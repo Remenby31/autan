@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cfd"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GPU-native unstructured finite-volume CFD solver: Python SDK and CLI"
 readme = "README.md"
 license = "Apache-2.0"
@@ -22,7 +22,6 @@ cfd = "cfd.cli:main"
 
 [dependency-groups]
 dev = [
-    "h5py>=3.16.0",
     "hatchling>=1.33.0",
     "jsonschema>=4.26.0",
     "mypy>=1.15",
@@ -31,14 +30,21 @@ dev = [
     "types-jsonschema>=4.26.0.20261006",
 ]
 
+[tool.hatch.version]
+path = "version.txt"
+pattern = "(?P<version>.+)"
+
 [tool.hatch.build.hooks.custom]
 path = "py/build_hook.py"
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["py/cfd/_build_info.py"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["py/cfd"]
 
 [tool.uv]
-cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true } }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "version.txt" }, { git = { commit = true } }]
 
 [tool.mypy]
 strict = true

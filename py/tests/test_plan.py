@@ -7,9 +7,9 @@ from typing import Any
 import cfd
 import pytest
 
-from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
+from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER
 
-HEAT = (EXAMPLES / "heat_exchanger.py").read_text()
+HEAT = HEAT_EXCHANGER
 
 
 def plan_of(body: str, mesh: cfd.MeshInfo, write_case: Callable[[str], Path]) -> cfd.Plan:
@@ -29,8 +29,10 @@ def zone_type(name: str, value: str | None) -> Callable[[dict[str, Any]], None]:
     return edit
 
 
-def test_crm_hl_example_plans_with_provenance(crm_mesh: cfd.MeshInfo) -> None:
-    result = cfd.load(EXAMPLES / "crm_hl.py").plan(crm_mesh)
+def test_crm_hl_example_plans_with_provenance(
+    crm_mesh: cfd.MeshInfo, example: Callable[[str], Path]
+) -> None:
+    result = cfd.load(example("crm_hl.py")).plan(crm_mesh)
     assert result.ok
     assert result.diagnostics == ()
     resolved = {
@@ -52,9 +54,11 @@ def test_crm_hl_example_plans_with_provenance(crm_mesh: cfd.MeshInfo) -> None:
     assert fluid.medium["material"]["name"] == "air"
 
 
-def test_heat_exchanger_example_plans_two_gases_and_a_solid() -> None:
+def test_heat_exchanger_example_plans_two_gases_and_a_solid(
+    example: Callable[[str], Path],
+) -> None:
     mesh = cfd.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
-    result = cfd.load(EXAMPLES / "heat_exchanger.py").plan(mesh)
+    result = cfd.load(example("heat_exchanger.py")).plan(mesh)
     assert result.ok, [d.render() for d in result.diagnostics]
     media = {
         z.zone: (z.medium["kind"], z.medium["material"]["name"], z.provenance)
@@ -105,7 +109,15 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid() -> None:
         ),
         ("crm-hl", None, CRM_HL + "case.monitor(cfd.forces('pylon*', name='p'))\n", ["E0601"]),
         ("crm-hl", None, CRM_HL + "case.monitor(cfd.forces('fuselage'))\n", ["E0602"]),
-        ("crm-hl", lambda d: d["source"].update(path="dpw.cgns"), CRM_HL, ["E0203"]),
+        ("crm-hl", lambda d: d["source"].update(sha256="0" * 64), CRM_HL, ["E0203"]),
+        ("crm-hl", None, CRM_HL.replace('"crm-hl.cgns"', '"absent.cgns"'), ["W0205"]),
+        # Mesh slip overridden by a no-slip wall changes the kind.
+        (
+            "crm-hl",
+            zone_type("fuselage", "slip"),
+            CRM_HL + "case.boundary('fuselage').wall()\n",
+            ["W0415"],
+        ),
         (
             "crm-hl",
             lambda d: d["quality"].update(max_non_orthogonality_deg=87.0),
@@ -118,6 +130,17 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid() -> None:
             lambda d: d["interfaces"].append({"zones": ["air", "co2"], "faces": 10}),
             HEAT,
             ["E0505"],
+        ),
+        # The same gas written in other units is the same material: no species transport.
+        (
+            "heat-exchanger",
+            lambda d: d["interfaces"].append({"zones": ["air", "co2"], "faces": 10}),
+            HEAT.replace(
+                "cfd.gases.CO2",
+                "cfd.IdealGas(**{**cfd.gases.AIR.model_dump(), 'name': 'a',"
+                " 'molar_mass': 28.9647 * cfd.units.ureg.gram / cfd.units.mol})",
+            ),
+            [],
         ),
     ],
 )
@@ -224,3 +247,23 @@ def test_memory_estimate_follows_the_documented_model(
     assert cfd.load(write_case(body)).plan(tiny_mesh(20), gpus=3).memory.bytes_per_gpu == -(
         -expected_bytes // 3
     )
+
+
+@pytest.mark.parametrize(
+    ("turbulence", "expected"),
+    [
+        # docs/sdk/plan.md: 5 compressible equations, +1 for SA, +2 for SST, base model for DDES.
+        ("cfd.Inviscid()", 5),
+        ("cfd.SA()", 6),
+        ("cfd.SST()", 7),
+        ("cfd.DDES(base=cfd.SA())", 6),
+        ("cfd.DDES()", 7),
+        ("cfd.WMLES()", 5),
+    ],
+)
+def test_equation_count_per_turbulence_model(
+    turbulence: str, expected: int, write_case: Callable[[str], Path], crm_mesh: cfd.MeshInfo
+) -> None:
+    body = CRM_HL.replace("cfd.SA()", turbulence).replace(".wall()", ".slip()")
+    body += "from cfd.units import s\ncase.time = cfd.Unsteady(steps=10, dt=1e-3 * s)\n"
+    assert cfd.load(write_case(body)).plan(crm_mesh).memory.equations == expected

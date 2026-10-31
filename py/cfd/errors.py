@@ -77,8 +77,15 @@ _CODES = [
     Code(
         "E0203",
         "The MeshInfo describes another mesh file",
-        "The file name in the MeshInfo `source.path` differs from the case's `mesh`.",
+        "The MeshInfo `source.sha256` differs from the SHA-256 of the case's mesh file, so it describes another mesh or another version of it.",
         "Pass the MeshInfo of the case's mesh, or change `mesh` in the case.",
+    ),
+    Code(
+        "W0205",
+        "Mesh file not found",
+        "The case's mesh file does not exist where the case says, so `plan` cannot check "
+        "that the MeshInfo describes it (by comparing the mesh hash).",
+        "Put the mesh at the path the case gives, relative to the case file.",
     ),
     Code(
         "W0204",
@@ -236,8 +243,7 @@ _CODES = [
     Code(
         "W0803",
         "Solver core not built",
-        "This installation contains the SDK only. Cases can be planned and run with the "
-        "`fake` backend, which writes synthetic results.",
+        "This installation contains the SDK only: cases can be planned, not run.",
         "Build the C++ core (see README) to run real computations.",
     ),
 ]

@@ -66,7 +66,7 @@ Values keep the unit they were written in; consumers convert to SI. Fields marke
 
 ## Tree
 
-Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or `model`, `law`).
+Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or `model`, `law`); a document always writes the tag, even where the Python builder fills it in. Integers are strict (a string or a boolean is rejected) and at most 2⁵³ − 1, the largest integer RFC 8785 represents exactly.
 
 ### Case
 
@@ -112,7 +112,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `"laminar"` | — | Navier-Stokes without a turbulence model. |
 | `"sa"` | `nu_tilde_ratio` > 0, default 3.0 | Spalart-Allmaras, negative variant (SA-neg). |
 | `"sst"` | `intensity` > 0, default 0.001; `viscosity_ratio` > 0, default 0.009 | Menter k-ω SST. |
-| `"ddes"` | `base = "sa"` · `"sst"` (default `"sst"`), and the options of the base model | Delayed detached-eddy simulation. Needs `time.kind = "unsteady"` (`E0305`). |
+| `"ddes"` | `base`: an `sa` or `sst` table with its options, default `{model = "sst"}` | Delayed detached-eddy simulation. Needs `time.kind = "unsteady"` (`E0305`). |
 | `"wmles"` | `wall_model = "equilibrium"` (default) | Wall-modelled LES. Needs `time.kind = "unsteady"` (`E0305`). |
 
 The options set the turbulence state of the freestream and of every inlet, from the local laminar viscosity ν = μ/ρ and speed V: SA takes ν̃ = `nu_tilde_ratio` · ν; SST takes k = 1.5 (`intensity` · V)² and ω = ρ k / (`viscosity_ratio` · μ). The defaults follow the NASA Turbulence Modeling Resource: ν̃/ν = 3 for SA, μt/μ = 0.009 for SST; the SST intensity default (0.1 %) is our choice.

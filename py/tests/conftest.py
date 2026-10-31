@@ -1,5 +1,6 @@
 import copy
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"
 EXAMPLES = ROOT / "py" / "examples"
+CRM_HL = (EXAMPLES / "crm_hl.py").read_text()
+HEAT_EXCHANGER = (EXAMPLES / "heat_exchanger.py").read_text()
+
+# Stand-ins for the example meshes: their SHA-256 is the source.sha256 of the fixtures.
+MESH_FILES = {"crm-hl.cgns": b"crm-hl fixture", "heat-exchanger.msh": b"heat-exchanger fixture"}
 
 
 def mesh_document(name: str) -> dict[str, Any]:
     document: dict[str, Any] = json.loads((FIXTURES / f"{name}.meshinfo.json").read_text())
     return document
+
+
+def place_meshes(directory: Path) -> None:
+    for name, content in MESH_FILES.items():
+        (directory / name).write_bytes(content)
 
 
 @pytest.fixture
@@ -35,7 +46,10 @@ def mesh_variant() -> Callable[..., cfd.MeshInfo]:
 
 
 @pytest.fixture
-def write_case(tmp_path: Path) -> Callable[[str], Path]:
+def write_case(tmp_path: Path) -> Callable[..., Path]:
+    """Write a case file next to the example mesh stand-ins."""
+    place_meshes(tmp_path)
+
     def write(body: str, name: str = "case.py") -> Path:
         path = tmp_path / name
         path.write_text(body)
@@ -44,4 +58,12 @@ def write_case(tmp_path: Path) -> Callable[[str], Path]:
     return write
 
 
-CRM_HL = (EXAMPLES / "crm_hl.py").read_text()
+@pytest.fixture
+def example(tmp_path: Path) -> Callable[[str], Path]:
+    """Copy an example case next to the example mesh stand-ins."""
+    place_meshes(tmp_path)
+
+    def copy_example(name: str) -> Path:
+        return Path(shutil.copy(EXAMPLES / name, tmp_path / name))
+
+    return copy_example

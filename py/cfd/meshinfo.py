@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -15,6 +16,9 @@ SCHEMA_ID = "cfd.mesh-info/1"
 
 BoundaryType = Literal["wall", "thermal-wall", "slip", "symmetry", "farfield", "inlet", "outlet"]
 Name = Annotated[str, Field(min_length=1)]
+Count = Annotated[int, Field(strict=True, ge=0)]
+Positive = Annotated[int, Field(strict=True, ge=1)]
+POLYMESH_FILES = ("points", "faces", "owner", "neighbour", "boundary", "cellZones")
 
 
 class _Strict(BaseModel):
@@ -28,17 +32,17 @@ class Source(_Strict):
 
 
 class CellsByType(_Strict):
-    tetra: Annotated[int, Field(ge=0)]
-    pyramid: Annotated[int, Field(ge=0)]
-    prism: Annotated[int, Field(ge=0)]
-    hexa: Annotated[int, Field(ge=0)]
-    polyhedron: Annotated[int, Field(ge=0)]
+    tetra: Count
+    pyramid: Count
+    prism: Count
+    hexa: Count
+    polyhedron: Count
 
 
 class Counts(_Strict):
-    cells: Annotated[int, Field(ge=1)]
-    faces: Annotated[int, Field(ge=1)]
-    nodes: Annotated[int, Field(ge=1)]
+    cells: Positive
+    faces: Positive
+    nodes: Positive
     cells_by_type: CellsByType
 
 
@@ -46,24 +50,24 @@ class BoundaryZone(_Strict):
     name: Name
     type: BoundaryType | None
     native_type: str | None
-    faces: Annotated[int, Field(ge=0)]
+    faces: Count
 
 
 class CellZone(_Strict):
     name: Name
     type: Literal["fluid", "solid"] | None
     native_type: str | None
-    cells: Annotated[int, Field(ge=1)]
+    cells: Positive
 
 
 class Interface(_Strict):
     zones: tuple[Name, Name]
-    faces: Annotated[int, Field(ge=1)]
+    faces: Positive
 
 
 class Quality(_Strict):
-    max_non_orthogonality_deg: Annotated[float, Field(ge=0, le=180)]
-    max_faces_per_cell: Annotated[int, Field(ge=4)]
+    max_non_orthogonality_deg: Annotated[float, Field(strict=True, ge=0, le=180)]
+    max_faces_per_cell: Annotated[int, Field(strict=True, ge=4)]
 
 
 class MeshInfo(_Strict):
@@ -84,8 +88,11 @@ class MeshInfo(_Strict):
             problems.append("counts.cells_by_type does not sum to counts.cells")
         if sum(zone.cells for zone in self.cell_zones) != self.counts.cells:
             problems.append("cell_zones[].cells does not sum to counts.cells")
-        if sum(zone.faces for zone in self.boundary_zones) > self.counts.faces:
+        boundary = sum(zone.faces for zone in self.boundary_zones)
+        if boundary > self.counts.faces:
             problems.append("boundary_zones[].faces exceeds counts.faces")
+        if sum(i.faces for i in self.interfaces) > self.counts.faces - boundary:
+            problems.append("interfaces[].faces exceeds the interior face count")
         for label, zones in (
             ("boundary_zones", self.boundary_zones),
             ("cell_zones", self.cell_zones),
@@ -112,7 +119,7 @@ class MeshInfo(_Strict):
         location = Location(file=str(path))
         try:
             document = json.loads(Path(path).read_text())
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, ValueError) as error:
             raise CaseError(
                 [diagnostic("E0202", f"cannot read {path}: {error}", location=location)]
             ) from None
@@ -144,3 +151,19 @@ class MeshInfo(_Strict):
 
     def document(self) -> dict[str, object]:
         return self.model_dump(mode="json", by_alias=True)
+
+
+def mesh_sha256(path: Path) -> str:
+    """The mesh hash of a mesh file, or of a polyMesh directory (mesh-info.md, ``source.sha256``)."""
+    digest = hashlib.sha256()
+    if path.is_dir():
+        for name in POLYMESH_FILES:
+            member = path / name
+            if member.exists():
+                data = member.read_bytes()
+                digest.update(f"{name}\n{len(data)}\n".encode() + data)
+        return digest.hexdigest()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()

@@ -81,6 +81,13 @@ class Case:
         return self._mesh
 
     @property
+    def mesh_path(self) -> Path:
+        """Absolute path of the mesh: ``mesh`` relative to the case file's directory."""
+        source = self._document_file or self._origin.file
+        base = Path(source).parent if source and Path(source).is_file() else Path.cwd()
+        return (base / self._mesh).resolve()
+
+    @property
     def physics(self) -> Compressible | Incompressible | None:
         return self._physics
 

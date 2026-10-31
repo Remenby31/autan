@@ -11,6 +11,7 @@ import jsonschema
 import pytest
 from cfd.cli import json_schema
 from cfd.units import K, Pa, s
+from pydantic import ValidationError
 
 from tests.conftest import CRM_HL, EXAMPLES
 
@@ -94,7 +95,14 @@ def test_builder_rejects_invalid_values_at_the_calling_line(
 
 @pytest.mark.parametrize(
     ("value", "code"),
-    [("7.0 parsecs_per_fortnight", "E0303"), ("7.0", "E0302"), ("7.0 s", "E0301")],
+    [
+        ("7.0 parsecs_per_fortnight", "E0303"),
+        ("7.0", "E0302"),
+        ("7.0 s", "E0301"),
+        ("m", "E0303"),
+        ("7 m + 1 m", "E0303"),
+        ("1 (m", "E0303"),
+    ],
 )
 def test_toml_quantities_are_checked(value: str, code: str, tmp_path: Path) -> None:
     document = cfd.load(EXAMPLES / "crm_hl.py").spec.document()
@@ -198,3 +206,102 @@ def test_presets_are_physical() -> None:
     assert sutherland(cfd.gases.AIR, 300.0) == pytest.approx(1.846e-5, rel=0.01)
     # CO2 viscosity at 300 K: 1.49e-5 Pa s (Incropera et al., 7th ed., Table A.4).
     assert sutherland(cfd.gases.CO2, 300.0) == pytest.approx(1.49e-5, rel=0.02)
+
+
+def test_quantities_from_another_registry_are_rejected(write_case: Callable[[str], Path]) -> None:
+    body = (
+        "import cfd, pint\nother = pint.UnitRegistry()\nother.define('inch = 0.03 * meter')\n"
+        "case = cfd.Case('c', mesh='m.cgns')\n"
+        "case.freestream(mach=0.2, re=5e6, ref_length=other.Quantity(1, 'inch'))\n"
+    )
+    with pytest.raises(cfd.CaseError) as error:
+        cfd.load(write_case(body))
+    assert codes(error) == ["E0303"]
+
+
+def test_cases_do_not_share_mutable_values() -> None:
+    first = cfd.load(EXAMPLES / "crm_hl.py").spec
+    second = cfd.load(EXAMPLES / "crm_hl.py").spec
+    before = second.hash()
+    assert isinstance(first.physics, cfd.Compressible)
+    law = first.physics.gas.viscosity
+    assert isinstance(law, cfd.Sutherland)
+    law.mu_ref.ito("mPa * s")
+    assert second.hash() == before
+    assert cfd.gases.AIR.viscosity.model_dump(mode="json")["mu_ref"] == "1.716e-05 Pa * s"
+
+
+def test_defaults_are_materialized_before_hashing(tmp_path: Path) -> None:
+    document = cfd.load(EXAMPLES / "crm_hl.py").spec.document()
+    assert document["monitors"][0]["moment_center"] == ["0.0 m", "0.0 m", "0.0 m"]
+    del document["monitors"][0]["moment_center"]
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(document))
+    assert cfd.load(path).spec.hash() == cfd.load(EXAMPLES / "crm_hl.py").spec.hash()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d.pop("schema"),
+        lambda d: d.update(freestream={}),
+        lambda d: d["freestream"].update(mach=-0.2),
+        lambda d: d["freestream"].update(pressure="1 bar"),
+        lambda d: d["boundaries"][0]["condition"].pop("kind"),
+        lambda d: d["physics"].update(turbulence={"model": "wmles"}),
+        lambda d: d["time"].update(max_iterations=True),
+        lambda d: d["physics"].update(
+            turbulence={"model": "ddes", "base": {"model": "sa", "intensity": 0.1}}
+        ),
+    ],
+)
+def test_published_json_schema_and_reader_reject_contract_violations(
+    edit: Callable[[dict[str, Any]], None], tmp_path: Path
+) -> None:
+    document = cfd.load(EXAMPLES / "crm_hl.py").spec.document()
+    edit(document)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("case")).validate(document)
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(cfd.CaseError):
+        cfd.load(path)
+
+
+def test_cross_field_rules_hold_for_plain_pydantic_validation() -> None:
+    document = cfd.load(EXAMPLES / "crm_hl.py").spec.document()
+    del document["freestream"]["mach"]
+    with pytest.raises(ValidationError) as error:
+        cfd.CaseSpec.model_validate(document)
+    assert error.value.errors()[0]["type"] == "cfd.consistency"
+
+
+@pytest.mark.parametrize(
+    ("edit", "code"),
+    [
+        (lambda d: d["time"].update(max_iterations=2**53), "E0304"),
+        (lambda d: d["time"].update(max_iterations="12"), "E0003"),
+    ],
+)
+def test_integers_are_strict_and_canonicalizable(
+    edit: Callable[[dict[str, Any]], None], code: str, tmp_path: Path
+) -> None:
+    document = cfd.load(EXAMPLES / "crm_hl.py").spec.document()
+    edit(document)
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(cfd.CaseError) as error:
+        cfd.load(path)
+    assert codes(error) == [code]
+
+
+def test_error_paths_are_document_paths(tmp_path: Path) -> None:
+    document = cfd.load(EXAMPLES / "crm_hl.py").spec.document()
+    document["boundaries"][0]["condition"]["temperature"] = "3 Pa"
+    document["physics"]["turbulence"]["nu_tilde_ratio"] = -1
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(cfd.CaseError) as error:
+        cfd.load(path)
+    paths = sorted(d.location.path or "" for d in error.value.diagnostics if d.location)
+    assert paths == ["boundaries[0].condition.temperature", "physics.turbulence.nu_tilde_ratio"]

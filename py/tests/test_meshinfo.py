@@ -54,3 +54,40 @@ def test_unreadable_file_is_e0202(tmp_path: Path) -> None:
     with pytest.raises(cfd.CaseError) as error:
         cfd.MeshInfo.load(path)
     assert error.value.codes == ["E0202"]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d["counts"].update(nodes=True),
+        lambda d: d["cell_zones"][0].update(cells="48200000"),
+        lambda d: d["cell_zones"].append(
+            {"name": "core", "type": None, "native_type": None, "cells": 1}
+        ),
+    ],
+)
+def test_counts_are_strict_integers(
+    edit: Callable[[dict[str, Any]], None], mesh_variant: Callable[..., cfd.MeshInfo]
+) -> None:
+    with pytest.raises(cfd.CaseError) as error:
+        mesh_variant("crm-hl", edit)
+    assert set(error.value.codes) == {"E0202"}
+
+
+def test_interface_faces_must_fit_in_the_interior(
+    mesh_variant: Callable[..., cfd.MeshInfo],
+) -> None:
+    def edit(document: dict[str, Any]) -> None:
+        document["interfaces"][0]["faces"] = document["counts"]["faces"]
+
+    with pytest.raises(cfd.CaseError) as error:
+        mesh_variant("heat-exchanger", edit)
+    assert error.value.codes == ["E0202"]
+
+
+def test_undecodable_file_is_e0202(tmp_path: Path) -> None:
+    path = tmp_path / "binary.json"
+    path.write_bytes(b"\xff\xfe{")
+    with pytest.raises(cfd.CaseError) as error:
+        cfd.MeshInfo.load(path)
+    assert error.value.codes == ["E0202"]

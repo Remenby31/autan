@@ -12,29 +12,40 @@ import rfc8785
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from cfd.errors import CaseError, Diagnostic, Location, diagnostic
-from cfd.units import Dimension, K, deg, fail, validate_number
+from cfd.units import K, deg, fail, m, quantity, validate_number
 
 SCHEMA_ID = "cfd.case/1"
+# Largest integer RFC 8785 canonicalizes exactly (IEEE 754 double, 2**53 - 1).
+MAX_INTEGER = 2**53 - 1
 
-Length = Annotated[pint.Quantity, Dimension("[length]", positive=True)]
-Area = Annotated[pint.Quantity, Dimension("[length] ** 2", positive=True)]
-Speed = Annotated[pint.Quantity, Dimension("[length] / [time]", positive=True)]
-Duration = Annotated[pint.Quantity, Dimension("[time]", positive=True)]
-Temperature = Annotated[pint.Quantity, Dimension("[temperature]", positive=True)]
-Pressure = Annotated[pint.Quantity, Dimension("[pressure]", positive=True)]
-Density = Annotated[pint.Quantity, Dimension("[mass] / [length] ** 3", positive=True)]
-DynamicViscosity = Annotated[pint.Quantity, Dimension("[mass] / [length] / [time]", positive=True)]
-MolarMass = Annotated[pint.Quantity, Dimension("[mass] / [substance]", positive=True)]
+Length = Annotated[pint.Quantity, *quantity("[length]", positive=True)]
+Area = Annotated[pint.Quantity, *quantity("[length] ** 2", positive=True)]
+Speed = Annotated[pint.Quantity, *quantity("[length] / [time]", positive=True)]
+Duration = Annotated[pint.Quantity, *quantity("[time]", positive=True)]
+Temperature = Annotated[pint.Quantity, *quantity("[temperature]", positive=True)]
+Pressure = Annotated[pint.Quantity, *quantity("[pressure]", positive=True)]
+Density = Annotated[pint.Quantity, *quantity("[mass] / [length] ** 3", positive=True)]
+DynamicViscosity = Annotated[pint.Quantity, *quantity("[mass] / [length] / [time]", positive=True)]
+MolarMass = Annotated[pint.Quantity, *quantity("[mass] / [substance]", positive=True)]
 SpecificHeat = Annotated[
-    pint.Quantity, Dimension("[length] ** 2 / [time] ** 2 / [temperature]", positive=True)
+    pint.Quantity, *quantity("[length] ** 2 / [time] ** 2 / [temperature]", positive=True)
 ]
 Conductivity = Annotated[
-    pint.Quantity, Dimension("[mass] * [length] / [time] ** 3 / [temperature]", positive=True)
+    pint.Quantity, *quantity("[mass] * [length] / [time] ** 3 / [temperature]", positive=True)
 ]
-Angle = Annotated[pint.Quantity, Dimension("[angle]")]
-Coordinate = Annotated[pint.Quantity, Dimension("[length]")]
-PositiveNumber = Annotated[float, BeforeValidator(lambda v: validate_number(v, positive=True))]
+Angle = Annotated[pint.Quantity, *quantity("[angle]")]
+Coordinate = Annotated[pint.Quantity, *quantity("[length]")]
+PositiveNumber = Annotated[
+    float, Field(gt=0), BeforeValidator(lambda v: validate_number(v, positive=True))
+]
+Gamma = Annotated[float, Field(gt=1), BeforeValidator(lambda v: validate_number(v, positive=True))]
+Count = Annotated[int, Field(strict=True, ge=1, le=MAX_INTEGER)]
+Index = Annotated[int, Field(strict=True, ge=0, le=MAX_INTEGER)]
 Pattern = Annotated[str, Field(min_length=1)]
+Name = Annotated[str, Field(min_length=1)]
+
+_RANGE_ERRORS = frozenset({"greater_than", "greater_than_equal", "less_than", "less_than_equal"})
+_TAGS = ("kind", "model", "law")
 
 
 def _caller_location() -> Location:
@@ -47,37 +58,68 @@ def _caller_location() -> Location:
     return Location(file=frame.f_code.co_filename, line=frame.f_lineno)
 
 
-def diagnostics_from(error: ValidationError, location: Location) -> list[Diagnostic]:
-    """Convert pydantic errors to coded diagnostics; ``cfd.E####`` error types keep their code."""
+def document_path(parts: tuple[int | str, ...], document: object) -> str:
+    """Document path of a pydantic error location, without the union tags pydantic inserts.
+
+    ``("boundaries", 0, "condition", "wall", "temperature")`` -> ``"boundaries[0].condition
+    .temperature"`` when the condition's ``kind`` is ``"wall"``.
+    """
+    text, node = "", document
+    for part in parts:
+        if isinstance(node, BaseModel):
+            node = node.model_dump(by_alias=True)
+        if (
+            isinstance(node, dict)
+            and part not in node
+            and any(node.get(tag) == part for tag in _TAGS)
+        ):
+            continue
+        if isinstance(part, int):
+            text += f"[{part}]"
+            node = node[part] if isinstance(node, list | tuple) and part < len(node) else None
+        else:
+            text += f".{part}" if text else part
+            node = node.get(part) if isinstance(node, dict) else None
+    return text
+
+
+def diagnostics_from(
+    error: ValidationError, location: Location, document: object
+) -> list[Diagnostic]:
+    """Coded diagnostics of a pydantic error: ``cfd.E####`` types keep their code, range
+    violations are ``E0304``, cross-field problems expand to one diagnostic each, the rest
+    is ``E0003``."""
     found = []
     for item in error.errors(include_url=False):
-        path = document_path(item["loc"])
-        code = item["type"][4:] if item["type"].startswith("cfd.") else "E0003"
-        where = location.model_copy(
-            update={"path": ".".join(p for p in (location.path, path) if p) or None}
-        )
-        found.append(diagnostic(code, f"{path or 'case'}: {item['msg']}", location=where))
+        path = document_path(item["loc"], document)
+        if item["type"] == "cfd.consistency":
+            problems = (item.get("ctx") or {})["problems"]
+        elif item["type"].startswith("cfd."):
+            problems = [(item["type"][4:], path, f"{path or 'case'}: {item['msg']}")]
+        elif item["type"] in _RANGE_ERRORS:
+            problems = [("E0304", path, f"{path}: {item['msg']}")]
+        else:
+            problems = [("E0003", path, f"{path or 'case'}: {item['msg']}")]
+        for code, where, message in problems:
+            full = ".".join(p for p in (location.path, where) if p) or None
+            found.append(
+                diagnostic(code, message, location=location.model_copy(update={"path": full}))
+            )
     return found
-
-
-def document_path(parts: tuple[int | str, ...]) -> str:
-    """``("boundaries", 0, "condition")`` -> ``"boundaries[0].condition"``."""
-    text = ""
-    for part in parts:
-        text += f"[{part}]" if isinstance(part, int) else (f".{part}" if text else part)
-    return text
 
 
 class Spec(BaseModel):
     """Base of every case model: immutable, strict about unknown keys, coded errors."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, arbitrary_types_allowed=True, revalidate_instances="always"
+    )
 
     def __init__(self, /, **data: Any) -> None:
         try:
             super().__init__(**data)
         except ValidationError as error:
-            raise CaseError(diagnostics_from(error, _caller_location())) from None
+            raise CaseError(diagnostics_from(error, _caller_location(), data)) from None
 
     # Nested validation must not run this conversion, only direct construction does:
     # pydantic calls a model's __init__ during validation unless it is marked as the base one.
@@ -106,24 +148,18 @@ class IdealGas(Spec):
     """A calorically perfect gas: molar mass, ratio of specific heats, Prandtl number, viscosity."""
 
     kind: Literal["ideal-gas"] = "ideal-gas"
-    name: str
+    name: Name
     molar_mass: MolarMass
-    gamma: PositiveNumber
+    gamma: Gamma
     prandtl: PositiveNumber
     viscosity: Viscosity
-
-    @model_validator(mode="after")
-    def _gamma_above_one(self) -> Self:
-        if self.gamma <= 1:
-            fail("E0304", "gamma must be > 1, got {g}", g=self.gamma)
-        return self
 
 
 class ConstantDensityFluid(Spec):
     """A fluid of constant density and viscosity, for incompressible flow."""
 
     kind: Literal["constant-density-fluid"] = "constant-density-fluid"
-    name: str
+    name: Name
     density: Density
     viscosity: DynamicViscosity
 
@@ -132,7 +168,7 @@ class Solid(Spec):
     """A solid for conjugate heat transfer: density, specific heat, thermal conductivity."""
 
     kind: Literal["solid"] = "solid"
-    name: str
+    name: Name
     density: Density
     specific_heat: SpecificHeat
     conductivity: Conductivity
@@ -175,10 +211,7 @@ class DDES(Spec):
     """Delayed detached-eddy simulation on an SA or SST base model; needs an unsteady run."""
 
     model: Literal["ddes"] = "ddes"
-    base: Literal["sa", "sst"] = "sst"
-    nu_tilde_ratio: PositiveNumber = 3.0
-    intensity: PositiveNumber = 0.001
-    viscosity_ratio: PositiveNumber = 0.009
+    base: Annotated[SA | SST, Field(discriminator="model")] = Field(default_factory=SST)
 
 
 class WMLES(Spec):
@@ -195,7 +228,7 @@ Precision = Literal["fp32+acc64", "fp64"]
 def _air() -> IdealGas:
     from cfd.gases import AIR  # noqa: PLC0415 -- cfd.gases imports this module
 
-    return AIR
+    return AIR.model_copy(deep=True)
 
 
 class Compressible(Spec):
@@ -238,7 +271,7 @@ class Steady(Spec):
     ``max_iterations`` iterations."""
 
     kind: Literal["steady"] = "steady"
-    max_iterations: Annotated[int, Field(ge=1)] = 10000
+    max_iterations: Count = 10000
     residual_orders: PositiveNumber = 8.0
 
 
@@ -246,10 +279,10 @@ class Unsteady(Spec):
     """Time-accurate run of ``steps`` steps, with either a fixed ``dt`` or a ``cfl`` target."""
 
     kind: Literal["unsteady"] = "unsteady"
-    steps: Annotated[int, Field(ge=1)]
+    steps: Count
     dt: Duration | None = None
     cfl: PositiveNumber | None = None
-    average_from: Annotated[int, Field(ge=0)] | None = None
+    average_from: Index | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -332,11 +365,13 @@ class Forces(Spec):
     """Integrated forces and moments over the boundary zones matching ``surfaces``."""
 
     kind: Literal["forces"] = "forces"
-    name: Annotated[str, Field(min_length=1)] = "forces"
+    name: Name = "forces"
     surfaces: Pattern
-    every: Annotated[int, Field(ge=1)] = 1
+    every: Count = 1
     ref_area: Area | None = None
-    moment_center: tuple[Coordinate, Coordinate, Coordinate] | None = None
+    moment_center: tuple[Coordinate, Coordinate, Coordinate] = Field(
+        default_factory=lambda: (0.0 * m, 0.0 * m, 0.0 * m)
+    )
 
 
 Monitor = Annotated[Forces, Field(discriminator="kind")]
@@ -349,8 +384,8 @@ class CaseSpec(Spec):
     """A complete case document, ``cfd.case/1``."""
 
     schema_: Literal["cfd.case/1"] = Field(default="cfd.case/1", alias="schema")
-    name: Annotated[str, Field(min_length=1)]
-    mesh: Annotated[str, Field(min_length=1)]
+    name: Name
+    mesh: Name
     physics: Physics
     freestream: Freestream
     time: Time = Field(default_factory=Steady)
@@ -360,17 +395,14 @@ class CaseSpec(Spec):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    def __init__(self, /, **data: Any) -> None:
-        super().__init__(**data)
-        _raise_inconsistencies(self, _caller_location())
-
-    __init__.__pydantic_base_init__ = True  # type: ignore[attr-defined]
-
     @model_validator(mode="after")
-    def _fill_defaults(self) -> Self:
+    def _complete(self) -> Self:
         if isinstance(self.physics, Compressible) and self.freestream.temperature is None:
             filled = self.freestream.model_copy(update={"temperature": 288.15 * K})
             object.__setattr__(self, "freestream", filled)
+        problems = consistency(self)
+        if problems:
+            fail("consistency", "{problems}", problems=problems)
         return self
 
     @classmethod
@@ -378,21 +410,13 @@ class CaseSpec(Spec):
         """Validate a JSON/TOML tree; every problem is reported as a coded diagnostic."""
         version = document.get("schema")
         if version != SCHEMA_ID:
-            raise CaseError(
-                [
-                    diagnostic(
-                        "E0004",
-                        f"schema is {version!r}, expected {SCHEMA_ID!r}",
-                        location=location.model_copy(update={"path": "schema"}),
-                    )
-                ]
-            )
+            where = location.model_copy(update={"path": "schema"})
+            message = f"schema is {version!r}, expected {SCHEMA_ID!r}"
+            raise CaseError([diagnostic("E0004", message, location=where)])
         try:
-            spec = cls.model_validate(document)
+            return cls.model_validate(document)
         except ValidationError as error:
-            raise CaseError(diagnostics_from(error, location)) from None
-        _raise_inconsistencies(spec, location)
-        return spec
+            raise CaseError(diagnostics_from(error, location, document)) from None
 
     def document(self) -> dict[str, Any]:
         """The case as a JSON-compatible tree, defaults filled in."""
@@ -401,15 +425,6 @@ class CaseSpec(Spec):
     def hash(self) -> str:
         """SHA-256 of the RFC 8785 canonical JSON (docs/contracts/case-schema.md#case-hash)."""
         return hashlib.sha256(rfc8785.dumps(self.document())).hexdigest()
-
-
-def _raise_inconsistencies(spec: CaseSpec, location: Location) -> None:
-    found = consistency(spec)
-    if found:
-        raise CaseError(
-            diagnostic(code, message, location=location.model_copy(update={"path": path}))
-            for code, path, message in found
-        )
 
 
 def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
@@ -448,3 +463,70 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
             ("E0305", "time", f"{physics.turbulence.model} needs case.time = cfd.Unsteady(...)")
         )
     return found
+
+
+def _require_tags(schema: dict[str, Any]) -> None:
+    """Discriminators and ``schema`` are required in documents, even where Python has defaults."""
+    if schema.get("type") == "object" and "properties" in schema:
+        tags = [k for k, v in schema["properties"].items() if "const" in v or k == "schema"]
+        schema["required"] = sorted(set(schema.get("required", [])) | set(tags))
+    for value in schema.values():
+        if isinstance(value, dict):
+            _require_tags(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _require_tags(item)
+
+
+def json_schema() -> dict[str, Any]:
+    """The published JSON Schema of ``cfd.case/1``, cross-field rules included."""
+    schema = CaseSpec.model_json_schema(by_alias=True, mode="validation")
+    _require_tags(schema)
+
+    def physics(kind: str) -> dict[str, Any]:
+        return {"properties": {"physics": {"properties": {"kind": {"const": kind}}}}}
+
+    def freestream(rule: dict[str, Any]) -> dict[str, Any]:
+        return {"properties": {"freestream": rule}}
+
+    def absent(*keys: str) -> dict[str, Any]:
+        return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
+
+    schema["allOf"] = [
+        {
+            "if": physics("compressible"),
+            "then": freestream(
+                {
+                    "required": ["mach"],
+                    **absent("velocity"),
+                    "oneOf": [
+                        {"required": ["pressure"], **absent("re")},
+                        {"required": ["re", "ref_length"], **absent("pressure")},
+                    ],
+                }
+            ),
+        },
+        {
+            "if": physics("incompressible"),
+            "then": freestream(
+                {"required": ["velocity"], **absent("mach", "re", "pressure", "temperature")}
+            ),
+        },
+        {
+            "if": {
+                "properties": {
+                    "physics": {
+                        "properties": {
+                            "turbulence": {"properties": {"model": {"enum": ["ddes", "wmles"]}}}
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["time"],
+                "properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}},
+            },
+        },
+    ]
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}
