@@ -17,3 +17,6 @@ Comput = "Comput"     # journal abbreviation, "PLoS Comput Biol"
 Numer = "Numer"       # journal abbreviation, "Int. J. Numer. Meth. Fluids"
 strat = "strat"       # Scotch API, SCOTCH_Strat
 ser = "ser"           # pydantic-core API, plain_serializer_function_ser_schema
+Aer = "Aer"           # DrivAer, automotive aerodynamics benchmark
+metalness = "metalness" # three.js material property
+DOUT = "DOUT"         # CMake -D definition of a variable named OUT
