@@ -83,6 +83,15 @@ def test_fetch_verifies_files_and_archive_members(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         fetch(_case((bad_member,)), tmp_path / "cache3")
     assert err.value.code == "V0602"
+    missing = CaseFile(
+        "gone.dat", "reference", (tmp_path / "gone.dat").as_uri(), "0" * 64, 1, "tecplot", ""
+    )
+    with pytest.raises(OSError):
+        fetch(_case((missing,)), tmp_path / "cache4")
+    leftovers = [p for p in (tmp_path / "cache2").rglob("*")] + [
+        p for p in (tmp_path / "cache4").rglob("*")
+    ]
+    assert all(p.is_dir() for p in leftovers), "no temporary file may survive a failed fetch"
 
 
 def test_tecplot_reader_handles_tmr_header_variants(tmp_path: Path) -> None:
@@ -118,16 +127,39 @@ def test_plot3d_reader_orders_i_fastest(tmp_path: Path) -> None:
     np.testing.assert_array_equal(y, [[0, 0, 0], [1, 1, 1]])
 
 
+TAPE = (
+    "----------------- FILE NUMBER     6-----------------\n"
+    "       1.     FLOW TITLE: CASE 8621;  COOK, MCDONALD, FIRMIN\n"
+    "-------------- END OF FILE NUMBER     6-------------\n"
+    "----------------- FILE NUMBER     7-----------------\n"
+    " 0.100000E 02 0.200000E-01\n"
+    " 0.000000E 00-0.200000E-01\n"
+    "     0 10000\n"
+    " 10000 20000\n"
+    "-------------- END OF FILE NUMBER     7-------------\n"
+)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        (" 0.100000E 02", " 0.100000X 02"),
+        (" 10000 20000", " 10001 20000"),
+        ("     0 10000", "     0 1\x100"),
+    ],
+)
+def test_tape_decoder_rejects_undeclared_damage(tmp_path: Path, damage: tuple[str, str]) -> None:
+    path = tmp_path / "f.txt"
+    path.write_text(TAPE.replace(*damage))
+    with pytest.raises(VVError) as err:
+        read_tape_1981(path)
+    assert err.value.code == "V0603"
+
+
 def test_tape_decoder_applies_the_min_max_scaling(tmp_path: Path) -> None:
     path = tmp_path / "f.txt"
-    path.write_text(
-        "----------------- FILE NUMBER     7-----------------\n"
-        " 0.100000E 02 0.200000E-01\n"
-        " 0.000000E 00-0.200000E-01\n"
-        "     0 10000\n"
-        " 10000 20000\n"
-        "-------------- END OF FILE NUMBER     7-------------\n"
-    )
+    path.write_text(TAPE)
+    assert set(read_tape_1981(path)) == {7}
     values = read_tape_1981(path)[7]
     np.testing.assert_allclose(values[0], [0.0, 0.02])
     assert values[1, 0] == 10.0

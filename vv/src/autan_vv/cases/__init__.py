@@ -125,13 +125,16 @@ def _publish_verified(write: Any, dest: Path, sha256: str, code: str, what: str)
     dest.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=dest.name + ".", delete=False) as fh:
         tmp = Path(fh.name)
-        write(fh)
-    got = _sha256(tmp)
-    if got != sha256:
-        tmp.unlink()
-        msg = f"{what}: SHA-256 {got} differs from the catalogue ({sha256})"
-        raise VVError(msg, code=code)
-    tmp.replace(dest)
+    try:
+        with tmp.open("wb") as out:
+            write(out)
+        got = _sha256(tmp)
+        if got != sha256:
+            msg = f"{what}: SHA-256 {got} differs from the catalogue ({sha256})"
+            raise VVError(msg, code=code)
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _download(url: str, sha256: str, size: int, blobs: Path) -> Path:
@@ -311,26 +314,35 @@ def read_tape_1981(path: Path, corrupt: tuple[int, ...] = ()) -> dict[int, Float
     out: dict[int, FloatArray] = {}
     pattern = r"FILE NUMBER\s+(\d+)-+\s*\n(.*?)\n-+ END OF FILE"
     for number, body in re.findall(pattern, _open_text(path), re.DOTALL):
+        if len(re.findall(r"\b[A-Z]{3,}\b", body)) >= 3:
+            continue  # a prose section (description of the data set)
         lines = [ln.rstrip() for ln in body.splitlines() if ln.strip()]
         n_real = 0
         while n_real < len(lines) and _TAPE_REAL.match(lines[n_real]):
             n_real += 1
-        if n_real == 0:
-            continue
-        if not all(_TAPE_INT.match(ln) for ln in lines[n_real:]):
-            if int(number) in corrupt:
-                continue
-            msg = f"{path.name}: coded file {number} has a malformed record"
-            raise VVError(msg, code="V0603")
         reals = [
             float(ln[k : k + 13].replace("E ", "E+"))
             for ln in lines[:n_real]
             for k in range(0, len(ln), 13)
         ]
-        ints = [int(ln[k : k + 6]) for ln in lines[n_real:] for k in range(0, len(ln), 6)]
+        well_formed = n_real > 0 and all(_TAPE_INT.match(ln) for ln in lines[n_real:])
+        ints = (
+            [int(ln[k : k + 6]) for ln in lines[n_real:] for k in range(0, len(ln), 6)]
+            if well_formed
+            else []
+        )
         nv = len(reals) // 2
-        if len(reals) != 2 * nv or len(ints) % nv:
-            msg = f"{path.name}: file {number} has {len(reals)} bounds and {len(ints)} integers"
+        well_formed = (
+            well_formed
+            and nv > 0
+            and len(reals) == 2 * nv
+            and len(ints) % nv == 0
+            and all(0 <= i <= 10000 or i == 20000 for i in ints)
+        )
+        if not well_formed:
+            if int(number) in corrupt:
+                continue
+            msg = f"{path.name}: coded file {number} is malformed"
             raise VVError(msg, code="V0603")
         hi, lo = np.array(reals[:nv]), np.array(reals[nv:])
         coded = np.array(ints, dtype=np.float64).reshape(-1, nv)
