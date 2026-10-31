@@ -1,4 +1,4 @@
-#include "cfd/core/mesh.hpp"
+#include "autan/core/mesh.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -8,9 +8,9 @@
 #include <unordered_set>
 #include <utility>
 
-#include "cfd/core/error.hpp"
+#include "autan/core/error.hpp"
 
-namespace cfd {
+namespace autan {
 namespace {
 
 std::size_t to_size(index_t value) { return static_cast<std::size_t>(value); }
@@ -336,4 +336,4 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   return mesh;
 }
 
-}  // namespace cfd
+}  // namespace autan

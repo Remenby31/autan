@@ -4,9 +4,9 @@
 #include <span>
 #include <vector>
 
-#include "cfd/core/mesh.hpp"
+#include "autan/core/mesh.hpp"
 
-namespace cfd {
+namespace autan {
 
 /// Linear cell shapes with the node ordering of the Gmsh reference elements
 /// (https://gmsh.info/doc/texinfo/gmsh.html#Node-ordering).
@@ -47,4 +47,4 @@ struct CellwiseMesh {
 /// visible downstream.
 MeshInput to_face_based(CellwiseMesh mesh);
 
-}  // namespace cfd
+}  // namespace autan
