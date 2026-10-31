@@ -12,3 +12,5 @@ Until the C++ core is built, the only backend is `fake` (`autan.FakeBackend`). I
 | Options | `--iterations N` stops the run after N iterations (or steps), status `stopped`; `--pace S` sleeps S seconds per iteration to imitate a live run; `--diverge-at N` stops at iteration N with status `diverged` and `D0107`. |
 
 SIGINT or SIGTERM stops the run: it is finalized as `stopped`, with its solution, and the command exits with 130. Exit status otherwise: 0, or 1 when the plan has errors or the run diverged.
+
+To browse runs, `autan ui [--runs DIR] [--port N] [--no-open]` serves the web UI for the run directories under `DIR` (default `./runs`) on `127.0.0.1:8765`. It needs the `ui` extra (`uv add 'autan[ui]'`); without it the command exits with `E0805`.
