@@ -125,10 +125,12 @@ std::string indexed(const std::string& path, std::size_t i) {
   return path + "[" + std::to_string(i) + "]";
 }
 
-const Json& array_at(const Object& o, const std::string& key) {
+// A pointer, not a reference: GCC 13 flags references bound to the result of
+// a call taking a temporary (-Wdangling-reference).
+const Json* array_at(const Object& o, const std::string& key) {
   const Json& v = o.get(key);
   if (!v.is_array()) invalid(o.at(key), "expected an array");
-  return v;
+  return &v;
 }
 
 Turbulence parse_turbulence(const Object& physics, const std::string& kind) {
@@ -323,11 +325,11 @@ SolverInput parse_solver_input(const std::string& text) {
     fs.k = f.positive_if("k", sst);
     fs.omega = f.positive_if("omega", sst);
   }
-  const Json& boundaries = array_at(root, "boundaries");
+  const Json& boundaries = *array_at(root, "boundaries");
   for (std::size_t i = 0; i < boundaries.size(); ++i) {
     in.boundaries.push_back(parse_boundary(boundaries[i], indexed("boundaries", i)));
   }
-  const Json& zones = array_at(root, "cell_zones");
+  const Json& zones = *array_at(root, "cell_zones");
   if (zones.empty()) invalid("cell_zones", "at least one cell zone is required");
   for (std::size_t i = 0; i < zones.size(); ++i) {
     const std::string path = indexed("cell_zones", i);
@@ -361,7 +363,7 @@ SolverInput parse_solver_input(const std::string& text) {
       invalid("time.kind", "expected steady or unsteady");
     }
   }
-  const Json& monitors = array_at(root, "monitors");
+  const Json& monitors = *array_at(root, "monitors");
   for (std::size_t i = 0; i < monitors.size(); ++i) {
     const std::string path = indexed("monitors", i);
     const Object m(monitors[i], path,
@@ -370,7 +372,7 @@ SolverInput parse_solver_input(const std::string& text) {
     ForcesMonitor fm;
     fm.name = m.string("name");
     fm.every = m.integer("every", 1);
-    const Json& names = array_at(m, "zones");
+    const Json& names = *array_at(m, "zones");
     for (std::size_t j = 0; j < names.size(); ++j) {
       if (!names[j].is_string()) invalid(indexed(m.at("zones"), j), "expected a zone name");
       fm.zones.push_back(names[j].get<std::string>());
