@@ -79,8 +79,13 @@ def sample(gpu_index: int = 0) -> GpuSample:
 @contextlib.contextmanager
 def gpu_lock(path: Path = DEFAULT_LOCK) -> Iterator[float]:
     """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it."""
-    # flock needs only a descriptor: opening read-only works on a lock file owned by another user.
-    fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
+    # flock needs only a read-only descriptor, so the lock works on a file owned by another user.
+    # O_CREAT is used only when the file is missing: in a sticky /tmp, fs.protected_regular
+    # refuses O_CREAT on another user's existing file even for reading.
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
     with os.fdopen(fd) as handle:
         start = time.monotonic()
         try:
