@@ -1,4 +1,4 @@
-"""The ``cfd`` command line. Every command prints JSON with ``--json``.
+"""The ``autan`` command line. Every command prints JSON with ``--json``.
 
 Exit status: 0 success, 1 the command found errors (coded diagnostics), 2 usage error.
 """
@@ -11,20 +11,22 @@ import json
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
-from cfd.case import Case, load
-from cfd.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
-from cfd.meshinfo import MeshInfo
-from cfd.schema import json_schema as case_json_schema
-from cfd.version import COMMIT, DIRTY, SCHEMAS, __version__
+from autan.case import Case, load
+from autan.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
+from autan.fake import FakeBackend
+from autan.meshinfo import MeshInfo
+from autan.schema import json_schema as case_json_schema
+from autan.version import COMMIT, DIRTY, SCHEMAS, __version__
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from cfd.plan import Plan
+    from autan.plan import Plan
 
 
 def _emit(document: dict[str, Any], as_json: bool, text: str) -> None:
@@ -101,6 +103,44 @@ def command_plan(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def command_run(args: argparse.Namespace) -> int:
+    if args.backend != "fake":
+        unknown = diagnostic("E0804", f"backend {args.backend!r} is not built")
+        return _fail(CaseError([unknown]), args.json)
+    try:
+        case = _load_quietly(args.case)
+        backend = FakeBackend(
+            iterations=args.iterations, pace=args.pace, diverge_at=args.diverge_at
+        )
+        previous = signal.signal(signal.SIGTERM, _interrupt)
+        try:
+            results = case.run(MeshInfo.load(args.mesh_info), backend=backend, runs=args.runs)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+    except CaseError as error:
+        return _fail(error, args.json)
+    except KeyboardInterrupt:
+        sys.stderr.write("run stopped; its directory records status 'stopped'\n")
+        return 130
+    run = results.run
+    text = f"{run.run_id}  {run.status}  {run.iterations} iterations  {results.path}"
+    text += "".join(f"\n{d.render()}" for d in run.diagnostics)
+    _emit(
+        {
+            "ok": run.status not in ("diverged", "failed"),
+            "path": str(results.path),
+            "run": run.document(),
+        },
+        args.json,
+        text,
+    )
+    return 1 if run.status in ("diverged", "failed") else 0
+
+
+def _interrupt(_signal: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def _load_quietly(path: str) -> Case:
     """Load a case file with its own prints sent to stderr, so stdout stays our output."""
     with contextlib.redirect_stdout(sys.stderr):
@@ -165,14 +205,14 @@ def command_doctor(args: argparse.Namespace) -> int:
 
 def command_version(args: argparse.Namespace) -> int:
     document = {
-        "cfd": __version__,
+        "autan": __version__,
         "commit": COMMIT,
         "dirty": DIRTY,
         "python": platform.python_version(),
         "schemas": SCHEMAS,
     }
     text = (
-        f"cfd {__version__} ({COMMIT[:12]}{', dirty' if DIRTY else ''})\n"
+        f"autan {__version__} ({COMMIT[:12]}{', dirty' if DIRTY else ''})\n"
         f"python {document['python']}\n"
         + "\n".join(f"schema {name} {ident}" for name, ident in SCHEMAS.items())
     )
@@ -221,7 +261,7 @@ def command_explain(args: argparse.Namespace) -> int:
         return 0
     code = (args.code or "").upper()
     if code not in REGISTRY:
-        sys.stderr.write(f"unknown code {args.code!r}; `cfd explain --all` lists every code\n")
+        sys.stderr.write(f"unknown code {args.code!r}; `autan explain --all` lists every code\n")
         return 2
     entry = REGISTRY[code]
     _emit(
@@ -239,7 +279,7 @@ def command_explain(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="cfd", description="GPU-native CFD solver.")
+    root = argparse.ArgumentParser(prog="autan", description="GPU-native CFD solver.")
     commands = root.add_subparsers(dest="command", required=True)
 
     sub = commands.add_parser("plan", help="check a case against its mesh before running it")
@@ -248,6 +288,17 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--gpus", type=int, default=1, help="GPUs for the memory estimate")
     sub.add_argument("--json", action="store_true", help="print JSON")
     sub.set_defaults(func=command_plan)
+
+    sub = commands.add_parser("run", help="run a case (only the fake backend is built)")
+    sub.add_argument("case", help="case file: .py, .toml or .json")
+    sub.add_argument("--mesh-info", required=True, help="MeshInfo JSON of the case's mesh")
+    sub.add_argument("--backend", default="fake", help="solver backend (default: fake)")
+    sub.add_argument("--runs", default="runs", help="directory of run directories")
+    sub.add_argument("--iterations", type=int, default=200, help="fake: iterations to write")
+    sub.add_argument("--pace", type=float, default=0.0, help="fake: seconds per iteration")
+    sub.add_argument("--diverge-at", type=int, help="fake: diverge at this iteration")
+    sub.add_argument("--json", action="store_true", help="print JSON")
+    sub.set_defaults(func=command_run)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")
     sub.add_argument("--json", action="store_true", help="print JSON")
