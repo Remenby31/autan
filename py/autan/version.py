@@ -2,12 +2,12 @@
 
 from importlib.metadata import version
 
-from cfd import _build_info
-from cfd.meshinfo import SCHEMA_ID as MESH_INFO_SCHEMA
-from cfd.results import SCHEMA_ID as RESULTS_SCHEMA
-from cfd.schema import SCHEMA_ID as CASE_SCHEMA
+from autan import _build_info
+from autan.meshinfo import SCHEMA_ID as MESH_INFO_SCHEMA
+from autan.results import SCHEMA_ID as RESULTS_SCHEMA
+from autan.schema import SCHEMA_ID as CASE_SCHEMA
 
-__version__ = version("cfd")
+__version__ = version("autan")
 COMMIT: str = _build_info.COMMIT
 DIRTY: bool = _build_info.DIRTY
 

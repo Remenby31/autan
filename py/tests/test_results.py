@@ -1,4 +1,4 @@
-"""Run directories written by the fake backend, read back through ``cfd.Results``.
+"""Run directories written by the fake backend, read back through ``autan.Results``.
 
 Expected values come from docs/contracts/results.md and case-schema.md (ideal-gas
 law, Sutherland's law, the force projections), recomputed here independently.
@@ -16,11 +16,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import cfd
+import autan
 import numpy as np
 import pytest
-from cfd import cgns
-from cfd.cli import main
+from autan import cgns
+from autan.cli import main
 
 from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
 
@@ -29,20 +29,20 @@ CGNSCHECK = shutil.which("cgnscheck")
 
 
 @pytest.fixture
-def crm_run(tmp_path: Path, crm_mesh: cfd.MeshInfo) -> cfd.Results:
-    return cfd.load(EXAMPLES / "crm_hl.py").run(
-        crm_mesh, backend=cfd.FakeBackend(iterations=60), runs=tmp_path / "runs"
+def crm_run(tmp_path: Path, crm_mesh: autan.MeshInfo) -> autan.Results:
+    return autan.load(EXAMPLES / "crm_hl.py").run(
+        crm_mesh, backend=autan.FakeBackend(iterations=60), runs=tmp_path / "runs"
     )
 
 
-def heat_run(runs: Path, **options: Any) -> cfd.Results:
-    mesh = cfd.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
-    return cfd.load(EXAMPLES / "heat_exchanger.py").run(
-        mesh, backend=cfd.FakeBackend(**options), runs=runs
+def heat_run(runs: Path, **options: Any) -> autan.Results:
+    mesh = autan.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
+    return autan.load(EXAMPLES / "heat_exchanger.py").run(
+        mesh, backend=autan.FakeBackend(**options), runs=runs
     )
 
 
-def test_run_directory_and_metadata_follow_the_contract(crm_run: cfd.Results) -> None:
+def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) -> None:
     path = crm_run.path
     assert sorted(p.name for p in path.iterdir()) == [
         "case.toml",
@@ -52,13 +52,13 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: cfd.Results) ->
         "solution.cgns",
     ]
     run = json.loads((path / "run.json").read_text())
-    assert run["schema"] == "cfd.results/1"
+    assert run["schema"] == "autan.results/1"
     assert re.fullmatch(r"run-\d{8}T\d{6}Z-[0-9a-f]{8}", run["run_id"])
     assert path.name == run["run_id"]
     assert run["status"] == "converged"
     assert run["solver"]["backend"] == "fake"
     assert re.fullmatch(r"[0-9a-f]{40}", run["solver"]["commit"])
-    assert run["case"]["sha256"] == cfd.load(path / "case.toml").spec.hash()
+    assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())
     parts = [
         run["case"]["sha256"],
@@ -75,7 +75,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: cfd.Results) ->
 
 
 def test_history_lines_carry_every_equation_and_monitors_at_their_period(
-    crm_run: cfd.Results,
+    crm_run: autan.Results,
 ) -> None:
     lines = [json.loads(line) for line in (crm_run.path / "history.jsonl").read_text().splitlines()]
     assert [line["iteration"] for line in lines] == list(range(1, 61))
@@ -91,11 +91,11 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
         assert ("forces" in line["monitors"]) == (line["iteration"] % 10 == 0)
         assert line["time"] is None
     first, last = lines[0]["residuals"]["density"], lines[-1]["residuals"]["density"]
-    assert isinstance(crm_run.case.time, cfd.Steady)
+    assert isinstance(crm_run.case.time, autan.Steady)
     assert math.log10(first / last) >= crm_run.case.time.residual_orders - 1e-9
 
 
-def test_force_coefficients_are_the_contract_projections(crm_run: cfd.Results) -> None:
+def test_force_coefficients_are_the_contract_projections(crm_run: autan.Results) -> None:
     forces = crm_run.forces
     assert list(forces.iteration) == list(range(10, 61, 10))
     alpha = math.radians(19.57)
@@ -111,7 +111,7 @@ def test_force_coefficients_are_the_contract_projections(crm_run: cfd.Results) -
     np.testing.assert_allclose(forces.cmy, forces.my / (q_area * 7.0), rtol=1e-12)
 
 
-def test_crm_hl_freestream_fields_follow_ideal_gas_and_sutherland(crm_run: cfd.Results) -> None:
+def test_crm_hl_freestream_fields_follow_ideal_gas_and_sutherland(crm_run: autan.Results) -> None:
     temperature, mach, re_number, length = 288.15, 0.20, 5.49e6, 7.0
     r = R_UNIVERSAL / 0.0289647
     mu = 1.716e-5 * (temperature / 273.15) ** 1.5 * (273.15 + 110.4) / (temperature + 110.4)
@@ -151,9 +151,9 @@ def test_solution_passes_the_cgns_library_checker(example: str, tmp_path: Path) 
     result = (
         heat_run(tmp_path, iterations=5)
         if example == "heat_exchanger"
-        else cfd.load(EXAMPLES / "crm_hl.py").run(
-            cfd.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json"),
-            backend=cfd.FakeBackend(iterations=5),
+        else autan.load(EXAMPLES / "crm_hl.py").run(
+            autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json"),
+            backend=autan.FakeBackend(iterations=5),
             runs=tmp_path,
         )
     )
@@ -165,7 +165,7 @@ def test_solution_passes_the_cgns_library_checker(example: str, tmp_path: Path) 
     assert done.returncode == 0
 
 
-def test_cgns_tree_layout(crm_run: cfd.Results) -> None:
+def test_cgns_tree_layout(crm_run: autan.Results) -> None:
     tree = cgns.read(crm_run.path / "solution.cgns")
     base = tree.child("Base")
     zone = base.child("Zone")
@@ -186,7 +186,7 @@ def test_cgns_tree_layout(crm_run: cfd.Results) -> None:
 
 
 def test_cgns_node_names_avoid_collisions(
-    tmp_path: Path, mesh_variant: Callable[..., cfd.MeshInfo], write_case: Callable[[str], Path]
+    tmp_path: Path, mesh_variant: Callable[..., autan.MeshInfo], write_case: Callable[[str], Path]
 ) -> None:
     long_name = "a-boundary-zone-name-longer-than-32"
 
@@ -198,8 +198,8 @@ def test_cgns_node_names_avoid_collisions(
     mesh = mesh_variant("crm-hl", edit)
     body = CRM_HL.replace('case.boundary("wing.*").wall()', 'case.boundary("*").wall()')
     body = body.replace('case.boundary("symmetry").symmetry()\n', "")
-    case = cfd.load(write_case(body.replace('forces("wing.*"', 'forces("fuselage"')))
-    result = case.run(mesh, backend=cfd.FakeBackend(iterations=2), runs=tmp_path)
+    case = autan.load(write_case(body.replace('forces("wing.*"', 'forces("fuselage"')))
+    result = case.run(mesh, backend=autan.FakeBackend(iterations=2), runs=tmp_path)
     names = json.loads(
         cgns.read(result.path / "solution.cgns").child("Base").child("ZoneNames").text()
     )
@@ -209,9 +209,9 @@ def test_cgns_node_names_avoid_collisions(
     assert names["boundary"]["ZoneBC"] == "ZoneBC"
 
 
-def test_divergence_is_reported_with_its_cell(tmp_path: Path, crm_mesh: cfd.MeshInfo) -> None:
-    result = cfd.load(EXAMPLES / "crm_hl.py").run(
-        crm_mesh, backend=cfd.FakeBackend(iterations=100, diverge_at=40), runs=tmp_path
+def test_divergence_is_reported_with_its_cell(tmp_path: Path, crm_mesh: autan.MeshInfo) -> None:
+    result = autan.load(EXAMPLES / "crm_hl.py").run(
+        crm_mesh, backend=autan.FakeBackend(iterations=100, diverge_at=40), runs=tmp_path
     )
     assert result.run.status == "diverged"
     [found] = result.run.diagnostics
@@ -224,12 +224,12 @@ def test_divergence_is_reported_with_its_cell(tmp_path: Path, crm_mesh: cfd.Mesh
 
 
 def test_unsteady_run_records_time_and_average(
-    tmp_path: Path, write_case: Callable[[str], Path], crm_mesh: cfd.MeshInfo
+    tmp_path: Path, write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
 ) -> None:
-    body = CRM_HL.replace("cfd.SA()", "cfd.DDES(base=cfd.SA())") + (
-        "from cfd.units import s\ncase.time = cfd.Unsteady(steps=40, dt=1e-4 * s, average_from=10)\n"
+    body = CRM_HL.replace("autan.SA()", "autan.DDES(base=autan.SA())") + (
+        "from autan.units import s\ncase.time = autan.Unsteady(steps=40, dt=1e-4 * s, average_from=10)\n"
     )
-    result = cfd.load(write_case(body)).run(crm_mesh, backend=cfd.FakeBackend(), runs=tmp_path)
+    result = autan.load(write_case(body)).run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path)
     assert result.run.status == "completed"
     assert result.run.time == pytest.approx(40 * 1e-4)
     assert result.run.averaging is not None
@@ -239,10 +239,12 @@ def test_unsteady_run_records_time_and_average(
     np.testing.assert_array_equal(result.field("Density", mean=True), result.field("Density"))
 
 
-def test_deterministic_runs_produce_identical_data(tmp_path: Path, crm_mesh: cfd.MeshInfo) -> None:
-    case = cfd.load(EXAMPLES / "crm_hl.py")
-    first = case.run(crm_mesh, backend=cfd.FakeBackend(iterations=20), runs=tmp_path)
-    second = case.run(crm_mesh, backend=cfd.FakeBackend(iterations=20), runs=tmp_path)
+def test_deterministic_runs_produce_identical_data(
+    tmp_path: Path, crm_mesh: autan.MeshInfo
+) -> None:
+    case = autan.load(EXAMPLES / "crm_hl.py")
+    first = case.run(crm_mesh, backend=autan.FakeBackend(iterations=20), runs=tmp_path)
+    second = case.run(crm_mesh, backend=autan.FakeBackend(iterations=20), runs=tmp_path)
     assert first.run.run_id != second.run.run_id
     assert first.run.identity == second.run.identity
     assert (first.path / "history.jsonl").read_bytes() == (
@@ -252,12 +254,14 @@ def test_deterministic_runs_produce_identical_data(tmp_path: Path, crm_mesh: cfd
         assert first.field(name).tobytes() == second.field(name).tobytes()
 
 
-def test_history_is_appended_while_the_run_is_live(tmp_path: Path, crm_mesh: cfd.MeshInfo) -> None:
-    case = cfd.load(EXAMPLES / "crm_hl.py")
+def test_history_is_appended_while_the_run_is_live(
+    tmp_path: Path, crm_mesh: autan.MeshInfo
+) -> None:
+    case = autan.load(EXAMPLES / "crm_hl.py")
     worker = threading.Thread(
         target=case.run,
         args=(crm_mesh,),
-        kwargs={"backend": cfd.FakeBackend(iterations=40, pace=0.02), "runs": tmp_path},
+        kwargs={"backend": autan.FakeBackend(iterations=40, pace=0.02), "runs": tmp_path},
     )
     worker.start()
     seen: tuple[str, int] | None = None
@@ -273,13 +277,13 @@ def test_history_is_appended_while_the_run_is_live(tmp_path: Path, crm_mesh: cfd
     worker.join()
     assert seen is not None
     [path] = tmp_path.iterdir()
-    assert cfd.Results.open(path).run.status == "converged"
+    assert autan.Results.open(path).run.status == "converged"
 
 
 @pytest.mark.parametrize(
     ("damage", "code"),
     [
-        (lambda p: (p / "run.json").write_text('{"schema": "cfd.results/2"}'), "E0701"),
+        (lambda p: (p / "run.json").write_text('{"schema": "autan.results/2"}'), "E0701"),
         (
             lambda p: (p / "case.toml").write_text(
                 (p / "case.toml").read_text().replace("mach = 0.2", "mach = 0.3")
@@ -296,50 +300,50 @@ def test_history_is_appended_while_the_run_is_live(tmp_path: Path, crm_mesh: cfd
     ],
 )
 def test_reader_rejects_non_conforming_directories(
-    damage: Callable[[Path], object], code: str, crm_run: cfd.Results
+    damage: Callable[[Path], object], code: str, crm_run: autan.Results
 ) -> None:
     damage(crm_run.path)
-    with pytest.raises(cfd.CaseError) as error:
-        cfd.Results.open(crm_run.path)
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
     assert error.value.codes == [code]
 
 
 def test_diverged_run_without_solution_opens_for_its_history(
-    tmp_path: Path, crm_mesh: cfd.MeshInfo
+    tmp_path: Path, crm_mesh: autan.MeshInfo
 ) -> None:
-    result = cfd.load(EXAMPLES / "crm_hl.py").run(
-        crm_mesh, backend=cfd.FakeBackend(iterations=30, diverge_at=10), runs=tmp_path
+    result = autan.load(EXAMPLES / "crm_hl.py").run(
+        crm_mesh, backend=autan.FakeBackend(iterations=30, diverge_at=10), runs=tmp_path
     )
     (result.path / "solution.cgns").unlink()
-    reopened = cfd.Results.open(result.path)
+    reopened = autan.Results.open(result.path)
     assert reopened.history.iterations[-1] == 9
-    with pytest.raises(cfd.CaseError) as error:
+    with pytest.raises(autan.CaseError) as error:
         reopened.field("Density")
     assert error.value.codes == ["E0703"]
 
 
 def test_run_needs_an_explicit_backend_and_a_valid_plan(
-    tmp_path: Path, crm_mesh: cfd.MeshInfo, mesh_variant: Callable[..., cfd.MeshInfo]
+    tmp_path: Path, crm_mesh: autan.MeshInfo, mesh_variant: Callable[..., autan.MeshInfo]
 ) -> None:
-    case = cfd.load(EXAMPLES / "crm_hl.py")
-    with pytest.raises(cfd.CaseError) as error:
+    case = autan.load(EXAMPLES / "crm_hl.py")
+    with pytest.raises(autan.CaseError) as error:
         case.run(crm_mesh, runs=tmp_path)
     assert error.value.codes == ["E0804"]
 
     def untype(document: dict[str, Any]) -> None:
         document["boundary_zones"][4]["type"] = None
 
-    with pytest.raises(cfd.CaseError) as error:
-        case.run(mesh_variant("crm-hl", untype), backend=cfd.FakeBackend(), runs=tmp_path)
+    with pytest.raises(autan.CaseError) as error:
+        case.run(mesh_variant("crm-hl", untype), backend=autan.FakeBackend(), runs=tmp_path)
     assert error.value.codes == ["E0412"]
     assert not tmp_path.exists() or not any(tmp_path.iterdir())
 
 
-def test_results_lookup_errors(crm_run: cfd.Results) -> None:
-    with pytest.raises(cfd.CaseError) as error:
+def test_results_lookup_errors(crm_run: autan.Results) -> None:
+    with pytest.raises(autan.CaseError) as error:
         crm_run.history.monitor("lift")
     assert error.value.codes == ["E0702"]
-    with pytest.raises(cfd.CaseError) as error:
+    with pytest.raises(autan.CaseError) as error:
         crm_run.field("Vorticity")
     assert error.value.codes == ["E0703"]
 
@@ -360,5 +364,5 @@ def test_cli_run_reports_divergence_with_exit_1(
     out = json.loads(capsys.readouterr().out)
     assert out["run"]["status"] == "diverged"
     assert out["run"]["diagnostics"][0]["code"] == "D0107"
-    assert cfd.Results.open(out["path"]).run.run_id == out["run"]["run_id"]
+    assert autan.Results.open(out["path"]).run.run_id == out["run"]["run_id"]
     assert main([*argv, "--iterations", "20"]) == 0

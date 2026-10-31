@@ -1,4 +1,4 @@
-"""MeshInfo ``cfd.mesh-info/1``: the mesh summary emitted by the core (docs/contracts/mesh-info.md)."""
+"""MeshInfo ``autan.mesh-info/1``: the mesh summary emitted by the core (docs/contracts/mesh-info.md)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from cfd.errors import CaseError, Location, diagnostic
-from cfd.units import fail
+from autan.errors import CaseError, Location, diagnostic
+from autan.units import fail
 
-SCHEMA_ID = "cfd.mesh-info/1"
+SCHEMA_ID = "autan.mesh-info/1"
 
 BoundaryType = Literal["wall", "thermal-wall", "slip", "symmetry", "farfield", "inlet", "outlet"]
 Name = Annotated[str, Field(min_length=1)]
@@ -73,7 +73,7 @@ class Quality(_Strict):
 class MeshInfo(_Strict):
     """Summary of a mesh: counts, typed boundary and cell zones, interfaces, quality, hash."""
 
-    schema_: Literal["cfd.mesh-info/1"] = Field(alias="schema")
+    schema_: Literal["autan.mesh-info/1"] = Field(alias="schema")
     source: Source
     counts: Counts
     boundary_zones: tuple[BoundaryZone, ...]

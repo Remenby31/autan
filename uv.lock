@@ -89,7 +89,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cfd"
+name = "autan"
 source = { editable = "." }
 dependencies = [
     { name = "h5py" },

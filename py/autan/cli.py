@@ -1,4 +1,4 @@
-"""The ``cfd`` command line. Every command prints JSON with ``--json``.
+"""The ``autan`` command line. Every command prints JSON with ``--json``.
 
 Exit status: 0 success, 1 the command found errors (coded diagnostics), 2 usage error.
 """
@@ -15,17 +15,17 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
-from cfd.case import Case, load
-from cfd.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
-from cfd.fake import FakeBackend
-from cfd.meshinfo import MeshInfo
-from cfd.schema import json_schema as case_json_schema
-from cfd.version import COMMIT, DIRTY, SCHEMAS, __version__
+from autan.case import Case, load
+from autan.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
+from autan.fake import FakeBackend
+from autan.meshinfo import MeshInfo
+from autan.schema import json_schema as case_json_schema
+from autan.version import COMMIT, DIRTY, SCHEMAS, __version__
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from cfd.plan import Plan
+    from autan.plan import Plan
 
 
 def _emit(document: dict[str, Any], as_json: bool, text: str) -> None:
@@ -193,14 +193,14 @@ def command_doctor(args: argparse.Namespace) -> int:
 
 def command_version(args: argparse.Namespace) -> int:
     document = {
-        "cfd": __version__,
+        "autan": __version__,
         "commit": COMMIT,
         "dirty": DIRTY,
         "python": platform.python_version(),
         "schemas": SCHEMAS,
     }
     text = (
-        f"cfd {__version__} ({COMMIT[:12]}{', dirty' if DIRTY else ''})\n"
+        f"autan {__version__} ({COMMIT[:12]}{', dirty' if DIRTY else ''})\n"
         f"python {document['python']}\n"
         + "\n".join(f"schema {name} {ident}" for name, ident in SCHEMAS.items())
     )
@@ -249,7 +249,7 @@ def command_explain(args: argparse.Namespace) -> int:
         return 0
     code = (args.code or "").upper()
     if code not in REGISTRY:
-        sys.stderr.write(f"unknown code {args.code!r}; `cfd explain --all` lists every code\n")
+        sys.stderr.write(f"unknown code {args.code!r}; `autan explain --all` lists every code\n")
         return 2
     entry = REGISTRY[code]
     _emit(
@@ -267,7 +267,7 @@ def command_explain(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="cfd", description="GPU-native CFD solver.")
+    root = argparse.ArgumentParser(prog="autan", description="GPU-native CFD solver.")
     commands = root.add_subparsers(dest="command", required=True)
 
     sub = commands.add_parser("plan", help="check a case against its mesh before running it")

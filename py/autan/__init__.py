@@ -1,17 +1,17 @@
 """GPU-native unstructured finite-volume CFD solver: Python SDK.
 
-Build a case with ``cfd.Case``, plan it against its mesh with ``case.plan``;
+Build a case with ``autan.Case``, plan it against its mesh with ``case.plan``;
 the case document is specified in docs/contracts/case-schema.md.
 """
 
-from cfd import gases, materials, units
-from cfd.case import Case, forces, load
-from cfd.errors import CaseError, Diagnostic, Location
-from cfd.fake import FakeBackend
-from cfd.meshinfo import MeshInfo
-from cfd.plan import Plan
-from cfd.results import Results
-from cfd.schema import (
+from autan import gases, materials, units
+from autan.case import Case, forces, load
+from autan.errors import CaseError, Diagnostic, Location
+from autan.fake import FakeBackend
+from autan.meshinfo import MeshInfo
+from autan.plan import Plan
+from autan.results import Results
+from autan.schema import (
     DDES,
     SA,
     SST,
@@ -29,7 +29,7 @@ from cfd.schema import (
     Sutherland,
     Unsteady,
 )
-from cfd.version import __version__
+from autan.version import __version__
 
 __all__ = [
     "DDES",

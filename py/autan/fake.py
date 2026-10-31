@@ -1,4 +1,4 @@
-"""``cfd.FakeBackend``: writes synthetic runs that conform to ``cfd.results/1``.
+"""``autan.FakeBackend``: writes synthetic runs that conform to ``autan.results/1``.
 
 The geometry is a unit cube of hexahedra standing in for the real mesh; zone names,
 conditions and media come from the resolved case. Fields hold the freestream state,
@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from pydantic import TypeAdapter
 
-from cfd import cgns
-from cfd.errors import CaseError, diagnostic
-from cfd.results import (
+from autan import cgns
+from autan.errors import CaseError, diagnostic
+from autan.results import (
     Averaging,
     CaseIdentity,
     Devices,
@@ -32,7 +32,7 @@ from cfd.results import (
     iso,
     utc_now,
 )
-from cfd.schema import (
+from autan.schema import (
     DDES,
     SA,
     SST,
@@ -47,17 +47,17 @@ from cfd.schema import (
     Sutherland,
     Unsteady,
 )
-from cfd.units import si
-from cfd.version import COMMIT, __version__
+from autan.units import si
+from autan.version import COMMIT, __version__
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from numpy.typing import NDArray
 
-    from cfd.case import Case
-    from cfd.meshinfo import MeshInfo
-    from cfd.plan import Plan
+    from autan.case import Case
+    from autan.meshinfo import MeshInfo
+    from autan.plan import Plan
 
 MEDIUM: TypeAdapter[Fluid | SolidZone] = TypeAdapter(Medium)
 GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact value
@@ -247,7 +247,7 @@ def equations(spec: CaseSpec) -> list[str]:
 
 @dataclass(frozen=True)
 class FakeBackend:
-    """Writes a synthetic run directory that conforms to ``cfd.results/1``.
+    """Writes a synthetic run directory that conforms to ``autan.results/1``.
 
     ``iterations`` caps the iterations (steady) or steps (unsteady) written; ``pace``
     sleeps that many seconds per iteration to imitate a live run; ``diverge_at`` makes

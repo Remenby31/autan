@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cfd"
+name = "autan"
 dynamic = ["version"]
 description = "GPU-native unstructured finite-volume CFD solver: Python SDK and CLI"
 readme = "README.md"
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cfd = "cfd.cli:main"
+autan = "autan.cli:main"
 
 [dependency-groups]
 dev = [
@@ -39,10 +39,10 @@ pattern = "(?P<version>.+)"
 path = "py/build_hook.py"
 
 [tool.hatch.build.targets.sdist]
-artifacts = ["py/cfd/_build_info.py"]
+artifacts = ["py/autan/_build_info.py"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["py/cfd"]
+packages = ["py/autan"]
 
 [tool.uv]
 cache-keys = [{ file = "pyproject.toml" }, { file = "version.txt" }, { git = { commit = true } }]
@@ -53,7 +53,7 @@ python_version = "3.12"
 files = ["py"]
 plugins = ["pydantic.mypy"]
 
-# h5py ships neither type hints nor stubs; py/cfd/cgns.py is the only module that uses it.
+# h5py ships neither type hints nor stubs; py/autan/cgns.py is the only module that uses it.
 [[tool.mypy.overrides]]
 module = ["h5py", "h5py.*"]
 ignore_missing_imports = true

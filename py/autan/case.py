@@ -1,4 +1,4 @@
-"""``cfd.Case``: build a case in Python, load it from a file, plan it."""
+"""``autan.Case``: build a case in Python, load it from a file, plan it."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 import tomli_w
 
-from cfd.errors import CaseError, Location, diagnostic
-from cfd.plan import Plan, plan
-from cfd.schema import (
+from autan.errors import CaseError, Location, diagnostic
+from autan.plan import Plan, plan
+from autan.schema import (
     BoundaryRule,
     CaseSpec,
     CellZoneRule,
@@ -44,19 +44,19 @@ if TYPE_CHECKING:
 
     import pint
 
-    from cfd.fake import FakeBackend
-    from cfd.meshinfo import MeshInfo
-    from cfd.results import Results
+    from autan.fake import FakeBackend
+    from autan.meshinfo import MeshInfo
+    from autan.results import Results
 
 _collectors: list[list[Case]] = []
 
 
 class Case:
-    """A case under construction: ``cfd.Case("crm-hl", mesh="crm-hl.cgns")``.
+    """A case under construction: ``autan.Case("crm-hl", mesh="crm-hl.cgns")``.
 
-    Builder methods validate their arguments immediately and raise ``cfd.CaseError``
+    Builder methods validate their arguments immediately and raise ``autan.CaseError``
     with a coded diagnostic that points at the calling line. ``spec`` returns the
-    complete, validated document (``cfd.case/1``).
+    complete, validated document (``autan.case/1``).
     """
 
     def __init__(self, name: str, mesh: str | Path) -> None:
@@ -100,7 +100,7 @@ class Case:
                 [
                     diagnostic(
                         "E0003",
-                        f"physics must be cfd.Compressible or cfd.Incompressible, "
+                        f"physics must be autan.Compressible or autan.Incompressible, "
                         f"got {type(physics).__name__}",
                         location=_caller_location(),
                     )
@@ -120,7 +120,7 @@ class Case:
                 [
                     diagnostic(
                         "E0003",
-                        f"time must be cfd.Steady or cfd.Unsteady, got {type(time).__name__}",
+                        f"time must be autan.Steady or autan.Unsteady, got {type(time).__name__}",
                         location=_caller_location(),
                     )
                 ]
@@ -162,7 +162,7 @@ class Case:
                 [
                     diagnostic(
                         "E0003",
-                        f"monitor must be built by cfd.forces(...), got {type(monitor).__name__}",
+                        f"monitor must be built by autan.forces(...), got {type(monitor).__name__}",
                         location=_caller_location(),
                     )
                 ]
@@ -195,7 +195,7 @@ class Case:
                     f"case.{key} is not set",
                     location=self._origin,
                     fix=(
-                        "case.physics = cfd.Compressible(turbulence=cfd.SA())"
+                        "case.physics = autan.Compressible(turbulence=autan.SA())"
                         if key == "physics"
                         else "case.freestream(mach=..., re=..., ref_length=...)"
                     ),
@@ -368,7 +368,7 @@ def load(path: str | Path) -> Case:
         )
     with _collect() as cases:
         try:
-            runpy.run_path(str(path), run_name="__cfd_case__")
+            runpy.run_path(str(path), run_name="__autan_case__")
         except CaseError:
             raise
         except SyntaxError as error:
@@ -402,7 +402,7 @@ def load(path: str | Path) -> Case:
             [
                 diagnostic(
                     "E0002",
-                    f"{path} creates {len(cases)} cfd.Case objects, expected 1",
+                    f"{path} creates {len(cases)} autan.Case objects, expected 1",
                     location=where,
                 )
             ]

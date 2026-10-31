@@ -1,8 +1,8 @@
 """Solid material presets: properties at 300 K from Incropera et al., *Fundamentals of
 Heat and Mass Transfer*, 7th ed. (2011), Table A.1."""
 
-from cfd.schema import Solid
-from cfd.units import J, K, W, kg, m
+from autan.schema import Solid
+from autan.units import J, K, W, kg, m
 
 COPPER = Solid(
     name="copper",

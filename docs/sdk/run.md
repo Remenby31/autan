@@ -1,8 +1,8 @@
-# `cfd run` and the fake backend
+# `autan run` and the fake backend
 
-`cfd run CASE --mesh-info MESHINFO [--runs DIR] [--json]` plans the case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`). In Python: `case.run(mesh_info, backend=cfd.FakeBackend(), runs="runs")`, which returns `cfd.Results`.
+`autan run CASE --mesh-info MESHINFO [--runs DIR] [--json]` plans the case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`). In Python: `case.run(mesh_info, backend=autan.FakeBackend(), runs="runs")`, which returns `autan.Results`.
 
-Until the C++ core is built, the only backend is `fake` (`cfd.FakeBackend`). It writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
+Until the C++ core is built, the only backend is `fake` (`autan.FakeBackend`). It writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
 
 | What | Fake backend |
 |---|---|

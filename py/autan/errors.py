@@ -2,7 +2,7 @@
 
 A code is ``E####`` (error: blocks the run), ``W####`` (warning) or ``D####``
 (divergence detected during a run). ``docs/sdk/errors.md`` is generated from
-``REGISTRY`` by ``cfd explain --all``.
+``REGISTRY`` by ``autan explain --all``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-DOC_URL = "https://github.com/Remenby31/cfd-solver/blob/main/docs/sdk/errors.md"
+DOC_URL = "https://remenby31.github.io/autan/sdk/errors/"
 
 Severity = Literal["error", "warning", "divergence"]
 _SEVERITY: dict[str, Severity] = {"E": "error", "W": "warning", "D": "divergence"}
@@ -44,33 +44,33 @@ _CODES = [
     Code(
         "E0002",
         "The case file does not define exactly one case",
-        "A Python case file must create exactly one `cfd.Case`, at module level.",
-        'Create one case: `case = cfd.Case("name", mesh="mesh.cgns")`.',
+        "A Python case file must create exactly one `autan.Case`, at module level.",
+        'Create one case: `case = autan.Case("name", mesh="mesh.cgns")`.',
     ),
     Code(
         "E0003",
         "The case document does not match the schema",
-        "A field is missing, has the wrong type, or is not part of `cfd.case/1`. The location "
+        "A field is missing, has the wrong type, or is not part of `autan.case/1`. The location "
         "gives the path of the field in the document. See docs/contracts/case-schema.md.",
         "Correct the field named in the message.",
     ),
     Code(
         "E0004",
         "Unsupported case schema version",
-        "The document's `schema` key is not `cfd.case/1`.",
-        'Set `schema = "cfd.case/1"`.',
+        "The document's `schema` key is not `autan.case/1`.",
+        'Set `schema = "autan.case/1"`.',
     ),
     Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "
         "C++ mesh readers are not part of this build, so it must be passed explicitly.",
-        "Pass the MeshInfo JSON: `cfd plan case.py --mesh-info mesh.meshinfo.json`.",
+        "Pass the MeshInfo JSON: `autan plan case.py --mesh-info mesh.meshinfo.json`.",
     ),
     Code(
         "E0202",
         "The MeshInfo document is invalid",
-        "The JSON does not match `cfd.mesh-info/1`, or its counts are inconsistent (zone "
+        "The JSON does not match `autan.mesh-info/1`, or its counts are inconsistent (zone "
         "counts that do not sum to the cell count, duplicate names, unknown interface zones).",
         "Regenerate the MeshInfo with the mesh reader of the same solver version.",
     ),
@@ -100,7 +100,7 @@ _CODES = [
         "Quantity of the wrong dimension",
         "The value has a dimension other than the one the field expects, for example a speed "
         "given for the Mach number.",
-        "Pass a value of the expected dimension, with a unit from `cfd.units`.",
+        "Pass a value of the expected dimension, with a unit from `autan.units`.",
     ),
     Code(
         "E0302",
@@ -126,7 +126,7 @@ _CODES = [
         "E0305",
         "Turbulence model needs an unsteady run",
         "DDES and WMLES resolve turbulent structures in time and cannot run steady.",
-        "Set `case.time = cfd.Unsteady(steps=..., dt=...)`.",
+        "Set `case.time = autan.Unsteady(steps=..., dt=...)`.",
     ),
     Code(
         "E0306",
@@ -140,7 +140,7 @@ _CODES = [
         "E0410",
         "Boundary rule matches no zone",
         "The pattern of `case.boundary(...)` matches no boundary zone of the mesh.",
-        "Use one of the zone names listed by `cfd plan`, or a glob that matches some.",
+        "Use one of the zone names listed by `autan plan`, or a glob that matches some.",
     ),
     Code(
         "E0411",
@@ -181,7 +181,7 @@ _CODES = [
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",
-        "Use one of the cell zone names listed by `cfd plan`.",
+        "Use one of the cell zone names listed by `autan plan`.",
     ),
     Code(
         "E0502",
@@ -193,7 +193,7 @@ _CODES = [
         "E0503",
         "Solid zone without a material",
         "The mesh declares the zone solid and the case gives it no material.",
-        'Set it: `case.cell_zone("name").solid(cfd.materials.COPPER)`.',
+        'Set it: `case.cell_zone("name").solid(autan.materials.COPPER)`.',
     ),
     Code(
         "E0504",
@@ -206,15 +206,15 @@ _CODES = [
         "E0505",
         "Fluids of different materials in contact",
         "Two fluid zones with different materials share an interface. Mixing them needs "
-        "species transport, which `cfd.case/1` does not provide.",
+        "species transport, which `autan.case/1` does not provide.",
         "Use the same material on both sides, or separate them by a solid zone.",
     ),
     Code(
         "E0506",
         "Solid zone with incompressible physics",
         "Conjugate heat transfer needs an energy equation in the fluid, which incompressible "
-        "flow does not solve in `cfd.case/1`.",
-        "Use `cfd.Compressible(...)`, or remove the solid zone from the mesh.",
+        "flow does not solve in `autan.case/1`.",
+        "Use `autan.Compressible(...)`, or remove the solid zone from the mesh.",
     ),
     Code(
         "E0601",
@@ -226,11 +226,11 @@ _CODES = [
         "E0602",
         "Duplicate monitor name",
         "Two monitors share a name; results are keyed by monitor name.",
-        'Name them: `cfd.forces("wing.*", name="wing")`.',
+        'Name them: `autan.forces("wing.*", name="wing")`.',
     ),
     Code(
         "E0701",
-        "The run directory does not conform to cfd.results/1",
+        "The run directory does not conform to autan.results/1",
         "A file is missing or unreadable, `run.json` has another schema, the stored case or "
         "MeshInfo does not match the hashes of `run.json`, or the history is out of order. "
         "See docs/contracts/results.md.",
@@ -282,7 +282,7 @@ _CODES = [
         "No solver backend",
         "`case.run()` needs a backend. The C++ core is not part of this build, so only the "
         "`fake` backend exists; it writes synthetic results.",
-        "Pass one explicitly: `case.run(mesh_info, backend=cfd.FakeBackend())`.",
+        "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
     ),
 ]
 
@@ -371,7 +371,7 @@ def reference_page() -> str:
     lines = [
         "# Diagnostic codes",
         "",
-        "Generated from `py/cfd/errors.py` by `cfd explain --all`; do not edit by hand.",
+        "Generated from `py/autan/errors.py` by `autan explain --all`; do not edit by hand.",
         "",
         (
             "`E` codes are errors and block the run, `W` codes are warnings, `D` codes report "

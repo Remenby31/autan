@@ -1,6 +1,6 @@
 # Contract: results
 
-A run writes one directory. Its layout, the run metadata and the CGNS solution layout are the contract between the solver (and the fake backend), the results API (`cfd.Results`), the UI and V&V. Schema identifier: `cfd.results/1`.
+A run writes one directory. Its layout, the run metadata and the CGNS solution layout are the contract between the solver (and the fake backend), the results API (`autan.Results`), the UI and V&V. Schema identifier: `autan.results/1`.
 
 ## Run directory
 
@@ -21,7 +21,7 @@ The writer creates `<run_id>/` atomically and fails if it exists. `run.json`, `c
 
 ```json
 {
-  "schema": "cfd.results/1",
+  "schema": "autan.results/1",
   "run_id": "run-20261031T214012Z-7f3a9c21",
   "identity": "4be1…",
   "status": "converged",
@@ -126,4 +126,4 @@ BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` 
 
 ## Results API
 
-`cfd.Results.open(path)` reads a run directory and checks it against this contract (`E0701` otherwise). `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name, mean=False)` a cell-centred field as a NumPy array, `results.wall(name)` a wall field with its face indices, `results.cell_zone(name)` the cell indices of a cell zone.
+`autan.Results.open(path)` reads a run directory and checks it against this contract (`E0701` otherwise). `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name, mean=False)` a cell-centred field as a NumPy array, `results.wall(name)` a wall field with its face indices, `results.cell_zone(name)` the cell indices of a cell zone.

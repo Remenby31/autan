@@ -1,4 +1,4 @@
-"""Run directories ``cfd.results/1``: writing them and reading them back (docs/contracts/results.md)."""
+"""Run directories ``autan.results/1``: writing them and reading them back (docs/contracts/results.md)."""
 
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from cfd import cgns
-from cfd.errors import CaseError, Diagnostic, Location, diagnostic
-from cfd.meshinfo import MeshInfo
-from cfd.schema import CaseSpec
+from autan import cgns
+from autan.errors import CaseError, Diagnostic, Location, diagnostic
+from autan.meshinfo import MeshInfo
+from autan.schema import CaseSpec
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-SCHEMA_ID = "cfd.results/1"
+SCHEMA_ID = "autan.results/1"
 Status = Literal["running", "converged", "completed", "stopped", "diverged", "failed"]
 SOLUTION_REQUIRED: frozenset[str] = frozenset({"converged", "completed", "stopped"})
 Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -62,7 +62,7 @@ class Averaging(_Strict):
 class RunInfo(_Strict):
     """The content of ``run.json``."""
 
-    schema_: Literal["cfd.results/1"] = Field(default="cfd.results/1", alias="schema")
+    schema_: Literal["autan.results/1"] = Field(default="autan.results/1", alias="schema")
     run_id: Annotated[str, Field(pattern=r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")]
     identity: Hex
     status: Status
@@ -193,7 +193,7 @@ class Forces:
 
 
 class Results:
-    """A run directory read back and checked against ``cfd.results/1``."""
+    """A run directory read back and checked against ``autan.results/1``."""
 
     def __init__(
         self, path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo, history: History
