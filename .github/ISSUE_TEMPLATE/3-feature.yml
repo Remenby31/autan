@@ -1,0 +1,32 @@
+name: Feature
+description: A capability the solver, the SDK or the tooling is missing
+type: Feature
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: capability
+    attributes:
+      label: Capability
+      description: What a user must be able to do that they cannot do today, and what they observe once it works.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: How we would verify it
+      description: The test, manufactured solution, reference case or benchmark that proves it works. Name its source.
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art
+      description: Where this capability already exists (another code, a paper) and what it gets right or wrong.
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: What this request does not ask for.
