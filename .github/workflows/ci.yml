@@ -110,6 +110,11 @@ jobs:
           cache-environment: false
       - name: Put cgnscheck on the PATH
         run: echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
+      - name: Build autan-mesh-info, the real MeshInfo producer for the contract test
+        run: |
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ninja-build
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
+          cmake --build build --target autan-mesh-info
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check
       - name: Install from the lock file

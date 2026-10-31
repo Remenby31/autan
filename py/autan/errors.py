@@ -444,6 +444,21 @@ _CODES = [
         "Report the message with the run directory.",
     ),
     Code(
+        "E0705",
+        "Invalid solver input",
+        "`autan-run` rejected its input: an unknown or missing key, a wrong type or schema, or "
+        "a value that the boundary kind or turbulence model requires or forbids. `data.path` "
+        "is the path of the key. See docs/contracts/solver-input.md.",
+        "Regenerate the input with `autan prepare` from the same Autan version as the runtime.",
+    ),
+    Code(
+        "E0706",
+        "Physics not in this solver build",
+        "The solver build has no implementation for the requested combination of physics, "
+        "turbulence model, precision and device kind; `data` names the combination.",
+        "Use a build that includes it, or change the case or the devices.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
@@ -482,6 +497,13 @@ _CODES = [
         "Web UI not installed",
         "`autan ui` needs the optional `autan-ui` package, which this installation lacks.",
         "Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).",
+    ),
+    Code(
+        "E0806",
+        "Cannot write the output file",
+        "The file given to `-o`/`--output` cannot be written: missing directory, a directory "
+        "in its place, or no permission.",
+        "Give a writable file path.",
     ),
 ]
 
@@ -563,6 +585,23 @@ class CaseError(Exception):
     @property
     def codes(self) -> list[str]:
         return [d.code for d in self.diagnostics]
+
+
+def registry_document() -> dict[str, Any]:
+    """Every registered code as JSON, the form other components embed
+    (docs/contracts/diagnostics.json)."""
+    return {
+        "schema": "autan.diagnostics/1",
+        "codes": {
+            entry.code: {
+                "severity": entry.severity,
+                "title": entry.title,
+                "fix": entry.fix,
+                "doc": doc_url(entry.code),
+            }
+            for entry in sorted(REGISTRY.values(), key=lambda c: c.code[1:])
+        },
+    }
 
 
 def reference_page() -> str:
