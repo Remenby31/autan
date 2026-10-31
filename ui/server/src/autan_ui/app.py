@@ -5,7 +5,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, Any
 
+import autan
 import uvicorn
+from autan.errors import CaseError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
@@ -16,9 +18,9 @@ from autan_ui.registry import (
     Registry,
     RunNotFoundError,
     RunRejectedError,
-    read_history,
     read_run,
 )
+from autan_ui.registry_io import read_history
 from autan_ui.surface import synthetic_wing
 
 log = logging.getLogger(__name__)
@@ -72,7 +74,7 @@ def create_app(
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
         """`runs` snapshot first, then `run` (upsert), `removed` (run id), `rejected` (the
-        whole list) and `progress` (last iteration of each running run) as they change.
+        whole list) and `summaries` (iteration and residual drop of each run) as they change.
         Every wake-up rescans, timeouts included, so a change made before the watcher starts is
         still reported."""
         previous = await asyncio.to_thread(registry.scan)
@@ -87,8 +89,8 @@ def create_app(
                         yield ServerSentEvent(event="run", data=run)
                 for run_id in sorted(previous.runs.keys() - current.runs.keys()):
                     yield ServerSentEvent(event="removed", data=run_id)
-                if current.progress != previous.progress:
-                    yield ServerSentEvent(event="progress", data=current.progress)
+                if current.summaries != previous.summaries:
+                    yield ServerSentEvent(event="summaries", data=current.summaries)
                 if current.rejected != previous.rejected:
                     yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
                 previous = current
@@ -99,6 +101,19 @@ def create_app(
     @app.get("/api/runs/{run_id}")
     def run_details(directory: Annotated[Path, Depends(existing_run)]) -> dict[str, Any]:
         return registry.details(directory)
+
+    @app.get("/api/runs/{run_id}/plan")
+    def run_plan(directory: Annotated[Path, Depends(existing_run)]) -> dict[str, Any]:
+        """`autan plan --json` of the run's stored case against its stored MeshInfo."""
+        run = read_run(directory)
+        try:
+            case = autan.load(directory / "case.toml")
+            mesh_info = autan.MeshInfo.load(directory / "mesh-info.json")
+            return case.plan(mesh_info, gpus=run["devices"]["count"]).document()
+        except CaseError as error:
+            raise HTTPException(
+                422, [d.model_dump(mode="json") for d in error.diagnostics]
+            ) from error
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(

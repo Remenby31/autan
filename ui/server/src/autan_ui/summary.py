@@ -19,12 +19,16 @@ class _Trend:
 def residual_orders(first: dict[str, float], residuals: dict[str, float]) -> float | None:
     """Orders of magnitude the slowest equation has dropped since iteration 1: the quantity
     the steady convergence criterion (`time.residual_orders`, case-schema.md) compares."""
-    drops = [
-        math.log10(first[name] / value)
-        for name, value in residuals.items()
-        if first.get(name, 0) > 0 and value > 0
-    ]
+    drops = []
+    for name, value in residuals.items():
+        start = first.get(name)
+        if isinstance(start, float | int) and _positive(start) and _positive(value):
+            drops.append(math.log10(start / value))
     return min(drops) if drops else None
+
+
+def _positive(value: object) -> bool:
+    return isinstance(value, float | int) and not isinstance(value, bool) and 0 < value < math.inf
 
 
 def downsample(values: list[float], points: int = TREND_POINTS) -> list[float]:
@@ -53,10 +57,15 @@ class Summaries:
         except ValueError:
             return None
         for record in chunk.records:
-            residuals = record.get("residuals", {})
+            iteration = record.get("iteration") if isinstance(record, dict) else None
+            if type(iteration) is not int:
+                continue
+            residuals = record.get("residuals")
+            if not isinstance(residuals, dict):
+                residuals = {}
             if trend.first is None:
                 trend.first = residuals
-            trend.iteration = record.get("iteration", trend.iteration)
+            trend.iteration = iteration
             orders = residual_orders(trend.first, residuals)
             if orders is not None:
                 trend.orders.append(orders)

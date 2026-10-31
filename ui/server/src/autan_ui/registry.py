@@ -110,7 +110,14 @@ class Registry:
         return outcome
 
     def details(self, directory: Path) -> dict[str, Any]:
+        outputs = [
+            {"name": path.name, "bytes": stat.st_size, "modified": stat.st_mtime}
+            for path in sorted(directory.iterdir())
+            if path.is_file() and not path.name.startswith(".")
+            for stat in (path.stat(),)
+        ]
         return {
+            "outputs": outputs,
             "run": read_run(directory),
             "case": tomllib.loads((directory / "case.toml").read_text(encoding="utf-8")),
             "mesh_info": json.loads((directory / "mesh-info.json").read_text(encoding="utf-8")),

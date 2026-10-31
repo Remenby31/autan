@@ -1,4 +1,5 @@
 import json
+import math
 import shutil
 import socket
 import threading
@@ -14,7 +15,8 @@ import numpy as np
 import pytest
 import uvicorn
 from autan_ui import create_app
-from autan_ui.registry import Registry, read_history
+from autan_ui.registry import Registry
+from autan_ui.registry_io import read_history
 from autan_ui.surface import synthetic_wing
 
 PY = Path(__file__).parents[3] / "py"
@@ -115,7 +117,7 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
 ) -> None:
     source = next(runs.iterdir())
     with httpx.stream("GET", f"{server}/api/runs/events", timeout=10) as response:
-        events = sse_events(response)
+        events = (e for e in sse_events(response) if e[0] != "summaries")
         kind, snapshot = next(events)
         assert (kind, len(snapshot["runs"])) == ("runs", 1)
 
@@ -192,34 +194,47 @@ def test_synthetic_surface_layout() -> None:
     assert [zone["name"] for zone in header["zones"]] == ["wing.upper", "wing.lower", "wing.tip"]
 
 
-def test_a_running_run_reports_its_last_recorded_iteration(runs: Path) -> None:
+def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     run = json.loads((source / "run.json").read_text())
     (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    records = [json.loads(line) for line in (source / "history.jsonl").read_text().splitlines()]
     with (source / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
-
-    snapshot = Registry(runs).scan()
-
-    assert snapshot.runs[source.name]["iterations"] == 30
-    assert snapshot.progress == {source.name: 30}
-
-
-def test_progress_survives_long_and_malformed_last_lines(runs: Path) -> None:
-    source = next(runs.iterdir())
-    run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
     registry = Registry(runs)
-    assert registry.scan().progress == {source.name: 30}
+
+    summary = registry.scan().summaries[source.name]
+
+    first, last = records[0]["residuals"], records[-1]["residuals"]
+    slowest = min(math.log10(first[name] / last[name]) for name in first)
+    assert summary["iteration"] == 30
+    assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
+    assert len(summary["trend"]) == 30
 
     # Lines appended after the directory was checked are not re-validated by the registry.
-    long_record = {"iteration": 31, "padding": "x" * 200_000}
     with (source / "history.jsonl").open("a") as history:
-        history.write(json.dumps(long_record) + "\n")
-    assert registry.scan().progress == {source.name: 31}
-
-    with (source / "history.jsonl").open("a") as history:
+        history.write('uals": {}, "padding": "' + "x" * 200_000 + '"}\n')
         history.write('{"iteration": 1e400}\n')
     snapshot = registry.scan()
     assert source.name in snapshot.runs
-    assert snapshot.progress == {}
+    assert snapshot.summaries[source.name]["iteration"] == 31
+
+
+def test_run_details_and_plan(runs: Path, server: str) -> None:
+    run_id = next(runs.iterdir()).name
+    details = httpx.get(f"{server}/api/runs/{run_id}").json()
+    assert {o["name"] for o in details["outputs"]} >= {
+        "run.json",
+        "case.toml",
+        "mesh-info.json",
+        "history.jsonl",
+        "solution.cgns",
+    }
+    mesh_info = json.loads((runs / run_id / "mesh-info.json").read_text())
+
+    plan = httpx.get(f"{server}/api/runs/{run_id}/plan").json()
+
+    assert plan["ok"] is True
+    assert {b["zone"] for b in plan["boundaries"]} == {
+        z["name"] for z in mesh_info["boundary_zones"]
+    }
