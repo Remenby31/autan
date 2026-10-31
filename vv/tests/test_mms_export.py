@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import sympy as sp
+from autan_vv.errors import VVError
 from autan_vv.mms import CATALOG, dump_json, parse_json_expressions, to_cpp
 from autan_vv.mms.solutions import ManufacturedSolution, X
 
@@ -139,3 +140,23 @@ def test_json_document_round_trips_through_a_parser(name: str) -> None:
         )
         scale = np.max(np.abs(expected[group]), axis=0) + 1e-300
         assert np.max(np.abs(got - expected[group]) / scale) < 1e-12, group
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "__import__('os').getcwd()",
+        "x.real",
+        "[x]",
+        "lambda: 1",
+        "sin(x, y=1)",
+        "unknown(x)",
+        "x ** 2",
+        "1 +",
+    ],
+)
+def test_json_reader_rejects_anything_outside_the_grammar(text: str) -> None:
+    doc = {"g": {"subexpressions": [], "outputs": {"f": text}}}
+    with pytest.raises(VVError) as err:
+        parse_json_expressions(doc, "g")
+    assert err.value.code == "V0202"

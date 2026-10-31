@@ -172,7 +172,34 @@ def test_fluent_polyhedral_file_reads_back_closed_with_zones(tmp_path: Path) -> 
         assert all(c == 1 and edges.get((b, a)) == 1 for (a, b), c in edges.items())
 
 
-def test_unknown_kind_is_a_coded_error() -> None:
+@pytest.mark.parametrize(
+    ("kind", "perturbation", "code"),
+    [
+        ("octree", 0.0, "V0304"),
+        ("hex", float("inf"), "V0309"),
+        ("hex", float("nan"), "V0309"),
+        ("hex", 1.0, "V0309"),
+    ],
+)
+def test_invalid_requests_are_coded_errors(kind: str, perturbation: float, code: str) -> None:
     with pytest.raises(VVError) as err:
-        generate_level("octree", 4)
-    assert err.value.code == "V0304"
+        generate_level(kind, 4, perturbation=perturbation)
+    assert err.value.code == code
+
+
+def test_check_rejects_non_finite_geometry() -> None:
+    mesh, _ = generate_level("hex", 2)
+    points = mesh.points.copy()
+    points[5] = np.nan
+    broken = FaceMesh(
+        points,
+        mesh.face_offsets,
+        mesh.face_nodes,
+        mesh.owner,
+        mesh.neighbour,
+        mesh.n_cells,
+        mesh.zones,
+    )
+    with pytest.raises(VVError) as err:
+        broken.check()
+    assert err.value.code == "V0301"

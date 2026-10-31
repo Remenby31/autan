@@ -414,6 +414,9 @@ def generate_level(
     if kind not in KINDS:
         msg = f"unknown mesh kind {kind!r}; expected one of {KINDS}"
         raise VVError(msg, code="V0304")
+    if not (0.0 <= perturbation < 1.0) or n < 1:
+        msg = f"need 0 <= perturbation < 1 and n >= 1, got {perturbation} and {n}"
+        raise VVError(msg, code="V0309")
     gmsh = _gmsh()
     gmsh.initialize(readConfigFiles=False)
     try:
@@ -484,5 +487,6 @@ def generate_family(
             )
         )
     family = Family(kind, perturbation, seed, version, tuple(records))
-    (out_dir / "manifest.json").write_text(json.dumps(family.manifest(), indent=2) + "\n")
+    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
+    (out_dir / "manifest.json").write_text(manifest + "\n")
     return family, meshes

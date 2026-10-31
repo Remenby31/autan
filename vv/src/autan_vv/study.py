@@ -36,16 +36,22 @@ def order_study(label: str, dim: int, levels: Sequence[dict[str, Any]]) -> dict[
     fits = {}
     for norm in norms:
         fit = fit_order([r["h"] for r in rows], [r["errors"][norm] for r in rows])
-        fits[norm] = {
-            k: (None if isinstance(v, float) and math.isnan(v) else v)
-            for k, v in asdict(fit).items()
-        }
+        fits[norm] = {k: _json_ready(v) for k, v in asdict(fit).items()}
     return {"schema": REPORT_SCHEMA, "label": label, "dim": dim, "levels": rows, "fits": fits}
+
+
+def _json_ready(value: Any) -> Any:
+    """NaN (an undefined statistic, e.g. a CI from two levels) becomes null."""
+    if isinstance(value, tuple | list):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def write_report(report: dict[str, Any], json_path: Path, plot_path: Path | None = None) -> None:
     """Write the report as JSON and, optionally, its log-log error plot."""
-    json_path.write_text(json.dumps(report, indent=2) + "\n")
+    json_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     if plot_path is None:
         return
     fig, ax = plt.subplots(figsize=(5.0, 4.0), layout="constrained")

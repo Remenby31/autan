@@ -61,6 +61,23 @@ def test_richardson_is_exact_for_a_power_law_with_non_constant_refinement() -> N
 
 
 @pytest.mark.parametrize(
+    ("h", "p"),
+    [
+        ((1.0, 3.0, 4.0), 2.0),
+        ((1.0, 1.5, 4.5), 2.0),
+        ((1.0, 1.5, 6.0), 2.0),
+        ((0.1, 0.2, 0.8), 0.5),
+    ],
+)
+def test_richardson_handles_strongly_non_constant_refinement(
+    h: tuple[float, ...], p: float
+) -> None:
+    res = richardson(h, [0.3 + 2.0 * hi**p for hi in h])
+    assert res.order == pytest.approx(p, rel=1e-10)
+    assert res.extrapolated == pytest.approx(0.3, abs=1e-10)
+
+
+@pytest.mark.parametrize(
     ("values", "code"), [([1.0, 1.1, 1.05], "V0107"), ([1.0, 1.1, 1.15], "V0108")]
 )
 def test_richardson_rejects_oscillatory_and_divergent_triplets(

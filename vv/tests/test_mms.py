@@ -80,9 +80,30 @@ def _grad(f: Callable[[Vec], Vec], p: Vec, h: float) -> Vec:
     return np.stack(cols, axis=-1)
 
 
-def _sa_residual(ms: ManufacturedSolution, p: Vec, h: float) -> dict[str, float]:
-    """RANS-SA residual from the TMR equations (SA, compressible conservative form), by finite differences."""
-    c = ms.parameters
+# Constants as printed on https://tmbwg.github.io/turbmodels/spalart.html (SA and Note 1(c)).
+TMR_SA = {
+    "cb1": 0.1355,
+    "sigma": 2.0 / 3.0,
+    "cb2": 0.622,
+    "kappa": 0.41,
+    "cw2": 0.3,
+    "cw3": 2.0,
+    "cv1": 7.1,
+    "ct3": 1.2,
+    "ct4": 0.5,
+    "prandtl_turbulent": 0.9,
+}
+
+
+def _sa_residual(ms: ManufacturedSolution, p: Vec, h: float, ft2: bool) -> dict[str, float]:
+    """RANS-SA residual from the TMR equations (SA, compressible conservative form), by finite differences.
+
+    Only the problem data (gas, laminar viscosity, Prandtl number, fields) come from `ms`; the model
+    constants come from the TMR page.
+    """
+    c = {**TMR_SA, "ft2": 1.0 if ft2 else 0.0}
+    for k in ("gamma", "gas_constant", "viscosity", "prandtl"):
+        c[k] = ms.parameters[k]
     gamma, gas, mu, pr, prt = (
         c["gamma"],
         c["gas_constant"],
@@ -164,7 +185,7 @@ def test_rans_sa_source_matches_independent_finite_differences(
 ) -> None:
     ms = rans_sa(ft2=ft2)
     p = np.array(point)
-    numerical = _sa_residual(ms, p, h=min(2e-3, p[1] / 20))
+    numerical = _sa_residual(ms, p, h=min(2e-3, p[1] / 20), ft2=ft2)
     symbolic = ms.evaluator("sources")(p[None, :])
     for name, value in numerical.items():
         # Relative to the largest flux-divergence term, the scale at which the residual is formed.

@@ -40,15 +40,19 @@ LEVELS = {
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("precision", ["fp64", "fp32"])
 @pytest.mark.parametrize("perturbation", [0.0, 0.3])
 @pytest.mark.parametrize("kind", KINDS)
-def test_observed_order_is_two_on_every_family(kind: str, perturbation: float) -> None:
+def test_observed_order_is_two_on_every_family(
+    kind: str, perturbation: float, precision: str
+) -> None:
     ms = advection_diffusion()
+    eps = float(np.finfo(np.float32 if precision == "fp32" else np.float64).eps)
     h, e = [], []
     for n in LEVELS[kind]:
         mesh, _ = generate_level(kind, n, perturbation=perturbation, seed=1)
-        sol = solve(mesh, ms)
-        assert sol.residual_norm < 1e-10
+        sol = solve(mesh, ms, precision)
+        assert sol.residual_norm < 1024 * eps
         h.append((mesh.geometry.cell_volume.sum() / mesh.n_cells) ** (1 / 3))
         e.append(sol.error_l2)
     fit = fit_order(h, e)
@@ -56,16 +60,32 @@ def test_observed_order_is_two_on_every_family(kind: str, perturbation: float) -
     assert fit.order > 1.85, fit
 
 
-def test_solver_rejects_other_equations() -> None:
+@pytest.mark.parametrize(
+    ("ms", "code"),
+    [(euler(), "V0401"), (advection_diffusion(diffusivity="0"), "V0403")],
+    ids=["other-equations", "pure-advection"],
+)
+def test_solver_rejects_problems_it_cannot_solve(ms: object, code: str) -> None:
     mesh, _ = generate_level("hex", 3)
     with pytest.raises(VVError) as err:
-        solve(mesh, euler())
-    assert err.value.code == "V0401"
+        solve(mesh, ms)  # type: ignore[arg-type]
+    assert err.value.code == code
 
 
 def test_cli_verify_writes_report_plot_and_manifest(tmp_path: Path) -> None:
-    assert main(["verify", "hex", "--levels", "4,8", "--out", str(tmp_path)]) == 0
-    report = json.loads((tmp_path / "order.json").read_text())
+    assert (
+        main(["verify", "hex", "--levels", "4,8", "--precision", "fp32", "--out", str(tmp_path)])
+        == 0
+    )
+
+    def reject(token: str) -> None:
+        raise AssertionError(token)
+
+    report = json.loads((tmp_path / "order.json").read_text(), parse_constant=reject)
+    assert report["precision"] == "fp32"
+    assert len(report["mms_sha256"]) == 64
+    assert len(report["commit"].removesuffix("-dirty")) == 40
+    assert report["fits"]["L2"]["order_ci95"] == [None, None]
     assert report["schema"] == "autan.order-study/1"
     assert report["mesh_family"]["levels"][0]["file"] == "hex-n004.msh"
     assert report["fits"]["L2"]["order"] > 1.8

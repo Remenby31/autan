@@ -28,7 +28,7 @@ template <typename T> AUTAN_MMS_HD void sources(T x, T y, T z, T* out);   // out
 
 `AUTAN_MMS_HD` is `__host__ __device__` under CUDA or HIP. Literals are written `T(p)/T(q)` and π as `std::numbers::pi_v<T>`, so one body serves `float` and `double` without promotion. Common subexpressions are shared.
 
-**JSON** (`<name>.json`, schema `autan.mms/1`): `name`, `equations`, `coordinates` (`x, y, z`), `domain`, `parameters`, `validity`, `references`, and one object per group with `subexpressions` (ordered `[name, expr]` pairs, each may use earlier ones) and `outputs` (`{name: expr}`). Expressions use C99 syntax restricted to `+ - * /`, unary minus, `pow`, `sqrt`, `sin`, `cos`, `exp`, `log`, decimal literals and the constant `pi`. `autan_vv.mms.parse_json_expressions` is a reference reader.
+**JSON** (`<name>.json`, schema `autan.mms/1`): `name`, `equations`, `coordinates` (`x, y, z`), `domain`, `parameters`, `validity`, `references`, and one object per group with `subexpressions` (ordered `[name, expr]` pairs, each may use earlier ones) and `outputs` (`{name: expr}`). Expressions use C99 syntax restricted to `+ - * /`, unary minus, `pow`, `sqrt`, `sin`, `cos`, `exp`, `log`, decimal literals and the constant `pi`. `autan_vv.mms.parse_json_expressions` is a reference reader: it builds expressions from that grammar only and rejects anything else with `V0202`, executing nothing.
 
 ## Verification of the generator
 
@@ -36,7 +36,7 @@ Tests use oracles that do not reuse the derivation (`vv/tests/test_mms.py`, `tes
 
 - the advection-diffusion source of φ = sin(πx), derived by hand;
 - exact steady solutions whose source must vanish: Shu's isentropic vortex for Euler, compressible Couette flow with viscous heating for Navier-Stokes;
-- the RANS-SA source re-evaluated by fourth-order finite differences of an independent implementation of the TMR equations, at points down to y = 0.03 (agreement 10⁻¹⁰–10⁻⁸ relative, for SA-neg and SA-noft2);
+- the RANS-SA source re-evaluated by fourth-order finite differences of an independent implementation of the TMR equations, with the model constants typed from the TMR page, at points down to y = 0.03 (agreement 10⁻¹⁰–10⁻⁸ relative, for SA-neg and SA-noft2);
 - the header compiled with `-Wall -Wextra -Werror` and evaluated in `double` and `float` against sympy: errors stay below 32 ε of the precision relative to each output's magnitude (measured: ≤ 1×10⁻¹⁵ in FP64, ≤ 5×10⁻⁷ in FP32, sources included);
 - the JSON parsed back and evaluated, within 10⁻¹².
 
