@@ -19,14 +19,6 @@ import autan_spike as s
 import mms
 
 
-def load(path: Path) -> tuple[FaceArrays, str]:
-    z = np.load(path)
-    fa = FaceArrays(
-        z["points"], z["face_offsets"], z["face_nodes"], z["cell0"], z["cell1"], int(z["n_cells"])
-    )
-    return fa, str(z["mesh_sha256"])
-
-
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     policies = sys.argv[3].split(",") if len(sys.argv) > 3 else ["fp64", "fp32+acc64", "fp32"]

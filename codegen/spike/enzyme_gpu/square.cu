@@ -10,8 +10,8 @@ __device__ void square(const double* x, double* y) { *y = *x * *x; }
 __global__ void grad(const double* x, double* dx, double* y, double* dy, int n) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) {
-    __enzyme_autodiff(reinterpret_cast<void*>(square), enzyme_dup, x + i, dx + i, enzyme_dup,
-                      y + i, dy + i);
+    __enzyme_autodiff(reinterpret_cast<void*>(square), enzyme_dup, x + i, dx + i, enzyme_dup, y + i,
+                      dy + i);
   }
 }
 

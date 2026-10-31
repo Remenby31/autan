@@ -59,10 +59,9 @@ int main() {
     // Generated adjoint: seeds of the left and right cells; the output adjoint is
     // seed_l - seed_r (Inc signs +1, -1), so seed_l = outb, seed_r = 0.
     double ours[10];
-    autan::kernels::roe::flux_adjoint_body<P>(ul[0], ul[1], ul[2], ul[3], ul[4], ur[0], ur[1],
-                                              ur[2], ur[3], ur[4], n[0], n[1], n[2], area,
-                                              outb[0], outb[1], outb[2], outb[3], outb[4], 0.0,
-                                              0.0, 0.0, 0.0, 0.0, ours);
+    autan::kernels::roe::flux_adjoint_body<P>(
+        ul[0], ul[1], ul[2], ul[3], ul[4], ur[0], ur[1], ur[2], ur[3], ur[4], n[0], n[1], n[2],
+        area, outb[0], outb[1], outb[2], outb[3], outb[4], 0.0, 0.0, 0.0, 0.0, 0.0, ours);
     double scale = 0.0, diff = 0.0;
     for (int k = 0; k < 5; ++k) {
       scale = std::max({scale, std::abs(ulb[k]), std::abs(urb[k])});
