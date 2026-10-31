@@ -40,13 +40,22 @@ test("a run written by another process appears and updates live", async ({ page 
   await expect(rows).toHaveCount(5);
   await expect(rows.first().getByRole("img", { name: "running" })).toBeVisible();
 
-  await rows.first().click();
-  const lines = readFileSync(join(directory, "history.jsonl"), "utf8").trim().split("\n");
+  const history = join(directory, "history.jsonl");
+  const lines = readFileSync(history, "utf8").trim().split("\n");
   const last = lines.length;
-  await expect(page.getByTestId("iteration")).toHaveText(String(last));
-  const next = { ...JSON.parse(lines[last - 1] as string), iteration: last + 1 };
-  appendFileSync(join(directory, "history.jsonl"), `${JSON.stringify(next)}\n`);
+  const append = (iteration: number) =>
+    appendFileSync(
+      history,
+      `${JSON.stringify({ ...JSON.parse(lines[last - 1] as string), iteration })}\n`,
+    );
+  await expect(rows.first().getByTestId("iterations")).toHaveText(String(last));
+  append(last + 1);
+  await expect(rows.first().getByTestId("iterations")).toHaveText(String(last + 1));
+
+  await rows.first().click();
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 1));
+  append(last + 2);
+  await expect(page.getByTestId("iteration")).toHaveText(String(last + 2));
   const finished = { ...run, status: "converged", finished: "2026-11-01T00:10:00Z" };
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
   await expect(page.getByTestId("status")).toContainText("converged");

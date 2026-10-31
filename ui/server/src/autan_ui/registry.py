@@ -9,7 +9,6 @@ from typing import Any
 
 import autan
 from autan.errors import CaseError
-from autan.results import RunInfo
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +32,12 @@ CHECKED_FILES = ("run.json", "case.toml", "mesh-info.json", "solution.cgns")
 class Snapshot:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejected: dict[str, str] = field(default_factory=dict)
+    progress: dict[str, int] = field(default_factory=dict)
 
     def document(self) -> dict[str, Any]:
         runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
         rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
-        return {"runs": runs, "rejected": rejected}
+        return {"runs": runs, "rejected": rejected, "progress": self.progress}
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,10 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
+                        if outcome["status"] == "running":
+                            last = last_iteration(child)
+                            if last is not None:
+                                snapshot.progress[child.name] = last
             for gone in self._checked.keys() - names:
                 del self._checked[gone]
         return snapshot
@@ -126,10 +130,27 @@ def read_run(directory: Path) -> dict[str, Any]:
     """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
     try:
         document = json.loads((directory / "run.json").read_text(encoding="utf-8"))
-        return RunInfo.model_validate(document).document()
+        return autan.RunInfo.model_validate(document).document()
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
+
+
+def last_iteration(directory: Path) -> int | None:
+    """Iteration of the last complete history line: run.json is rewritten only when the status
+    changes, so this is how far a running run has got."""
+    try:
+        with (directory / "history.jsonl").open("rb") as file:
+            size = file.seek(0, 2)
+            file.seek(max(size - 65536, 0))
+            tail = file.read()
+    except OSError:
+        return None
+    lines = tail[: tail.rfind(b"\n") + 1].splitlines()
+    try:
+        return int(json.loads(lines[-1])["iteration"]) if lines else None
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:

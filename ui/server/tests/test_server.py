@@ -190,3 +190,16 @@ def test_synthetic_surface_layout() -> None:
     assert indices.size == 3 * header["triangles"]
     assert int(indices.max()) < header["nodes"]
     assert [zone["name"] for zone in header["zones"]] == ["wing.upper", "wing.lower", "wing.tip"]
+
+
+def test_a_running_run_reports_its_last_recorded_iteration(runs: Path) -> None:
+    source = next(runs.iterdir())
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    with (source / "history.jsonl").open("a") as history:
+        history.write('{"iteration": 31, "time": null, "resid')
+
+    snapshot = Registry(runs).scan()
+
+    assert snapshot.runs[source.name]["iterations"] == 30
+    assert snapshot.progress == {source.name: 30}
