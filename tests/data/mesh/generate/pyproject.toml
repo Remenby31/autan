@@ -1,0 +1,9 @@
+[project]
+name = "cfd-test-meshes"
+version = "0.0.0"
+description = "Generates the test meshes in tests/data/mesh with Gmsh"
+requires-python = ">=3.12"
+dependencies = ["gmsh==4.15.2"]
+
+[tool.uv]
+package = false
