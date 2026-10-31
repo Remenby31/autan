@@ -1,10 +1,13 @@
 import math
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 from autan_vv.errors import VVError
 from autan_vv.order import fit_order, gci_two_grids, mesh_size, richardson
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def test_mesh_size_is_the_dth_root_of_mean_cell_volume() -> None:
