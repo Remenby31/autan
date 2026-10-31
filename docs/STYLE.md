@@ -42,7 +42,7 @@ A guide then lists its prerequisites, its numbered steps, and ends on **Next ste
 
 | Before | After |
 |---|---|
-| Until the C++ mesh readers exist, the MeshInfo is passed explicitly. | Until the mesh readers ship, pass the MeshInfo yourself with `--mesh-info`. |
+| The MeshInfo is passed explicitly. | Pass the MeshInfo yourself with `--mesh-info`. |
 
 ## Headings say what the section does
 

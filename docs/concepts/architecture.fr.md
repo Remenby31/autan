@@ -1,5 +1,5 @@
 ---
-source_hash: fdff99d4e289
+source_hash: 999db47e2398
 ---
 
 # Architecture
@@ -13,11 +13,13 @@ Autan est un cœur C++, un générateur de kernels et un SDK Python qui échange
 | Répertoire | Rôle | Jalon |
 |---|---|---|
 | `io/` | Lecteurs de maillages Gmsh, Fluent, CGNS et OpenFOAM. | M0 |
-| `core/` | Le [maillage](meshes.fr.md) par faces, la géométrie FP64, le partitionnement et les halos. | M0 |
+| `core/` | Le [maillage](meshes.fr.md) par faces, la géométrie FP64, la qualité et la renumérotation. | M0 |
+| `partition/` | Partitionnement par METIS ou Scotch, et échange de halos MPI. | M0 |
 | `py/` | Le SDK et la CLI `autan` : schéma de cas, `plan`, `run`, résultats. | M0, M4 |
 | `codegen/`, `kernels/` | Kernels écrits une fois, émis pour CUDA, HIP et CPU avec leur tangent et leur adjoint. | M1 |
 | `physics/`, `solvers/` | Schémas de flux, modèles de turbulence, pas de temps, solveurs linéaires. | M2, M3 |
-| `vv/`, `bench/` | Vérification par solutions manufacturées et données de référence ; mesures de bande passante. | M0 |
+| `vv/`, `bench/`, `docker/` | Vérification par solutions manufacturées et données de référence ; image de développement et mesures de bande passante. | M0 |
+| `ui/` | Interface web : éditeur de cas et visualisation des résultats. | M10 |
 
 Les composants communiquent par trois schémas, jamais par leurs internes : le [cas](../contracts/case-schema.md) (`autan.case/1`), le [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`) et le [répertoire de calcul](../contracts/results.md) (`autan.results/1`).
 

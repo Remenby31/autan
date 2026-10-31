@@ -1,5 +1,5 @@
 ---
-source_hash: d9872a89f6c4
+source_hash: 2f48b8b005e7
 ---
 
 # Prise en main du SDK Autan
@@ -42,7 +42,7 @@ warning[W0205]: mesh '…/crm-hl.cgns' not found; the MeshInfo is taken as given
 plan OK
 ```
 
-Chaque zone frontière a une condition, et la dernière colonne indique d'où elle vient : votre code ou le fichier de maillage. L'avertissement est attendu : le fichier de maillage lui-même n'est pas dans le dépôt. [Conditions aux limites](../concepts/boundary-conditions.fr.md) explique la résolution.
+Chaque zone frontière a une condition, et la dernière colonne indique d'où elle vient : votre code ou le fichier de maillage. L'avertissement est attendu : le fichier de maillage lui-même n'est pas dans le dépôt. Pour votre propre maillage, l'outil C++ `autan-mesh-info --json MESH` écrit ce document ([contrat de maillage : lecteurs](../contracts/mesh.md#readers)). [Conditions aux limites](../concepts/boundary-conditions.fr.md) explique la résolution.
 
 ## Le lancer sur le backend fake
 

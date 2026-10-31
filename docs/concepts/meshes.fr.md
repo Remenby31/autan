@@ -1,5 +1,5 @@
 ---
-source_hash: b463e7df2349
+source_hash: 6820f649727e
 ---
 
 # Maillages
@@ -26,7 +26,7 @@ Votre cas désigne les zones par leur nom. Le résumé [MeshInfo](../contracts/m
 
 Pour calculer sur plusieurs GPU, Autan découpe le maillage en partitions, une par GPU. Chaque partition stocke les cellules qu'elle **possède** (`owned`), puis des copies **fantômes** (`ghost`) des cellules de l'autre côté de la coupe, possédées par une autre partition.
 
-Une face sur la coupe a une cellule possédée d'un côté et une fantôme de l'autre : la boucle sur les faces tourne sans changement. Avant la boucle, un échange de halo copie les valeurs possédées dans les fantômes. Après, les contributions ajoutées aux fantômes sont des sommes partielles : un échange inverse les ajoute à la partition propriétaire. L'adjoint a besoin de cet échange inverse ; voir [Architecture](architecture.fr.md#comment-autan-dérive-ses-kernels).
+Une face sur la coupe a une cellule possédée d'un côté et une fantôme de l'autre : la boucle sur les faces tourne sans changement. Avant la boucle, un échange de halo copie les valeurs possédées dans les fantômes. Après, les contributions ajoutées aux fantômes sont des sommes partielles : un échange inverse les ajoute à la partition propriétaire. L'adjoint a besoin de cet échange inverse ; voir [Architecture](architecture.fr.md#comment-autan-dérive-ses-kernels). [Partitioning and halo exchange](../design/partitioning.md) (en anglais) décrit le partitionneur et l'échange.
 
 ## Géométrie
 

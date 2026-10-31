@@ -9,11 +9,13 @@ Autan is a C++ core, a kernel generator and a Python SDK that exchange documents
 | Directory | Role | Milestone |
 |---|---|---|
 | `io/` | Readers for Gmsh, Fluent, CGNS and OpenFOAM meshes. | M0 |
-| `core/` | The face-based [mesh](meshes.md), FP64 geometry, partitioning and halos. | M0 |
+| `core/` | The face-based [mesh](meshes.md), FP64 geometry, quality and renumbering. | M0 |
+| `partition/` | Partitioning with METIS or Scotch, and the MPI halo exchange. | M0 |
 | `py/` | The `autan` SDK and CLI: case schema, `plan`, `run`, results. | M0, M4 |
 | `codegen/`, `kernels/` | Kernels written once, emitted for CUDA, HIP and CPU with their tangent and adjoint. | M1 |
 | `physics/`, `solvers/` | Flux schemes, turbulence models, time stepping, linear solvers. | M2, M3 |
-| `vv/`, `bench/` | Verification against manufactured solutions and reference data; bandwidth benchmarks. | M0 |
+| `vv/`, `bench/`, `docker/` | Verification against manufactured solutions and reference data; development image and bandwidth benchmarks. | M0 |
+| `ui/` | Web UI: case editor and result viewer. | M10 |
 
 Components talk through three schemas, never through each other's internals: the [case](../contracts/case-schema.md) (`autan.case/1`), the [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`) and the [run directory](../contracts/results.md) (`autan.results/1`).
 
