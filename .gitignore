@@ -16,4 +16,4 @@ compile_commands.json
 *.cgns
 *.h5
 !tests/**/*.cgns
-py/cfd/_build_info.py
+py/autan/_build_info.py
