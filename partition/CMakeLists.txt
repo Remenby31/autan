@@ -43,3 +43,6 @@ if(AUTAN_ENABLE_MPI)
     target_link_libraries(autan_halo PUBLIC CUDA::cudart)
   endif()
 endif()
+
+add_executable(autan-partition-report tools/partition_report.cpp)
+target_link_libraries(autan-partition-report PRIVATE autan::partition autan_compile_options)
