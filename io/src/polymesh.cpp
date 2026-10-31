@@ -148,6 +148,8 @@ class FoamFile {
       return out;
     }
     if (cursor_.accept('{')) {
+      skip_blank(cursor_);
+      if (*n == 0 && cursor_.accept('}')) return out;
       const std::int64_t v = label();
       skip_blank(cursor_);
       cursor_.expect('}');
@@ -169,6 +171,7 @@ class FoamFile {
       } else {
         cursor_.binary(out.data(), *n);
       }
+      skip_blank(cursor_);
       cursor_.expect(')');
       return out;
     }
@@ -207,7 +210,7 @@ class FoamFile {
         cursor_.expect('(');
         for (std::size_t k = 0; k < 3; ++k) {
           skip_blank(cursor_);
-          out[3 * p + k] = cursor_.real();
+          out[3 * p + k] = cursor_.real("()/");
         }
         skip_blank(cursor_);
         cursor_.expect(')');

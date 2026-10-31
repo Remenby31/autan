@@ -133,6 +133,7 @@ class GmshReader {
     for (std::size_t i = 0; i < n; ++i) {
       const int dim = c_.integer<int>(10, "");
       const int tag = c_.integer<int>(10, "");
+      if (tag <= 0) c_.fail("non-positive physical tag " + std::to_string(tag));
       c_.skip_space();
       std::string_view name = c_.line();
       if (name.size() < 2 || name.front() != '"' || name.back() != '"')
@@ -263,9 +264,12 @@ class GmshReader {
   void elements() {
     if (binary_) (void)c_.line();
     const std::uint64_t n_blocks = next_size();
+    const std::uint64_t n_elements = next_size();
     (void)next_size();
     (void)next_size();
-    (void)next_size();
+    c_.check_fits(n_blocks, min_bytes(4));
+    c_.check_fits(n_elements, min_bytes(2));
+    std::uint64_t read = 0;
     std::vector<index_t> nodes;
     for (std::uint64_t b = 0; b < n_blocks; ++b) {
       const int dim = next_int();
@@ -274,6 +278,8 @@ class GmshReader {
       const std::uint64_t n = next_size();
       ElementType et{};
       c_.check_fits(n, min_bytes(2));
+      read += n;
+      if (read > n_elements) c_.fail("$Elements blocks hold more elements than declared");
       if (!element_type(type, et))
         c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
       if (et.dim != dim) c_.fail("element type does not match its entity dimension");
