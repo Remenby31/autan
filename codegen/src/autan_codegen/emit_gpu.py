@@ -248,6 +248,11 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w("      }")
     e.w("      break;")
     e.w("    case gpu::Strategy::store_gather: {")
+    e.w(f"      if (s.face_scratch_width < {n_out(lm)}) {{")
+    e.w(
+        '        throw std::invalid_argument("E1104: face scratch narrower than the loop outputs");'
+    )
+    e.w("      }")
     e.w("      auto* scratch = static_cast<typename P::accum*>(s.face_scratch);")
     e.w("      if (hi > lo) {")
     e.w(f"        {lm.name}_store<P><<<grid(hi - lo), block, 0, s.stream>>>(d, lo, hi, scratch);")

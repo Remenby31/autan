@@ -46,6 +46,7 @@ class DeviceArray {
 
 /// Topology, colourings and scratch of a spike mesh on the device.
 struct DeviceMesh {
+  static constexpr int kScratchWidth = 10;  // widest spike face loop: the Roe adjoint
   DeviceArray<index_t> owner, neighbour, cell_faces;
   DeviceArray<offset_t> offsets;
   autan::kernels::HostColouring int_colours, bnd_colours;
@@ -63,7 +64,7 @@ struct DeviceMesh {
         bnd_colours(autan::kernels::colour_faces(m.topo, m.topo.n_interior_faces, m.topo.n_faces)),
         int_faces(int_colours.faces),
         bnd_faces(bnd_colours.faces),
-        scratch(3 * static_cast<std::size_t>(m.topo.n_faces)),
+        scratch(kScratchWidth * static_cast<std::size_t>(m.topo.n_faces)),
         topo(m.topo) {
     topo.owner = owner.get();
     topo.neighbour = neighbour.get();
@@ -73,6 +74,7 @@ struct DeviceMesh {
     schedule.interior = {int_faces.get(), int_colours.offsets};
     schedule.boundary = {bnd_faces.get(), bnd_colours.offsets};
     schedule.face_scratch = scratch.get();
+    schedule.face_scratch_width = kScratchWidth;
   }
 };
 

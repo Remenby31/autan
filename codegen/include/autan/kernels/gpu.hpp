@@ -122,7 +122,8 @@ struct Schedule {
   int block = 256;
   Colouring interior;
   Colouring boundary;
-  void* face_scratch = nullptr;  ///< store-gather: n_outputs x n_faces accumulation values
+  void* face_scratch = nullptr;  ///< store-gather: face_scratch_width x n_faces accumulation values
+  int face_scratch_width = 0;    ///< components per face the scratch holds
   stream_t stream = nullptr;
 };
 
