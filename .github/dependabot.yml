@@ -25,6 +25,9 @@ updates:
     ignore:
       # The formatter version is part of the style; change it on purpose, with .clang-format.
       - dependency-name: https://github.com/pre-commit/mirrors-clang-format
+      # The typos repository also tags its internal crates (varcon-core-v5.x); typos itself is 1.x.
+      - dependency-name: https://github.com/crate-ci/typos
+        versions: [">= 2"]
     groups:
       hooks:
         patterns: ["*"]
