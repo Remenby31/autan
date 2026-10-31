@@ -15,3 +15,4 @@ contrats = "contrats" # lane name "CFD - SDK & contrats"
 Comput = "Comput"     # journal abbreviation, "PLoS Comput Biol"
 Numer = "Numer"       # journal abbreviation, "Int. J. Numer. Meth. Fluids"
 strat = "strat"       # Scotch API, SCOTCH_Strat
+ser = "ser"           # pydantic-core API, plain_serializer_function_ser_schema
