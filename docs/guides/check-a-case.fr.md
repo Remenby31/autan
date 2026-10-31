@@ -1,18 +1,18 @@
 ---
-source_hash: acd508212e5e
+source_hash: de8ef4d140b6
 ---
 
 # Vérifier un cas avant de le lancer
 
-`autan plan` vérifie un cas face à son maillage avant que vous réserviez un GPU. Il affiche la condition de chaque zone et son origine, signale ce qui ne va pas avec un code et une correction, et estime la mémoire GPU. Ce guide planifie l'example de l'échangeur thermique, puis lit et corrige un diagnostic.
+`autan plan` vérifie un cas face à son maillage avant que vous réserviez un GPU. Il affiche la condition de chaque zone et son origine, signale ce qui ne va pas avec un code et une correction, et estime la mémoire GPU. Ce guide planifie l'exemple de l'échangeur thermique, puis lit et corrige un diagnostic.
 
 ## Prérequis
 
-- L'environment de [Prise en main du SDK Autan](../getting-started/sdk.fr.md).
+- L'environnement de [Prise en main du SDK Autan](../getting-started/sdk.fr.md).
 
 ## Planifier le cas
 
-Le cas de l'échangeur a deux gaz et une plaque de cuivre. Planifiez-le avec le MeshInfo de son maillage :
+Le cas de l'échangeur a deux gaz et une plaque de cuivre. Planifiez-le avec le MeshInfo de test qui tient lieu de son maillage :
 
 ```sh
 uv run autan plan py/examples/heat_exchanger.py --mesh-info py/tests/fixtures/heat-exchanger.meshinfo.json
@@ -28,6 +28,7 @@ cell zones
   co2        0.5 M cells  fluid(co2)               code
   plate      0.2 M cells  solid(copper)            code
 memory      1.5 GB total · 1.5 GB/GPU on 1 GPU · 7 equations (autan.memory/1)
+warning[W0205]: mesh '…/heat-exchanger.msh' not found; the MeshInfo is taken as given
 plan OK
 ```
 
@@ -35,6 +36,7 @@ Lisez-le zone par zone :
 
 - `casing` n'a pas de règle dans le cas : c'est une paroi parce que le fichier de maillage le dit (`mesh`).
 - `co2` et `plate` prennent les matériaux que le cas leur donne (`code`).
+- `W0205` est attendu : le fichier de maillage n'est pas dans le dépôt, donc `plan` prend le MeshInfo tel quel.
 - La ligne mémoire est une borne inférieure ; [autan plan](../sdk/plan.md#memory-model-autanmemory1) liste ce qu'elle compte.
 
 ## Lire un diagnostic

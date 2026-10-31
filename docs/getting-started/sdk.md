@@ -21,7 +21,7 @@ uv sync --locked
 
 ## Check a case
 
-The repository ships a case for the NASA CRM-HL high-lift configuration, `py/examples/crm_hl.py`, and the MeshInfo summary of its mesh. Plan it:
+The repository ships a case for the NASA CRM-HL high-lift configuration, `py/examples/crm_hl.py`, and a MeshInfo fixture that stands in for its mesh: the counts are realistic, the mesh file does not exist. Plan it:
 
 ```sh
 uv run autan plan py/examples/crm_hl.py --mesh-info py/tests/fixtures/crm-hl.meshinfo.json
@@ -43,7 +43,7 @@ Every boundary zone has a condition, and the last column says where it comes fro
 ## Run it on the fake backend
 
 ```sh
-uv run autan run py/examples/crm_hl.py --mesh-info py/tests/fixtures/crm-hl.meshinfo.json --runs /tmp/autan-runs
+uv run autan run py/examples/crm_hl.py --mesh-info py/tests/fixtures/crm-hl.meshinfo.json --runs "${TMPDIR:-/tmp}/autan-runs"
 ```
 
 The command prints the run id, its final state and its directory. The directory holds the case as run, the metadata, the residual history and a CGNS solution, as [Runs](../concepts/runs.md) describes.
@@ -53,11 +53,12 @@ The command prints the run id, its final state and its directory. The directory 
 Open the run with `autan.Results`:
 
 ```python
+import os
 from pathlib import Path
 
 import autan
 
-run_dir = max(Path("/tmp/autan-runs").glob("run-*"))
+run_dir = max(Path(os.environ.get("TMPDIR", "/tmp"), "autan-runs").glob("run-*"))
 results = autan.Results.open(run_dir)
 print(results.run.status, results.run.solver.backend)
 print(results.forces.cl[-1])

@@ -30,4 +30,4 @@ In the adjoint, a loop that read from neighbouring cells writes to them, so the 
 
 ## Precision
 
-Kernels compute in FP32 and accumulate updates, norms and geometry in FP64 (`fp32+acc64`); `fp64` computes everything in FP64. Every run records its precision.
+Kernels compute in FP32 and accumulate in FP64 by default; a case can ask for FP64 throughout. [Case schema: physics](../contracts/case-schema.md#physics) defines both modes, and every run records which one it used.

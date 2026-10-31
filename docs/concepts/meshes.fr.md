@@ -6,13 +6,13 @@ source_hash: b463e7df2349
 
 Autan lit tout maillage de cellules polyédriques et le stocke par ses faces. Une cellule n'est connue que par les faces qui la bordent : un tétraèdre, un hexaèdre et un polyèdre à 200 faces passent par le même code. Les tableaux, invariants et codes d'erreur exacts sont dans le [contrat de maillage](../contracts/mesh.md) (en anglais).
 
-## Comment les faces reliant les cellules
+## Comment les faces relient les cellules
 
 ![Propriétaire et voisine d'une face](../assets/diagrams/mesh-faces.svg)
 
-Chaque face stocke la cellule de chaque côté. La **propriétaire** (`owner`) est la cellule dont s'éloigne son vecteur surface ; la **voisine** (`neighbour`) est cell vers laquelle il pointe. Une face frontière a une propriétaire et pas de voisine, et son vecteur sort du domaine.
+Chaque face stocke la cellule de chaque côté. La **propriétaire** (`owner`) est la cellule dont s'éloigne son vecteur surface ; la **voisine** (`neighbour`) est celle vers laquelle il pointe. Une face frontière a une propriétaire et pas de voisine, et son vecteur sort du domaine.
 
-Un kernel de flux boucle sure les faces : il lit la propriétaire et la voisine, calcule un flux, l'ajoute à l'une et le retranche à l'autre. C'est pourquoi le solveur n'a besoin d'aucun type de cellule.
+Un kernel de flux boucle sur les faces : il lit la propriétaire et la voisine, calcule un flux, l'ajoute à l'une et le retranche à l'autre. C'est pourquoi le solveur n'a besoin d'aucun type de cellule.
 
 ## Zones
 
@@ -24,9 +24,9 @@ Votre cas désigne les zones par leur nom. Le résumé [MeshInfo](../contracts/m
 
 ![Cellules possédées et fantômes après partitionnement](../assets/diagrams/partition-halos.svg)
 
-Pour calculer sure plusieurs GPU, Autan découpe le maillage en partitions, une par GPU. Chaque partition stocke les cellules qu'elle **possède** (`owned`), puis des copies **fantômes** (`ghost`) des cellules de l'autre côté de la coupe, possédées par une autre partition.
+Pour calculer sur plusieurs GPU, Autan découpe le maillage en partitions, une par GPU. Chaque partition stocke les cellules qu'elle **possède** (`owned`), puis des copies **fantômes** (`ghost`) des cellules de l'autre côté de la coupe, possédées par une autre partition.
 
-Une face sure la coupe a une cellule possédée d'un côté et une fantôme de l'autre : la boucle sure les faces tourne sans changement. Avant la boucle, un échange de halo copie les valeurs possédées dans les fantômes. Après, les contributions ajoutées aux fantômes sont des sommes partielles : un échange inverse les ajoute à la partition propriétaire. L'adjoint a besoin de cet échange inverse ; voir [Architecture](architecture.fr.md#comment-autan-dérive-ses-kernels).
+Une face sur la coupe a une cellule possédée d'un côté et une fantôme de l'autre : la boucle sur les faces tourne sans changement. Avant la boucle, un échange de halo copie les valeurs possédées dans les fantômes. Après, les contributions ajoutées aux fantômes sont des sommes partielles : un échange inverse les ajoute à la partition propriétaire. L'adjoint a besoin de cet échange inverse ; voir [Architecture](architecture.fr.md#comment-autan-dérive-ses-kernels).
 
 ## Géométrie
 
