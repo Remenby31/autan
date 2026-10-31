@@ -1,15 +1,22 @@
 # Documentation site
 
-The site at <https://remenby31.github.io/autan/> renders the Markdown of this repository. It lives in `website/`, owns no content and is rebuilt from `docs/` and `README.md` on every push to `main`.
+The site at <https://remenby31.github.io/autan/> (French: <https://remenby31.github.io/autan/fr/>) renders the Markdown of this repository. It lives in `website/`, owns no content and is rebuilt from `docs/` and `README.md` on every push to `main`.
 
 ## Writing for the site
 
-- A page is any `.md` or `.mdx` file under `docs/`, plus `README.md`, which becomes the introduction. Its URL is its path under `docs/`, lower-cased, without the extension: `docs/contracts/results.md` → `/autan/contracts/results`. A `README.md` or `index.md` is its folder's page: `docs/design/ui-inspiration/README.md` → `/autan/design/ui-inspiration`. Two files with the same URL (`PLAN.md` and `plan.mdx`, `design/x.md` and `design/x/README.md`) fail the build.
-- The first `#` heading is the page title. The sidebar shortens it: a one-word prefix before `: ` is dropped ("Contract: results" → "Results"), and so is a subtitle after ` — `.
-- The folder is the sidebar section. Known sections come in this order: Contracts, SDK, Validation, Design, Research; a new folder gets its own section after them, so a page never needs a site change to appear.
+- A page is any `.md` or `.mdx` file under `docs/` except `docs/assets/`, plus `README.md`, which becomes the introduction. Its URL is its path under `docs/`, lower-cased, without the extension: `docs/contracts/results.md` → `/autan/contracts/results`. A `README.md` or `index.md` is its folder's page: `docs/design/ui-inspiration/README.md` → `/autan/design/ui-inspiration`. Two files with the same URL (`PLAN.md` and `plan.mdx`, `design/x.md` and `design/x/README.md`) fail the build.
+- The first `#` heading is the page title. The sidebar shortens it: a subtitle after ` — ` is dropped ("Kernel generator — design research" → "Kernel generator"), or, when a single word precedes the dash, that word is ("Autan — état de l'art" → "État de l'art"); a one-word prefix before `: ` is dropped too ("Contract: results" → "Results").
+- The folder is the sidebar section. The sidebar reads Introduction, Getting started, Concepts, Guides, Reference (Contracts, SDK), then Project (Plan, style guide, internal contracts, Design, Research, Validation); the grouping is in `website/app/content/navigation.server.ts`. A new folder gets its own section after them, so a page never needs a site change to appear. Within a folder pages sort by title, unless the folder has a `meta.json` whose `pages` lists file names without extension in reading order: `{"pages": ["meshes", "boundary-conditions"]}`.
 - Link to other files with relative paths, inline or by reference, as on GitHub. The build rewrites a link to a page into a site link, a link to an HTML document into its published copy, and any other link (source files, `AGENTS.md`) into a GitHub link. A link to a missing file is reported by the build as `[docs] <file>: link to missing file <target>`.
 - Standalone HTML documents under `docs/` are published unchanged at their repository path (`docs/design/dx.html` → `/autan/docs/design/dx.html`) and listed in the sidebar with an external-link icon, under their `<title>`.
 - Blockquotes render as a note box: use them for status and warnings, not for quotations.
+- Diagrams are SVG files in `docs/assets/diagrams/`, referenced as images (`![Owner and neighbour](../assets/diagrams/mesh-faces.svg)`). The site inlines them so they follow the theme: colour with the variables of `tokens.css` and a fallback (`fill="var(--fg, #0a0a0b)"`), give a `viewBox` and a `<title>` but no `width` or `height`, and prefix every `id` with the file name. A `<style>` block may set those variables for dark mode when the file is viewed alone (GitHub); the site drops it.
+
+### French
+
+- English is the source. A French translation sits next to its source as `page.fr.md` and appears at `/autan/fr/<page>`; links from it to `other.fr.md` or `other.md` both lead to `/autan/fr/other`. A page without a translation is shown on the French site in English, under a notice.
+- A translation carries `source_hash: "<12 hex>"` in its frontmatter: the start of the SHA-256 of its English source, printed by `bun scripts/translations.ts hash ../docs/<page>.md` (from `website/`). CI runs `bun scripts/translations.ts check`, which fails when a source changed after its translation; update the translation and its hash in the same pull request as the source, or say in the pull request that the translation is now out of date. Quote the hash: an all-digit value would read as a number.
+- A page written in French marks it with `lang: fr` in its frontmatter. It serves both sites, with the notice "This page is in French" on the English one.
 
 Preview locally from `website/`: `bun install --frozen-lockfile`, then `bun run dev`, or `bun run build && bun run preview` for the exact GitHub Pages output.
 
