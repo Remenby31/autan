@@ -28,11 +28,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install CMake, Ninja and the roc-obj-ls dependency
-        run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build libfile-which-perl
+      - name: Install CMake and Ninja
+        run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build
       - name: Build for gfx942
         run: >-
           cmake -S bench -B build -G Ninja -DAUTAN_BENCH_BACKEND=HIP -DCMAKE_HIP_ARCHITECTURES=gfx942
           -DCMAKE_PREFIX_PATH=/opt/rocm && cmake --build build
       - name: Check the binary carries gfx942 code
-        run: /opt/rocm/bin/roc-obj-ls build/stream | tee /dev/stderr | grep -q gfx942
+        # The HIP fat binary names each code object by its offload bundle ID.
+        run: grep -a -q 'amdgcn-amd-amdhsa--gfx942' build/stream
