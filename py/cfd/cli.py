@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from cfd.case import load
 from cfd.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
+from cfd.fake import FakeBackend
 from cfd.meshinfo import MeshInfo
 from cfd.schema import CaseSpec
 from cfd.version import COMMIT, DIRTY, SCHEMAS, __version__
@@ -98,6 +99,33 @@ def command_plan(args: argparse.Namespace) -> int:
         return _fail(error, args.json)
     _emit(result.document(), args.json, _plan_text(result))
     return 0 if result.ok else 1
+
+
+def command_run(args: argparse.Namespace) -> int:
+    if args.backend != "fake":
+        unknown = diagnostic("E0804", f"backend {args.backend!r} is not built")
+        return _fail(CaseError([unknown]), args.json)
+    try:
+        case = load(args.case)
+        backend = FakeBackend(
+            iterations=args.iterations, pace=args.pace, diverge_at=args.diverge_at
+        )
+        results = case.run(MeshInfo.load(args.mesh_info), backend=backend, runs=args.runs)
+    except CaseError as error:
+        return _fail(error, args.json)
+    run = results.run
+    text = f"{run.run_id}  {run.status}  {run.iterations} iterations  {results.path}"
+    text += "".join(f"\n{d.render()}" for d in run.diagnostics)
+    _emit(
+        {
+            "ok": run.status not in ("diverged", "failed"),
+            "path": str(results.path),
+            "run": run.document(),
+        },
+        args.json,
+        text,
+    )
+    return 1 if run.status in ("diverged", "failed") else 0
 
 
 def _run(command: list[str]) -> str | None:
@@ -222,6 +250,17 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--gpus", type=int, default=1, help="GPUs for the memory estimate")
     sub.add_argument("--json", action="store_true", help="print JSON")
     sub.set_defaults(func=command_plan)
+
+    sub = commands.add_parser("run", help="run a case (only the fake backend is built)")
+    sub.add_argument("case", help="case file: .py, .toml or .json")
+    sub.add_argument("--mesh-info", required=True, help="MeshInfo JSON of the case's mesh")
+    sub.add_argument("--backend", default="fake", help="solver backend (default: fake)")
+    sub.add_argument("--runs", default="runs", help="directory of run directories")
+    sub.add_argument("--iterations", type=int, default=200, help="fake: iterations to write")
+    sub.add_argument("--pace", type=float, default=0.0, help="fake: seconds per iteration")
+    sub.add_argument("--diverge-at", type=int, help="fake: diverge at this iteration")
+    sub.add_argument("--json", action="store_true", help="print JSON")
+    sub.set_defaults(func=command_run)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")
     sub.add_argument("--json", action="store_true", help="print JSON")

@@ -44,7 +44,9 @@ if TYPE_CHECKING:
 
     import pint
 
+    from cfd.fake import FakeBackend
     from cfd.meshinfo import MeshInfo
+    from cfd.results import Results
 
 _collectors: list[list[Case]] = []
 
@@ -79,6 +81,13 @@ class Case:
     @property
     def mesh(self) -> str:
         return self._mesh
+
+    @property
+    def mesh_path(self) -> Path:
+        """Absolute path of the mesh: ``mesh`` relative to the case file's directory."""
+        source = self._document_file or self._origin.file
+        base = Path(source).parent if source and Path(source).exists() else Path.cwd()
+        return (base / self._mesh).resolve()
 
     @property
     def physics(self) -> Compressible | Incompressible | None:
@@ -242,6 +251,19 @@ class Case:
 
     def to_json(self) -> str:
         return json.dumps(self.spec.document(), indent=2) + "\n"
+
+    def run(
+        self, mesh_info: MeshInfo, *, backend: FakeBackend | None = None, runs: str | Path = "runs"
+    ) -> Results:
+        """Run the case with ``backend`` into a new directory under ``runs``."""
+        if backend is None:
+            missing = diagnostic(
+                "E0804",
+                "case.run() needs a backend; the solver core is not built",
+                location=_caller_location(),
+            )
+            raise CaseError([missing])
+        return backend.run(self, mesh_info, Path(runs))
 
     def plan(self, mesh_info: MeshInfo, *, gpus: int = 1) -> Plan:
         """Resolve boundaries and cell zones against the mesh and estimate memory."""

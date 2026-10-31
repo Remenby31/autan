@@ -7,8 +7,10 @@ the case document is specified in docs/contracts/case-schema.md.
 from cfd import gases, materials, units
 from cfd.case import Case, forces, load
 from cfd.errors import CaseError, Diagnostic, Location
+from cfd.fake import FakeBackend
 from cfd.meshinfo import MeshInfo
 from cfd.plan import Plan
+from cfd.results import Results
 from cfd.schema import (
     DDES,
     SA,
@@ -41,6 +43,7 @@ __all__ = [
     "ConstantDensityFluid",
     "ConstantViscosity",
     "Diagnostic",
+    "FakeBackend",
     "IdealGas",
     "Incompressible",
     "Inviscid",
@@ -48,6 +51,7 @@ __all__ = [
     "Location",
     "MeshInfo",
     "Plan",
+    "Results",
     "Solid",
     "Steady",
     "Sutherland",

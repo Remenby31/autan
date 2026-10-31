@@ -222,6 +222,36 @@ _CODES = [
         'Name them: `cfd.forces("wing.*", name="wing")`.',
     ),
     Code(
+        "E0701",
+        "The run directory does not conform to cfd.results/1",
+        "A file is missing or unreadable, `run.json` has another schema, the stored case or "
+        "MeshInfo does not match the hashes of `run.json`, or the history is out of order. "
+        "See docs/contracts/results.md.",
+        "Open a directory written by a backend of this solver version.",
+    ),
+    Code(
+        "E0702",
+        "No such monitor",
+        "The history has no monitor of that name, or `results.forces` was used on a case "
+        "with zero or several forces monitors.",
+        "Use `results.history.monitor(name)` with a name from `results.history.monitors`.",
+    ),
+    Code(
+        "E0703",
+        "No such solution data",
+        "The run has no `solution.cgns` (it failed or diverged before writing one), or the "
+        "requested field is not in it.",
+        "Check `results.run.status`, and use a field name listed in the message.",
+    ),
+    Code(
+        "D0107",
+        "Divergence",
+        "The solution diverged: a residual or a state became non-finite or non-physical. "
+        "`data` gives the iteration, the cell (0-based) and its cell zone.",
+        "Lower the CFL number or use a more dissipative limiter; check the mesh quality "
+        "near the cell.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",
@@ -239,6 +269,13 @@ _CODES = [
         "This installation contains the SDK only. Cases can be planned and run with the "
         "`fake` backend, which writes synthetic results.",
         "Build the C++ core (see README) to run real computations.",
+    ),
+    Code(
+        "E0804",
+        "No solver backend",
+        "`case.run()` needs a backend. The C++ core is not part of this build, so only the "
+        "`fake` backend exists; it writes synthetic results.",
+        "Pass one explicitly: `case.run(mesh_info, backend=cfd.FakeBackend())`.",
     ),
 ]
 

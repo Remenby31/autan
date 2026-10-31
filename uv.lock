@@ -93,6 +93,7 @@ name = "cfd"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "h5py" },
     { name = "numpy" },
     { name = "pint" },
     { name = "pydantic" },
@@ -113,6 +114,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "h5py", specifier = ">=3.16.0" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "pint", specifier = ">=0.24" },
     { name = "pydantic", specifier = ">=2.10" },
