@@ -38,7 +38,7 @@ warning[W0205]: mesh '…/crm-hl.cgns' not found; the MeshInfo is taken as given
 plan OK
 ```
 
-Every boundary zone has a condition, and the last column says where it comes from: your code or the mesh file. The warning is expected: the mesh file itself is not in the repository. [Boundary conditions](../concepts/boundary-conditions.md) explains the resolution.
+Every boundary zone has a condition, and the last column says where it comes from: your code or the mesh file. The warning is expected: the mesh file itself is not in the repository. For your own mesh, the C++ tool `autan-mesh-info --json MESH` writes this document ([mesh contract: readers](../contracts/mesh.md#readers)). [Boundary conditions](../concepts/boundary-conditions.md) explains the resolution.
 
 ## Run it on the fake backend
 

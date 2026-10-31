@@ -22,7 +22,7 @@ Your case refers to zones by name. The [MeshInfo](../contracts/mesh-info.md) sum
 
 To run on several GPUs, Autan cuts the mesh into partitions, one per GPU. Each partition stores the cells it **owns**, then **ghost** copies of the cells across its cut, owned by another partition.
 
-A face on the cut has an owned cell on one side and a ghost on the other, so the face loop runs unchanged. Before the loop, a halo exchange copies owned values into the ghosts. After it, the contributions added to ghosts are partial sums: a reverse exchange adds them to the owning partition. The adjoint needs this reverse exchange; see [Architecture](architecture.md#how-autan-differentiates-its-kernels).
+A face on the cut has an owned cell on one side and a ghost on the other, so the face loop runs unchanged. Before the loop, a halo exchange copies owned values into the ghosts. After it, the contributions added to ghosts are partial sums: a reverse exchange adds them to the owning partition. The adjoint needs this reverse exchange; see [Architecture](architecture.md#how-autan-differentiates-its-kernels). [Partitioning and halo exchange](../design/partitioning.md) describes the partitioner and the exchange.
 
 ## Geometry
 
