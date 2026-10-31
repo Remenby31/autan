@@ -1,0 +1,108 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace autan::runtime {
+
+/// The solver input of docs/contracts/solver-input.md (autan.solver-input/1),
+/// every value in SI. Optional members are the keys the contract allows to be
+/// null.
+struct Viscosity {
+  std::string law;  ///< "sutherland" or "constant"
+  std::optional<double> mu_ref, t_ref, s, mu;
+};
+
+struct Medium {
+  std::string kind;  ///< "ideal-gas", "constant-density-fluid" or "solid"
+  std::string name;
+  std::optional<double> gas_constant, gamma, prandtl;  // ideal gas
+  std::optional<Viscosity> viscosity;                  // fluids
+  std::optional<double> density;                       // constant-density fluid, solid
+  std::optional<double> specific_heat, conductivity;   // solid
+};
+
+struct InitialState {
+  std::string kind;  ///< "fluid" or "solid"
+  std::optional<double> density, pressure;
+  double temperature = 0.0;
+  std::optional<std::array<double, 3>> velocity;
+  std::optional<double> nu_tilde, k, omega;
+};
+
+struct CellZoneInput {
+  std::string zone;
+  Medium medium;
+  InitialState initial;
+};
+
+struct BoundaryInput {
+  std::string zone;
+  std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet
+  std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
+  std::optional<std::array<double, 3>> velocity;
+};
+
+struct Turbulence {
+  std::string model;  ///< inviscid, laminar, sa, sst, ddes, wmles
+  std::optional<std::string> base, wall_model;
+  std::optional<double> nu_tilde_ratio, intensity, viscosity_ratio;
+};
+
+struct Freestream {
+  double density = 0.0, pressure = 0.0;
+  std::optional<double> temperature;
+  std::array<double, 3> velocity{};
+  double speed = 0.0, viscosity = 0.0;
+  std::optional<double> mach, re, ref_length;
+  double aoa = 0.0, sideslip = 0.0;
+  std::optional<double> nu_tilde, k, omega;
+};
+
+struct TimeInput {
+  std::string kind;  ///< "steady" or "unsteady"
+  std::int64_t max_iterations = 0;
+  double residual_orders = 0.0;
+  std::int64_t steps = 0;
+  std::optional<double> dt, cfl;
+  std::optional<std::int64_t> average_from;
+};
+
+struct ForcesMonitor {
+  std::string name;
+  std::int64_t every = 1;
+  std::vector<std::string> zones;
+  std::optional<double> ref_area, ref_length;
+  std::array<double, 3> moment_center{};
+};
+
+struct SolverInput {
+  std::string case_name, case_sha256, case_toml;
+  std::string mesh_path, mesh_sha256;
+  std::string precision;  ///< "fp32+acc64" or "fp64"
+  bool deterministic = false;
+  std::string device_kind;  ///< cpu, cuda, hip
+  std::int64_t device_count = 1;
+  std::string physics_kind;  ///< compressible, incompressible
+  Turbulence turbulence;
+  Freestream freestream;
+  std::vector<BoundaryInput> boundaries;
+  std::vector<CellZoneInput> cell_zones;
+  TimeInput time;
+  std::vector<ForcesMonitor> monitors;
+};
+
+/// Parses and checks a solver input: every key present, no unknown key,
+/// types, tags and the nulls the kinds require. Throws InputError (E0705)
+/// naming the path of the first offending key.
+SolverInput parse_solver_input(const std::string& json_text);
+
+/// Equations of the history and fields of solution.cgns for this input, in
+/// the order of docs/contracts/results.md.
+std::vector<std::string> residual_names(const SolverInput& input);
+std::vector<std::string> field_names(const SolverInput& input);
+
+}  // namespace autan::runtime
