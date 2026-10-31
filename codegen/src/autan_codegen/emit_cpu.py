@@ -153,11 +153,15 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
             return f"{ind}atomicAdd(&{target}, {v});"
         return f"{ind}{target} += {v};"
 
-    lines = [f"{indent}A acc[{n}];", f"{indent}offset_t sel[{n}];"]
+    selects = any(isinstance(o, dsl.Min | dsl.Max) for o in accs)
+    lines = [f"{indent}A acc[{n}];"]
+    if selects:
+        lines.append(f"{indent}offset_t sel[{n}];")
     for o, off in zip(accs, offs, strict=True):
         for c in range(o.dataset.type.size):
             lines.append(f"{indent}acc[{off + c}] = {acc_init(o)};")  # type: ignore[arg-type]
-            lines.append(f"{indent}sel[{off + c}] = -1;")
+            if selects:
+                lines.append(f"{indent}sel[{off + c}] = -1;")
     loop_head = f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{"
     nb_line = f"{i2}[[maybe_unused]] const index_t nb = f < d.topo.n_interior_faces ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;"
     args = call_args(p.sig, loop.bindings, {"self": "c", "direct": "k"})
