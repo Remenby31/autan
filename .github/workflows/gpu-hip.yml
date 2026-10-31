@@ -1,13 +1,13 @@
-# Compiles the benchmarks with HIP for AMD Instinct MI300X (gfx942) in a ROCm container on a
-# GitHub-hosted x86 runner. Compile-only: no AMD GPU is attached, nothing is run.
+# Compiles the benchmarks and the generated kernels with HIP for AMD Instinct MI300X (gfx942) in
+# a ROCm container on a GitHub-hosted x86 runner. Compile-only: no AMD GPU is attached.
 name: gpu-hip
 
 on:
   push:
     branches: [main]
-    paths: [bench/**, .github/workflows/gpu-hip.yml]
+    paths: [bench/**, codegen/**, kernels/**, CMakeLists.txt, .github/workflows/gpu-hip.yml]
   pull_request:
-    paths: [bench/**, .github/workflows/gpu-hip.yml]
+    paths: [bench/**, codegen/**, kernels/**, CMakeLists.txt, .github/workflows/gpu-hip.yml]
   workflow_dispatch:
 
 permissions: {}
@@ -25,8 +25,8 @@ jobs:
     container:
       image: rocm/dev-ubuntu-24.04:7.2.4@sha256:bdc8e61026cbb844ede93d44d2c50055f51ebb2041906b60182bf3bee3139054
     steps:
-      - name: Install Git, CMake and Ninja
-        run: apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build
+      - name: Install Git, CMake, Ninja and Python (kernel generator)
+        run: apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -38,3 +38,15 @@ jobs:
       - name: Check the binary carries gfx942 code
         # The HIP fat binary names each code object by its offload bundle ID.
         run: grep -a -q 'amdgcn-amd-amdhsa--gfx942' build/stream
+      - name: Build the generated kernels for gfx942
+        if: hashFiles('codegen/CMakeLists.txt') != ''
+        run: >-
+          cmake -S . -B build-hip -G Ninja -DAUTAN_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx942
+          -DAUTAN_BUILD_TESTS=OFF -DCMAKE_PREFIX_PATH=/opt/rocm
+          && cmake --build build-hip --target autan_kernels_gpu
+      - name: Check every generated object carries gfx942 code
+        if: hashFiles('codegen/CMakeLists.txt') != ''
+        run: |
+          objects=$(find build-hip -path '*autan_kernels_gpu.dir*' -name '*.o')
+          [ -n "$objects" ] || { echo "no autan_kernels_gpu object was built" >&2; exit 1; }
+          for o in $objects; do grep -a -q 'amdgcn-amd-amdhsa--gfx942' "$o" || { echo "$o: no gfx942 code" >&2; exit 1; }; done

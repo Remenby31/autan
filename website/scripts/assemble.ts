@@ -1,7 +1,12 @@
 import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import path from "node:path";
-import { basePath, docsDir, htmlAssetPath } from "../app/content/paths";
+import {
+  assetsDir,
+  basePath,
+  docsDir,
+  htmlAssetPath,
+} from "../app/content/paths";
 
 // React Router writes prerendered pages under build/client/<basename>/ and assets under
 // build/client/assets/. GitHub Pages serves one directory at the base path: dist/.
@@ -23,6 +28,12 @@ for await (const data of glob("**/*.data", { cwd: dist })) {
 }
 // The SPA fallback renders the not-found page for any URL that was not prerendered.
 cpSync(path.join(client, "index.html"), path.join(dist, "404.html"));
+
+// Diagrams and images under docs/assets/ are published at their repository path, for the
+// Markdown exports and for links to them.
+cpSync(path.join(repoRoot, assetsDir), path.join(dist, assetsDir), {
+  recursive: true,
+});
 
 for await (const file of glob(`${docsDir}/**/*.html`, { cwd: repoRoot })) {
   const asset = htmlAssetPath(file);
