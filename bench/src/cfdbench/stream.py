@@ -31,6 +31,7 @@ def run(
     elements: int,
     warmup: int,
     reps: int,
+    batch: int,
     block: int,
     lock: Path = gpu.DEFAULT_LOCK,
 ) -> dict[str, Any]:
@@ -42,6 +43,8 @@ def run(
         str(warmup),
         "--reps",
         str(reps),
+        "--batch",
+        str(batch),
         "--block",
         str(block),
     ]

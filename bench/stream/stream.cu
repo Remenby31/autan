@@ -71,6 +71,7 @@ struct Options {
   long elements = 1L << 28;
   int warmup = 10;
   int reps = 100;
+  int batch = 5;
   int block = 256;
 };
 
@@ -95,6 +96,8 @@ Options parse(int argc, char** argv) {
       o.warmup = static_cast<int>(v);
     else if (flag == "--reps")
       o.reps = static_cast<int>(v);
+    else if (flag == "--batch")
+      o.batch = static_cast<int>(v);
     else if (flag == "--block")
       o.block = static_cast<int>(v);
     else
@@ -115,15 +118,16 @@ void time_kernel(Kernel& k, const Options& o, Launch launch) {
   cudaEvent_t start, stop;
   check_cuda(cudaEventCreate(&start), "cudaEventCreate");
   check_cuda(cudaEventCreate(&stop), "cudaEventCreate");
+  // One sample is the mean time of `batch` back-to-back launches between two events.
   for (int r = 0; r < o.warmup + o.reps; ++r) {
     check_cuda(cudaEventRecord(start), "cudaEventRecord");
-    launch();
+    for (int i = 0; i < o.batch; ++i) launch();
     check_cuda(cudaEventRecord(stop), "cudaEventRecord");
     check_cuda(cudaEventSynchronize(stop), k.name);
     check_cuda(cudaGetLastError(), k.name);
     float ms = 0.0f;
     check_cuda(cudaEventElapsedTime(&ms, start, stop), "cudaEventElapsedTime");
-    if (r >= o.warmup) k.seconds.push_back(ms * 1e-3);
+    if (r >= o.warmup) k.seconds.push_back(ms * 1e-3 / o.batch);
   }
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
@@ -189,8 +193,9 @@ int main(int argc, char** argv) {
   std::printf("\"backend\":\"" CFD_BENCH_BACKEND "\",\"runtime_version\":%d,\"driver_version\":%d,",
               runtime, driver);
   std::printf(
-      "\"config\":{\"elements\":%ld,\"element_bytes\":8,\"warmup\":%d,\"reps\":%d,\"block\":%d},",
-      o.elements, o.warmup, o.reps, o.block);
+      "\"config\":{\"elements\":%ld,\"element_bytes\":8,\"warmup\":%d,\"reps\":%d,\"batch\":%d,"
+      "\"block\":%d},",
+      o.elements, o.warmup, o.reps, o.batch, o.block);
   std::printf("\"verified\":true,\"kernels\":[");
   for (std::size_t k = 0; k < std::size(kernels); ++k) {
     const Kernel& kern = kernels[k];

@@ -32,6 +32,7 @@ def _stream(args: argparse.Namespace) -> int:
         elements=args.elements,
         warmup=args.warmup,
         reps=args.reps,
+        batch=args.batch,
         block=args.block,
         lock=args.lock,
     )
@@ -104,6 +105,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--elements", type=int, default=1 << 28, help="FP64 elements per array")
     s.add_argument("--warmup", type=int, default=10)
     s.add_argument("--reps", type=int, default=100)
+    s.add_argument("--batch", type=int, default=5, help="launches averaged into one sample")
     s.add_argument("--block", type=int, default=256, help="threads per block")
     s.add_argument(
         "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"

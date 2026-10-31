@@ -26,6 +26,10 @@ def compare(
         raise BenchError(
             Code.GPU_MISMATCH, f"result is from {gpu_now!r}, baseline from {gpu_base!r}"
         )
+    if current["config"] != baseline["config"]:
+        raise BenchError(
+            Code.INCOMPATIBLE, f"configs differ: {current['config']!r} != {baseline['config']!r}"
+        )
     by_name = {b["name"]: b for b in current["benchmarks"]}
     rows = []
     for base in baseline["benchmarks"]:

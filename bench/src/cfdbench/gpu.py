@@ -94,22 +94,29 @@ def gpu_lock(path: Path = DEFAULT_LOCK) -> Iterator[float]:
 
 
 def require_idle(
-    gpu_index: int = 0, samples: int = 5, interval_s: float = 0.2
+    gpu_index: int = 0, window: int = 5, interval_s: float = 0.2, timeout_s: float = 5.0
 ) -> dict[str, float | int]:
-    """Fail with ``GPU_BUSY`` unless no compute process runs and utilization stays low."""
-    seen = []
-    for i in range(samples):
-        if i:
-            time.sleep(interval_s)
+    """Wait until ``window`` consecutive samples show no compute process and low utilization.
+
+    ``utilization.gpu`` is a trailing average, so a GPU released just before still reads busy
+    for up to a second; a GPU that is not idle within ``timeout_s`` fails with ``GPU_BUSY``.
+    """
+    seen: list[GpuSample] = []
+    deadline = time.monotonic() + timeout_s
+    while True:
         seen.append(sample(gpu_index))
-    apps = max(s.compute_apps for s in seen)
-    util = max((s.utilization_pct or 0.0) for s in seen)
-    if apps or util > IDLE_UTILIZATION_PCT:
-        raise BenchError(
-            Code.GPU_BUSY,
-            f"GPU {gpu_index} is not idle: {apps} compute process(es), utilization up to {util:.0f} %",
-        )
-    return {"samples": samples, "compute_apps_max": apps, "utilization_pct_max": util}
+        recent = seen[-window:]
+        apps = max(s.compute_apps for s in recent)
+        util = max((s.utilization_pct or 0.0) for s in recent)
+        if len(recent) == window and not apps and util <= IDLE_UTILIZATION_PCT:
+            return {"samples": window, "compute_apps_max": apps, "utilization_pct_max": util}
+        if time.monotonic() > deadline:
+            raise BenchError(
+                Code.GPU_BUSY,
+                f"GPU {gpu_index} not idle after {timeout_s:.0f} s: {apps} compute process(es),"
+                f" utilization up to {util:.0f} %",
+            )
+        time.sleep(interval_s)
 
 
 def _spread(values: list[float]) -> dict[str, float] | None:

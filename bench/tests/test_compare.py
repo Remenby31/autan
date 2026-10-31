@@ -39,6 +39,7 @@ def test_compare_fails_only_beyond_five_percent_worse(
         (make_result([bench("stream.copy", BASE)]), "MISSING_BENCHMARK"),
         (make_result([bench("stream.triad", BASE)], gpu="NVIDIA RTX PRO 6000"), "GPU_MISMATCH"),
         (make_result([bench("stream.triad", BASE, unit="ns", better="lower")]), "INCOMPATIBLE"),
+        (make_result([bench("stream.triad", BASE)], config={"elements": 1 << 25}), "INCOMPATIBLE"),
     ],
 )
 def test_compare_refuses_results_it_cannot_judge(write_json, capsys, current, code):

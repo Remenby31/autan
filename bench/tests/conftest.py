@@ -18,7 +18,13 @@ def bench(name: str, samples: list[float], *, unit: str = "GB/s", better: str = 
     }
 
 
-def make_result(benchmarks: list[dict], *, gpu: str = "NVIDIA GB10", dirty: bool = False) -> dict:
+def make_result(
+    benchmarks: list[dict],
+    *,
+    gpu: str = "NVIDIA GB10",
+    dirty: bool = False,
+    config: dict | None = None,
+) -> dict:
     doc = {
         "schema": result.SCHEMA_ID,
         "suite": "stream",
@@ -56,7 +62,7 @@ def make_result(benchmarks: list[dict], *, gpu: str = "NVIDIA GB10", dirty: bool
                 "compute_apps_max": 1,
             },
         },
-        "config": {},
+        "config": config or {"elements": 1 << 28},
         "benchmarks": benchmarks,
     }
     result.validate(doc)

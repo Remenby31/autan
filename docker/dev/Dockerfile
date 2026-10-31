@@ -14,7 +14,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential cmake ninja-build pkg-config git ca-certificates curl \
       libmetis-dev zlib1g-dev libibverbs-dev librdmacm-dev libnuma-dev \
-      python3.12 python3.12-dev python3.12-venv \
+      python3 python3.12 python3.12-dev python3.12-venv \
       openssh-client openssh-server jq \
  && rm -rf /var/lib/apt/lists/*
 
