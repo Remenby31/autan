@@ -35,6 +35,12 @@ enum class ErrorCode : std::uint16_t {
   io_unsupported = 133,
   io_external_reference = 134,
   io_ambiguous_zone = 135,
+  partition_invalid_request = 140,
+  partition_input_has_ghosts = 141,
+  partition_backend_failed = 142,
+  partition_empty_part = 143,
+  halo_inconsistent = 144,
+  halo_device_unsupported = 145,
 };
 
 /// Returns the registry form of a code, for example "E0107".
