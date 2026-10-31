@@ -20,12 +20,41 @@ A GPU-native, unstructured finite-volume CFD solver: arbitrary polyhedral cells,
 3. **Results are reproducible.** Every run records mesh hash, case hash, solver commit and precision. A bitwise-deterministic mode must keep working.
 4. **No silent fallbacks.** Never fall back to CPU, FP64 or a slower path without logging it.
 
+## Source of truth
+
+The code, this file, `docs/PLAN.md`, the contracts in `docs/contracts/` and the open issue you work on describe the target. A closed issue, a past pull request or a transcript records a past intent, not a constraint.
+
+`AGENTS.md` and the files in `docs/contracts/` change only through a pull request the lead approves for that change.
+
+## Design
+
+- No backward compatibility: nothing is released. Remove obsolete paths; add no compatibility layers, fallbacks or lenient readers for our own formats. Readers of external formats (Gmsh, Fluent, CGNS) follow the format specification and reject what it forbids, with a coded error.
+- Choose the simplest durable implementation that meets the current milestone. Prefer an existing dependency; read its documentation and types before adding a package or reimplementing one.
+- Licences: everything we ship carries a permissive or weak-copyleft licence (MIT, BSD, Apache-2.0, MPL, LGPL, CeCILL-C). AGPL, SSPL, BUSL, non-commercial and other source-available licences are refused (ParMETIS is non-commercial: use METIS or Scotch). GPL needs the lead's approval. Check the licence before adding a dependency, image or dataset.
+- Before changing a shared API, schema or contract, find and update every consumer in the same change: tests, benchmarks, scripts, examples, docs. Verify a contract by sending the real producer's output through the real consumer (for example, the C++ core's `MeshInfo` JSON through the Python schema), never through a handwritten fixture alone.
+
 ## Code
 
 - C++20 for the core, CUDA and HIP from the kernel generator. Python 3.12+ for the SDK, CLI and validation.
 - Code, comments, docs and commit messages in English.
 - Small, focused diffs. No opportunistic refactors of files you do not own.
+- Comments only where the code cannot say it: the equation, paper and equation number a kernel implements (`// Roe (1981), eq. 12; entropy fix: Harten (1983)`), a non-obvious numerical choice and its reason, and tool directives that name their rule. No narrating comments, no change history in code, names or docstrings.
+- Docstrings only on public SDK exports, CLI commands and published schemas: one paragraph of caller contract.
+- Python dependencies come only from a committed `uv.lock` (`uv sync --locked`). Never resolve requirements at test time.
+
+## Tests
+
+- A test protects behaviour at a public seam: a mesh read through the public reader, a kernel through the solver API, a case through the SDK, a CLI command through its output.
+- **Expected values come from the specification, never from the code under test**: analytic solutions, manufactured solutions, conservation laws, published reference data. A golden file produced by our own code is not an oracle unless a second, independent source confirms it.
+- One behaviour, one primary test; extend it rather than adding another. No parametrisation over equivalent cases; do parametrise over cell types, precisions and backends, which are not equivalent.
+- A regression test fails on the code before the fix, for the reason the bug gives.
+- No mocks of our own classes; fakes only at external boundaries. Assert outcomes and error codes, never exact message text.
 - No redundant tests: delete a test that guards nothing another test does not.
+
+## Docs
+
+- Update the affected documentation in the same change. Revise the page that owns the fact; do not append change notes.
+- State each fact once and link to it elsewhere. Leave each page you touch shorter or clearer than you found it.
 
 ## Ownership (wave 1)
 
@@ -42,8 +71,12 @@ Need a change in someone else's area? Say so in your PR description instead of e
 ## Workflow
 
 - One branch and one worktree per task. Before every push: `git fetch origin && git merge origin/main`.
-- Open a PR and stop. Do not merge; the lead reviews and merges.
-- PR description ≤ ~250 words, plain language; details in a `<details>` block.
+- Stage named files only. Commit messages follow Conventional Commits.
+- A PR title is a Conventional Commit that reads on its own: the squash keeps it as the only commit on `main`. The body opens with the impact, one bullet per topic, then the verification evidence. ≤ ~250 words; details in a `<details>` block. After a review, rewrite the body to describe the change as it stands.
+- An issue states the present, the expected result, how to verify it and what is out of scope. When the target changes, rewrite the body instead of commenting.
+- Open a PR and stop. Do not merge; the lead reviews and merges. Never enable auto-merge.
+- Ask before anything destructive: force-push, rewriting pushed history, deleting a branch you did not create, discarding uncommitted work.
+- In GitHub prose, keep each paragraph on one source line (single newlines render as hard breaks).
 - Before marking a PR ready, get an adversarial review from Codex (skill `ask-codex`) and address or answer each finding.
 
 ## Hardware
