@@ -1,4 +1,4 @@
-# Writes OUT with the git commit and dirty flag of SOURCE_DIR, only when they change, so the
+# Writes OUTPUT_FILE with the git commit and dirty flag of SOURCE_DIR, only when they change, so the
 # binary records the revision it was built from. Run at every build by autan_bench_revision.
 execute_process(
   COMMAND ${GIT} -C ${SOURCE_DIR} rev-parse HEAD
@@ -24,6 +24,6 @@ else()
 endif()
 file(
   CONFIGURE
-  OUTPUT ${OUT}
+  OUTPUT ${OUTPUT_FILE}
   CONTENT "#define AUTAN_BENCH_COMMIT \"${commit}\"\n#define AUTAN_BENCH_DIRTY \"${dirty}\"\n"
 )

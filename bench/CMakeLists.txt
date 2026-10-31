@@ -34,7 +34,7 @@ add_custom_target(
   autan_bench_revision
   COMMAND
     ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-    -DOUBT=${CMAKE_CURRENT_BINARY_DIR}/revision.h -P
+    -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision.h -P
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/revision.cmake
   BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision.h
 )
