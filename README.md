@@ -1,4 +1,4 @@
-# cfd-solver
+# Autan
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/20)
 [![CUDA](https://img.shields.io/badge/CUDA-13-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
@@ -9,10 +9,10 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Made in France](https://img.shields.io/badge/made%20in-France-0055A4)](#about)
 <br>
-[![CI](https://github.com/Remenby31/cfd-solver/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Remenby31/cfd-solver/actions/workflows/ci.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Remenby31/cfd-solver/badge)](https://scorecard.dev/viewer/?uri=github.com/Remenby31/cfd-solver)
+[![CI](https://github.com/Remenby31/autan/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Remenby31/autan/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Remenby31/autan/badge)](https://scorecard.dev/viewer/?uri=github.com/Remenby31/autan)
 
-A GPU-native finite-volume solver for compressible flow on unstructured meshes of arbitrary polyhedra, with a discrete adjoint on the GPU and a typed Python SDK.
+Autan is a GPU-native finite-volume solver for compressible flow on unstructured meshes of arbitrary polyhedra, with a discrete adjoint on the GPU and a typed Python SDK.
 
 > **Status: pre-alpha. Nothing runs yet.** The repository holds the plan, the research behind it, the contracts between components and the first foundations (milestone M0). There is no release, no installable package and no stable API. Do not use it for engineering work.
 
@@ -39,7 +39,7 @@ This project sets out to:
 | M1 Generator spike | Kernel DSL to CUDA, HIP and CPU; gradients; scalar advection-diffusion; adjoint of one kernel | Planned |
 | M2 Compressible Euler | Roe, HLLC and AUSM+-up fluxes; explicit then implicit solver | Planned |
 | M3 Navier-Stokes + SA | Viscous fluxes, Spalart-Allmaras, agglomeration multigrid | Planned |
-| M4 SDK + CLI v0 | Typed case schema with units, `cfd plan`, `run`, `logs`, `diff`, coded errors | Planned |
+| M4 SDK + CLI v0 | Typed case schema with units, `autan plan`, `run`, `logs`, `diff`, coded errors | Planned |
 | M5 Multi-GPU and precision | GPU-aware MPI, FP32 versus FP64 study | Planned |
 | M6 GPU discrete adjoint | Adjoint of the generated kernels, shape optimisation | Planned |
 | M7–M11 | SST, DDES, WMLES; pressure-based solver; multi-gas and conjugate heat transfer; web UI; AI-native workflows | Planned |
@@ -53,7 +53,7 @@ Today the repository holds the design: [plan](docs/PLAN.md), [research](docs/res
 | Component | Role | Milestone |
 |---|---|---|
 | `core/`, `io/` | Face-based mesh, zones, partitioning, FP64 geometry; Gmsh, Fluent, CGNS and OpenFOAM readers | M0 |
-| `py/` | Python SDK, case schema and `cfd` CLI | M0, then M4 |
+| `py/` | Python SDK, case schema and `autan` CLI | M0, then M4 |
 | `vv/` | Manufactured solutions, observed-order tools, reference cases | M0 |
 | `bench/`, `docker/` | Development image, bandwidth and time-per-cell benchmarks on DGX Spark | M0 |
 | `kernels/`, `codegen/` | Kernel DSL and the generator to CUDA, HIP and CPU, with tangent and adjoint versions | M1 |
@@ -71,7 +71,7 @@ Development hardware is two NVIDIA DGX Spark (GB10). Production targets are B200
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pull request flow, and [AGENTS.md](AGENTS.md) for the rules every contributor follows. Report a wrong numerical result with the [numerical discrepancy form](https://github.com/Remenby31/cfd-solver/issues/new?template=2-numerical-discrepancy.yml), and a vulnerability as described in [SECURITY.md](SECURITY.md). Everyone follows the [code of conduct](CODE_OF_CONDUCT.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pull request flow, and [AGENTS.md](AGENTS.md) for the rules every contributor follows. Report a wrong numerical result with the [numerical discrepancy form](https://github.com/Remenby31/autan/issues/new?template=2-numerical-discrepancy.yml), and a vulnerability as described in [SECURITY.md](SECURITY.md). Everyone follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Citing
 
@@ -79,7 +79,7 @@ Use GitHub's "Cite this repository" button, which reads [CITATION.cff](CITATION.
 
 ## About
 
-Designed and developed in France by [Baptiste Cruvellier](https://github.com/Remenby31). The design documents are in French; code, contracts and reference documentation are in English.
+Designed and developed in France by [Baptiste Cruvellier](https://github.com/Remenby31). The autan is the wind that blows over Toulouse, the capital of French aeronautics. The design documents are in French; code, contracts and reference documentation are in English.
 
 ## License
 

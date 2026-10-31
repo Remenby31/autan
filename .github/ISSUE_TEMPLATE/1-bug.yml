@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: >-
-        A result that is wrong or inaccurate belongs in **Numerical discrepancy**. A security problem goes through [private reporting](https://github.com/Remenby31/cfd-solver/security/advisories/new).
+        A result that is wrong or inaccurate belongs in **Numerical discrepancy**. A security problem goes through [private reporting](https://github.com/Remenby31/autan/security/advisories/new).
 
   - type: textarea
     id: observed

@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: If you use this software, please cite it as below.
-title: "cfd-solver: a GPU-native unstructured finite-volume CFD solver"
+title: "Autan: a GPU-native unstructured finite-volume CFD solver"
 type: software
 authors:
   - family-names: Cruvellier
@@ -10,7 +10,7 @@ abstract: >-
   A GPU-native, cell-centred finite-volume solver for compressible flow on
   unstructured meshes of arbitrary polyhedra, with a discrete adjoint on the
   GPU and a typed Python SDK. Pre-alpha: nothing runs yet.
-repository-code: https://github.com/Remenby31/cfd-solver
+repository-code: https://github.com/Remenby31/autan
 license: Apache-2.0
 keywords:
   - computational fluid dynamics
