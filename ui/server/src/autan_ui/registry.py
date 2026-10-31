@@ -138,19 +138,30 @@ def read_run(directory: Path) -> dict[str, Any]:
 
 def last_iteration(directory: Path) -> int | None:
     """Iteration of the last complete history line: run.json is rewritten only when the status
-    changes, so this is how far a running run has got."""
+    changes, so this is how far a running run has got. Reads backwards until it has the whole
+    line, however long."""
     try:
         with (directory / "history.jsonl").open("rb") as file:
-            size = file.seek(0, 2)
-            file.seek(max(size - 65536, 0))
-            tail = file.read()
+            end = file.seek(0, 2)
+            tail = b""
+            while end > 0:
+                start = max(end - 65536, 0)
+                file.seek(start)
+                tail = file.read(end - start) + tail
+                end = start
+                complete = tail[: tail.rfind(b"\n") + 1]
+                if complete.count(b"\n") >= 2 or (end == 0 and complete):
+                    break
     except OSError:
         return None
     lines = tail[: tail.rfind(b"\n") + 1].splitlines()
-    try:
-        return int(json.loads(lines[-1])["iteration"]) if lines else None
-    except (ValueError, KeyError, TypeError):
+    if not lines:
         return None
+    try:
+        iteration = json.loads(lines[-1]).get("iteration")
+    except (ValueError, AttributeError):
+        return None
+    return iteration if type(iteration) is int else None
 
 
 def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:
