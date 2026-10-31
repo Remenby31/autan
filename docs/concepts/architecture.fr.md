@@ -1,5 +1,5 @@
 ---
-source_hash: 999db47e2398
+source_hash: "999db47e2398"
 ---
 
 # Architecture

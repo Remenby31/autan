@@ -1,5 +1,5 @@
 ---
-source_hash: 2f48b8b005e7
+source_hash: "2f48b8b005e7"
 ---
 
 # Prise en main du SDK Autan
