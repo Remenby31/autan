@@ -30,11 +30,11 @@ Policy for the case library: never commit third-party data unless its licence al
 | AGARD AR-138, AR-303 (NATO STO) | Free download, no registration. No licence text. | No: store pointers and transcribed tables, with citation |
 | ERCOFTAC Classic Collection, [cfd.mace.manchester.ac.uk/ercoftac](http://cfd.mace.manchester.ac.uk/ercoftac/) | **CC BY-NC-SA 4.0**. No login. **HTTP only**: HTTPS refuses the connection. | No: download by hash |
 | ERCOFTAC KBwiki, [kbwiki.ercoftac.org](https://kbwiki.ercoftac.org/) | "Reuse with attribution; **AI/ML-training & TDM reserved**". The licence page it links to does not exist. | No. Excluded from M11 training data until ERCOFTAC agrees in writing. |
-| DrivAerML, AhmedML, WindsorML (Hugging Face `neashton/*`) | **CC-BY-SA-4.0** | Yes (share-alike for derived data) |
+| DrivAreML, AhmedML, WindsorML (Hugging Face `neashton/*`) | **CC-BY-SA-4.0** | Yes (share-alike for derived data) |
 | ADODG CRM grids, [Mendeley 10.17632/7jnyjdbvf9.1](https://data.mendeley.com/datasets/7jnyjdbvf9/1) | **CC BY 4.0** | Yes |
 | Lee & Moser, Madrid channel DNS, HiOCFD files, Featflow, TNF archive | No licence stated. The files ask for citation. | No: download by hash |
-| DrivAer CAD (TU München) | Free, **registration required**, no licence text | No |
-| Loughborough DrivAer experiment | **CC-BY-NC-4.0** | No |
+| DrivAre CAD (TU München) | Free, **registration required**, no licence text | No |
+| Loughborough DrivAre experiment | **CC-BY-NC-4.0** | No |
 | ONERA OAT15A (DPW-8) | ONERA property, conditions of use. The Jacquin 2009 paper is for personal use only. | No |
 | MASA (MMS library) | **LGPL-2.1** (`COPYING`) | Test-only dependency |
 | LANL ExactPack (exact Riemann, Noh, Sedov) | **BSD-3-Clause** (`LICENSE.txt`) | Test-only dependency |
@@ -55,7 +55,7 @@ Several well-known references point to dead hosts. Use the current ones:
 | `www.sto.nato.int` (403 to scripts) | `https://publications.sto.nato.int/publications/AGARD/…` |
 | `cfdval2004.larc.nasa.gov` (down) | TMR mirror `Other_exp_Data/CFDVAL2004/case3expdata.html` |
 | `cavityflow.com` (Erturk, 404) | arXiv [cs/0411047](https://arxiv.org/abs/cs/0411047) |
-| TUM DrivAer `mw.tum.de` pages | [epc.ed.tum.de/en/aer/research-groups/automotive/drivaer](https://www.epc.ed.tum.de/en/aer/research-groups/automotive/drivaer/) |
+| TUM DrivAre `mw.tum.de` pages | [epc.ed.tum.de/en/aer/research-groups/automotive/drivaer](https://www.epc.ed.tum.de/en/aer/research-groups/automotive/drivaer/) |
 
 ## Summary by milestone
 
@@ -68,7 +68,7 @@ Several well-known references point to dead hosts. Use the current ones:
 | M5 | ONERA M6 viscous (reference forces), NACA 0012 numerics | DPW CRM |
 | M6 | Adjoint dot-product and complex-step checks, ADODG case 2 (RAE 2822), SU2 ONERA M6 constrained design | ADODG case 4.1 (CRM wing), ADODG case 1, Giles–Pierce quasi-1D adjoint |
 | M7 | Taylor–Green Re 1600, channel DNS (Lee & Moser), cylinder Re 3900, Driver–Seegmiller step, Ahmed 25°/35°, HLPW CRM-HL | Le–Moin–Kim DNS, periodic hill, DPW CRM, AGARD AR-303 cases |
-| M8 | Lid-driven cavity (Botella–Peyret, Ghia), Schäfer–Turek 2D-1/2D-2/2D-3/3D, DrivAer/DrivAerML | Erturk high-Re cavity, Loughborough DrivAer |
+| M8 | Lid-driven cavity (Botella–Peyret, Ghia), Schäfer–Turek 2D-1/2D-2/2D-3/3D, DrivAer/DrivAerML | Erturk high-Re cavity, Loughborough DrivAre |
 | M9 | Species MMS and 1D diffusion, He/air shock tube, conjugate MMS and composite wall, Sandia propane jet, Cutler He/air coaxial jet, NASA C3X vane | Brown–Roshko layer, preCICE heated plate, Vynnycky plate, O'Hern He plume, Panchapakesan–Lumley jet |
 
 ---
@@ -182,7 +182,7 @@ The gate is "TMR flat plate, bump and NACA 0012 within tolerance; convergence on
 ### RANS-SA MMS — V-exact · Must
 - **Sources:**
   - Eça, Hoekstra, Hay & Pelletier (2007), *IJNMF* 54:119–154, [doi:10.1002/fld.1387](https://doi.org/10.1002/fld.1387), paywalled. Wall-bounded 2D MMS for SA, k-ε and k-ω. Revision: Eça, Hoekstra & Vaz (2012), *IJCFD* 26:313–332, [doi:10.1080/10618562.2012.717617](https://doi.org/10.1080/10618562.2012.717617).
-  - The TMR page for the Lisbon verification workshops, [eca1.html](https://tmbwg.github.io/turbmodels/eca1.html), hosts the IST reports and the Fortran sources of the manufactured functions.
+  - The TMR page for the Lisbon verification workshops, [eca1.html](https://tmbwg.github.io/turbmodels/eca1.html), hosts the Institution Superior Técnico reports and the Fortran sources of the manufactured functions.
   - Compressible version: Oliver, Estacio-Hiroms, Malaya & Carey, "Manufactured solutions for the Favre-averaged Navier–Stokes equations with eddy-viscosity turbulence models", AIAA 2012-0080, [doi:10.2514/6.2012-80](https://doi.org/10.2514/6.2012-80). Implemented in MASA as `fans_sa` and `rans_sa`.
   - TMR has no SA MMS page of its own.
 - **Quantities:** L2 and L∞ errors of the mean-flow variables and ν̃.
@@ -266,7 +266,7 @@ These cases fill the high-speed gap. None is a milestone gate, but they are the 
 - The same TM also tabulates Coleman Mach 9 corners, Holden CUBRC Mach 8–13 corners and cone-flares, HIFiRE, and the Kussoy Mach 8 impinging shock: a ready-made hypersonic set for later.
 
 **Settles compression corners, Mach 2.85 (8°, 16°, 20°, 24°).**
-- **Sources:** Settles, Vas & Bogdonoff, *AIAA J* 14(12), 1976, [doi:10.2514/3.61513](https://doi.org/10.2514/3.61513); Settles, Fitzpatrick & Bogdonoff, *AIAA J* 17(6), 1979, [doi:10.2514/3.61180](https://doi.org/10.2514/3.61180). Both paywalled.
+- **Sources:** Settles, Was & Bogdonoff, *AIAA J* 14(12), 1976, [doi:10.2514/3.61513](https://doi.org/10.2514/3.61513); Settles, Fitzpatrick & Bogdonoff, *AIAA J* 17(6), 1979, [doi:10.2514/3.61180](https://doi.org/10.2514/3.61180). Both paywalled.
 - **Use NASA CR-177638 (1994), "new and corrected data"**, full text at [archive.org/details/nasa_techdoc_19940032012](https://archive.org/details/nasa_techdoc_19940032012). It replaces the 1991 Settles & Dodson database (CR-177577). The 1991 Cf column was normalised wrongly ("essentially worthless") and its wall pressure is now p_w/p∞. **Do not use the 1991 numbers.**
 - **Data:** p_w, Cf, pitot and static profiles (ASCII tables in the PDF, about 270 kB of text). The same report adds Kuntz/Amatucci/Addy Mach 2.94 LDV profiles.
 - **Inflow:** the report warns that no experiment fully defines the inflow. Match δ* (or δ, δ*, θ and Cf within 15 %).
@@ -431,7 +431,7 @@ The PLAN gate is "cylinder, backward-facing step, Ahmed; CRM-HL near CLmax compa
 
 ## M8 — Pressure-based solver
 
-The gate is "cavity, cylinder, DrivAer compared with references".
+The gate is "cavity, cylinder, DrivAre compared with references".
 
 ### Lid-driven cavity — V-ref · Must
 | Reference | Access | Data | Accuracy |
@@ -459,17 +459,17 @@ The gate is "cavity, cylinder, DrivAer compared with references".
 
 - **Why:** the Featflow values are converged far beyond our target. The tolerances allow a second-order finite-volume scheme to reach them on meshes of a few hundred thousand cells. For the compressible solver at M ≤ 0.1, use the wider 1996 paper bounds.
 
-### DrivAer and DrivAerML — Val · Must (DrivAerML baseline), Useful (experiment)
-- **DrivAerML:** Ashton et al. (2024), arXiv 2408.11969, [huggingface.co/datasets/neashton/drivaerml](https://huggingface.co/datasets/neashton/drivaerml). **CC-BY-SA-4.0**, **31.2 TB** in total.
+### DrivAre and DrivAreML — Val · Must (DrivAreML baseline), Useful (experiment)
+- **DrivAreML:** Ashton et al. (2024), arXiv 2408.11969, [huggingface.co/datasets/neashton/drivaerml](https://huggingface.co/datasets/neashton/drivaerml). **CC-BY-SA-4.0**, **31.2 TB** in total.
   - Content: 500 morphed notchback variants (484 public). Incompressible OpenFOAM, SA σ-DDES, about 160 M cells, U∞ 38.889 m/s, Re_L 7.19e6, A_ref 2.17 m².
   - Per run: STL, surface VTP (about 500 MB), volume VTU (about 50 GB), mean-force CSV, slices.
   - The baseline was compared with Ford/Pininfarina full-scale experiments.
-- **TU München DrivAer geometry:** [epc.ed.tum.de](https://www.epc.ed.tum.de/en/aer/research-groups/automotive/drivaer/). Registration required. Heft et al., SAE 2012-01-0168; the TUM Cd and Cp data are in that paywalled paper (unverified).
+- **TU München DrivAre geometry:** [epc.ed.tum.de](https://www.epc.ed.tum.de/en/aer/research-groups/automotive/drivaer/). Registration required. Heft et al., SAE 2012-01-0168; the TUM Cd and Cp data are in that paywalled paper (unverified).
 - **Loughborough experiment:** [doi:10.17028/rd.lboro.12881213.v1](https://doi.org/10.17028/rd.lboro.12881213.v1). CC-BY-NC-4.0. 25 % scale, 40 m/s, Re_L 2.94e6. Cd: fastback 0.311, notchback 0.312, estate 0.334 (uncorrected). CSV forces, rear Cp, PIV wake. No uncertainty stated.
 - **Acceptance:**
-  - DrivAerML baseline (code-to-code, same setup): Cd within ±3 %, surface Cp L2 difference ≤ 0.05.
+  - DrivAreML baseline (code-to-code, same setup): Cd within ±3 %, surface Cp L2 difference ≤ 0.05.
   - Against experiment (report): |ΔCd| ≤ 0.010, in the same facility and configuration.
-- **Why:** DrivAerML is another code's output and therefore not an oracle under `AGENTS.md`. Its validated baseline is acceptable as a cross-code reference; the morphed variants are not.
+- **Why:** DrivAreML is another code's output and therefore not an oracle under `AGENTS.md`. Its validated baseline is acceptable as a cross-code reference; the morphed variants are not.
 
 ---
 
