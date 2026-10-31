@@ -2,9 +2,14 @@
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 
 set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients roe)
-# AUTAN_ENABLE_CUDA (root) adds the GPU loops and the GPU spike driver.
+# AUTAN_ENABLE_CUDA (root) adds the GPU loops, the GPU spike driver and the loop benchmark.
+# AUTAN_ENABLE_HIP compiles the same generated GPU loops with HIP (no AMD device: compile only).
+option(AUTAN_ENABLE_HIP "Compile the generated GPU loops with HIP" OFF)
+if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_HIP)
+  message(FATAL_ERROR "AUTAN_ENABLE_CUDA and AUTAN_ENABLE_HIP are exclusive")
+endif()
 set(AUTAN_KERNEL_BACKENDS cpu)
-if(AUTAN_ENABLE_CUDA)
+if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_HIP)
   list(APPEND AUTAN_KERNEL_BACKENDS gpu)
 endif()
 
@@ -20,7 +25,7 @@ set(AUTAN_GENERATED_GPU_UNITS)
 foreach(module IN LISTS AUTAN_KERNEL_MODULES)
   set(outputs ${AUTAN_GENERATED_DIR}/${module}.hpp)
   list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp)
-  if(AUTAN_ENABLE_CUDA)
+  if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_HIP)
     list(
       APPEND outputs
       ${AUTAN_GENERATED_DIR}/${module}_gpu.cuh
@@ -93,4 +98,16 @@ if(AUTAN_ENABLE_CUDA)
   target_link_libraries(autan_loop_bench PRIVATE autan::kernels autan::io)
   set_target_properties(autan_loop_bench PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
   target_compile_options(autan_loop_bench PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo -Xptxas=-v>)
+endif()
+
+if(AUTAN_ENABLE_HIP)
+  enable_language(HIP)
+  set_source_files_properties(${AUTAN_GENERATED_GPU_UNITS} PROPERTIES LANGUAGE HIP)
+  add_library(autan_kernels_gpu OBJECT ${AUTAN_GENERATED_GPU_UNITS})
+  add_dependencies(autan_kernels_gpu autan_generated_kernels)
+  target_include_directories(
+    autan_kernels_gpu
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${AUTAN_GENERATED_DIR}
+  )
+  set_target_properties(autan_kernels_gpu PROPERTIES HIP_STANDARD 20 HIP_STANDARD_REQUIRED ON)
 endif()
