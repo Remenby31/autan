@@ -1,0 +1,61 @@
+name: Bug
+description: The solver, the SDK or the tooling does something wrong that is not a numerical accuracy problem
+type: Bug
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A result that is wrong or inaccurate belongs in **Numerical discrepancy**. A security problem goes through [private reporting](https://github.com/Remenby31/cfd-solver/security/advisories/new).
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened
+      description: What you observed. Paste the error code and message as printed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The shortest path from a clean checkout to the problem. Attach or link every input file it needs.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse HEAD`.
+      placeholder: 4cf640fd1b0e...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, compiler, CUDA or ROCm version, GPU model and driver (`nvidia-smi` or `rocm-smi` header), Python version.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Full output of the failing command.
+      render: text

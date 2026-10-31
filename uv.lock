@@ -90,7 +90,6 @@ wheels = [
 
 [[package]]
 name = "cfd"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "h5py" },
@@ -103,7 +102,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "h5py" },
     { name = "hatchling" },
     { name = "jsonschema" },
     { name = "mypy" },
@@ -124,7 +122,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "h5py", specifier = ">=3.16.0" },
     { name = "hatchling", specifier = ">=1.33.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "mypy", specifier = ">=1.15" },

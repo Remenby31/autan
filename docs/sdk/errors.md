@@ -56,7 +56,7 @@ Fix: Regenerate the MeshInfo with the mesh reader of the same solver version.
 
 **The MeshInfo describes another mesh file** (error)
 
-The file name in the MeshInfo `source.path` differs from the case's `mesh`.
+The MeshInfo `source.sha256` differs from the SHA-256 of the case's mesh file, so it describes another mesh or another version of it.
 
 Fix: Pass the MeshInfo of the case's mesh, or change `mesh` in the case.
 
@@ -67,6 +67,14 @@ Fix: Pass the MeshInfo of the case's mesh, or change `mesh` in the case.
 The maximum face non-orthogonality exceeds 70°, the threshold above which OpenFOAM's checkMesh reports severely non-orthogonal faces. Gradients and viscous fluxes lose accuracy and implicit solves may stall.
 
 Fix: Improve the mesh near the worst cells, or lower the CFL number.
+
+## W0205
+
+**Mesh file not found** (warning)
+
+The case's mesh file does not exist where the case says, so `plan` cannot check that the MeshInfo describes it (by comparing the mesh hash).
+
+Fix: Put the mesh at the path the case gives, relative to the case file.
 
 ## E0301
 
@@ -248,6 +256,6 @@ Fix: Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support).
 
 **Solver core not built** (warning)
 
-This installation contains the SDK only. Cases can be planned and run with the `fake` backend, which writes synthetic results.
+This installation contains the SDK only: cases can be planned, not run.
 
 Fix: Build the C++ core (see README) to run real computations.

@@ -6,6 +6,7 @@ Exit status: 0 success, 1 the command found errors (coded diagnostics), 2 usage 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import platform
 import re
@@ -14,11 +15,11 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
-from cfd.case import load
+from cfd.case import Case, load
 from cfd.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
 from cfd.fake import FakeBackend
 from cfd.meshinfo import MeshInfo
-from cfd.schema import CaseSpec
+from cfd.schema import json_schema as case_json_schema
 from cfd.version import COMMIT, DIRTY, SCHEMAS, __version__
 
 if TYPE_CHECKING:
@@ -86,7 +87,7 @@ def _plan_text(result: Plan) -> str:
 
 def command_plan(args: argparse.Namespace) -> int:
     try:
-        case = load(args.case)
+        case = _load_quietly(args.case)
         if args.mesh_info is None:
             missing = diagnostic(
                 "E0201",
@@ -106,7 +107,7 @@ def command_run(args: argparse.Namespace) -> int:
         unknown = diagnostic("E0804", f"backend {args.backend!r} is not built")
         return _fail(CaseError([unknown]), args.json)
     try:
-        case = load(args.case)
+        case = _load_quietly(args.case)
         backend = FakeBackend(
             iterations=args.iterations, pace=args.pace, diverge_at=args.diverge_at
         )
@@ -126,6 +127,12 @@ def command_run(args: argparse.Namespace) -> int:
         text,
     )
     return 1 if run.status in ("diverged", "failed") else 0
+
+
+def _load_quietly(path: str) -> Case:
+    """Load a case file with its own prints sent to stderr, so stdout stays our output."""
+    with contextlib.redirect_stdout(sys.stderr):
+        return load(path)
 
 
 def _run(command: list[str]) -> str | None:
@@ -203,8 +210,9 @@ def command_version(args: argparse.Namespace) -> int:
 
 def json_schema(name: str) -> dict[str, Any]:
     """The published JSON Schema of the ``case`` or ``mesh-info`` document."""
-    model = CaseSpec if name == "case" else MeshInfo
-    schema = model.model_json_schema(by_alias=True, mode="validation")
+    if name == "case":
+        return case_json_schema()
+    schema = MeshInfo.model_json_schema(by_alias=True, mode="validation")
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMAS[name],
@@ -219,7 +227,25 @@ def command_schema(args: argparse.Namespace) -> int:
 
 def command_explain(args: argparse.Namespace) -> int:
     if args.all:
-        sys.stdout.write(reference_page())
+        if args.json:
+            _emit(
+                {
+                    "codes": [
+                        {
+                            "code": c.code,
+                            "severity": c.severity,
+                            "title": c.title,
+                            "explanation": c.explanation,
+                            "fix": c.fix,
+                        }
+                        for c in REGISTRY.values()
+                    ]
+                },
+                True,
+                "",
+            )
+        else:
+            sys.stdout.write(reference_page())
         return 0
     code = (args.code or "").upper()
     if code not in REGISTRY:

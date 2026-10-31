@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ def run_json(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, Any]:
 
 
 def test_plan_json_reports_missing_boundary_condition_with_fix(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, example: Callable[[str], Path]
 ) -> None:
     document = mesh_document("crm-hl")
     for zone in document["boundary_zones"]:
@@ -30,7 +31,7 @@ def test_plan_json_reports_missing_boundary_condition_with_fix(
     info = tmp_path / "crm-hl.meshinfo.json"
     info.write_text(json.dumps(document))
 
-    status, out = run_json(capsys, "plan", str(EXAMPLES / "crm_hl.py"), "--mesh-info", str(info))
+    status, out = run_json(capsys, "plan", str(example("crm_hl.py")), "--mesh-info", str(info))
 
     assert status == 1
     assert out["ok"] is False
@@ -45,12 +46,14 @@ def test_plan_json_reports_missing_boundary_condition_with_fix(
     assert empennage["provenance"] is None
 
 
-def test_plan_text_and_json_agree_on_success(capsys: pytest.CaptureFixture[str]) -> None:
-    status, out = run_json(capsys, "plan", str(EXAMPLES / "crm_hl.py"), "--mesh-info", CRM_INFO)
+def test_plan_text_and_json_agree_on_success(
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path]
+) -> None:
+    status, out = run_json(capsys, "plan", str(example("crm_hl.py")), "--mesh-info", CRM_INFO)
     assert status == 0
     assert out["ok"] is True
     assert out["diagnostics"] == []
-    assert main(["plan", str(EXAMPLES / "crm_hl.py"), "--mesh-info", CRM_INFO]) == 0
+    assert main(["plan", str(example("crm_hl.py")), "--mesh-info", CRM_INFO]) == 0
     text = capsys.readouterr().out
     assert "7/7 zones covered" in text
     assert "plan OK" in text
@@ -113,3 +116,19 @@ def test_explain_prints_a_registered_code(capsys: pytest.CaptureFixture[str]) ->
     assert out["code"] == "E0412"
     assert out["severity"] == "error"
     assert main(["explain", "E9999"]) == 2
+
+
+def test_case_prints_do_not_corrupt_json_output(
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path]
+) -> None:
+    path = example("crm_hl.py")
+    path.write_text('print("loading")\n' + path.read_text())
+    status, out = run_json(capsys, "plan", str(path), "--mesh-info", CRM_INFO)
+    assert status == 0
+    assert out["ok"] is True
+
+
+def test_explain_all_json_lists_every_code(capsys: pytest.CaptureFixture[str]) -> None:
+    status, out = run_json(capsys, "explain", "--all")
+    assert status == 0
+    assert "E0412" in {entry["code"] for entry in out["codes"]}

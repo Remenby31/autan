@@ -8,10 +8,12 @@ the quantity it receives; see ``docs/contracts/case-schema.md#quantities``.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import pint
+from pydantic import PlainSerializer
 from pydantic_core import PydanticCustomError, core_schema
 
 if TYPE_CHECKING:
@@ -34,7 +36,10 @@ W = ureg.watt
 deg = ureg.degree
 rad = ureg.radian
 
-_QUANTITY_PATTERN = r"^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s+\S.*$"
+_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_QUANTITY_PATTERN = rf"^\s*{_NUMBER}\s+\S.*$"
+_QUANTITY = re.compile(rf"\s*({_NUMBER})\s+(\S.*?)\s*")
+_BARE_NUMBER = re.compile(rf"\s*{_NUMBER}\s*")
 
 
 def fail(code: str, template: str, **context: object) -> NoReturn:
@@ -57,12 +62,7 @@ class Dimension:
     def __get_pydantic_core_schema__(
         self, source: type[Any], handler: GetCoreSchemaHandler
     ) -> core_schema.CoreSchema:
-        return core_schema.no_info_plain_validator_function(
-            self.validate,
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                format_quantity, when_used="json"
-            ),
-        )
+        return core_schema.no_info_plain_validator_function(self.validate)
 
     def __get_pydantic_json_schema__(
         self, schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
@@ -98,26 +98,14 @@ class Dimension:
 def _to_quantity(value: object, dimension: str) -> pint.Quantity:
     if isinstance(value, pint.Quantity):
         if value._REGISTRY is not ureg:
-            return Quantity(float(value.magnitude), str(value.units))
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = Quantity(value)
-        except (pint.UndefinedUnitError, pint.errors.DefinitionSyntaxError, ValueError) as error:
             fail(
                 "E0303",
-                "cannot read {got} as a quantity: {reason}",
-                got=repr(value),
-                reason=str(error),
+                "{got} comes from another unit registry; build it with cfd.units",
+                got=repr(str(value)),
             )
-        if not isinstance(parsed, pint.Quantity) or parsed.unitless:
-            fail(
-                "E0302",
-                "{got} has no unit; expected {expected}",
-                got=repr(value),
-                expected=dimension,
-            )
-        return parsed
+        return Quantity(value.magnitude, value.units)
+    if isinstance(value, str):
+        return parse(value, dimension)
     if isinstance(value, int | float) and not isinstance(value, bool):
         fail(
             "E0302",
@@ -143,6 +131,30 @@ def _describe_dimension(quantity: pint.Quantity) -> str:
     if ureg.get_root_units(quantity.units)[1] == ureg.radian:
         return "[angle]"
     return str(quantity.dimensionality) or "dimensionless"
+
+
+def parse(text: str, dimension: str) -> pint.Quantity:
+    """Read ``"<number> <unit>"``; the unit part may only multiply, divide and raise units."""
+    if _BARE_NUMBER.fullmatch(text):
+        fail("E0302", "{got} has no unit; expected {expected}", got=repr(text), expected=dimension)
+    match = _QUANTITY.fullmatch(text)
+    if match is None:
+        fail("E0303", "{got} is not written as '<number> <unit>'", got=repr(text))
+    try:
+        unit = ureg.parse_units(match.group(2))
+    except Exception as error:  # noqa: BLE001 -- Pint's parser raises many unrelated types
+        fail(
+            "E0303",
+            "cannot read the unit of {got}: {reason}",
+            got=repr(text),
+            reason=f"{type(error).__name__}: {error}",
+        )
+    return Quantity(float(match.group(1)), unit)
+
+
+def quantity(dimension: str, *, positive: bool = False) -> Any:
+    """Annotation metadata of a quantity field: dimension check, and canonical text in JSON."""
+    return (Dimension(dimension, positive), PlainSerializer(format_quantity, when_used="json"))
 
 
 def format_quantity(quantity: pint.Quantity) -> str:

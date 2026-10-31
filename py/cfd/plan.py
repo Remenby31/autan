@@ -7,12 +7,12 @@ Memory model: docs/sdk/plan.md.
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
-from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from cfd.errors import Diagnostic, diagnostic
+from cfd.meshinfo import mesh_sha256
 from cfd.schema import (
     DDES,
     SA,
@@ -32,6 +32,7 @@ from cfd.schema import (
     VelocityInlet,
     Wall,
 )
+from cfd.units import parse
 
 if TYPE_CHECKING:
     from cfd.case import Case
@@ -41,9 +42,9 @@ Provenance = Literal["code", "mesh", "default"]
 NON_ORTHOGONALITY_WARNING_DEG = 70.0
 
 _COMPATIBLE_MESH_TYPE = {
-    "wall": {"wall", "slip"},
+    "wall": {"wall"},
     "thermal-wall": {"wall"},
-    "slip": {"slip", "wall"},
+    "slip": {"slip"},
     "symmetry": {"symmetry"},
     "farfield": {"farfield"},
     "inlet": {"inlet", "velocity-inlet"},
@@ -117,11 +118,8 @@ def equations(spec: CaseSpec) -> int:
     """Number of solved equations per cell: flow equations plus turbulence transport."""
     flow = 5 if isinstance(spec.physics, Compressible) else 4
     turbulence = spec.physics.turbulence
-    if isinstance(turbulence, DDES):
-        extra = 1 if turbulence.base == "sa" else 2
-    else:
-        extra = {SA: 1, SST: 2}.get(type(turbulence), 0)
-    return flow + extra
+    model = turbulence.base if isinstance(turbulence, DDES) else turbulence
+    return flow + {SA: 1, SST: 2}.get(type(model), 0)
 
 
 def memory(spec: CaseSpec, mesh: MeshInfo, gpus: int) -> Memory:
@@ -149,12 +147,23 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
     spec = case.spec
     found: list[Diagnostic] = []
 
-    if PurePath(mesh.source.path).name != PurePath(spec.mesh).name:
+    mesh_file = case.mesh_path
+    if not mesh_file.exists():
+        found.append(
+            diagnostic(
+                "W0205",
+                f"mesh {str(mesh_file)!r} not found; the MeshInfo is taken as given",
+                location=case.locate("mesh"),
+                mesh=str(mesh_file),
+            )
+        )
+    elif mesh_sha256(mesh_file) != mesh.source.sha256:
         found.append(
             diagnostic(
                 "E0203",
-                f"MeshInfo describes {mesh.source.path!r}, the case uses {spec.mesh!r}",
+                f"the MeshInfo hash differs from the hash of {str(mesh_file)!r}",
                 location=case.locate("mesh"),
+                mesh=str(mesh_file),
             )
         )
     worst = mesh.quality.max_non_orthogonality_deg
@@ -399,7 +408,12 @@ def _check_interfaces(
     media = {zone.zone: zone.medium for zone in zones}
     for interface in mesh.interfaces:
         a, b = (media[name] for name in interface.zones)
-        if a and b and a["kind"] == b["kind"] == "fluid" and a["material"] != b["material"]:
+        if (
+            a
+            and b
+            and a["kind"] == b["kind"] == "fluid"
+            and _properties(a["material"]) != _properties(b["material"])
+        ):
             found.append(
                 diagnostic(
                     "E0505",
@@ -409,6 +423,21 @@ def _check_interfaces(
                     zones=list(interface.zones),
                 )
             )
+
+
+def _properties(material: dict[str, Any]) -> dict[str, Any]:
+    """Physical properties in SI base units, rounded to 12 significant digits; no name."""
+
+    def canonical(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: canonical(v) for k, v in value.items() if k != "name"}
+        if isinstance(value, str) and " " in value:
+            magnitude = parse(value, "").to_base_units().magnitude
+            return float(f"{magnitude:.12g}")
+        return value
+
+    result: dict[str, Any] = canonical(material)
+    return result
 
 
 def _check_monitors(case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]) -> None:
