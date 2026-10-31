@@ -27,7 +27,9 @@ repos:
   - repo: https://github.com/crate-ci/typos
     rev: 9023c1f779400877cafdd98052113fc777e2cfdc  # frozen: v1.51.1
     hooks:
+      # Report only: a spelling fix written without review can corrupt identifiers and translations.
       - id: typos
+        args: [--force-exclude]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 25bcf95026b96e2dd3c0aec3090c3d6ef6ca2e6c  # frozen: v0.17.3

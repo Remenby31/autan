@@ -1,3 +1,4 @@
+import http.client
 import json
 import shutil
 import socket
@@ -24,16 +25,28 @@ PY = Path(__file__).parents[3] / "py"
 def runs(tmp_path: Path) -> Path:
     case = autan.load(PY / "examples" / "crm_hl.py")
     mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
-    case.run(mesh_info, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
-    return tmp_path
+    case.run(mesh_info, backend=autan.FakeBackend(iterations=30), runs=tmp_path / "runs")
+    return tmp_path / "runs"
 
 
 @pytest.fixture
-def server(runs: Path) -> Iterator[str]:
+def static(tmp_path: Path) -> Path:
+    """A built app next to a file it must never serve, with a link pointing at that file."""
+    (tmp_path / "secret.txt").write_text("SECRET")
+    app = tmp_path / "static"
+    (app / "assets").mkdir(parents=True)
+    (app / "index.html").write_text("INDEX")
+    (app / "assets" / "app.js").write_text("APP")
+    (app / "leak").symlink_to(tmp_path / "secret.txt")
+    return app
+
+
+@pytest.fixture
+def server(runs: Path, static: Path) -> Iterator[str]:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    config = uvicorn.Config(create_app(runs, static=None), port=port, log_level="warning")
+    config = uvicorn.Config(create_app(runs, static=static), port=port, log_level="warning")
     instance = uvicorn.Server(config)
     thread = threading.Thread(target=instance.run, daemon=True)
     thread.start()
@@ -190,3 +203,68 @@ def test_synthetic_surface_layout() -> None:
     assert indices.size == 3 * header["triangles"]
     assert int(indices.max()) < header["nodes"]
     assert [zone["name"] for zone in header["zones"]] == ["wing.upper", "wing.lower", "wing.tip"]
+
+
+def test_a_running_run_reports_its_last_recorded_iteration(runs: Path) -> None:
+    source = next(runs.iterdir())
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    with (source / "history.jsonl").open("a") as history:
+        history.write('{"iteration": 31, "time": null, "resid')
+
+    snapshot = Registry(runs).scan()
+
+    assert snapshot.runs[source.name]["iterations"] == 30
+    assert snapshot.progress == {source.name: 30}
+
+
+def test_progress_survives_long_and_malformed_last_lines(runs: Path) -> None:
+    source = next(runs.iterdir())
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    registry = Registry(runs)
+    assert registry.scan().progress == {source.name: 30}
+
+    # Lines appended after the directory was checked are not re-validated by the registry.
+    long_record = {"iteration": 31, "padding": "x" * 200_000}
+    with (source / "history.jsonl").open("a") as history:
+        history.write(json.dumps(long_record) + "\n")
+    assert registry.scan().progress == {source.name: 31}
+
+    with (source / "history.jsonl").open("a") as history:
+        history.write('{"iteration": 1e400}\n')
+    snapshot = registry.scan()
+    assert source.name in snapshot.runs
+    assert snapshot.progress == {}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/../secret.txt",
+        "/%2e%2e/secret.txt",
+        "/assets/..%2f..%2fsecret.txt",
+        "//etc/passwd",
+        "/leak",
+    ],
+)
+def test_static_files_never_leave_the_build(server: str, target: str) -> None:
+    host, port = server.removeprefix("http://").split(":")
+    connection = http.client.HTTPConnection(host, int(port))
+    connection.putrequest("GET", target, skip_accept_encoding=True)
+    connection.endheaders()
+    body = connection.getresponse().read()
+    assert body == b"INDEX"
+    assert httpx.get(f"{server}/assets/app.js").text == "APP"
+
+
+def test_a_run_directory_linking_outside_the_runs_directory_is_refused(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    source = next(runs.iterdir())
+    outside = shutil.copytree(source, tmp_path / "elsewhere" / source.name)
+    shutil.rmtree(source)
+    source.symlink_to(outside, target_is_directory=True)
+
+    assert httpx.get(f"{server}/api/runs/{source.name}").status_code == 404
+    assert Registry(runs).scan().rejected == {source.name: "links outside the runs directory"}

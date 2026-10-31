@@ -9,7 +9,6 @@ from typing import Any
 
 import autan
 from autan.errors import CaseError
-from autan.results import RunInfo
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +32,12 @@ CHECKED_FILES = ("run.json", "case.toml", "mesh-info.json", "solution.cgns")
 class Snapshot:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejected: dict[str, str] = field(default_factory=dict)
+    progress: dict[str, int] = field(default_factory=dict)
 
     def document(self) -> dict[str, Any]:
         runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
         rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
-        return {"runs": runs, "rejected": rejected}
+        return {"runs": runs, "rejected": rejected, "progress": self.progress}
 
 
 @dataclass(frozen=True)
@@ -60,13 +60,16 @@ class Registry:
 
     def run_dir(self, run_id: str) -> Path:
         """The directory of an accepted run."""
-        if not RUN_ID.fullmatch(run_id) or not (self.root / run_id).is_dir():
+        if not RUN_ID.fullmatch(run_id):
+            raise RunNotFoundError(run_id)
+        directory = self.root / run_id
+        if not _inside(self.root, directory):
             raise RunNotFoundError(run_id)
         with self._lock:
-            outcome = self._check(self.root / run_id)
+            outcome = self._check(directory)
         if isinstance(outcome, str):
             raise RunRejectedError(outcome)
-        return self.root / run_id
+        return directory
 
     def scan(self) -> Snapshot:
         snapshot = Snapshot()
@@ -74,7 +77,10 @@ class Registry:
             names = set()
             if self.root.is_dir():
                 for child in sorted(self.root.iterdir()):
-                    if not child.is_dir() or child.name.startswith("."):
+                    if child.name.startswith(".") or not child.is_dir():
+                        continue
+                    if not _inside(self.root, child):
+                        snapshot.rejected[child.name] = "links outside the runs directory"
                         continue
                     names.add(child.name)
                     outcome = self._check(child)
@@ -82,6 +88,10 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
+                        if outcome["status"] == "running":
+                            last = last_iteration(child)
+                            if last is not None:
+                                snapshot.progress[child.name] = last
             for gone in self._checked.keys() - names:
                 del self._checked[gone]
         return snapshot
@@ -114,6 +124,12 @@ class Registry:
         }
 
 
+def _inside(root: Path, directory: Path) -> bool:
+    """A real directory directly under `root`: a symbolic link, even to another run, is refused
+    so that every file the server reads lies under the runs directory."""
+    return directory.is_dir() and not directory.is_symlink() and directory.resolve().parent == root
+
+
 def _stat(path: Path) -> tuple[int, int] | None:
     try:
         stat = path.stat()
@@ -126,10 +142,38 @@ def read_run(directory: Path) -> dict[str, Any]:
     """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
     try:
         document = json.loads((directory / "run.json").read_text(encoding="utf-8"))
-        return RunInfo.model_validate(document).document()
+        return autan.RunInfo.model_validate(document).document()
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
+
+
+def last_iteration(directory: Path) -> int | None:
+    """Iteration of the last complete history line: run.json is rewritten only when the status
+    changes, so this is how far a running run has got. Reads backwards until it has the whole
+    line, however long."""
+    try:
+        with (directory / "history.jsonl").open("rb") as file:
+            end = file.seek(0, 2)
+            tail = b""
+            while end > 0:
+                start = max(end - 65536, 0)
+                file.seek(start)
+                tail = file.read(end - start) + tail
+                end = start
+                complete = tail[: tail.rfind(b"\n") + 1]
+                if complete.count(b"\n") >= 2 or (end == 0 and complete):
+                    break
+    except OSError:
+        return None
+    lines = tail[: tail.rfind(b"\n") + 1].splitlines()
+    if not lines:
+        return None
+    try:
+        iteration = json.loads(lines[-1]).get("iteration")
+    except (ValueError, AttributeError):
+        return None
+    return iteration if type(iteration) is int else None
 
 
 def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:

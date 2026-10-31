@@ -18,14 +18,28 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autan.case import Case, load
-from autan.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
+from autan.errors import (
+    REGISTRY,
+    CaseError,
+    Diagnostic,
+    diagnostic,
+    explain,
+    reference_page,
+    registry_document,
+)
 from autan.fake import FakeBackend
 from autan.meshinfo import MeshInfo
+from autan.results import Devices, RunInfo
 from autan.schema import json_schema as case_json_schema
+from autan.schema import require_tags
+from autan.solver_input import build as build_solver_input
+from autan.solver_input import json_schema as solver_input_json_schema
 from autan.version import COMMIT, DIRTY, SCHEMAS, __version__
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from pydantic import BaseModel
 
     from autan.plan import Plan
 
@@ -148,6 +162,43 @@ def command_ui(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_prepare(args: argparse.Namespace) -> int:
+    try:
+        case = _load_quietly(args.case)
+        mesh_info = MeshInfo.load(args.mesh_info)
+        warnings = [d for d in case.plan(mesh_info).diagnostics if d.severity == "warning"]
+        devices = Devices(kind=args.device_kind, count=args.device_count)
+        document = build_solver_input(
+            case, mesh_info, devices=devices, deterministic=args.deterministic
+        ).document()
+        text = json.dumps(document, indent=2) + "\n"
+        if args.output:
+            try:
+                Path(args.output).write_text(text)
+            except OSError as error:
+                unwritable = diagnostic("E0806", f"cannot write {args.output}: {error}")
+                raise CaseError([unwritable]) from None
+        else:
+            sys.stdout.write(text)
+    except CaseError as error:
+        return _fail(error, args.json)
+    if warnings:
+        sys.stderr.write(
+            json.dumps([d.model_dump(mode="json") for d in warnings]) + "\n"
+            if args.json
+            else "\n".join(d.render() for d in warnings) + "\n"
+        )
+    return 0
+
+
+def _positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        message = f"{text} is not a positive integer"
+        raise argparse.ArgumentTypeError(message)
+    return value
+
+
 def _interrupt(_signal: int, _frame: object) -> None:
     raise KeyboardInterrupt
 
@@ -232,10 +283,15 @@ def command_version(args: argparse.Namespace) -> int:
 
 
 def json_schema(name: str) -> dict[str, Any]:
-    """The published JSON Schema of the ``case`` or ``mesh-info`` document."""
+    """The published JSON Schema of a document: ``case``, ``mesh-info``, ``results`` (run.json)
+    or ``solver-input``."""
     if name == "case":
         return case_json_schema()
-    schema = MeshInfo.model_json_schema(by_alias=True, mode="validation")
+    if name == "solver-input":
+        return solver_input_json_schema()
+    models: dict[str, type[BaseModel]] = {"mesh-info": MeshInfo, "results": RunInfo}
+    schema = models[name].model_json_schema(by_alias=True, mode="validation")
+    require_tags(schema)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMAS[name],
@@ -251,22 +307,7 @@ def command_schema(args: argparse.Namespace) -> int:
 def command_explain(args: argparse.Namespace) -> int:
     if args.all:
         if args.json:
-            _emit(
-                {
-                    "codes": [
-                        {
-                            "code": c.code,
-                            "severity": c.severity,
-                            "title": c.title,
-                            "explanation": c.explanation,
-                            "fix": c.fix,
-                        }
-                        for c in REGISTRY.values()
-                    ]
-                },
-                True,
-                "",
-            )
+            sys.stdout.write(json.dumps(registry_document(), indent=2) + "\n")
         else:
             sys.stdout.write(reference_page())
         return 0
@@ -310,6 +351,18 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--diverge-at", type=int, help="fake: diverge at this iteration")
     sub.add_argument("--json", action="store_true", help="print JSON")
     sub.set_defaults(func=command_run)
+
+    sub = commands.add_parser(
+        "prepare", help="write the solver input (autan.solver-input/1) of a planned case"
+    )
+    sub.add_argument("case", help="case file: .py, .toml or .json")
+    sub.add_argument("--mesh-info", required=True, help="MeshInfo JSON of the case's mesh")
+    sub.add_argument("--device-kind", choices=["cpu", "cuda", "hip"], default="cpu")
+    sub.add_argument("--device-count", type=_positive, default=1)
+    sub.add_argument("--deterministic", action="store_true", help="bitwise-deterministic run")
+    sub.add_argument("-o", "--output", help="file to write (default: stdout)")
+    sub.add_argument("--json", action="store_true", help="diagnostics as JSON on failure")
+    sub.set_defaults(func=command_prepare)
 
     sub = commands.add_parser("ui", help="browse run directories in the web UI (extra `ui`)")
     sub.add_argument("--runs", default="runs", help="directory of run directories")

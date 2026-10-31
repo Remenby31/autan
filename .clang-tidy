@@ -8,6 +8,7 @@
 #  -modernize-avoid-c-arrays: device code uses fixed-size C arrays for registers.
 #  -readability-identifier-length: i, j, k, n, x, y, z, u, v, w are the names the equations use.
 #  -readability-magic-numbers: numerical constants come from the paper they cite.
+#  -performance-enum-size: underlying types are chosen for a stable range (error codes, file formats), not for size.
 Checks: >
   -*,
   bugprone-*,
@@ -23,6 +24,7 @@ Checks: >
   -modernize-use-designated-initializers,
   -modernize-avoid-c-arrays,
   performance-*,
+  -performance-enum-size,
   portability-*,
   -portability-avoid-pragma-once,
   readability-container-size-empty,
