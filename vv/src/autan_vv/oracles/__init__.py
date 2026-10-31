@@ -29,8 +29,9 @@ PRIMITIVES = ("Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure")
 class Oracle:
     """An exact or reference solution and the conditions under which it holds.
 
-    `dim` is the number of directions the solution varies in (2 for planar flows computed on one
-    layer of cells), which sets the mesh size h = (A/N)^(1/2) or (V/N)^(1/3). `physics` names the
+    `axes` are the directions (0 = x, 1 = y, 2 = z) the solution varies along; a run is refined
+    along those only, one cell thick along the others, and its mesh size is the cell measure in
+    those directions to the power 1/len(axes). `physics` names the
     equations it solves (`euler`, `navier-stokes`, `rans-sa`, `incompressible-navier-stokes`).
     `reference_only` marks a numerical reference, usable for regression but not as an exact oracle.
     """
@@ -38,7 +39,7 @@ class Oracle:
     name: str
     description: str
     physics: str
-    dim: int
+    axes: tuple[int, ...]
     unsteady: bool
     gamma: float
     gas_constant: float
@@ -89,7 +90,7 @@ def from_mms(ms: ManufacturedSolution) -> Oracle:
         name=f"mms-{ms.name.replace('_', '-')}",
         description=ms.description,
         physics=physics,
-        dim=3,
+        axes=(0, 1, 2),
         unsteady=False,
         gamma=ms.parameters["gamma"],
         gas_constant=ms.parameters["gas_constant"],

@@ -9,11 +9,13 @@ reconstruction of primitive variables with the van Leer limiter, HLLC fluxes (To
 from __future__ import annotations
 
 import hashlib
+import math
 from functools import cache
 from pathlib import Path
 
 import numpy as np
 
+from autan_vv.errors import VVError
 from autan_vv.oracles import FloatArray, Oracle
 
 GAMMA = 1.4
@@ -123,7 +125,10 @@ def shu_osher(cells: int = 12800, t_end: float = 1.8, cache_dir: Path | None = N
         np.save(path, solution)
         return solution
 
-    def evaluate(points: FloatArray, _t: float | None) -> dict[str, FloatArray]:
+    def evaluate(points: FloatArray, time: float | None) -> dict[str, FloatArray]:
+        if time is None or not math.isclose(time, t_end, rel_tol=1e-12):
+            msg = f"the Shu-Osher reference exists at t = {t_end} only, not t = {time}"
+            raise VVError(msg, code="V0707")
         rho, u, p = reference()
         x = points[:, 0]
         zero = np.zeros_like(x)
@@ -139,7 +144,7 @@ def shu_osher(cells: int = 12800, t_end: float = 1.8, cache_dir: Path | None = N
         name="shu-osher",
         description=f"Shu-Osher problem at t = {t_end}, 1D reference on {cells} cells (regression only).",
         physics="euler",
-        dim=1,
+        axes=(0,),
         unsteady=True,
         gamma=GAMMA,
         gas_constant=1.0 / GAMMA,

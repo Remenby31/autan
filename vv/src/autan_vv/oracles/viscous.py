@@ -10,6 +10,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import brentq
 
+from autan_vv.errors import VVError
 from autan_vv.oracles import FloatArray, Oracle
 
 
@@ -53,7 +54,7 @@ def couette(
         name="couette",
         description="Compressible Couette flow with viscous heating between isothermal walls y = 0 and y = H.",
         physics="navier-stokes",
-        dim=1,
+        axes=(1,),
         unsteady=False,
         gamma=gamma,
         gas_constant=gas_constant,
@@ -99,7 +100,7 @@ def poiseuille(
         name="poiseuille",
         description="Plane Poiseuille flow between walls y = 0 and y = H (incompressible).",
         physics="incompressible-navier-stokes",
-        dim=1,
+        axes=(0, 1),
         unsteady=False,
         gamma=math.inf,
         gas_constant=math.nan,
@@ -161,6 +162,9 @@ def blasius(
     def evaluate(points: FloatArray, _t: float | None) -> dict[str, FloatArray]:
         _, displacement, sol = blasius_profile()
         x = points[:, 0] - leading_edge
+        if not (np.all(np.isfinite(points)) and np.all(x > 0.0) and np.all(points[:, 1] >= 0.0)):
+            msg = "Blasius is defined downstream of the leading edge (x > x_le) above the plate (y >= 0)"
+            raise VVError(msg, code="V0708")
         eta = points[:, 1] * np.sqrt(speed / (nu * x))
         inside = eta < BLASIUS_ETA_MAX
         f = eta - displacement
@@ -181,7 +185,7 @@ def blasius(
         name="blasius",
         description="Blasius flat-plate boundary layer (boundary-layer equations, Re_x >> 1, low Mach).",
         physics="boundary-layer",
-        dim=2,
+        axes=(0, 1),
         unsteady=False,
         gamma=math.inf,
         gas_constant=math.nan,

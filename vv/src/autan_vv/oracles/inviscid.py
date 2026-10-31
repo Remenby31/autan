@@ -1,8 +1,8 @@
 """Exact inviscid solutions: Ringleb flow, the convected isentropic vortex, shock tubes.
 
 The Ringleb flow and the vortex are written in units where the stagnation (Ringleb) or
-free-stream (vortex) density, speed of sound and temperature are 1: gamma = 1.4 and
-R = 1/gamma, so that T = p/(rho R) = c^2.
+free-stream (vortex) density, speed of sound and temperature are 1, with R = 1/gamma so that
+T = p/(rho R) = c^2.
 """
 
 from __future__ import annotations
@@ -11,39 +11,43 @@ import math
 
 import numpy as np
 
+from autan_vv.errors import VVError
 from autan_vv.oracles import FloatArray, Oracle
 from autan_vv.oracles.riemann import State, sample
 
 GAMMA = 1.4
 
 
-def _ringleb_state(
-    speed: FloatArray, gamma: float
-) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
-    c = np.sqrt(1.0 - 0.5 * (gamma - 1.0) * speed**2)
-    rho = c ** (2.0 / (gamma - 1.0))
-    p = c ** (2.0 * gamma / (gamma - 1.0)) / gamma
+RINGLEB_K = (0.7, 1.5)
+RINGLEB_SPEED_MIN = 0.5
+
+
+def _ringleb_state(speed: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+    # J(c) below is the hodograph integral for gamma = 1.4 only.
+    c = np.sqrt(1.0 - 0.5 * (GAMMA - 1.0) * speed**2)
+    rho = c ** (2.0 / (GAMMA - 1.0))
+    p = c ** (2.0 * GAMMA / (GAMMA - 1.0)) / GAMMA
     j = 1.0 / c + 1.0 / (3.0 * c**3) + 1.0 / (5.0 * c**5) - 0.5 * np.log((1.0 + c) / (1.0 - c))
     return c, rho, p, j
 
 
-def ringleb_fields(points: FloatArray, gamma: float = GAMMA) -> dict[str, FloatArray]:
-    """Ringleb flow at points (x, y) of the plane (z ignored).
+def ringleb_fields(points: FloatArray) -> dict[str, FloatArray]:
+    """Ringleb flow (gamma = 1.4) at points (x, y) of the HiOCFD1 C1.2 domain (z ignored).
 
-    The hodograph solution gives x = (1/V^2 - 2/k^2)/(2 rho) + J/2 and y = +-sqrt(1 - V^2/k^2)/(k rho V)
-    for speed V and streamline constant k, so that (x - J/2)^2 + y^2 = 1/(4 rho^2 V^4), which is
-    solved for V by bisection; then 1/k^2 = (1/V^2 - 2 rho (x - J/2))/2 and, with sin(theta) = V/k,
-    u = V cos(theta) sign(y), v = V sin(theta): the flow turns around the origin, crossing y = 0
-    vertically. Chiocchia, AGARD-AR-211, 1985; HiOCFD1 problem C1.2.
+    HiOCFD1 C1.2, eqs. 1-2: x = (2/k^2 - 1/V^2)/(2 rho) - J/2, y = +-sqrt(1 - V^2/k^2)/(k rho V), so that
+    (x + J/2)^2 + y^2 = 1/(4 rho^2 V^4), solved for the speed V by bisection; then
+    1/k^2 = (1/V^2 + 2 rho (x + J/2))/2 and, with sin(theta) = V/k, u = V cos(theta) sign(y),
+    v = -V sin(theta): the flow enters at y > 0, turns around the origin and leaves at y < 0.
+    Points outside 0.7 <= k <= 1.5, V >= 0.5 raise V0706.
     """
     x, y = points[:, 0], points[:, 1]
     # Bracket away from V = 0 (1 - c rounds to 0) and from the cavitation speed (c = 0).
     lo = np.full(x.shape, 1e-3)
-    hi = np.full(x.shape, math.sqrt(2.0 / (gamma - 1.0)) * (1.0 - 1e-6))
+    hi = np.full(x.shape, math.sqrt(2.0 / (GAMMA - 1.0)) * (1.0 - 1e-6))
 
     def residual(speed: FloatArray) -> FloatArray:
-        _, rho, _, j = _ringleb_state(speed, gamma)
-        return (x - 0.5 * j) ** 2 + y**2 - 1.0 / (4.0 * rho**2 * speed**4)
+        _, rho, _, j = _ringleb_state(speed)
+        return (x + 0.5 * j) ** 2 + y**2 - 1.0 / (4.0 * rho**2 * speed**4)
 
     r_lo = residual(lo)
     for _ in range(120):
@@ -52,31 +56,43 @@ def ringleb_fields(points: FloatArray, gamma: float = GAMMA) -> dict[str, FloatA
         same = np.sign(r_mid) == np.sign(r_lo)
         lo, r_lo, hi = np.where(same, mid, lo), np.where(same, r_mid, r_lo), np.where(same, hi, mid)
     speed = 0.5 * (lo + hi)
-    _, rho, p, j = _ringleb_state(speed, gamma)
-    inv_k2 = 0.5 * (1.0 / speed**2 - 2.0 * rho * (x - 0.5 * j))
-    sin_t = np.minimum(speed * np.sqrt(inv_k2), 1.0)
+    _, rho, p, j = _ringleb_state(speed)
+    k = 1.0 / np.sqrt(0.5 * (1.0 / speed**2 + 2.0 * rho * (x + 0.5 * j)))
+    tol = 1e-9
+    inside = (
+        (speed >= RINGLEB_SPEED_MIN * (1 - tol))
+        & (k >= RINGLEB_K[0] * (1 - tol))
+        & (k <= RINGLEB_K[1] * (1 + tol))
+        & (speed <= k * (1 + tol))
+        & (np.abs(residual(speed)) <= 1e-10 / (4.0 * rho**2 * speed**4))
+    )
+    if not np.all(inside):
+        i = int(np.argmin(inside))
+        msg = f"point ({x[i]:.6g}, {y[i]:.6g}) is outside the Ringleb domain (V = {speed[i]:.4g}, k = {k[i]:.4g})"
+        raise VVError(msg, code="V0706")
+    sin_t = np.minimum(speed / k, 1.0)
     cos_t = np.sqrt(1.0 - sin_t**2)
     return {
         "Density": rho,
         "VelocityX": speed * cos_t * np.sign(y),
-        "VelocityY": speed * sin_t,
+        "VelocityY": -speed * sin_t,
         "VelocityZ": np.zeros_like(rho),
         "Pressure": p,
     }
 
 
-def ringleb(gamma: float = GAMMA) -> Oracle:
-    """Ringleb flow, steady, transonic, isentropic and irrotational (2D)."""
+def ringleb() -> Oracle:
+    """Ringleb flow, steady, transonic, isentropic and irrotational (2D, gamma = 1.4)."""
     return Oracle(
         name="ringleb",
-        description="Ringleb flow; HiOCFD1 C1.2 domain: streamlines k = 0.7 and 1.5, iso-speed V = 0.5.",
+        description="Ringleb flow on the HiOCFD1 C1.2 domain: streamlines k = 0.7 and 1.5, iso-speed V = 0.5.",
         physics="euler",
-        dim=2,
+        axes=(0, 1),
         unsteady=False,
-        gamma=gamma,
-        gas_constant=1.0 / gamma,
-        evaluate=lambda points, _t: ringleb_fields(points, gamma),
-        parameters={"k_inner": 1.5, "k_outer": 0.7, "speed_inflow": 0.5},
+        gamma=GAMMA,
+        gas_constant=1.0 / GAMMA,
+        evaluate=lambda points, _t: ringleb_fields(points),
+        parameters={"k_min": RINGLEB_K[0], "k_max": RINGLEB_K[1], "speed_min": RINGLEB_SPEED_MIN},
         references=("chiocchia1985", "hiocfd_c12"),
     )
 
@@ -100,6 +116,17 @@ def isentropic_vortex(
 
     u_inf = mach * math.cos(angle)
     v_inf = mach * math.sin(angle)
+    # Positive temperature at the centre: 1 - (gamma - 1) beta^2 e / (8 pi^2) > 0.
+    if (gamma - 1.0) * strength**2 * math.e / (8.0 * math.pi**2) >= 1.0:
+        msg = f"vortex strength {strength} gives a non-positive temperature at the centre"
+        raise VVError(msg, code="V0709")
+    if period is not None:
+        # The nearest-image solution is exact to the size of the perturbation at half a period.
+        r = 0.5 * min(period)
+        tail = abs(strength) / (2.0 * math.pi) * r * math.exp(0.5 * (1.0 - r * r))
+        if tail > 1e-15:
+            msg = f"period {period} truncates the vortex: perturbation {tail:.2g} at half a period"
+            raise VVError(msg, code="V0709")
 
     def evaluate(points: FloatArray, time: float | None) -> dict[str, FloatArray]:
         t = 0.0 if time is None else time
@@ -127,7 +154,7 @@ def isentropic_vortex(
         name="isentropic-vortex",
         description=f"Isentropic vortex, strength {strength}, convected at Mach {mach}.",
         physics="euler",
-        dim=2,
+        axes=(0, 1),
         unsteady=True,
         gamma=gamma,
         gas_constant=1.0 / gamma,
@@ -165,7 +192,7 @@ def shock_tube(name: str, diaphragm: float = 0.5, gamma: float = GAMMA) -> Oracl
         name=name,
         description=f"{name.capitalize()} shock tube, diaphragm at x = {diaphragm}, exact Riemann solution.",
         physics="euler",
-        dim=1,
+        axes=(0,),
         unsteady=True,
         gamma=gamma,
         gas_constant=1.0 / gamma,

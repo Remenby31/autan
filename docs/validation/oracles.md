@@ -2,26 +2,26 @@
 
 Source: `vv/src/autan_vv/oracles/`. An oracle maps positions (and a physical time for unsteady flows) to the primitive fields of [results.md](../contracts/results.md) — `Density`, `VelocityX`, `VelocityY`, `VelocityZ`, `Pressure`, `Temperature` and, for SA, `TurbulentSANuTilde` — in SI. `autan-vv oracles` lists them; `autan_vv.oracles.registry.get_oracle(name)` builds one.
 
-| Name | Physics | Dim | Kind | Definition |
+| Name | Physics | Axes | Kind | Definition |
 |---|---|---|---|---|
-| `mms-euler`, `mms-navier-stokes`, `mms-rans-sa`, `mms-rans-sa-noft2` | Euler, laminar NS, RANS-SA | 3 | exact with the manufactured source | [mms.md](mms.md) |
-| `ringleb` | Euler | 2 | exact, steady | Hodograph solution (Chiocchia 1985; HiOCFD1 C1.2): (x − J/2)² + y² = 1/(4ρ²V⁴) solved for the speed V, then u = V cos θ sign(y), v = V sin θ with sin θ = V/k. Domain k ∈ [0.7, 1.5], V ≥ 0.5 |
-| `isentropic-vortex` | Euler | 2 | exact, unsteady | Vortex of strength 5 convected at Mach 0.5 (Shu 1998) on the periodic [−10, 10]² domain recommended by Spiegel, Huynh and DeBonis (2015) |
-| `sod`, `lax` | Euler | 1 | exact, unsteady | Exact Riemann solver (Toro 2009, ch. 4), diaphragm at x = 0.5 |
-| `shu-osher` | Euler | 1 | **reference only** | 1D MUSCL–HLLC–SSP-RK3 solution on 12 800 cells at t = 1.8, cached in `~/.cache/autan-vv`; regression, never an exact gate |
-| `couette` | compressible NS | 1 | exact | Plane Couette flow with viscous heating, constant μ and Pr (White 2006) |
-| `poiseuille` | incompressible NS | 1 | exact (incompressible) | u = G y (H − y)/(2μ); holds to O(M²) for the compressible solver |
-| `blasius` | boundary layer | 2 | asymptotic | Blasius profile by shooting to f″(0) = 0.332057336215196; approximates NS for Re_x ≫ 1 at low Mach |
+| `mms-euler`, `mms-navier-stokes`, `mms-rans-sa`, `mms-rans-sa-noft2` | Euler, laminar NS, RANS-SA | x, y, z | exact with the manufactured source | [mms.md](mms.md) |
+| `ringleb` | Euler (γ = 1.4) | x, y | exact, steady | Hodograph solution in the HiOCFD1 C1.2 convention: x = (2/k² − 1/V²)/(2ρ) − J/2, so (x + J/2)² + y² = 1/(4ρ²V⁴) is solved for the speed V; u = V cos θ sign(y), v = −V sin θ with sin θ = V/k (inflow at y > 0). Points outside k ∈ [0.7, 1.5], V ≥ 0.5 raise `V0706`; J(c) is the γ = 1.4 integral |
+| `isentropic-vortex` | Euler | x, y | exact, unsteady | Vortex of strength 5 convected at Mach 0.5 (Shu 1998) on the periodic [−10, 10]² domain recommended by Spiegel, Huynh and DeBonis (2015); a period whose truncation exceeds 10⁻¹⁵, or a strength making the core temperature non-positive, raises `V0709` |
+| `sod`, `lax` | Euler | x | exact, unsteady | Exact Riemann solver (Toro 2009, ch. 4), diaphragm at x = 0.5 |
+| `shu-osher` | Euler | x | **reference only** | 1D MUSCL–HLLC–SSP-RK3 solution on 12 800 cells at t = 1.8 only (`V0707` otherwise), cached in `~/.cache/autan-vv`; regression, never evidence |
+| `couette` | compressible NS | y | exact | Plane Couette flow with viscous heating, constant μ and Pr (White 2006) |
+| `poiseuille` | incompressible NS | x, y | exact (incompressible) | u = G y (H − y)/(2μ); holds to O(M²) for the compressible solver |
+| `blasius` | boundary layer | x, y | asymptotic | Blasius profile by shooting to f″(0) = 0.332057336215196; approximates NS for Re_x ≫ 1 at low Mach; defined for x > x_le, y ≥ 0 (`V0708`) |
 
-The Ringleb, vortex and shock-tube oracles use units where the stagnation (Ringleb) or reference (vortex, shock tubes) density, speed of sound and temperature are 1: γ = 1.4 and R = 1/γ, so T = c². A run verified against them uses the same gas constant; the harness checks it.
+A run is refined along an oracle's axes and is one cell thick along the others; the harness takes h as the cell measure in those directions to the power 1/(number of axes). The Ringleb, vortex and shock-tube oracles use units where the stagnation (Ringleb) or reference (vortex, shock tubes) density, speed of sound and temperature are 1: γ = 1.4 and R = 1/γ, so T = c². A run verified against them uses the same gas constant; the harness checks it.
 
 ## How they are verified
 
 `vv/tests/test_oracles.py`, against what defines each one rather than against the code:
 
-- Ringleb and the vortex: residual of the steady or unsteady Euler equations by fourth-order finite differences, below 10⁻⁹; Ringleb also recovers its hodograph speed, its stagnation temperature, and is continuous across y = 0; the vortex returns to its initial state after one period.
-- Riemann solver: the star states of Toro's Table 4.3, tests 1–5, within the rounding of the printed digits (for test 5, whose inputs are themselves rounded outputs, plus the propagated input rounding); the Rankine–Hugoniot conditions across the Sod shock.
-- Shu–Osher: the 1D solver that produces it converges to the exact Sod solution at L1 order 0.6–1.1, as a discontinuous solution must (Banks, Aslam and Rider 2008), which is the second source that makes it usable for regression; the reference places the shock near x = 2.4.
+- Ringleb and the vortex: residual of the steady or unsteady Euler equations by fourth-order finite differences, below 10⁻⁹. The residual cannot tell a flow from its mirror image or its reversal, so Ringleb is also checked against the HiOCFD point V = 0.5, k = 1 (x = −0.8543492035, y = 1.9690267405, ρ = 0.95^2.5, u = V cos 30°, v = −V sin 30°), its stagnation temperature and its continuity across y = 0; the vortex returns to its initial state after one period.
+- Riemann solver: the star states of Toro's Table 4.3, tests 1–5, within the rounding of the printed digits (for test 5, whose inputs are themselves rounded outputs, plus the propagated input rounding); the closed-form two-rarefaction solution; isentropy, the Riemann invariant and the Rankine–Hugoniot conditions for soft gases (γ = 1.02, 1.04); Rankine–Hugoniot across the sampled Sod shock.
+- Shu–Osher: the 1D solver that produces it converges to the exact Sod solution at L1 order 0.6–1.1, as a discontinuous solution must (Banks, Aslam and Rider 2008); the reference places the shock near x = 2.4, keeps the undisturbed initial state exactly ahead of it, and carries the entropy-wave oscillations behind it. The profile behind the shock is confirmed by no independent source, which is why the oracle is reference-only.
 - Blasius: f″(0) and the displacement constant 1.72078765752246 of Ganapol (2010) to 10⁻¹³ and 10⁻¹⁰; wall shear and edge velocities.
 - Couette and Poiseuille: their momentum and energy balances by finite differences, and the boundary values.
 
