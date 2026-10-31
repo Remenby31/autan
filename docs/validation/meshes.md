@@ -1,0 +1,48 @@
+# Mesh families
+
+Source: `vv/src/autan_vv/meshes/`. Generate with `autan-vv meshes <kind> --levels 8,16,32,64 [--perturbation 0.3] [--seed S] --out DIR`.
+
+## Kinds
+
+All meshes fill the unit cube [0, 1]³; level `n` has about `n` cells per edge.
+
+| Kind | Cells | Construction | File |
+|---|---|---|---|
+| `tet` | tetrahedra | Gmsh Delaunay, size 1/n | MSH 4.1 ASCII |
+| `hex` | hexahedra | Gmsh transfinite, n³ | MSH 4.1 ASCII |
+| `prism` | prisms | Gmsh unstructured triangles in xy, n layers in z | MSH 4.1 ASCII |
+| `hybrid` | hex, pyramid, tet, prism | Structured n³ grid in four slabs along z: hexahedra; a transition layer where each hexahedron becomes a pyramid on its bottom quad plus ten tetrahedra; Kuhn tetrahedra; prisms. Every split quad uses its lowest-to-highest-corner diagonal, so cells always share whole faces | MSH 4.1 ASCII |
+| `poly` | polyhedra (median dual) | One cell per vertex of the `tet` mesh; faces are the median-dual rings of face and tetrahedron centroids around each edge (Barth 1994), closed through edge midpoints and vertices on the boundary | Fluent ASCII |
+| `agglomerated` | polyhedra, up to ~330 faces | The `poly` mesh with the cells of every other box of a lattice of edge ≈ 4/n merged: non-convex cells with 100+ faces among ordinary ones | Fluent ASCII |
+
+The hybrid kind is built in Python rather than by Gmsh because Gmsh 4.15's tetrahedral optimiser duplicates tetrahedra next to the pyramids it inserts on quad faces, and without it leaves inverted slivers, depending on the seed.
+
+**Dirty variant.** `--perturbation α` moves every node by a seeded random vector, uniform in a ball of radius α × its shortest incident edge, tangentially on the cube faces so the domain is unchanged. Nodes of a cell that would become inverted or non-star-shaped have their move halved until every cell is valid. The seed of each level derives from (seed, n, kind).
+
+## Files and zones
+
+Agreed with the core mesh readers (#1):
+
+- MSH 4.1 ASCII, linear elements only (tet 4, hex 5, prism 6, pyramid 7; tri 2, quad 3 on boundaries). One 3D physical group `fluid`; six 2D physical groups `xmin`, `xmax`, `ymin`, `ymax`, `zmin`, `zmax`; nothing else. The file is written through a discrete Gmsh model from the in-memory arrays, so it holds exactly the mesh that was checked.
+- Fluent ASCII for polyhedra: sections 0, 2, 10 (nodes), 12 (cells, element type 7), 13 (faces, mixed type 0, each line starting with its node count), 45 (zone names); indices in hexadecimal, 1-based. The right-hand-rule normal of a face points toward c0; boundary faces have c1 = 0. Cell zone `fluid`; face zones `interior` (type 2), `ymin` as `wall` (type 3, the RANS-SA wall), the five others as `pressure-far-field` (type 9). Every MMS boundary is Dirichlet from the exact solution whatever its type.
+- Coordinates are rounded to the 16 significant digits Gmsh writes, so file and memory agree bit for bit.
+
+## Manifest and reproducibility
+
+Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, perturbation, seed, Gmsh version, and per level the file name, `file_sha256`, `mesh_sha256` (topology and coordinates, format-independent), counts per cell type, total volume, h = (V/N)^(1/3) and `min_subvolume_ratio`. The same seed, Gmsh version and platform give byte-identical files; a different seed gives different files (`test_families_regenerate_bit_for_bit`).
+
+`min_subvolume_ratio` is the smallest (sub-tetrahedron / cell volume) of the decomposition used by the core (triangle fan around each face's mean point, apex at the cell's mean face point). It is slightly negative (≈ −0.005) on median-dual meshes because their faces are strongly non-planar; volumes and closure are still exact.
+
+## Checks
+
+Every generated mesh is closed to 10⁻¹² relative and has positive cell volumes (`V0301` otherwise). Tests (`vv/tests/test_meshes.py`) also check, for every kind with and without perturbation: total volume 1 to 10⁻¹³, each box face of area 1 with outward normals, interior normals from owner to neighbour; the MSH file read back through Gmsh's own reader (physical names, element types, coordinates bit for bit); the Fluent file read back by an independent parser in the test, then checked for closure, volumes, zones and the core rule that every edge of every cell is used exactly twice in opposite directions.
+
+## Platform
+
+Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, never imported by shipped code, approved by the lead for that use. Gmsh publishes no linux-aarch64 wheel: generate meshes on macOS or x86-64 CI and copy the files (with their manifest) to the DGX Spark machines, which only consume them. The generated meshes are data, not GPL code.
+
+## References
+
+- T. J. Barth, Aspects of unstructured grids and finite-volume solvers for the Euler and Navier-Stokes equations, VKI Lecture Series 1994-05, 1994 (median dual).
+- C. Geuzaine and J.-F. Remacle, Gmsh: a 3-D finite element mesh generator with built-in pre- and post-processing facilities, *Int. J. Numer. Meth. Eng.* 79(11):1309–1331, 2009. doi:10.1002/nme.2579
+- H. W. Kuhn, Some combinatorial lemmas in topology, *IBM J. Res. Dev.* 4(5):518–524, 1960 (cube triangulation).

@@ -25,7 +25,7 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 | `neighbour` | n_interior_faces | Cell on the side the normal points into. |
 | `face_zone` | n_faces | Index into `face_zones`. |
 | `cell_zone` | n_cells | Index into `cell_zones`. |
-| `cell_global_id` | n_cells | `int64` index of the cell in the unpartitioned mesh; the identity when the mesh was not partitioned. |
+| `cell_global_id` | n_cells | `int64` identity of the cell: its index in the mesh as first assembled (the identity then), kept through partitioning and renumbering. |
 | `boundary_zone_offsets` | n_face_zones + 1 | Boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_faces`. Interior zones have an empty range. |
 | `cell_face_offsets`, `cell_faces` | n_cells + 1, 2·n_interior + n_boundary | CSR of the faces of each cell, in increasing face index. A face is outward for cell `c` iff `owner[f] == c`. |
 
@@ -72,11 +72,17 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 | `cell_volume` | n_cells | Volume of the polyhedron bounded by the fan triangles, summed over tetrahedra (apex, m, pᵢ, pᵢ₊₁) with signed volumes; the apex is the mean of the face centroids. Volumes of all cells sum to the volume enclosed by the boundary triangles. |
 | `cell_centroid_{x,y,z}` | n_cells | Volume-weighted centroid of the same tetrahedra. |
 
-Ghost cells get NaN volume and centroid: the partitioner fills them from the owning partition.
+Ghost cells get NaN volume and centroid: the forward halo exchange fills them from the owning partition. `compute_geometry` on a partition is valid but not bitwise identical to the global computation; the bitwise path is the geometry distributed by the partitioner ([partitioning.md](../design/partitioning.md)).
 
 On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Green–Gauss with face-centroid values is exact for linear fields. On warped faces a single (c_f, S_f) pair cannot integrate a linear field over the fan exactly; the error is of the order of the warp, as in other cell-centred codes. Kernels that need exactness there must use least-squares gradients or per-triangle quadrature.
 
 `autan::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
+
+## Quality and ordering
+
+`autan::compute_quality(mesh, geometry)` (`core/include/autan/core/quality.hpp`) returns the checkMesh metrics of OpenFOAM: per-face non-orthogonality (degrees) and skewness, per-interior-face volume ratio, per-owned-cell aspect ratio; the header gives each definition.
+
+`autan::rcm_order(mesh)` returns a reverse Cuthill–McKee order of the owned cells (ghosts stay last); `autan::renumber_cells(mesh, new_to_old)` applies any such permutation and re-sorts the faces, so other orderings (Hilbert) plug in through the same call. Every cell keeps its global id.
 
 ## Building a mesh
 
@@ -92,11 +98,13 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 | Fluent mesh, ASCII and binary (2010/3010, 2012, 2013) | Sections 0, 1, 2, 10, 12, 13, 39, 45; 4, 37, 38, 40 are skipped. Mixed and polygonal faces, polyhedral cells (type 7). The face normal points toward c0. | Zone sections 39/45 give names and types (they take precedence over face-section codes); a zone without one is named `zone-<id>` and typed from its code; a declared zone without faces is kept. A zone's role is that of its faces. Declared element types must match the cell's face count (E0132). | 2D meshes, periodic shadow faces (18), hanging-node trees and interface parents (58, 59, 61–63), any other section. |
 | OpenFOAM polyMesh, ASCII and binary, 32/64-bit labels and scalars | The `polyMesh` directory or a case directory holding `constant/polyMesh`; comments anywhere; sized, unsized and uniform label lists; ASCII faces in nested form (`faceList` or `faceCompactList`), binary faces as `faceCompactList`. | Patches → boundary zones (type as written), `cellZones` → cell zones (type empty). `faceZones`, `pointZones` and `sets` are selections, not zones, and are not read. | Compressed files, binary `faceList`, processor patches; a cell in two cell zones (E0135). |
 
+`autan::io::mesh_hash(path)` computes the mesh hash and `autan::io::mesh_info_json(mesh, hash)` the MeshInfo document, both as [mesh-info.md](mesh-info.md) defines them. The `autan-mesh-info [--json] MESH` tool prints a summary (counts, zones, quality maxima, closure) or that document; it exits 1 with the E01xx code on a read error.
+
 The test meshes and how they are generated: [tests/data/mesh/README.md](../../tests/data/mesh/README.md).
 
 ## Errors
 
-Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers; the SDK registry carries their fix and doc page.
+Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers (E0101–E0139) and to the partitioner and halo exchange (E0140–E0149); the SDK registry carries their fix and doc page.
 
 | Code | Name | Raised when |
 |---|---|---|
@@ -125,3 +133,9 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
 | E0134 | `io_external_reference` | The mesh refers to another file (CGNS link); meshes must be self-contained. |
 | E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |
+| E0140 | `partition_invalid_request` | A part count, rank, part index or cell weight is out of range, or an array has the wrong size. |
+| E0141 | `partition_input_has_ghosts` | The mesh to partition already has ghost cells. |
+| E0142 | `partition_backend_failed` | The partitioner (METIS, Scotch) is not built or reports an error. |
+| E0143 | `partition_empty_part` | A part received no cell. |
+| E0144 | `halo_inconsistent` | The communicator size differs from the partition count, or two ranks disagree on what they exchange. |
+| E0145 | `halo_device_unsupported` | A halo exchange on device memory without CUDA support in the build or in MPI. |
