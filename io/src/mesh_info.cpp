@@ -35,7 +35,7 @@ void hash_file(picosha2::hash256_one_by_one& hasher, const fs::path& path, bool 
     const std::string frame = path.filename().string() + "\n" + std::to_string(size) + "\n";
     hasher.process(frame.begin(), frame.end());
   }
-  std::vector<char> buffer(1 << 20);
+  std::vector<char> buffer(std::size_t{1} << 20U);
   while (in) {
     in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     hasher.process(buffer.begin(), buffer.begin() + in.gcount());
@@ -87,7 +87,7 @@ std::size_t shape_index(const Mesh& mesh, index_t cell, std::vector<index_t>& no
     }
     nodes.insert(nodes.end(), fn.begin(), fn.end());
   }
-  std::sort(nodes.begin(), nodes.end());
+  std::ranges::sort(nodes);
   std::vector<int> degrees;
   for (std::size_t i = 0; i < nodes.size();) {
     std::size_t j = i;
@@ -101,8 +101,8 @@ std::size_t shape_index(const Mesh& mesh, index_t cell, std::vector<index_t>& no
   if (n == 4 && triangles == 4 && v == 4) return 0;
   if (n == 5 && triangles == 4 && quads == 1 && v == 5 && count(3) == 4 && count(4) == 1) {
     for (const index_t p : mesh.face_nodes(quad_face)) {
-      const auto range = std::equal_range(nodes.begin(), nodes.end(), p);
-      if (range.second - range.first != 3) return 4;
+      const auto range = std::ranges::equal_range(nodes, p);
+      if (range.size() != 3) return 4;
     }
     return 1;
   }
@@ -183,8 +183,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
     interfaces.push_back(Json{{"zones", {pair.first, pair.second}}, {"faces", faces}});
   }
 
-  const double max_angle =
-      *std::max_element(quality.non_orthogonality.begin(), quality.non_orthogonality.end());
+  const double max_angle = *std::ranges::max_element(quality.non_orthogonality);
   const Json doc{
       {"schema", "autan.mesh-info/1"},
       {"source",

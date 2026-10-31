@@ -36,7 +36,7 @@ MeshQuality compute_quality(const Mesh& mesh, const Geometry& g) {
   if (g.face_area.size() != n_faces || g.cell_volume.size() != at(mesh.n_cells())) {
     throw Error(ErrorCode::mesh_inconsistent_sizes, "geometry does not belong to this mesh");
   }
-  auto cell_centre = [&](index_t c) {
+  const auto cell_centre = [&](index_t c) {
     return Vec3{g.cell_centroid_x[at(c)], g.cell_centroid_y[at(c)], g.cell_centroid_z[at(c)]};
   };
   MeshQuality q;
@@ -47,7 +47,7 @@ MeshQuality compute_quality(const Mesh& mesh, const Geometry& g) {
   // OpenFOAM primitiveMeshTools::faceSkewness / boundaryFaceSkewness: the
   // skewness vector is normalised by the face extent along it, at least
   // 0.2 |d| (interior) or 0.4 |d| (boundary).
-  auto skewness = [&](std::size_t f, Vec3 cpf, Vec3 d, Vec3 s, Vec3 cf, double floor) {
+  const auto skewness = [&](std::size_t f, Vec3 cpf, Vec3 d, Vec3 s, Vec3 cf, double floor) {
     const double ds = dot(s, d);
     if (!(ds > 0.0)) return infinite;
     const Vec3 sv = cpf - (dot(s, cpf) / ds) * d;

@@ -25,7 +25,7 @@ constexpr const char* usage =
     "coded error (E01xx) if the mesh cannot be read, 2 on a usage error.\n";
 
 double max_of(const std::vector<double>& v) {
-  return v.empty() ? 0.0 : *std::max_element(v.begin(), v.end());
+  return v.empty() ? 0.0 : *std::ranges::max_element(v);
 }
 
 void print_text(const autan::Mesh& mesh, const std::string& hash) {
@@ -54,9 +54,7 @@ void print_text(const autan::Mesh& mesh, const std::string& hash) {
                 zone.type.empty() ? "-" : zone.type.c_str(), cells);
   }
   std::printf("\nquality\n");
-  const double min_ratio = q.volume_ratio.empty()
-                               ? 1.0
-                               : *std::min_element(q.volume_ratio.begin(), q.volume_ratio.end());
+  const double min_ratio = q.volume_ratio.empty() ? 1.0 : *std::ranges::min_element(q.volume_ratio);
   std::printf("  max non-orthogonality  %.3f deg\n", max_of(q.non_orthogonality));
   std::printf("  max skewness           %.3g\n", max_of(q.skewness));
   std::printf("  max aspect ratio       %.3g\n", max_of(q.aspect_ratio));
@@ -66,7 +64,7 @@ void print_text(const autan::Mesh& mesh, const std::string& hash) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char* const* argv) {
   bool json = false;
   const char* path = nullptr;
   for (int i = 1; i < argc; ++i) {
@@ -76,7 +74,7 @@ int main(int argc, char** argv) {
     } else if (arg == "-h" || arg == "--help") {
       std::fputs(usage, stdout);
       return 0;
-    } else if (path == nullptr && !arg.starts_with("-")) {
+    } else if (path == nullptr && !arg.starts_with('-')) {
       path = argv[i];
     } else {
       std::fputs(usage, stderr);

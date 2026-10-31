@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "autan/core/error.hpp"
@@ -92,10 +93,9 @@ index_t pseudo_peripheral(const Graph& g, index_t start, std::vector<int>& level
   index_t root = start;
   auto [last, depth] = last_level(g, root, level);
   for (;;) {
-    const index_t candidate =
-        *std::min_element(last.begin(), last.end(), [&](index_t a, index_t b) {
-          return g.degree(a) != g.degree(b) ? g.degree(a) < g.degree(b) : a < b;
-        });
+    const index_t candidate = *std::ranges::min_element(last, [&](index_t a, index_t b) {
+      return g.degree(a) != g.degree(b) ? g.degree(a) < g.degree(b) : a < b;
+    });
     auto [candidate_last, candidate_depth] = last_level(g, candidate, level);
     if (candidate_depth <= depth) return root;
     root = candidate;
@@ -116,11 +116,11 @@ std::vector<index_t> rcm_order(const Mesh& mesh) {
   // Components are started in increasing order of their lowest-degree cell.
   std::vector<index_t> by_degree(at(n));
   std::iota(by_degree.begin(), by_degree.end(), 0);
-  std::stable_sort(by_degree.begin(), by_degree.end(),
-                   [&](index_t a, index_t b) { return g.degree(a) < g.degree(b); });
+  std::ranges::stable_sort(by_degree,
+                           [&](index_t a, index_t b) { return g.degree(a) < g.degree(b); });
   std::vector<index_t> sorted_neighbours;
   for (const index_t seed : by_degree) {
-    if (placed[at(seed)]) continue;
+    if (placed[at(seed)] != 0) continue;
     const index_t root = pseudo_peripheral(g, seed, level);
     std::size_t head = order.size();
     order.push_back(root);
@@ -129,9 +129,9 @@ std::vector<index_t> rcm_order(const Mesh& mesh) {
       const index_t c = order[head++];
       sorted_neighbours.clear();
       for (const index_t d : g.of(c)) {
-        if (!placed[at(d)]) sorted_neighbours.push_back(d);
+        if (placed[at(d)] == 0) sorted_neighbours.push_back(d);
       }
-      std::sort(sorted_neighbours.begin(), sorted_neighbours.end(), [&](index_t a, index_t b) {
+      std::ranges::sort(sorted_neighbours, [&](index_t a, index_t b) {
         return g.degree(a) != g.degree(b) ? g.degree(a) < g.degree(b) : a < b;
       });
       for (const index_t d : sorted_neighbours) {
@@ -140,7 +140,7 @@ std::vector<index_t> rcm_order(const Mesh& mesh) {
       }
     }
   }
-  std::reverse(order.begin(), order.end());
+  std::ranges::reverse(order);
   for (index_t c = n; c < mesh.n_cells(); ++c) order.push_back(c);
   return order;
 }
@@ -179,8 +179,7 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
   // numbering; a partition keeps the global ids of its cells.
   const auto ids = mesh.cell_global_id();
   bool identity = mesh.n_owned_cells() == mesh.n_cells();
-  for (std::size_t i = 0; i < n_cells && identity; ++i)
-    identity = ids[i] == static_cast<std::int64_t>(i);
+  for (std::size_t i = 0; i < n_cells && identity; ++i) identity = std::cmp_equal(ids[i], i);
   in.cell_zone.resize(n_cells);
   if (!identity) in.cell_global_id.resize(n_cells);
   for (std::size_t i = 0; i < n_cells; ++i) {
