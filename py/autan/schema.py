@@ -1,4 +1,4 @@
-"""The case document ``cfd.case/1`` as pydantic models (docs/contracts/case-schema.md)."""
+"""The case document ``autan.case/1`` as pydantic models (docs/contracts/case-schema.md)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ import pint
 import rfc8785
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
-from cfd.errors import CaseError, Diagnostic, Location, diagnostic
-from cfd.units import K, deg, fail, m, quantity, validate_number
+from autan.errors import CaseError, Diagnostic, Location, diagnostic
+from autan.units import K, deg, fail, m, quantity, validate_number
 
-SCHEMA_ID = "cfd.case/1"
+SCHEMA_ID = "autan.case/1"
 # Largest integer RFC 8785 canonicalizes exactly (IEEE 754 double, 2**53 - 1).
 MAX_INTEGER = 2**53 - 1
 
@@ -86,16 +86,18 @@ def document_path(parts: tuple[int | str, ...], document: object) -> str:
 def diagnostics_from(
     error: ValidationError, location: Location, document: object
 ) -> list[Diagnostic]:
-    """Coded diagnostics of a pydantic error: ``cfd.E####`` types keep their code, range
+    """Coded diagnostics of a pydantic error: ``autan.E####`` types keep their code, range
     violations are ``E0304``, cross-field problems expand to one diagnostic each, the rest
     is ``E0003``."""
     found = []
     for item in error.errors(include_url=False):
         path = document_path(item["loc"], document)
-        if item["type"] == "cfd.consistency":
+        if item["type"] == "autan.consistency":
             problems = (item.get("ctx") or {})["problems"]
-        elif item["type"].startswith("cfd."):
-            problems = [(item["type"][4:], path, f"{path or 'case'}: {item['msg']}")]
+        elif item["type"].startswith("autan."):
+            problems = [
+                (item["type"].removeprefix("autan."), path, f"{path or 'case'}: {item['msg']}")
+            ]
         elif item["type"] in _RANGE_ERRORS:
             problems = [("E0304", path, f"{path}: {item['msg']}")]
         else:
@@ -226,7 +228,7 @@ Precision = Literal["fp32+acc64", "fp64"]
 
 
 def _air() -> IdealGas:
-    from cfd.gases import AIR  # noqa: PLC0415 -- cfd.gases imports this module
+    from autan.gases import AIR  # noqa: PLC0415 -- autan.gases imports this module
 
     return AIR.model_copy(deep=True)
 
@@ -381,9 +383,9 @@ Monitor = Annotated[Forces, Field(discriminator="kind")]
 
 
 class CaseSpec(Spec):
-    """A complete case document, ``cfd.case/1``."""
+    """A complete case document, ``autan.case/1``."""
 
-    schema_: Literal["cfd.case/1"] = Field(default="cfd.case/1", alias="schema")
+    schema_: Literal["autan.case/1"] = Field(default="autan.case/1", alias="schema")
     name: Name
     mesh: Name
     physics: Physics
@@ -460,7 +462,7 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
         )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(
-            ("E0305", "time", f"{physics.turbulence.model} needs case.time = cfd.Unsteady(...)")
+            ("E0305", "time", f"{physics.turbulence.model} needs case.time = autan.Unsteady(...)")
         )
     return found
 
@@ -480,7 +482,7 @@ def _require_tags(schema: dict[str, Any]) -> None:
 
 
 def json_schema() -> dict[str, Any]:
-    """The published JSON Schema of ``cfd.case/1``, cross-field rules included."""
+    """The published JSON Schema of ``autan.case/1``, cross-field rules included."""
     schema = CaseSpec.model_json_schema(by_alias=True, mode="validation")
     _require_tags(schema)
 
