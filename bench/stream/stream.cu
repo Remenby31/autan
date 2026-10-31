@@ -190,7 +190,8 @@ int main(int argc, char** argv) {
       "\"sm_count\":%d,\"l2_bytes\":%d,\"memory_bytes\":%zu},",
       prop.name, uuid, prop.major, prop.minor, prop.multiProcessorCount, prop.l2CacheSize,
       prop.totalGlobalMem);
-  std::printf("\"backend\":\"" CFD_BENCH_BACKEND "\",\"runtime_version\":%d,\"driver_version\":%d,",
+  std::printf("\"backend\":\"" AUTAN_BENCH_BACKEND
+              "\",\"runtime_version\":%d,\"driver_version\":%d,",
               runtime, driver);
   std::printf(
       "\"config\":{\"elements\":%ld,\"element_bytes\":8,\"warmup\":%d,\"reps\":%d,\"batch\":%d,"

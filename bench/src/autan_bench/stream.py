@@ -4,9 +4,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from cfdbench import gpu, provenance, result
-from cfdbench.errors import BenchError, Code
-from cfdbench.stats import summarize
+from autan_bench import gpu, provenance, result
+from autan_bench.errors import BenchError, Code
+from autan_bench.stats import summarize
 
 
 def _run_binary(binary: Path, args: list[str]) -> dict[str, Any]:

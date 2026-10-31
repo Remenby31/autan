@@ -1,6 +1,6 @@
 import json
 
-from cfdbench.cli import main
+from autan_bench.cli import main
 from conftest import bench, make_result
 
 QUIET = [200.0, 201.0, 199.0, 200.5, 199.5]

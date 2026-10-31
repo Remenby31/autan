@@ -1,5 +1,5 @@
 import pytest
-from cfdbench.stats import summarize
+from autan_bench.stats import summarize
 
 
 def test_summary_statistics_follow_their_definitions():

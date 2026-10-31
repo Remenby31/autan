@@ -1,11 +1,11 @@
-// The CUDA runtime names used by the benchmarks, mapped to HIP when CFD_BENCH_HIP is defined,
+// The CUDA runtime names used by the benchmarks, mapped to HIP when AUTAN_BENCH_HIP is defined,
 // so one source builds for both backends.
 #pragma once
 
-#ifdef CFD_BENCH_HIP
+#ifdef AUTAN_BENCH_HIP
 #include <hip/hip_runtime.h>
 
-#define CFD_BENCH_BACKEND "hip"
+#define AUTAN_BENCH_BACKEND "hip"
 #define cudaDeviceProp hipDeviceProp_t
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaDriverGetVersion hipDriverGetVersion
@@ -29,5 +29,5 @@
 #else
 #include <cuda_runtime.h>
 
-#define CFD_BENCH_BACKEND "cuda"
+#define AUTAN_BENCH_BACKEND "cuda"
 #endif

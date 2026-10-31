@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
-from cfdbench.cli import main
+from autan_bench.cli import main
 
 # DGX Spark datasheet: 128 GB LPDDR5x, 256-bit, 273 GB/s.
 GB10_THEORETICAL_GBPS = 273.0
@@ -13,11 +13,11 @@ pytestmark = pytest.mark.gpu
 
 @pytest.fixture
 def stream_binary() -> Path:
-    path = os.environ.get("CFD_BENCH_STREAM")
+    path = os.environ.get("AUTAN_BENCH_STREAM")
     if not path:
-        if os.environ.get("CFD_BENCH_REQUIRE_GPU"):
-            pytest.fail("CFD_BENCH_REQUIRE_GPU is set but CFD_BENCH_STREAM is not")
-        pytest.skip("set CFD_BENCH_STREAM to the built stream binary to run GPU tests")
+        if os.environ.get("AUTAN_BENCH_REQUIRE_GPU"):
+            pytest.fail("AUTAN_BENCH_REQUIRE_GPU is set but AUTAN_BENCH_STREAM is not")
+        pytest.skip("set AUTAN_BENCH_STREAM to the built stream binary to run GPU tests")
     return Path(path)
 
 

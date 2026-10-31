@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 
 import pytest
-from cfdbench import result
-from cfdbench.stats import summarize
+from autan_bench import result
+from autan_bench.stats import summarize
 
 
 def bench(name: str, samples: list[float], *, unit: str = "GB/s", better: str = "higher") -> dict:

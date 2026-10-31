@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(cfd_image_smoke LANGUAGES C CXX CUDA)
+project(autan_image_smoke LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

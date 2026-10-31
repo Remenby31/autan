@@ -1,5 +1,5 @@
 import pytest
-from cfdbench.cli import main
+from autan_bench.cli import main
 from conftest import bench, make_result
 
 

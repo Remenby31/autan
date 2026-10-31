@@ -1,5 +1,5 @@
 # Builds the dev image (docker/dev) for amd64 and arm64 on GitHub-hosted runners, runs the
-# image smoke test and, on main, publishes ghcr.io/remenby31/cfd-dev:<sha> and :main.
+# image smoke test and, on main, publishes ghcr.io/remenby31/autan-dev:<sha> and :main.
 name: gpu-image
 
 on:
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IMAGE: ghcr.io/remenby31/cfd-dev
+  IMAGE: ghcr.io/remenby31/autan-dev
   PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
 
 jobs:
@@ -45,18 +45,18 @@ jobs:
           context: docker/dev
           platforms: linux/${{ matrix.arch }}
           load: true
-          tags: cfd-dev:ci
-          build-args: CFD_IMAGE_REVISION=${{ github.sha }}
+          tags: autan-dev:ci
+          build-args: AUTAN_IMAGE_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=dev-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=dev-${{ matrix.arch }}
       - name: Smoke test (CPU; CUDA code compiled, not run)
         run: >-
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" cfd-dev:ci
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" autan-dev:ci
           env CUDA_ARCHITECTURES="120;121" /src/docker/dev/smoke/run.sh /tmp/smoke
       - name: Build the solver
         if: hashFiles('CMakeLists.txt') != ''
         run: >-
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" cfd-dev:ci
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" autan-dev:ci
           sh -c 'cmake -S /src -B /tmp/build -DCMAKE_CUDA_ARCHITECTURES="120;121" && cmake --build /tmp/build'
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: env.PUBLISH == 'true'
@@ -67,7 +67,7 @@ jobs:
       - name: Push the single-architecture image
         if: env.PUBLISH == 'true'
         run: |
-          docker tag cfd-dev:ci "$IMAGE:${GITHUB_SHA}-${{ matrix.arch }}"
+          docker tag autan-dev:ci "$IMAGE:${GITHUB_SHA}-${{ matrix.arch }}"
           docker push "$IMAGE:${GITHUB_SHA}-${{ matrix.arch }}"
 
   publish:

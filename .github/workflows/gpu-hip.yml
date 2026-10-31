@@ -32,7 +32,7 @@ jobs:
         run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build libfile-which-perl
       - name: Build for gfx942
         run: >-
-          cmake -S bench -B build -G Ninja -DCFD_BENCH_BACKEND=HIP -DCMAKE_HIP_ARCHITECTURES=gfx942
+          cmake -S bench -B build -G Ninja -DAUTAN_BENCH_BACKEND=HIP -DCMAKE_HIP_ARCHITECTURES=gfx942
           -DCMAKE_PREFIX_PATH=/opt/rocm && cmake --build build
       - name: Check the binary carries gfx942 code
         run: /opt/rocm/bin/roc-obj-ls build/stream | tee /dev/stderr | grep -q gfx942

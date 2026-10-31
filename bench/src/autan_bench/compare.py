@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from cfdbench.errors import BenchError, Code
+from autan_bench.errors import BenchError, Code
 
 DEFAULT_THRESHOLD = 0.05
 

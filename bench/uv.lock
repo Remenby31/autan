@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cfd-bench"
+name = "autan-bench"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [

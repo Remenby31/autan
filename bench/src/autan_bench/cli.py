@@ -1,12 +1,12 @@
-"""Measure, validate and compare cfd-solver benchmark results."""
+"""Measure, validate and compare Autan benchmark results."""
 
 import argparse
 import sys
 from pathlib import Path
 
-from cfdbench import gpu, result, stream
-from cfdbench.compare import DEFAULT_THRESHOLD, compare
-from cfdbench.errors import BenchError, Code
+from autan_bench import gpu, result, stream
+from autan_bench.compare import DEFAULT_THRESHOLD, compare
+from autan_bench.errors import BenchError, Code
 
 MAX_BASELINE_CV = 0.02
 
@@ -91,7 +91,7 @@ def _peak(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cfdbench", description=__doc__)
+    p = argparse.ArgumentParser(prog="autan_bench", description=__doc__)
     sub = p.add_subparsers(required=True)
 
     s = sub.add_parser("stream", help="measure device memory bandwidth with the STREAM kernels")
@@ -137,7 +137,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point of the ``cfdbench`` command; returns 0 on success, 1 on regression, 2 on error."""
+    """Entry point of the ``autan-bench`` command; returns 0 on success, 1 on regression, 2 on error."""
     args = parser().parse_args(argv)
     try:
         return args.func(args)

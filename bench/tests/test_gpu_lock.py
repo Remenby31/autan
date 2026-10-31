@@ -1,7 +1,7 @@
 import threading
 import time
 
-from cfdbench.gpu import gpu_lock
+from autan_bench.gpu import gpu_lock
 
 
 def test_gpu_lock_serialises_holders(tmp_path):

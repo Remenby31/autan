@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Development and CI image: CUDA 13.0, GCC 13, CMake, Ninja, CUDA-aware Open MPI over UCX,
 # METIS, PT-Scotch, parallel HDF5, CGNS, OSU micro-benchmarks, Python 3.12 with uv.
-# Libraries built from source live in /opt/cfd. See docs/infra/image.md.
+# Libraries built from source live in /opt/autan. See docs/infra/image.md.
 
 ARG CUDA_IMAGE=nvidia/cuda:13.0.3-devel-ubuntu24.04@sha256:b7ae301dea2c162444795462ce17a05f6a516e5a75944b57af5b88540a1a2266
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168
@@ -22,7 +22,7 @@ FROM base AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends bzip2 flex bison autoconf automake libtool \
  && rm -rf /var/lib/apt/lists/*
-ARG PREFIX=/opt/cfd
+ARG PREFIX=/opt/autan
 ENV PATH=${PREFIX}/bin:${PATH}
 WORKDIR /src
 COPY fetch.sh /usr/local/bin/fetch
@@ -96,17 +96,17 @@ RUN fetch https://mvapich.cse.ohio-state.edu/download/mvapich/osu-micro-benchmar
 
 FROM base AS dev
 COPY --from=uv /uv /uvx /usr/local/bin/
-COPY --from=build /opt/cfd /opt/cfd
-ARG CFD_IMAGE_REVISION=unknown
-LABEL org.opencontainers.image.source="https://github.com/Remenby31/cfd-solver" \
-      org.opencontainers.image.description="cfd-solver development and CI image" \
+COPY --from=build /opt/autan /opt/autan
+ARG AUTAN_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/Remenby31/autan" \
+      org.opencontainers.image.description="Autan development and CI image" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.revision="${CFD_IMAGE_REVISION}"
-ENV PATH=/opt/cfd/bin:/opt/cfd/osu/libexec/osu-micro-benchmarks/mpi/pt2pt:/opt/cfd/osu/libexec/osu-micro-benchmarks/mpi/collective:${PATH} \
-    CMAKE_PREFIX_PATH=/opt/cfd \
+      org.opencontainers.image.revision="${AUTAN_IMAGE_REVISION}"
+ENV PATH=/opt/autan/bin:/opt/autan/osu/libexec/osu-micro-benchmarks/mpi/pt2pt:/opt/autan/osu/libexec/osu-micro-benchmarks/mpi/collective:${PATH} \
+    CMAKE_PREFIX_PATH=/opt/autan \
     CMAKE_GENERATOR=Ninja \
     UV_PYTHON=/usr/bin/python3.12 \
     UV_PYTHON_DOWNLOADS=never \
     UV_CACHE_DIR=/tmp/uv-cache \
-    CFD_IMAGE_REVISION=${CFD_IMAGE_REVISION}
-RUN echo /opt/cfd/lib > /etc/ld.so.conf.d/cfd.conf && ldconfig
+    AUTAN_IMAGE_REVISION=${AUTAN_IMAGE_REVISION}
+RUN echo /opt/autan/lib > /etc/ld.so.conf.d/autan.conf && ldconfig

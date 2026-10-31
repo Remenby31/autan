@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Remenby31/cfd-solver/bench/result.schema.json",
-  "title": "cfd-solver benchmark result",
-  "description": "One benchmark run: provenance, measurement conditions and per-benchmark samples with summary statistics. Produced by `cfdbench`, consumed by `cfdbench compare` and the baselines in bench/baselines/.",
+  "$id": "https://github.com/Remenby31/autan/bench/result.schema.json",
+  "title": "Autan benchmark result",
+  "description": "One benchmark run: provenance, measurement conditions and per-benchmark samples with summary statistics. Produced by `autan-bench`, consumed by `autan-bench compare` and the baselines in bench/baselines/.",
   "type": "object",
   "required": ["schema", "suite", "created", "provenance", "conditions", "config", "benchmarks"],
   "additionalProperties": false,
@@ -32,7 +32,7 @@
     }
   },
   "properties": {
-    "schema": {"const": "cfd-bench-result/1"},
+    "schema": {"const": "autan.bench-result/1"},
     "suite": {"type": "string", "minLength": 1},
     "created": {"type": "string", "format": "date-time"},
     "provenance": {

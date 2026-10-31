@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
 
-from cfdbench.errors import BenchError, Code
+from autan_bench.errors import BenchError, Code
 
 _log = logging.getLogger(__name__)
 

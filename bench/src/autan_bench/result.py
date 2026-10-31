@@ -6,14 +6,14 @@ from typing import Any
 
 import jsonschema
 
-from cfdbench.errors import BenchError, Code
+from autan_bench.errors import BenchError, Code
 
-SCHEMA_ID = "cfd-bench-result/1"
+SCHEMA_ID = "autan.bench-result/1"
 
 
 @cache
 def schema() -> dict[str, Any]:
-    return json.loads(resources.files("cfdbench").joinpath("result.schema.json").read_text())
+    return json.loads(resources.files("autan_bench").joinpath("result.schema.json").read_text())
 
 
 def validate(doc: dict[str, Any]) -> None:

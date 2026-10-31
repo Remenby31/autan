@@ -3,7 +3,7 @@ import socket
 import subprocess
 from pathlib import Path
 
-from cfdbench.errors import BenchError, Code
+from autan_bench.errors import BenchError, Code
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -24,7 +24,7 @@ def collect(repo: Path) -> dict[str, object]:
             "commit": _git(repo, "rev-parse", "HEAD"),
             "dirty": bool(_git(repo, "status", "--porcelain", "--untracked-files=no")),
         },
-        "host": os.environ.get("CFD_HOST") or socket.gethostname(),
-        "image": os.environ.get("CFD_IMAGE"),
-        "image_revision": os.environ.get("CFD_IMAGE_REVISION"),
+        "host": os.environ.get("AUTAN_HOST") or socket.gethostname(),
+        "image": os.environ.get("AUTAN_IMAGE"),
+        "image_revision": os.environ.get("AUTAN_IMAGE_REVISION"),
     }

@@ -1,6 +1,6 @@
 # Dev image
 
-`docker/dev/Dockerfile` builds the image every build, test and benchmark runs in. CI publishes it as `ghcr.io/remenby31/cfd-dev:<commit>` and `:main` for `linux/amd64` and `linux/arm64` (workflow `gpu-image`).
+`docker/dev/Dockerfile` builds the image every build, test and benchmark runs in. CI publishes it as `ghcr.io/remenby31/autan-dev:<commit>` and `:main` for `linux/amd64` and `linux/arm64` (workflow `gpu-image`).
 
 ## Contents
 
@@ -17,19 +17,19 @@
 | OSU micro-benchmarks | 7.5.2 | source | CUDA buffers, on `PATH` |
 | Python, uv | 3.12, 0.13.0 | Ubuntu 24.04, `ghcr.io/astral-sh/uv` | `uv` never downloads an interpreter |
 
-Libraries built from source install to `/opt/cfd`, which is on `PATH`, `CMAKE_PREFIX_PATH` and the loader path. Every download is checked against a SHA-256 written in the Dockerfile; to upgrade a component, change its version and checksum together. All components carry permissive or weak-copyleft licences (BSD, Apache-2.0, zlib, CeCILL-C); ParMETIS is excluded by its licence.
+Libraries built from source install to `/opt/autan`, which is on `PATH`, `CMAKE_PREFIX_PATH` and the loader path. Every download is checked against a SHA-256 written in the Dockerfile; to upgrade a component, change its version and checksum together. All components carry permissive or weak-copyleft licences (BSD, Apache-2.0, zlib, CeCILL-C); ParMETIS is excluded by its licence.
 
 ## Use
 
 On a DGX Spark, from the repository root:
 
 ```sh
-docker pull ghcr.io/remenby31/cfd-dev:main          # or: docker build -t cfd-dev:local docker/dev
+docker pull ghcr.io/remenby31/autan-dev:main          # or: docker build -t autan-dev:local docker/dev
 docker run --rm -it --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD:/src" -w /src ghcr.io/remenby31/cfd-dev:main bash
+  -v "$PWD:/src" -w /src ghcr.io/remenby31/autan-dev:main bash
 ```
 
-Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Name your containers with a `cfd-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
+Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Name your containers with a `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
 
 ## Smoke test
 
