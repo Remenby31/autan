@@ -17,7 +17,7 @@ Validé le 2026-10-31. Sources : `research/etat-de-l-art-2026-10.md`, `research/
 ## Arborescence
 
 ```
-cfd-solver/
+autan/
   core/       maillage (faces, zones), partition METIS, halos, géométrie FP64
   kernels/    sources DSL des kernels ponctuels (flux, gradients, limiteurs, BC)
   codegen/    générateur → CUDA / HIP / CPU + tangent / adjoint
