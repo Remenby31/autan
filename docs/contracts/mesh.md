@@ -1,0 +1,102 @@
+# Contract: mesh
+
+The in-memory mesh that readers produce and that kernels, the partitioner and the kernel generator consume. Headers: `core/include/cfd/core/{mesh,geometry,cellwise,error}.hpp`, library `cfd::core`. The JSON summary sent to the SDK is a separate contract: [mesh-info.md](mesh-info.md).
+
+## Model
+
+A mesh is **face-based**: cells are arbitrary polyhedra known only through their faces; faces are arbitrary polygons (three or more nodes, non-planar allowed, collinear hanging nodes allowed). There is no cell→node connectivity and no cell type. A mesh is 3D and describes one partition.
+
+| Type | Meaning |
+|---|---|
+| `index_t` = `int32_t` | Index of a point, face, cell or zone within one mesh. |
+| `offset_t` = `int64_t` | Offset into a CSR array (face→node lists can exceed 2³¹ entries). |
+| `no_cell` = `-1` | Absent cell. |
+
+## Arrays
+
+All arrays are structure-of-arrays, indexed by the entity they describe, and exposed both as `std::span` accessors on `cfd::Mesh` and as raw pointers in `cfd::MeshView` (the same struct describes host or device copies).
+
+| Array | Size | Content |
+|---|---|---|
+| `x`, `y`, `z` | n_points | FP64 coordinates. |
+| `face_node_offsets` | n_faces + 1 | CSR offsets, `[0] = 0`. |
+| `face_nodes` | `face_node_offsets[n_faces]` | Nodes of each face, ordered so the right-hand-rule normal points from owner to neighbour (outward on the boundary). |
+| `owner` | n_faces | Cell on the side the normal points away from. |
+| `neighbour` | n_interior_faces | Cell on the side the normal points into. |
+| `face_zone` | n_faces | Index into `face_zones`. |
+| `cell_zone` | n_cells | Index into `cell_zones`. |
+| `boundary_zone_offsets` | n_face_zones + 1 | Boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_faces`. Interior zones have an empty range. |
+| `cell_face_offsets`, `cell_faces` | n_cells + 1, 2·n_interior + n_boundary | CSR of the faces of each cell, in increasing face index. A face is outward for cell `c` iff `owner[f] == c`. |
+
+## Invariants
+
+`cfd::assemble(MeshInput)` is the only way to build a `Mesh`; it establishes and checks these, and throws `cfd::Error` on the first violation:
+
+1. Faces `[0, n_interior_faces)` are interior, faces `[n_interior_faces, n_faces)` are boundary.
+2. Interior faces have `owner < neighbour` and are sorted by `(owner, neighbour)`. Two cells may share several faces.
+3. Boundary faces are grouped by ascending zone index and sorted by owner within a zone.
+4. Each face has ≥ 3 distinct nodes; each cell has ≥ 4 faces.
+5. Every cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction.
+6. A face zone holds only interior faces or only boundary faces. Face-zone names are unique; cell-zone names are unique.
+7. Every point is referenced by a face (unreferenced points are removed).
+8. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit.
+
+## Zones
+
+Every face belongs to exactly one face zone and every cell to exactly one cell zone.
+
+| Field | Face zone | Cell zone |
+|---|---|---|
+| `name` | Name in the source (Fluent zone name, Gmsh physical name, OpenFOAM patch). | Same. |
+| `bc_type` / `type` | Type exactly as written in the source; empty if the format has none. | Same. |
+| `kind` | `BcKind`: `unspecified`, `wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
+| `provenance.source_id` | Identifier in the source file, or −1 for a zone the reader synthesised. | Same. |
+| `provenance.detail` | Human-readable origin. | Same. |
+
+Synthesised zones: `interior` for interior faces with no zone in the source, `unassigned` for boundary faces with no zone in the source (so `cfd plan` reports the missing condition), `fluid` (kind `unspecified`) for cells with no zone in the source. A source zone with one of these names collides and is rejected with E0110.
+
+`Mesh::source()` records the format (`gmsh`, `fluent`, `polymesh`, `cgns`, or `memory` for meshes built in code) and the path as given.
+
+## Geometry
+
+`cfd::compute_geometry(mesh)` returns a `cfd::Geometry` (SoA, FP64; raw pointers via `cfd::view`):
+
+| Array | Size | Definition |
+|---|---|---|
+| `face_area_{x,y,z}` | n_faces | Area vector S_f = Σᵢ ½ (pᵢ − m) × (pᵢ₊₁ − m), m the mean of the face nodes. It equals ½ Σᵢ pᵢ × pᵢ₊₁, the vector area of any surface spanning the face loop. Owner → neighbour, outward on the boundary. |
+| `face_area` | n_faces | ‖S_f‖. |
+| `face_centroid_{x,y,z}` | n_faces | Centroids of the fan triangles (m, pᵢ, pᵢ₊₁), weighted by their area projected on S_f / ‖S_f‖. Exact for planar polygons, convex or not. |
+| `cell_volume` | n_cells | Volume of the polyhedron bounded by the fan triangles, summed over tetrahedra (apex, m, pᵢ, pᵢ₊₁) with signed volumes; the apex is the mean of the face centroids. Volumes of all cells sum to the volume enclosed by the boundary triangles. |
+| `cell_centroid_{x,y,z}` | n_cells | Volume-weighted centroid of the same tetrahedra. |
+
+`cfd::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ per cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
+
+## Building a mesh
+
+Readers of face-based formats (Fluent, OpenFOAM) fill a `cfd::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary). Readers of element-based formats (Gmsh, CGNS) fill a `cfd::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `cfd::to_face_based`, which merges coincident faces by node set.
+
+## Errors
+
+Every failure throws `cfd::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers; the SDK registry carries their fix and doc page.
+
+| Code | Name | Raised when |
+|---|---|---|
+| E0101 | `mesh_inconsistent_sizes` | Input arrays disagree on a size, or CSR offsets are not monotone. |
+| E0102 | `mesh_index_out_of_range` | A node, cell or zone index is out of range. |
+| E0103 | `mesh_face_too_few_nodes` | A face has fewer than 3 nodes. |
+| E0104 | `mesh_face_repeated_node` | A face lists a node twice. |
+| E0105 | `mesh_face_same_cell_both_sides` | A face has the same cell on both sides. |
+| E0106 | `mesh_cell_too_few_faces` | A cell has fewer than 4 faces (including none). |
+| E0107 | `mesh_cell_not_closed` | Invariant 5 fails for a cell. |
+| E0108 | `mesh_face_shared_by_more_than_two_cells` | More than two cells list the same face. |
+| E0109 | `mesh_zone_mixes_interior_and_boundary` | Invariant 6, first part. |
+| E0110 | `mesh_duplicate_zone_name` | Invariant 6, second part. |
+| E0111 | `mesh_labelled_face_not_found` | A labelled face matches no cell face. |
+| E0112 | `mesh_empty` | No cell, face or point. |
+| E0113 | `mesh_too_large` | A count exceeds the `index_t` range. |
+| E0114 | `mesh_shared_face_orientation` | Two cells list their common face with the same orientation (one is inverted). |
+| E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
+| E0120 | `geometry_degenerate_face` | A face has zero area. |
+| E0121 | `geometry_non_positive_volume` | A cell has zero or negative volume. |
+
+Reader codes start at E0130 and are listed with the readers.
