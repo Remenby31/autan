@@ -477,6 +477,12 @@ _CODES = [
         "`fake` backend exists; it writes synthetic results.",
         "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
     ),
+    Code(
+        "E0805",
+        "Web UI not installed",
+        "`autan ui` needs the optional `autan-ui` package, which this installation lacks.",
+        "Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).",
+    ),
 ]
 
 REGISTRY: dict[str, Code] = {code.code: code for code in _CODES}
