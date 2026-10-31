@@ -555,3 +555,11 @@ Fix: Build the C++ core (see README) to run real computations.
 `case.run()` needs a backend. The C++ core is not part of this build, so only the `fake` backend exists; it writes synthetic results.
 
 Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
+
+## E0805
+
+**Web UI not installed** (error)
+
+`autan ui` needs the optional `autan-ui` package, which this installation lacks.
+
+Fix: Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).

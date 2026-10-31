@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autan.case import Case, load
@@ -135,6 +136,16 @@ def command_run(args: argparse.Namespace) -> int:
         text,
     )
     return 1 if run.status in ("diverged", "failed") else 0
+
+
+def command_ui(args: argparse.Namespace) -> int:
+    try:
+        import autan_ui  # noqa: PLC0415 -- optional dependency, the `ui` extra
+    except ImportError:
+        missing = diagnostic("E0805", "the autan-ui package is not installed")
+        return _fail(CaseError([missing]), as_json=False)
+    autan_ui.serve(Path(args.runs), "127.0.0.1", args.port, open_browser=not args.no_open)
+    return 0
 
 
 def _interrupt(_signal: int, _frame: object) -> None:
@@ -299,6 +310,12 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--diverge-at", type=int, help="fake: diverge at this iteration")
     sub.add_argument("--json", action="store_true", help="print JSON")
     sub.set_defaults(func=command_run)
+
+    sub = commands.add_parser("ui", help="browse run directories in the web UI (extra `ui`)")
+    sub.add_argument("--runs", default="runs", help="directory of run directories")
+    sub.add_argument("--port", type=int, default=8765, help="local port (default 8765)")
+    sub.add_argument("--no-open", action="store_true", help="do not open a browser")
+    sub.set_defaults(func=command_ui)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")
     sub.add_argument("--json", action="store_true", help="print JSON")
