@@ -50,7 +50,7 @@ def _cmd_order(args: argparse.Namespace) -> None:
         _say(f"{norm}: p = {fit['order']:.3f}, finest pair {fit['pairwise_orders'][-1]:.3f}")
 
 
-def _cmd_verify(args: argparse.Namespace) -> None:
+def _cmd_reference(args: argparse.Namespace) -> None:
     from autan_vv.verify import advection_diffusion_study  # noqa: PLC0415
 
     report = advection_diffusion_study(
@@ -85,6 +85,29 @@ def _cmd_oracles(_args: argparse.Namespace) -> None:
         _say(f"{name}: {ORACLES[name]().description}")
 
 
+def _cmd_verify(args: argparse.Namespace) -> None:
+    import json  # noqa: PLC0415
+
+    from autan_vv.harness import verify  # noqa: PLC0415
+
+    report = verify(args.runs, args.against, args.gate)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for run in report["runs"]:
+        worst = max(run["errors"].items(), key=lambda kv: kv[1]["L2"] / max(kv[1]["scale"], 1e-300))
+        _say(f"{run['run_id']}: {run['n_cells']} cells, h = {run['h']:.4g}, worst L2 {worst[0]} {worst[1]['L2']:.3g}")
+    for name, fit in report["fits"].items():
+        if "L2" in fit:
+            _say(f"{name}: L2 order {fit['L2']['order']:.3f}, finest pair {fit['L2']['pairwise_orders'][-1]:.3f}")
+    verdict = report["verdict"]
+    if verdict is not None:
+        state = "PASS" if verdict["pass"] else "FAIL"
+        note = "" if verdict["evidence"] else f" (not evidence: {'; '.join(verdict['not_evidence_because'])})"
+        _say(f"gate {verdict['gate']}: {state}{note}")
+        if not verdict["pass"]:
+            raise SystemExit(1)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
     parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
@@ -112,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_order)
 
     p = sub.add_parser(
-        "verify", help="reference advection-diffusion solve and order study on a family"
+        "reference", help="reference advection-diffusion solve and order study on a family"
     )
     p.add_argument("kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated"))
     p.add_argument("--levels", type=_levels, default=(8, 16, 24, 32))
@@ -120,6 +143,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=_cmd_reference)
+
+    p = sub.add_parser("verify", help="verify solver runs against an oracle; with --gate, a verdict")
+    p.add_argument("runs", type=Path, nargs="+", help="run directories (autan.results/1)")
+    p.add_argument("--against", required=True, help="oracle name (autan-vv oracles) or 'freestream'")
+    p.add_argument("--gate", help="gate of docs/validation/acceptance.md (exit 1 if it fails)")
+    p.add_argument("--out", type=Path, help="write the report (autan.vv-verdict/1) as JSON")
     p.set_defaults(func=_cmd_verify)
 
     p = sub.add_parser("cases", help="list or download reference cases, verifying checksums")
