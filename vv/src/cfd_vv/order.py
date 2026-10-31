@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import numpy as np
+import numpy.typing as npt
 from scipy import stats
 
 from cfd_vv.errors import VVError
@@ -32,7 +33,7 @@ class OrderFit:
     pairwise_orders: tuple[float, ...]
 
 
-def fit_order(h: Sequence[float], errors: Sequence[float]) -> OrderFit:
+def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
     """Fit e = C h^p by least squares in log space and return p with its uncertainty.
 
     `pairwise_orders[i]` is the order between levels i and i+1 after sorting from coarse to fine,
@@ -83,7 +84,6 @@ class RichardsonResult:
     gci_fine: float
     gci_medium: float
     relative_gci_fine: float
-    asymptotic_ratio: float
     refinement_ratios: tuple[float, float]
 
 
@@ -96,8 +96,8 @@ def richardson(h: Sequence[float], values: Sequence[float], *, max_iterations: i
 
     Inputs are in any order; they are sorted so that level 1 is the finest. The observed order solves
     Celik et al. (2008), eqs. 3a-3c, by fixed-point iteration, which handles non-constant refinement ratios.
-    GCI uses Roache's safety factor 1.25. `asymptotic_ratio` is GCI_32 / (r21^p GCI_21), close to 1 in the
-    asymptotic range (Roache 1998). An oscillatory or divergent triplet raises: its order is meaningless.
+    GCI uses Roache's safety factor 1.25. Compare `order` with the formal order to judge whether the grids
+    are in the asymptotic range. An oscillatory or divergent triplet raises: its order is meaningless.
     """
     if len(h) != 3 or len(values) != 3:
         raise VVError("V0105", "Richardson extrapolation needs exactly three grids")
@@ -134,7 +134,6 @@ def richardson(h: Sequence[float], values: Sequence[float], *, max_iterations: i
         gci_fine=gci21,
         gci_medium=gci32,
         relative_gci_fine=gci21 / abs(f1) if f1 != 0.0 else math.inf,
-        asymptotic_ratio=gci32 / (r21**p * gci21),
         refinement_ratios=(r21, r32),
     )
 
@@ -146,7 +145,7 @@ def gci_two_grids(h: Sequence[float], values: Sequence[float], order: float) -> 
     (h1, f1), (h2, f2) = sorted(zip(h, values, strict=True), key=lambda hv: hv[0])
     if not 0.0 < h1 < h2:
         raise VVError("V0104", "mesh sizes must be distinct and positive")
-    return GCI_SAFETY_TWO_GRIDS * abs(f2 - f1) / ((h2 / h1) ** order - 1.0)
+    return float(GCI_SAFETY_TWO_GRIDS * abs(f2 - f1) / ((h2 / h1) ** order - 1.0))
 
 
 def convergence_condition(values_coarse_to_fine: Sequence[float]) -> Convergence:

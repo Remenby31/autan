@@ -136,7 +136,7 @@ def advection_diffusion(
         parameters={"ax": float(a[0]), "ay": float(a[1]), "az": float(a[2]), "nu": float(nu)},
         fields={"phi": phi},
         conserved={"phi": phi},
-        sources={"phi": _div(flux)},  # type: ignore[arg-type]
+        sources={"phi": _div(flux)},
         references=("roache2002",),
     )
 
@@ -148,7 +148,9 @@ GAS_CONSTANT = R("287")
 
 
 @dataclass(frozen=True)
-class _Flow:
+class Flow:
+    """Primitive compressible fields: density, velocity and pressure."""
+
     rho: sp.Expr
     u: tuple[sp.Expr, sp.Expr, sp.Expr]
     p: sp.Expr
@@ -169,16 +171,16 @@ class _Flow:
         return {"rho": self.rho, "u": self.u[0], "v": self.u[1], "w": self.u[2], "p": self.p}
 
 
-def _convective_fluxes(f: _Flow) -> list[tuple[sp.Expr, sp.Expr, sp.Expr]]:
+def _convective_fluxes(f: Flow) -> list[tuple[sp.Expr, sp.Expr, sp.Expr]]:
     rho, u, p = f.rho, f.u, f.p
     h0 = f.total_energy + p
     mass = tuple(rho * u[j] for j in range(3))
     mom = [tuple(rho * u[i] * u[j] + (p if i == j else 0) for j in range(3)) for i in range(3)]
     energy = tuple(h0 * u[j] for j in range(3))
-    return [mass, *mom, energy]  # type: ignore[list-item]
+    return [mass, *mom, energy]
 
 
-def _viscous_fluxes(f: _Flow, mu: sp.Expr, conductivity: sp.Expr) -> list[tuple[sp.Expr, sp.Expr, sp.Expr]]:
+def _viscous_fluxes(f: Flow, mu: sp.Expr, conductivity: sp.Expr) -> list[tuple[sp.Expr, sp.Expr, sp.Expr]]:
     """Newtonian stress with Stokes' hypothesis and Fourier heat flux (TMR, 'Implementing turbulence models')."""
     u = f.u
     grad_u = [[sp.diff(u[i], X[j]) for j in range(3)] for i in range(3)]
@@ -189,7 +191,7 @@ def _viscous_fluxes(f: _Flow, mu: sp.Expr, conductivity: sp.Expr) -> list[tuple[
     zero = (sp.Integer(0),) * 3
     mom = [tuple(tau[i][j] for j in range(3)) for i in range(3)]
     energy = tuple(sum(u[i] * tau[i][j] for i in range(3)) + conductivity * grad_t[j] for j in range(3))
-    return [zero, *mom, energy]  # type: ignore[list-item]
+    return [zero, *mom, energy]
 
 
 def _sources(conv: list[tuple[sp.Expr, sp.Expr, sp.Expr]], visc: list[tuple[sp.Expr, sp.Expr, sp.Expr]] | None,
@@ -197,11 +199,11 @@ def _sources(conv: list[tuple[sp.Expr, sp.Expr, sp.Expr]], visc: list[tuple[sp.E
     out = {}
     for k, name in enumerate(names):
         flux = conv[k] if visc is None else tuple(conv[k][j] - visc[k][j] for j in range(3))
-        out[name] = _div(flux)  # type: ignore[arg-type]
+        out[name] = _div(flux)
     return out
 
 
-ROY_SUBSONIC_3D = _Flow(
+ROY_SUBSONIC_3D = Flow(
     rho=trig_field("1", ("x", "sin", "0.15", "1"), ("y", "cos", "-0.1", "0.5"), ("z", "sin", "0.08", "0.75")),
     u=(
         trig_field("70", ("x", "sin", "4", "5/3"), ("y", "cos", "-12", "3/2"), ("z", "cos", "7", "1/2")),
@@ -212,13 +214,13 @@ ROY_SUBSONIC_3D = _Flow(
 )
 
 
-def _flow_validity(f: _Flow) -> tuple[Validity, ...]:
+def _flow_validity(f: Flow) -> tuple[Validity, ...]:
     mach2 = sum(c**2 for c in f.u) * f.rho / (GAMMA * f.p)
     return (Validity("density positive", f.rho, lower=0.0), Validity("pressure positive", f.p, lower=0.0),
             Validity("subsonic", mach2, upper=1.0))
 
 
-def euler(flow: _Flow = ROY_SUBSONIC_3D) -> ManufacturedSolution:
+def euler(flow: Flow = ROY_SUBSONIC_3D) -> ManufacturedSolution:
     """Steady compressible Euler, calorically perfect air (gamma 1.4, R 287 J/(kg K))."""
     names = ["rho", "rhou", "rhov", "rhow", "rhoE"]
     ms = ManufacturedSolution(
@@ -237,7 +239,7 @@ def euler(flow: _Flow = ROY_SUBSONIC_3D) -> ManufacturedSolution:
 
 
 def navier_stokes(
-    flow: _Flow = ROY_SUBSONIC_3D, viscosity: str = "10", prandtl: str = "0.72",
+    flow: Flow = ROY_SUBSONIC_3D, viscosity: str = "10", prandtl: str = "0.72",
 ) -> ManufacturedSolution:
     """Steady laminar compressible Navier-Stokes with constant viscosity and Prandtl number.
 
@@ -272,25 +274,28 @@ SA_CONSTANTS: dict[str, sp.Expr] = {
 }
 
 
-def _sa_wall_flow() -> tuple[_Flow, sp.Expr]:
+def _sa_wall_flow(u_edge: str, thickness: str, nu_hat_max: str) -> tuple[Flow, sp.Expr]:
     """Wall-bounded fields: no-slip velocity and nu_hat = 0 at the wall y = 0, nu_hat ~ y near it.
 
     Shapes follow the principles of Eca et al. (2007) and Oliver et al. (2012): a boundary-layer-like
     velocity, an eddy-viscosity variable linear in the wall distance near the wall, smooth elsewhere.
     """
-    bl = 1 - sp.exp(-y / R("0.15"))
-    u = 50 * bl * (1 + R("0.1") * sp.sin(R("0.8") * sp.pi * x) + R("0.05") * sp.cos(R("0.6") * sp.pi * z))
+    bl = 1 - sp.exp(-y / R(thickness))
+    u = R(u_edge) * bl * (1 + R("0.1") * sp.sin(R("0.8") * sp.pi * x) + R("0.05") * sp.cos(R("0.6") * sp.pi * z))
     v = 5 * bl**2 * sp.sin(R("0.5") * sp.pi * x + R("0.2"))
     w = 10 * bl * sp.cos(R("0.7") * sp.pi * x) * sp.sin(R("0.5") * sp.pi * z + R("0.3"))
     rho = trig_field("1", ("x", "sin", "0.1", "0.75"), ("y", "cos", "0.05", "1"), ("z", "sin", "0.05", "0.5"))
     p = trig_field("100000", ("x", "cos", "2000", "1"), ("y", "sin", "1000", "1"), ("z", "cos", "1000", "0.5"))
     eta = y / R("0.25")
-    nu_hat = R("0.01") * eta * sp.exp(1 - eta) * (1 + R("0.2") * sp.sin(R("0.5") * sp.pi * x)
+    nu_hat = R(nu_hat_max) * eta * sp.exp(1 - eta) * (1 + R("0.2") * sp.sin(R("0.5") * sp.pi * x)
                                                   * sp.cos(R("0.4") * sp.pi * z))
-    return _Flow(rho=rho, u=(u, v, w), p=p), nu_hat
+    return Flow(rho=rho, u=(u, v, w), p=p), nu_hat
 
 
-def rans_sa(viscosity: str = "0.001", prandtl: str = "0.72", ft2: bool = True) -> ManufacturedSolution:
+def rans_sa(
+    viscosity: str = "0.001", prandtl: str = "0.72", ft2: bool = True,
+    wall_flow: tuple[str, str, str] = ("50", "0.15", "0.01"),
+) -> ManufacturedSolution:
     """Steady compressible RANS closed by Spalart-Allmaras, conservative form of Allmaras et al. (2012).
 
     With nu_hat >= 0 the SA-neg model equals standard SA with the S_tilde of Allmaras et al. (2012),
@@ -300,7 +305,7 @@ def rans_sa(viscosity: str = "0.001", prandtl: str = "0.72", ft2: bool = True) -
     smooth and the solver must use the same branches.
     """
     c = SA_CONSTANTS
-    flow, nu_hat = _sa_wall_flow()
+    flow, nu_hat = _sa_wall_flow(*wall_flow)
     mu, pr = R(viscosity), R(prandtl)
     cp = GAMMA * GAS_CONSTANT / (GAMMA - 1)
     d = y
@@ -334,7 +339,7 @@ def rans_sa(viscosity: str = "0.001", prandtl: str = "0.72", ft2: bool = True) -
     conductivity = cp * (mu / pr + mu_t / c["prandtl_turbulent"])
     names = ["rho", "rhou", "rhov", "rhow", "rhoE"]
     sources = _sources(_convective_fluxes(flow), _viscous_fluxes(flow, mu + mu_t, conductivity), names)
-    sources["rhonu"] = _div(tuple(sa_conv[j] - sa_diff[j] for j in range(3))) - sa_q  # type: ignore[arg-type]
+    sources["rhonu"] = _div(tuple(sa_conv[j] - sa_diff[j] for j in range(3))) - sa_q
     fields = flow.primitive() | {"nu_hat": nu_hat}
     conserved = flow.conserved() | {"rhonu": rho * nu_hat}
     params = {"gamma": float(GAMMA), "gas_constant": float(GAS_CONSTANT), "viscosity": float(mu),
