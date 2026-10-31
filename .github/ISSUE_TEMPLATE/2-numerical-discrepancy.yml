@@ -1,0 +1,94 @@
+name: Numerical discrepancy
+description: A result disagrees with an analytic solution, a manufactured solution, a conservation law, reference data or another code
+type: Bug
+labels: ["numerics", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A report we can reproduce bit for bit is a report we can fix. Give the case and the mesh with their hashes, the precision and the backend, and where the expected value comes from.
+
+  - type: textarea
+    id: quantity
+    attributes:
+      label: Quantity
+      description: What disagrees, and where it is measured. For example, lift coefficient, L2 norm of the density error, observed order of the gradient, mass imbalance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected value and its source
+      description: The value, its tolerance, and the independent source it comes from (paper with equation or table, manufactured solution, NASA TMR or workshop data, another code with its version and settings). A value produced by this solver is not a source.
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed value
+      description: The value this solver produced, and how you extracted it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: order
+    attributes:
+      label: Mesh family and observed order
+      description: If the discrepancy is in a convergence order, give the mesh sizes, the error on each level and the observed order you computed. Leave empty for a single-mesh result.
+      render: text
+
+  - type: textarea
+    id: case
+    attributes:
+      label: Case and mesh
+      description: Attach or link the case file and the mesh, and paste the mesh hash, case hash and solver commit that the run recorded. Name the cell types in the mesh (tetrahedra, hexahedra, prisms, pyramids, polyhedra).
+    validations:
+      required: true
+
+  - type: dropdown
+    id: precision
+    attributes:
+      label: Precision
+      multiple: true
+      options:
+        - FP32
+        - FP64
+        - Mixed (FP32 compute, FP64 accumulation)
+        - Reduced-precision storage (FP16 or BF16)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      multiple: true
+      options:
+        - CUDA
+        - HIP
+        - CPU
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deterministic
+    attributes:
+      label: Bitwise-deterministic mode
+      description: Does the discrepancy remain with the deterministic mode on?
+      options:
+        - "Yes"
+        - "No"
+        - Not tried
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: GPU model and driver, CUDA or ROCm version, compiler, number of GPUs and MPI ranks.
+      render: text
+    validations:
+      required: true

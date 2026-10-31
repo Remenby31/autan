@@ -1,0 +1,8 @@
+self-hosted-runner:
+  # DGX Spark runners (issue #4).
+  labels: [gpu, gb10]
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # GitHub added the top-level cache-mode key in September 2026; actionlint 1.7.12 predates it.
+      - 'unexpected key "cache-mode" for "workflow" section'
