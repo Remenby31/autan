@@ -1,8 +1,7 @@
 import json
 
-from conftest import bench, make_result
-
 from cfdbench.cli import main
+from conftest import bench, make_result
 
 QUIET = [200.0, 201.0, 199.0, 200.5, 199.5]
 NOISY = [180.0, 220.0, 190.0, 210.0, 200.0]
@@ -10,7 +9,9 @@ NOISY = [180.0, 220.0, 190.0, 210.0, 200.0]
 
 def test_baseline_keeps_only_clean_low_noise_results(write_json, tmp_path, capsys):
     out = tmp_path / "gb10.json"
-    good = make_result([bench("stream.copy", QUIET), bench("stream.triad", [x + 10 for x in QUIET])])
+    good = make_result(
+        [bench("stream.copy", QUIET), bench("stream.triad", [x + 10 for x in QUIET])]
+    )
     assert main(["baseline", str(write_json("good.json", good)), "--out", str(out)]) == 0
     assert json.loads(out.read_text()) == good
     capsys.readouterr()

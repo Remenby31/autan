@@ -4,7 +4,8 @@ import statistics
 def summarize(samples: list[float]) -> dict[str, float | int]:
     # Quartiles by linear interpolation between order statistics (Hyndman & Fan 1996, type 7).
     if len(samples) < 2:
-        raise ValueError("at least two samples are needed")
+        msg = f"at least two samples are needed, got {len(samples)}"
+        raise ValueError(msg)
     q1, median, q3 = statistics.quantiles(samples, n=4, method="inclusive")
     mean = statistics.fmean(samples)
     stdev = statistics.stdev(samples)

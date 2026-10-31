@@ -86,8 +86,8 @@ RUN fetch https://gitlab.inria.fr/scotch/scotch/-/archive/v${SCOTCH_VERSION}/sco
       -DBUILD_LIBESMUMPS=OFF -DBUILD_FORTRAN=OFF -DENABLE_TESTS=OFF \
  && cmake --build scotch-build && cmake --install scotch-build && rm -rf scotch-*
 
-ARG OSU_VERSION=7.5.1
-ARG OSU_SHA256=160d0d5e3c3cb022520ecb247e9875bb0973b1d3cadccd6c17624f8407c52e22
+ARG OSU_VERSION=7.5.2
+ARG OSU_SHA256=618de3d0b1122f73a9229177d2da1e5cd62e431190580cb915f2605849cbbbdc
 RUN fetch https://mvapich.cse.ohio-state.edu/download/mvapich/osu-micro-benchmarks-${OSU_VERSION}.tar.gz ${OSU_SHA256} \
  && cd osu-micro-benchmarks-${OSU_VERSION} \
  && ./configure --prefix=${PREFIX}/osu CC=mpicc CXX=mpicxx \

@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from cfdbench.cli import main
 
 # DGX Spark datasheet: 128 GB LPDDR5x, 256-bit, 273 GB/s.
@@ -28,7 +27,12 @@ def test_stream_run_produces_a_valid_physical_result(stream_binary, tmp_path):
     argv = ["stream", "--binary", str(stream_binary), "--out", str(out), "--repo", str(repo)]
     assert main([*argv, "--elements", str(1 << 25), "--warmup", "3", "--reps", "20"]) == 0
     doc = json.loads(out.read_text())
-    assert [b["name"] for b in doc["benchmarks"]] == ["stream.copy", "stream.scale", "stream.add", "stream.triad"]
+    assert [b["name"] for b in doc["benchmarks"]] == [
+        "stream.copy",
+        "stream.scale",
+        "stream.add",
+        "stream.triad",
+    ]
     for b in doc["benchmarks"]:
         assert b["stats"]["n"] == 20
         assert b["stats"]["median"] > 0
@@ -40,6 +44,8 @@ def test_stream_run_produces_a_valid_physical_result(stream_binary, tmp_path):
 
 def test_stream_binary_rejects_bad_arguments(stream_binary, tmp_path, capsys):
     out = tmp_path / "stream.json"
-    assert main(["stream", "--binary", str(stream_binary), "--out", str(out), "--elements", "3"]) == 2
+    assert (
+        main(["stream", "--binary", str(stream_binary), "--out", str(out), "--elements", "3"]) == 2
+    )
     assert "error[BINARY_FAILED]" in capsys.readouterr().err
     assert not out.exists()

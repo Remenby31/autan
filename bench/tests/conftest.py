@@ -2,14 +2,20 @@ import json
 from pathlib import Path
 
 import pytest
-
 from cfdbench import result
 from cfdbench.stats import summarize
 
 
 def bench(name: str, samples: list[float], *, unit: str = "GB/s", better: str = "higher") -> dict:
     metric = "bandwidth" if unit == "GB/s" else "time_per_cell_iteration"
-    return {"name": name, "metric": metric, "unit": unit, "better": better, "samples": samples, "stats": summarize(samples)}
+    return {
+        "name": name,
+        "metric": metric,
+        "unit": unit,
+        "better": better,
+        "samples": samples,
+        "stats": summarize(samples),
+    }
 
 
 def make_result(benchmarks: list[dict], *, gpu: str = "NVIDIA GB10", dirty: bool = False) -> dict:
@@ -18,12 +24,13 @@ def make_result(benchmarks: list[dict], *, gpu: str = "NVIDIA GB10", dirty: bool
         "suite": "stream",
         "created": "2026-10-31T12:00:00+00:00",
         "provenance": {
-            "commit": "0" * 40,
-            "dirty": dirty,
+            "solver": {"commit": "0" * 40, "dirty": dirty},
+            "backend": "cuda",
+            "precision": "fp64",
+            "devices": {"kind": "cuda", "count": 1},
             "host": "test",
             "image": None,
             "image_revision": None,
-            "precision": "fp64",
             "cuda_runtime": 13000,
             "cuda_driver": 13000,
             "gpu": {

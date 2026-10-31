@@ -1,5 +1,4 @@
 import pytest
-
 from cfdbench.stats import summarize
 
 
@@ -13,5 +12,5 @@ def test_summary_statistics_follow_their_definitions():
     assert s["mean"] == 10.0
     assert s["stdev"] == pytest.approx(1.0, rel=1e-15)
     assert s["cv"] == pytest.approx(0.1, rel=1e-15)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="two samples"):
         summarize([1.0])

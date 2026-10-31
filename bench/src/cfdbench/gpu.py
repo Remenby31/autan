@@ -1,15 +1,19 @@
 import contextlib
 import fcntl
+import logging
+import os
 import statistics
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Self
 
-from cfdbench.errors import BenchError
+from cfdbench.errors import BenchError, Code
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_LOCK = Path("/tmp/cfd-gpu.lock")
 IDLE_UTILIZATION_PCT = 5.0
@@ -30,7 +34,7 @@ def _nvidia_smi(*args: str) -> list[str]:
             ["nvidia-smi", *args], check=True, capture_output=True, text=True, timeout=30
         ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
-        raise BenchError("NVIDIA_SMI_FAILED", f"nvidia-smi {' '.join(args)}: {exc}") from exc
+        raise BenchError(Code.NVIDIA_SMI_FAILED, f"nvidia-smi {' '.join(args)}: {exc}") from exc
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
@@ -57,7 +61,7 @@ def sample(gpu_index: int = 0) -> GpuSample:
         f"--id={gpu_index}", f"--query-gpu={','.join(_GPU_FIELDS)}", "--format=csv,noheader,nounits"
     )
     if len(rows) != 1:
-        raise BenchError("NVIDIA_SMI_FAILED", f"expected one GPU row, got {rows!r}")
+        raise BenchError(Code.NVIDIA_SMI_FAILED, f"expected one GPU row, got {rows!r}")
     util, sm, sm_max, power, temp, reasons = (v.strip() for v in rows[0].split(","))
     apps = _nvidia_smi(f"--id={gpu_index}", "--query-compute-apps=pid", "--format=csv,noheader")
     return GpuSample(
@@ -74,12 +78,14 @@ def sample(gpu_index: int = 0) -> GpuSample:
 @contextlib.contextmanager
 def gpu_lock(path: Path = DEFAULT_LOCK) -> Iterator[float]:
     """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it."""
-    with open(path, "a") as handle:
+    # flock needs only a descriptor: opening read-only works on a lock file owned by another user.
+    fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
+    with os.fdopen(fd) as handle:
         start = time.monotonic()
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print(f"cfdbench: waiting for {path}", file=sys.stderr, flush=True)
+            _log.warning("waiting for %s", path)
             fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield time.monotonic() - start
@@ -87,7 +93,9 @@ def gpu_lock(path: Path = DEFAULT_LOCK) -> Iterator[float]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def require_idle(gpu_index: int = 0, samples: int = 5, interval_s: float = 0.2) -> dict[str, float | int]:
+def require_idle(
+    gpu_index: int = 0, samples: int = 5, interval_s: float = 0.2
+) -> dict[str, float | int]:
     """Fail with ``GPU_BUSY`` unless no compute process runs and utilization stays low."""
     seen = []
     for i in range(samples):
@@ -98,7 +106,7 @@ def require_idle(gpu_index: int = 0, samples: int = 5, interval_s: float = 0.2) 
     util = max((s.utilization_pct or 0.0) for s in seen)
     if apps or util > IDLE_UTILIZATION_PCT:
         raise BenchError(
-            "GPU_BUSY",
+            Code.GPU_BUSY,
             f"GPU {gpu_index} is not idle: {apps} compute process(es), utilization up to {util:.0f} %",
         )
     return {"samples": samples, "compute_apps_max": apps, "utilization_pct_max": util}
@@ -121,7 +129,7 @@ class Sampler:
     _thread: threading.Thread | None = None
     _error: BenchError | None = None
 
-    def __enter__(self) -> "Sampler":
+    def __enter__(self) -> Self:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
@@ -144,7 +152,7 @@ class Sampler:
         if self._error is not None:
             raise self._error
         if not self.samples:
-            raise BenchError("NO_SAMPLES", "the run ended before any clock sample was taken")
+            raise BenchError(Code.NO_SAMPLES, "the run ended before any clock sample was taken")
 
         def values(name: str) -> list[float]:
             return [v for s in self.samples if (v := getattr(s, name)) is not None]

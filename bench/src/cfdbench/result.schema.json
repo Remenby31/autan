@@ -36,16 +36,31 @@
     "suite": {"type": "string", "minLength": 1},
     "created": {"type": "string", "format": "date-time"},
     "provenance": {
+      "description": "Run identity, named as in docs/contracts/results.md (solver.commit, backend, precision, devices), plus the host, image and GPU the numbers depend on.",
       "type": "object",
-      "required": ["commit", "dirty", "host", "image", "image_revision", "precision", "cuda_runtime", "cuda_driver", "gpu"],
+      "required": ["solver", "backend", "precision", "devices", "host", "image", "image_revision", "cuda_runtime", "cuda_driver", "gpu"],
       "additionalProperties": false,
       "properties": {
-        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "dirty": {"type": "boolean"},
+        "solver": {
+          "type": "object",
+          "required": ["commit", "dirty"],
+          "additionalProperties": false,
+          "properties": {
+            "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "dirty": {"type": "boolean"}
+          }
+        },
+        "backend": {"enum": ["cuda", "hip", "cpu"]},
+        "precision": {"enum": ["fp32", "fp32+acc64", "fp64"]},
+        "devices": {
+          "type": "object",
+          "required": ["kind", "count"],
+          "additionalProperties": false,
+          "properties": {"kind": {"enum": ["cuda", "hip", "cpu"]}, "count": {"type": "integer", "minimum": 1}}
+        },
         "host": {"type": "string", "minLength": 1},
         "image": {"type": ["string", "null"]},
         "image_revision": {"type": ["string", "null"]},
-        "precision": {"enum": ["fp16", "bf16", "fp32", "fp64", "mixed"]},
         "cuda_runtime": {"type": "integer"},
         "cuda_driver": {"type": "integer"},
         "gpu": {

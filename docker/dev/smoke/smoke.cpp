@@ -1,17 +1,17 @@
 // Image smoke test: every library the image provides is found by CMake, links, and computes
 // a result fixed by its specification. Run with mpirun -n 2.
-#include <cgnslib.h>
-#include <pcgnslib.h>
-#include <hdf5.h>
-#include <metis.h>
-#include <mpi.h>
-#include <ptscotch.h>
-
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
 #include <vector>
+
+#include <cgnslib.h>
+#include <hdf5.h>
+#include <metis.h>
+#include <mpi.h>
+#include <pcgnslib.h>
+#include <ptscotch.h>
 
 namespace {
 
@@ -42,7 +42,8 @@ void grid_graph(std::vector<Int>& xadj, std::vector<Int>& adj) {
 }
 
 template <class Int>
-int edge_cut(const std::vector<Int>& xadj, const std::vector<Int>& adj, const std::vector<Int>& part) {
+int edge_cut(const std::vector<Int>& xadj, const std::vector<Int>& adj,
+             const std::vector<Int>& part) {
   int cut = 0;
   for (std::size_t v = 0; v + 1 < xadj.size(); ++v)
     for (Int e = xadj[v]; e < xadj[v + 1]; ++e) cut += part[v] != part[adj[e]];
@@ -66,8 +67,9 @@ void test_metis() {
   grid_graph(xadj, adj);
   idx_t nv = 16, ncon = 1, nparts = 2, objval = 0;
   std::vector<idx_t> part(16);
-  const int status = METIS_PartGraphKway(&nv, &ncon, xadj.data(), adj.data(), nullptr, nullptr, nullptr,
-                                         &nparts, nullptr, nullptr, nullptr, &objval, part.data());
+  const int status =
+      METIS_PartGraphKway(&nv, &ncon, xadj.data(), adj.data(), nullptr, nullptr, nullptr, &nparts,
+                          nullptr, nullptr, nullptr, &objval, part.data());
   check(status == METIS_OK, "METIS_PartGraphKway status");
   check(balanced_bisection(part), "METIS bisection is balanced");
   check(objval == edge_cut(xadj, adj, part), "METIS reported edge cut matches partition");
@@ -105,7 +107,8 @@ void test_hdf5(int rank, int size) {
   hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
   hsize_t dims = static_cast<hsize_t>(size);
   hid_t space = H5Screate_simple(1, &dims, nullptr);
-  hid_t dset = H5Dcreate2(file, "ranks", H5T_NATIVE_INT, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  hid_t dset =
+      H5Dcreate2(file, "ranks", H5T_NATIVE_INT, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hsize_t offset = static_cast<hsize_t>(rank), count = 1;
   H5Sselect_hyperslab(space, H5S_SELECT_SET, &offset, nullptr, &count, nullptr);
   hid_t mem = H5Screate_simple(1, &count, nullptr);
@@ -136,7 +139,8 @@ void test_cgns() {
   check(cgp_mpi_comm(MPI_COMM_WORLD) == CG_OK, "cgp_mpi_comm");
   check(cgp_open(path, CG_MODE_WRITE, &fn) == CG_OK, "cgp_open write");
   check(cg_base_write(fn, "Base", 3, 3, &base) == CG_OK, "cg_base_write");
-  check(cg_zone_write(fn, base, "Hex", size, CGNS_ENUMV(Unstructured), &zone) == CG_OK, "cg_zone_write");
+  check(cg_zone_write(fn, base, "Hex", size, CGNS_ENUMV(Unstructured), &zone) == CG_OK,
+        "cg_zone_write");
   check(cgp_close(fn) == CG_OK, "cgp_close");
 
   char name[33] = {};

@@ -6,7 +6,7 @@ from typing import Any
 
 import jsonschema
 
-from cfdbench.errors import BenchError
+from cfdbench.errors import BenchError, Code
 
 SCHEMA_ID = "cfd-bench-result/1"
 
@@ -23,17 +23,19 @@ def validate(doc: dict[str, Any]) -> None:
     errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
     if errors:
         where = "/".join(str(p) for p in errors[0].absolute_path) or "<root>"
-        raise BenchError("SCHEMA_INVALID", f"{where}: {errors[0].message} ({len(errors)} error(s))")
+        raise BenchError(
+            Code.SCHEMA_INVALID, f"{where}: {errors[0].message} ({len(errors)} error(s))"
+        )
     names = [b["name"] for b in doc["benchmarks"]]
     if len(names) != len(set(names)):
-        raise BenchError("SCHEMA_INVALID", "benchmark names are not unique")
+        raise BenchError(Code.SCHEMA_INVALID, "benchmark names are not unique")
 
 
 def load(path: Path) -> dict[str, Any]:
     try:
         doc = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise BenchError("RESULT_UNREADABLE", f"{path}: {exc}") from exc
+        raise BenchError(Code.RESULT_UNREADABLE, f"{path}: {exc}") from exc
     validate(doc)
     return doc
 
@@ -48,5 +50,5 @@ def peak_bandwidth(doc: dict[str, Any]) -> float:
     """Highest median bandwidth (GB/s) among the STREAM benchmarks of a result."""
     medians = [b["stats"]["median"] for b in doc["benchmarks"] if b["name"].startswith("stream.")]
     if not medians:
-        raise BenchError("NO_STREAM", "the result holds no stream.* benchmark")
+        raise BenchError(Code.NO_STREAM, "the result holds no stream.* benchmark")
     return max(medians)

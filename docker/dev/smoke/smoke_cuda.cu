@@ -1,11 +1,13 @@
 // CUDA-aware MPI check: MPI_Allreduce on device buffers. Run with mpirun -n 2 on a GPU host.
 // Exits 77 when no GPU is visible so callers can tell a skip from a pass.
-#include <cuda_runtime.h>
-#include <mpi-ext.h>
-#include <mpi.h>
-
 #include <cstdio>
 #include <cstdlib>
+
+#include <cuda_runtime.h>
+#include <mpi.h>
+
+// Open MPI extensions (MPIX_Query_cuda_support) need mpi.h first.
+#include <mpi-ext.h>
 
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
@@ -39,7 +41,8 @@ int main(int argc, char** argv) {
   for (int i = 0; i < n; ++i) bad += host[i] != want;
   int total = 0;
   MPI_Allreduce(&bad, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-  if (rank == 0) std::printf(total == 0 ? "smoke_cuda: OK (%d ranks)\n" : "smoke_cuda: FAILED\n", size);
+  if (rank == 0)
+    std::printf(total == 0 ? "smoke_cuda: OK (%d ranks)\n" : "smoke_cuda: FAILED\n", size);
   std::free(host);
   cudaFree(buf);
   MPI_Finalize();

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from cfdbench.errors import BenchError
+from cfdbench.errors import BenchError, Code
 
 DEFAULT_THRESHOLD = 0.05
 
@@ -16,21 +16,29 @@ class Row:
     regression: bool
 
 
-def compare(current: dict[str, Any], baseline: dict[str, Any], threshold: float = DEFAULT_THRESHOLD) -> list[Row]:
+def compare(
+    current: dict[str, Any], baseline: dict[str, Any], threshold: float = DEFAULT_THRESHOLD
+) -> list[Row]:
     """Compare medians of every baseline benchmark; a change worse than ``threshold`` is a regression."""
     gpu_now = current["provenance"]["gpu"]["name"]
     gpu_base = baseline["provenance"]["gpu"]["name"]
     if gpu_now != gpu_base:
-        raise BenchError("GPU_MISMATCH", f"result is from {gpu_now!r}, baseline from {gpu_base!r}")
+        raise BenchError(
+            Code.GPU_MISMATCH, f"result is from {gpu_now!r}, baseline from {gpu_base!r}"
+        )
     by_name = {b["name"]: b for b in current["benchmarks"]}
     rows = []
     for base in baseline["benchmarks"]:
         now = by_name.get(base["name"])
         if now is None:
-            raise BenchError("MISSING_BENCHMARK", f"{base['name']} is in the baseline but not in the result")
+            raise BenchError(
+                Code.MISSING_BENCHMARK, f"{base['name']} is in the baseline but not in the result"
+            )
         for key in ("metric", "unit", "better"):
             if now[key] != base[key]:
-                raise BenchError("INCOMPATIBLE", f"{base['name']}: {key} {now[key]!r} != {base[key]!r}")
+                raise BenchError(
+                    Code.INCOMPATIBLE, f"{base['name']}: {key} {now[key]!r} != {base[key]!r}"
+                )
         change = now["stats"]["median"] / base["stats"]["median"] - 1.0
         worse = -change if base["better"] == "higher" else change
         rows.append(

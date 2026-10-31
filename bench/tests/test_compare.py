@@ -1,7 +1,6 @@
 import pytest
-from conftest import bench, make_result
-
 from cfdbench.cli import main
+from conftest import bench, make_result
 
 
 def scaled(samples: list[float], factor: float) -> list[float]:
@@ -23,8 +22,12 @@ BASE = [100.0, 101.0, 99.0, 100.5, 99.5]
         (0.70, "ns", "lower", 0),
     ],
 )
-def test_compare_fails_only_beyond_five_percent_worse(write_json, capsys, factor, unit, better, exit_code):
-    base = write_json("base.json", make_result([bench("stream.triad", BASE, unit=unit, better=better)]))
+def test_compare_fails_only_beyond_five_percent_worse(
+    write_json, capsys, factor, unit, better, exit_code
+):
+    base = write_json(
+        "base.json", make_result([bench("stream.triad", BASE, unit=unit, better=better)])
+    )
     now = make_result([bench("stream.triad", scaled(BASE, factor), unit=unit, better=better)])
     assert main(["compare", str(write_json("now.json", now)), str(base)]) == exit_code
     assert ("error[REGRESSION]" in capsys.readouterr().err) == (exit_code == 1)
