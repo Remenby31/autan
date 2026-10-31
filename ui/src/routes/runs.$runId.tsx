@@ -24,7 +24,8 @@ function RunView() {
         <Metric label="CL" value={history.forces.cl[last]} digits={4} />
         <Metric label="CD" value={history.forces.cd[last]} digits={5} />
         <span className="ml-auto font-mono text-fg-3 text-xs">
-          {connected ? "live" : "offline"} · {run?.precision} · {run?.solver.backend}
+          {run?.status === "running" && (connected ? "live · " : "offline · ")}
+          {run?.precision} · {run?.solver.backend}
         </span>
       </div>
       {run?.diagnostics.map((d) => (

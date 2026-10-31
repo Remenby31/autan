@@ -11,7 +11,7 @@ async function runs(page: Page): Promise<Run[]> {
 test("home lists every run directory and filters by state", async ({ page }) => {
   await page.goto("/");
   const rows = page.getByTestId("runs").locator("tbody tr");
-  await expect(rows).toHaveCount(7);
+  await expect(rows).toHaveCount(4);
   await page.getByRole("button", { name: /diverged/ }).click();
   await expect(rows).toHaveCount(1);
   await expect(page).toHaveURL(/status/);
@@ -21,7 +21,7 @@ test("home lists every run directory and filters by state", async ({ page }) => 
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
   const rows = page.getByTestId("runs").locator("tbody tr");
-  await expect(rows).toHaveCount(7);
+  await expect(rows).toHaveCount(4);
 
   const source = (await runs(page))[0] as Run;
   const runId = "run-20261031T235959Z-0123abcd";
@@ -29,7 +29,7 @@ test("a run written by another process appears and updates live", async ({ page 
   cpSync(join(RUNS, source.run_id), directory, { recursive: true });
   const run: Run = { ...source, run_id: runId, status: "running", started: "2026-10-31T23:59:59Z" };
   writeFileSync(join(directory, "run.json"), JSON.stringify(run));
-  await expect(rows).toHaveCount(8);
+  await expect(rows).toHaveCount(5);
   await expect(rows.first().getByRole("img", { name: "running" })).toBeVisible();
 
   await rows.first().click();

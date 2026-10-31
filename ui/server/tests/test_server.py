@@ -3,25 +3,26 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import autan
 import httpx
 import numpy as np
 import pytest
 import uvicorn
 from autan_ui import create_app
-from autan_ui.demo import write_run
 from autan_ui.registry import Registry, read_history
 from autan_ui.surface import synthetic_wing
 
-STARTED = datetime(2026, 10, 31, 21, 40, 12, tzinfo=UTC)
+PY = Path(__file__).parents[3] / "py"
 
 
 @pytest.fixture
 def runs(tmp_path: Path) -> Path:
-    write_run(tmp_path, started=STARTED, aoa=19.57, status="converged", iterations=30)
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    case.run(mesh_info, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
     return tmp_path
 
 
@@ -59,8 +60,7 @@ def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
 
     listed, rejected = Registry(runs).scan()
 
-    assert [run["status"] for run in listed] == ["converged"]
-    assert listed[0]["run_id"].startswith("run-20261031T214012Z-")
+    assert [(run["case"]["name"], run["status"]) for run in listed] == [("crm-hl", "stopped")]
     assert sorted(r.dir for r in rejected) == ["notes", foreign.name]
 
 
@@ -94,10 +94,10 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
         assert (kind, [r["iteration"] for r in records]) == ("history", [31])
 
         run = json.loads((directory / "run.json").read_text())
-        run["status"] = "stopped"
+        run["status"] = "failed"
         (directory / "run.json").write_text(json.dumps(run))
         kind, data = next(events)
-        assert (kind, data["status"]) == ("run", "stopped")
+        assert (kind, data["status"]) == ("run", "failed")
 
 
 def test_unknown_run_is_404(server: str) -> None:

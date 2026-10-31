@@ -10,7 +10,7 @@ export default defineConfig({
   reporter: "list",
   use: { baseURL: `http://127.0.0.1:${port}`, channel: "chrome", headless: true },
   webServer: {
-    command: `rm -rf ${RUNS} && bun run build && uv run --project server python -m autan_ui.demo ${RUNS} && uv run --project server python -m autan_ui --runs ${RUNS} --port ${port} --no-open`,
+    command: `rm -rf ${RUNS} && bun run build && scripts/sample-runs.sh ${RUNS} && uv run --project server python -m autan_ui --runs ${RUNS} --port ${port} --no-open`,
     url: `http://127.0.0.1:${port}/api/runs`,
     reuseExistingServer: false,
     timeout: 120_000,

@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from autan.results import SCHEMA_ID, RunInfo
+from pydantic import ValidationError
+
 log = logging.getLogger(__name__)
 
-RESULTS_SCHEMA = "autan.results/1"
 RUN_ID = re.compile(r"run-\d{8}T\d{6}Z-[0-9a-f]{8}")
 
 
@@ -65,18 +67,25 @@ class Registry:
 
 
 def read_run(directory: Path) -> dict[str, Any]:
+    """run.json of `directory`, validated by the SDK's model of autan.results/1."""
     run_json = directory / "run.json"
     if not run_json.is_file():
         msg = "no run.json"
         raise ValueError(msg)
-    run = json.loads(run_json.read_text(encoding="utf-8"))
-    if not isinstance(run, dict) or run.get("schema") != RESULTS_SCHEMA:
-        msg = f"run.json schema is not {RESULTS_SCHEMA}"
+    document = json.loads(run_json.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
+        msg = f"run.json schema is not {SCHEMA_ID}"
         raise ValueError(msg)
-    if run.get("run_id") != directory.name:
+    try:
+        run = RunInfo.model_validate(document)
+    except ValidationError as error:
+        first = error.errors(include_url=False)[0]
+        msg = f"run.json: {first['msg']} at {first['loc']}"
+        raise ValueError(msg) from error
+    if run.run_id != directory.name:
         msg = "run.json run_id differs from the directory name"
         raise ValueError(msg)
-    return run
+    return document
 
 
 def read_history(directory: Path, offset: int) -> HistoryChunk:

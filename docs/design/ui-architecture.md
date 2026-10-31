@@ -10,7 +10,7 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 ```
 
 - **One process, one port, loopback only.** `autan_ui.serve(runs, host, port)` serves the built app and the API. `autan ui [--runs DIR] [--port N] [--no-open]` in the SDK CLI is a thin call to it; the default runs directory is `./runs`, the same one `autan run` writes.
-- **The registry is the runs directory.** Every `<runs>/*/run.json` with schema `autan.results/1` is a run, whoever wrote it. There is no database and no UI-side state: a run started from a notebook appears in the UI the moment its directory does. Directories that do not conform are listed as rejected with the reason, never hidden.
+- **The registry is the runs directory.** Every `<runs>/*/run.json` that the SDK's model of `autan.results/1` accepts is a run, whoever wrote it; names starting with `.` are directories still being written. There is no database and no UI-side state: a run started from a notebook appears in the UI the moment its directory does. Directories that do not conform are listed as rejected with the reason, never hidden.
 - **Heavy data stays on the server.** Volume fields (tens of millions of cells) never reach the browser. The server extracts what is displayed (wall surfaces, slices, iso-surfaces, probes) and sends triangles and node values. Slices and probes are server-side NumPy operations, so the browser renderer only needs to draw triangle surfaces fast.
 
 ## API
@@ -91,11 +91,11 @@ Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench
 cd ui
 bun install --frozen-lockfile
 uv sync --locked --project server
-uv run --project server python -m autan_ui.demo runs --live 0.05   # synthetic runs, one live
+scripts/sample-runs.sh runs --live &                               # fake-backend runs, one live
 uv run --project server python -m autan_ui --runs runs --no-open    # API on :8765
 bun run dev                                                          # app on :5173, proxies /api
 ```
 
 Checks: `bun run check` (Biome, `tsc`), `bun run test` (Vitest), `bun run e2e` (Playwright, builds the app and starts the server on synthetic runs), `uv run --project server pytest`, `bun run bench:viewer`.
 
-`autan_ui.demo` writes synthetic run directories (backend `fake`, solver commit all zeros) until the SDK's fake backend is merged; the tests then use that backend's output, the real producer.
+Sample and test runs come from the SDK's fake backend (`autan run`, `autan.FakeBackend`), the real producer of `autan.results/1`, so the tests send its output through this server. `run.json` is validated with the SDK's own model (`autan.results.RunInfo`).

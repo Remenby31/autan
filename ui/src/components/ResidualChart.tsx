@@ -39,6 +39,7 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
           ...names.map((name, k) => ({
             label: name,
             stroke: series(k),
+            points: { show: false },
             width: 1.5,
           })),
         ],
