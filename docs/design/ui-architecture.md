@@ -19,11 +19,11 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 |---|---|
 | `GET /api/runs` | `{runs: [run.json…], rejected: [{dir, reason}]}`, newest first |
 | `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json), `removed` (run id) and `rejected` (the whole list) as they change |
-| `GET /api/runs/{id}` | `{run, case, mesh_info}`: run.json, case.toml as JSON, mesh-info.json |
-| `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 before any stream starts. |
+| `GET /api/runs/{id}` | `{run, case, mesh_info}`: run.json, case.toml as JSON, mesh-info.json of an accepted run |
+| `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 and rejected ones 409 with the reason, before any stream starts. |
 | `GET /api/surfaces/synthetic?triangles=N` | A synthetic wing surface for the viewer and its benchmark, until `solution.cgns` surfaces are served |
 
-Live updates come from file-system events (`watchfiles`, 50 ms debounce) and a 1 s timeout: every wake-up rescans, so a change made before the watcher started is still reported. A directory is checked by `autan.Results.open` again only when its run.json changes; history.jsonl is re-read from the last offset. SSE rather than WebSocket: traffic is server → browser only, `EventSource` reconnects by itself, and FastAPI ships SSE natively.
+Live updates come from file-system events (`watchfiles`, 50 ms debounce) and a 1 s timeout: every wake-up rescans, so a change made before the watcher started is still reported. A directory is checked by `autan.Results.open` again only when its `run.json`, `case.toml`, `mesh-info.json` or `solution.cgns` changes; history.jsonl is re-read from the last offset. SSE rather than WebSocket: traffic is server → browser only, `EventSource` reconnects by itself, and FastAPI ships SSE natively.
 
 ### Surface message `autan-ui.surface/1`
 

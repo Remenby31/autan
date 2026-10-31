@@ -12,7 +12,13 @@ from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
 
-from autan_ui.registry import Registry, RunNotFoundError, read_history, read_run
+from autan_ui.registry import (
+    Registry,
+    RunNotFoundError,
+    RunRejectedError,
+    read_history,
+    read_run,
+)
 from autan_ui.surface import synthetic_wing
 
 log = logging.getLogger(__name__)
@@ -56,6 +62,8 @@ def create_app(
             return registry.run_dir(run_id)
         except RunNotFoundError as error:
             raise HTTPException(404, f"no run {run_id}") from error
+        except RunRejectedError as error:
+            raise HTTPException(409, str(error)) from error
 
     @app.get("/api/runs")
     async def list_runs() -> dict[str, Any]:
@@ -86,11 +94,8 @@ def create_app(
             watcher.cancel()
 
     @app.get("/api/runs/{run_id}")
-    def run_details(run_id: str) -> dict[str, Any]:
-        try:
-            return registry.details(run_id)
-        except RunNotFoundError as error:
-            raise HTTPException(404, f"no run {run_id}") from error
+    def run_details(directory: Annotated[Path, Depends(existing_run)]) -> dict[str, Any]:
+        return registry.details(directory)
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(
@@ -125,7 +130,11 @@ def create_app(
                     return
                 mtime = run_json.stat().st_mtime_ns
                 if mtime != run_mtime:
-                    run_mtime, run = mtime, read_run(directory)
+                    try:
+                        run_mtime, run = mtime, read_run(directory)
+                    except ValueError as error:
+                        yield ServerSentEvent(event="invalid", data=str(error))
+                        return
                     yield ServerSentEvent(event="run", data=run)
         finally:
             stop.set()

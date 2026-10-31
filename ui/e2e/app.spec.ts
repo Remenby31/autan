@@ -41,12 +41,11 @@ test("a run written by another process appears and updates live", async ({ page 
   await expect(rows.first().getByRole("img", { name: "running" })).toBeVisible();
 
   await rows.first().click();
-  const last = readFileSync(join(directory, "history.jsonl"), "utf8").trim().split("\n").length;
+  const lines = readFileSync(join(directory, "history.jsonl"), "utf8").trim().split("\n");
+  const last = lines.length;
   await expect(page.getByTestId("iteration")).toHaveText(String(last));
-  appendFileSync(
-    join(directory, "history.jsonl"),
-    `${JSON.stringify({ iteration: last + 1, time: null, residuals: { density: 1e-9 } })}\n`,
-  );
+  const next = { ...JSON.parse(lines[last - 1] as string), iteration: last + 1 };
+  appendFileSync(join(directory, "history.jsonl"), `${JSON.stringify(next)}\n`);
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 1));
   const finished = { ...run, status: "converged", finished: "2026-11-01T00:10:00Z" };
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));

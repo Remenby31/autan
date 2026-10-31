@@ -9,6 +9,7 @@ from typing import Any
 
 import autan
 from autan.errors import CaseError
+from autan.results import RunInfo
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +18,15 @@ RUN_ID = re.compile(r"run-\d{8}T\d{6}Z-[0-9a-f]{8}")
 
 class RunNotFoundError(LookupError):
     pass
+
+
+class RunRejectedError(ValueError):
+    pass
+
+
+# Files whose change can change the verdict; history.jsonl grows during a run and is checked by
+# the history stream instead.
+CHECKED_FILES = ("run.json", "case.toml", "mesh-info.json", "solution.cgns")
 
 
 @dataclass(frozen=True)
@@ -40,17 +50,22 @@ class Registry:
     """Every run directory directly under `root`, whoever wrote it (UI, SDK, CLI, agent).
 
     A directory is checked by the SDK's reader (`autan.Results.open`) and checked again only
-    when its run.json changes, so rescanning costs one stat per directory.
+    when one of `CHECKED_FILES` changes, so rescanning costs a few stats per directory.
     """
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
-        self._checked: dict[str, tuple[tuple[int, int] | None, dict[str, Any] | str]] = {}
+        self._checked: dict[str, tuple[tuple[Any, ...], dict[str, Any] | str]] = {}
         self._lock = threading.Lock()
 
     def run_dir(self, run_id: str) -> Path:
-        if not RUN_ID.fullmatch(run_id) or not (self.root / run_id / "run.json").is_file():
+        """The directory of an accepted run."""
+        if not RUN_ID.fullmatch(run_id) or not (self.root / run_id).is_dir():
             raise RunNotFoundError(run_id)
+        with self._lock:
+            outcome = self._check(self.root / run_id)
+        if isinstance(outcome, str):
+            raise RunRejectedError(outcome)
         return self.root / run_id
 
     def scan(self) -> Snapshot:
@@ -72,28 +87,26 @@ class Registry:
         return snapshot
 
     def _check(self, directory: Path) -> dict[str, Any] | str:
-        try:
-            stat = (directory / "run.json").stat()
-            key: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            key = None
+        key = tuple(_stat(directory / name) for name in CHECKED_FILES)
         cached = self._checked.get(directory.name)
         if cached and cached[0] == key:
             return cached[1]
         outcome: dict[str, Any] | str
-        if key is None:
+        if key[0] is None:
             outcome = "no run.json"
         else:
             try:
                 outcome = autan.Results.open(directory).run.document()
             except CaseError as error:
                 outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
-                log.warning("run directory %s rejected: %s", directory, outcome)
+            except (OSError, ValueError) as error:
+                outcome = f"cannot read the run directory: {error}"
+        if isinstance(outcome, str):
+            log.warning("run directory %s rejected: %s", directory, outcome)
         self._checked[directory.name] = (key, outcome)
         return outcome
 
-    def details(self, run_id: str) -> dict[str, Any]:
-        directory = self.run_dir(run_id)
+    def details(self, directory: Path) -> dict[str, Any]:
         return {
             "run": read_run(directory),
             "case": tomllib.loads((directory / "case.toml").read_text(encoding="utf-8")),
@@ -101,9 +114,22 @@ class Registry:
         }
 
 
+def _stat(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def read_run(directory: Path) -> dict[str, Any]:
-    run: dict[str, Any] = json.loads((directory / "run.json").read_text(encoding="utf-8"))
-    return run
+    """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
+    try:
+        document = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+        return RunInfo.model_validate(document).document()
+    except (OSError, ValueError) as error:
+        msg = f"run.json: {error}"
+        raise ValueError(msg) from error
 
 
 def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:

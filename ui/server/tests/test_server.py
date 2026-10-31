@@ -75,6 +75,24 @@ def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
     assert snapshot.rejected[foreign.name].startswith("E0701")
 
 
+def test_registry_rechecks_a_run_when_any_contract_file_changes(runs: Path) -> None:
+    source = next(runs.iterdir())
+    registry = Registry(runs)
+    case = (source / "case.toml").read_text()
+
+    (source / "case.toml").write_text("schema = 1\n")
+    assert source.name in registry.scan().rejected
+    (source / "case.toml").write_text(case)
+    assert source.name in registry.scan().runs
+
+
+def test_an_unreadable_run_is_rejected_not_fatal(runs: Path) -> None:
+    source = next(runs.iterdir())
+    (source / "history.jsonl").unlink()
+    (source / "history.jsonl").mkdir()
+    assert source.name in Registry(runs).scan().rejected
+
+
 def test_history_holds_a_partial_line_only_while_live(runs: Path) -> None:
     directory = next(runs.iterdir())
     first = read_history(directory, 0, live=False)
@@ -143,6 +161,14 @@ def test_unknown_run_is_404_before_any_stream(server: str) -> None:
     assert httpx.get(f"{server}/api/runs/{unknown}").status_code == 404
     assert httpx.get(f"{server}/api/runs/{unknown}/history/events").status_code == 404
     assert httpx.get(f"{server}/api/runs/..%2F..%2Fetc").status_code == 404
+
+
+def test_a_rejected_run_is_409_with_its_reason(runs: Path, server: str) -> None:
+    source = next(runs.iterdir())
+    (source / "mesh-info.json").write_text("{}")
+    response = httpx.get(f"{server}/api/runs/{source.name}")
+    assert (response.status_code, response.json()["detail"][:5]) == (409, "E0701")
+    assert httpx.get(f"{server}/api/runs/{source.name}/history/events").status_code == 409
 
 
 def test_foreign_host_header_is_refused(server: str) -> None:
