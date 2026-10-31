@@ -84,7 +84,7 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 
 ## Errors
 
-Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core, readers (up to E0139), partitioner and halo exchange; the SDK registry carries their fix and doc page.
+Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers (E0101–E0139) and to the partitioner and halo exchange (E0140–E0149); the SDK registry carries their fix and doc page.
 
 | Code | Name | Raised when |
 |---|---|---|
