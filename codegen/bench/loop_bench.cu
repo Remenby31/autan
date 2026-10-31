@@ -22,6 +22,7 @@
 #include "gradients_cpu.hpp"
 #include "gradients_gpu.cuh"
 #include "revision.h"
+#include "roe_gpu.cuh"
 #include "spike.hpp"
 
 namespace {
@@ -299,6 +300,44 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                            ni * 2 * sizeof(index_t) + nb * sizeof(S);
   out.push_back({"lsq_gradient_bounds", lsq_bytes, "cell",
                  time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule); })});
+
+  // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
+  namespace rf = autan::kernels::roe;
+  std::vector<S> u(5 * nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    const double rho = 1.0 + 0.1 * std::abs(normal(rng));
+    const double vx = 0.3 * normal(rng), vy = 0.3 * normal(rng), vz = 0.3 * normal(rng);
+    u[c] = S(rho);
+    u[nc + c] = S(rho * vx);
+    u[2 * nc + c] = S(rho * vy);
+    u[3 * nc + c] = S(rho * vz);
+    u[4 * nc + c] = S(2.5 + 0.5 * rho * (vx * vx + vy * vy + vz * vz));
+  }
+  DeviceArray<S> du(u), du_tan(u);
+  DeviceArray<R> dr(5 * nc), dr_tan(5 * nc), dr_adj(5 * nc), du_adj(5 * nc);
+  rf::Data<P> rd{};
+  rd.topo = dm.topo;
+  rd.u_cons = du.get();
+  rd.res = dr.get();
+  rd.face_normal = g.face_normal.get();
+  rd.face_area_magnitude = g.face_area_magnitude.get();
+  rd.u_cons_tan = du_tan.get();
+  rd.res_tan = dr_tan.get();
+  rd.res_adj = dr_adj.get();
+  rd.u_cons_adj = du_adj.get();
+  const double roe_bytes =
+      ni * (4.0 * sizeof(G) + 2 * sizeof(index_t)) + cells * (5.0 * sizeof(S) + 10.0 * sizeof(R));
+  for (auto s : {gpu::Strategy::atomic, gpu::Strategy::warp_aggregated, gpu::Strategy::store_gather,
+                 gpu::Strategy::gather_recompute}) {
+    std::string tag = gpu::name(s);
+    std::replace(tag.begin(), tag.end(), '-', '_');
+    out.push_back({"roe_" + tag, roe_bytes, gpu::name(s),
+                   time_it(o, [&] { rf::gpu_loops::flux(rd, s, dm.schedule); })});
+    out.push_back({"roe_tangent_" + tag, roe_bytes + cells * 5.0 * sizeof(S), gpu::name(s),
+                   time_it(o, [&] { rf::gpu_loops::flux_tangent(rd, s, dm.schedule); })});
+    out.push_back({"roe_adjoint_" + tag, roe_bytes, gpu::name(s),
+                   time_it(o, [&] { rf::gpu_loops::flux_adjoint(rd, s, dm.schedule); })});
+  }
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.int_colours.offsets.size() - 1,
                dm.bnd_colours.offsets.size() - 1);

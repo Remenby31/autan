@@ -113,7 +113,11 @@ def tangent(fn: Function, active_args: Sequence[int]) -> Function:
                 d[v] = o.neg(o.mul(da[0], o.op("sin", a[0], line=ln), ln), ln)
             case "select":
                 t, f = da[1], da[2]
-                d[v] = None if t is None and f is None else o.op("select", a[0], o.real(t), o.real(f), line=ln)
+                d[v] = (
+                    None
+                    if t is None and f is None
+                    else o.op("select", a[0], o.real(t), o.real(f), line=ln)
+                )
             case _:
                 raise AssertionError(ins.op)
     out.outputs = [*fn.outputs, *(o.real(d.get(y)) for y in fn.outputs)]

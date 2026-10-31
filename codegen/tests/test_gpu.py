@@ -78,3 +78,29 @@ def test_deterministic_strategies_are_bitwise_reproducible(
         norm = np.sqrt(np.sum(res * res))
         runs.append((res.tobytes(), grad.tobytes(), gg.tobytes(), norm))
     assert len(set(runs)) == 1
+
+
+@pytest.mark.parametrize("strategy", s.STRATEGIES)
+@pytest.mark.parametrize("policy", PRECISIONS)
+def test_gpu_tangent_and_adjoint_equal_host(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str
+) -> None:
+    m, d = case
+    rng = np.random.default_rng(4)
+    rho = 1.0 + 0.2 * rng.random(m.n_cells)
+    vel = 0.3 * rng.standard_normal((m.n_cells, 3))
+    p = 1.0 + 0.2 * rng.random(m.n_cells)
+    u = np.column_stack([rho, rho[:, None] * vel, p / 0.4 + 0.5 * rho * np.sum(vel * vel, axis=1)])
+    x = rng.standard_normal(u.shape)
+    for mode in ("residual", "tangent", "adjoint"):
+        host = s.roe(m, policy, mode, u, x)
+        dev = s.gpu_roe(m, policy, strategy, 128, mode, u, x)
+        assert np.abs(dev - host).max() <= 500 * eps(policy) * np.abs(host).max()
+    y = rng.standard_normal(m.n_cells)
+    host = s.advdiff_derivative(
+        m, policy, "adjoint", d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU, y
+    )
+    dev = s.gpu_advdiff_adjoint(
+        m, policy, strategy, 128, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU, y
+    )
+    assert np.abs(dev - host).max() <= 500 * eps(policy) * np.abs(host).max()

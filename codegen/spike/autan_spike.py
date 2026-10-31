@@ -330,3 +330,45 @@ def lsq_bounds_derivative(m: Mesh, policy: str, mode: str, q: F64, q_b: F64, see
     )  # fmt: skip
     _check(rc, err)
     return out.reshape(5, -1).T if mode == "tangent" else out
+
+
+def gpu_roe(
+    m: Mesh, policy: str, strategy: str, block: int, mode: str, u: F64, seed: F64 | None = None
+) -> F64:
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(5 * m.n_cells)
+    us = soa(u)
+    sd = soa(seed) if seed is not None else np.zeros(5 * m.n_cells)
+    code = {"residual": 0, "tangent": 1, "adjoint": 2}[mode]
+    rc = lib().autan_spike_gpu_roe(
+        m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), ctypes.c_int(code), _p(us), _p(sd),
+        _p(out), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out.reshape(5, -1).T
+
+
+def gpu_advdiff_adjoint(
+    m: Mesh,
+    policy: str,
+    strategy: str,
+    block: int,
+    q: F64,
+    q_b: F64,
+    source: F64,
+    velocity: tuple[float, float, float],
+    nu: float,
+    seed: F64,
+) -> F64:
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_cells)
+    vel = np.array(velocity, dtype=np.float64)
+    q, q_b, source, seed = (
+        np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b, source, seed)
+    )
+    rc = lib().autan_spike_gpu_advdiff_adjoint(
+        m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(q_b), _p(source), _p(vel),
+        ctypes.c_double(nu), _p(seed), _p(out), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out

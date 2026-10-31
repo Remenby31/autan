@@ -18,7 +18,9 @@ GAP = {"fp64": 1e-13, "fp32+acc64": 1e-5, "fp32": 1e-5}
 
 def gap(y: np.ndarray, jx: np.ndarray, jty: np.ndarray, x: np.ndarray) -> float:
     a, b = float(np.vdot(y, jx)), float(np.vdot(jty, x))
-    return abs(a - b) / (np.linalg.norm(y) * np.linalg.norm(jx) + np.linalg.norm(jty) * np.linalg.norm(x))
+    return abs(a - b) / (
+        np.linalg.norm(y) * np.linalg.norm(jx) + np.linalg.norm(jty) * np.linalg.norm(x)
+    )
 
 
 @pytest.fixture(scope="module", params=KINDS)
@@ -30,7 +32,11 @@ def mesh(request: pytest.FixtureRequest) -> s.Mesh:
 @pytest.mark.parametrize("policy", PRECISIONS)
 def test_residual_adjoint_passes_the_dot_product_test(mesh: s.Mesh, policy: str, seed: int) -> None:
     rng = np.random.default_rng(seed)
-    q, q_b, src = rng.standard_normal(mesh.n_cells), rng.standard_normal(mesh.n_faces), rng.standard_normal(mesh.n_cells)
+    q, q_b, src = (
+        rng.standard_normal(mesh.n_cells),
+        rng.standard_normal(mesh.n_faces),
+        rng.standard_normal(mesh.n_cells),
+    )
     x, y = rng.standard_normal(mesh.n_cells), rng.standard_normal(mesh.n_cells)
     jx = s.advdiff_derivative(mesh, policy, "tangent", q, q_b, src, mms.VELOCITY, mms.NU, x)
     jty = s.advdiff_derivative(mesh, policy, "adjoint", q, q_b, src, mms.VELOCITY, mms.NU, y)
@@ -39,7 +45,11 @@ def test_residual_adjoint_passes_the_dot_product_test(mesh: s.Mesh, policy: str,
 
 def test_residual_tangent_equals_complex_step(mesh: s.Mesh) -> None:
     rng = np.random.default_rng(5)
-    q, q_b, src = rng.standard_normal(mesh.n_cells), rng.standard_normal(mesh.n_faces), rng.standard_normal(mesh.n_cells)
+    q, q_b, src = (
+        rng.standard_normal(mesh.n_cells),
+        rng.standard_normal(mesh.n_faces),
+        rng.standard_normal(mesh.n_cells),
+    )
     x = rng.standard_normal(mesh.n_cells)
     jx = s.advdiff_derivative(mesh, "fp64", "tangent", q, q_b, src, mms.VELOCITY, mms.NU, x)
     cs = s.advdiff_complex_step(mesh, q, q_b, src, mms.VELOCITY, mms.NU, x)
@@ -51,8 +61,14 @@ def test_adjoint_of_the_residual_sum_vanishes_away_from_the_boundary(mesh: s.Mes
     # boundary flux (more than two layers from the boundary).
     m = s.mesh(meshes.build("tet", 8, 0.15, seed=4))
     rng = np.random.default_rng(6)
-    q, q_b, src = rng.standard_normal(m.n_cells), rng.standard_normal(m.n_faces), rng.standard_normal(m.n_cells)
-    qbar = s.advdiff_derivative(m, "fp64", "adjoint", q, q_b, src, mms.VELOCITY, mms.NU, np.ones(m.n_cells))
+    q, q_b, src = (
+        rng.standard_normal(m.n_cells),
+        rng.standard_normal(m.n_faces),
+        rng.standard_normal(m.n_cells),
+    )
+    qbar = s.advdiff_derivative(
+        m, "fp64", "adjoint", q, q_b, src, mms.VELOCITY, mms.NU, np.ones(m.n_cells)
+    )
     near = set(m.owner[m.n_interior :].tolist())
     for _ in range(2):
         layer = set(near)

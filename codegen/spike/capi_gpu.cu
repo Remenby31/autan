@@ -12,6 +12,7 @@
 #include "autan/kernels/gpu.hpp"
 #include "device.cuh"
 #include "gradients_gpu.cuh"
+#include "roe_gpu.cuh"
 #include "spike.hpp"
 
 namespace {
@@ -155,9 +156,116 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
   copy_out(rs.download(), res);
 }
 
+template <class P>
+void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const double* u,
+         const double* seed, double* out) {
+  namespace rf = autan::kernels::roe;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  DeviceMesh dm(m, block);
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(hg);
+  DeviceArray<S> us(converted_in<S>(u, 5 * nc));
+  DeviceArray<S> u_tan(converted_in<S>(seed, 5 * nc));
+  DeviceArray<R> r_adj(converted_in<R>(seed, 5 * nc));
+  DeviceArray<R> rs(5 * nc), r_tan(5 * nc), u_adj(5 * nc);
+  rf::Data<P> d{};
+  d.topo = dm.topo;
+  d.u_cons = us.get();
+  d.res = rs.get();
+  d.face_normal = g.face_normal.get();
+  d.face_area_magnitude = g.face_area_magnitude.get();
+  d.u_cons_tan = u_tan.get();
+  d.res_tan = r_tan.get();
+  d.res_adj = r_adj.get();
+  d.u_cons_adj = u_adj.get();
+  if (mode == 0) {
+    rf::gpu_loops::flux(d, strategy, dm.schedule);
+  } else if (mode == 1) {
+    rf::gpu_loops::flux_tangent(d, strategy, dm.schedule);
+  } else {
+    rf::gpu_loops::flux_adjoint(d, strategy, dm.schedule);
+  }
+  synchronise();
+  copy_out((mode == 0 ? rs : mode == 1 ? r_tan : u_adj).download(), out);
+}
+
+/// Adjoint of the composed advection-diffusion residual on the device (seed R-bar -> q-bar).
+template <class P>
+void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, const double* q,
+                     const double* q_b, const double* source, const double* velocity, double nu,
+                     const double* seed, double* out) {
+  namespace ad = autan::kernels::advection_diffusion;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  DeviceMesh dm(m, block);
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(hg);
+  DeviceArray<S> qs(converted_in<S>(q, nc)), qbs(converted_in<S>(q_b, nf)),
+      ss(converted_in<S>(source, nc));
+  DeviceArray<typename P::grad> gs(3 * nc);
+  DeviceArray<R> rs(nc), r_adj(converted_in<R>(seed, nc)), q_adj(nc), g_adj(3 * nc), s_adj(nc);
+  ad::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.q_b = qbs.get();
+  d.lsq_weight = g.lsq_weight.get();
+  d.grad = gs.get();
+  d.source = ss.get();
+  d.cell_volume = g.cell_volume.get();
+  d.res = rs.get();
+  d.cell_centroid = g.cell_centroid.get();
+  d.face_centroid = g.face_centroid.get();
+  d.face_area = g.face_area.get();
+  d.face_moment = g.face_moment.get();
+  d.res_adj = r_adj.get();
+  d.q_adj = q_adj.get();
+  d.grad_adj = g_adj.get();
+  d.source_adj = s_adj.get();
+  for (int i = 0; i < 3; ++i) {
+    d.velocity[i] = typename P::param(velocity[i]);
+  }
+  d.nu[0] = typename P::param(nu);
+  ad::gpu_loops::lsq_gradient(d, dm.schedule);
+  ad::gpu_loops::boundary_flux_adjoint(d, strategy, dm.schedule);
+  ad::gpu_loops::flux_adjoint(d, strategy, dm.schedule);
+  ad::gpu_loops::init_residual_adjoint(d, dm.schedule);
+  ad::gpu_loops::lsq_gradient_adjoint(d, dm.schedule);
+  synchronise();
+  copy_out(q_adj.download(), out);
+}
+
 }  // namespace
 
 extern "C" {
+
+int autan_spike_gpu_roe(const void* mesh, const char* policy, const char* strategy, int block,
+                        int mode, const double* u, const double* seed, double* out, char* err,
+                        std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::with_policy(policy,
+                              [&](auto p) { roe<decltype(p)>(*m, s, block, mode, u, seed, out); });
+  });
+}
+
+int autan_spike_gpu_advdiff_adjoint(const void* mesh, const char* policy, const char* strategy,
+                                    int block, const double* q, const double* q_b,
+                                    const double* source, const double* velocity, double nu,
+                                    const double* seed, double* out, char* err,
+                                    std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::with_policy(policy, [&](auto p) {
+      advdiff_adjoint<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, seed, out);
+    });
+  });
+}
 
 int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const char* strategy,
                                      int block, const double* q, const double* q_b,

@@ -45,13 +45,17 @@ def _active(sig: Signature, bindings: dict[str, dsl.Binding], skip: int = 0) -> 
 
 
 def _keep_outputs(fn: Function, start: int) -> Function:
-    out = Function(fn.name, fn.arg_names, fn.arg_sizes, list(fn.instrs), fn.outputs[start:], fn.source)
+    out = Function(
+        fn.name, fn.arg_names, fn.arg_sizes, list(fn.instrs), fn.outputs[start:], fn.source
+    )
     return dce(out)
 
 
 def _single_output(lm: LoopModel) -> dsl.Dataset:
     if len(lm.loop.outputs) != 1:
-        raise CodegenError(Code.AD_UNSUPPORTED, f"loop {lm.name}: AD needs exactly one output dataset")
+        raise CodegenError(
+            Code.AD_UNSUPPORTED, f"loop {lm.name}: AD needs exactly one output dataset"
+        )
     return lm.loop.outputs[0].dataset
 
 
@@ -71,8 +75,16 @@ class ReduceAdjoint:
     datasets: list[dsl.Dataset] = field(default_factory=list)
 
 
-def _derived(name: str, lm: LoopModel, fn: Function, names: list[str], types: list[dsl.Type],
-             bindings: dict[str, dsl.Binding], outputs: list[object], kind: str | None = None) -> LoopModel:
+def _derived(
+    name: str,
+    lm: LoopModel,
+    fn: Function,
+    names: list[str],
+    types: list[dsl.Type],
+    bindings: dict[str, dsl.Binding],
+    outputs: list[object],
+    kind: str | None = None,
+) -> LoopModel:
     loop = dsl.Loop(kind or lm.kind, lm.loop.body, bindings, outputs, name=name)  # type: ignore[arg-type]
     fn.name = name + "_body"
     return LoopModel(name, loop, fn, Signature(names, types, None), None, None)
@@ -87,14 +99,18 @@ def tangent_loop(lm: LoopModel, m: Module) -> LoopModel:
     bindings = dict(lm.loop.bindings)
     for k in active:
         b = lm.loop.bindings[lm.sig.names[k]]
-        bindings[names[len(lm.sig.names) + active.index(k)]] = dsl.Binding(tan_ds(b.dataset), b.via, None)  # type: ignore[arg-type]
+        bindings[names[len(lm.sig.names) + active.index(k)]] = dsl.Binding(
+            tan_ds(b.dataset), b.via, None
+        )  # type: ignore[arg-type]
     n_primal = len(lm.fn.outputs)
     if lm.kind in ("face", "boundary", "cell"):
         out = _single_output(lm)
         fn_t = _keep_outputs(fn_t, n_primal)
         o = lm.loop.outputs[0]
         outputs: list[object] = [
-            dsl.Inc(tan_ds(out), o.left, o.right) if isinstance(o, dsl.Inc) else dsl.Write(tan_ds(out))
+            dsl.Inc(tan_ds(out), o.left, o.right)
+            if isinstance(o, dsl.Inc)
+            else dsl.Write(tan_ds(out))
         ]
         res = _derived(name, lm, fn_t, names, types, bindings, outputs)
         m.extra_bodies.append((fn_t, types))
@@ -196,7 +212,14 @@ def adjoint_loop(lm: LoopModel, m: Module) -> LoopModel:
         m.extra_bodies.append((fin_adj, [*lm.fin_sig.types, dsl.Type(dsl.Role.RESIDUAL, (n_fin,))]))
         for k in fin_active[n_acc:]:
             datasets.append(adj_ds(lm.loop.finalise_bindings[lm.fin_sig.names[k]].dataset))  # type: ignore[arg-type]
-    res = LoopModel(name, dsl.Loop("reduce_adjoint", lm.loop.body, lm.loop.bindings, [], name=name), lm.fn, lm.sig, None, None)
+    res = LoopModel(
+        name,
+        dsl.Loop("reduce_adjoint", lm.loop.body, lm.loop.bindings, [], name=name),
+        lm.fn,
+        lm.sig,
+        None,
+        None,
+    )
     res.loop.finalise_bindings = lm.loop.finalise_bindings
     res.radj = ReduceAdjoint(lm, body_adj, active, fin_adj, fin_active, datasets)
     return res
