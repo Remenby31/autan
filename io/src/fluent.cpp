@@ -13,11 +13,11 @@
 #include <string_view>
 #include <vector>
 
-#include "cfd/io/read_mesh.hpp"
+#include "autan/io/read_mesh.hpp"
 
 #include "cursor.hpp"
 
-namespace cfd::io {
+namespace autan::io {
 namespace {
 
 struct ZoneInfo {
@@ -200,8 +200,8 @@ class FluentReader {
       return;
     }
     check_range(first, last, "node");
-    const std::int64_t and = h.size() > 4 ? h[4] : 3;
-    if (and!= 3) c_.unsupported("nodes with " + std::to_string(and) + " dimensions");
+    const std::int64_t dimension = h.size() > 4 ? h[4] : 3;
+    if (dimension != 3) c_.unsupported("nodes with " + std::to_string(dimension) + " dimensions");
     n_nodes_ = std::max(n_nodes_, last);
     if (xyz_.size() < static_cast<std::size_t>(3 * last)) {
       xyz_.resize(static_cast<std::size_t>(3 * last));
@@ -496,4 +496,4 @@ Mesh read_fluent(const std::filesystem::path& file) {
   return assemble(std::move(in));
 }
 
-}  // namespace cfd::io
+}  // namespace autan::io

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace cfd {
+namespace autan {
 
 /// Index of a point, face, cell or zone inside one mesh (one partition).
 using index_t = std::int32_t;
@@ -183,7 +183,7 @@ class Mesh {
 /// interior faces, interior faces first sorted by (owner, neighbour), then
 /// boundary faces grouped by zone index and sorted by owner; points that no
 /// face references are removed. Cell order is kept. Fills `map` when given.
-/// Throws cfd::Error with an E01xx code on the first invariant violation.
+/// Throws autan::Error with an E01xx code on the first invariant violation.
 Mesh assemble(MeshInput input, AssemblyMap* map = nullptr);
 
-}  // namespace cfd
+}  // namespace autan

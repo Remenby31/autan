@@ -13,12 +13,12 @@
 #include <string_view>
 #include <vector>
 
-#include "cfd/core/cellwise.hpp"
-#include "cfd/io/read_mesh.hpp"
+#include "autan/core/cellwise.hpp"
+#include "autan/io/read_mesh.hpp"
 
 #include "cursor.hpp"
 
-namespace cfd::io {
+namespace autan::io {
 namespace {
 
 struct ElementType {
@@ -333,4 +333,4 @@ Mesh read_gmsh(const std::filesystem::path& file) {
   return assemble(reader.read());
 }
 
-}  // namespace cfd::io
+}  // namespace autan::io

@@ -13,11 +13,11 @@
 #include <string_view>
 #include <vector>
 
-#include "cfd/io/read_mesh.hpp"
+#include "autan/io/read_mesh.hpp"
 
 #include "cursor.hpp"
 
-namespace cfd::io {
+namespace autan::io {
 namespace {
 
 namespace fs = std::filesystem;
@@ -441,4 +441,4 @@ Mesh read_polymesh(const fs::path& directory) {
   return assemble(std::move(in));
 }
 
-}  // namespace cfd::io
+}  // namespace autan::io

@@ -10,31 +10,30 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
-#include "cfd/core/error.hpp"
-#include "cfd/core/geometry.hpp"
-#include "cfd/core/mesh.hpp"
-
+#include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
+#include "autan/core/mesh.hpp"
 #include "fixtures.hpp"
 
-using cfd::index_t;
-using cfd::offset_t;
+using autan::index_t;
+using autan::offset_t;
 
 namespace {
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
-void require_error(cfd::ErrorCode expected, const std::function<void()>& action) {
+void require_error(autan::ErrorCode expected, const std::function<void()>& action) {
   try {
     action();
-    FAIL("expected " << cfd::error_code_string(expected));
-  } catch (const cfd::Error& e) {
+    FAIL("expected " << autan::error_code_string(expected));
+  } catch (const autan::Error& e) {
     CHECK(e.code() == expected);
   }
 }
 
 // Two unit cubes side by side along x, written directly in face-based form.
-cfd::MeshInput two_cubes() {
-  cfd::MeshInput in;
+autan::MeshInput two_cubes() {
+  autan::MeshInput in;
   for (int k = 0; k < 2; ++k)
     for (int j = 0; j < 2; ++j)
       for (int i = 0; i < 3; ++i) {
@@ -55,25 +54,25 @@ cfd::MeshInput two_cubes() {
   face({p(1, 0, 0), p(1, 0, 1), p(1, 1, 1), p(1, 1, 0)}, 1, 0, 1);
   for (int c = 0; c < 2; ++c) {
     const auto ci = static_cast<index_t>(c);
-    if (c == 0) face({p(0, 0, 0), p(0, 0, 1), p(0, 1, 1), p(0, 1, 0)}, ci, cfd::no_cell, 0);
-    if (c == 1) face({p(2, 0, 0), p(2, 1, 0), p(2, 1, 1), p(2, 0, 1)}, ci, cfd::no_cell, 0);
-    face({p(c, 0, 0), p(c + 1, 0, 0), p(c + 1, 0, 1), p(c, 0, 1)}, ci, cfd::no_cell, 0);
-    face({p(c, 1, 0), p(c, 1, 1), p(c + 1, 1, 1), p(c + 1, 1, 0)}, ci, cfd::no_cell, 0);
-    face({p(c, 0, 0), p(c, 1, 0), p(c + 1, 1, 0), p(c + 1, 0, 0)}, ci, cfd::no_cell, 0);
-    face({p(c, 0, 1), p(c + 1, 0, 1), p(c + 1, 1, 1), p(c, 1, 1)}, ci, cfd::no_cell, 0);
+    if (c == 0) face({p(0, 0, 0), p(0, 0, 1), p(0, 1, 1), p(0, 1, 0)}, ci, autan::no_cell, 0);
+    if (c == 1) face({p(2, 0, 0), p(2, 1, 0), p(2, 1, 1), p(2, 0, 1)}, ci, autan::no_cell, 0);
+    face({p(c, 0, 0), p(c + 1, 0, 0), p(c + 1, 0, 1), p(c, 0, 1)}, ci, autan::no_cell, 0);
+    face({p(c, 1, 0), p(c, 1, 1), p(c + 1, 1, 1), p(c + 1, 1, 0)}, ci, autan::no_cell, 0);
+    face({p(c, 0, 0), p(c, 1, 0), p(c + 1, 1, 0), p(c + 1, 0, 0)}, ci, autan::no_cell, 0);
+    face({p(c, 0, 1), p(c + 1, 0, 1), p(c + 1, 1, 1), p(c, 1, 1)}, ci, autan::no_cell, 0);
   }
   in.cell_zone = {0, 0};
   in.face_zones = {
-      cfd::FaceZone{
-          .name = "walls", .bc_type = "wall", .kind = cfd::BcKind::wall, .provenance = {}},
-      cfd::FaceZone{.name = "interior",
-                    .bc_type = "",
-                    .kind = cfd::BcKind::unspecified,
-                    .boundary = false,
-                    .provenance = {}}};
-  in.cell_zones = {cfd::CellZone{
-      .name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}}};
-  in.source = cfd::MeshSource{.format = "memory", .path = ""};
+      autan::FaceZone{
+          .name = "walls", .bc_type = "wall", .kind = autan::BcKind::wall, .provenance = {}},
+      autan::FaceZone{.name = "interior",
+                      .bc_type = "",
+                      .kind = autan::BcKind::unspecified,
+                      .boundary = false,
+                      .provenance = {}}};
+  in.cell_zones = {autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}}};
+  in.source = autan::MeshSource{.format = "memory", .path = ""};
   return in;
 }
 
@@ -81,11 +80,11 @@ cfd::MeshInput two_cubes() {
 
 TEST_CASE("Assembled meshes satisfy the canonical ordering of the mesh contract", "[mesh]") {
   const auto fill =
-      GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
-               cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
-  CAPTURE(cfd::test::to_string(fill));
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(4, fill, 0.0)));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+      GENERATE(autan::test::BoxFill::hexa, autan::test::BoxFill::tetra, autan::test::BoxFill::prism,
+               autan::test::BoxFill::pyramid, autan::test::BoxFill::hybrid);
+  CAPTURE(autan::test::to_string(fill));
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::box(4, fill, 0.0)));
+  const autan::Geometry g = autan::compute_geometry(mesh);
   const auto owner = mesh.owner();
   const auto neighbour = mesh.neighbour();
   const index_t n_interior = mesh.n_interior_faces();
@@ -145,81 +144,82 @@ TEST_CASE("Assembled meshes satisfy the canonical ordering of the mesh contract"
 
 TEST_CASE("Analytic entity counts of box meshes", "[mesh]") {
   struct Expected {
-    cfd::test::BoxFill fill;
+    autan::test::BoxFill fill;
     int cells_per_cube;
     int faces_per_cell;
     int boundary_faces_per_side_square;
   };
-  const auto e = GENERATE(Expected{cfd::test::BoxFill::hexa, 1, 6, 1},
-                          Expected{cfd::test::BoxFill::tetra, 6, 4, 2},
-                          Expected{cfd::test::BoxFill::pyramid, 6, 5, 1});
-  CAPTURE(cfd::test::to_string(e.fill));
+  const auto e = GENERATE(Expected{autan::test::BoxFill::hexa, 1, 6, 1},
+                          Expected{autan::test::BoxFill::tetra, 6, 4, 2},
+                          Expected{autan::test::BoxFill::pyramid, 6, 5, 1});
+  CAPTURE(autan::test::to_string(e.fill));
   constexpr int n = 3;
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(n, e.fill)));
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::box(n, e.fill)));
   const int cells = e.cells_per_cube * n * n * n;
   const int boundary = 6 * n * n * e.boundary_faces_per_side_square;
   CHECK(mesh.n_cells() == cells);
   CHECK(mesh.n_boundary_faces() == boundary);
   CHECK(mesh.n_interior_faces() == (e.faces_per_cell * cells - boundary) / 2);
   const int corner_points = (n + 1) * (n + 1) * (n + 1);
-  CHECK(mesh.n_points() == corner_points + (e.fill == cfd::test::BoxFill::pyramid ? n * n * n : 0));
+  CHECK(mesh.n_points() ==
+        corner_points + (e.fill == autan::test::BoxFill::pyramid ? n * n * n : 0));
 }
 
 TEST_CASE("Assemble flips interior faces to owner < neighbour and keeps zones", "[mesh]") {
-  const cfd::Mesh mesh = cfd::assemble(two_cubes());
+  const autan::Mesh mesh = autan::assemble(two_cubes());
   REQUIRE(mesh.n_interior_faces() == 1);
   CHECK(mesh.owner()[0] == 0);
   CHECK(mesh.neighbour()[0] == 1);
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  const autan::Geometry g = autan::compute_geometry(mesh);
   CHECK(g.face_area_x[0] == 1.0);
-  CHECK(mesh.face_zones()[0].kind == cfd::BcKind::wall);
+  CHECK(mesh.face_zones()[0].kind == autan::BcKind::wall);
   CHECK(mesh.face_zones()[0].bc_type == "wall");
   CHECK(mesh.boundary_zone_offsets()[1] - mesh.boundary_zone_offsets()[0] == 10);
 }
 
 TEST_CASE("Points referenced by no face are removed", "[mesh]") {
-  cfd::MeshInput in = two_cubes();
+  autan::MeshInput in = two_cubes();
   in.x.insert(in.x.begin(), 42.0);
   in.y.insert(in.y.begin(), 42.0);
   in.z.insert(in.z.begin(), 42.0);
   for (index_t& node : in.face_nodes) ++node;
-  const cfd::Mesh mesh = cfd::assemble(in);
+  const autan::Mesh mesh = autan::assemble(in);
   CHECK(mesh.n_points() == 12);
   CHECK(std::find(mesh.x().begin(), mesh.x().end(), 42.0) == mesh.x().end());
 }
 
 TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
-  using cfd::ErrorCode;
+  using autan::ErrorCode;
   SECTION("E0101 inconsistent sizes") {
     auto in = two_cubes();
     in.face_zone.pop_back();
-    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0102 node index out of range") {
     auto in = two_cubes();
     in.face_nodes[5] = 12;
-    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0103 face with fewer than 3 nodes") {
     auto in = two_cubes();
     in.face_nodes.erase(in.face_nodes.begin() + 2, in.face_nodes.begin() + 4);
     for (std::size_t f = 1; f < in.face_node_offsets.size(); ++f) in.face_node_offsets[f] -= 2;
-    require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0104 repeated node") {
     auto in = two_cubes();
     in.face_nodes[1] = in.face_nodes[0];
-    require_error(ErrorCode::mesh_face_repeated_node, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_face_repeated_node, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0105 same cell on both sides") {
     auto in = two_cubes();
     in.face_cell1[0] = 1;
-    require_error(ErrorCode::mesh_face_same_cell_both_sides, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_face_same_cell_both_sides, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0106 cell with fewer than 4 faces") {
     auto in = two_cubes();
     in.cell_zone.push_back(0);
-    require_error(ErrorCode::mesh_cell_too_few_faces, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_cell_too_few_faces, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0107 open cell") {
     auto in = two_cubes();
@@ -228,16 +228,16 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     in.face_cell0.pop_back();
     in.face_cell1.pop_back();
     in.face_zone.pop_back();
-    require_error(ErrorCode::mesh_cell_not_closed, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_cell_not_closed, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0107 inconsistently oriented cell") {
     auto in = two_cubes();
     std::reverse(in.face_nodes.end() - 4, in.face_nodes.end());
-    require_error(ErrorCode::mesh_cell_not_closed, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_cell_not_closed, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0108 face shared by three cells") {
-    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
-                                     {0, 0, 0})
+    auto cw = autan::test::affine_cell(autan::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                       {0, 0, 0})
                   .mesh;
     cw.x.push_back(0.3);
     cw.y.push_back(0.3);
@@ -245,98 +245,99 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     cw.x.push_back(0.3);
     cw.y.push_back(0.3);
     cw.z.push_back(-2.0);
-    cw.add_cell(cfd::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 4}, 0);
-    cw.add_cell(cfd::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 5}, 0);
+    cw.add_cell(autan::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 4}, 0);
+    cw.add_cell(autan::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 5}, 0);
     require_error(ErrorCode::mesh_face_shared_by_more_than_two_cells,
-                  [&] { (void)cfd::to_face_based(cw); });
+                  [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0109 zone with interior and boundary faces") {
     auto in = two_cubes();
     in.face_zone[0] = 0;
-    require_error(ErrorCode::mesh_face_zone_role, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_face_zone_role, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0110 duplicate zone name") {
     auto in = two_cubes();
     in.face_zones[1].name = "walls";
-    require_error(ErrorCode::mesh_duplicate_zone_name, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_duplicate_zone_name, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0111 labelled face matching no cell face") {
-    auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa, 0.0, false);
-    cw.face_zones.push_back(cfd::FaceZone{
-        .name = "stray", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
+    auto cw = autan::test::box(1, autan::test::BoxFill::hexa, 0.0, false);
+    cw.face_zones.push_back(autan::FaceZone{
+        .name = "stray", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
     cw.add_labelled_face(std::array<index_t, 3>{0, 1, 2}, 0);
-    require_error(ErrorCode::mesh_labelled_face_not_found, [&] { (void)cfd::to_face_based(cw); });
+    require_error(ErrorCode::mesh_labelled_face_not_found, [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0101 cellwise offsets out of bounds") {
-    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
-                                     {0, 0, 0})
+    auto cw = autan::test::affine_cell(autan::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                       {0, 0, 0})
                   .mesh;
     auto overflow = cw;
     cw.face_node_offsets[1] = 1000;
-    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)cfd::to_face_based(cw); });
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::to_face_based(cw); });
     overflow.face_node_offsets[1] = std::numeric_limits<offset_t>::max();
     overflow.face_node_offsets[2] = -6;
-    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)cfd::to_face_based(overflow); });
+    require_error(ErrorCode::mesh_inconsistent_sizes,
+                  [&] { (void)autan::to_face_based(overflow); });
   }
   SECTION("E0102 labelled face with an invalid zone") {
-    auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa, 0.0, false);
-    cw.face_zones.push_back(cfd::FaceZone{
-        .name = "side", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
+    auto cw = autan::test::box(1, autan::test::BoxFill::hexa, 0.0, false);
+    cw.face_zones.push_back(autan::FaceZone{
+        .name = "side", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
     cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4}, -1);
-    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)cfd::to_face_based(cw); });
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0109 labels on both interior and boundary faces") {
-    auto cw = cfd::test::box(2, cfd::test::BoxFill::hexa, 0.0, false);
-    cw.face_zones.push_back(cfd::FaceZone{
-        .name = "mixed", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
+    auto cw = autan::test::box(2, autan::test::BoxFill::hexa, 0.0, false);
+    cw.face_zones.push_back(autan::FaceZone{
+        .name = "mixed", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
     cw.add_labelled_face(std::array<index_t, 4>{0, 3, 12, 9}, 0);   // x = 0 side
     cw.add_labelled_face(std::array<index_t, 4>{1, 4, 13, 10}, 0);  // x = 0.5, interior
-    require_error(ErrorCode::mesh_face_zone_role, [&] { (void)cfd::to_face_based(cw); });
+    require_error(ErrorCode::mesh_face_zone_role, [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0116 face between two ghost cells") {
     auto in = two_cubes();
     in.n_ghost_cells = 1;
-    require_error(ErrorCode::mesh_face_without_owned_cell, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_face_without_owned_cell, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0117 duplicate global id") {
     auto in = two_cubes();
     in.cell_global_id = {7, 7};
-    require_error(ErrorCode::mesh_duplicate_global_id, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_duplicate_global_id, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0112 empty mesh") {
-    cfd::MeshInput in;
+    autan::MeshInput in;
     in.face_node_offsets.push_back(0);
-    require_error(ErrorCode::mesh_empty, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_empty, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0114 inverted neighbour in a cellwise mesh") {
-    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
-                                     {0, 0, 0})
+    auto cw = autan::test::affine_cell(autan::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                       {0, 0, 0})
                   .mesh;
     cw.x.push_back(0.3);
     cw.y.push_back(0.3);
     cw.z.push_back(-1.0);
     // Inverted tetra: it lists the shared face (0, 1, 2) with the same
     // orientation as the first one.
-    cw.add_cell(cfd::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 4}, 0);
-    require_error(ErrorCode::mesh_shared_face_orientation, [&] { (void)cfd::to_face_based(cw); });
+    cw.add_cell(autan::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 4}, 0);
+    require_error(ErrorCode::mesh_shared_face_orientation, [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0115 face labelled twice") {
-    auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa);
+    auto cw = autan::test::box(1, autan::test::BoxFill::hexa);
     cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4}, 1);
-    require_error(ErrorCode::mesh_face_labelled_twice, [&] { (void)cfd::to_face_based(cw); });
+    require_error(ErrorCode::mesh_face_labelled_twice, [&] { (void)autan::to_face_based(cw); });
   }
 }
 
 TEST_CASE("Unlabelled boundary faces land in the synthesised zone 'unassigned'", "[mesh]") {
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::hanging_node_box()));
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::hanging_node_box()));
   const auto zones = mesh.face_zones();
   REQUIRE(zones.size() == 3);
   CHECK(zones[0].name == "inlet");
-  CHECK(zones[0].kind == cfd::BcKind::inlet);
+  CHECK(zones[0].kind == autan::BcKind::inlet);
   const auto offsets = mesh.boundary_zone_offsets();
   CHECK(offsets[1] - offsets[0] == 1);
   const auto unassigned = std::find_if(
-      zones.begin(), zones.end(), [](const cfd::FaceZone& z) { return z.name == "unassigned"; });
+      zones.begin(), zones.end(), [](const autan::FaceZone& z) { return z.name == "unassigned"; });
   REQUIRE(unassigned != zones.end());
   CHECK(unassigned->provenance.source_id == -1);
   const auto u = static_cast<std::size_t>(unassigned - zones.begin());
@@ -347,14 +348,14 @@ TEST_CASE("Unlabelled boundary faces land in the synthesised zone 'unassigned'",
 }
 
 TEST_CASE("The assembly map links every mesh entity to its input", "[mesh]") {
-  cfd::MeshInput in = two_cubes();
+  autan::MeshInput in = two_cubes();
   in.x.insert(in.x.begin(), 42.0);
   in.y.insert(in.y.begin(), 42.0);
   in.z.insert(in.z.begin(), 42.0);
   for (index_t& node : in.face_nodes) ++node;
-  const cfd::MeshInput copy = in;
-  cfd::AssemblyMap map;
-  const cfd::Mesh mesh = cfd::assemble(in, &map);
+  const autan::MeshInput copy = in;
+  autan::AssemblyMap map;
+  const autan::Mesh mesh = autan::assemble(in, &map);
 
   REQUIRE(map.face_source.size() == static_cast<std::size_t>(mesh.n_faces()));
   REQUIRE(map.point_source.size() == static_cast<std::size_t>(mesh.n_points()));
@@ -376,14 +377,14 @@ TEST_CASE("The assembly map links every mesh entity to its input", "[mesh]") {
 TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[mesh]") {
   // Partition of a 2x2x2 hex box: the four cells with x < 1/2 are owned, the
   // four across x = 1/2 are ghosts that only carry their shared faces.
-  const cfd::Mesh full =
-      cfd::assemble(cfd::to_face_based(cfd::test::box(2, cfd::test::BoxFill::hexa)));
-  const cfd::Geometry gf = cfd::compute_geometry(full);
+  const autan::Mesh full =
+      autan::assemble(autan::to_face_based(autan::test::box(2, autan::test::BoxFill::hexa)));
+  const autan::Geometry gf = autan::compute_geometry(full);
   std::vector<index_t> owned, ghosts;
   for (index_t c = 0; c < full.n_cells(); ++c)
     (gf.cell_centroid_x[at(c)] < 0.5 ? owned : ghosts).push_back(c);
   std::vector<index_t> local(at(full.n_cells()), -1);
-  cfd::MeshInput in;
+  autan::MeshInput in;
   in.x.assign(full.x().begin(), full.x().end());
   in.y.assign(full.y().begin(), full.y().end());
   in.z.assign(full.z().begin(), full.z().end());
@@ -402,9 +403,9 @@ TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[
   for (index_t f = 0; f < full.n_faces(); ++f) {
     const index_t o = local[at(full.owner()[at(f)])];
     const index_t n =
-        f < full.n_interior_faces() ? local[at(full.neighbour()[at(f)])] : cfd::no_cell;
+        f < full.n_interior_faces() ? local[at(full.neighbour()[at(f)])] : autan::no_cell;
     const bool o_owned = o < static_cast<index_t>(owned.size());
-    const bool n_owned = n != cfd::no_cell && n < static_cast<index_t>(owned.size());
+    const bool n_owned = n != autan::no_cell && n < static_cast<index_t>(owned.size());
     if (!o_owned && !n_owned) continue;
     const auto nodes = full.face_nodes(f);
     in.face_nodes.insert(in.face_nodes.end(), nodes.begin(), nodes.end());
@@ -415,8 +416,8 @@ TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[
   }
   in.face_zones.assign(full.face_zones().begin(), full.face_zones().end());
   in.cell_zones.assign(full.cell_zones().begin(), full.cell_zones().end());
-  const cfd::Mesh part = cfd::assemble(in);
-  const cfd::Geometry gp = cfd::compute_geometry(part);
+  const autan::Mesh part = autan::assemble(in);
+  const autan::Geometry gp = autan::compute_geometry(part);
 
   CHECK(part.n_owned_cells() == 4);
   CHECK(part.n_cells() == 8);
@@ -431,16 +432,16 @@ TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[
       CHECK(part.cell_faces(c).size() == 1);
     }
   }
-  const auto closure = cfd::cell_closure_error(part, gp);
+  const auto closure = autan::cell_closure_error(part, gp);
   CHECK(closure.size() == 4);
   CHECK(*std::max_element(closure.begin(), closure.end()) < 1e-12);
 }
 
 TEST_CASE("A zone that labels no face keeps its declared role", "[mesh]") {
-  auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa);
-  cw.face_zones.push_back(cfd::FaceZone{
-      .name = "spare-outlet", .bc_type = "", .kind = cfd::BcKind::outlet, .provenance = {}});
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cw));
+  auto cw = autan::test::box(1, autan::test::BoxFill::hexa);
+  cw.face_zones.push_back(autan::FaceZone{
+      .name = "spare-outlet", .bc_type = "", .kind = autan::BcKind::outlet, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
   const auto& zone = mesh.face_zones()[6];
   CHECK(zone.name == "spare-outlet");
   CHECK(zone.boundary);

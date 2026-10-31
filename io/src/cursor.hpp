@@ -10,9 +10,9 @@
 #include <string_view>
 #include <system_error>
 
-#include "cfd/core/error.hpp"
+#include "autan/core/error.hpp"
 
-namespace cfd::io {
+namespace autan::io {
 
 static_assert(std::endian::native == std::endian::little,
               "binary mesh formats are read as little-endian");
@@ -152,4 +152,4 @@ class Cursor {
   std::size_t pos_ = 0;
 };
 
-}  // namespace cfd::io
+}  // namespace autan::io

@@ -1,4 +1,4 @@
-#include "cfd/io/read_mesh.hpp"
+#include "autan/io/read_mesh.hpp"
 
 #include <fstream>
 #include <iterator>
@@ -6,7 +6,7 @@
 
 #include "cursor.hpp"
 
-namespace cfd::io {
+namespace autan::io {
 
 std::string read_file(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
@@ -33,4 +33,4 @@ Mesh read_mesh(const std::filesystem::path& path) {
               "'" + path.string() + "' is neither a Gmsh, a Fluent nor an OpenFOAM mesh");
 }
 
-}  // namespace cfd::io
+}  // namespace autan::io

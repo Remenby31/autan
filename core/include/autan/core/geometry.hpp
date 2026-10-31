@@ -2,9 +2,9 @@
 
 #include <vector>
 
-#include "cfd/core/mesh.hpp"
+#include "autan/core/mesh.hpp"
 
-namespace cfd {
+namespace autan {
 
 /// FP64 geometry of a Mesh, structure of arrays indexed like the mesh.
 /// Face area vectors point from owner to neighbour, outward on the boundary.
@@ -48,4 +48,4 @@ Geometry compute_geometry(const Mesh& mesh);
 /// E0101.
 std::vector<double> cell_closure_error(const Mesh& mesh, const Geometry& geometry);
 
-}  // namespace cfd
+}  // namespace autan

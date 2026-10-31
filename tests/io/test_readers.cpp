@@ -6,6 +6,7 @@
 #include <fstream>
 #include <map>
 #include <numeric>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -13,19 +14,19 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
-#include "cfd/core/error.hpp"
-#include "cfd/core/geometry.hpp"
-#include "cfd/io/read_mesh.hpp"
+#include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
+#include "autan/io/read_mesh.hpp"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
-using cfd::index_t;
+using autan::index_t;
 
 namespace {
 
 namespace fs = std::filesystem;
 
-const fs::path data_dir{CFD_TEST_MESH_DIR};
+const fs::path data_dir{AUTAN_TEST_MESH_DIR};
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
@@ -40,14 +41,14 @@ struct Canonical {
 };
 
 std::vector<std::array<std::int64_t, 3>> sorted_face_key(
-    const cfd::Mesh& mesh, index_t f, const std::vector<std::array<std::int64_t, 3>>& pk) {
+    const autan::Mesh& mesh, index_t f, const std::vector<std::array<std::int64_t, 3>>& pk) {
   std::vector<std::array<std::int64_t, 3>> key;
   for (const index_t p : mesh.face_nodes(f)) key.push_back(pk[at(p)]);
   std::sort(key.begin(), key.end());
   return key;
 }
 
-Canonical canonical(const cfd::Mesh& mesh) {
+Canonical canonical(const autan::Mesh& mesh) {
   Canonical out;
   for (index_t p = 0; p < mesh.n_points(); ++p) {
     out.point_key.push_back({std::llround(mesh.x()[at(p)] * 1e7),
@@ -64,7 +65,7 @@ Canonical canonical(const cfd::Mesh& mesh) {
 // Checks that `b` describes the same mesh as `a`: same points, faces, cells,
 // boundary zones per face and orientation; and cell zones per cell unless
 // `b` comes from a format that does not keep them.
-void require_same_mesh(const cfd::Mesh& a, const cfd::Mesh& b, bool cell_zones = true) {
+void require_same_mesh(const autan::Mesh& a, const autan::Mesh& b, bool cell_zones = true) {
   REQUIRE(a.n_points() == b.n_points());
   REQUIRE(a.n_faces() == b.n_faces());
   REQUIRE(a.n_interior_faces() == b.n_interior_faces());
@@ -95,8 +96,8 @@ void require_same_mesh(const cfd::Mesh& a, const cfd::Mesh& b, bool cell_zones =
     REQUIRE(it != b_cells.end());
     cell_map[at(c)] = it->second;
   }
-  const cfd::Geometry ga = cfd::compute_geometry(a);
-  const cfd::Geometry gb = cfd::compute_geometry(b);
+  const autan::Geometry ga = autan::compute_geometry(a);
+  const autan::Geometry gb = autan::compute_geometry(b);
   for (index_t f = 0; f < a.n_faces(); ++f) {
     const index_t g = face_map[at(f)];
     const bool same_owner = cell_map[at(a.owner()[at(f)])] == b.owner()[at(g)];
@@ -119,35 +120,44 @@ void require_same_mesh(const cfd::Mesh& a, const cfd::Mesh& b, bool cell_zones =
   }
 }
 
-const cfd::FaceZone& zone_named(const cfd::Mesh& mesh, const std::string& name) {
+const autan::FaceZone& zone_named(const autan::Mesh& mesh, const std::string& name) {
   const auto zones = mesh.face_zones();
   const auto it = std::find_if(zones.begin(), zones.end(),
-                               [&](const cfd::FaceZone& z) { return z.name == name; });
+                               [&](const autan::FaceZone& z) { return z.name == name; });
   REQUIRE(it != zones.end());
   return *it;
 }
 
-void require_valid_box(const cfd::Mesh& mesh, double volume) {
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
-  const auto closure = cfd::cell_closure_error(mesh, g);
+void require_valid_box(const autan::Mesh& mesh, double volume) {
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const auto closure = autan::cell_closure_error(mesh, g);
   CHECK(*std::max_element(closure.begin(), closure.end()) < 1e-12);
   CHECK_THAT(std::accumulate(g.cell_volume.begin(), g.cell_volume.end(), 0.0),
              WithinRel(volume, 1e-12));
 }
 
+// One directory per test process: ctest runs test cases in parallel.
+const fs::path& temp_dir() {
+  static const fs::path dir = [] {
+    std::random_device random;
+    return fs::temp_directory_path() / ("autan_io_tests-" + std::to_string(random()));
+  }();
+  return dir;
+}
+
 fs::path write_temp(const std::string& name, const std::string& content) {
-  const fs::path dir = fs::temp_directory_path() / "cfd_io_tests";
+  const fs::path dir = temp_dir();
   fs::create_directories(dir);
   const fs::path path = dir / name;
   std::ofstream(path, std::ios::binary) << content;
   return path;
 }
 
-void require_error(cfd::ErrorCode expected, const fs::path& path) {
+void require_error(autan::ErrorCode expected, const fs::path& path) {
   try {
-    (void)cfd::io::read_mesh(path);
-    FAIL("expected " << cfd::error_code_string(expected));
-  } catch (const cfd::Error& e) {
+    (void)autan::io::read_mesh(path);
+    FAIL("expected " << autan::error_code_string(expected));
+  } catch (const autan::Error& e) {
     CHECK(e.code() == expected);
   }
 }
@@ -158,35 +168,35 @@ TEST_CASE("Every format of a test mesh reads to the same mesh", "[io]") {
   const std::string name = GENERATE("hex", "prism", "pyramid", "tet", "hybrid", "tet-gmsh");
   CAPTURE(name);
   const fs::path dir = data_dir / name;
-  const cfd::Mesh reference = cfd::io::read_mesh(dir / "polyMesh");
+  const autan::Mesh reference = autan::io::read_mesh(dir / "polyMesh");
   require_valid_box(reference, 1.0);
   CHECK(reference.source().format == "polymesh");
 
   const std::array<std::string, 6> sides{"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"};
   for (const auto& side : sides) CHECK(zone_named(reference, side).boundary);
-  CHECK(zone_named(reference, "ymin").kind == cfd::BcKind::wall);
-  CHECK(zone_named(reference, "zmax").kind == cfd::BcKind::symmetry);
-  CHECK(zone_named(reference, "xmin").kind == cfd::BcKind::unspecified);
+  CHECK(zone_named(reference, "ymin").kind == autan::BcKind::wall);
+  CHECK(zone_named(reference, "zmax").kind == autan::BcKind::symmetry);
+  CHECK(zone_named(reference, "xmin").kind == autan::BcKind::unspecified);
   if (fs::exists(dir / "polyMesh-binary"))
-    require_same_mesh(reference, cfd::io::read_mesh(dir / "polyMesh-binary"));
+    require_same_mesh(reference, autan::io::read_mesh(dir / "polyMesh-binary"));
 
   for (const char* file : {".ascii.msh", ".binary.msh"}) {
     CAPTURE(file);
-    const cfd::Mesh gmsh = cfd::io::read_mesh(dir / (name + file));
+    const autan::Mesh gmsh = autan::io::read_mesh(dir / (name + file));
     CHECK(gmsh.source().format == "gmsh");
     require_same_mesh(reference, gmsh);
   }
   for (const char* file : {".fluent.msh", ".fluent-binary.msh"}) {
     CAPTURE(file);
-    const cfd::Mesh fluent = cfd::io::read_mesh(dir / (name + file));
+    const autan::Mesh fluent = autan::io::read_mesh(dir / (name + file));
     CHECK(fluent.source().format == "fluent");
     require_same_mesh(reference, fluent, false);  // foamMeshToFluent writes one cell zone
     CHECK(zone_named(fluent, "ymin").bc_type == "wall");
-    CHECK(zone_named(fluent, "ymin").kind == cfd::BcKind::wall);
-    CHECK(zone_named(fluent, "zmax").kind == cfd::BcKind::symmetry);
+    CHECK(zone_named(fluent, "ymin").kind == autan::BcKind::wall);
+    CHECK(zone_named(fluent, "zmax").kind == autan::BcKind::symmetry);
     CHECK_FALSE(zone_named(fluent, "interior-1").boundary);
     REQUIRE(fluent.cell_zones().size() == 1);
-    CHECK(fluent.cell_zones()[0].kind == cfd::CellKind::fluid);
+    CHECK(fluent.cell_zones()[0].kind == autan::CellKind::fluid);
   }
 }
 
@@ -194,13 +204,13 @@ TEST_CASE("Polyhedral meshes read identically from polyMesh and Fluent", "[io]")
   const std::string name = GENERATE("poly", "hanging");
   CAPTURE(name);
   const fs::path dir = data_dir / name;
-  const cfd::Mesh reference = cfd::io::read_mesh(dir / "polyMesh");
+  const autan::Mesh reference = autan::io::read_mesh(dir / "polyMesh");
   require_valid_box(reference, name == "hanging" ? 2.0 : 1.0);
   if (fs::exists(dir / "polyMesh-binary"))
-    require_same_mesh(reference, cfd::io::read_mesh(dir / "polyMesh-binary"));
+    require_same_mesh(reference, autan::io::read_mesh(dir / "polyMesh-binary"));
   for (const char* file : {".fluent.msh", ".fluent-binary.msh"}) {
     CAPTURE(file);
-    require_same_mesh(reference, cfd::io::read_mesh(dir / (name + file)), false);
+    require_same_mesh(reference, autan::io::read_mesh(dir / (name + file)), false);
   }
   index_t max_faces = 0;
   for (index_t c = 0; c < reference.n_cells(); ++c) {
@@ -210,7 +220,7 @@ TEST_CASE("Polyhedral meshes read identically from polyMesh and Fluent", "[io]")
     CHECK(max_faces == 105);
     REQUIRE(reference.cell_zones().size() == 2);
     CHECK(reference.cell_zones()[0].name == "coarse");
-    CHECK(zone_named(reference, "walls").kind == cfd::BcKind::wall);
+    CHECK(zone_named(reference, "walls").kind == autan::BcKind::wall);
   } else {
     CHECK(max_faces > 6);
   }
@@ -302,24 +312,24 @@ std::string replace(std::string text, const std::string& from, const std::string
 
 TEST_CASE("Hand-written files from the format specifications read as specified", "[io]") {
   SECTION("Fluent") {
-    const cfd::Mesh mesh = cfd::io::read_mesh(write_temp("tet.msh", fluent_tet));
-    const cfd::Geometry g = cfd::compute_geometry(mesh);
+    const autan::Mesh mesh = autan::io::read_mesh(write_temp("tet.msh", fluent_tet));
+    const autan::Geometry g = autan::compute_geometry(mesh);
     REQUIRE(mesh.n_cells() == 1);
     CHECK_THAT(g.cell_volume[0], WithinRel(1.0 / 6.0, 1e-15));
-    CHECK(*std::max_element(cfd::cell_closure_error(mesh, g).begin(),
-                            cfd::cell_closure_error(mesh, g).end()) < 1e-12);
+    CHECK(*std::max_element(autan::cell_closure_error(mesh, g).begin(),
+                            autan::cell_closure_error(mesh, g).end()) < 1e-12);
     const auto& sides = zone_named(mesh, "sides");
     CHECK(sides.bc_type == "velocity-inlet");
-    CHECK(sides.kind == cfd::BcKind::inlet);
+    CHECK(sides.kind == autan::BcKind::inlet);
     CHECK(sides.provenance.source_id == 4);
-    CHECK(zone_named(mesh, "bottom-and-front").kind == cfd::BcKind::wall);
+    CHECK(zone_named(mesh, "bottom-and-front").kind == autan::BcKind::wall);
     REQUIRE(mesh.cell_zones().size() == 1);
     CHECK(mesh.cell_zones()[0].name == "tet-cell");
-    CHECK(mesh.cell_zones()[0].kind == cfd::CellKind::fluid);
+    CHECK(mesh.cell_zones()[0].kind == autan::CellKind::fluid);
   }
   SECTION("Gmsh") {
-    const cfd::Mesh mesh = cfd::io::read_mesh(write_temp("tet-gmsh.msh", gmsh_tet));
-    const cfd::Geometry g = cfd::compute_geometry(mesh);
+    const autan::Mesh mesh = autan::io::read_mesh(write_temp("tet-gmsh.msh", gmsh_tet));
+    const autan::Geometry g = autan::compute_geometry(mesh);
     REQUIRE(mesh.n_cells() == 1);
     CHECK(mesh.n_points() == 4);
     CHECK_THAT(g.cell_volume[0], WithinRel(1.0 / 6.0, 1e-15));
@@ -336,7 +346,7 @@ TEST_CASE("Hand-written files from the format specifications read as specified",
 }
 
 TEST_CASE("Readers reject what the formats forbid or the core does not support", "[io]") {
-  using cfd::ErrorCode;
+  using autan::ErrorCode;
   SECTION("E0130 missing file") {
     require_error(ErrorCode::io_cannot_open, data_dir / "missing.msh");
   }
@@ -375,7 +385,8 @@ TEST_CASE("Readers reject what the formats forbid or the core does not support",
                   write_temp("clash.msh", replace(gmsh_tet, "2 7 \"base\"", "2 7 \"unassigned\"")));
   }
   SECTION("polyMesh") {
-    const fs::path dir = fs::temp_directory_path() / "cfd_io_tests" / "polyMesh";
+    const fs::path dir = temp_dir() / "polyMesh";
+    fs::create_directories(temp_dir());
     fs::remove_all(dir);
     fs::copy(data_dir / "hex" / "polyMesh", dir);
     SECTION("E0133 decomposed mesh") {
