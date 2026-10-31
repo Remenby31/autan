@@ -31,10 +31,14 @@ def case(request: pytest.FixtureRequest) -> tuple[s.Mesh, dict[str, np.ndarray]]
 
 @pytest.mark.parametrize("strategy", s.STRATEGIES)
 @pytest.mark.parametrize("policy", PRECISIONS)
-def test_gpu_residual_equals_host_residual(case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str) -> None:
+def test_gpu_residual_equals_host_residual(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str
+) -> None:
     m, d = case
     host, hg = s.advdiff_residual(m, policy, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU)
-    dev, dg = s.gpu_advdiff_residual(m, policy, strategy, 128, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU)
+    dev, dg = s.gpu_advdiff_residual(
+        m, policy, strategy, 128, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU
+    )
     scale = np.abs(host).max()
     assert np.abs(dev - host).max() <= 200 * eps(policy) * scale
     assert np.abs(dg - hg).max() <= 200 * eps(policy) * np.abs(hg).max()
@@ -44,7 +48,9 @@ def test_gpu_residual_equals_host_residual(case: tuple[s.Mesh, dict[str, np.ndar
 
 
 @pytest.mark.parametrize("strategy", s.STRATEGIES)
-def test_gpu_green_gauss_equals_host(case: tuple[s.Mesh, dict[str, np.ndarray]], strategy: str) -> None:
+def test_gpu_green_gauss_equals_host(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], strategy: str
+) -> None:
     m, d = case
     host, lo, hi = s.gradients(m, "fp64", "gg", d["q"], d["q_b"], 3, d["grad"])
     dev, _, _ = s.gpu_gradients(m, "fp64", "gg", strategy, 128, d["q"], d["q_b"], 3, d["grad"])
@@ -58,12 +64,16 @@ def test_gpu_green_gauss_equals_host(case: tuple[s.Mesh, dict[str, np.ndarray]],
 
 @pytest.mark.parametrize("strategy", s.DETERMINISTIC)
 @pytest.mark.parametrize("policy", PRECISIONS)
-def test_deterministic_strategies_are_bitwise_reproducible(case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str) -> None:
+def test_deterministic_strategies_are_bitwise_reproducible(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str
+) -> None:
     m, d = case
     runs = []
     for k in range(10):
         block = 64 if k % 2 else 256
-        res, grad = s.gpu_advdiff_residual(m, policy, strategy, block, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU)
+        res, grad = s.gpu_advdiff_residual(
+            m, policy, strategy, block, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU
+        )
         gg, _, _ = s.gpu_gradients(m, policy, "gg", strategy, block, d["q"], d["q_b"], 2, d["grad"])
         norm = np.sqrt(np.sum(res * res))
         runs.append((res.tobytes(), grad.tobytes(), gg.tobytes(), norm))

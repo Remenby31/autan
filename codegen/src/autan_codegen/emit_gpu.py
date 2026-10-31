@@ -117,7 +117,9 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
     e.w("}")
     e.w()
     # coloured: faces of one colour touch distinct cells.
-    _kernel_head(e, f"{lm.name}_coloured", ", const index_t* __restrict__ faces, const index_t count")
+    _kernel_head(
+        e, f"{lm.name}_coloured", ", const index_t* __restrict__ faces, const index_t count"
+    )
     e.w(f"  const index_t i = {tid};")
     e.w("  if (i >= count) {")
     e.w("    return;")
@@ -134,7 +136,11 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
     e.w("}")
     e.w()
     # store-gather, pass 1: face values to scratch.
-    _kernel_head(e, f"{lm.name}_store", ", const index_t lo, const index_t hi, typename P::accum* __restrict__ scratch")
+    _kernel_head(
+        e,
+        f"{lm.name}_store",
+        ", const index_t lo, const index_t hi, typename P::accum* __restrict__ scratch",
+    )
     e.w(f"  const index_t f = lo + {tid};")
     e.w("  if (f >= hi) {")
     e.w("    return;")
@@ -143,7 +149,11 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
     for s in _face_eval(lm, "  "):
         e.w(s)
     for k in range(n):
-        e.w(f"  scratch[{k} * d.topo.n_faces + f] = A(out[{k}]);" if k else "  scratch[f] = A(out[0]);")
+        e.w(
+            f"  scratch[{k} * d.topo.n_faces + f] = A(out[{k}]);"
+            if k
+            else "  scratch[f] = A(out[0]);"
+        )
     e.w("}")
     e.w()
     # store-gather pass 2 and gather-recompute: one thread per owned cell, incidence order.
@@ -155,16 +165,24 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         e.w("    return;")
         e.w("  }")
         e.w(f"  A acc[{n}] = {{}};")
-        e.w("  for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {")
+        e.w(
+            "  for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {"
+        )
         e.w("    const index_t f = d.topo.cell_faces[k];")
-        cond = "f >= d.topo.n_interior_faces" if lm.kind == "face" else "f < d.topo.n_interior_faces"
+        cond = (
+            "f >= d.topo.n_interior_faces" if lm.kind == "face" else "f < d.topo.n_interior_faces"
+        )
         e.w(f"    if ({cond}) {{")
         e.w("      continue;")
         e.w("    }")
         if variant == "gather":
             e.w(f"    A out[{n}];")
             for k in range(n):
-                e.w(f"    out[{k}] = scratch[{k} * d.topo.n_faces + f];" if k else "    out[0] = scratch[f];")
+                e.w(
+                    f"    out[{k}] = scratch[{k} * d.topo.n_faces + f];"
+                    if k
+                    else "    out[0] = scratch[f];"
+                )
             if lm.kind == "face":
                 e.w("    const bool left = d.topo.owner[f] == c;")
         else:
@@ -195,10 +213,14 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     lo, hi = _range(lm)
     col = "interior" if lm.kind == "face" else "boundary"
     e.w("template <class P>")
-    e.w(f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{")
+    e.w(
+        f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{"
+    )
     e.w(f"  const index_t lo = {lo};")
     e.w(f"  const index_t hi = {hi};")
-    e.w("  const auto grid = [&](index_t n) { return static_cast<unsigned>((n + s.block - 1) / s.block); };")
+    e.w(
+        "  const auto grid = [&](index_t n) { return static_cast<unsigned>((n + s.block - 1) / s.block); };"
+    )
     e.w("  const auto block = static_cast<unsigned>(s.block);")
     e.w("  switch (strategy) {")
     e.w("    case gpu::Strategy::atomic:")
@@ -215,7 +237,9 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w(f"      for (std::size_t k = 0; k + 1 < s.{col}.offsets.size(); ++k) {{")
     e.w(f"        const index_t first = s.{col}.offsets[k];")
     e.w(f"        const index_t count = s.{col}.offsets[k + 1] - first;")
-    e.w(f"        {lm.name}_coloured<P><<<grid(count), block, 0, s.stream>>>(d, s.{col}.faces + first, count);")
+    e.w(
+        f"        {lm.name}_coloured<P><<<grid(count), block, 0, s.stream>>>(d, s.{col}.faces + first, count);"
+    )
     e.w("      }")
     e.w("      break;")
     e.w("    case gpu::Strategy::store_gather: {")
@@ -223,11 +247,15 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w("      if (hi > lo) {")
     e.w(f"        {lm.name}_store<P><<<grid(hi - lo), block, 0, s.stream>>>(d, lo, hi, scratch);")
     e.w("      }")
-    e.w(f"      {lm.name}_gather<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d, scratch);")
+    e.w(
+        f"      {lm.name}_gather<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d, scratch);"
+    )
     e.w("      break;")
     e.w("    }")
     e.w("    case gpu::Strategy::gather_recompute:")
-    e.w(f"      {lm.name}_gather_recompute<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d);")
+    e.w(
+        f"      {lm.name}_gather_recompute<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d);"
+    )
     e.w("      break;")
     e.w("  }")
     e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
@@ -248,7 +276,9 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
         e.w(f"  {lm.fn.name}<P>({', '.join([*args, 'out'])});")
         for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
             for c in range(o.dataset.type.size):
-                e.w(f"  {at(o.dataset, 'c', c)} = static_cast<{ctype(o.dataset.type.role)}>(out[{off + c}]);")
+                e.w(
+                    f"  {at(o.dataset, 'c', c)} = static_cast<{ctype(o.dataset.type.role)}>(out[{off + c}]);"
+                )
     else:
         for s in reduce_body(lm, "  "):
             e.w(s)
@@ -257,7 +287,9 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     e.w("template <class P>")
     e.w(f"void {lm.name}(const Data<P>& d, const gpu::Schedule& s) {{")
     e.w("  if (d.topo.n_owned_cells > 0) {")
-    e.w("    const auto grid = static_cast<unsigned>((d.topo.n_owned_cells + s.block - 1) / s.block);")
+    e.w(
+        "    const auto grid = static_cast<unsigned>((d.topo.n_owned_cells + s.block - 1) / s.block);"
+    )
     e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")
     e.w("  }")
     e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
@@ -285,5 +317,28 @@ def emit_gpu_header(m: Module) -> str:
             emit_face_launcher(e, lm)
         else:
             emit_cell_kernel(e, lm)
+    e.w(f"}}  // namespace autan::kernels::{m.name}::gpu_loops")
+    return e.text()
+
+
+POLICIES = {"fp64": "fp64", "fp32+acc64": "fp32_acc64", "fp32": "fp32"}
+
+
+def emit_gpu_instances(m: Module, policies: list[str]) -> str:
+    """`<module>_gpu.cu`: explicit instantiations of every loop for the policies a build lists."""
+    e = Emitter(f"{m.name}_gpu.cu", line_directives=False)
+    e.w(f"// Generated by autan_codegen from {m.path.name}. Do not edit.")
+    e.w(f'#include "{m.name}_gpu.cuh"')
+    e.w()
+    e.w(f"namespace autan::kernels::{m.name}::gpu_loops {{")
+    for p in policies:
+        pol = f"::autan::kernels::{POLICIES[p]}"
+        for lm in m.loops:
+            if lm.kind in ("face", "boundary"):
+                e.w(
+                    f"template void {lm.name}<{pol}>(const Data<{pol}>&, gpu::Strategy, const gpu::Schedule&);"
+                )
+            else:
+                e.w(f"template void {lm.name}<{pol}>(const Data<{pol}>&, const gpu::Schedule&);")
     e.w(f"}}  // namespace autan::kernels::{m.name}::gpu_loops")
     return e.text()

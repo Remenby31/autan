@@ -13,7 +13,12 @@ from autan_vv.meshes.families import generate_level
 
 
 def main() -> None:
-    kind, levels, perturbation, out = sys.argv[1], sys.argv[2], float(sys.argv[3]), Path(sys.argv[4])
+    kind, levels, perturbation, out = (
+        sys.argv[1],
+        sys.argv[2],
+        float(sys.argv[3]),
+        Path(sys.argv[4]),
+    )
     out.mkdir(parents=True, exist_ok=True)
     for n in (int(x) for x in levels.split(",")):
         mesh, version = generate_level(kind, n, perturbation=perturbation, seed=2026)

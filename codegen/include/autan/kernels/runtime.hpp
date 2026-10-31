@@ -3,7 +3,6 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
-#include <limits>
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define AUTAN_HD __host__ __device__
@@ -114,11 +113,15 @@ inline bool ge(std::complex<T> a, std::complex<T> b) {
 
 template <class T>
 AUTAN_HD inline T infinity() {
-  return std::numeric_limits<T>::infinity();
+  if constexpr (sizeof(T) == sizeof(float)) {
+    return T(__builtin_huge_valf());
+  } else {
+    return T(__builtin_huge_val());
+  }
 }
 template <>
 inline std::complex<double> infinity<std::complex<double>>() {
-  return {std::numeric_limits<double>::infinity(), 0.0};
+  return {__builtin_huge_val(), 0.0};
 }
 
 }  // namespace autan::kernels

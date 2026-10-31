@@ -22,7 +22,9 @@ from meshes import FaceArrays
 
 def load(path: Path) -> tuple[FaceArrays, str]:
     z = np.load(path)
-    fa = FaceArrays(z["points"], z["face_offsets"], z["face_nodes"], z["cell0"], z["cell1"], int(z["n_cells"]))
+    fa = FaceArrays(
+        z["points"], z["face_offsets"], z["face_nodes"], z["cell0"], z["cell1"], int(z["n_cells"])
+    )
     return fa, str(z["mesh_sha256"])
 
 
@@ -30,7 +32,9 @@ def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     policies = sys.argv[3].split(",") if len(sys.argv) > 3 else ["fp64", "fp32+acc64", "fp32"]
     out.mkdir(parents=True, exist_ok=True)
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
     families: dict[str, list[Path]] = defaultdict(list)
     for p in sorted(src.glob("*.npz")):
         families[p.stem.rsplit("-n", 1)[0]].append(p)
@@ -48,7 +52,9 @@ def main() -> None:
                     "relative_residual": sol.residual,
                 })  # fmt: skip
             label = f"{family} {policy}"
-            (out / f"{family}-{policy}.json").write_text(json.dumps({"label": label, "dim": 3, "levels": levels}, indent=1))
+            (out / f"{family}-{policy}.json").write_text(
+                json.dumps({"label": label, "dim": 3, "levels": levels}, indent=1)
+            )
             h = [(lv["volume"] / lv["n_cells"]) ** (1 / 3) for lv in levels]
             row = [label]
             for norm in ("L2", "Linf"):

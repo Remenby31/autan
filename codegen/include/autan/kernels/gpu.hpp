@@ -11,6 +11,10 @@
 #include "autan/kernels/runtime.hpp"
 
 #if defined(__HIPCC__)
+// Warp-synchronous shuffles and ballots with 64-bit masks, on floating-point types too (HIP
+// documentation, "Warp cross-lane functions").
+#define HIP_ENABLE_WARP_SYNC_BUILTINS 1
+#define HIP_ENABLE_EXTRA_WARP_SYNC_TYPES 1
 #include <hip/hip_runtime.h>
 #define AUTAN_GPU_HIP 1
 #else
@@ -66,7 +70,7 @@ __device__ inline T shfl_up(T v, int delta) {
 __device__ inline int segment_id(bool head) {
   const int lane = static_cast<int>(threadIdx.x) % warp_size;
 #if defined(AUTAN_GPU_HIP)
-  const lane_mask_t heads = __ballot(head);
+  const lane_mask_t heads = __ballot_sync(full_mask, head);
   const lane_mask_t upto = full_mask >> (warp_size - 1 - lane);
   return __popcll(heads & upto);
 #else
@@ -103,8 +107,7 @@ inline const char* name(Strategy s) {
 
 /// True for strategies whose sums run in an order fixed by the mesh numbering.
 inline bool deterministic(Strategy s) {
-  return s == Strategy::coloured || s == Strategy::store_gather ||
-         s == Strategy::gather_recompute;
+  return s == Strategy::coloured || s == Strategy::store_gather || s == Strategy::gather_recompute;
 }
 
 /// Faces of one range grouped in colours: no two faces of a colour touch the same cell.

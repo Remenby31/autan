@@ -20,10 +20,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--no-line", action="store_true", help="omit #line directives to the DSL source"
     )
+    ap.add_argument("--policies", default="fp64,fp32+acc64,fp32", help="policies to instantiate")
     ns = ap.parse_args(argv)
     try:
         for path in ns.kernels:
-            generate(path, ns.out, ns.backends.split(","), line_directives=not ns.no_line)
+            generate(
+                path,
+                ns.out,
+                ns.backends.split(","),
+                line_directives=not ns.no_line,
+                policies=ns.policies.split(","),
+            )
     except CodegenError:
         return 1
     return 0

@@ -57,13 +57,20 @@ Options parse(int argc, char** argv) {
   for (int i = 2; i + 1 < argc; i += 2) {
     const std::string_view f(argv[i]);
     const std::string v(argv[i + 1]);
-    if (f == "--policy") o.policy = v;
-    else if (f == "--order") o.order = v;
-    else if (f == "--block") o.block = std::stoi(v);
-    else if (f == "--warmup") o.warmup = std::stoi(v);
-    else if (f == "--reps") o.reps = std::stoi(v);
-    else if (f == "--batch") o.batch = std::stoi(v);
-    else fail("unknown flag " + std::string(f));
+    if (f == "--policy")
+      o.policy = v;
+    else if (f == "--order")
+      o.order = v;
+    else if (f == "--block")
+      o.block = std::stoi(v);
+    else if (f == "--warmup")
+      o.warmup = std::stoi(v);
+    else if (f == "--reps")
+      o.reps = std::stoi(v);
+    else if (f == "--batch")
+      o.batch = std::stoi(v);
+    else
+      fail("unknown flag " + std::string(f));
   }
   return o;
 }
@@ -115,7 +122,8 @@ std::vector<index_t> rcm(const autan::Mesh& m) {
 
 autan::Mesh renumbered(const autan::Mesh& m, const std::vector<index_t>& order) {
   std::vector<index_t> new_of(order.size());
-  for (std::size_t k = 0; k < order.size(); ++k) new_of[static_cast<std::size_t>(order[k])] = static_cast<index_t>(k);
+  for (std::size_t k = 0; k < order.size(); ++k)
+    new_of[static_cast<std::size_t>(order[k])] = static_cast<index_t>(k);
   autan::MeshInput in;
   in.x.assign(m.x().begin(), m.x().end());
   in.y.assign(m.y().begin(), m.y().end());
@@ -131,7 +139,8 @@ autan::Mesh renumbered(const autan::Mesh& m, const std::vector<index_t>& order) 
   }
   in.face_zone.assign(m.face_zone().begin(), m.face_zone().end());
   in.cell_zone.resize(order.size());
-  for (std::size_t k = 0; k < order.size(); ++k) in.cell_zone[k] = m.cell_zone()[static_cast<std::size_t>(order[k])];
+  for (std::size_t k = 0; k < order.size(); ++k)
+    in.cell_zone[k] = m.cell_zone()[static_cast<std::size_t>(order[k])];
   in.face_zones.assign(m.face_zones().begin(), m.face_zones().end());
   in.cell_zones.assign(m.cell_zones().begin(), m.cell_zones().end());
   in.source = m.source();
@@ -318,9 +327,8 @@ int main(int argc, char** argv) {
   std::vector<Timed> timed;
   bool verified = true;
   double tolerance = 0.0;
-  autan::spike::with_policy(o.policy, [&](auto p) {
-    run<decltype(p)>(o, m, timed, verified, tolerance);
-  });
+  autan::spike::with_policy(o.policy,
+                            [&](auto p) { run<decltype(p)>(o, m, timed, verified, tolerance); });
 
   int device = 0;
   cudaDeviceProp prop{};
@@ -355,11 +363,13 @@ int main(int argc, char** argv) {
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < timed.size(); ++k) {
     const auto& t = timed[k];
-    std::printf("%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":"
-                "\"%s\",\"policy\":\"%s\",\"order\":\"%s\"},\"seconds\":[",
-                k ? "," : "", t.name.c_str(), t.bytes, m.topo.n_cells, t.strategy.c_str(),
-                o.policy.c_str(), o.order.c_str());
-    for (std::size_t r = 0; r < t.seconds.size(); ++r) std::printf("%s%.9e", r ? "," : "", t.seconds[r]);
+    std::printf(
+        "%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":"
+        "\"%s\",\"policy\":\"%s\",\"order\":\"%s\"},\"seconds\":[",
+        k ? "," : "", t.name.c_str(), t.bytes, m.topo.n_cells, t.strategy.c_str(), o.policy.c_str(),
+        o.order.c_str());
+    for (std::size_t r = 0; r < t.seconds.size(); ++r)
+      std::printf("%s%.9e", r ? "," : "", t.seconds[r]);
     std::printf("]}");
   }
   std::printf("]}\n");

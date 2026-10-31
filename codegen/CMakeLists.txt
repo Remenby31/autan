@@ -17,11 +17,17 @@ file(
 set(AUTAN_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 set(AUTAN_GENERATED_FILES)
+set(AUTAN_GENERATED_GPU_UNITS)
 foreach(module IN LISTS AUTAN_KERNEL_MODULES)
   set(outputs ${AUTAN_GENERATED_DIR}/${module}.hpp)
   list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp)
   if(AUTAN_ENABLE_CUDA)
-    list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_gpu.cuh)
+    list(
+      APPEND outputs
+      ${AUTAN_GENERATED_DIR}/${module}_gpu.cuh
+      ${AUTAN_GENERATED_DIR}/${module}_gpu.cu
+    )
+    list(APPEND AUTAN_GENERATED_GPU_UNITS ${AUTAN_GENERATED_DIR}/${module}_gpu.cu)
   endif()
   list(JOIN AUTAN_KERNEL_BACKENDS "," backends)
   add_custom_command(
@@ -59,6 +65,11 @@ add_library(autan_spike SHARED spike/capi.cpp)
 target_link_libraries(autan_spike PRIVATE autan::kernels autan::io autan_compile_options)
 
 if(AUTAN_ENABLE_CUDA)
+  # Every generated loop instantiated for every policy: the compile-time measure of the spike.
+  add_library(autan_kernels_gpu OBJECT ${AUTAN_GENERATED_GPU_UNITS})
+  target_link_libraries(autan_kernels_gpu PRIVATE autan::kernels)
+  set_target_properties(autan_kernels_gpu PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+
   # GPU spike driver: the same C ABI on device memory, and the loop benchmark.
   add_library(autan_spike_gpu SHARED spike/capi.cpp spike/capi_gpu.cu)
   target_link_libraries(autan_spike_gpu PRIVATE autan::kernels autan::io)
@@ -79,14 +90,8 @@ if(AUTAN_ENABLE_CUDA)
   )
   add_executable(autan_loop_bench bench/loop_bench.cu spike/capi.cpp)
   add_dependencies(autan_loop_bench autan_codegen_revision)
-  target_include_directories(
-    autan_loop_bench
-    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike
-  )
+  target_include_directories(autan_loop_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike)
   target_link_libraries(autan_loop_bench PRIVATE autan::kernels autan::io)
   set_target_properties(autan_loop_bench PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
-  target_compile_options(
-    autan_loop_bench
-    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo -Xptxas=-v>
-  )
+  target_compile_options(autan_loop_bench PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo -Xptxas=-v>)
 endif()

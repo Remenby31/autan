@@ -10,19 +10,19 @@
 #include "advection_gpu.cuh"
 #include "autan/kernels/colouring.hpp"
 #include "autan/kernels/gpu.hpp"
-#include "gradients_gpu.cuh"
 #include "device.cuh"
+#include "gradients_gpu.cuh"
 #include "spike.hpp"
 
 namespace {
 
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
-using autan::spike::GeomCopy;
-using autan::spike::guarded;
 using autan::spike::DeviceArray;
 using autan::spike::DeviceGeom;
 using autan::spike::DeviceMesh;
+using autan::spike::GeomCopy;
+using autan::spike::guarded;
 using autan::spike::SpikeMesh;
 using autan::spike::strategy_of;
 namespace gpu = autan::kernels::gpu;
@@ -185,16 +185,14 @@ int autan_spike_gpu_gradients(const void* mesh, const char* policy, const char* 
   });
 }
 
-int autan_spike_gpu_advection(const void* mesh, const char* policy, const char* strategy,
-                              int block, const double* q, const double* grad,
-                              const double* velocity, double* res, char* err,
-                              std::size_t err_len) {
+int autan_spike_gpu_advection(const void* mesh, const char* policy, const char* strategy, int block,
+                              const double* q, const double* grad, const double* velocity,
+                              double* res, char* err, std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
-    autan::spike::with_policy(policy, [&](auto p) {
-      advection<decltype(p)>(*m, s, block, q, grad, velocity, res);
-    });
+    autan::spike::with_policy(
+        policy, [&](auto p) { advection<decltype(p)>(*m, s, block, q, grad, velocity, res); });
   });
 }
 

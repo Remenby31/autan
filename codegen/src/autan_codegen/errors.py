@@ -18,6 +18,7 @@ class Code(enum.StrEnum):
     INC_TARGET_NOT_ACCUMULATION = "E1008"
     INVALID_KERNEL_MODULE = "E1009"
     UNKNOWN_BACKEND = "E1010"
+    UNKNOWN_POLICY = "E1011"
 
 
 class CodegenError(Exception):
