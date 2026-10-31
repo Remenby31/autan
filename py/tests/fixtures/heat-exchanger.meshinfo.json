@@ -1,0 +1,92 @@
+{
+  "schema": "cfd.mesh-info/1",
+  "source": {
+    "path": "heat-exchanger.msh",
+    "format": "fluent",
+    "sha256": "2c5a776f8a65fd979846b7d589de0306154e9683cf3ed8298d3ea0c97b141dba"
+  },
+  "counts": {
+    "cells": 1200000,
+    "faces": 3900000,
+    "nodes": 1400000,
+    "cells_by_type": {
+      "tetra": 0,
+      "pyramid": 0,
+      "prism": 300000,
+      "hexa": 700000,
+      "polyhedron": 200000
+    }
+  },
+  "boundary_zones": [
+    {
+      "name": "air-inlet",
+      "type": "inlet",
+      "native_type": "pressure-inlet",
+      "faces": 4000
+    },
+    {
+      "name": "air-outlet",
+      "type": "outlet",
+      "native_type": "pressure-outlet",
+      "faces": 4000
+    },
+    {
+      "name": "co2-inlet",
+      "type": "inlet",
+      "native_type": "pressure-inlet",
+      "faces": 4000
+    },
+    {
+      "name": "co2-outlet",
+      "type": "outlet",
+      "native_type": "pressure-outlet",
+      "faces": 4000
+    },
+    {
+      "name": "casing",
+      "type": "wall",
+      "native_type": "wall",
+      "faces": 96000
+    }
+  ],
+  "cell_zones": [
+    {
+      "name": "air",
+      "type": "fluid",
+      "native_type": "fluid",
+      "cells": 500000
+    },
+    {
+      "name": "co2",
+      "type": "fluid",
+      "native_type": "fluid",
+      "cells": 500000
+    },
+    {
+      "name": "plate",
+      "type": "solid",
+      "native_type": "solid",
+      "cells": 200000
+    }
+  ],
+  "interfaces": [
+    {
+      "zones": [
+        "air",
+        "plate"
+      ],
+      "faces": 40000
+    },
+    {
+      "zones": [
+        "co2",
+        "plate"
+      ],
+      "faces": 40000
+    }
+  ],
+  "quality": {
+    "max_non_orthogonality_deg": 35.0,
+    "max_faces_per_cell": 18
+  }
+}
