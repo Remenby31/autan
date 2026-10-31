@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
@@ -33,6 +33,10 @@ class LoopModel:
     sig: Signature
     fin_fn: Function | None
     fin_sig: Signature | None
+    # Finalise call order: ("acc", k) or ("bind", name); default: every accumulator, then bindings.
+    fin_args: list[tuple[str, int | str]] | None = None
+    # Adjoint of a cell reduction (kind "reduce_adjoint"): see derive.reduce_adjoint.
+    radj: object = None
 
     @property
     def kind(self) -> str:
@@ -58,6 +62,7 @@ class Module:
     datasets: list[dsl.Dataset]
     params: list[dsl.Parameter]
     bodies: list[tuple[Function, Signature]]
+    extra_bodies: list[tuple[Function, list[dsl.Type]]] = field(default_factory=list)
 
 
 ALLOWED_VIA = {

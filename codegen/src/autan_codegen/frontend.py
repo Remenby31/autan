@@ -50,6 +50,7 @@ INTRINSICS = UNARY_MATH | {
     "norm",
     "rel",
     "Vec3",
+    "Vec5",
     "transpose",
     "abs",
     "min",
@@ -367,10 +368,11 @@ class _Builder:
                 for i, j in ((1, 2), (2, 0), (0, 1))
             )
             return Arr(ids, (3,))
-        if fname == "Vec3":
-            if len(args) != 3:
-                raise self.err(Code.TYPE_MISMATCH, "Vec3 takes three scalars")
-            return Arr(tuple(self.real(a) for a in args), (3,))
+        if fname in ("Vec3", "Vec5"):
+            n = int(fname[3])
+            if len(args) != n:
+                raise self.err(Code.TYPE_MISMATCH, f"{fname} takes {n} scalars")
+            return Arr(tuple(self.real(a) for a in args), (n,))
         if fname == "transpose":
             (a,) = args
             if not (isinstance(a, Arr) and len(a.shape) == 2):

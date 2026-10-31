@@ -19,6 +19,7 @@ class Code(enum.StrEnum):
     INVALID_KERNEL_MODULE = "E1009"
     UNKNOWN_BACKEND = "E1010"
     UNKNOWN_POLICY = "E1011"
+    AD_UNSUPPORTED = "E1012"
 
 
 class CodegenError(Exception):

@@ -21,6 +21,7 @@
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "gradients_cpu.hpp"
+#include "roe_cpu.hpp"
 #include "spike.hpp"
 
 namespace {
@@ -85,6 +86,222 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
   copy_out(rs, res);
   if (grad != nullptr) {
     copy_out(gs, grad);
+  }
+}
+
+/// Tangent (mode 0: seed = dq, out = dR) or adjoint (mode 1: seed = R-bar, out = q-bar) of the
+/// composed residual with respect to q, boundary values and sources held fixed. The adjoint runs
+/// the loop adjoints in reverse order (research section 4.1).
+template <class P>
+void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const double* q_b,
+                        const double* source, const double* velocity, double nu, const double* seed,
+                        double* out) {
+  namespace ad = autan::kernels::advection_diffusion;
+  using S = typename P::state;
+  using Gr = typename P::grad;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<S>(q, nc);
+  auto qbs = copy_in<S>(q_b, nf);
+  auto ss = copy_in<S>(source, nc);
+  std::vector<Gr> gs(3 * nc, Gr(0)), g_tan(3 * nc, Gr(0));
+  std::vector<R> rs(nc, R(0)), r_tan(nc, R(0)), r_adj(nc, R(0)), q_adj(nc, R(0)),
+      g_adj(3 * nc, R(0)), s_adj(nc, R(0));
+  std::vector<S> q_tan(nc, S(0)), s_tan(nc, S(0));
+  ad::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.q_b = qbs.data();
+  d.lsq_weight = g.lsq_weight.data();
+  d.grad = gs.data();
+  d.source = ss.data();
+  d.cell_volume = g.cell_volume.data();
+  d.res = rs.data();
+  d.cell_centroid = g.cell_centroid.data();
+  d.face_centroid = g.face_centroid.data();
+  d.face_area = g.face_area.data();
+  d.face_moment = g.face_moment.data();
+  d.q_tan = q_tan.data();
+  d.grad_tan = g_tan.data();
+  d.source_tan = s_tan.data();
+  d.res_tan = r_tan.data();
+  d.res_adj = r_adj.data();
+  d.q_adj = q_adj.data();
+  d.grad_adj = g_adj.data();
+  d.source_adj = s_adj.data();
+  for (int i = 0; i < 3; ++i) {
+    d.velocity[i] = typename P::param(velocity[i]);
+  }
+  d.nu[0] = typename P::param(nu);
+  ad::cpu::lsq_gradient(d);
+  if (mode == 0) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      q_tan[c] = S(seed[c]);
+    }
+    ad::cpu::lsq_gradient_tangent(d);
+    ad::cpu::init_residual_tangent(d);
+    ad::cpu::flux_tangent(d);
+    ad::cpu::boundary_flux_tangent(d);
+    copy_out(r_tan, out);
+  } else {
+    for (std::size_t c = 0; c < nc; ++c) {
+      r_adj[c] = R(seed[c]);
+    }
+    ad::cpu::boundary_flux_adjoint(d);
+    ad::cpu::flux_adjoint(d);
+    ad::cpu::init_residual_adjoint(d);
+    ad::cpu::lsq_gradient_adjoint(d);
+    copy_out(q_adj, out);
+  }
+}
+
+/// Im(R(q + i h dq)) / h on the host in complex arithmetic: the complex-step derivative
+/// (Martins, Sturdza and Alonso 2003, eq. 6).
+void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b,
+                          const double* source, const double* velocity, double nu, const double* dq,
+                          double h, double* out) {
+  using P = autan::kernels::complex_step;
+  namespace ad = autan::kernels::advection_diffusion;
+  using Z = std::complex<double>;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  std::vector<Z> qs(nc), qbs(q_b, q_b + nf), ss(source, source + nc), gs(3 * nc), rs(nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    qs[c] = Z(q[c], h * dq[c]);
+  }
+  ad::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.q_b = qbs.data();
+  d.lsq_weight = g.lsq_weight.data();
+  d.grad = gs.data();
+  d.source = ss.data();
+  d.cell_volume = g.cell_volume.data();
+  d.res = rs.data();
+  d.cell_centroid = g.cell_centroid.data();
+  d.face_centroid = g.face_centroid.data();
+  d.face_area = g.face_area.data();
+  d.face_moment = g.face_moment.data();
+  for (int i = 0; i < 3; ++i) {
+    d.velocity[i] = velocity[i];
+  }
+  d.nu[0] = nu;
+  ad::cpu::lsq_gradient(d);
+  ad::cpu::init_residual(d);
+  ad::cpu::flux(d);
+  ad::cpu::boundary_flux(d);
+  for (std::size_t c = 0; c < nc; ++c) {
+    out[c] = rs[c].imag() / h;
+  }
+}
+
+/// Roe flux loop: mode 0 residual of U, 1 tangent (seed dU -> dR), 2 adjoint (seed R-bar -> U-bar).
+/// Arrays are 5 x n_cells, structure of arrays.
+template <class P>
+void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, double* out) {
+  namespace rf = autan::kernels::roe;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  GeomCopy<P> g(m.packed);
+  auto us = copy_in<S>(u, 5 * nc);
+  std::vector<S> u_tan(5 * nc, S(0));
+  std::vector<R> rs(5 * nc, R(0)), r_tan(5 * nc, R(0)), r_adj(5 * nc, R(0)), u_adj(5 * nc, R(0));
+  rf::Data<P> d{};
+  d.topo = m.topo;
+  d.u_cons = us.data();
+  d.res = rs.data();
+  d.face_normal = g.face_normal.data();
+  d.face_area_magnitude = g.face_area_magnitude.data();
+  d.u_cons_tan = u_tan.data();
+  d.res_tan = r_tan.data();
+  d.res_adj = r_adj.data();
+  d.u_cons_adj = u_adj.data();
+  if (mode == 0) {
+    rf::cpu::flux(d);
+    copy_out(rs, out);
+  } else if (mode == 1) {
+    for (std::size_t i = 0; i < 5 * nc; ++i) u_tan[i] = S(seed[i]);
+    rf::cpu::flux_tangent(d);
+    copy_out(r_tan, out);
+  } else {
+    for (std::size_t i = 0; i < 5 * nc; ++i) r_adj[i] = R(seed[i]);
+    rf::cpu::flux_adjoint(d);
+    copy_out(u_adj, out);
+  }
+}
+
+void roe_complex_step(const SpikeMesh& m, const double* u, const double* du, double h,
+                      double* out) {
+  using P = autan::kernels::complex_step;
+  namespace rf = autan::kernels::roe;
+  using Z = std::complex<double>;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  GeomCopy<P> g(m.packed);
+  std::vector<Z> us(5 * nc), rs(5 * nc);
+  for (std::size_t i = 0; i < 5 * nc; ++i) us[i] = Z(u[i], h * du[i]);
+  rf::Data<P> d{};
+  d.topo = m.topo;
+  d.u_cons = us.data();
+  d.res = rs.data();
+  d.face_normal = g.face_normal.data();
+  d.face_area_magnitude = g.face_area_magnitude.data();
+  rf::cpu::flux(d);
+  for (std::size_t i = 0; i < 5 * nc; ++i) out[i] = rs[i].imag() / h;
+}
+
+/// LSQ gradient and bounds: mode 1 tangent (seed dq -> (dgrad, dqmin, dqmax) as 5 x n_cells),
+/// mode 2 adjoint (seed 5 x n_cells -> q-bar).
+template <class P>
+void lsq_bounds_derivative(const SpikeMesh& m, int mode, const double* q, const double* q_b,
+                           const double* seed, double* out) {
+  namespace gr = autan::kernels::gradients;
+  using S = typename P::state;
+  using Gr = typename P::grad;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<S>(q, nc);
+  auto qbs = copy_in<S>(q_b, nf);
+  std::vector<Gr> gs(3 * nc), g_tan(3 * nc);
+  std::vector<S> lo(nc), hi(nc), lo_tan(nc), hi_tan(nc), q_tan(nc, S(0));
+  std::vector<R> g_adj(3 * nc, R(0)), lo_adj(nc, R(0)), hi_adj(nc, R(0)), q_adj(nc, R(0));
+  gr::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.q_b = qbs.data();
+  d.grad = gs.data();
+  d.qmin = lo.data();
+  d.qmax = hi.data();
+  d.lsq_weight = g.lsq_weight.data();
+  d.q_tan = q_tan.data();
+  d.grad_tan = g_tan.data();
+  d.qmin_tan = lo_tan.data();
+  d.qmax_tan = hi_tan.data();
+  d.grad_adj = g_adj.data();
+  d.qmin_adj = lo_adj.data();
+  d.qmax_adj = hi_adj.data();
+  d.q_adj = q_adj.data();
+  if (mode == 1) {
+    for (std::size_t c = 0; c < nc; ++c) q_tan[c] = S(seed[c]);
+    gr::cpu::lsq_gradient_bounds_tangent(d);
+    for (std::size_t i = 0; i < 3 * nc; ++i) out[i] = static_cast<double>(g_tan[i]);
+    for (std::size_t c = 0; c < nc; ++c) {
+      out[3 * nc + c] = static_cast<double>(lo_tan[c]);
+      out[4 * nc + c] = static_cast<double>(hi_tan[c]);
+    }
+  } else {
+    for (std::size_t i = 0; i < 3 * nc; ++i) g_adj[i] = R(seed[i]);
+    for (std::size_t c = 0; c < nc; ++c) {
+      lo_adj[c] = R(seed[3 * nc + c]);
+      hi_adj[c] = R(seed[4 * nc + c]);
+    }
+    gr::cpu::lsq_gradient_bounds_adjoint(d);
+    copy_out(q_adj, out);
   }
 }
 
@@ -265,6 +482,49 @@ int autan_spike_gradients(const void* mesh, const char* policy, const char* meth
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len, [&](auto p) {
     autan::spike::gradients<decltype(p)>(*m, method, q, q_b, iterations, grad, qmin, qmax);
+  });
+}
+
+int autan_spike_advdiff_derivative(const void* mesh, const char* policy, int mode, const double* q,
+                                   const double* q_b, const double* source, const double* velocity,
+                                   double nu, const double* seed, double* out, char* err,
+                                   std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::advdiff_derivative<decltype(p)>(*m, mode, q, q_b, source, velocity, nu, seed,
+                                                  out);
+  });
+}
+
+int autan_spike_advdiff_complex_step(const void* mesh, const double* q, const double* q_b,
+                                     const double* source, const double* velocity, double nu,
+                                     const double* dq, double h, double* out, char* err,
+                                     std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    autan::spike::advdiff_complex_step(*m, q, q_b, source, velocity, nu, dq, h, out);
+  });
+}
+
+int autan_spike_roe(const void* mesh, const char* policy, int mode, const double* u,
+                    const double* seed, double* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len,
+                  [&](auto p) { autan::spike::roe<decltype(p)>(*m, mode, u, seed, out); });
+}
+
+int autan_spike_roe_complex_step(const void* mesh, const double* u, const double* du, double h,
+                                 double* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] { autan::spike::roe_complex_step(*m, u, du, h, out); });
+}
+
+int autan_spike_lsq_bounds_derivative(const void* mesh, const char* policy, int mode,
+                                      const double* q, const double* q_b, const double* seed,
+                                      double* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::lsq_bounds_derivative<decltype(p)>(*m, mode, q, q_b, seed, out);
   });
 }
 

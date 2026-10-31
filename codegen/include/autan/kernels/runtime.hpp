@@ -119,9 +119,5 @@ AUTAN_HD inline T infinity() {
     return T(__builtin_huge_val());
   }
 }
-template <>
-inline std::complex<double> infinity<std::complex<double>>() {
-  return {__builtin_huge_val(), 0.0};
-}
 
 }  // namespace autan::kernels

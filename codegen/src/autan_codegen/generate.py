@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from autan_codegen import model
+from autan_codegen.derive import derive
 from autan_codegen.emit_cpp import emit_common_header
 from autan_codegen.emit_cpu import emit_cpu_header
 from autan_codegen.emit_gpu import POLICIES, emit_gpu_header, emit_gpu_instances
@@ -31,10 +32,11 @@ def generate(
         if b not in BACKENDS:
             raise CodegenError(Code.UNKNOWN_BACKEND, f"unknown backend {b!r}")
     policies = list(POLICIES) if policies is None else policies
-    for p in policies:
-        if p not in POLICIES:
-            raise CodegenError(Code.UNKNOWN_POLICY, f"unknown precision policy {p!r}")
+    for pol in policies:
+        if pol not in POLICIES:
+            raise CodegenError(Code.UNKNOWN_POLICY, f"unknown precision policy {pol!r}")
     m = model.load(path.resolve())
+    derive(m)
     files = {f"{m.name}.hpp": emit_common_header(m, line_directives)}
     if "cpu" in backends:
         files[f"{m.name}_cpu.hpp"] = emit_cpu_header(m)

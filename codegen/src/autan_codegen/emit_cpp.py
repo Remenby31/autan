@@ -181,9 +181,13 @@ def call_args(
         b = bindings[name]
         for c in range(t.size):
             if b.via == "other":
-                assert b.boundary is not None
+                bnd = (
+                    at(b.boundary, "f", c, layout)
+                    if b.boundary is not None
+                    else f"{ctype(t.role)}(0)"
+                )
                 out.append(
-                    f"(f < d.topo.n_interior_faces ? {at(b.dataset, 'nb', c, layout)} : {at(b.boundary, 'f', c, layout)})"
+                    f"(f < d.topo.n_interior_faces ? {at(b.dataset, 'nb', c, layout)} : {bnd})"
                 )
             else:
                 out.append(at(b.dataset, index_of[b.via], c, layout))
@@ -217,5 +221,7 @@ def emit_common_header(m: Module, line_directives: bool = True) -> str:
     emit_data_struct(e, m)
     for fn, sig in unique_bodies(m):
         emit_function(e, fn, sig.types, len(fn.outputs))
+    for fn, types in m.extra_bodies:
+        emit_function(e, fn, types, len(fn.outputs))
     e.w(f"}}  // namespace autan::kernels::{m.name}")
     return e.text()

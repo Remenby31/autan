@@ -1,7 +1,7 @@
 # Kernel generator: runs autan_codegen on kernels/*.py at build time and builds the generated loops.
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 
-set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients)
+set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients roe)
 option(AUTAN_ENABLE_CUDA "Generate and build the CUDA loops" OFF)
 set(AUTAN_KERNEL_BACKENDS cpu)
 if(AUTAN_ENABLE_CUDA)

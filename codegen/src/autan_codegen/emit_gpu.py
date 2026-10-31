@@ -41,6 +41,8 @@ def _incs(lm: LoopModel, side: str, index: str, indent: str, mode: str) -> list[
     for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
         assert isinstance(o, dsl.Inc)
         sign = o.left if side == "left" else o.right
+        if not sign:
+            continue
         for c in range(o.dataset.type.size):
             v = _signed(sign, f"A(out[{off + c}])")
             target = at(o.dataset, index, c)
@@ -52,7 +54,8 @@ def _incs(lm: LoopModel, side: str, index: str, indent: str, mode: str) -> list[
 
 
 def _signed(sign: int | None, v: str) -> str:
-    assert sign is not None
+    if not sign:
+        return "A(0)"
     if sign == 1:
         return v
     if sign == -1:
@@ -105,6 +108,8 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
     e.w("  const int seg = gpu::segment_id(head);")
     for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
         assert isinstance(o, dsl.Inc)
+        if not o.left:
+            continue
         for c in range(o.dataset.type.size):
             k = off + c
             e.w(f"  A v{k} = {_signed(o.left, f'A(out[{k}])')};")

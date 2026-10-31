@@ -234,3 +234,99 @@ def gpu_advection(
     )  # fmt: skip
     _check(rc, err)
     return res
+
+
+def advdiff_derivative(
+    m: Mesh,
+    policy: str,
+    mode: str,
+    q: F64,
+    q_b: F64,
+    source: F64,
+    velocity: tuple[float, float, float],
+    nu: float,
+    seed: F64,
+) -> F64:
+    """mode "tangent": dR for dq = seed; "adjoint": q-bar for R-bar = seed (dR/dq only)."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_cells)
+    vel = np.array(velocity, dtype=np.float64)
+    q, q_b, source, seed = (
+        np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b, source, seed)
+    )
+    rc = lib().autan_spike_advdiff_derivative(
+        m.handle, policy.encode(), ctypes.c_int(0 if mode == "tangent" else 1), _p(q), _p(q_b), _p(source),
+        _p(vel), ctypes.c_double(nu), _p(seed), _p(out), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out
+
+
+def advdiff_complex_step(
+    m: Mesh,
+    q: F64,
+    q_b: F64,
+    source: F64,
+    velocity: tuple[float, float, float],
+    nu: float,
+    dq: F64,
+    h: float = 1e-30,
+) -> F64:
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_cells)
+    vel = np.array(velocity, dtype=np.float64)
+    q, q_b, source, dq = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b, source, dq))
+    rc = lib().autan_spike_advdiff_complex_step(
+        m.handle, _p(q), _p(q_b), _p(source), _p(vel), ctypes.c_double(nu), _p(dq), ctypes.c_double(h),
+        _p(out), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out
+
+
+def roe(m: Mesh, policy: str, mode: str, u: F64, seed: F64 | None = None) -> F64:
+    """Roe face loop on U (n, 5): residual, tangent (seed dU) or adjoint (seed R-bar); (n, 5)."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(5 * m.n_cells)
+    us = soa(u)
+    sd = soa(seed) if seed is not None else np.zeros(5 * m.n_cells)
+    code = {"residual": 0, "tangent": 1, "adjoint": 2}[mode]
+    rc = lib().autan_spike_roe(
+        m.handle,
+        policy.encode(),
+        ctypes.c_int(code),
+        _p(us),
+        _p(sd),
+        _p(out),
+        err,
+        ctypes.c_size_t(len(err)),
+    )
+    _check(rc, err)
+    return out.reshape(5, -1).T
+
+
+def roe_complex_step(m: Mesh, u: F64, du: F64, h: float = 1e-30) -> F64:
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(5 * m.n_cells)
+    us, ds = soa(u), soa(du)
+    rc = lib().autan_spike_roe_complex_step(
+        m.handle, _p(us), _p(ds), ctypes.c_double(h), _p(out), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    return out.reshape(5, -1).T
+
+
+def lsq_bounds_derivative(m: Mesh, policy: str, mode: str, q: F64, q_b: F64, seed: F64) -> F64:
+    """Tangent: seed dq (n,) -> (n, 5) = (dgrad, dqmin, dqmax). Adjoint: seed (n, 5) -> q-bar (n,)."""
+    err = ctypes.create_string_buffer(512)
+    q, q_b = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b))
+    if mode == "tangent":
+        sd, out = np.ascontiguousarray(seed, dtype=np.float64), np.zeros(5 * m.n_cells)
+    else:
+        sd, out = soa(seed), np.zeros(m.n_cells)
+    rc = lib().autan_spike_lsq_bounds_derivative(
+        m.handle, policy.encode(), ctypes.c_int(1 if mode == "tangent" else 2), _p(q), _p(q_b), _p(sd), _p(out),
+        err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out.reshape(5, -1).T if mode == "tangent" else out

@@ -31,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
                 line_directives=not ns.no_line,
                 policies=ns.policies.split(","),
             )
-    except CodegenError:
+    except CodegenError as exc:
+        sys.stderr.write(f"error: {exc}\n")
         return 1
     return 0
 
