@@ -1,0 +1,2 @@
+# Test meshes written by independent tools are oracles: keep them byte for byte.
+tests/data/** -text
