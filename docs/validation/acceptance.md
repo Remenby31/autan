@@ -39,9 +39,9 @@ Conventions for every gate:
 | MMS `navier_stokes` | L2 order 2 ± 0.1, 4 families + perturbed, FP32 and FP64, non-orthogonal correction on | Roy et al. 2004 |
 | MMS `rans_sa`, `rans_sa_noft2` | L2 order 2 ± 0.1 for the mean flow and ν̂ with second-order turbulence advection | Eça et al. 2007; Oliver et al. 2012; [mms.md](mms.md) |
 | Compressible Couette | velocity exact to 64 ε; T and wall heat flux order 2 ± 0.1 | Exact solution (`test_mms.py` uses the same flow) |
-| TMR flat plate (`tmr-2dzp-flatplate`) | continuum cf(x = 0.97) within 0.5 % of 2.7054×10⁻³ (hex) and 1 % (tet, poly); continuum CD within 0.5 % of 2.859×10⁻³ | CFL3D and FUN3D finest grid cf 2.70562 / 2.70540×10⁻³, CD 2.85985 / 2.85247×10⁻³; their Richardson estimates 2.7052–2.7060×10⁻³ and 2.8586–2.8592×10⁻³. *Ours*: 0.5 % is ten times the CFL3D–FUN3D cf spread (0.03 %) |
-| TMR bump-in-channel (`tmr-2dbc-bump`) | continuum CD and cf(0.75) within 0.5 % of CFL3D/FUN3D | CD 3.5724 / 3.5611×10⁻³, cf(0.75) 6.1494 / 6.1514×10⁻³ (finest grid); *ours*: the CD spread between codes is 0.3 % |
-| TMR NACA 0012, α 10°, family II (`tmr-2dn00-naca0012-numerics`) | \|ΔCL\| ≤ 0.002 from 1.0912–1.0913; \|ΔCD\| ≤ 1 count from 0.01221–0.01222 | Diskin et al. 2015 continuum range; *ours*: below the 12-code SA-neg spread (ΔCL ≈ 0.005, ΔCD ≈ 5 counts, datasets §M7) |
+| TMR flat plate (`tmr-2dzp-flatplate`) | continuum cf(x = 0.97) within 0.5 % of 2.7056×10⁻³ (hex) and 1 % (tet, poly); continuum CD within 0.5 % of 2.8589×10⁻³ | CFL3D and FUN3D continuum estimates from `cf_convergence.dat` and `drag_convergence.dat` (three finest grids): cf 2.70524 / 2.70601×10⁻³ (p = 1.98 / 1.34), CD 2.85924 / 2.85861×10⁻³ (p = 1.75 / 0.80), the orders TMR publishes. *Ours*: 0.5 % is ten times the CFL3D–FUN3D cf spread (0.03 %) |
+| TMR bump-in-channel (`tmr-2dbc-bump`) | continuum CD within 0.5 % of 3.5714×10⁻³ and continuum cf(0.75) within 0.5 % of 6.1536×10⁻³ | CFL3D continuum estimates from `force_convergence.dat` and `cf_convergence_sa.dat` (three finest grids, p = 2.37 and 1.43, GCI 0.03 % and 0.09 %); FUN3D's three finest CD values oscillate, so it has no continuum CD and its finest-grid 3.5611×10⁻³ is reported only. *Ours*: 0.5 % is about the CFL3D–FUN3D finest-grid CD spread (0.3 %) plus the GCI |
+| TMR NACA 0012, α 10°, family II (`tmr-2dn00-naca0012-numerics`) | \|ΔCL\| ≤ 0.002 from 1.0912–1.0913; \|ΔCD\| ≤ 1 count from 0.01221–0.01222 | Diskin et al. 2015 continuum range; *ours*: tighter than the code-to-code SA-neg spread of HLPW-5 test case 1 (ΔCL ≈ 0.005, ΔCD ≈ 5 counts, datasets §M7) because this 2D case is better defined |
 | NACA 0012 validation, α 0/10/15° (`tmr-2dn00-naca0012`) | report CL, CD, Cp, cf against CFL3D and Ladson, Gregory and O'Reilly; no gate on experiment | TMR 2DN00 page |
 | Degraded meshes | residual drop ≥ 8 orders on the perturbed families (`--perturbation 0.3`) | PLAN M3 ("convergence on degraded meshes"); *ours*: 8 orders leaves forces converged to < 0.01 % |
 
@@ -58,13 +58,15 @@ Conventions for every gate:
 |---|---|---|
 | Dot product, every kernel and the composed residual | as M1 | kernel-generator.md §8 |
 | Gradient vs central finite differences (FP64) | relative difference ≤ 10⁻⁶ at the step minimising truncation plus round-off | *ours*: FD truncation O(h²) with h ≈ ε^(1/3) gives ≈ 10⁻¹⁰–10⁻⁶ |
-| RAE 2822 case 9 and ONERA M6 drag minimisation | report baseline against experiment: RAE 2822 case 9 CN 0.803, CD 0.0168 (M 0.73, α 2.79° corrected, Re 6.5×10⁶) | Cook, McDonald and Firmin 1979, decoded from the 1981 tape (`rae2822` case) |
+| RAE 2822 and ONERA M6 drag minimisation | each optimisation ends feasible (CL within 10⁻³ of its target, thickness or volume constraints met to 10⁻⁶ relative) and optimal (projected gradient reduced by 10⁻³ from the start), with CD lower than the baseline's continuum CD by more than the baseline's GCI | PLAN M6; *ours*: a reduction smaller than the baseline's discretisation uncertainty is not a result. Results are compared with the ADODG benchmark cases, to be added to the library with M6 |
+| Baseline against experiment (report) | RAE 2822 case 9: CN 0.803, CM −0.099, CD 0.0168 at M 0.73, α 2.79° corrected, Re 6.5×10⁶ | Cook, McDonald and Firmin 1979, decoded from the 1981 tape (`rae2822` case) |
 
 ## M7 — SST, DDES, WMLES
 
 | Criterion | Threshold | Source |
 |---|---|---|
 | Driver–Seegmiller backward-facing step | x_reatt/H within ±0.3 of 6.26 | Driver and Seegmiller 1985 (6.26 ± 0.10), via TMR; datasets §M3 |
-| CRM-HL near CLmax | inside the HLPW-5 SA-neg range ΔCL ≈ 0.005, ΔCD ≈ 5 counts, ΔCM ≈ 0.003 | HLPW-5 summary (NTRS 20240014255); datasets §M7 |
+| HLPW-5 test case 1, CRM-HL wing-body at α 11° (verification) | our continuum CL, CD, CM inside the envelope of the HLPW-5 SA-neg submissions, whose spread is ΔCL ≈ 0.005, ΔCD ≈ 5 counts, ΔCM ≈ 0.003; the absolute envelope is transcribed from the summary's figure 5 when M7 starts | HLPW-5 summary (NTRS 20240014255); datasets §M7 |
+| HLPW-5 test case 2.4, near CLmax (validation) | report CL(α) and CLmax against the matching submissions and the experiment; no gate (RANS scatter near CLmax is about 0.5 in CL) | HLPW-5 summary; state-of-the-art.md §1.3 |
 
 Milestones M4 and M8–M11 gate on functionality or on cases still to be added; their numbers will be set here when those cases enter the library.

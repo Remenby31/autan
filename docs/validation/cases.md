@@ -10,7 +10,7 @@ uv run pytest -m network                            # fetch, verify and parse ev
 
 ## How files are pinned
 
-Every file has a URL, a size and a SHA-256. TMR data files use `raw.githubusercontent.com/TMBWG/turbmodels/<commit>/…` at commit `20a39f5`, which is immutable; the TMR site moved from turbmodels.larc.nasa.gov to [tmbwg.github.io/turbmodels](https://tmbwg.github.io/turbmodels/) and its old links now redirect to a NASA notice. TMR grids exist only inside the zip archives on nasa.gov (`wp-content/uploads/2026/02/…`); the catalogue pins each archive and each member's own SHA-256. Archives are downloaded once into `blobs/` by checksum. A mismatch raises `V0601` (download) or `V0602` (member) and leaves nothing behind; there is no mirror fallback.
+Every file has a URL, a size and a SHA-256. TMR data files use `raw.githubusercontent.com/TMBWG/turbmodels/<commit>/…` at commit `20a39f5`, which is immutable; the TMR site moved from turbmodels.larc.nasa.gov to [tmbwg.github.io/turbmodels](https://tmbwg.github.io/turbmodels/) and its old links now redirect to a NASA notice. TMR grids exist only inside the zip archives on nasa.gov (`wp-content/uploads/2026/02/…`); the catalogue pins each archive and each member's own SHA-256. Archives are downloaded once into `blobs/` by checksum. Every file is written under a unique temporary name, verified, then renamed, so concurrent fetches never see unverified bytes. A mismatch raises `V0601` (download) or `V0602` (file or member) and leaves nothing behind; there is no mirror fallback.
 
 ## Cases
 
@@ -21,15 +21,17 @@ Every file has a URL, a size and a SHA-256. TMR data files use `raw.githubuserco
 | `tmr-2dn00-naca0012` | 5 grids (113×33 … 1793×513, 110 MB zip) and the exact airfoil points; CFL3D SA cp, cf, CL, CD at α = 0, 10, 15°; experiments of Ladson, Gregory and O'Reilly, Abbott and von Doenhoff, McCroskey | PLOT3D 2D, Tecplot |
 | `tmr-2dn00-naca0012-numerics` | CFL3D and FUN3D SA forces on grid families I–III at α = 10° (Diskin et al. 2015), cp and cf | Tecplot |
 | `onera-m6` | Schmitt and Charpin pressure at 7 span stations, runs 2308 (M 0.8395, α 3.06°) and 2565 (M 0.8372, α 6.06°), from TMR and NPARC (NPARC `.ex` files store −Cp); section profiles | Tecplot, columns |
-| `rae2822` | Geometry; case 6 Cp (NPARC); cases 1, 6, 7, 9, 12 conditions, forces, Cp, cf from the 1981 AFOSR-HTTM-Stanford conference tape (72 coded files; its text files are skipped) | columns, 1981 tape |
+| `rae2822` | Geometry; case 6 Cp (NPARC); cases 1, 6, 7, 9, 12 conditions, forces, Cp, cf from the 1981 AFOSR-HTTM-Stanford conference tape (72 coded files decoded; the text file is skipped; see known defects) | columns, 1981 tape |
 
 Pointers only (too large to fetch): HLPW-5 (CRM-HL, finest grids 2×10⁸–10⁹ cells, archive 1.75 GB at aiaa-hlpw.org) and DPW-7/DPW-8 (dpw.larc.nasa.gov; DPW-7 Vassberg grids 5.3–221 M points), in `pointers()`.
+
+**Known defects of the sources.** Section 1124 of the 1981 tape (case 6 Cp) is damaged in the checksummed copy: records 23–29 are bit-shifted bytes. The catalogue declares it, the reader skips it and raises `V0603` on any undeclared malformed section; take case 6 Cp from NPARC. NPARC files store −Cp (`raetaf01_cp.exp.gen`, the ONERA M6 `cp*.ex`), as their catalogue descriptions say.
 
 **RAE 2822 case 10** has no reachable digital source (the AGARD AR-138 PDF times out at sto.nato.int and DTIC refuses); it is not in the catalogue. The NWTF/Airbus RAE 2822 dataset is CC BY-NC 4.0, refused by our licence policy.
 
 ## Verification
 
-Offline tests check the checksum and member errors through `file://` URLs and each parser on snippets written from its format description. Network tests (`-m network`) fetch every file of every case, verify it, parse it, check grid dimensions against the file names, compare the values transcribed in the catalogue from the TMR pages with the downloaded data files (flat plate cf and CD for CFL3D and FUN3D, NACA 0012 CL and CD), and decode RAE 2822 case 9 from the 1981 tape to its published conditions (M = 0.73, α = 3.19°, corrected 2.79°, Re = 6.5×10⁶).
+Offline tests check the checksum and member errors through `file://` URLs and each parser on snippets written from its format description. Network tests (`-m network`) fetch every file of every case, verify it, parse it, check grid dimensions against the file names, compare the values transcribed in the catalogue from the TMR pages with the downloaded data files (flat plate cf and CD for CFL3D and FUN3D, NACA 0012 CL and CD), reproduce with `autan_vv.order.richardson` the orders TMR publishes for the flat plate (cf p = 1.98 and 1.34, CD p = 1.75 and 0.80), and decode RAE 2822 case 9 from the 1981 tape to its published conditions (M = 0.73, α = 3.19°, corrected 2.79°, Re = 6.5×10⁶).
 
 ## Licences
 

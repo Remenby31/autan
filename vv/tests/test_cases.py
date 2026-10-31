@@ -27,6 +27,7 @@ from autan_vv.cases import (
     read_tecplot,
 )
 from autan_vv.errors import VVError
+from autan_vv.order import richardson
 
 
 def _case(files: tuple[CaseFile, ...]) -> Case:
@@ -212,10 +213,38 @@ def test_tmr_page_values_match_the_data_files(cache: Path) -> None:
 
 
 @pytest.mark.network
+def test_order_tool_reproduces_the_orders_tmr_publishes(cache: Path) -> None:
+    # TMR flat-plate page, GCI table (Celik et al. 2008 from the three finest grids): CFL3D cf p = 1.98,
+    # FUN3D cf p = 1.34, CFL3D CD p = 1.75, FUN3D CD p = 0.80.
+    fp = get_case("tmr-2dzp-flatplate")
+    fetch(fp, cache, roles=("reference",))
+    expected = {
+        ("cf_convergence.dat", "C_f,x=0.97"): {"CFL3D": 1.98, "FUN3D": 1.34},
+        ("drag_convergence.dat", "C_D"): {"CFL3D": 1.75, "FUN3D": 0.80},
+    }
+    for (name, column), orders in expected.items():
+        for table in read_tecplot(cache / fp.name / name):
+            n = table.column("N")
+            finest = np.argsort(-n)[:3]
+            res = richardson(
+                (1.0 / np.sqrt(n[finest])).tolist(), table.column(column)[finest].tolist()
+            )
+            assert res.order == pytest.approx(orders[table.title], abs=0.005)
+
+
+@pytest.mark.network
 def test_rae2822_case_9_conditions_decode_from_the_1981_tape(cache: Path) -> None:
     rae = get_case("rae2822")
     path = fetch(rae, cache, roles=("experiment",))[-1]
-    table = read_tape_1981(path)[1122]
+    tape = rae.file("f8621.txt")
+    sections = parse(tape, path)
+    # 74 sections: one text section, 72 coded ones, and 1124 declared damaged.
+    assert len(sections) == 72
+    assert 1124 not in sections
+    with pytest.raises(VVError) as err:
+        read_tape_1981(path)
+    assert err.value.code == "V0603"
+    table = sections[1122]
     row = table[np.argmin(np.abs(table[:, 0] - 9.0))]
     # Cook, McDonald and Firmin (AGARD AR-138), case 9: M = 0.73, alpha = 3.19 deg (2.79 corrected),
     # Re = 6.5e6; the tape stores about four significant digits.

@@ -896,7 +896,7 @@
      "sha256": "498b8ccc63348bc5b1007f5c5d61cdd24283159a728f1f56c17b8ba73ed3658b",
      "size": 7734,
      "parser": "columns",
-     "description": "Case 6 Cp (corrected M=0.729, alpha=2.31)"
+     "description": "NPARC case 6 pressure, columns x/c and -Cp (sign flipped, as the NPARC .ex files), M 0.729, alpha 2.31 deg corrected"
     },
     {
      "name": "f8621.txt",
@@ -905,7 +905,10 @@
      "sha256": "7118a3b36922cf34b24f68d8620ff30897593be6c7c0ec83c0d5724112c8f876",
      "size": 237062,
      "parser": "tape1981",
-     "description": "Cook/McDonald/Firmin Cases 1,6,7,9,12: geometry, conditions (ALPHA, ALPHAC, CN, CM, CD), Cp both surfaces, BL/wake profiles, cf/delta*/theta/H at stations. No Case 10."
+     "description": "Cook/McDonald/Firmin Cases 1,6,7,9,12: geometry, conditions (ALPHA, ALPHAC, CN, CM, CD), Cp both surfaces, BL/wake profiles, cf/delta*/theta/H at stations. No Case 10. Section 1124 (case 6 Cp) is damaged in this copy: its records 23-29 are bit-shifted bytes; take case 6 Cp from NPARC.",
+     "corrupt_sections": [
+      1124
+     ]
     }
    ]
   }

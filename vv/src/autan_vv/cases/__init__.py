@@ -12,19 +12,18 @@ import hashlib
 import json
 import re
 import shutil
+import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from importlib import resources
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from autan_vv.errors import VVError
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 CATALOG_SCHEMA = "autan.case-library/1"
 FloatArray = npt.NDArray[np.float64]
@@ -43,6 +42,7 @@ class CaseFile:
     description: str
     member: str | None = None
     member_sha256: str | None = None
+    corrupt_sections: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,10 @@ def list_cases() -> list[Case]:
     """All cases of the catalogue, in catalogue order."""
     out = []
     for name, c in _catalog()["cases"].items():
-        files = tuple(CaseFile(**f) for f in c["files"])
+        files = tuple(
+            CaseFile(**{**f, "corrupt_sections": tuple(f.get("corrupt_sections", ()))})
+            for f in c["files"]
+        )
         out.append(
             Case(
                 name,
@@ -117,21 +120,33 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _publish_verified(write: Any, dest: Path, sha256: str, code: str, what: str) -> None:
+    """Write through `write(fh)` to a unique temporary file, verify it, then rename it into place."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=dest.name + ".", delete=False) as fh:
+        tmp = Path(fh.name)
+        write(fh)
+    got = _sha256(tmp)
+    if got != sha256:
+        tmp.unlink()
+        msg = f"{what}: SHA-256 {got} differs from the catalogue ({sha256})"
+        raise VVError(msg, code=code)
+    tmp.replace(dest)
+
+
 def _download(url: str, sha256: str, size: int, blobs: Path) -> Path:
     blob = blobs / sha256
     if blob.exists() and _sha256(blob) == sha256:
         return blob
-    blobs.mkdir(parents=True, exist_ok=True)
-    tmp = blob.with_suffix(".part")
     request = urllib.request.Request(url, headers={"User-Agent": "autan-vv"})
-    with urllib.request.urlopen(request, timeout=120) as response, tmp.open("wb") as fh:
-        shutil.copyfileobj(response, fh, 1 << 20)
-    got = _sha256(tmp)
-    if got != sha256 or tmp.stat().st_size != size:
-        tmp.unlink()
-        msg = f"{url}: SHA-256 {got} and size differ from the catalogue ({sha256}, {size} bytes)"
-        raise VVError(msg, code="V0601")
-    tmp.replace(blob)
+
+    def write(fh: Any) -> None:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            shutil.copyfileobj(response, fh, 1 << 20)
+        if fh.tell() != size:
+            fh.truncate(0)
+
+    _publish_verified(write, blob, sha256, "V0601", url)
     return blob
 
 
@@ -141,28 +156,28 @@ def fetch(
     """Download and verify the files of `case` with the given roles into `cache/<case>/`.
 
     Archives are downloaded once and kept by checksum in `cache/blobs/`; archive members are
-    extracted and verified against their own SHA-256. Raises V0601 (download) or V0602 (member) on
-    a mismatch. Returns the local paths in catalogue order.
+    extracted and verified against their own SHA-256. Every file is written to a unique temporary
+    name, verified, then renamed, so concurrent fetches never expose unverified bytes. Raises V0601
+    (download) or V0602 (file or member) on a mismatch. Returns the local paths in catalogue order.
     """
-    target = cache / case.name
-    target.mkdir(parents=True, exist_ok=True)
     paths = []
     for f in case.files:
         if f.role not in roles:
             continue
-        dest = target / f.name
+        dest = cache / case.name / f.name
         expected = f.member_sha256 or f.sha256
         if not (dest.exists() and _sha256(dest) == expected):
             blob = _download(f.url, f.sha256, f.size, cache / "blobs")
-            if f.member is None:
-                shutil.copyfile(blob, dest)
-            else:
-                with zipfile.ZipFile(blob) as zf, zf.open(f.member) as src, dest.open("wb") as out:
-                    shutil.copyfileobj(src, out)
-                if _sha256(dest) != expected:
-                    dest.unlink()
-                    msg = f"{f.member} in {f.url} differs from its catalogue SHA-256"
-                    raise VVError(msg, code="V0602")
+
+            def write(fh: Any, f: CaseFile = f, blob: Path = blob) -> None:
+                if f.member is None:
+                    with blob.open("rb") as src:
+                        shutil.copyfileobj(src, fh)
+                else:
+                    with zipfile.ZipFile(blob) as zf, zf.open(f.member) as src:
+                        shutil.copyfileobj(src, fh)
+
+            _publish_verified(write, dest, expected, "V0602", f"{f.name} of {case.name}")
         paths.append(dest)
     return paths
 
@@ -284,13 +299,14 @@ _TAPE_REAL = re.compile(r"^(?:[ -]\d\.\d{6}E[ +-]\d{2})+$")
 _TAPE_INT = re.compile(r"^(?:[ -]{0,5}\d{1,6})+$")
 
 
-def read_tape_1981(path: Path) -> dict[int, FloatArray]:
+def read_tape_1981(path: Path, corrupt: tuple[int, ...] = ()) -> dict[int, FloatArray]:
     """Coded data files of the 1980-81 AFOSR-HTTM-Stanford conference tape (Bradshaw's f8621.txt).
 
     A coded file holds one record of maxima and one of minima (E13.6, a blank exponent sign meaning
     +), then integer records (I6) I in 0..10000 per variable: value = min + (max - min) I / 10000;
-    I = 20000 means no value (NaN). Text files of the tape (descriptions, tables) are skipped.
-    Returns {file number: array (rows, variables)}.
+    I = 20000 means no value (NaN). Text files of the tape (descriptions) are skipped. A coded file
+    with a malformed record raises V0603 unless its number is in `corrupt`, the sections the
+    catalogue declares damaged. Returns {file number: array (rows, variables)}.
     """
     out: dict[int, FloatArray] = {}
     pattern = r"FILE NUMBER\s+(\d+)-+\s*\n(.*?)\n-+ END OF FILE"
@@ -299,8 +315,13 @@ def read_tape_1981(path: Path) -> dict[int, FloatArray]:
         n_real = 0
         while n_real < len(lines) and _TAPE_REAL.match(lines[n_real]):
             n_real += 1
-        if n_real == 0 or not all(_TAPE_INT.match(ln) for ln in lines[n_real:]):
+        if n_real == 0:
             continue
+        if not all(_TAPE_INT.match(ln) for ln in lines[n_real:]):
+            if int(number) in corrupt:
+                continue
+            msg = f"{path.name}: coded file {number} has a malformed record"
+            raise VVError(msg, code="V0603")
         reals = [
             float(ln[k : k + 13].replace("E ", "E+"))
             for ln in lines[:n_real]
@@ -332,4 +353,6 @@ PARSERS = {
 
 def parse(case_file: CaseFile, path: Path) -> Any:
     """Parse a fetched file with the parser the catalogue names for it."""
+    if case_file.parser == "tape1981":
+        return read_tape_1981(path, case_file.corrupt_sections)
     return PARSERS[case_file.parser](path)
