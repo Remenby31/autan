@@ -16,13 +16,15 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from importlib import resources
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 
 from autan_vv.errors import VVError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 CATALOG_SCHEMA = "autan.case-library/1"
 FloatArray = npt.NDArray[np.float64]
