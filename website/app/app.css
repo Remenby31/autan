@@ -1,0 +1,108 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+/* Shared with the web app (owner: CFD - Inspiration UI). Colours, fonts and radii come only from here. */
+@import "../../docs/design/ui-inspiration/tokens.css";
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+
+/* fumadocs-ui sets its palette on :root and .dark; this selector outranks both. */
+:root,
+:root.dark {
+  --color-fd-background: var(--bg-0);
+  --color-fd-foreground: var(--fg);
+  --color-fd-muted: var(--bg-2);
+  --color-fd-muted-foreground: var(--fg-2);
+  --color-fd-popover: var(--bg-0);
+  --color-fd-popover-foreground: var(--fg);
+  --color-fd-card: var(--bg-1);
+  --color-fd-card-foreground: var(--fg);
+  --color-fd-border: var(--line);
+  --color-fd-primary: var(--accent);
+  --color-fd-primary-foreground: var(--accent-fg);
+  --color-fd-secondary: var(--bg-2);
+  --color-fd-secondary-foreground: var(--fg);
+  --color-fd-accent: var(--bg-2);
+  --color-fd-accent-foreground: var(--fg);
+  --color-fd-ring: var(--accent);
+  --color-fd-overlay: var(--scrim);
+  --color-fd-info: var(--info);
+  --color-fd-warning: var(--warning);
+  --color-fd-error: var(--danger);
+  --color-fd-success: var(--success);
+  --radius: var(--radius-md);
+}
+
+:root.dark #nd-sidebar {
+  --color-fd-muted: var(--bg-2);
+  --color-fd-secondary: var(--bg-3);
+  --color-fd-muted-foreground: var(--fg-2);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-0);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+#nd-page > h1 {
+  font-size: 2.5rem;
+  line-height: 1.1;
+  letter-spacing: -0.05em;
+  font-weight: var(--weight-semibold);
+}
+
+.prose :where(h2, h3, h4) {
+  letter-spacing: -0.03em;
+  font-weight: var(--weight-semibold);
+}
+
+.prose :where(p, li) {
+  line-height: 1.7;
+}
+
+.prose :where(:not(pre) > code) {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+}
+
+/* Markdown blockquotes in our docs are notes, not quotations: render them as a callout. */
+.prose blockquote {
+  font-style: normal;
+  font-weight: inherit;
+  quotes: none;
+  border: 1px solid var(--line);
+  border-left-width: 1px;
+  border-radius: var(--radius-md);
+  background: var(--bg-1);
+  padding: var(--space-3) var(--space-4);
+  color: var(--fg);
+}
+
+.prose blockquote p::before,
+.prose blockquote p::after {
+  content: none;
+}
+
+/* Badge rows (an image inside a link, several per paragraph) stay on one line. */
+.prose a:has(> img) {
+  display: inline-block;
+  margin: 0 0.25rem 0.25rem 0;
+}
+
+.prose a > img {
+  display: inline;
+  margin: 0;
+  border-radius: 0;
+}
