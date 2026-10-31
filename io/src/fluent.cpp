@@ -186,19 +186,27 @@ class FluentReader {
     return static_cast<std::size_t>(last - first + 1);
   }
 
-  void check_range(std::int64_t first, std::int64_t last, const char* what) {
+  // Indices are 1-based and contiguous; every entity takes at least
+  // `min_bytes` bytes of the file, which bounds any allocation by its size.
+  void check_range(std::int64_t first, std::int64_t last, const char* what,
+                   std::int64_t min_bytes) {
     if (first < 1 || last < first) c_.fail(std::string("invalid ") + what + " index range");
+    if (last > static_cast<std::int64_t>(c_.size()) / min_bytes) {
+      c_.fail(std::string(what) + " index " + std::to_string(last) +
+              " exceeds what the file can hold");
+    }
   }
 
   void nodes(int id) {
     const auto h = header();
     const std::int64_t zone = h[0], first = h[1], last = h[2];
     if (zone == 0) {
+      check_range(std::max<std::int64_t>(first, 1), std::max(last, first), "node", 6);
       n_nodes_ = std::max(n_nodes_, last);
       c_.expect(')');
       return;
     }
-    check_range(first, last, "node");
+    check_range(first, last, "node", 6);
     const std::int64_t dimension = h.size() > 4 ? h[4] : 3;
     if (dimension != 3) c_.unsupported("nodes with " + std::to_string(dimension) + " dimensions");
     n_nodes_ = std::max(n_nodes_, last);
@@ -229,12 +237,13 @@ class FluentReader {
     const auto h = header();
     const std::int64_t zone = h[0], first = h[1], last = h[2];
     if (zone == 0) {
+      check_range(std::max<std::int64_t>(first, 1), std::max(last, first), "cell", 2);
       n_cells_ = std::max(n_cells_, last);
       if (c_.peek() == '(') skip_balanced_body();
       c_.expect(')');
       return;
     }
-    check_range(first, last, "cell");
+    check_range(first, last, "cell", 2);
     const std::int64_t element = h.size() > 4 ? h[4] : 0;
     n_cells_ = std::max(n_cells_, last);
     if (cell_fluent_zone_.size() < static_cast<std::size_t>(last)) {
@@ -278,7 +287,7 @@ class FluentReader {
       c_.expect(')');
       return;
     }
-    check_range(first, last, "face");
+    check_range(first, last, "face", 10);
     if (h.size() < 5) c_.fail("face section header has fewer than 5 fields");
     const std::int64_t bc_code = h[3], face_type = h[4];
     if (face_type == 2) c_.unsupported("2D (linear) faces");
@@ -384,6 +393,22 @@ class FluentReader {
           .boundary = true,
           .provenance = Provenance{.source_id = block.zone,
                                    .detail = "Fluent zone " + std::to_string(block.zone)}});
+    }
+    // Zones declared without faces stay visible; cell-zone types excluded.
+    for (const auto& [id, info] : zones_) {
+      const bool cells =
+          std::find(cell_zone_order_.begin(), cell_zone_order_.end(), id) != cell_zone_order_.end();
+      if (cells || face_zone_index.contains(id) || info.type == "fluid" || info.type == "solid") {
+        continue;
+      }
+      face_zone_index[id] = static_cast<index_t>(in.face_zones.size());
+      in.face_zones.push_back(FaceZone{
+          .name = info.name,
+          .bc_type = info.type,
+          .kind = bc_kind(info.type),
+          .boundary = info.type != "interior",
+          .provenance = Provenance{.source_id = id,
+                                   .detail = "Fluent zone " + std::to_string(id) + " (no faces)"}});
     }
     const std::size_t n_faces = face_cell0_.size();
     in.face_cell0.resize(n_faces);
