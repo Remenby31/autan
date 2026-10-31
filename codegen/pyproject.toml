@@ -1,0 +1,34 @@
+[project]
+name = "autan-codegen"
+version = "0.1.0"
+description = "Autan kernel generator: restricted-Python kernel bodies to C++20 for CPU, CUDA and HIP, with tangents and adjoints."
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autan_codegen"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15",
+    "numpy>=2.1",
+    "pytest>=8.3",
+    "ruff>=0.9",
+    "scipy>=1.14",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["spike"]
+addopts = ["--strict-markers", "-ra"]
+markers = ["slow: takes more than a few seconds"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src"]

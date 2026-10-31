@@ -1,0 +1,179 @@
+"""DSL parsing: SSA semantics of names, branches and unrolled loops, and coded rejections."""
+
+from __future__ import annotations
+
+import math
+from typing import TYPE_CHECKING
+
+import pytest
+from autan_codegen import dsl
+from autan_codegen.dsl import Geom, Param, Residual, State, cells, dot, pointwise, rel
+from autan_codegen.errors import CodegenError
+from autan_codegen.frontend import parse
+
+if TYPE_CHECKING:
+    from autan_codegen.ir import Function
+from autan_codegen.model import build_loop
+
+OPS = {
+    "add": lambda a, b: a + b,
+    "sub": lambda a, b: a - b,
+    "mul": lambda a, b: a * b,
+    "div": lambda a, b: a / b,
+    "neg": lambda a: -a,
+    "sqrt": math.sqrt,
+    "exp": math.exp,
+    "log": math.log,
+    "sin": math.sin,
+    "cos": math.cos,
+    "rel": lambda a, b: a - b,
+    "lt": lambda a, b: a < b,
+    "le": lambda a, b: a <= b,
+    "gt": lambda a, b: a > b,
+    "ge": lambda a, b: a >= b,
+    "and": lambda a, b: a and b,
+    "or": lambda a, b: a or b,
+    "not": lambda a: not a,
+    "select": lambda c, a, b: a if c else b,
+}
+
+
+def run(fn: Function, *args: float | tuple[float, ...]) -> list[float]:
+    flat = [list(a) if isinstance(a, tuple) else [a] for a in args]
+    v: list[object] = []
+    for ins in fn.instrs:
+        if ins.op == "input":
+            k, c = ins.attr  # type: ignore[misc]
+            v.append(flat[k][c])
+        elif ins.op == "const":
+            v.append(ins.attr)
+        else:
+            v.append(OPS[ins.op](*(v[a] for a in ins.args)))
+    return [v[o] for o in fn.outputs]  # type: ignore[misc]
+
+
+@pointwise
+def reassigned_before_predicate(x: State) -> State:
+    y = x
+    y = y * 2.0
+    return y - 1.0 if y > 1.0 else -y
+
+
+@pointwise
+def unrolled(v: State.Vec3) -> State:
+    acc = 0.0
+    for i in range(3):
+        acc += v[i] * (i + 1)
+    return acc
+
+
+@pointwise
+def helper(a: State, b: State) -> State:
+    return a * b if a > b else a + b
+
+
+@pointwise
+def inlined_and_vectors(
+    u: State.Vec3, x: Geom.Vec3, y: Geom.Vec3, k: Param
+) -> tuple[State, State.Vec3]:
+    d = rel(x, y)
+    return helper(dot(u, d), k), abs(k) * u - d
+
+
+@pointwise
+def minmax_ties(a: State, b: State) -> tuple[State, State]:
+    return min(a, b), max(a, b)
+
+
+def test_branches_see_the_value_their_predicate_was_computed_from() -> None:
+    fn, _ = parse(reassigned_before_predicate)
+    assert run(fn, 0.75) == [0.5]
+    assert run(fn, 0.25) == [-0.5]
+
+
+def test_loops_with_constant_bounds_are_unrolled() -> None:
+    fn, _ = parse(unrolled)
+    assert run(fn, (1.0, 10.0, 100.0)) == [321.0]
+    assert all(i.op != "select" for i in fn.instrs)
+
+
+def test_calls_are_inlined_and_vectors_scalarised() -> None:
+    fn, sig = parse(inlined_and_vectors)
+    assert sig.names == ["u", "x", "y", "k"]
+    # d = (1, 1, -1); u . d = 2 > k = -3 -> 2 * -3; abs(-3) u - d
+    assert run(fn, (1.0, 2.0, 1.0), (2.0, 3.0, 0.0), (1.0, 2.0, 1.0), -3.0) == [-6.0, 2.0, 5.0, 4.0]
+
+
+def test_min_and_max_select_the_first_argument_on_ties() -> None:
+    fn, _ = parse(minmax_ties)
+    a_min, a_max = fn.instrs[fn.outputs[0]], fn.instrs[fn.outputs[1]]
+    assert a_min.op == a_max.op == "select"
+    assert fn.instrs[a_min.args[1]].attr == (0, 0)  # first argument when the comparison holds
+    assert fn.instrs[a_max.args[1]].attr == (0, 0)
+    assert run(fn, 2.0, 2.0) == [2.0, 2.0]
+
+
+@pointwise
+def uses_while(x: State) -> State:
+    while x > 1.0:
+        x = x / 2.0
+    return x
+
+
+@pointwise
+def one_sided(x: State) -> State:
+    if x > 0.0:
+        y = x
+    return y
+
+
+@pointwise
+def rel_after_arithmetic(x: Geom.Vec3, y: Geom.Vec3) -> Geom.Vec3:
+    return rel(x * 2.0, y)
+
+
+@pointwise
+def calls_python(x: State) -> State:
+    return round(x)
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        (uses_while, "E1001"),
+        (one_sided, "E1005"),
+        (rel_after_arithmetic, "E1007"),
+        (calls_python, "E1001"),
+    ],
+)
+def test_unsupported_constructs_are_rejected_with_a_code_and_line(
+    body: dsl.Body, code: str
+) -> None:
+    with pytest.raises(CodegenError) as info:
+        parse(body)
+    assert info.value.code == code
+    assert info.value.where is not None
+    assert info.value.where.endswith(tuple(f":{n}" for n in range(1, 500)))
+
+
+q = cells.field("q", State)
+r = cells.field("r", Residual)
+
+
+@pointwise
+def flux(ql: State, qr: State) -> Residual:
+    return ql - qr
+
+
+def test_loop_declarations_are_checked() -> None:
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.face_loop(flux, ql=q.left, out=dsl.Inc(r, left=1, right=-1)))
+    assert info.value.code == "E1003"
+    with pytest.raises(CodegenError) as info:
+        build_loop(
+            "bad", dsl.face_loop(flux, ql=q.left, qr=q.right, out=dsl.Inc(q, left=1, right=-1))
+        )
+    assert info.value.code == "E1008"
+    with pytest.raises(CodegenError) as info:
+        dsl.face_loop(flux, ql=q.left, qr=q.right, out=dsl.Inc(r, left=1))
+    assert info.value.code == "E1004"

@@ -1,0 +1,141 @@
+#include "autan/kernels/geometry.hpp"
+
+#include <array>
+#include <cmath>
+#include <cstddef>
+
+namespace autan::kernels {
+
+namespace {
+
+using Vec = std::array<double, 3>;
+
+Vec sub(const Vec& a, const Vec& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+
+Vec cross(const Vec& a, const Vec& b) {
+  return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+std::array<double, 9> inverse3(const std::array<double, 9>& m) {
+  const double c00 = m[4] * m[8] - m[5] * m[7];
+  const double c01 = m[5] * m[6] - m[3] * m[8];
+  const double c02 = m[3] * m[7] - m[4] * m[6];
+  const double det = m[0] * c00 + m[1] * c01 + m[2] * c02;
+  const double s = 1.0 / det;
+  return {c00 * s, (m[2] * m[7] - m[1] * m[8]) * s, (m[1] * m[5] - m[2] * m[4]) * s,
+          c01 * s, (m[0] * m[8] - m[2] * m[6]) * s, (m[2] * m[3] - m[0] * m[5]) * s,
+          c02 * s, (m[1] * m[6] - m[0] * m[7]) * s, (m[0] * m[4] - m[1] * m[3]) * s};
+}
+
+}  // namespace
+
+Topology topology(const MeshView& mesh) noexcept {
+  return {mesh.n_cells,
+          mesh.n_owned_cells,
+          mesh.n_faces,
+          mesh.n_interior_faces,
+          mesh.cell_face_offsets[mesh.n_cells],
+          mesh.owner,
+          mesh.neighbour,
+          mesh.cell_face_offsets,
+          mesh.cell_faces};
+}
+
+PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {
+  const auto nf = static_cast<std::size_t>(mesh.n_faces());
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  PackedGeometry p;
+  p.face_area.resize(3 * nf);
+  p.face_centroid.resize(3 * nf);
+  p.face_moment.assign(9 * nf, 0.0);
+  p.cell_centroid.resize(3 * nc);
+  p.cell_volume = g.cell_volume;
+  for (std::size_t f = 0; f < nf; ++f) {
+    p.face_area[f] = g.face_area_x[f];
+    p.face_area[nf + f] = g.face_area_y[f];
+    p.face_area[2 * nf + f] = g.face_area_z[f];
+    p.face_centroid[f] = g.face_centroid_x[f];
+    p.face_centroid[nf + f] = g.face_centroid_y[f];
+    p.face_centroid[2 * nf + f] = g.face_centroid_z[f];
+  }
+  for (std::size_t c = 0; c < nc; ++c) {
+    p.cell_centroid[c] = g.cell_centroid_x[c];
+    p.cell_centroid[nc + c] = g.cell_centroid_y[c];
+    p.cell_centroid[2 * nc + c] = g.cell_centroid_z[c];
+  }
+
+  // Face moments over the same fan as the core's geometry (triangles (m, p_i, p_i+1)).
+  const auto x = mesh.x(), y = mesh.y(), z = mesh.z();
+  for (index_t f = 0; f < mesh.n_faces(); ++f) {
+    const auto nodes = mesh.face_nodes(f);
+    Vec m{0.0, 0.0, 0.0};
+    for (const index_t node : nodes) {
+      const auto n = static_cast<std::size_t>(node);
+      m = {m[0] + x[n], m[1] + y[n], m[2] + z[n]};
+    }
+    const auto k = static_cast<double>(nodes.size());
+    m = {m[0] / k, m[1] / k, m[2] / k};
+    const auto fi = static_cast<std::size_t>(f);
+    const Vec xf{g.face_centroid_x[fi], g.face_centroid_y[fi], g.face_centroid_z[fi]};
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      const auto i0 = static_cast<std::size_t>(nodes[i]);
+      const auto i1 = static_cast<std::size_t>(nodes[(i + 1) % nodes.size()]);
+      const Vec a{x[i0], y[i0], z[i0]};
+      const Vec b{x[i1], y[i1], z[i1]};
+      const Vec s = cross(sub(a, m), sub(b, m));
+      const Vec c{(m[0] + a[0] + b[0]) / 3.0, (m[1] + a[1] + b[1]) / 3.0,
+                  (m[2] + a[2] + b[2]) / 3.0};
+      const Vec r = sub(c, xf);
+      for (std::size_t u = 0; u < 3; ++u) {
+        for (std::size_t v = 0; v < 3; ++v) {
+          p.face_moment[(3 * u + v) * nf + fi] += 0.5 * r[u] * s[v];
+        }
+      }
+    }
+  }
+
+  const auto offsets = mesh.cell_face_offsets();
+  const auto cell_faces = mesh.cell_faces();
+  const auto owner = mesh.owner();
+  const auto neighbour = mesh.neighbour();
+  const auto ni = static_cast<std::size_t>(offsets.back());
+  p.lsq_weight.assign(3 * ni, 0.0);
+  std::vector<Vec> d;
+  for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+    const auto ci = static_cast<std::size_t>(c);
+    const Vec xc{p.cell_centroid[ci], p.cell_centroid[nc + ci], p.cell_centroid[2 * nc + ci]};
+    d.clear();
+    std::array<double, 9> mat{};
+    for (auto k = offsets[ci]; k < offsets[ci + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(cell_faces[static_cast<std::size_t>(k)]);
+      Vec xo;
+      if (f < neighbour.size()) {
+        const auto o = static_cast<std::size_t>(owner[f] == c ? neighbour[f] : owner[f]);
+        xo = {p.cell_centroid[o], p.cell_centroid[nc + o], p.cell_centroid[2 * nc + o]};
+      } else {
+        xo = {p.face_centroid[f], p.face_centroid[nf + f], p.face_centroid[2 * nf + f]};
+      }
+      const Vec dk = sub(xo, xc);
+      const double w = 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]);
+      for (std::size_t u = 0; u < 3; ++u) {
+        for (std::size_t v = 0; v < 3; ++v) {
+          mat[3 * u + v] += w * dk[u] * dk[v];
+        }
+      }
+      d.push_back(dk);
+    }
+    const auto inv = inverse3(mat);
+    std::size_t j = 0;
+    for (auto k = offsets[ci]; k < offsets[ci + 1]; ++k, ++j) {
+      const Vec& dk = d[j];
+      const double w = 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]);
+      for (std::size_t u = 0; u < 3; ++u) {
+        p.lsq_weight[u * ni + static_cast<std::size_t>(k)] =
+            w * (inv[3 * u] * dk[0] + inv[3 * u + 1] * dk[1] + inv[3 * u + 2] * dk[2]);
+      }
+    }
+  }
+  return p;
+}
+
+}  // namespace autan::kernels
