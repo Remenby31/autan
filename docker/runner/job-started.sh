@@ -2,24 +2,26 @@
 # Runner job-started hook (ACTIONS_RUNNER_HOOK_JOB_STARTED). It runs on the runner before any
 # step and outside the workflow's control. It accepts only jobs of the repository named in the
 # root-owned file `repository` next to this script (never from the environment, which a
-# workflow controls), triggered by push, workflow_dispatch, schedule, or a pull_request whose head branch lives in
-# that same repository. Fork pull requests are refused.
+# workflow controls), triggered by push, workflow_dispatch, schedule, or a pull_request whose
+# head branch lives in that same repository. Fork pull requests are refused.
 #
 # A failing hook only fails its own step: the runner still evaluates the job's later steps,
 # so `if: always()` steps would run. Refusing therefore kills the Runner.Worker process that
 # runs this job, which ends the job before any of its steps.
 set -euo pipefail
 
+# The runner starts this script as `bash job-started.sh` directly under Runner.Worker, so the
+# worker is our parent. Only the parent is killed: run any other way (tests, a job calling it)
+# the script must not kill a worker it does not belong to.
 kill_worker() {
-  local pid=$$ comm
-  while [[ $pid -gt 1 ]]; do
-    comm=$(<"/proc/$pid/comm")
-    if [[ $comm == Runner.Worker ]]; then
-      kill -KILL "$pid"
-      return
-    fi
-    pid=$(awk '/^PPid:/ {print $2}' "/proc/$pid/status")
-  done
+  local parent comm=""
+  parent=$(awk '/^PPid:/ {print $2}' "/proc/$$/status" 2>/dev/null || true)
+  [[ -z $parent ]] || comm=$(cat "/proc/$parent/comm" 2>/dev/null || true)
+  if [[ $comm == Runner.Worker ]]; then
+    kill -KILL "$parent"
+  else
+    echo "::error title=autan-runner::not started by Runner.Worker; the job was not stopped" >&2
+  fi
 }
 
 deny() {
