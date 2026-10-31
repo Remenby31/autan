@@ -8,8 +8,8 @@ gamma = cp / (cp - R) with cp = 851 J/(kg K), both at 300 K from Incropera et al
 *Fundamentals of Heat and Mass Transfer*, 7th ed. (2011), Table A.4.
 """
 
-from cfd.schema import IdealGas, Sutherland
-from cfd.units import K, Pa, kg, mol, s
+from autan.schema import IdealGas, Sutherland
+from autan.units import K, Pa, kg, mol, s
 
 AIR = IdealGas(
     name="air",

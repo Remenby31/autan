@@ -1,4 +1,4 @@
-"""``cfd plan``: resolve a case against its mesh before any GPU is reserved.
+"""``autan plan``: resolve a case against its mesh before any GPU is reserved.
 
 Resolution rules: docs/contracts/case-schema.md#boundary-resolution.
 Memory model: docs/sdk/plan.md.
@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from cfd.errors import Diagnostic, diagnostic
-from cfd.meshinfo import mesh_sha256
-from cfd.schema import (
+from autan.errors import Diagnostic, diagnostic
+from autan.meshinfo import mesh_sha256
+from autan.schema import (
     DDES,
     SA,
     SST,
@@ -32,11 +32,11 @@ from cfd.schema import (
     VelocityInlet,
     Wall,
 )
-from cfd.units import parse
+from autan.units import parse
 
 if TYPE_CHECKING:
-    from cfd.case import Case
-    from cfd.meshinfo import MeshInfo
+    from autan.case import Case
+    from autan.meshinfo import MeshInfo
 
 Provenance = Literal["code", "mesh", "default"]
 NON_ORTHOGONALITY_WARNING_DEG = 70.0
@@ -89,7 +89,7 @@ class CellZoneResolution(_Report):
 
 
 class Memory(_Report):
-    model: Literal["cfd.memory/1"] = "cfd.memory/1"
+    model: Literal["autan.memory/1"] = "autan.memory/1"
     bytes_total: int
     bytes_per_gpu: int
     gpus: int
@@ -123,7 +123,7 @@ def equations(spec: CaseSpec) -> int:
 
 
 def memory(spec: CaseSpec, mesh: MeshInfo, gpus: int) -> Memory:
-    """Device memory of the arrays listed in docs/sdk/plan.md (model ``cfd.memory/1``)."""
+    """Device memory of the arrays listed in docs/sdk/plan.md (model ``autan.memory/1``)."""
     n = equations(spec)
     fp64 = spec.physics.precision == "fp64"
     compute, accumulate, jacobian = (8, 8, 8) if fp64 else (4, 8, 2)
@@ -352,7 +352,7 @@ def _resolve_cell_zones(
         if isinstance(medium, SolidZone) and isinstance(spec.physics, Incompressible):
             found.append(
                 diagnostic(
-                    "E0506", "solid zones need compressible physics in cfd.case/1", location=where
+                    "E0506", "solid zones need compressible physics in autan.case/1", location=where
                 )
             )
         if isinstance(medium, Fluid):
@@ -380,7 +380,7 @@ def _resolve_cell_zones(
                     "E0503",
                     f"cell zone {zone.name!r} is solid in the mesh and has no material",
                     location=case.locate("cell_zones"),
-                    fix=f"case.cell_zone({zone.name!r}).solid(cfd.materials.COPPER)",
+                    fix=f"case.cell_zone({zone.name!r}).solid(autan.materials.COPPER)",
                     zone=zone.name,
                 )
             )

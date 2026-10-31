@@ -43,8 +43,8 @@ _BARE_NUMBER = re.compile(rf"\s*{_NUMBER}\s*")
 
 
 def fail(code: str, template: str, **context: object) -> NoReturn:
-    """Raise a pydantic error whose type carries a diagnostic code (``cfd.E0301``)."""
-    kind = f"cfd.{code}"
+    """Raise a pydantic error whose type carries a diagnostic code (``autan.E0301``)."""
+    kind = f"autan.{code}"
     raise PydanticCustomError(kind, template, context)
 
 
@@ -72,7 +72,7 @@ class Dimension:
             "type": "string",
             "pattern": _QUANTITY_PATTERN,
             "description": f'Quantity "<number> <unit>" of dimension {self.dimension}{bound}.',
-            "x-cfd-dimension": self.dimension,
+            "x-autan-dimension": self.dimension,
         }
 
     def validate(self, value: object) -> pint.Quantity:
@@ -100,7 +100,7 @@ def _to_quantity(value: object, dimension: str) -> pint.Quantity:
         if value._REGISTRY is not ureg:
             fail(
                 "E0303",
-                "{got} comes from another unit registry; build it with cfd.units",
+                "{got} comes from another unit registry; build it with autan.units",
                 got=repr(str(value)),
             )
         return Quantity(value.magnitude, value.units)

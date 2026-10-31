@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import cfd
+import autan
 import pytest
 
 from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER
@@ -12,11 +12,11 @@ from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER
 HEAT = HEAT_EXCHANGER
 
 
-def plan_of(body: str, mesh: cfd.MeshInfo, write_case: Callable[[str], Path]) -> cfd.Plan:
-    return cfd.load(write_case(body)).plan(mesh)
+def plan_of(body: str, mesh: autan.MeshInfo, write_case: Callable[[str], Path]) -> autan.Plan:
+    return autan.load(write_case(body)).plan(mesh)
 
 
-def diagnostic_codes(result: cfd.Plan) -> list[str]:
+def diagnostic_codes(result: autan.Plan) -> list[str]:
     return sorted(d.code for d in result.diagnostics)
 
 
@@ -30,9 +30,9 @@ def zone_type(name: str, value: str | None) -> Callable[[dict[str, Any]], None]:
 
 
 def test_crm_hl_example_plans_with_provenance(
-    crm_mesh: cfd.MeshInfo, example: Callable[[str], Path]
+    crm_mesh: autan.MeshInfo, example: Callable[[str], Path]
 ) -> None:
-    result = cfd.load(example("crm_hl.py")).plan(crm_mesh)
+    result = autan.load(example("crm_hl.py")).plan(crm_mesh)
     assert result.ok
     assert result.diagnostics == ()
     resolved = {
@@ -57,8 +57,8 @@ def test_crm_hl_example_plans_with_provenance(
 def test_heat_exchanger_example_plans_two_gases_and_a_solid(
     example: Callable[[str], Path],
 ) -> None:
-    mesh = cfd.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
-    result = cfd.load(example("heat_exchanger.py")).plan(mesh)
+    mesh = autan.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
+    result = autan.load(example("heat_exchanger.py")).plan(mesh)
     assert result.ok, [d.render() for d in result.diagnostics]
     media = {
         z.zone: (z.medium["kind"], z.medium["material"]["name"], z.provenance)
@@ -91,24 +91,24 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid(
         ("crm-hl", zone_type("farfield", "outlet"), CRM_HL, ["E0413"]),
         ("crm-hl", zone_type("fuselage", "thermal-wall"), CRM_HL, ["E0413"]),
         ("crm-hl", None, CRM_HL + "case.boundary('farfield').symmetry()\n", ["W0415"]),
-        ("crm-hl", None, CRM_HL.replace("cfd.SA()", "cfd.Inviscid()"), ["E0414"]),
+        ("crm-hl", None, CRM_HL.replace("autan.SA()", "autan.Inviscid()"), ["E0414"]),
         (
             "crm-hl",
             None,
-            CRM_HL + "from cfd.units import s\n"
+            CRM_HL + "from autan.units import s\n"
             "case.boundary('farfield').velocity_inlet(velocity=3 * m / s)\n",
             ["E0414", "W0415"],
         ),
-        ("crm-hl", None, CRM_HL + "case.cell_zone('core').fluid(cfd.gases.CO2)\n", ["E0501"]),
+        ("crm-hl", None, CRM_HL + "case.cell_zone('core').fluid(autan.gases.CO2)\n", ["E0501"]),
         (
             "crm-hl",
             None,
-            CRM_HL + "case.cell_zone('fl*').fluid(cfd.gases.CO2)\n"
-            "case.cell_zone('*').fluid(cfd.gases.AIR)\n",
+            CRM_HL + "case.cell_zone('fl*').fluid(autan.gases.CO2)\n"
+            "case.cell_zone('*').fluid(autan.gases.AIR)\n",
             ["E0502"],
         ),
-        ("crm-hl", None, CRM_HL + "case.monitor(cfd.forces('pylon*', name='p'))\n", ["E0601"]),
-        ("crm-hl", None, CRM_HL + "case.monitor(cfd.forces('fuselage'))\n", ["E0602"]),
+        ("crm-hl", None, CRM_HL + "case.monitor(autan.forces('pylon*', name='p'))\n", ["E0601"]),
+        ("crm-hl", None, CRM_HL + "case.monitor(autan.forces('fuselage'))\n", ["E0602"]),
         ("crm-hl", lambda d: d["source"].update(sha256="0" * 64), CRM_HL, ["E0203"]),
         ("crm-hl", None, CRM_HL.replace('"crm-hl.cgns"', '"absent.cgns"'), ["W0205"]),
         # Mesh slip overridden by a no-slip wall changes the kind.
@@ -136,9 +136,9 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid(
             "heat-exchanger",
             lambda d: d["interfaces"].append({"zones": ["air", "co2"], "faces": 10}),
             HEAT.replace(
-                "cfd.gases.CO2",
-                "cfd.IdealGas(**{**cfd.gases.AIR.model_dump(), 'name': 'a',"
-                " 'molar_mass': 28.9647 * cfd.units.ureg.gram / cfd.units.mol})",
+                "autan.gases.CO2",
+                "autan.IdealGas(**{**autan.gases.AIR.model_dump(), 'name': 'a',"
+                " 'molar_mass': 28.9647 * autan.units.ureg.gram / autan.units.mol})",
             ),
             [],
         ),
@@ -149,7 +149,7 @@ def test_resolution_diagnostics(
     edit: Callable[[dict[str, Any]], None] | None,
     body: str,
     expected: list[str],
-    mesh_variant: Callable[..., cfd.MeshInfo],
+    mesh_variant: Callable[..., autan.MeshInfo],
     write_case: Callable[[str], Path],
 ) -> None:
     mesh = mesh_variant(mesh_name, edit or (lambda _: None))
@@ -159,10 +159,10 @@ def test_resolution_diagnostics(
 
 
 def test_missing_boundary_condition_points_at_the_case_and_suggests_the_fix(
-    mesh_variant: Callable[..., cfd.MeshInfo], write_case: Callable[[str], Path]
+    mesh_variant: Callable[..., autan.MeshInfo], write_case: Callable[[str], Path]
 ) -> None:
     path = write_case(CRM_HL)
-    result = cfd.load(path).plan(mesh_variant("crm-hl", zone_type("empennage", None)))
+    result = autan.load(path).plan(mesh_variant("crm-hl", zone_type("empennage", None)))
     [found] = result.diagnostics
     assert found.code == "E0412"
     assert found.data == {"zone": "empennage"}
@@ -174,26 +174,26 @@ def test_missing_boundary_condition_points_at_the_case_and_suggests_the_fix(
 def test_incompressible_physics_rejects_solids_and_gases(
     write_case: Callable[[str], Path],
 ) -> None:
-    mesh = cfd.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
+    mesh = autan.MeshInfo.load(FIXTURES / "heat-exchanger.meshinfo.json")
     body = (
-        "import cfd\nfrom cfd.units import Pa, kg, m, s\n"
-        "water = cfd.ConstantDensityFluid(name='water', density=998 * kg / m**3,"
+        "import autan\nfrom autan.units import Pa, kg, m, s\n"
+        "water = autan.ConstantDensityFluid(name='water', density=998 * kg / m**3,"
         " viscosity=1e-3 * Pa * s)\n"
-        "case = cfd.Case('hx', mesh='heat-exchanger.msh')\n"
-        "case.physics = cfd.Incompressible(turbulence=cfd.SST(), fluid=water)\n"
+        "case = autan.Case('hx', mesh='heat-exchanger.msh')\n"
+        "case.physics = autan.Incompressible(turbulence=autan.SST(), fluid=water)\n"
         "case.freestream(velocity=2 * m / s)\n"
-        "case.cell_zone('co2').fluid(cfd.gases.CO2)\n"
-        "case.cell_zone('plate').solid(cfd.materials.COPPER)\n"
+        "case.cell_zone('co2').fluid(autan.gases.CO2)\n"
+        "case.cell_zone('plate').solid(autan.materials.COPPER)\n"
         "case.boundary('*-inlet').velocity_inlet(velocity=2 * m / s)\n"
         "case.boundary('*-outlet').outlet(static_pressure=101325 * Pa)\n"
     )
     assert diagnostic_codes(plan_of(body, mesh, write_case)) == ["E0504", "E0506"]
 
 
-def tiny_mesh(boundary_faces: int) -> cfd.MeshInfo:
-    return cfd.MeshInfo.from_document(
+def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
+    return autan.MeshInfo.from_document(
         {
-            "schema": "cfd.mesh-info/1",
+            "schema": "autan.mesh-info/1",
             "source": {"path": "m.cgns", "format": "cgns", "sha256": "0" * 64},
             "counts": {
                 "cells": 10,
@@ -219,7 +219,7 @@ def tiny_mesh(boundary_faces: int) -> cfd.MeshInfo:
             "interfaces": [],
             "quality": {"max_non_orthogonality_deg": 0.0, "max_faces_per_cell": 6},
         },
-        cfd.Location(),
+        autan.Location(),
     )
 
 
@@ -239,12 +239,12 @@ def test_memory_estimate_follows_the_documented_model(
     body = CRM_HL.replace('"crm-hl.cgns"', '"m.cgns"').replace('"fp32+acc64"', f'"{precision}"')
     body = body.replace(
         'case.boundary("wing.*").wall()\ncase.boundary("symmetry").symmetry()\n', ""
-    ).replace('cfd.forces("wing.*"', 'cfd.forces("farfield"')
+    ).replace('autan.forces("wing.*"', 'autan.forces("farfield"')
     result = plan_of(body, tiny_mesh(20), write_case)
     assert result.ok, [d.render() for d in result.diagnostics]
     assert result.memory.equations == 6
     assert result.memory.bytes_total == expected_bytes
-    assert cfd.load(write_case(body)).plan(tiny_mesh(20), gpus=3).memory.bytes_per_gpu == -(
+    assert autan.load(write_case(body)).plan(tiny_mesh(20), gpus=3).memory.bytes_per_gpu == -(
         -expected_bytes // 3
     )
 
@@ -253,17 +253,17 @@ def test_memory_estimate_follows_the_documented_model(
     ("turbulence", "expected"),
     [
         # docs/sdk/plan.md: 5 compressible equations, +1 for SA, +2 for SST, base model for DDES.
-        ("cfd.Inviscid()", 5),
-        ("cfd.SA()", 6),
-        ("cfd.SST()", 7),
-        ("cfd.DDES(base=cfd.SA())", 6),
-        ("cfd.DDES()", 7),
-        ("cfd.WMLES()", 5),
+        ("autan.Inviscid()", 5),
+        ("autan.SA()", 6),
+        ("autan.SST()", 7),
+        ("autan.DDES(base=autan.SA())", 6),
+        ("autan.DDES()", 7),
+        ("autan.WMLES()", 5),
     ],
 )
 def test_equation_count_per_turbulence_model(
-    turbulence: str, expected: int, write_case: Callable[[str], Path], crm_mesh: cfd.MeshInfo
+    turbulence: str, expected: int, write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
 ) -> None:
-    body = CRM_HL.replace("cfd.SA()", turbulence).replace(".wall()", ".slip()")
-    body += "from cfd.units import s\ncase.time = cfd.Unsteady(steps=10, dt=1e-3 * s)\n"
-    assert cfd.load(write_case(body)).plan(crm_mesh).memory.equations == expected
+    body = CRM_HL.replace("autan.SA()", turbulence).replace(".wall()", ".slip()")
+    body += "from autan.units import s\ncase.time = autan.Unsteady(steps=10, dt=1e-3 * s)\n"
+    assert autan.load(write_case(body)).plan(crm_mesh).memory.equations == expected

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import cfd
+import autan
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,18 +29,18 @@ def place_meshes(directory: Path) -> None:
 
 
 @pytest.fixture
-def crm_mesh() -> cfd.MeshInfo:
-    return cfd.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json")
+def crm_mesh() -> autan.MeshInfo:
+    return autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json")
 
 
 @pytest.fixture
-def mesh_variant() -> Callable[..., cfd.MeshInfo]:
+def mesh_variant() -> Callable[..., autan.MeshInfo]:
     """A fixture MeshInfo after ``edit`` mutates its JSON document."""
 
-    def build(name: str, edit: Callable[[dict[str, Any]], None]) -> cfd.MeshInfo:
+    def build(name: str, edit: Callable[[dict[str, Any]], None]) -> autan.MeshInfo:
         document = copy.deepcopy(mesh_document(name))
         edit(document)
-        return cfd.MeshInfo.from_document(document, cfd.Location(file=name))
+        return autan.MeshInfo.from_document(document, autan.Location(file=name))
 
     return build
 
