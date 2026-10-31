@@ -11,6 +11,7 @@ import json
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
@@ -111,9 +112,16 @@ def command_run(args: argparse.Namespace) -> int:
         backend = FakeBackend(
             iterations=args.iterations, pace=args.pace, diverge_at=args.diverge_at
         )
-        results = case.run(MeshInfo.load(args.mesh_info), backend=backend, runs=args.runs)
+        previous = signal.signal(signal.SIGTERM, _interrupt)
+        try:
+            results = case.run(MeshInfo.load(args.mesh_info), backend=backend, runs=args.runs)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
     except CaseError as error:
         return _fail(error, args.json)
+    except KeyboardInterrupt:
+        sys.stderr.write("run stopped; its directory records status 'stopped'\n")
+        return 130
     run = results.run
     text = f"{run.run_id}  {run.status}  {run.iterations} iterations  {results.path}"
     text += "".join(f"\n{d.render()}" for d in run.diagnostics)
@@ -127,6 +135,10 @@ def command_run(args: argparse.Namespace) -> int:
         text,
     )
     return 1 if run.status in ("diverged", "failed") else 0
+
+
+def _interrupt(_signal: int, _frame: object) -> None:
+    raise KeyboardInterrupt
 
 
 def _load_quietly(path: str) -> Case:

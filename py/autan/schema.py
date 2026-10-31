@@ -95,7 +95,9 @@ def diagnostics_from(
         if item["type"] == "autan.consistency":
             problems = (item.get("ctx") or {})["problems"]
         elif item["type"].startswith("autan."):
-            problems = [(item["type"].removeprefix("autan."), path, f"{path or 'case'}: {item['msg']}")]
+            problems = [
+                (item["type"].removeprefix("autan."), path, f"{path or 'case'}: {item['msg']}")
+            ]
         elif item["type"] in _RANGE_ERRORS:
             problems = [("E0304", path, f"{path}: {item['msg']}")]
         else:

@@ -9,7 +9,9 @@ import json
 import math
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import autan
+import h5py
 import numpy as np
 import pytest
 from autan import cgns
@@ -31,7 +34,7 @@ CGNSCHECK = shutil.which("cgnscheck")
 @pytest.fixture
 def crm_run(tmp_path: Path, crm_mesh: autan.MeshInfo) -> autan.Results:
     return autan.load(EXAMPLES / "crm_hl.py").run(
-        crm_mesh, backend=autan.FakeBackend(iterations=60), runs=tmp_path / "runs"
+        crm_mesh, backend=autan.FakeBackend(), runs=tmp_path / "runs"
     )
 
 
@@ -70,7 +73,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
         str(run["devices"]["count"]),
     ]
     assert run["identity"] == hashlib.sha256("\n".join(parts).encode()).hexdigest()
-    assert run["iterations"] == 60
+    assert run["iterations"] == 100
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run["finished"])
 
 
@@ -78,7 +81,7 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
     crm_run: autan.Results,
 ) -> None:
     lines = [json.loads(line) for line in (crm_run.path / "history.jsonl").read_text().splitlines()]
-    assert [line["iteration"] for line in lines] == list(range(1, 61))
+    assert [line["iteration"] for line in lines] == list(range(1, 101))
     for line in lines:
         assert list(line["residuals"]) == [
             "density",
@@ -97,7 +100,7 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
 
 def test_force_coefficients_are_the_contract_projections(crm_run: autan.Results) -> None:
     forces = crm_run.forces
-    assert list(forces.iteration) == list(range(10, 61, 10))
+    assert list(forces.iteration) == list(range(10, 101, 10))
     alpha = math.radians(19.57)
     e_d = np.array([math.cos(alpha), 0.0, math.sin(alpha)])
     e_l = np.array([-math.sin(alpha), 0.0, math.cos(alpha)])
@@ -254,29 +257,24 @@ def test_deterministic_runs_produce_identical_data(
         assert first.field(name).tobytes() == second.field(name).tobytes()
 
 
-def test_history_is_appended_while_the_run_is_live(
-    tmp_path: Path, crm_mesh: autan.MeshInfo
-) -> None:
+def test_live_run_is_readable_at_every_moment(tmp_path: Path, crm_mesh: autan.MeshInfo) -> None:
     case = autan.load(EXAMPLES / "crm_hl.py")
     worker = threading.Thread(
         target=case.run,
         args=(crm_mesh,),
-        kwargs={"backend": autan.FakeBackend(iterations=40, pace=0.02), "runs": tmp_path},
+        kwargs={"backend": autan.FakeBackend(pace=0.005), "runs": tmp_path},
     )
     worker.start()
-    seen: tuple[str, int] | None = None
-    deadline = time.monotonic() + 10
-    while seen is None and time.monotonic() < deadline:
-        for run_json in tmp_path.glob("*/run.json"):
-            history = run_json.parent / "history.jsonl"
-            lines = len(history.read_text().splitlines()) if history.exists() else 0
-            status = json.loads(run_json.read_text())["status"]
-            if status == "running" and 0 < lines < 40:
-                seen = (status, lines)
-        time.sleep(0.01)
+    live_lines: set[int] = set()
+    while worker.is_alive():
+        for path in tmp_path.glob("run-*"):
+            assert {"run.json", "case.toml", "mesh-info.json"} <= {p.name for p in path.iterdir()}
+            opened = autan.Results.open(path)
+            if opened.run.status == "running":
+                live_lines.add(len(opened.history.iterations))
     worker.join()
-    assert seen is not None
-    [path] = tmp_path.iterdir()
+    assert len(live_lines - {0, 100}) > 1
+    [path] = tmp_path.glob("run-*")
     assert autan.Results.open(path).run.status == "converged"
 
 
@@ -366,3 +364,213 @@ def test_cli_run_reports_divergence_with_exit_1(
     assert out["run"]["diagnostics"][0]["code"] == "D0107"
     assert autan.Results.open(out["path"]).run.run_id == out["run"]["run_id"]
     assert main([*argv, "--iterations", "20"]) == 0
+
+
+def test_dimensional_units_follow_the_cgns_hdf5_mapping(crm_run: autan.Results) -> None:
+    # CGNS/HDF5 mapping: a C1 array of Fortran dimensions [32, 5] is stored as HDF5 [5, 32].
+    with h5py.File(crm_run.path / "solution.cgns", "r") as handle:
+        raw = handle["Base/DimensionalUnits/ data"][()]
+    assert raw.shape == (5, 32)
+    names = [bytes(row.astype(np.uint8)).decode().rstrip() for row in raw]
+    assert names == ["Kilogram", "Meter", "Second", "Kelvin", "Radian"]
+
+
+def test_identity_alone_fixes_the_data(tmp_path: Path, crm_mesh: autan.MeshInfo) -> None:
+    case = autan.load(EXAMPLES / "crm_hl.py")
+    short = case.run(
+        crm_mesh, backend=autan.FakeBackend(iterations=20, diverge_at=11), runs=tmp_path
+    )
+    long = case.run(
+        crm_mesh, backend=autan.FakeBackend(iterations=40, diverge_at=11), runs=tmp_path
+    )
+    assert short.run.identity == long.run.identity
+    assert (short.path / "history.jsonl").read_bytes() == (long.path / "history.jsonl").read_bytes()
+    assert short.field("Density").tobytes() == long.field("Density").tobytes()
+
+
+@pytest.mark.parametrize(
+    ("options", "extra", "status"),
+    [
+        ({}, "", "converged"),
+        ({"iterations": 30}, "", "stopped"),
+        ({}, "case.time = autan.Steady(max_iterations=1)\n", "completed"),
+        ({}, "case.time = autan.Steady(max_iterations=50)\n", "completed"),
+    ],
+)
+def test_status_follows_the_convergence_criterion(
+    options: dict[str, Any],
+    extra: str,
+    status: str,
+    write_case: Callable[[str], Path],
+    crm_mesh: autan.MeshInfo,
+) -> None:
+    result = autan.load(write_case(CRM_HL + extra)).run(
+        crm_mesh, backend=autan.FakeBackend(**options), runs=write_case("").parent / "runs"
+    )
+    assert result.run.status == status
+    density = result.history.residual("density")
+    assert extra or options or math.log10(density[0] / density[-1]) >= 8.0 - 1e-9
+    if status != "converged":
+        assert density.size < 2 or math.log10(density[0] / density[-1]) < 8.0
+
+
+def test_each_zone_uses_its_own_medium(tmp_path: Path) -> None:
+    result = heat_run(tmp_path)
+    temperature, pressure, speed = (
+        300.0,
+        101325.0,
+        0.1 * math.sqrt(1.4 * R_UNIVERSAL / 0.0289647 * 300.0),
+    )
+    co2 = result.cell_zone("co2")
+    rho = pressure / (R_UNIVERSAL / 0.0440095 * temperature)
+    mu = 1.370e-5 * (temperature / 273.15) ** 1.5 * (273.15 + 222.0) / (temperature + 222.0)
+    k = 1.5 * (0.001 * speed) ** 2
+    np.testing.assert_allclose(result.field("TurbulentEnergyKinetic")[co2], k, rtol=1e-12)
+    np.testing.assert_allclose(
+        result.field("TurbulentDissipationRate")[co2], rho * k / (0.009 * mu), rtol=1e-12
+    )
+    plate = result.cell_zone("plate")
+    np.testing.assert_allclose(result.field("TurbulentDissipationRate")[plate], 0.0)
+
+
+def test_incompressible_zone_override_keeps_its_density(
+    write_case: Callable[[str], Path], tmp_path: Path
+) -> None:
+    body = (
+        "import autan\nfrom autan.units import Pa, kg, m, s\n"
+        "water = autan.ConstantDensityFluid(name='water', density=998 * kg / m**3,"
+        " viscosity=1e-3 * Pa * s)\n"
+        "oil = autan.ConstantDensityFluid(name='oil', density=870 * kg / m**3,"
+        " viscosity=0.03 * Pa * s)\n"
+        "case = autan.Case('c', mesh='crm-hl.cgns')\n"
+        "case.physics = autan.Incompressible(turbulence=autan.Laminar(), fluid=water)\n"
+        "case.freestream(velocity=2 * m / s)\n"
+        "case.boundary('*').slip()\n"
+    )
+    mesh = autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json")
+    result = autan.load(write_case(body + "case.cell_zone('fluid').fluid(oil)\n")).run(
+        mesh, backend=autan.FakeBackend(), runs=tmp_path / "runs"
+    )
+    np.testing.assert_allclose(result.field("Density"), 870.0)
+
+
+def test_interrupted_run_is_stopped_with_its_solution(
+    tmp_path: Path, example: Callable[[str], Path]
+) -> None:
+    command = [
+        str(Path(sys.executable).with_name("autan")),
+        "run",
+        str(example("crm_hl.py")),
+        "--mesh-info",
+        str(FIXTURES / "crm-hl.meshinfo.json"),
+        "--runs",
+        str(tmp_path / "runs"),
+        "--pace",
+        "0.05",
+    ]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not list((tmp_path / "runs").glob("run-*/history.jsonl")):
+        time.sleep(0.02)
+    time.sleep(0.2)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=20) == 130
+    [path] = (tmp_path / "runs").glob("run-*")
+    result = autan.Results.open(path)
+    assert result.run.status == "stopped"
+    assert result.run.iterations == result.history.iterations[-1] > 0
+    assert result.field("Density").size > 0
+
+
+def test_awkward_zone_names_get_safe_node_names(
+    tmp_path: Path, mesh_variant: Callable[..., autan.MeshInfo], write_case: Callable[[str], Path]
+) -> None:
+    names = ["x" * 33, "boundary-0000", "Zone", "entrée", "ZoneNames"]
+
+    def edit(document: dict[str, Any]) -> None:
+        for zone, name in zip(document["boundary_zones"], names, strict=False):
+            zone["name"] = name
+
+    body = CRM_HL.replace('case.boundary("wing.*").wall()', 'case.boundary("*").wall()')
+    body = body.replace('case.boundary("symmetry").symmetry()\n', "")
+    case = autan.load(write_case(body.replace('forces("wing.*"', 'forces("symmetry"')))
+    result = case.run(
+        mesh_variant("crm-hl", edit), backend=autan.FakeBackend(iterations=2), runs=tmp_path
+    )
+    mapping = json.loads(
+        cgns.read(result.path / "solution.cgns").child("Base").child("ZoneNames").text()
+    )["boundary"]
+    assert sorted(mapping.values()) == sorted([*names, "symmetry", "farfield"])
+    assert all(n.isascii() and len(n) <= 32 for n in mapping)
+    assert len(set(mapping)) == len(mapping)
+
+
+def _rewrite(path: Path, edit: Callable[[dict[str, Any]], None]) -> None:
+    document = json.loads((path / "run.json").read_text())
+    edit(document)
+    (path / "run.json").write_text(json.dumps(document))
+
+
+def _drop_last_line(path: Path) -> None:
+    lines = (path / "history.jsonl").read_text().splitlines()
+    (path / "history.jsonl").write_text("\n".join(lines[:-1]) + "\n")
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda p: _rewrite(p, lambda d: d.update(identity="0" * 64)),
+        lambda p: _rewrite(p, lambda d: d.update(started="yesterday")),
+        lambda p: _rewrite(p, lambda d: d["mesh"].update(path="crm-hl.cgns")),
+        lambda p: _rewrite(p, lambda d: d.update(precision="fp64")),
+        lambda p: _rewrite(p, lambda d: d.update(status="diverged")),
+        lambda p: _rewrite(p, lambda d: d.update(finished=None)),
+        lambda p: (p / "history.jsonl").unlink(),
+        _drop_last_line,
+        lambda p: (p / "history.jsonl").write_text(
+            (p / "history.jsonl").read_text().replace('"energy"', '"enthalpy"')
+        ),
+        lambda p: (p / "history.jsonl").write_text(
+            (p / "history.jsonl").read_text().replace("1.0, ", "NaN, ", 1)
+        ),
+        lambda p: (p / "history.jsonl").write_text((p / "history.jsonl").read_text()[:-20]),
+        lambda p: h5py.File(p / "solution.cgns", "w").close(),
+        lambda p: _shrink_density(p / "solution.cgns"),
+    ],
+)
+def test_reader_checks_every_contract_invariant(
+    damage: Callable[[Path], object], crm_run: autan.Results
+) -> None:
+    damage(crm_run.path)
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]
+
+
+def _shrink_density(path: Path) -> None:
+    with h5py.File(path, "r+") as handle:
+        data = handle["Base/Zone/FlowSolution/Density/ data"]
+        values = data[()]
+        del handle["Base/Zone/FlowSolution/Density/ data"]
+        handle["Base/Zone/FlowSolution/Density"].create_dataset(" data", data=values[:1])
+
+
+def test_unsteady_metadata_and_mean_describe_the_run(
+    write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    body = CRM_HL.replace("autan.SA()", "autan.DDES(base=autan.SA())") + (
+        "from autan.units import s\n"
+        "case.time = autan.Unsteady(steps=4, dt=1e-3 * s, average_from=2)\n"
+    )
+    case = autan.load(write_case(body))
+    full = case.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path / "a")
+    metadata = json.loads(
+        cgns.read(full.path / "solution.cgns").child("Base").child("RunMetadata").text()
+    )
+    assert metadata["time"] == pytest.approx(4e-3)
+    assert metadata["averaging"] == full.run.document()["averaging"]
+    early = case.run(crm_mesh, backend=autan.FakeBackend(iterations=1), runs=tmp_path / "b")
+    assert early.run.status == "stopped"
+    assert early.run.averaging is None
+    with pytest.raises(autan.CaseError):
+        early.field("Density", mean=True)

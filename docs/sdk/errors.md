@@ -268,6 +268,14 @@ The run has no `solution.cgns` (it failed or diverged before writing one), or th
 
 Fix: Check `results.run.status`, and use a field name listed in the message.
 
+## E0704
+
+**The run failed** (error)
+
+The backend stopped on an unexpected error; the message names it. The run directory keeps the history written so far.
+
+Fix: Report the message with the run directory.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

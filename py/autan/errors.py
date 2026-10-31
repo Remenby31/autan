@@ -251,6 +251,13 @@ _CODES = [
         "Check `results.run.status`, and use a field name listed in the message.",
     ),
     Code(
+        "E0704",
+        "The run failed",
+        "The backend stopped on an unexpected error; the message names it. The run directory "
+        "keeps the history written so far.",
+        "Report the message with the run directory.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "

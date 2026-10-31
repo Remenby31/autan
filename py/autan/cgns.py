@@ -115,6 +115,11 @@ class Node:
     def text(self) -> str:
         return bytes(np.asarray(self.data, dtype=np.int8).astype(np.uint8)).decode("ascii")
 
+    def text_rows(self) -> list[str]:
+        """Rows of a 2-D character array (Fortran dimensions [32, n]), blanks stripped."""
+        rows = np.asarray(self.data, dtype=np.int8).astype(np.uint8)
+        return [bytes(row).decode("ascii").rstrip(" \0") for row in rows.T]
+
     def child(self, name: str) -> Node:
         return self.children[name]
 

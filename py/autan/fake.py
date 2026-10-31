@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time as clock
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -28,8 +29,10 @@ from autan.results import (
     RunInfo,
     RunWriter,
     Solver,
+    field_names,
     identity,
     iso,
+    residual_names,
     utc_now,
 )
 from autan.schema import (
@@ -70,6 +73,7 @@ BC_TYPES = {
     "velocity-inlet": "BCInflowSubsonic",
     "outlet": "BCOutflowSubsonic",
 }
+BASE_CHILDREN = frozenset({"Zone", "ZoneNames", "RunMetadata", "DataClass", "DimensionalUnits"})
 ZONE_CHILDREN = frozenset(
     {
         "ZoneType",
@@ -82,6 +86,8 @@ ZONE_CHILDREN = frozenset(
         "WallSolution",
     }
 )
+GENERATED = re.compile(r"(boundary|cell-zone)-\d{4}")
+CONVERGED_AT = 100
 
 
 def bc_type(condition: dict[str, Any]) -> str:
@@ -94,18 +100,24 @@ def node_names(boundary: list[str], cells: list[str]) -> tuple[list[str], list[s
     """CGNS node names of the zones, by the rule of results.md#solutioncgns."""
     everything = boundary + cells
 
-    def valid(name: str, reserved: frozenset[str]) -> bool:
+    def kept(name: str, reserved: frozenset[str]) -> bool:
         return (
-            len(name) <= 32
+            0 < len(name) <= 32
+            and name.isascii()
+            and name.isprintable()
             and "/" not in name
             and name not in (".", "..")
             and everything.count(name) == 1
             and name not in reserved
+            and not GENERATED.fullmatch(name)
         )
 
     return (
-        [n if valid(n, frozenset()) else f"boundary-{i:04d}" for i, n in enumerate(boundary)],
-        [n if valid(n, ZONE_CHILDREN) else f"cell-zone-{i:04d}" for i, n in enumerate(cells)],
+        [n if kept(n, BASE_CHILDREN) else f"boundary-{i:04d}" for i, n in enumerate(boundary)],
+        [
+            n if kept(n, BASE_CHILDREN | ZONE_CHILDREN) else f"cell-zone-{i:04d}"
+            for i, n in enumerate(cells)
+        ],
     )
 
 
@@ -234,30 +246,19 @@ def freestream_state(spec: CaseSpec) -> dict[str, Any]:
     }
 
 
-def equations(spec: CaseSpec) -> list[str]:
-    names = (
-        ["density", "momentum-x", "momentum-y", "momentum-z", "energy"]
-        if isinstance(spec.physics, Compressible)
-        else ["pressure", "momentum-x", "momentum-y", "momentum-z"]
-    )
-    turbulence = spec.physics.turbulence
-    model = turbulence.base.model if isinstance(turbulence, DDES) else turbulence.model
-    return names + {"sa": ["nu-tilde"], "sst": ["k", "omega"]}.get(model, [])
-
-
 @dataclass(frozen=True)
 class FakeBackend:
     """Writes a synthetic run directory that conforms to ``autan.results/1``.
 
-    ``iterations`` caps the iterations (steady) or steps (unsteady) written; ``pace``
-    sleeps that many seconds per iteration to imitate a live run; ``diverge_at`` makes
-    the run diverge at that iteration with ``D0107``.
+    The synthetic trajectory depends only on the case and the mesh: a steady run
+    converges at iteration 100 unless its budget ends first. ``iterations`` stops the
+    run earlier (status ``stopped``); ``pace`` sleeps that many seconds per iteration to
+    imitate a live run; ``diverge_at`` makes the run diverge there with ``D0107``.
     """
 
     iterations: int = 200
     pace: float = 0.0
     diverge_at: int | None = None
-    cells_per_side: int = 8
 
     def run(self, case: Case, mesh_info: MeshInfo, runs: Path) -> Results:
         result = case.plan(mesh_info)
@@ -287,34 +288,65 @@ class FakeBackend:
             diagnostics=(),
         )
         writer = RunWriter(runs, info, spec, mesh_info)
+        history = _History(spec, freestream_state(spec))
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps
-        count = min(self.iterations, budget)
-        last = count if self.diverge_at is None else min(count, self.diverge_at - 1)
-        state = freestream_state(spec)
-        history = _History(spec, state, count)
-        for iteration in range(1, last + 1):
-            writer.append(history.record(iteration))
-            if self.pace:
-                clock.sleep(self.pace)
+        end = min(budget, CONVERGED_AT) if steady else budget
+        diverges = self.diverge_at is not None and self.diverge_at <= min(end, self.iterations)
+        last = min(end, self.iterations, (self.diverge_at or end + 1) - 1)
+        done, status = 0, "running"
+        try:
+            for iteration in range(1, last + 1):
+                writer.append(history.record(iteration))
+                done = iteration
+                if self.pace:
+                    clock.sleep(self.pace)
+        except KeyboardInterrupt:
+            status = "stopped"
+            raise
+        except Exception as error:
+            status = "failed"
+            failure = diagnostic("E0704", f"{type(error).__name__}: {error}")
+            writer.finish(
+                status=status, iterations=done, time=history.time(done), diagnostics=(failure,)
+            )
+            raise
+        finally:
+            if status == "stopped":
+                self._finish(writer, spec, result, history, done, "stopped", mesh_info)
+        if diverges:
+            status = "diverged"
+        elif done < end:
+            status = "stopped"
+        elif steady:
+            status = "converged" if done == CONVERGED_AT else "completed"
+        else:
+            status = "completed"
+        self._finish(writer, spec, result, history, done, status, mesh_info)
+        return Results.open(writer.path)
 
+    def _finish(
+        self,
+        writer: RunWriter,
+        spec: CaseSpec,
+        plan: Plan,
+        history: _History,
+        done: int,
+        status: str,
+        mesh_info: MeshInfo,
+    ) -> None:
         box = Box(
             max(
-                self.cells_per_side,
+                8,
                 len(mesh_info.cell_zones),
                 math.ceil(math.sqrt(len(mesh_info.boundary_zones) / 6)),
             )
         )
-        layout = _write_solution(
-            writer.path / "solution.cgns", spec, result, state, box, writer.info
-        )
-        changes: dict[str, Any] = {
-            "iterations": last,
-            "time": None if steady else history.time(last),
-        }
-        if self.diverge_at is not None and self.diverge_at <= count:
+        layout = cell_layout(box, plan)
+        changes: dict[str, Any] = {"status": status, "iterations": done, "time": history.time(done)}
+        if status == "diverged":
+            assert self.diverge_at is not None
             cell = box.n**3 // 2
-            changes["status"] = "diverged"
             changes["diagnostics"] = (
                 diagnostic(
                     "D0107",
@@ -325,50 +357,57 @@ class FakeBackend:
                     zone=layout[cell],
                 ),
             )
-        elif steady:
-            changes["status"] = "converged"
-        else:
-            assert isinstance(spec.time, Unsteady)
-            changes["status"] = "completed" if count == budget else "stopped"
-            if spec.time.average_from is not None and count == budget:
-                start = spec.time.average_from
+        if isinstance(spec.time, Unsteady) and spec.time.average_from is not None:
+            start = spec.time.average_from
+            if done > start:
                 changes["averaging"] = Averaging(
                     from_step=start + 1,
-                    to_step=count,
-                    from_time=history.time(start),
-                    to_time=history.time(count),
+                    to_step=done,
+                    from_time=float(history.time(start) or 0.0),
+                    to_time=float(history.time(done) or 0.0),
                 )
+        info = writer.info.model_copy(update=changes)
+        staging = writer.path / ".solution.cgns.tmp"
+        _write_solution(staging, spec, plan, history.state, box, layout, info)
+        staging.rename(writer.path / "solution.cgns")
         writer.finish(**changes)
-        return Results.open(writer.path)
+
+
+def cell_layout(box: Box, plan: Plan) -> list[str]:
+    """Cell zone of every cell: slabs along x, in MeshInfo order."""
+    names = [z.zone for z in plan.cell_zones]
+    return [names[(c % box.n) * len(names) // box.n] for c in range(box.n**3)]
 
 
 class _History:
-    """Synthetic residuals decaying by ``residual_orders`` and forces approaching a limit."""
+    """Synthetic residuals reaching ``residual_orders`` at CONVERGED_AT, forces approaching a
+    limit; both depend only on the case."""
 
-    def __init__(self, spec: CaseSpec, state: dict[str, Any], count: int) -> None:
-        self.spec, self.state, self.count = spec, state, max(count, 2)
-        self.equations = equations(spec)
-        orders = spec.time.residual_orders if isinstance(spec.time, Steady) else 3.0
-        self.orders = orders
+    def __init__(self, spec: CaseSpec, state: dict[str, Any]) -> None:
+        self.spec, self.state = spec, state
+        self.equations = residual_names(spec)
+        self.orders = spec.time.residual_orders if isinstance(spec.time, Steady) else 3.0
 
-    def time(self, step: int) -> float:
-        dt = self.spec.time.dt if not isinstance(self.spec.time, Steady) else None
+    def time(self, step: int) -> float | None:
+        if isinstance(self.spec.time, Steady):
+            return None
+        dt = self.spec.time.dt
         return step * (si(dt, "s") if dt is not None else 1e-3)
 
     def record(self, iteration: int) -> dict[str, Any]:
-        fraction = (iteration - 1) / (self.count - 1)
+        fraction = (iteration - 1) / (CONVERGED_AT - 1)
         residuals = {
             name: 10.0 ** (-self.orders * fraction) * (1 + index)
             for index, name in enumerate(self.equations)
         }
-        monitors = {}
-        for monitor in self.spec.monitors:
-            if iteration % monitor.every == 0:
-                monitors[monitor.name] = self._forces(monitor, iteration)
-        steady = isinstance(self.spec.time, Steady)
+        monitors = {
+            monitor.name: self._forces(monitor, iteration)
+            for monitor in self.spec.monitors
+            if iteration % monitor.every == 0
+        }
         return {
             "iteration": iteration,
-            "time": None if steady else self.time(iteration),
+            "time": self.time(iteration),
             "residuals": residuals,
             "monitors": monitors,
         }
@@ -378,7 +417,7 @@ class _History:
         alpha, beta = si(fs.aoa, "rad"), si(fs.sideslip, "rad")
         q = 0.5 * state["density"] * state["speed"] ** 2
         area = si(monitor.ref_area, "m**2") if monitor.ref_area is not None else 1.0
-        approach = 1.0 - math.exp(-iteration / (0.2 * self.count))
+        approach = 1.0 - math.exp(-iteration / (0.2 * CONVERGED_AT))
         cl = 2 * math.pi * alpha * approach
         cd = 0.02 + cl**2 / (math.pi * 10.0)
         e_d = np.array(
@@ -409,9 +448,15 @@ class _History:
 
 
 def _write_solution(
-    path: Path, spec: CaseSpec, plan: Plan, state: dict[str, Any], box: Box, info: RunInfo
-) -> list[str]:
-    """Write solution.cgns; returns the cell zone name of every cell."""
+    path: Path,
+    spec: CaseSpec,
+    plan: Plan,
+    state: dict[str, Any],
+    box: Box,
+    layout: list[str],
+    info: RunInfo,
+) -> None:
+    """Write solution.cgns for the final ``info``."""
     faces, boundary_faces, index = box.faces()
     cells = box.cells(index)
     boundary_zones = [b for b in plan.boundaries if b.faces > 0]
@@ -420,7 +465,6 @@ def _write_solution(
     boundary_nodes, cell_nodes = node_names(boundary_names, cell_names)
     chunks = np.array_split(np.array(boundary_faces), len(boundary_zones))
     owned = dict(zip((b.zone for b in boundary_zones), chunks, strict=True))
-    layout = [cell_names[(c % box.n) * len(cell_names) // box.n] for c in range(len(cells))]
     n_faces = len(faces)
 
     with cgns.create(path) as handle:
@@ -435,7 +479,9 @@ def _write_solution(
                     u.ljust(32) for u in ("Kilogram", "Meter", "Second", "Kelvin", "Radian")
                 ).encode(),
                 dtype=np.int8,
-            ).reshape(5, 32),
+            )
+            .reshape(5, 32)
+            .T,
         )
         metadata = {
             k: v
@@ -498,7 +544,7 @@ def _write_solution(
 
         fields = _fields(spec, plan, state, layout)
         for solution_name in ("FlowSolution",) + (
-            ("FlowSolutionMean",) if getattr(spec.time, "average_from", None) is not None else ()
+            ("FlowSolutionMean",) if info.averaging is not None else ()
         ):
             solution = cgns.node(zone, solution_name, "FlowSolution_t")
             cgns.node(solution, "GridLocation", "GridLocation_t", "CellCenter")
@@ -522,7 +568,6 @@ def _write_solution(
             cgns.data_array(region, "Pressure", np.full(walls.size, state["pressure"]))
             for axis in "XYZ":
                 cgns.data_array(region, f"WallShearStress{axis}", np.zeros(walls.size))
-    return layout
 
 
 def _point_list(parent: Any, ids: NDArray[Any]) -> None:
@@ -550,27 +595,30 @@ def _elements(zone: Any, name: str, kind: int, first: int, items: list[list[int]
 def _fields(
     spec: CaseSpec, plan: Plan, state: dict[str, Any], layout: list[str]
 ) -> dict[str, NDArray[np.float64]]:
+    """Freestream state in every fluid cell, with each zone's own medium properties."""
     media = {z.zone: MEDIUM.validate_python(z.medium) for z in plan.cell_zones}
     count = len(layout)
-    density, velocity = np.empty(count), np.zeros((3, count))
-    pressure, temperature = np.empty(count), np.empty(count)
-    viscosity_ratio = np.empty(count)
+    density, velocity = np.zeros(count), np.zeros((3, count))
+    pressure, temperature = np.zeros(count), np.zeros(count)
+    kinematic = np.zeros(count)
     for cell, zone in enumerate(layout):
         medium = media[zone]
         if isinstance(medium, SolidZone):
             density[cell] = si(medium.material.density, "kg / m**3")
-            pressure[cell] = 0.0
-        elif isinstance(medium.material, IdealGas):
-            r = GAS_CONSTANT / si(medium.material.molar_mass, "kg / mol")
+            temperature[cell] = state["temperature"] or 0.0
+            continue
+        material = medium.material
+        if isinstance(material, IdealGas):
+            r = GAS_CONSTANT / si(material.molar_mass, "kg / mol")
             density[cell] = state["pressure"] / (r * state["temperature"])
-            pressure[cell] = state["pressure"]
-            velocity[:, cell] = state["speed"] * state["direction"]
+            mu = viscosity(material, state["temperature"])
+            temperature[cell] = state["temperature"]
         else:
-            density[cell] = state["density"]
-            pressure[cell] = state["pressure"]
-            velocity[:, cell] = state["speed"] * state["direction"]
-        temperature[cell] = state["temperature"] or 0.0
-        viscosity_ratio[cell] = state["viscosity"] / density[cell]
+            density[cell] = si(material.density, "kg / m**3")
+            mu = si(material.viscosity, "Pa * s")
+        pressure[cell] = state["pressure"]
+        velocity[:, cell] = state["speed"] * state["direction"]
+        kinematic[cell] = mu / density[cell]
     fields: dict[str, NDArray[np.float64]] = {
         "Density": density,
         "VelocityX": velocity[0],
@@ -583,15 +631,14 @@ def _fields(
     turbulence = spec.physics.turbulence
     if isinstance(turbulence, DDES):
         turbulence = turbulence.base
-    fluid = np.array([isinstance(media[z], Fluid) for z in layout])
+    fluid = kinematic > 0
     if isinstance(turbulence, SA):
-        fields["TurbulentSANuTilde"] = np.where(
-            fluid, turbulence.nu_tilde_ratio * viscosity_ratio, 0.0
-        )
+        fields["TurbulentSANuTilde"] = turbulence.nu_tilde_ratio * kinematic
     if isinstance(turbulence, SST):
         k = 1.5 * (turbulence.intensity * state["speed"]) ** 2
         fields["TurbulentEnergyKinetic"] = np.where(fluid, k, 0.0)
-        fields["TurbulentDissipationRate"] = np.where(
-            fluid, k / (turbulence.viscosity_ratio * viscosity_ratio), 0.0
+        fields["TurbulentDissipationRate"] = np.divide(
+            k, turbulence.viscosity_ratio * kinematic, out=np.zeros(count), where=fluid
         )
+    assert list(fields) == field_names(spec)
     return fields
