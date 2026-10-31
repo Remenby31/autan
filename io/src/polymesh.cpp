@@ -7,8 +7,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <initializer_list>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,27 +37,59 @@ void skip_blank(Cursor& c) {
   }
 }
 
-// Skips an entry value up to its ';', or a braced sub-dictionary.
-void skip_entry(Cursor& c) {
-  skip_blank(c);
-  int depth = 0;
-  bool quoted = false;
+bool at_comment(std::string_view rest) { return rest.starts_with("//") || rest.starts_with("/*"); }
+
+// Value of a `key value;` entry: its tokens, comments removed, joined by
+// single spaces; quoted strings keep their content.
+std::string entry_value(Cursor& c, std::string_view data) {
+  std::string value;
   for (;;) {
+    skip_blank(c);
     if (c.at_end()) c.fail("unterminated entry");
     const char ch = c.peek_raw();
-    c.advance();
-    if (quoted) {
-      quoted = ch != '"';
-    } else if (ch == '"') {
-      quoted = true;
-    } else if (ch == '{' || ch == '(') {
-      ++depth;
-    } else if (ch == '}' || ch == ')') {
-      --depth;
-      if (depth == 0 && ch == '}') return;
-    } else if (ch == ';' && depth == 0) {
-      return;
+    if (ch == ';') {
+      c.advance();
+      return value;
     }
+    if (!value.empty()) value += ' ';
+    if (ch == '"') {
+      c.advance();
+      while (!c.at_end() && c.peek_raw() != '"') {
+        value += c.peek_raw();
+        c.advance();
+      }
+      c.expect('"');
+      continue;
+    }
+    while (!c.at_end()) {
+      const char t = c.peek_raw();
+      if (t == ';' || t == ' ' || t == '\t' || t == '\n' || t == '\r' ||
+          at_comment(data.substr(c.position()))) {
+        break;
+      }
+      value += t;
+      c.advance();
+    }
+  }
+}
+
+// Skips a braced sub-dictionary, comments and strings included.
+void skip_dict(Cursor& c, std::string_view data) {
+  c.expect('{');
+  int depth = 1;
+  while (depth > 0) {
+    skip_blank(c);
+    if (c.at_end()) c.fail("unterminated dictionary");
+    const char ch = c.peek_raw();
+    if (ch == '"') {
+      c.advance();
+      while (!c.at_end() && c.peek_raw() != '"') c.advance();
+      c.expect('"');
+      continue;
+    }
+    if (ch == '{') ++depth;
+    if (ch == '}') --depth;
+    if (!at_comment(data.substr(c.position()))) c.advance();
   }
 }
 
@@ -65,104 +100,100 @@ struct Header {
   std::string object_class;
 };
 
-std::string unquote(std::string_view v) {
-  if (v.size() >= 2 && v.front() == '"' && v.back() == '"') v = v.substr(1, v.size() - 2);
-  return std::string(v);
-}
-
-// Reads `key value;` entries of the FoamFile dictionary.
-Header read_header(Cursor& c) {
-  skip_blank(c);
-  c.expect("FoamFile");
-  c.expect('{');
-  Header h;
-  for (;;) {
-    skip_blank(c);
-    if (c.accept('}')) break;
-    const std::string key(c.token("{};"));
-    skip_blank(c);
-    if (c.peek() == '{') {
-      skip_entry(c);
-      continue;
-    }
-    std::string value;
-    bool quoted = false;
-    while (!c.at_end() && (quoted || c.peek_raw() != ';')) {
-      if (c.peek_raw() == '"') quoted = !quoted;
-      value += c.peek_raw();
-      c.advance();
-    }
-    c.expect(';');
-    while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.pop_back();
-    value = unquote(value);
-    if (key == "format") {
-      if (value != "ascii" && value != "binary") c.fail("unknown format '" + value + "'");
-      h.binary = value == "binary";
-    } else if (key == "class") {
-      h.object_class = value;
-    } else if (key == "arch") {
-      if (value.find("label=64") != std::string::npos) h.label_bytes = 8;
-      if (value.find("scalar=32") != std::string::npos) h.scalar_bytes = 4;
-      if (value.find("MSB") != std::string::npos) c.unsupported("big-endian binary files");
-    }
-  }
-  return h;
-}
-
 class FoamFile {
  public:
-  FoamFile(const fs::path& path, std::string_view expected_class)
-      : data_(read_file(path.string())),
-        cursor_(data_, path.string()),
-        header_(read_header(cursor_)) {
-    if (!expected_class.empty() && header_.object_class != expected_class) {
-      cursor_.fail("class '" + header_.object_class + "', expected '" +
-                   std::string(expected_class) + "'");
-    }
+  explicit FoamFile(const fs::path& path)
+      : data_(read_file(path.string())), cursor_(data_, path.string()) {
+    read_header();
   }
 
   Cursor& cursor() { return cursor_; }
   [[nodiscard]] const Header& header() const { return header_; }
+  [[nodiscard]] std::string_view data() const { return data_; }
 
-  std::size_t list_size() {
+  void require_class(std::initializer_list<std::string_view> classes) {
+    for (const auto expected : classes) {
+      if (header_.object_class == expected) return;
+    }
+    cursor_.fail("unexpected class '" + header_.object_class + "'");
+  }
+
+  std::string value() { return entry_value(cursor_, data_); }
+  void skip_sub_dict() { skip_dict(cursor_, data_); }
+
+  // Optional leading size of a list; nullopt when the list starts with '('.
+  std::optional<std::size_t> list_size() {
     skip_blank(cursor_);
+    if (cursor_.peek() == '(') return std::nullopt;
     const auto n = cursor_.integer<std::size_t>(10, "({/");
     skip_blank(cursor_);
     return n;
   }
 
-  // `N ( v0 v1 ... )`, `N { v }` or, in binary files, `N ( <raw> )`.
+  std::int64_t label() {
+    skip_blank(cursor_);
+    return cursor_.integer<std::int64_t>(10, "(){}/;");
+  }
+
+  // `N(v ...)`, `(v ...)`, `N{v}`; in binary files `N(<raw>)`, or a bare `0`.
   std::vector<std::int64_t> labels() {
     skip_blank(cursor_);
     if (cursor_.accept("List<label>")) skip_blank(cursor_);
-    const std::size_t n = list_size();
-    std::vector<std::int64_t> out(n);
+    const auto n = list_size();
+    std::vector<std::int64_t> out;
+    if (!n) {
+      cursor_.expect('(');
+      while (skip_blank(cursor_), cursor_.peek() != ')') out.push_back(label());
+      cursor_.expect(')');
+      return out;
+    }
     if (cursor_.accept('{')) {
-      std::fill(out.begin(), out.end(), cursor_.integer<std::int64_t>(10, "}"));
+      const std::int64_t v = label();
+      skip_blank(cursor_);
       cursor_.expect('}');
+      out.assign(*n, v);
+      return out;
+    }
+    if (header_.binary) {
+      if (*n == 0) {
+        if (cursor_.accept('(')) cursor_.expect(')');
+        return out;
+      }
+      cursor_.expect('(');
+      cursor_.check_fits(*n, static_cast<std::uint64_t>(header_.label_bytes));
+      out.resize(*n);
+      if (header_.label_bytes == 4) {
+        std::vector<std::int32_t> raw(*n);
+        cursor_.binary(raw.data(), *n);
+        std::copy(raw.begin(), raw.end(), out.begin());
+      } else {
+        cursor_.binary(out.data(), *n);
+      }
+      cursor_.expect(')');
       return out;
     }
     cursor_.expect('(');
-    if (header_.binary && n > 0) {
-      if (header_.label_bytes == 4) {
-        std::vector<std::int32_t> raw(n);
-        cursor_.binary(raw.data(), n);
-        std::copy(raw.begin(), raw.end(), out.begin());
-      } else {
-        cursor_.binary(out.data(), n);
-      }
-    } else {
-      for (auto& v : out) v = cursor_.integer<std::int64_t>();
-    }
+    cursor_.check_fits(*n, 2);
+    out.resize(*n);
+    for (auto& v : out) v = label();
+    skip_blank(cursor_);
     cursor_.expect(')');
     return out;
   }
 
   std::vector<double> points() {
-    const std::size_t n = list_size();
-    std::vector<double> out(3 * n);
+    const auto n = list_size();
+    if (!n) cursor_.fail("points list without a size");
+    std::vector<double> out;
+    if (header_.binary && *n == 0) {
+      if (cursor_.accept('(')) cursor_.expect(')');
+      return out;
+    }
     cursor_.expect('(');
-    if (header_.binary && n > 0) {
+    cursor_.check_fits(*n,
+                       header_.binary ? 3 * static_cast<std::uint64_t>(header_.scalar_bytes) : 7);
+    out.resize(3 * *n);
+    if (header_.binary) {
       if (header_.scalar_bytes == 8) {
         cursor_.binary(out.data(), out.size());
       } else {
@@ -171,17 +202,52 @@ class FoamFile {
         std::copy(raw.begin(), raw.end(), out.begin());
       }
     } else {
-      for (std::size_t p = 0; p < n; ++p) {
+      for (std::size_t p = 0; p < *n; ++p) {
+        skip_blank(cursor_);
         cursor_.expect('(');
-        for (int k = 0; k < 3; ++k) out[3 * p + static_cast<std::size_t>(k)] = cursor_.real();
+        for (std::size_t k = 0; k < 3; ++k) {
+          skip_blank(cursor_);
+          out[3 * p + k] = cursor_.real();
+        }
+        skip_blank(cursor_);
         cursor_.expect(')');
       }
     }
+    skip_blank(cursor_);
     cursor_.expect(')');
     return out;
   }
 
  private:
+  // `FoamFile { key value; ... }`.
+  void read_header() {
+    skip_blank(cursor_);
+    cursor_.expect("FoamFile");
+    skip_blank(cursor_);
+    cursor_.expect('{');
+    for (;;) {
+      skip_blank(cursor_);
+      if (cursor_.accept('}')) break;
+      const std::string key(cursor_.token("{};/"));
+      skip_blank(cursor_);
+      if (cursor_.peek() == '{') {
+        skip_sub_dict();
+        continue;
+      }
+      const std::string v = value();
+      if (key == "format") {
+        if (v != "ascii" && v != "binary") cursor_.fail("unknown format '" + v + "'");
+        header_.binary = v == "binary";
+      } else if (key == "class") {
+        header_.object_class = v;
+      } else if (key == "arch") {
+        if (v.find("label=64") != std::string::npos) header_.label_bytes = 8;
+        if (v.find("scalar=32") != std::string::npos) header_.scalar_bytes = 4;
+        if (v.find("MSB") != std::string::npos) cursor_.unsupported("big-endian binary files");
+      }
+    }
+  }
+
   std::string data_;
   Cursor cursor_;
   Header header_;
@@ -193,40 +259,44 @@ struct Faces {
 };
 
 Faces read_faces(const fs::path& path) {
-  FoamFile file(path, "");
+  FoamFile file(path);
+  file.require_class({"faceList", "faceCompactList"});
   Cursor& c = file.cursor();
   Faces faces;
   auto narrow = [&](std::int64_t v) {
     if (v < 0 || v > std::numeric_limits<index_t>::max()) c.fail("point label out of range");
     return static_cast<index_t>(v);
   };
-  if (file.header().object_class == "faceCompactList") {
+  if (file.header().binary) {
+    // Binary polyMesh faces are written as faceCompactList: offsets, labels.
+    if (file.header().object_class != "faceCompactList") {
+      c.unsupported("binary faceList (OpenFOAM writes binary faces as faceCompactList)");
+    }
     const auto offsets = file.labels();
     const auto nodes = file.labels();
     if (offsets.empty() || offsets.front() != 0 ||
-        static_cast<std::size_t>(offsets.back()) != nodes.size()) {
+        static_cast<std::size_t>(offsets.back()) != nodes.size() ||
+        std::adjacent_find(offsets.begin(), offsets.end(), std::greater<>()) != offsets.end()) {
       c.fail("faceCompactList offsets do not match its labels");
     }
     faces.offsets.assign(offsets.begin(), offsets.end());
     faces.nodes.reserve(nodes.size());
     for (const auto v : nodes) faces.nodes.push_back(narrow(v));
-  } else if (file.header().object_class == "faceList") {
-    if (file.header().binary) c.unsupported("binary faceList (OpenFOAM writes faceCompactList)");
-    const std::size_t n = file.list_size();
-    c.expect('(');
-    faces.offsets.reserve(n + 1);
-    faces.offsets.push_back(0);
-    for (std::size_t f = 0; f < n; ++f) {
-      const auto k = c.integer<std::size_t>();
-      c.expect('(');
-      for (std::size_t i = 0; i < k; ++i) faces.nodes.push_back(narrow(c.integer<std::int64_t>()));
-      c.expect(')');
-      faces.offsets.push_back(static_cast<offset_t>(faces.nodes.size()));
-    }
-    c.expect(')');
-  } else {
-    c.fail("class '" + file.header().object_class + "', expected faceList or faceCompactList");
+    return faces;
   }
+  // ASCII faces are nested lists `k(a b c)` whichever the class.
+  const auto n = file.list_size();
+  if (!n) c.fail("faces list without a size");
+  c.expect('(');
+  c.check_fits(*n, 4);
+  faces.offsets.reserve(*n + 1);
+  faces.offsets.push_back(0);
+  for (std::size_t f = 0; f < *n; ++f) {
+    for (const auto v : file.labels()) faces.nodes.push_back(narrow(v));
+    faces.offsets.push_back(static_cast<offset_t>(faces.nodes.size()));
+  }
+  skip_blank(c);
+  c.expect(')');
   return faces;
 }
 
@@ -239,44 +309,34 @@ struct NamedDict {
 
 std::vector<NamedDict> read_dict_list(FoamFile& file, std::string_view label_key) {
   Cursor& c = file.cursor();
-  const std::size_t n = file.list_size();
+  const auto n = file.list_size();
   c.expect('(');
-  std::vector<NamedDict> out(n);
-  for (auto& d : out) {
+  std::vector<NamedDict> out;
+  for (;;) {
     skip_blank(c);
-    d.name = std::string(c.token("{"));
+    if (c.accept(')')) break;
+    NamedDict d;
+    d.name = std::string(c.token("{/"));
     skip_blank(c);
     c.expect('{');
     for (;;) {
       skip_blank(c);
       if (c.accept('}')) break;
-      const std::string key(c.token("{};"));
+      const std::string key(c.token("{};/"));
       skip_blank(c);
-      if (key == label_key) {
+      if (!label_key.empty() && key == label_key) {
         d.labels = file.labels();
         skip_blank(c);
         c.expect(';');
-        continue;
+      } else if (c.peek() == '{') {
+        file.skip_sub_dict();
+      } else {
+        d.values[key] = file.value();
       }
-      if (c.peek() == '{') {
-        skip_entry(c);
-        continue;
-      }
-      std::string value;
-      while (!c.at_end() && c.peek_raw() != ';') {
-        value += c.peek_raw();
-        c.advance();
-      }
-      c.expect(';');
-      while (!value.empty() &&
-             (value.back() == ' ' || value.back() == '\t' || value.back() == '\n')) {
-        value.pop_back();
-      }
-      d.values[key] = value;
     }
+    out.push_back(std::move(d));
   }
-  skip_blank(c);
-  c.expect(')');
+  if (n && *n != out.size()) c.fail("list size does not match its entries");
   return out;
 }
 
@@ -316,7 +376,8 @@ Mesh read_polymesh(const fs::path& directory) {
   MeshInput in;
   in.source = MeshSource{.format = "polymesh", .path = directory.string()};
   {
-    FoamFile file(dir / "points", "vectorField");
+    FoamFile file(dir / "points");
+    file.require_class({"vectorField"});
     const auto xyz = file.points();
     const std::size_t n = xyz.size() / 3;
     in.x.resize(n);
@@ -331,9 +392,11 @@ Mesh read_polymesh(const fs::path& directory) {
   Faces faces = read_faces(dir / "faces");
   const std::size_t n_faces = faces.offsets.size() - 1;
 
-  FoamFile owner_file(dir / "owner", "labelList");
+  FoamFile owner_file(dir / "owner");
+  owner_file.require_class({"labelList"});
   const auto owner = owner_file.labels();
-  FoamFile neighbour_file(dir / "neighbour", "labelList");
+  FoamFile neighbour_file(dir / "neighbour");
+  neighbour_file.require_class({"labelList"});
   const auto neighbour = neighbour_file.labels();
   if (owner.size() != n_faces || neighbour.size() > n_faces) {
     owner_file.cursor().fail("owner and neighbour sizes do not match the faces");
@@ -357,7 +420,8 @@ Mesh read_polymesh(const fs::path& directory) {
     in.face_cell1[f] = to_index(neighbour_file.cursor(), neighbour[f], n_cells, "neighbour");
   }
 
-  FoamFile boundary_file(dir / "boundary", "polyBoundaryMesh");
+  FoamFile boundary_file(dir / "boundary");
+  boundary_file.require_class({"polyBoundaryMesh"});
   Cursor& bc = boundary_file.cursor();
   std::size_t expected_start = neighbour.size();
   for (const auto& patch : read_dict_list(boundary_file, "")) {
@@ -406,8 +470,13 @@ Mesh read_polymesh(const fs::path& directory) {
   }
 
   in.cell_zone.assign(static_cast<std::size_t>(n_cells), -1);
+  if (!fs::exists(dir / "cellZones", ec) && fs::exists(dir / "cellZones.gz", ec)) {
+    throw Error(ErrorCode::io_unsupported,
+                (dir / "cellZones").string() + ".gz: compressed polyMesh files");
+  }
   if (fs::exists(dir / "cellZones", ec)) {
-    FoamFile zones_file(dir / "cellZones", "regIOobject");
+    FoamFile zones_file(dir / "cellZones");
+    zones_file.require_class({"regIOobject", "cellZoneList"});
     for (const auto& zone : read_dict_list(zones_file, "cellLabels")) {
       const auto z = static_cast<index_t>(in.cell_zones.size());
       in.cell_zones.push_back(CellZone{

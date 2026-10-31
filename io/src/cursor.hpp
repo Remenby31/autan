@@ -33,6 +33,18 @@ class Cursor {
 
   [[nodiscard]] bool at_end() const { return pos_ >= data_.size(); }
   [[nodiscard]] std::size_t position() const { return pos_; }
+  [[nodiscard]] std::size_t size() const { return data_.size(); }
+  [[nodiscard]] std::size_t remaining() const {
+    return data_.size() - std::min(pos_, data_.size());
+  }
+
+  /// Fails unless `count` items of at least `bytes_each` bytes fit in the
+  /// rest of the file, so that hostile sizes never reach an allocation.
+  void check_fits(std::uint64_t count, std::uint64_t bytes_each) const {
+    if (bytes_each != 0 && count > remaining() / bytes_each) {
+      fail("declared size " + std::to_string(count) + " exceeds the rest of the file");
+    }
+  }
   [[nodiscard]] const std::string& path() const { return path_; }
 
   void skip_space() {

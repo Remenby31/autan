@@ -2,7 +2,7 @@
 
 A code is ``E####`` (error: blocks the run), ``W####`` (warning) or ``D####``
 (divergence detected during a run). ``docs/sdk/errors.md`` is generated from
-``REGISTRY`` by ``cfd explain --all``.
+``REGISTRY`` by ``autan explain --all``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-DOC_URL = "https://github.com/Remenby31/cfd-solver/blob/main/docs/sdk/errors.md"
+DOC_URL = "https://remenby31.github.io/autan/sdk/errors/"
 
 Severity = Literal["error", "warning", "divergence"]
 _SEVERITY: dict[str, Severity] = {"E": "error", "W": "warning", "D": "divergence"}
@@ -44,33 +44,183 @@ _CODES = [
     Code(
         "E0002",
         "The case file does not define exactly one case",
-        "A Python case file must create exactly one `cfd.Case`, at module level.",
-        'Create one case: `case = cfd.Case("name", mesh="mesh.cgns")`.',
+        "A Python case file must create exactly one `autan.Case`, at module level.",
+        'Create one case: `case = autan.Case("name", mesh="mesh.cgns")`.',
     ),
     Code(
         "E0003",
         "The case document does not match the schema",
-        "A field is missing, has the wrong type, or is not part of `cfd.case/1`. The location "
+        "A field is missing, has the wrong type, or is not part of `autan.case/1`. The location "
         "gives the path of the field in the document. See docs/contracts/case-schema.md.",
         "Correct the field named in the message.",
     ),
     Code(
         "E0004",
         "Unsupported case schema version",
-        "The document's `schema` key is not `cfd.case/1`.",
-        'Set `schema = "cfd.case/1"`.',
+        "The document's `schema` key is not `autan.case/1`.",
+        'Set `schema = "autan.case/1"`.',
+    ),
+    Code(
+        "E0101",
+        "Inconsistent mesh array sizes",
+        "Input arrays disagree on a size, or CSR offsets are not monotone.",
+        "Regenerate the mesh with the meshing tool; the file or partition is corrupt.",
+    ),
+    Code(
+        "E0102",
+        "Mesh index out of range",
+        "A node, cell or zone index is out of range.",
+        "Regenerate the mesh; an index points past the end of its array.",
+    ),
+    Code(
+        "E0103",
+        "Face with fewer than 3 nodes",
+        "A face has fewer than 3 nodes.",
+        "Remove or repair the degenerate face in the meshing tool.",
+    ),
+    Code(
+        "E0104",
+        "Face with a repeated node",
+        "A face lists a node twice.",
+        "Repair the face in the meshing tool so each node appears once.",
+    ),
+    Code(
+        "E0105",
+        "Face with the same cell on both sides",
+        "A face has the same cell on both sides.",
+        "Repair the mesh connectivity in the meshing tool.",
+    ),
+    Code(
+        "E0106",
+        "Cell with too few faces",
+        "An owned cell has fewer than 4 faces, or a ghost cell none.",
+        "Repair the cell in the meshing tool, or regenerate the partition.",
+    ),
+    Code(
+        "E0107",
+        "Cell not closed",
+        "Invariant 5 fails for a cell.",
+        "Repair the cell in the meshing tool: its faces must enclose a volume.",
+    ),
+    Code(
+        "E0108",
+        "Face shared by more than two cells",
+        "More than two cells list the same face.",
+        "Repair non-manifold faces in the meshing tool.",
+    ),
+    Code(
+        "E0109",
+        "Face does not match its zone's role",
+        "A face does not match its zone's role, or labels put one zone on both interior and boundary faces.",
+        "Put interior and boundary faces in separate zones in the meshing tool.",
+    ),
+    Code(
+        "E0110",
+        "Duplicate zone name",
+        "Two face zones or two cell zones share a name.",
+        "Rename one of the zones in the meshing tool; `interior`, `unassigned` and `fluid` are reserved.",
+    ),
+    Code(
+        "E0111",
+        "Labelled face not found",
+        "A labelled face matches no cell face.",
+        "Regenerate the mesh; a zone references a face that does not exist.",
+    ),
+    Code(
+        "E0112",
+        "Empty mesh",
+        "No cell, face or point.",
+        "Check that the file is the intended mesh and was exported completely.",
+    ),
+    Code(
+        "E0113",
+        "Mesh too large",
+        "A count exceeds the `index_t` range.",
+        "Partition the mesh, or use a build with 64-bit indices.",
+    ),
+    Code(
+        "E0114",
+        "Inverted cell",
+        "Two cells list their common face with the same orientation (one is inverted).",
+        "Repair the inverted cell in the meshing tool.",
+    ),
+    Code(
+        "E0115",
+        "Face labelled twice",
+        "A face carries two labels.",
+        "Assign each face to one zone in the meshing tool.",
+    ),
+    Code(
+        "E0116",
+        "Face without an owned cell",
+        "A face touches only ghost cells.",
+        "Regenerate the partition; every face needs an owned cell.",
+    ),
+    Code(
+        "E0117",
+        "Duplicate or negative global cell id",
+        "Two cells share a global id, or one is negative.",
+        "Regenerate the partition; global cell ids must be unique and non-negative.",
+    ),
+    Code(
+        "E0120",
+        "Degenerate face",
+        "A face has zero or non-finite area.",
+        "Repair the face in the meshing tool; it has no area.",
+    ),
+    Code(
+        "E0121",
+        "Non-positive cell volume",
+        "An owned cell has zero, negative or non-finite volume.",
+        "Repair the cell in the meshing tool; it is inverted or flat.",
+    ),
+    Code(
+        "E0130",
+        "Mesh file cannot be opened",
+        "The file or directory cannot be opened or read.",
+        "Check the path and the file permissions.",
+    ),
+    Code(
+        "E0131",
+        "Unknown mesh format",
+        "The content matches no supported format.",
+        "Export the mesh as CGNS, Gmsh, Fluent .msh or an OpenFOAM polyMesh.",
+    ),
+    Code(
+        "E0132",
+        "Malformed mesh file",
+        "The file violates its format specification (syntax, truncation, inconsistent counts).",
+        "Re-export the mesh; the file does not follow its format specification.",
+    ),
+    Code(
+        "E0133",
+        "Unsupported mesh feature",
+        "The file is valid but uses a feature the reader does not support yet; the message names it.",
+        "Export the mesh without the feature named in the message.",
+    ),
+    Code(
+        "E0134",
+        "Mesh refers to another file",
+        "The mesh refers to another file (CGNS link); meshes must be self-contained.",
+        "Export a self-contained mesh (no CGNS links to other files).",
+    ),
+    Code(
+        "E0135",
+        "Entity in several zones",
+        "An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones).",
+        "Assign each entity to one zone in the meshing tool.",
     ),
     Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "
         "C++ mesh readers are not part of this build, so it must be passed explicitly.",
-        "Pass the MeshInfo JSON: `cfd plan case.py --mesh-info mesh.meshinfo.json`.",
+        "Pass the MeshInfo JSON: `autan plan case.py --mesh-info mesh.meshinfo.json`.",
     ),
     Code(
         "E0202",
         "The MeshInfo document is invalid",
-        "The JSON does not match `cfd.mesh-info/1`, or its counts are inconsistent (zone "
+        "The JSON does not match `autan.mesh-info/1`, or its counts are inconsistent (zone "
         "counts that do not sum to the cell count, duplicate names, unknown interface zones).",
         "Regenerate the MeshInfo with the mesh reader of the same solver version.",
     ),
@@ -100,7 +250,7 @@ _CODES = [
         "Quantity of the wrong dimension",
         "The value has a dimension other than the one the field expects, for example a speed "
         "given for the Mach number.",
-        "Pass a value of the expected dimension, with a unit from `cfd.units`.",
+        "Pass a value of the expected dimension, with a unit from `autan.units`.",
     ),
     Code(
         "E0302",
@@ -126,7 +276,7 @@ _CODES = [
         "E0305",
         "Turbulence model needs an unsteady run",
         "DDES and WMLES resolve turbulent structures in time and cannot run steady.",
-        "Set `case.time = cfd.Unsteady(steps=..., dt=...)`.",
+        "Set `case.time = autan.Unsteady(steps=..., dt=...)`.",
     ),
     Code(
         "E0306",
@@ -140,7 +290,7 @@ _CODES = [
         "E0410",
         "Boundary rule matches no zone",
         "The pattern of `case.boundary(...)` matches no boundary zone of the mesh.",
-        "Use one of the zone names listed by `cfd plan`, or a glob that matches some.",
+        "Use one of the zone names listed by `autan plan`, or a glob that matches some.",
     ),
     Code(
         "E0411",
@@ -181,7 +331,7 @@ _CODES = [
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",
-        "Use one of the cell zone names listed by `cfd plan`.",
+        "Use one of the cell zone names listed by `autan plan`.",
     ),
     Code(
         "E0502",
@@ -193,7 +343,7 @@ _CODES = [
         "E0503",
         "Solid zone without a material",
         "The mesh declares the zone solid and the case gives it no material.",
-        'Set it: `case.cell_zone("name").solid(cfd.materials.COPPER)`.',
+        'Set it: `case.cell_zone("name").solid(autan.materials.COPPER)`.',
     ),
     Code(
         "E0504",
@@ -206,15 +356,15 @@ _CODES = [
         "E0505",
         "Fluids of different materials in contact",
         "Two fluid zones with different materials share an interface. Mixing them needs "
-        "species transport, which `cfd.case/1` does not provide.",
+        "species transport, which `autan.case/1` does not provide.",
         "Use the same material on both sides, or separate them by a solid zone.",
     ),
     Code(
         "E0506",
         "Solid zone with incompressible physics",
         "Conjugate heat transfer needs an energy equation in the fluid, which incompressible "
-        "flow does not solve in `cfd.case/1`.",
-        "Use `cfd.Compressible(...)`, or remove the solid zone from the mesh.",
+        "flow does not solve in `autan.case/1`.",
+        "Use `autan.Compressible(...)`, or remove the solid zone from the mesh.",
     ),
     Code(
         "E0601",
@@ -226,7 +376,44 @@ _CODES = [
         "E0602",
         "Duplicate monitor name",
         "Two monitors share a name; results are keyed by monitor name.",
-        'Name them: `cfd.forces("wing.*", name="wing")`.',
+        'Name them: `autan.forces("wing.*", name="wing")`.',
+    ),
+    Code(
+        "E0701",
+        "The run directory does not conform to autan.results/1",
+        "A file is missing or unreadable, `run.json` has another schema, the stored case or "
+        "MeshInfo does not match the hashes of `run.json`, or the history is out of order. "
+        "See docs/contracts/results.md.",
+        "Open a directory written by a backend of this solver version.",
+    ),
+    Code(
+        "E0702",
+        "No such monitor",
+        "The history has no monitor of that name, or `results.forces` was used on a case "
+        "with zero or several forces monitors.",
+        "Use `results.history.monitor(name)` with a name from `results.history.monitors`.",
+    ),
+    Code(
+        "E0703",
+        "No such solution data",
+        "The run has no `solution.cgns` (it failed or diverged before writing one), or the "
+        "requested field is not in it.",
+        "Check `results.run.status`, and use a field name listed in the message.",
+    ),
+    Code(
+        "E0704",
+        "The run failed",
+        "The backend stopped on an unexpected error; the message names it. The run directory "
+        "keeps the history written so far.",
+        "Report the message with the run directory.",
+    ),
+    Code(
+        "D0107",
+        "Divergence",
+        "The solution diverged: a residual or a state became non-finite or non-physical. "
+        "`data` gives the iteration, the cell (0-based) and its cell zone.",
+        "Lower the CFL number or use a more dissipative limiter; check the mesh quality "
+        "near the cell.",
     ),
     Code(
         "W0801",
@@ -243,8 +430,16 @@ _CODES = [
     Code(
         "W0803",
         "Solver core not built",
-        "This installation contains the SDK only: cases can be planned, not run.",
+        "This installation contains the SDK only: cases can be planned, and run only with "
+        "the `fake` backend, which writes synthetic results.",
         "Build the C++ core (see README) to run real computations.",
+    ),
+    Code(
+        "E0804",
+        "No solver backend",
+        "`case.run()` needs a backend. The C++ core is not part of this build, so only the "
+        "`fake` backend exists; it writes synthetic results.",
+        "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
     ),
 ]
 
@@ -333,7 +528,7 @@ def reference_page() -> str:
     lines = [
         "# Diagnostic codes",
         "",
-        "Generated from `py/cfd/errors.py` by `cfd explain --all`; do not edit by hand.",
+        "Generated from `py/autan/errors.py` by `autan explain --all`; do not edit by hand.",
         "",
         (
             "`E` codes are errors and block the run, `W` codes are warnings, `D` codes report "

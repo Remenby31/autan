@@ -147,24 +147,35 @@ class GmshReader {
     return binary_ ? c_.binary<std::uint64_t>() : c_.integer<std::uint64_t>(10, "");
   }
   double next_double() { return binary_ ? c_.binary<double>() : c_.real(""); }
+  // Smallest encoding of `values` numbers: 4 bytes in binary files, a digit
+  // and a separator in ASCII ones.
+  [[nodiscard]] std::uint64_t min_bytes(std::uint64_t values) const {
+    return values * (binary_ ? 4 : 2);
+  }
 
   void entities() {
     if (binary_) (void)c_.line();
     std::uint64_t counts[4];
     for (auto& n : counts) n = next_size();
     for (int dim = 0; dim < 4; ++dim) {
+      c_.check_fits(counts[dim], min_bytes(1));
       for (std::uint64_t e = 0; e < counts[dim]; ++e) {
         const int tag = next_int();
         for (int k = 0; k < (dim == 0 ? 3 : 6); ++k) (void)next_double();
         const std::uint64_t n_physicals = next_size();
+        c_.check_fits(n_physicals, min_bytes(1));
         std::vector<int> physicals(n_physicals);
-        for (auto& p : physicals) p = next_int();
+        for (auto& p : physicals) {
+          p = next_int();
+          // Physical tags are positive; signs only orient bounding entities.
+          if (p <= 0) c_.fail("non-positive physical tag " + std::to_string(p));
+        }
         if (dim > 0) {
           const std::uint64_t n_bounding = next_size();
+          c_.check_fits(n_bounding, min_bytes(1));
           for (std::uint64_t b = 0; b < n_bounding; ++b) (void)next_int();
         }
         if (dim >= 2) {
-          for (auto& p : physicals) p = std::abs(p);
           if (physicals.size() > 1) {
             c_.fail("entity (" + std::to_string(dim) + ", " + std::to_string(tag) +
                         ") belongs to several physical groups",
@@ -183,6 +194,8 @@ class GmshReader {
     const std::uint64_t n_nodes = next_size();
     (void)next_size();
     (void)next_size();
+    c_.check_fits(n_blocks, min_bytes(4));
+    c_.check_fits(n_nodes, min_bytes(4));
     tags_.reserve(n_nodes);
     xyz_.reserve(3 * n_nodes);
     std::vector<std::uint64_t> block_tags;
@@ -191,6 +204,8 @@ class GmshReader {
       (void)next_int();
       const int parametric = next_int();
       const std::uint64_t n = next_size();
+      c_.check_fits(n, min_bytes(4));
+      if (tags_.size() + n > n_nodes) c_.fail("$Nodes blocks hold more nodes than declared");
       block_tags.resize(n);
       for (auto& t : block_tags) t = next_size();
       const int extra = parametric != 0 ? dim : 0;
@@ -202,8 +217,20 @@ class GmshReader {
     }
     if (tags_.size() != n_nodes) c_.fail("$Nodes count does not match its blocks");
     if (binary_) c_.skip_space();
-    // Node tags are sparse in general: index them through a sorted table.
-    order_.resize(tags_.size());
+    // Contiguous tags (what Gmsh writes) index directly; sparse ones go
+    // through a sorted table. Both detect duplicate tags.
+    const auto [lo, hi] = std::minmax_element(tags_.begin(), tags_.end());
+    dense_ = !tags_.empty() && *hi - *lo + 1 == tags_.size();
+    order_.assign(tags_.size(), -1);
+    if (dense_) {
+      first_tag_ = *lo;
+      for (std::size_t i = 0; i < tags_.size(); ++i) {
+        index_t& slot = order_[static_cast<std::size_t>(tags_[i] - first_tag_)];
+        if (slot != -1) c_.fail("node tag " + std::to_string(tags_[i]) + " is defined twice");
+        slot = static_cast<index_t>(i);
+      }
+      return;
+    }
     for (std::size_t i = 0; i < order_.size(); ++i) order_[i] = static_cast<index_t>(i);
     std::sort(order_.begin(), order_.end(), [&](index_t a, index_t b) {
       return tags_[static_cast<std::size_t>(a)] < tags_[static_cast<std::size_t>(b)];
@@ -218,6 +245,12 @@ class GmshReader {
   }
 
   index_t node_index(std::uint64_t tag) {
+    if (dense_) {
+      if (tag < first_tag_ || tag - first_tag_ >= order_.size()) {
+        c_.fail("element refers to undefined node " + std::to_string(tag));
+      }
+      return order_[static_cast<std::size_t>(tag - first_tag_)];
+    }
     const auto it = std::lower_bound(
         order_.begin(), order_.end(), tag,
         [&](index_t i, std::uint64_t t) { return tags_[static_cast<std::size_t>(i)] < t; });
@@ -240,6 +273,7 @@ class GmshReader {
       const int type = next_int();
       const std::uint64_t n = next_size();
       ElementType et{};
+      c_.check_fits(n, min_bytes(2));
       if (!element_type(type, et))
         c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
       if (et.dim != dim) c_.fail("element type does not match its entity dimension");
@@ -269,7 +303,7 @@ class GmshReader {
     if (it != cell_zone_index_.end()) return it->second;
     const auto index = static_cast<index_t>(mesh_.cell_zones.size());
     mesh_.cell_zones.push_back(CellZone{
-        .name = physical == 0 ? "fluid" : zone_name(3, physical),
+        .name = physical == 0 ? "fluid" : std::to_string(physical),
         .type = "",
         .kind = CellKind::unspecified,
         .provenance =
@@ -287,7 +321,7 @@ class GmshReader {
     if (it != face_zone_index_.end()) return it->second;
     const auto index = static_cast<index_t>(mesh_.face_zones.size());
     mesh_.face_zones.push_back(FaceZone{
-        .name = zone_name(2, physical),
+        .name = std::to_string(physical),
         .bc_type = "",
         .kind = BcKind::unspecified,
         .boundary = true,
@@ -299,6 +333,21 @@ class GmshReader {
 
   MeshInput build() {
     if (mesh_.cell_zone.empty()) c_.fail("no volume elements");
+    // Declared surface groups are zones even without elements, so that their
+    // names stay visible; names are resolved once every section is read.
+    for (const auto& [key, name] : names_) {
+      if (key.first == 2) (void)face_zone(key.second);
+    }
+    for (const auto& [key, physical] : entity_physical_) {
+      if (key.first == 2 && physical != 0) (void)face_zone(physical);
+    }
+    for (auto& zone : mesh_.cell_zones) {
+      if (zone.provenance.source_id > 0)
+        zone.name = zone_name(3, static_cast<int>(zone.provenance.source_id));
+    }
+    for (auto& zone : mesh_.face_zones) {
+      zone.name = zone_name(2, static_cast<int>(zone.provenance.source_id));
+    }
     const std::size_t n = tags_.size();
     mesh_.x.resize(n);
     mesh_.y.resize(n);
@@ -319,6 +368,8 @@ class GmshReader {
   std::map<std::pair<int, int>, int> entity_physical_;
   std::vector<std::uint64_t> tags_;
   std::vector<index_t> order_;
+  bool dense_ = false;
+  std::uint64_t first_tag_ = 0;
   std::vector<double> xyz_;
   std::map<int, index_t> cell_zone_index_;
   std::map<int, index_t> face_zone_index_;

@@ -1,5 +1,5 @@
 {
-  "schema": "cfd.mesh-info/1",
+  "schema": "autan.mesh-info/1",
   "source": {
     "path": "heat-exchanger.msh",
     "format": "fluent",
