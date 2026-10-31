@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
-from autan_codegen.emit_cpp import Emitter, at, call_args, ctype
-from autan_codegen.emit_cpu import n_out, offsets, reduce_body
+from autan_codegen.emit_cpp import Emitter, at, call_args
+from autan_codegen.emit_cpu import cell_stores, n_out, offsets, reduce_adjoint_body, reduce_body
 
 if TYPE_CHECKING:
     from autan_codegen.model import LoopModel, Module
@@ -279,11 +279,11 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
         e.w(f"  typename P::compute out[{n_out(lm)}];")
         args = call_args(lm.sig, lm.loop.bindings, {"direct": "c"})
         e.w(f"  {lm.fn.name}<P>({', '.join([*args, 'out'])});")
-        for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
-            for c in range(o.dataset.type.size):
-                e.w(
-                    f"  {at(o.dataset, 'c', c)} = static_cast<{ctype(o.dataset.type.role)}>(out[{off + c}]);"
-                )
+        for s in cell_stores(lm, "  "):
+            e.w(s)
+    elif lm.kind == "reduce_adjoint":
+        for s in reduce_adjoint_body(lm, "  ", "atomic"):
+            e.w(s)
     else:
         for s in reduce_body(lm, "  "):
             e.w(s)
