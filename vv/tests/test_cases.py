@@ -7,6 +7,7 @@ catalogue from the TMR pages against the downloaded data files, a second source.
 
 import hashlib
 import math
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -86,7 +87,7 @@ def test_fetch_verifies_files_and_archive_members(tmp_path: Path) -> None:
     missing = CaseFile(
         "gone.dat", "reference", (tmp_path / "gone.dat").as_uri(), "0" * 64, 1, "tecplot", ""
     )
-    with pytest.raises(OSError):
+    with pytest.raises(urllib.error.URLError):
         fetch(_case((missing,)), tmp_path / "cache4")
     leftovers = [p for p in (tmp_path / "cache2").rglob("*")] + [
         p for p in (tmp_path / "cache4").rglob("*")
