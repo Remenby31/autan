@@ -202,4 +202,4 @@ The case hash is the SHA-256 of the case's canonical JSON: the document with def
 
 ## Diagnostics
 
-Every problem is a diagnostic with a code, a location, a suggested fix and a documentation page. The registry and its generated reference are in [docs/sdk/errors.md](../sdk/errors.md).
+Every problem is a diagnostic with a code, a location, a suggested fix and a documentation page. The registry and its generated reference are in `docs/sdk/errors.md`, generated from `cfd.errors`.

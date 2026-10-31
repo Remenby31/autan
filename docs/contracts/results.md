@@ -48,7 +48,7 @@ All five files are required once `status` is not `running`. While running, `solu
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`. |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
-| `diagnostics` | Diagnostics raised during the run, in the format of [docs/sdk/errors.md](../sdk/errors.md); a `diverged` run carries its `D` code here. |
+| `diagnostics` | Diagnostics raised during the run, in the format of `docs/sdk/errors.md`, generated from `cfd.errors`; a `diverged` run carries its `D` code here. |
 
 Mesh hash, case hash, solver commit and precision identify a run; two runs with equal identities and `deterministic: true` produce bitwise-identical `history.jsonl` and `solution.cgns` data arrays.
 
