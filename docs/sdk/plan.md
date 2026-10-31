@@ -6,7 +6,7 @@
 autan plan CASE --mesh-info MESHINFO [--gpus N] [--json]
 ```
 
-It exits with 1 when it finds an error. Until the mesh readers ship, pass the MeshInfo yourself with `--mesh-info`: `plan` compares its `source.sha256` with the hash of the mesh file (`E0203`) and warns when the file is absent (`W0205`). [Check a case before you run it](../guides/check-a-case.md) walks through the output.
+It exits with 1 when it finds an error. The SDK does not call the mesh readers yet: write the MeshInfo with `autan-mesh-info --json MESH` and pass it with `--mesh-info`. `plan` compares its `source.sha256` with the hash of the mesh file (`E0203`) and warns when the file is absent (`W0205`). [Check a case before you run it](../guides/check-a-case.md) walks through the output.
 
 ## Memory model `autan.memory/1`
 

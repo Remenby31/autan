@@ -62,7 +62,7 @@ Each milestone closes on numbered exit criteria. They are in [the plan](docs/PLA
 
 ## Architecture
 
-A C++ core reads and partitions meshes, a kernel generator emits CUDA, HIP and CPU code with its tangent and adjoint, and a Python SDK checks cases and reads results. They exchange three documents: the [case](docs/contracts/case-schema.md), the [MeshInfo summary](docs/contracts/mesh-info.md) and the [run directory](docs/contracts/results.md). [Architecture](docs/concepts/architecture.md) shows the components and the milestone of each.
+Three parts: a C++ core that reads and partitions meshes, a Python SDK that checks cases and reads results, and, from M1, a kernel generator that emits CUDA, HIP and CPU code with its tangent and adjoint. They exchange three documents: the [case](docs/contracts/case-schema.md), the [MeshInfo summary](docs/contracts/mesh-info.md) and the [run directory](docs/contracts/results.md). [Architecture](docs/concepts/architecture.md) shows the components and the milestone of each.
 
 ## How correctness and speed are proven
 
