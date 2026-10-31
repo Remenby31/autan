@@ -1,185 +1,406 @@
-import { Toggle } from "@base-ui/react/toggle";
-import { ToggleGroup } from "@base-ui/react/toggle-group";
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { ChevronRight, FolderSearch, HardDrive, ListFilter, SearchX } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { RUN_STATUSES, type Run, type RunStatus } from "../api/contracts";
+import { RUN_STATUSES, type Run, type RunStatus, type RunSummary } from "../api/contracts";
 import { runsQuery } from "../api/runs";
-import { StateGlyph } from "../components/StateGlyph";
+import { TopBar } from "../components/shell/TopBar";
+import { Button } from "../components/ui/Button";
+import { Collapse } from "../components/ui/Collapse";
+import { cn } from "../components/ui/cn";
+import { EmptyState } from "../components/ui/EmptyState";
+import { FilterChip } from "../components/ui/FilterChip";
+import { Menu, MenuItem } from "../components/ui/Menu";
+import { Note } from "../components/ui/Note";
+import { RelativeTime } from "../components/ui/RelativeTime";
+import { SearchInput } from "../components/ui/SearchInput";
+import { Skeleton } from "../components/ui/Skeleton";
+import { Snippet } from "../components/ui/Snippet";
+import { Sparkline } from "../components/ui/Sparkline";
+import { StateGlyph } from "../components/ui/StateGlyph";
+import { formatDuration, Status } from "../components/ui/Status";
+import { useToast } from "../components/ui/Toast";
+import { Tooltip } from "../components/ui/Tooltip";
 
 interface Search {
   status?: RunStatus[] | undefined;
+  case?: string[] | undefined;
   q?: string | undefined;
+  flat?: boolean | undefined;
 }
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
 export const Route = createFileRoute("/")({
   validateSearch: (raw: Record<string, unknown>): Search => {
     const search: Search = {};
-    if (Array.isArray(raw.status)) {
-      search.status = raw.status.filter((s): s is RunStatus =>
-        RUN_STATUSES.includes(s as RunStatus),
-      );
-    }
+    const status = strings(raw.status).filter((s): s is RunStatus =>
+      RUN_STATUSES.includes(s as RunStatus),
+    );
+    if (status.length) search.status = status;
+    const cases = strings(raw.case);
+    if (cases.length) search.case = cases;
     if (typeof raw.q === "string" && raw.q) search.q = raw.q;
+    if (raw.flat === true) search.flat = true;
     return search;
   },
-  component: Registry,
+  component: Runs,
 });
 
 function matches(run: Run, search: Search): boolean {
   if (search.status?.length && !search.status.includes(run.status)) return false;
+  if (search.case?.length && !search.case.includes(run.case.name)) return false;
   if (!search.q) return true;
   const q = search.q.toLowerCase();
-  return [run.case.name, run.run_id, run.precision, run.solver.backend].some((v) =>
+  return [run.case.name, run.run_id, run.precision, run.solver.backend, run.status].some((v) =>
     v.toLowerCase().includes(q),
   );
 }
 
-function Registry() {
+const COLUMNS =
+  "grid grid-cols-[minmax(180px,1.4fr)_minmax(140px,1fr)_minmax(150px,1fr)_88px_minmax(130px,1fr)_100px_40px] items-center gap-4";
+
+function Runs() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { data, error } = useQuery(runsQuery);
-  const [cursor, setCursor] = useState(0);
-  const input = useRef<HTMLInputElement>(null);
+  const { data, error, isPending } = useQuery(runsQuery);
+  const filter = useRef<HTMLInputElement>(null);
+  const rows = useRef<HTMLDivElement>(null);
   const runs = useMemo(() => (data?.runs ?? []).filter((r) => matches(r, search)), [data, search]);
-  const counts = useMemo(() => {
-    const c = new Map<RunStatus, number>();
-    for (const run of data?.runs ?? []) c.set(run.status, (c.get(run.status) ?? 0) + 1);
-    return c;
-  }, [data]);
+  const cases = useMemo(
+    () => [...new Set((data?.runs ?? []).map((r) => r.case.name))].sort(),
+    [data],
+  );
+  const groups = useMemo(() => {
+    const byCase = new Map<string, Run[]>();
+    for (const run of runs) byCase.set(run.case.name, [...(byCase.get(run.case.name) ?? []), run]);
+    return [...byCase.entries()];
+  }, [runs]);
+  const setSearch = (patch: Partial<Search>) =>
+    void navigate({ search: (s: Search) => ({ ...s, ...patch }), replace: true });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) {
-        if (e.key === "Escape") input.current?.blur();
-        return;
-      }
+      const target = e.target as HTMLElement;
+      if (target.closest("input, textarea, [contenteditable], [role=dialog]")) return;
       if (e.key === "/") {
         e.preventDefault();
-        input.current?.focus();
-      } else if (e.key === "j" || e.key === "ArrowDown") {
-        setCursor((c) => Math.min(c + 1, runs.length - 1));
-      } else if (e.key === "k" && !e.metaKey && !e.ctrlKey) {
-        setCursor((c) => Math.max(c - 1, 0));
-      } else if (e.key === "ArrowUp") {
-        setCursor((c) => Math.max(c - 1, 0));
-      } else if (e.key === "Enter" && runs[cursor]) {
-        void navigate({ to: "/runs/$runId", params: { runId: runs[cursor].run_id } });
+        filter.current?.focus();
+        return;
       }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== "j" && e.key !== "k") return;
+      const links = [...(rows.current?.querySelectorAll<HTMLAnchorElement>("a[data-row]") ?? [])];
+      const at = links.indexOf(document.activeElement as HTMLAnchorElement);
+      const next = e.key === "j" ? Math.min(at + 1, links.length - 1) : Math.max(at - 1, 0);
+      links[next]?.focus();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runs, cursor, navigate]);
+  }, []);
+
+  const filtered = Boolean(search.status?.length || search.case?.length || search.q);
+  const grouped = !search.flat && cases.length > 1;
 
   return (
-    <div className="mx-auto flex h-full max-w-6xl flex-col gap-4 overflow-auto px-4 py-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <input
-          ref={input}
-          value={search.q ?? ""}
-          onChange={(e) =>
-            void navigate({
-              search: (s: Search) => ({ ...s, q: e.target.value || undefined }),
-              replace: true,
-            })
-          }
-          placeholder="Filter  /"
-          className="w-64 rounded-md border border-line bg-bg-1 px-3 py-1.5 outline-none focus:border-accent"
-        />
-        <ToggleGroup
-          multiple
-          value={search.status ?? []}
-          onValueChange={(value) =>
-            void navigate({
-              search: (s: Search) => ({
-                ...s,
-                status: value.length ? (value as RunStatus[]) : undefined,
-              }),
-              replace: true,
-            })
-          }
-          className="flex gap-1"
-        >
-          {RUN_STATUSES.filter((s) => counts.has(s)).map((status) => (
-            <Toggle
-              key={status}
-              value={status}
-              className="flex items-center gap-2 rounded-md border border-line px-2.5 py-1 text-fg-3 text-sm data-[pressed]:border-accent data-[pressed]:text-fg"
-            >
-              <StateGlyph status={status} />
-              {status}
-              <span className="font-mono text-xs">{counts.get(status)}</span>
-            </Toggle>
-          ))}
-        </ToggleGroup>
-      </div>
-      {error && <p className="text-danger">{String(error)}</p>}
-      {data?.rejected.length ? (
-        <p className="text-warning text-sm" data-testid="rejected">
-          {data.rejected.length} unreadable run directories:{" "}
-          {data.rejected.map((r) => `${r.dir} (${r.reason})`).join(", ")}
-        </p>
-      ) : null}
-      <table className="w-full border-collapse text-sm" data-testid="runs">
-        <thead className="text-left font-mono text-fg-3 text-xs uppercase tracking-wider">
-          <tr>
-            <th className="py-2 font-normal">Case</th>
-            <th className="font-normal">Status</th>
-            <th className="text-right font-normal">Iter.</th>
-            <th className="text-right font-normal">Precision</th>
-            <th className="text-right font-normal">Devices</th>
-            <th className="text-right font-normal">Started</th>
-          </tr>
-        </thead>
-        <tbody>
-          <AnimatePresence initial={false}>
-            {runs.map((run, i) => (
-              <motion.tr
-                key={run.run_id}
-                layout
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                aria-selected={i === cursor}
-                onClick={() => void navigate({ to: "/runs/$runId", params: { runId: run.run_id } })}
-                onMouseEnter={() => setCursor(i)}
-                className="cursor-pointer border-line border-t aria-selected:bg-accent-soft"
+    <>
+      <TopBar crumbs={[{ label: "Runs" }]} />
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto flex max-w-[1200px] flex-col gap-5 px-6 py-8">
+          <h1 className="m-0 font-semibold text-2xl tracking-tight">Runs</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <SearchInput
+              ref={filter}
+              value={search.q ?? ""}
+              onChange={(q) => setSearch({ q: q || undefined })}
+              placeholder="Search runs…"
+              shortcut="/"
+            />
+            <FilterChip
+              label="State"
+              options={RUN_STATUSES}
+              selected={search.status ?? []}
+              onChange={(status) => setSearch({ status: status.length ? status : undefined })}
+              render={(s) => (
+                <span className="inline-flex items-center gap-1.5">
+                  <StateGlyph status={s} />
+                  {s}
+                </span>
+              )}
+            />
+            <FilterChip
+              label="Case"
+              options={cases}
+              selected={search.case ?? []}
+              onChange={(c) => setSearch({ case: c.length ? c : undefined })}
+              render={(c) => c}
+            />
+            {cases.length > 1 && (
+              <Button
+                size="md"
+                variant="tertiary"
+                icon={<ListFilter className="size-4" />}
+                aria-pressed={grouped}
+                onClick={() => setSearch({ flat: grouped ? true : undefined })}
+                className="ml-auto aria-pressed:bg-bg-3"
               >
-                <td className="py-2">
-                  <span className="font-semibold">{run.case.name}</span>
-                  <span className="ml-2 font-mono text-fg-3 text-xs">{run.run_id.slice(-8)}</span>
-                </td>
-                <td>
-                  <span className="flex items-center gap-2" data-status={run.status}>
-                    <StateGlyph status={run.status} />
-                    {run.status}
-                    {run.diagnostics[0] && (
-                      <span className="font-mono text-danger text-xs">
-                        {run.diagnostics[0].code}
-                      </span>
-                    )}
+                Group by case
+              </Button>
+            )}
+          </div>
+
+          {error && (
+            <Note tone="error" title="The server did not answer">
+              {String(error)}
+            </Note>
+          )}
+
+          {isPending ? (
+            <TableFrame>
+              {["a", "b", "c", "d"].map((k) => (
+                <li
+                  key={k}
+                  className={cn(COLUMNS, "h-14 border-line border-t px-4 first:border-t-0")}
+                >
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-4 w-12" />
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-4 w-14" />
+                </li>
+              ))}
+            </TableFrame>
+          ) : !data?.runs.length ? (
+            <EmptyState
+              icon={<HardDrive className="size-5" />}
+              title="No runs yet"
+              description="Runs started from the SDK, the CLI or an agent appear here as soon as their directory is written."
+            >
+              <Snippet text="autan run case.py --mesh-info mesh-info.json" />
+            </EmptyState>
+          ) : !runs.length ? (
+            <EmptyState icon={<SearchX className="size-5" />} title="No runs match these filters">
+              <Button
+                className="self-center"
+                onClick={() => setSearch({ q: undefined, status: undefined, case: undefined })}
+              >
+                Clear filters
+              </Button>
+            </EmptyState>
+          ) : (
+            <div ref={rows}>
+              <TableFrame
+                header={
+                  <div
+                    aria-hidden
+                    className={cn(COLUMNS, "h-10 border-line border-b px-4 text-fg-3 text-sm")}
+                  >
+                    <span>Case</span>
+                    <span>State</span>
+                    <span>Residuals</span>
+                    <span className="text-right">Iteration</span>
+                    <span>Devices</span>
+                    <span className="text-right">Started</span>
+                    <span />
+                  </div>
+                }
+              >
+                {grouped && !filtered ? (
+                  groups.map(([name, members]) => (
+                    <Group key={name} name={name} runs={members} summaries={data.summaries} />
+                  ))
+                ) : (
+                  <AnimatePresence initial={false}>
+                    {runs.map((run) => (
+                      <RunRow key={run.run_id} run={run} summary={data.summaries[run.run_id]} />
+                    ))}
+                  </AnimatePresence>
+                )}
+              </TableFrame>
+            </div>
+          )}
+
+          {data?.rejected.length ? (
+            <div className="rounded-lg border border-line bg-bg-0" data-testid="rejected">
+              <Collapse
+                title={
+                  <span className="flex items-center gap-2">
+                    <FolderSearch className="size-4 text-warning" />
+                    {data.rejected.length} unreadable run{" "}
+                    {data.rejected.length === 1 ? "directory" : "directories"}
                   </span>
-                </td>
-                <td className="text-right font-mono tabular-nums" data-testid="iterations">
-                  {data?.progress[run.run_id] ?? run.iterations}
-                </td>
-                <td className="text-right font-mono">{run.precision}</td>
-                <td className="text-right font-mono">
-                  {run.devices.count}× {run.devices.kind}
-                  {run.solver.backend === "fake" && <span className="ml-1 text-warning">fake</span>}
-                </td>
-                <td className="text-right font-mono text-fg-3 tabular-nums">
-                  {run.started.replace("T", " ").slice(0, 16)}
-                </td>
-              </motion.tr>
-            ))}
-          </AnimatePresence>
-        </tbody>
-      </table>
-      {data && !data.runs.length && (
-        <p className="text-fg-3">No runs yet. `autan run` writes them here.</p>
-      )}
+                }
+              >
+                <ul className="m-0 flex list-none flex-col gap-2 p-0 font-mono text-sm">
+                  {data.rejected.map((r) => (
+                    <li key={r.dir}>
+                      <span>{r.dir}</span>
+                      <span className="block text-fg-3">{r.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Collapse>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function TableFrame({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-bg-0">
+      {header}
+      <ul aria-label="Runs" data-testid="runs" className="m-0 list-none p-0">
+        {children}
+      </ul>
     </div>
+  );
+}
+
+function Group({
+  name,
+  runs,
+  summaries,
+}: {
+  name: string;
+  runs: Run[];
+  summaries: Record<string, RunSummary>;
+}) {
+  const [open, setOpen] = useState(true);
+  const latest = runs[0];
+  return (
+    <li className="border-line border-t first:border-t-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="flex h-10 w-full items-center gap-2 bg-bg-1 px-4 text-left text-sm transition-colors hover:bg-bg-2"
+      >
+        <ChevronRight
+          className={cn(
+            "size-4 text-fg-3 transition-transform duration-[var(--dur-base)]",
+            open && "rotate-90",
+          )}
+        />
+        <span className="font-medium">{name}</span>
+        <span className="text-fg-3">{runs.length} runs</span>
+        {latest && (
+          <span className="ml-auto flex items-center gap-2 text-fg-3">
+            latest <StateGlyph status={latest.status} /> <RelativeTime iso={latest.started} />
+          </span>
+        )}
+      </button>
+      <ul className="m-0 list-none p-0">
+        <AnimatePresence initial={false}>
+          {open &&
+            runs.map((run) => (
+              <RunRow key={run.run_id} run={run} summary={summaries[run.run_id]} />
+            ))}
+        </AnimatePresence>
+      </ul>
+    </li>
+  );
+}
+
+function duration(run: Run): string {
+  const end = run.finished ? new Date(run.finished).getTime() : Date.now();
+  return formatDuration(end - new Date(run.started).getTime());
+}
+
+function RunRow({ run, summary }: { run: Run; summary: RunSummary | undefined }) {
+  const toast = useToast();
+  const iteration = summary?.iteration ?? run.iterations;
+  const target = summary?.target_orders ?? undefined;
+  return (
+    <motion.li
+      layout="position"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="group relative border-line border-t"
+    >
+      <Link
+        to="/runs/$runId"
+        params={{ runId: run.run_id }}
+        data-row
+        className={cn(
+          COLUMNS,
+          "h-14 px-4 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-1 focus-visible:bg-bg-1 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
+        )}
+      >
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-medium">{run.case.name}</span>
+          <span className="truncate font-mono text-fg-3 text-xs">{run.run_id.slice(-8)}</span>
+        </span>
+        <span className="flex min-w-0 items-center gap-2">
+          <Status status={run.status} duration={duration(run)} />
+          {run.diagnostics[0] && (
+            <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
+          )}
+        </span>
+        <span className="flex items-center gap-2">
+          <Sparkline
+            values={summary?.trend ?? []}
+            {...(target !== undefined ? { target } : {})}
+            label="Residual drop along the run"
+            color={
+              run.status === "diverged" || run.status === "failed"
+                ? "var(--danger)"
+                : run.status === "converged"
+                  ? "var(--success)"
+                  : "var(--accent)"
+            }
+          />
+          {summary?.orders != null && (
+            <span className="font-mono text-fg-2 text-xs tabular-nums">
+              {summary.orders.toFixed(1)}
+              {target !== undefined && <span className="text-fg-3">/{target}</span>}
+            </span>
+          )}
+        </span>
+        <span className="text-right font-mono tabular-nums" data-testid="iterations">
+          {iteration.toLocaleString("en")}
+        </span>
+        <span className="flex min-w-0 items-center gap-1.5 font-mono text-fg-2 text-sm">
+          {run.devices.count}× {run.devices.kind}
+          <span className="text-fg-3">·</span>
+          <span className="truncate">{run.precision}</span>
+          {run.solver.backend === "fake" && (
+            <Tooltip content="Synthetic results from the fake backend">
+              <span className="rounded-xs bg-warning-soft px-1 text-warning text-xs">fake</span>
+            </Tooltip>
+          )}
+        </span>
+        <span className="text-right text-fg-2 text-sm">
+          <RelativeTime iso={run.started} />
+        </span>
+        <span />
+      </Link>
+      <div className="absolute top-1/2 right-3 -translate-y-1/2 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 has-[[data-popup-open]]:opacity-100">
+        <Menu label={`Actions for ${run.run_id}`}>
+          <MenuItem
+            onClick={() =>
+              void navigator.clipboard.writeText(run.run_id).then(() => toast("Run id copied"))
+            }
+          >
+            Copy run id
+          </MenuItem>
+          <MenuItem
+            onClick={() =>
+              void navigator.clipboard
+                .writeText(run.mesh.sha256)
+                .then(() => toast("Mesh hash copied"))
+            }
+          >
+            Copy mesh hash
+          </MenuItem>
+        </Menu>
+      </div>
+    </motion.li>
   );
 }

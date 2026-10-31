@@ -53,6 +53,7 @@ class Registry:
         self.root = root.resolve()
         self._checked: dict[str, tuple[tuple[Any, ...], dict[str, Any] | str]] = {}
         self._summaries = Summaries()
+        self._budgets: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def run_dir(self, run_id: str) -> Path:
@@ -82,10 +83,13 @@ class Registry:
                         live = outcome["status"] == "running"
                         summary = self._summaries.update(child, live=live)
                         if summary is not None:
-                            snapshot.summaries[child.name] = summary
+                            snapshot.summaries[child.name] = summary | self._budgets.get(
+                                child.name, {}
+                            )
             gone = self._checked.keys() - names
             for name in gone:
                 del self._checked[name]
+                self._budgets.pop(name, None)
             self._summaries.forget(gone)
         return snapshot
 
@@ -99,7 +103,13 @@ class Registry:
             outcome = "no run.json"
         else:
             try:
-                outcome = autan.Results.open(directory).run.document()
+                results = autan.Results.open(directory)
+                outcome = results.run.document()
+                time = results.case.document()["time"]
+                self._budgets[directory.name] = {
+                    "target_orders": time.get("residual_orders"),
+                    "max_iterations": time.get("max_iterations", time.get("steps")),
+                }
             except CaseError as error:
                 outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
             except (OSError, ValueError) as error:
@@ -116,10 +126,12 @@ class Registry:
             if path.is_file() and not path.name.startswith(".")
             for stat in (path.stat(),)
         ]
+        case_toml = (directory / "case.toml").read_text(encoding="utf-8")
         return {
             "outputs": outputs,
             "run": read_run(directory),
-            "case": tomllib.loads((directory / "case.toml").read_text(encoding="utf-8")),
+            "case": tomllib.loads(case_toml),
+            "case_toml": case_toml,
             "mesh_info": json.loads((directory / "mesh-info.json").read_text(encoding="utf-8")),
         }
 

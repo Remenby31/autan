@@ -1,13 +1,6 @@
 import { expect, test } from "vitest";
 import type { HistoryRecord } from "./contracts";
-import { appendHistory, type HistoryColumns, soleForces } from "./runs";
-
-const empty = (): HistoryColumns => ({
-  iteration: [],
-  residuals: new Map(),
-  forces: new Map(),
-  version: 0,
-});
+import { appendHistory, emptyColumns as empty, soleForces } from "./runs";
 
 const record = (iteration: number, monitors?: HistoryRecord["monitors"]): HistoryRecord => ({
   iteration,
