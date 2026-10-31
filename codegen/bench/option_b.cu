@@ -80,6 +80,10 @@ __host__ __device__ inline Dual<N> operator*(float a, const Dual<N>& b) {
   return constant<N>(a) * b;
 }
 template <int N>
+__host__ __device__ inline Dual<N> operator*(const Dual<N>& a, float b) {
+  return a * constant<N>(b);
+}
+template <int N>
 __host__ __device__ inline Dual<N> sqrt(const Dual<N>& a) {
   Dual<N> r;
   r.v = sqrtf(a.v);
