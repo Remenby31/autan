@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import pint
-from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
-from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import PydanticCustomError, core_schema
+
+if TYPE_CHECKING:
+    from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
+    from pydantic.json_schema import JsonSchemaValue
 
 ureg = pint.UnitRegistry()
 Quantity = ureg.Quantity
@@ -33,6 +35,12 @@ deg = ureg.degree
 rad = ureg.radian
 
 _QUANTITY_PATTERN = r"^\s*[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?\s+\S.*$"
+
+
+def fail(code: str, template: str, **context: object) -> NoReturn:
+    """Raise a pydantic error whose type carries a diagnostic code (``cfd.E0301``)."""
+    kind = f"cfd.{code}"
+    raise PydanticCustomError(kind, template, context)
 
 
 @dataclass(frozen=True)
@@ -70,26 +78,20 @@ class Dimension:
     def validate(self, value: object) -> pint.Quantity:
         quantity = _to_quantity(value, self.dimension)
         if not _has_dimension(quantity, self.dimension):
-            raise PydanticCustomError(
-                "cfd.E0301",
+            fail(
+                "E0301",
                 "expected a quantity of dimension {expected}, got {got} ({actual})",
-                {
-                    "expected": self.dimension,
-                    "got": repr(format_quantity(quantity)),
-                    "actual": _describe_dimension(quantity),
-                },
+                expected=self.dimension,
+                got=repr(format_quantity(quantity)),
+                actual=_describe_dimension(quantity),
             )
         magnitude = float(quantity.magnitude)
         if not math.isfinite(magnitude):
-            raise PydanticCustomError(
-                "cfd.E0304", "{got} is not finite", {"got": repr(format_quantity(quantity))}
-            )
+            fail("E0304", "{got} is not finite", got=repr(format_quantity(quantity)))
         if self.positive:
             absolute = quantity.to(ureg.kelvin) if self.dimension == "[temperature]" else quantity
             if float(absolute.magnitude) <= 0:
-                raise PydanticCustomError(
-                    "cfd.E0304", "{got} must be > 0", {"got": repr(format_quantity(quantity))}
-                )
+                fail("E0304", "{got} must be > 0", got=repr(format_quantity(quantity)))
         return quantity
 
 
@@ -102,24 +104,32 @@ def _to_quantity(value: object, dimension: str) -> pint.Quantity:
         try:
             parsed = Quantity(value)
         except (pint.UndefinedUnitError, pint.errors.DefinitionSyntaxError, ValueError) as error:
-            raise PydanticCustomError(
-                "cfd.E0303", "cannot read {got} as a quantity: {reason}",
-                {"got": repr(value), "reason": str(error)},
-            ) from None
+            fail(
+                "E0303",
+                "cannot read {got} as a quantity: {reason}",
+                got=repr(value),
+                reason=str(error),
+            )
         if not isinstance(parsed, pint.Quantity) or parsed.unitless:
-            raise PydanticCustomError(
-                "cfd.E0302", "{got} has no unit; expected {expected}",
-                {"got": repr(value), "expected": dimension},
+            fail(
+                "E0302",
+                "{got} has no unit; expected {expected}",
+                got=repr(value),
+                expected=dimension,
             )
         return parsed
     if isinstance(value, int | float) and not isinstance(value, bool):
-        raise PydanticCustomError(
-            "cfd.E0302", "{got} has no unit; expected a quantity of dimension {expected}",
-            {"got": repr(value), "expected": dimension},
+        fail(
+            "E0302",
+            "{got} has no unit; expected a quantity of dimension {expected}",
+            got=repr(value),
+            expected=dimension,
         )
-    raise PydanticCustomError(
-        "cfd.E0301", "expected a quantity of dimension {expected}, got {got}",
-        {"expected": dimension, "got": repr(value)},
+    fail(
+        "E0301",
+        "expected a quantity of dimension {expected}, got {got}",
+        expected=dimension,
+        got=repr(value),
     )
 
 
@@ -144,23 +154,22 @@ def validate_number(value: object, *, positive: bool) -> float:
     """Validate a dimensionless number; a quantity with a dimension is rejected (E0301)."""
     if isinstance(value, pint.Quantity):
         if not value.dimensionless or ureg.get_root_units(value.units)[1] == ureg.radian:
-            raise PydanticCustomError(
-                "cfd.E0301", "expected a dimensionless number, got {got}",
-                {"got": repr(format_quantity(value))},
+            fail(
+                "E0301",
+                "expected a dimensionless number, got {got}",
+                got=repr(format_quantity(value)),
             )
         value = float(value.to(ureg.dimensionless).magnitude)
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise PydanticCustomError(
-            "cfd.E0301", "expected a dimensionless number, got {got}", {"got": repr(value)}
-        )
+        fail("E0301", "expected a dimensionless number, got {got}", got=repr(value))
     number = float(value)
     if not math.isfinite(number):
-        raise PydanticCustomError("cfd.E0304", "{got} is not finite", {"got": repr(number)})
+        fail("E0304", "{got} is not finite", got=repr(number))
     if positive and number <= 0:
-        raise PydanticCustomError("cfd.E0304", "{got} must be > 0", {"got": repr(number)})
+        fail("E0304", "{got} must be > 0", got=repr(number))
     return number
 
 
 def si(quantity: pint.Quantity, unit: str) -> float:
     """Magnitude of ``quantity`` in ``unit``."""
-    return cast(float, float(quantity.to(unit).magnitude))
+    return float(quantity.to(unit).magnitude)

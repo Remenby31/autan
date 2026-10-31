@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 import pint
+import rfc8785
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
-from pydantic_core import PydanticCustomError
 
 from cfd.errors import CaseError, Diagnostic, Location, diagnostic
-from cfd.units import Dimension, validate_number
+from cfd.units import Dimension, K, deg, fail, validate_number
 
 SCHEMA_ID = "cfd.case/1"
 
@@ -24,9 +23,7 @@ Duration = Annotated[pint.Quantity, Dimension("[time]", positive=True)]
 Temperature = Annotated[pint.Quantity, Dimension("[temperature]", positive=True)]
 Pressure = Annotated[pint.Quantity, Dimension("[pressure]", positive=True)]
 Density = Annotated[pint.Quantity, Dimension("[mass] / [length] ** 3", positive=True)]
-DynamicViscosity = Annotated[
-    pint.Quantity, Dimension("[mass] / [length] / [time]", positive=True)
-]
+DynamicViscosity = Annotated[pint.Quantity, Dimension("[mass] / [length] / [time]", positive=True)]
 MolarMass = Annotated[pint.Quantity, Dimension("[mass] / [substance]", positive=True)]
 SpecificHeat = Annotated[
     pint.Quantity, Dimension("[length] ** 2 / [time] ** 2 / [temperature]", positive=True)
@@ -82,6 +79,10 @@ class Spec(BaseModel):
         except ValidationError as error:
             raise CaseError(diagnostics_from(error, _caller_location())) from None
 
+    # Nested validation must not run this conversion, only direct construction does:
+    # pydantic calls a model's __init__ during validation unless it is marked as the base one.
+    __init__.__pydantic_base_init__ = True  # type: ignore[attr-defined]
+
 
 # --- materials ---------------------------------------------------------------------------
 
@@ -114,7 +115,7 @@ class IdealGas(Spec):
     @model_validator(mode="after")
     def _gamma_above_one(self) -> Self:
         if self.gamma <= 1:
-            raise PydanticCustomError("cfd.E0304", "gamma must be > 1, got {g}", {"g": self.gamma})
+            fail("E0304", "gamma must be > 1, got {g}", g=self.gamma)
         return self
 
 
@@ -156,15 +157,18 @@ class Laminar(Spec):
 
 
 class SA(Spec):
-    """Spalart-Allmaras, negative variant (SA-neg)."""
+    """Spalart-Allmaras, negative variant (SA-neg); freestream and inlets get nu~ = ratio * nu."""
 
     model: Literal["sa"] = "sa"
+    nu_tilde_ratio: PositiveNumber = 3.0
 
 
 class SST(Spec):
-    """Menter k-omega SST."""
+    """Menter k-omega SST; freestream and inlets get k from ``intensity``, omega from mu_t/mu."""
 
     model: Literal["sst"] = "sst"
+    intensity: PositiveNumber = 0.001
+    viscosity_ratio: PositiveNumber = 0.009
 
 
 class DDES(Spec):
@@ -172,6 +176,9 @@ class DDES(Spec):
 
     model: Literal["ddes"] = "ddes"
     base: Literal["sa", "sst"] = "sst"
+    nu_tilde_ratio: PositiveNumber = 3.0
+    intensity: PositiveNumber = 0.001
+    viscosity_ratio: PositiveNumber = 0.009
 
 
 class WMLES(Spec):
@@ -181,14 +188,12 @@ class WMLES(Spec):
     wall_model: Literal["equilibrium"] = "equilibrium"
 
 
-Turbulence = Annotated[
-    Inviscid | Laminar | SA | SST | DDES | WMLES, Field(discriminator="model")
-]
+Turbulence = Annotated[Inviscid | Laminar | SA | SST | DDES | WMLES, Field(discriminator="model")]
 Precision = Literal["fp32+acc64", "fp64"]
 
 
 def _air() -> IdealGas:
-    from cfd.gases import AIR
+    from cfd.gases import AIR  # noqa: PLC0415 -- cfd.gases imports this module
 
     return AIR
 
@@ -217,25 +222,24 @@ Physics = Annotated[Compressible | Incompressible, Field(discriminator="kind")]
 class Freestream(Spec):
     mach: PositiveNumber | None = None
     velocity: Speed | None = None
-    aoa: Angle = Field(default_factory=lambda: _deg(0.0))
-    sideslip: Angle = Field(default_factory=lambda: _deg(0.0))
+    aoa: Angle = Field(default_factory=lambda: 0.0 * deg)
+    sideslip: Angle = Field(default_factory=lambda: 0.0 * deg)
     temperature: Temperature | None = None
     pressure: Pressure | None = None
     re: PositiveNumber | None = None
     ref_length: Length | None = None
 
 
-def _deg(value: float) -> pint.Quantity:
-    from cfd.units import deg
-
-    return value * deg
-
-
 # --- time --------------------------------------------------------------------------------
 
 
 class Steady(Spec):
+    """Local time stepping until every residual drops ``residual_orders`` orders, at most
+    ``max_iterations`` iterations."""
+
     kind: Literal["steady"] = "steady"
+    max_iterations: Annotated[int, Field(ge=1)] = 10000
+    residual_orders: PositiveNumber = 8.0
 
 
 class Unsteady(Spec):
@@ -250,9 +254,9 @@ class Unsteady(Spec):
     @model_validator(mode="after")
     def _check(self) -> Self:
         if (self.dt is None) == (self.cfl is None):
-            raise PydanticCustomError("cfd.E0003", "give exactly one of dt or cfl", {})
+            fail("E0003", "give exactly one of dt or cfl")
         if self.average_from is not None and self.average_from >= self.steps:
-            raise PydanticCustomError("cfd.E0304", "average_from must be < steps", {})
+            fail("E0304", "average_from must be < steps")
         return self
 
 
@@ -344,7 +348,7 @@ Monitor = Annotated[Forces, Field(discriminator="kind")]
 class CaseSpec(Spec):
     """A complete case document, ``cfd.case/1``."""
 
-    schema_: Literal["cfd.case/1"] = Field(default=SCHEMA_ID, alias="schema")
+    schema_: Literal["cfd.case/1"] = Field(default="cfd.case/1", alias="schema")
     name: Annotated[str, Field(min_length=1)]
     mesh: Annotated[str, Field(min_length=1)]
     physics: Physics
@@ -360,11 +364,11 @@ class CaseSpec(Spec):
         super().__init__(**data)
         _raise_inconsistencies(self, _caller_location())
 
+    __init__.__pydantic_base_init__ = True  # type: ignore[attr-defined]
+
     @model_validator(mode="after")
     def _fill_defaults(self) -> Self:
         if isinstance(self.physics, Compressible) and self.freestream.temperature is None:
-            from cfd.units import K
-
             filled = self.freestream.model_copy(update={"temperature": 288.15 * K})
             object.__setattr__(self, "freestream", filled)
         return self
@@ -374,10 +378,15 @@ class CaseSpec(Spec):
         """Validate a JSON/TOML tree; every problem is reported as a coded diagnostic."""
         version = document.get("schema")
         if version != SCHEMA_ID:
-            raise CaseError([diagnostic(
-                "E0004", f"schema is {version!r}, expected {SCHEMA_ID!r}",
-                location=location.model_copy(update={"path": "schema"}),
-            )])
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0004",
+                        f"schema is {version!r}, expected {SCHEMA_ID!r}",
+                        location=location.model_copy(update={"path": "schema"}),
+                    )
+                ]
+            )
         try:
             spec = cls.model_validate(document)
         except ValidationError as error:
@@ -390,11 +399,8 @@ class CaseSpec(Spec):
         return self.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     def hash(self) -> str:
-        """SHA-256 of the canonical JSON (docs/contracts/case-schema.md#case-hash)."""
-        text = json.dumps(
-            self.document(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
-        return hashlib.sha256(text.encode()).hexdigest()
+        """SHA-256 of the RFC 8785 canonical JSON (docs/contracts/case-schema.md#case-hash)."""
+        return hashlib.sha256(rfc8785.dumps(self.document())).hexdigest()
 
 
 def _raise_inconsistencies(spec: CaseSpec, location: Location) -> None:
@@ -414,22 +420,31 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
         if fs.mach is None:
             found.append(("E0306", "freestream.mach", "compressible freestream needs mach"))
         if fs.velocity is not None:
-            found.append(("E0306", "freestream.velocity",
-                          "compressible freestream takes mach, not velocity"))
+            found.append(
+                ("E0306", "freestream.velocity", "compressible freestream takes mach, not velocity")
+            )
         if (fs.pressure is None) == (fs.re is None):
-            found.append(("E0306", "freestream",
-                          "compressible freestream needs exactly one of pressure or re"))
+            found.append(
+                (
+                    "E0306",
+                    "freestream",
+                    "compressible freestream needs exactly one of pressure or re",
+                )
+            )
         if fs.re is not None and fs.ref_length is None:
             found.append(("E0306", "freestream.ref_length", "re needs ref_length"))
     else:
         if fs.velocity is None:
-            found.append(("E0306", "freestream.velocity",
-                          "incompressible freestream needs velocity"))
-        for key in ("mach", "re", "pressure", "temperature"):
-            if getattr(fs, key) is not None:
-                found.append(("E0306", f"freestream.{key}",
-                              f"incompressible freestream takes no {key}"))
+            found.append(
+                ("E0306", "freestream.velocity", "incompressible freestream needs velocity")
+            )
+        found.extend(
+            ("E0306", f"freestream.{key}", f"incompressible freestream takes no {key}")
+            for key in ("mach", "re", "pressure", "temperature")
+            if getattr(fs, key) is not None
+        )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
-        found.append(("E0305", "time",
-                      f"{physics.turbulence.model} needs case.time = cfd.Unsteady(...)"))
+        found.append(
+            ("E0305", "time", f"{physics.turbulence.model} needs case.time = cfd.Unsteady(...)")
+        )
     return found

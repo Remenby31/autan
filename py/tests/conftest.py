@@ -4,9 +4,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import cfd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).parent / "fixtures"

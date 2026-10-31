@@ -16,7 +16,7 @@ def _git(root: str, *args: str) -> str:
 class BuildInfoHook(BuildHookInterface):  # type: ignore[type-arg]
     PLUGIN_NAME = "custom"
 
-    def initialize(self, version: str, build_data: dict[str, Any]) -> None:
+    def initialize(self, _version: str, build_data: dict[str, Any]) -> None:
         commit = _git(self.root, "rev-parse", "HEAD")
         dirty = bool(_git(self.root, "status", "--porcelain", "--untracked-files=no"))
         target = Path(self.root, "py", "cfd", "_build_info.py")

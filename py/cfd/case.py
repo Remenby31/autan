@@ -6,15 +6,14 @@ import json
 import runpy
 import tomllib
 import traceback
-from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import pint
 import tomli_w
 
 from cfd.errors import CaseError, Location, diagnostic
+from cfd.plan import Plan, plan
 from cfd.schema import (
     BoundaryRule,
     CaseSpec,
@@ -41,10 +40,13 @@ from cfd.schema import (
 )
 
 if TYPE_CHECKING:
-    from cfd.meshinfo import MeshInfo
-    from cfd.plan import Plan
+    from collections.abc import Iterator
 
-_collector: list[Case] | None = None
+    import pint
+
+    from cfd.meshinfo import MeshInfo
+
+_collectors: list[list[Case]] = []
 
 
 class Case:
@@ -67,8 +69,8 @@ class Case:
         self._monitors: list[Forces] = []
         self._locations: dict[str, Location] = {}
         self._document_file: str | None = None
-        if _collector is not None:
-            _collector.append(self)
+        if _collectors:
+            _collectors[-1].append(self)
 
     @property
     def name(self) -> str:
@@ -85,9 +87,16 @@ class Case:
     @physics.setter
     def physics(self, physics: Compressible | Incompressible) -> None:
         if not isinstance(physics, Compressible | Incompressible):
-            raise CaseError([diagnostic(
-                "E0003", f"physics must be cfd.Compressible or cfd.Incompressible, "
-                f"got {type(physics).__name__}", location=_caller_location())])
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0003",
+                        f"physics must be cfd.Compressible or cfd.Incompressible, "
+                        f"got {type(physics).__name__}",
+                        location=_caller_location(),
+                    )
+                ]
+            )
         self._physics = physics
         self._locations["physics"] = _caller_location()
 
@@ -98,9 +107,15 @@ class Case:
     @time.setter
     def time(self, time: Steady | Unsteady) -> None:
         if not isinstance(time, Steady | Unsteady):
-            raise CaseError([diagnostic(
-                "E0003", f"time must be cfd.Steady or cfd.Unsteady, got {type(time).__name__}",
-                location=_caller_location())])
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0003",
+                        f"time must be cfd.Steady or cfd.Unsteady, got {type(time).__name__}",
+                        location=_caller_location(),
+                    )
+                ]
+            )
         self._time = time
         self._locations["time"] = _caller_location()
 
@@ -117,8 +132,9 @@ class Case:
         ref_length: pint.Quantity | None = None,
     ) -> None:
         """Set the freestream state; which parameters apply depends on the physics."""
-        given = {key: value for key, value in locals().items()
-                 if key != "self" and value is not None}
+        given = {
+            key: value for key, value in locals().items() if key != "self" and value is not None
+        }
         self._freestream = Freestream(**given)
         self._locations["freestream"] = _caller_location()
 
@@ -133,9 +149,15 @@ class Case:
     def monitor(self, monitor: Forces, *, every: int | None = None) -> None:
         """Record ``monitor`` every ``every`` iterations."""
         if not isinstance(monitor, Forces):
-            raise CaseError([diagnostic(
-                "E0003", f"monitor must be built by cfd.forces(...), got {type(monitor).__name__}",
-                location=_caller_location())])
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0003",
+                        f"monitor must be built by cfd.forces(...), got {type(monitor).__name__}",
+                        location=_caller_location(),
+                    )
+                ]
+            )
         if every is not None:
             monitor = Forces(**{**monitor.model_dump(), "every": every})
         self._locations[f"monitors[{len(self._monitors)}]"] = _caller_location()
@@ -152,26 +174,41 @@ class Case:
     @property
     def spec(self) -> CaseSpec:
         """The validated case document."""
-        missing = [key for key, value in (("physics", self._physics),
-                                          ("freestream", self._freestream)) if value is None]
+        missing = [
+            key
+            for key, value in (("physics", self._physics), ("freestream", self._freestream))
+            if value is None
+        ]
         if missing:
             raise CaseError(
-                diagnostic("E0003", f"case.{key} is not set", location=self._origin,
-                           fix=("case.physics = cfd.Compressible(turbulence=cfd.SA())"
-                                if key == "physics" else "case.freestream(mach=..., re=..., "
-                                "ref_length=...)"))
-                for key in missing)
+                diagnostic(
+                    "E0003",
+                    f"case.{key} is not set",
+                    location=self._origin,
+                    fix=(
+                        "case.physics = cfd.Compressible(turbulence=cfd.SA())"
+                        if key == "physics"
+                        else "case.freestream(mach=..., re=..., ref_length=...)"
+                    ),
+                )
+                for key in missing
+            )
         try:
             return CaseSpec(
-                name=self._name, mesh=self._mesh, physics=self._physics,
-                freestream=self._freestream, time=self._time,
-                boundaries=tuple(self._boundaries), cell_zones=tuple(self._cell_zones),
+                name=self._name,
+                mesh=self._mesh,
+                physics=self._physics,
+                freestream=self._freestream,
+                time=self._time,
+                boundaries=tuple(self._boundaries),
+                cell_zones=tuple(self._cell_zones),
                 monitors=tuple(self._monitors),
             )
         except CaseError as error:
             raise CaseError(
                 d.model_copy(update={"location": self.locate(d.location.path or "")})
-                if d.location is not None else d
+                if d.location is not None
+                else d
                 for d in error.diagnostics
             ) from None
 
@@ -208,8 +245,6 @@ class Case:
 
     def plan(self, mesh_info: MeshInfo, *, gpus: int = 1) -> Plan:
         """Resolve boundaries and cell zones against the mesh and estimate memory."""
-        from cfd.plan import plan
-
         return plan(self, mesh_info, gpus=gpus)
 
 
@@ -261,7 +296,8 @@ class CellZoneSelector:
 
     def solid(self, material: Solid) -> None:
         self._case._add_cell_zone(
-            CellZoneRule(zones=self._zones, medium=SolidZone(material=material)))
+            CellZoneRule(zones=self._zones, medium=SolidZone(material=material))
+        )
 
 
 def forces(
@@ -282,12 +318,11 @@ def forces(
 
 @contextmanager
 def _collect() -> Iterator[list[Case]]:
-    global _collector
-    previous, _collector = _collector, []
+    _collectors.append([])
     try:
-        yield _collector
+        yield _collectors[-1]
     finally:
-        _collector = previous
+        _collectors.pop()
 
 
 def load(path: str | Path) -> Case:
@@ -306,25 +341,48 @@ def load(path: str | Path) -> Case:
             raise CaseError([diagnostic("E0003", f"{path}: not a table", location=where)])
         return Case.from_spec(CaseSpec.from_document(document, where), file=str(path))
     if path.suffix != ".py":
-        raise CaseError([diagnostic(
-            "E0001", f"{path}: case files are .py, .toml or .json", location=where)])
+        raise CaseError(
+            [diagnostic("E0001", f"{path}: case files are .py, .toml or .json", location=where)]
+        )
     with _collect() as cases:
         try:
             runpy.run_path(str(path), run_name="__cfd_case__")
         except CaseError:
             raise
         except SyntaxError as error:
-            raise CaseError([diagnostic(
-                "E0001", f"syntax error: {error.msg}",
-                location=Location(file=str(path), line=error.lineno))]) from None
-        except Exception as error:
-            frames = [f for f in traceback.extract_tb(error.__traceback__)
-                      if Path(f.filename) == path.resolve() or f.filename == str(path)]
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0001",
+                        f"syntax error: {error.msg}",
+                        location=Location(file=str(path), line=error.lineno),
+                    )
+                ]
+            ) from None
+        except Exception as error:  # noqa: BLE001 -- user code may raise anything
+            frames = [
+                f
+                for f in traceback.extract_tb(error.__traceback__)
+                if Path(f.filename) == path.resolve() or f.filename == str(path)
+            ]
             line = frames[-1].lineno if frames else None
-            raise CaseError([diagnostic(
-                "E0001", f"{type(error).__name__}: {error}",
-                location=Location(file=str(path), line=line))]) from None
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0001",
+                        f"{type(error).__name__}: {error}",
+                        location=Location(file=str(path), line=line),
+                    )
+                ]
+            ) from None
     if len(cases) != 1:
-        raise CaseError([diagnostic(
-            "E0002", f"{path} creates {len(cases)} cfd.Case objects, expected 1", location=where)])
+        raise CaseError(
+            [
+                diagnostic(
+                    "E0002",
+                    f"{path} creates {len(cases)} cfd.Case objects, expected 1",
+                    location=where,
+                )
+            ]
+        )
     return cases[0]

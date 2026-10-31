@@ -7,13 +7,13 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from pydantic_core import PydanticCustomError
 
 from cfd.errors import CaseError, Location, diagnostic
+from cfd.units import fail
 
 SCHEMA_ID = "cfd.mesh-info/1"
 
-BoundaryType = Literal["wall", "slip", "symmetry", "farfield", "inlet", "outlet"]
+BoundaryType = Literal["wall", "thermal-wall", "slip", "symmetry", "farfield", "inlet", "outlet"]
 Name = Annotated[str, Field(min_length=1)]
 
 
@@ -86,8 +86,10 @@ class MeshInfo(_Strict):
             problems.append("cell_zones[].cells does not sum to counts.cells")
         if sum(zone.faces for zone in self.boundary_zones) > self.counts.faces:
             problems.append("boundary_zones[].faces exceeds counts.faces")
-        for label, zones in (("boundary_zones", self.boundary_zones),
-                             ("cell_zones", self.cell_zones)):
+        for label, zones in (
+            ("boundary_zones", self.boundary_zones),
+            ("cell_zones", self.cell_zones),
+        ):
             names = [zone.name for zone in zones]
             if len(set(names)) != len(names):
                 problems.append(f"{label} has duplicate names")
@@ -101,7 +103,7 @@ class MeshInfo(_Strict):
         if len(set(pairs)) != len(pairs):
             problems.append("interfaces lists a pair twice")
         if problems:
-            raise PydanticCustomError("cfd.E0202", "; ".join(problems), {})
+            fail("E0202", "{problems}", problems="; ".join(problems))
         return self
 
     @classmethod
@@ -111,22 +113,32 @@ class MeshInfo(_Strict):
         try:
             document = json.loads(Path(path).read_text())
         except (OSError, json.JSONDecodeError) as error:
-            raise CaseError([diagnostic("E0202", f"cannot read {path}: {error}",
-                                        location=location)]) from None
+            raise CaseError(
+                [diagnostic("E0202", f"cannot read {path}: {error}", location=location)]
+            ) from None
         return cls.from_document(document, location)
 
     @classmethod
     def from_document(cls, document: object, location: Location) -> MeshInfo:
         if isinstance(document, dict) and document.get("schema") != SCHEMA_ID:
-            raise CaseError([diagnostic(
-                "E0202", f"schema is {document.get('schema')!r}, expected {SCHEMA_ID!r}",
-                location=location)])
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0202",
+                        f"schema is {document.get('schema')!r}, expected {SCHEMA_ID!r}",
+                        location=location,
+                    )
+                ]
+            )
         try:
             return cls.model_validate(document)
         except ValidationError as error:
             raise CaseError(
-                diagnostic("E0202", f"{'.'.join(map(str, e['loc'])) or 'mesh-info'}: {e['msg']}",
-                           location=location)
+                diagnostic(
+                    "E0202",
+                    f"{'.'.join(map(str, e['loc'])) or 'mesh-info'}: {e['msg']}",
+                    location=location,
+                )
                 for e in error.errors(include_url=False)
             ) from None
 
