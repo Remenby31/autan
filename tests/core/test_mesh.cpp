@@ -1,6 +1,6 @@
 #include <algorithm>
-#include <cmath>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -65,8 +65,11 @@ cfd::MeshInput two_cubes() {
   in.face_zones = {
       cfd::FaceZone{
           .name = "walls", .bc_type = "wall", .kind = cfd::BcKind::wall, .provenance = {}},
-      cfd::FaceZone{
-          .name = "interior", .bc_type = "", .kind = cfd::BcKind::unspecified, .boundary = false, .provenance = {}}};
+      cfd::FaceZone{.name = "interior",
+                    .bc_type = "",
+                    .kind = cfd::BcKind::unspecified,
+                    .boundary = false,
+                    .provenance = {}}};
   in.cell_zones = {cfd::CellZone{
       .name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}}};
   in.source = cfd::MeshSource{.format = "memory", .path = ""};
@@ -249,8 +252,7 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
   SECTION("E0109 zone with interior and boundary faces") {
     auto in = two_cubes();
     in.face_zone[0] = 0;
-    require_error(ErrorCode::mesh_face_zone_role,
-                  [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_face_zone_role, [&] { (void)cfd::assemble(in); });
   }
   SECTION("E0110 duplicate zone name") {
     auto in = two_cubes();
@@ -266,7 +268,8 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
   }
   SECTION("E0101 cellwise offsets out of bounds") {
     auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
-                                     {0, 0, 0}).mesh;
+                                     {0, 0, 0})
+                  .mesh;
     cw.face_node_offsets[1] = 1000;
     require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)cfd::to_face_based(cw); });
     cw.face_node_offsets.back() = 1000;
@@ -274,13 +277,15 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
   }
   SECTION("E0102 labelled face with an invalid zone") {
     auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa, 0.0, false);
-    cw.face_zones.push_back(cfd::FaceZone{.name = "side", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
+    cw.face_zones.push_back(cfd::FaceZone{
+        .name = "side", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
     cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4}, -1);
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)cfd::to_face_based(cw); });
   }
   SECTION("E0109 labels on both interior and boundary faces") {
     auto cw = cfd::test::box(2, cfd::test::BoxFill::hexa, 0.0, false);
-    cw.face_zones.push_back(cfd::FaceZone{.name = "mixed", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
+    cw.face_zones.push_back(cfd::FaceZone{
+        .name = "mixed", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
     cw.add_labelled_face(std::array<index_t, 4>{0, 3, 12, 9}, 0);   // x = 0 side
     cw.add_labelled_face(std::array<index_t, 4>{1, 4, 13, 10}, 0);  // x = 0.5, interior
     require_error(ErrorCode::mesh_face_zone_role, [&] { (void)cfd::to_face_based(cw); });
@@ -358,7 +363,8 @@ TEST_CASE("The assembly map links every mesh entity to its input", "[mesh]") {
     const index_t owner = map.face_reversed[at(f)] ? copy.face_cell1[src] : copy.face_cell0[src];
     CHECK(mesh.owner()[at(f)] == owner);
     CHECK(mesh.face_zone()[at(f)] == copy.face_zone[src]);
-    CHECK(map.point_source[at(mesh.face_nodes(f)[0])] == copy.face_nodes[static_cast<std::size_t>(copy.face_node_offsets[src])]);
+    CHECK(map.point_source[at(mesh.face_nodes(f)[0])] ==
+          copy.face_nodes[static_cast<std::size_t>(copy.face_node_offsets[src])]);
   }
   CHECK(map.face_source[0] == 0);
   CHECK(map.face_reversed[0] == 1);
@@ -367,10 +373,12 @@ TEST_CASE("The assembly map links every mesh entity to its input", "[mesh]") {
 TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[mesh]") {
   // Partition of a 2x2x2 hex box: the four cells with x < 1/2 are owned, the
   // four across x = 1/2 are ghosts that only carry their shared faces.
-  const cfd::Mesh full = cfd::assemble(cfd::to_face_based(cfd::test::box(2, cfd::test::BoxFill::hexa)));
+  const cfd::Mesh full =
+      cfd::assemble(cfd::to_face_based(cfd::test::box(2, cfd::test::BoxFill::hexa)));
   const cfd::Geometry gf = cfd::compute_geometry(full);
   std::vector<index_t> owned, ghosts;
-  for (index_t c = 0; c < full.n_cells(); ++c) (gf.cell_centroid_x[at(c)] < 0.5 ? owned : ghosts).push_back(c);
+  for (index_t c = 0; c < full.n_cells(); ++c)
+    (gf.cell_centroid_x[at(c)] < 0.5 ? owned : ghosts).push_back(c);
   std::vector<index_t> local(at(full.n_cells()), -1);
   cfd::MeshInput in;
   in.x.assign(full.x().begin(), full.x().end());
@@ -390,7 +398,8 @@ TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[
   in.face_node_offsets.push_back(0);
   for (index_t f = 0; f < full.n_faces(); ++f) {
     const index_t o = local[at(full.owner()[at(f)])];
-    const index_t n = f < full.n_interior_faces() ? local[at(full.neighbour()[at(f)])] : cfd::no_cell;
+    const index_t n =
+        f < full.n_interior_faces() ? local[at(full.neighbour()[at(f)])] : cfd::no_cell;
     const bool o_owned = o < static_cast<index_t>(owned.size());
     const bool n_owned = n != cfd::no_cell && n < static_cast<index_t>(owned.size());
     if (!o_owned && !n_owned) continue;
@@ -426,7 +435,8 @@ TEST_CASE("A partition with ghost cells keeps owned geometry and global ids", "[
 
 TEST_CASE("A zone that labels no face keeps its declared role", "[mesh]") {
   auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa);
-  cw.face_zones.push_back(cfd::FaceZone{.name = "spare-outlet", .bc_type = "", .kind = cfd::BcKind::outlet, .provenance = {}});
+  cw.face_zones.push_back(cfd::FaceZone{
+      .name = "spare-outlet", .bc_type = "", .kind = cfd::BcKind::outlet, .provenance = {}});
   const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cw));
   const auto& zone = mesh.face_zones()[6];
   CHECK(zone.name == "spare-outlet");

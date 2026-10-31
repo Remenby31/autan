@@ -238,19 +238,22 @@ TEST_CASE("Face centroids and area vectors integrate linear fields exactly on pl
       for (const index_t f : mesh.cell_faces(c)) {
         const std::size_t i = at(f);
         const double sign = mesh.owner()[i] == c ? 1.0 : -1.0;
-        const std::array<double, 3> cf{g.face_centroid_x[i], g.face_centroid_y[i], g.face_centroid_z[i]};
+        const std::array<double, 3> cf{g.face_centroid_x[i], g.face_centroid_y[i],
+                                       g.face_centroid_z[i]};
         const std::array<double, 3> s{g.face_area_x[i], g.face_area_y[i], g.face_area_z[i]};
         for (std::size_t a = 0; a < 3; ++a)
           for (std::size_t b = 0; b < 3; ++b) m[a][b] += sign * cf[a] * s[b];
       }
       const double v = g.cell_volume[at(c)];
       for (std::size_t a = 0; a < 3; ++a)
-        for (std::size_t b = 0; b < 3; ++b) CHECK_THAT(m[a][b] / v, WithinAbs(a == b ? 1.0 : 0.0, 1e-12));
+        for (std::size_t b = 0; b < 3; ++b)
+          CHECK_THAT(m[a][b] / v, WithinAbs(a == b ? 1.0 : 0.0, 1e-12));
     }
   };
   SECTION("boxes") {
-    const auto fill = GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
-                               cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
+    const auto fill =
+        GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
+                 cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
     CAPTURE(cfd::test::to_string(fill));
     check(cfd::assemble(cfd::to_face_based(cfd::test::box(3, fill))));
   }
@@ -271,7 +274,8 @@ TEST_CASE("Geometry holds at extreme length scales", "[geometry]") {
 }
 
 TEST_CASE("Closure of a geometry computed for another mesh is rejected", "[geometry]") {
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(1, cfd::test::BoxFill::hexa)));
+  const cfd::Mesh mesh =
+      cfd::assemble(cfd::to_face_based(cfd::test::box(1, cfd::test::BoxFill::hexa)));
   try {
     (void)cfd::cell_closure_error(mesh, cfd::Geometry{});
     FAIL("expected an error");

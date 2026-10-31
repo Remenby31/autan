@@ -86,9 +86,9 @@ struct MeshInput {
 /// Where each entity of an assembled mesh comes from in its MeshInput, for
 /// callers that hold data attached to the input numbering.
 struct AssemblyMap {
-  std::vector<index_t> face_source;          ///< input face of each mesh face
+  std::vector<index_t> face_source;         ///< input face of each mesh face
   std::vector<std::uint8_t> face_reversed;  ///< 1 if the face was flipped (owner <-> neighbour)
-  std::vector<index_t> point_source;         ///< input point of each mesh point
+  std::vector<index_t> point_source;        ///< input point of each mesh point
 };
 
 /// Non-owning view of a mesh's arrays for kernels. Plain pointers so that the

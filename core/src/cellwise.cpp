@@ -96,7 +96,8 @@ void check_faces(std::span<const offset_t> offsets, std::span<const index_t> nod
   for (std::size_t f = 0; f + 1 < offsets.size(); ++f) {
     if (offsets[f + 1] - offsets[f] < 3) {
       fail(ErrorCode::mesh_face_too_few_nodes,
-           std::string(what) + " " + std::to_string(f) + " has fewer than 3 nodes (or decreasing offsets)");
+           std::string(what) + " " + std::to_string(f) +
+               " has fewer than 3 nodes (or decreasing offsets)");
     }
   }
   for (const index_t p : nodes) {
@@ -168,8 +169,7 @@ MeshInput to_face_based(CellwiseMesh mesh) {
     fail(ErrorCode::mesh_inconsistent_sizes, "cell_face_offsets decreases");
   }
   check_faces(mesh.face_node_offsets, mesh.face_nodes, n_points, "cell face");
-  check_faces(mesh.labelled_face_node_offsets, mesh.labelled_face_nodes, n_points,
-              "labelled face");
+  check_faces(mesh.labelled_face_node_offsets, mesh.labelled_face_nodes, n_points, "labelled face");
   const std::size_t n_source_zones = mesh.face_zones.size();
   for (const index_t zone : mesh.labelled_face_zone) {
     if (zone < 0 || to_size(zone) >= n_source_zones) {

@@ -49,11 +49,11 @@ void check_sizes(const MeshInput& in) {
     }
   }
   if (!in.cell_global_id.empty() && in.cell_global_id.size() != in.cell_zone.size()) {
-    fail(ErrorCode::mesh_inconsistent_sizes, "cell_global_id must be empty or have one id per cell");
+    fail(ErrorCode::mesh_inconsistent_sizes,
+         "cell_global_id must be empty or have one id per cell");
   }
   if (in.n_ghost_cells < 0 || to_size(in.n_ghost_cells) >= in.cell_zone.size()) {
-    fail(ErrorCode::mesh_inconsistent_sizes,
-         "n_ghost_cells must leave at least one owned cell");
+    fail(ErrorCode::mesh_inconsistent_sizes, "n_ghost_cells must leave at least one owned cell");
   }
 }
 
