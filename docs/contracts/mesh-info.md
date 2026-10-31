@@ -47,19 +47,22 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `quality.max_non_orthogonality_deg` | number in [0, 180] | Max over interior faces of the angle between the face normal and the vector joining the two cell centroids; over boundary faces, between the normal and the vector from the cell centroid to the face centroid. |
 | `quality.max_faces_per_cell` | integer ≥ 4 | Largest face count of any cell. |
 
-Unknown fields are rejected. Readers fill every field; there are no optional fields. Reader errors (malformed files, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
+Unknown fields are rejected. Readers fill every field; there are no optional fields. A mesh must be self-contained: the mesh hash covers one file (or one polyMesh directory), so readers reject CGNS links to other files. Reader errors (malformed files, external links, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
 
 ## Normalized boundary types
 
 | Normalized | Fluent `.msh` | CGNS `BCType_t` | polyMesh | Gmsh |
 |---|---|---|---|---|
-| `wall` | `wall` | `BCWall`, `BCWallViscous`, `BCWallViscousHeatFlux`, `BCWallViscousIsothermal` | `wall` | — |
+| `wall` | `wall` | `BCWall`, `BCWallViscous` | `wall` | — |
+| `thermal-wall` | — | `BCWallViscousHeatFlux`, `BCWallViscousIsothermal` | — | — |
 | `slip` | — | `BCWallInviscid` | — | — |
 | `symmetry` | `symmetry` | `BCSymmetryPlane` | `symmetry`, `symmetryPlane` | — |
 | `farfield` | `pressure-far-field` | `BCFarfield` | — | — |
 | `inlet` | `velocity-inlet`, `pressure-inlet`, `mass-flow-inlet` | `BCInflow`, `BCInflowSubsonic`, `BCInflowSupersonic`, `BCTunnelInflow` | — | — |
 | `outlet` | `pressure-outlet`, `outflow` | `BCOutflow`, `BCOutflowSubsonic`, `BCOutflowSupersonic`, `BCTunnelOutflow` | — | — |
 | `null` | every other type | every other type, `FamilySpecified` resolved to the family's type first | every other type (`patch`, `empty`, `cyclic`, …) | every physical group |
+
+`wall` carries no thermal condition: the case resolves it to an adiabatic wall. `thermal-wall` declares one whose value the case must give, so it is never resolved silently.
 
 Fluent `interior` zones are interior faces, not boundary zones. A Fluent cell zone of type `fluid` or `solid` maps to that type; CGNS, polyMesh and Gmsh cell zones map to `null`.
 

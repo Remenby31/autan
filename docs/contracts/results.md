@@ -7,23 +7,26 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
 ```
 <run_id>/
   run.json         run metadata, written at start and rewritten at every status change
-  case.toml        the case exactly as run (case-schema.md)
-  mesh-info.json   the MeshInfo of the mesh (mesh-info.md)
+  case.toml        the case document as run (case-schema.md), every default filled in
+  mesh-info.json   the MeshInfo of the mesh read (mesh-info.md)
   history.jsonl    one line per recorded iteration, appended during the run
-  solution.cgns    final solution (CGNS/HDF5), written when the run ends
+  solution.cgns    solution (CGNS/HDF5), written when the run ends
 ```
 
-All five files are required once `status` is not `running`. While running, `solution.cgns` may be absent. Readers reject a directory whose `run.json` has another `schema` value.
+The writer creates `<run_id>/` atomically and fails if it exists. `run.json`, `case.toml` and `mesh-info.json` exist from the start; `history.jsonl` from the first recorded iteration. `solution.cgns` is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
+
+`case.toml` keeps `mesh` as the case wrote it, since it is part of the case hash. The mesh actually read is `run.json` `mesh.path`, an absolute path, identified by `mesh.sha256`.
 
 ## run.json
 
 ```json
 {
   "schema": "cfd.results/1",
-  "run_id": "run-7f3a9c21e0b4",
+  "run_id": "run-20261031T214012Z-7f3a9c21",
+  "identity": "4be1…",
   "status": "converged",
   "case": {"name": "crm-hl", "sha256": "…"},
-  "mesh": {"path": "crm-hl.cgns", "sha256": "…"},
+  "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
   "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
   "precision": "fp32+acc64",
   "deterministic": true,
@@ -31,16 +34,19 @@ All five files are required once `status` is not `running`. While running, `solu
   "started": "2026-10-31T21:40:12Z",
   "finished": "2026-10-31T21:54:40Z",
   "iterations": 3000,
+  "time": null,
+  "averaging": null,
   "diagnostics": []
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `run_id` | `run-` followed by 12 lowercase hex characters: the first 12 of SHA-256 over `case.sha256`, `mesh.sha256`, `solver.commit`, `precision` and `started`, joined by `\n`. |
-| `status` | `running` · `converged` (stopping criterion met) · `completed` (iteration budget reached) · `stopped` (stopped by user code or signal) · `diverged` · `failed`. |
+| `run_id` | Unique name of this execution and of its directory: `run-`, `started` as `YYYYMMDDThhmmssZ`, `-`, 8 random lowercase hex characters. |
+| `identity` | What the run computes: SHA-256 of `case.sha256`, `mesh.sha256`, `solver.commit`, `precision`, `solver.backend`, `devices.kind`, `devices.count`, joined by `\n`, UTF-8. |
+| `status` | `running` · `converged` (convergence criterion met) · `completed` (iteration or step budget reached) · `stopped` (stopped by user code or signal) · `diverged` · `failed`. |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
-| `mesh.sha256` | `source.sha256` of the MeshInfo: hash of the mesh file bytes. |
+| `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
 | `precision` | Precision as run, from the case. |
@@ -48,9 +54,11 @@ All five files are required once `status` is not `running`. While running, `solu
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`. |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
-| `diagnostics` | Diagnostics raised during the run, in the format of `docs/sdk/errors.md`, generated from `cfd.errors`; a `diverged` run carries its `D` code here. |
+| `time` | Physical time reached in seconds (unsteady), `null` (steady). |
+| `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}` for the time average of unsteady runs. |
+| `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Mesh hash, case hash, solver commit and precision identify a run; two runs with equal identities and `deterministic: true` produce bitwise-identical `history.jsonl` and `solution.cgns` data arrays.
+Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays.
 
 ## History
 
@@ -61,9 +69,15 @@ Mesh hash, case hash, solver commit and precision identify a run; two runs with 
 ```
 
 - `time`: physical time in seconds for unsteady runs, `null` for steady runs.
-- `residuals`: for each solved equation, the root mean square over cells of the cell residual (volume-integrated, not normalized), in FP64. Names: `density`, `momentum-x`, `momentum-y`, `momentum-z`, `energy` (compressible) or `pressure`, `momentum-x`, `momentum-y`, `momentum-z` (incompressible), then `nu-tilde` (SA, DDES on SA) or `k`, `omega` (SST, DDES on SST). Every line carries every equation.
+- `residuals`: one value per solved equation, every line carrying every equation. Names: `density`, `momentum-x`, `momentum-y`, `momentum-z`, `energy` (compressible) or `pressure` (the continuity defect), `momentum-x`, `momentum-y`, `momentum-z` (incompressible), then `nu-tilde` (SA, DDES on SA) or `k`, `omega` (SST, DDES on SST).
+- Residual value: R_i is the volume-integrated residual of cell i for that equation, in SI units of the conserved quantity per second (kg/s for density, N for momentum, W for energy, ρν̃, ρk, ρω equations likewise). Steady runs evaluate the spatial operator at the current iterate; unsteady runs evaluate the physical-time defect at the last inner iteration of the step. The value is √(Σ R_i² / N) over the N fluid cells of the whole mesh, each counted once (halo copies excluded), accumulated in FP64. Solid cells are excluded.
 - `monitors`: one entry per monitor recorded at this iteration (iteration divisible by the monitor's `every`), keyed by monitor name. A line may carry no monitor.
-- Forces monitor: `fx` `fy` `fz` in N and `mx` `my` `mz` in N·m about `moment_center`, mesh axes, pressure plus viscous contributions. With `ref_area` set: `cd`, `cs`, `cl` = force projected on the drag direction e_D = (cos α cos β, −sin β, sin α cos β), the side direction e_S = e_L × e_D and the lift direction e_L = (−sin α, 0, cos α), divided by q∞ `ref_area` with q∞ = ½ ρ∞ V∞²; and, with `freestream.ref_length` also set, `cmx` `cmy` `cmz` = moments divided by q∞ `ref_area` `ref_length`.
+
+Forces monitor. Over the faces of the matched boundary zones, with n the unit normal pointing out of the fluid domain, p∞ the freestream static pressure and τ the viscous stress tensor, the force the fluid exerts on the surface and its moment about `moment_center` x_c are
+
+F = ∫ [(p − p∞) n − τ·n] dA,  M = ∫ (x − x_c) × [(p − p∞) n − τ·n] dA,
+
+reported as `fx` `fy` `fz` (N) and `mx` `my` `mz` (N·m) in mesh axes. With `ref_area` set, `cd`, `cs`, `cl` are F projected on the drag direction e_D = (cos α cos β, −sin β, sin α cos β), the side direction e_S = e_L × e_D and the lift direction e_L = (−sin α, 0, cos α), divided by q∞ `ref_area`, where q∞ = ½ ρ∞ V∞²; with `freestream.ref_length` also set, `cmx` `cmy` `cmz` are M divided by q∞ `ref_area` `ref_length`.
 
 ## solution.cgns
 
@@ -74,10 +88,12 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
 /Base                    CGNSBase_t      CellDimension 3, PhysicalDimension 3
   DataClass                              Dimensional
   DimensionalUnits                       Kilogram Meter Second Kelvin Radian
-  RunMetadata            Descriptor_t    run.json identity fields as JSON (run_id, case, mesh, solver, precision)
-  <family>               Family_t        one per boundary zone and per cell zone, named after it
+  RunMetadata            Descriptor_t    run.json without status, finished, iterations, diagnostics (JSON)
+  ZoneNames              Descriptor_t    {"boundary": {<node name>: <zone name>}, "cell": {…}} (JSON)
+  <family>               Family_t        one per boundary zone and per cell zone
     FamilyBC             FamilyBC_t      boundary zones only: BCType of the resolved condition
   Zone                   Zone_t          Unstructured; [nodes, cells, 0]
+    ZoneType                             Unstructured
     GridCoordinates                      CoordinateX, CoordinateY, CoordinateZ (R8)
     NGonElements         Elements_t      NGON_n, ElementRange [1, F], ElementStartOffset, ElementConnectivity (I8)
     NFaceElements        Elements_t      NFACE_n, ElementRange [F+1, F+C], ElementStartOffset, ElementConnectivity (I8, signed face ids)
@@ -85,22 +101,28 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
       <boundary zone>    BC_t            BCType, GridLocation FaceCenter, PointList (NGON ids), FamilyName
     <cell zone>          ZoneSubRegion_t GridLocation CellCenter, PointList (NFACE ids), FamilyName
     FlowSolution         FlowSolution_t  GridLocation CellCenter, one R8 DataArray per field
+    FlowSolutionMean     FlowSolution_t  same fields, time average (unsteady runs with average_from)
+    WallSolution         FlowSolution_t  GridLocation FaceCenter, PointList of every wall and slip face
 ```
 
-There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node.
+There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node.
 
-BCType of each resolved condition: `wall` → `BCWall` (adiabatic) or `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`.
+Node names. A zone keeps its name as node name when it has at most 32 characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, and, for cell zones, differs from the other children of `Zone` listed above. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
 
-`FlowSolution` fields (SIDS names), values in solid zones are those of the solid:
+BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`.
+
+`FlowSolution` fields (SIDS names):
 
 | Field | Unit | Written for |
 |---|---|---|
-| `Density` | kg/m³ | fluid cells; solid cells carry the solid density |
-| `VelocityX`, `VelocityY`, `VelocityZ` | m/s | 0 in solid cells |
-| `Pressure` | Pa | 0 in solid cells |
-| `Temperature` | K | all cells |
+| `Density` | kg/m³ | all cells (solid cells: the solid density) |
+| `VelocityX`, `VelocityY`, `VelocityZ` | m/s | all cells (0 in solid cells) |
+| `Pressure` | Pa | all cells (0 in solid cells) |
+| `Temperature` | K | compressible physics |
 | `TurbulentSANuTilde` | m²/s | SA and DDES on SA |
-| `TurbulentEnergyKinetic`, `TurbulentDissipationRate` | m²/s², 1/s | SST and DDES on SST |
+| `TurbulentEnergyKinetic`, `TurbulentDissipationRate` | m²/s², 1/s | SST and DDES on SST (ω) |
+
+`WallSolution` fields, on wall and slip faces: `Pressure` (Pa, at the face) and `WallShearStressX`, `WallShearStressY`, `WallShearStressZ` (Pa, the tangential traction −τ·n the fluid exerts on the wall, n as in [History](#history); 0 on slip faces). Cp and Cf follow from these and q∞.
 
 ## Results API
 
