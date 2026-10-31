@@ -1,4 +1,4 @@
-"""The ``cfd`` command line, through its output and exit status."""
+"""The ``autan`` command line, through its output and exit status."""
 
 import json
 import re
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cfd.cli import main
+from autan.cli import main
 
 from tests.conftest import EXAMPLES, FIXTURES, mesh_document
 
@@ -78,7 +78,11 @@ def test_version_reports_build_commit_and_schemas(capsys: pytest.CaptureFixture[
     status, out = run_json(capsys, "version")
     assert status == 0
     assert re.fullmatch(r"[0-9a-f]{40}", out["commit"])
-    assert out["schemas"] == {"case": "cfd.case/1", "mesh-info": "cfd.mesh-info/1"}
+    assert out["schemas"] == {
+        "case": "autan.case/1",
+        "mesh-info": "autan.mesh-info/1",
+        "results": "autan.results/1",
+    }
 
 
 def test_doctor_reports_checks_with_registered_codes(
@@ -93,15 +97,15 @@ def test_doctor_reports_checks_with_registered_codes(
 def test_schema_command_prints_json_schema(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["schema", "case"]) == 0
     schema = json.loads(capsys.readouterr().out)
-    assert schema["$id"] == "cfd.case/1"
+    assert schema["$id"] == "autan.case/1"
 
 
 def test_installed_entry_point_runs() -> None:
-    cfd = Path(sys.executable).with_name("cfd")
+    autan = Path(sys.executable).with_name("autan")
     done = subprocess.run(
-        [str(cfd), "version", "--json"], capture_output=True, text=True, check=True
+        [str(autan), "version", "--json"], capture_output=True, text=True, check=True
     )
-    assert json.loads(done.stdout)["schemas"]["case"] == "cfd.case/1"
+    assert json.loads(done.stdout)["schemas"]["case"] == "autan.case/1"
 
 
 def test_usage_error_exits_2() -> None:

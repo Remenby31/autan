@@ -1,4 +1,4 @@
-#include "cfd/core/geometry.hpp"
+#include "autan/core/geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,9 +6,9 @@
 #include <limits>
 #include <string>
 
-#include "cfd/core/error.hpp"
+#include "autan/core/error.hpp"
 
-namespace cfd {
+namespace autan {
 namespace {
 
 struct Vec3 {
@@ -180,4 +180,4 @@ std::vector<double> cell_closure_error(const Mesh& mesh, const Geometry& g) {
   return error;
 }
 
-}  // namespace cfd
+}  // namespace autan
