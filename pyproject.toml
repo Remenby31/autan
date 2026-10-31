@@ -18,6 +18,9 @@ dependencies = [
     "tomli-w>=1.1",
 ]
 
+[project.optional-dependencies]
+ui = ["autan-ui"]
+
 [project.scripts]
 autan = "autan.cli:main"
 
@@ -44,6 +47,9 @@ artifacts = ["py/autan/_build_info.py"]
 [tool.hatch.build.targets.wheel]
 packages = ["py/autan"]
 
+[tool.uv.sources]
+autan-ui = { path = "ui/server", editable = true }
+
 [tool.uv]
 cache-keys = [{ file = "pyproject.toml" }, { file = "version.txt" }, { git = { commit = true } }]
 
@@ -56,6 +62,11 @@ plugins = ["pydantic.mypy"]
 # h5py ships neither type hints nor stubs; py/autan/cgns.py is the only module that uses it.
 [[tool.mypy.overrides]]
 module = ["h5py", "h5py.*"]
+ignore_missing_imports = true
+
+# autan_ui is the optional `ui` extra, absent from the default environment.
+[[tool.mypy.overrides]]
+module = ["autan_ui"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
