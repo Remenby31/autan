@@ -161,7 +161,9 @@ function Registry() {
                     )}
                   </span>
                 </td>
-                <td className="text-right font-mono tabular-nums">{run.iterations}</td>
+                <td className="text-right font-mono tabular-nums" data-testid="iterations">
+                  {data?.progress[run.run_id] ?? run.iterations}
+                </td>
                 <td className="text-right font-mono">{run.precision}</td>
                 <td className="text-right font-mono">
                   {run.devices.count}× {run.devices.kind}

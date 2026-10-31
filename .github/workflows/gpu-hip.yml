@@ -1,0 +1,40 @@
+# Compiles the benchmarks with HIP for AMD Instinct MI300X (gfx942) in a ROCm container on a
+# GitHub-hosted x86 runner. Compile-only: no AMD GPU is attached, nothing is run.
+name: gpu-hip
+
+on:
+  push:
+    branches: [main]
+    paths: [bench/**, .github/workflows/gpu-hip.yml]
+  pull_request:
+    paths: [bench/**, .github/workflows/gpu-hip.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: gpu-hip-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    container:
+      image: rocm/dev-ubuntu-24.04:7.2.4@sha256:bdc8e61026cbb844ede93d44d2c50055f51ebb2041906b60182bf3bee3139054
+    steps:
+      - name: Install Git, CMake and Ninja
+        run: apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build for gfx942
+        run: >-
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" &&
+          cmake -S bench -B build -G Ninja -DAUTAN_BENCH_BACKEND=HIP -DCMAKE_HIP_ARCHITECTURES=gfx942
+          -DCMAKE_PREFIX_PATH=/opt/rocm && cmake --build build
+      - name: Check the binary carries gfx942 code
+        # The HIP fat binary names each code object by its offload bundle ID.
+        run: grep -a -q 'amdgcn-amd-amdhsa--gfx942' build/stream

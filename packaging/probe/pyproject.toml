@@ -1,0 +1,47 @@
+[build-system]
+# Exact pins: a rebuild of the same commit uses the same build tools.
+requires = ["scikit-build-core==1.1.1", "nanobind==3.1.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "autan-probe"
+version = "0.0.0"
+description = "Throwaway native wheel that proves Autan's GPU wheel pipeline before the solver core ships"
+license = "Apache-2.0"
+# nanobind is linked statically (NB_STATIC): its BSD licence travels with the binary.
+license-files = ["LICENSE", "LICENSES/*"]
+requires-python = ">=3.12"
+dependencies = ["nvidia-cuda-runtime>=13.0,<14; sys_platform == 'linux'"]
+
+[project.scripts]
+autan-probe = "autan_probe.cli:main"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.28"
+cmake.build-type = "Release"
+# nanobind's stable ABI needs CPython 3.12: one wheel per platform serves every later version.
+wheel.py-api = "cp312"
+wheel.packages = ["python/autan_probe"]
+
+[tool.scikit-build.cmake.define]
+AUTAN_PROBE_CUDA = { env = "AUTAN_PROBE_CUDA", default = "OFF" }
+AUTAN_CUDA_ARCHITECTURES = { env = "AUTAN_CUDA_ARCHITECTURES", default = "" }
+
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = "*-musllinux_*"
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+test-command = "autan-probe --json"
+
+[tool.cibuildwheel.linux]
+before-all = "sh packaging/probe/install-cuda.sh"
+# SASS for each architecture we name, PTX of the newest for future GPUs. A cubin for X.y also
+# runs on X.z, z >= y (CUDA C++ Programming Guide, "Binary Compatibility").
+environment = { AUTAN_PROBE_CUDA = "ON", PATH = "/usr/local/cuda/bin:$PATH", AUTAN_CUDA_ARCHITECTURES = "75-real;80-real;86-real;89-real;90-real;100-real;110-real;120-real;120-virtual" }
+# libcuda.so.1 comes from the driver and libcudart.so.13 from the nvidia-cuda-runtime wheel.
+repair-wheel-command = "auditwheel repair --exclude libcuda.so.1 --exclude libcudart.so.13 -w {dest_dir} {wheel} && python /project/packaging/probe/check_wheel.py {dest_dir}"
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }

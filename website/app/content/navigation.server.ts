@@ -44,7 +44,7 @@ const sidebar: Group[] = [
   {
     title: "Project",
     children: [
-      { slugs: ["plan", "plan.html", "style"] },
+      { slugs: ["plan", "style"] },
       {
         title: "Internal contracts",
         slugs: ["contracts/mesh"],

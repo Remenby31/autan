@@ -65,4 +65,6 @@ export interface HistoryRecord {
 export interface RunRegistry {
   runs: Run[];
   rejected: { dir: string; reason: string }[];
+  /** Last recorded iteration of each running run, by run id. */
+  progress: Record<string, number>;
 }
