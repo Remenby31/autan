@@ -1,8 +1,8 @@
-# `cfd plan`
+# `autan plan`
 
-`cfd plan CASE --mesh-info MESHINFO [--gpus N] [--json]` checks a case against its mesh before any GPU is reserved: it resolves every boundary and cell zone and shows where each condition comes from ([case-schema.md](../contracts/case-schema.md#boundary-resolution)), reports coded diagnostics ([errors.md](errors.md)) and estimates device memory. It exits with 1 when an error is found. Until the C++ mesh readers exist, the MeshInfo is passed explicitly; `plan` checks that it describes the case's mesh by comparing its `source.sha256` with the hash of the mesh file (`E0203`), and warns when the file is absent (`W0205`).
+`autan plan CASE --mesh-info MESHINFO [--gpus N] [--json]` checks a case against its mesh before any GPU is reserved: it resolves every boundary and cell zone and shows where each condition comes from ([case-schema.md](../contracts/case-schema.md#boundary-resolution)), reports coded diagnostics ([errors.md](errors.md)) and estimates device memory. It exits with 1 when an error is found. Until the C++ mesh readers exist, the MeshInfo is passed explicitly; `plan` checks that it describes the case's mesh by comparing its `source.sha256` with the hash of the mesh file (`E0203`), and warns when the file is absent (`W0205`).
 
-## Memory model `cfd.memory/1`
+## Memory model `autan.memory/1`
 
 The estimate counts the arrays below; the solver workspace (Krylov vectors, multigrid levels, communication buffers) is not counted yet, so the figure is a lower bound. It will be calibrated against the measured footprint once the implicit solver exists (M2).
 
