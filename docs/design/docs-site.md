@@ -4,10 +4,10 @@ The site at <https://remenby31.github.io/autan/> renders the Markdown of this re
 
 ## Writing for the site
 
-- A page is any `.md` or `.mdx` file under `docs/`, plus `README.md`, which becomes the introduction. Its URL is its path under `docs/`, lower-cased, without the extension: `docs/contracts/results.md` → `/autan/contracts/results`. A `README.md` is its folder's page: `docs/design/ui-inspiration/README.md` → `/autan/design/ui-inspiration`.
+- A page is any `.md` or `.mdx` file under `docs/`, plus `README.md`, which becomes the introduction. Its URL is its path under `docs/`, lower-cased, without the extension: `docs/contracts/results.md` → `/autan/contracts/results`. A `README.md` or `index.md` is its folder's page: `docs/design/ui-inspiration/README.md` → `/autan/design/ui-inspiration`. Two files with the same URL (`PLAN.md` and `plan.mdx`, `design/x.md` and `design/x/README.md`) fail the build.
 - The first `#` heading is the page title. The sidebar shortens it: a one-word prefix before `: ` is dropped ("Contract: results" → "Results"), and so is a subtitle after ` — `.
 - The folder is the sidebar section. Known sections come in this order: Contracts, SDK, Validation, Design, Research; a new folder gets its own section after them, so a page never needs a site change to appear.
-- Link to other files with relative paths, as on GitHub. The build rewrites a link to a page into a site link, a link to an HTML document into its published copy, and any other link (source files, `AGENTS.md`) into a GitHub link. A link to a missing file is reported by the build as `[docs] <file>: link to missing file <target>`.
+- Link to other files with relative paths, inline or by reference, as on GitHub. The build rewrites a link to a page into a site link, a link to an HTML document into its published copy, and any other link (source files, `AGENTS.md`) into a GitHub link. A link to a missing file is reported by the build as `[docs] <file>: link to missing file <target>`.
 - Standalone HTML documents under `docs/` are published unchanged at their repository path (`docs/design/dx.html` → `/autan/docs/design/dx.html`) and listed in the sidebar with an external-link icon, under their `<title>`.
 - Blockquotes render as a note box: use them for status and warnings, not for quotations.
 
@@ -36,7 +36,7 @@ We do not take the marketing header, sign-up buttons, "Ask AI" or the feedback f
 
 ## Stack
 
-Fumadocs 16 on React Router 8 (Vite 8), prerendered to static files, Bun 1.3, Tailwind 4, Biome; the same toolchain as the web app in `ui/` (Bun, Vite, Tailwind, Biome). Colours, fonts and radii come only from `docs/design/ui-inspiration/tokens.css`, which the app also uses; fonts are Geist and Geist Mono (SIL OFL 1.1), self-hosted.
+Fumadocs 16 on React Router 8 (Vite 8), prerendered to static files, Bun 1.3, Tailwind 4, Biome; the same toolchain as the web app in `ui/` (Bun, Vite, Tailwind, Biome). Colours, fonts and radii come only from `docs/design/ui-inspiration/tokens.css`, which the app also uses; fonts are Geist and Geist Mono (SIL OFL 1.1), self-hosted. The header wordmark and the favicon are the files in `docs/assets/`.
 
 We built the three official Fumadocs templates on 2026-10-31 and compared them:
 

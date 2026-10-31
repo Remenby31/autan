@@ -8,7 +8,10 @@ import {
   introductionPath,
   pageSlug,
 } from "../content/paths";
-import { remarkRepoDocs } from "../content/remark-repo-docs";
+import {
+  remarkRepoDocs,
+  rewriteMarkdownLinks,
+} from "../content/remark-repo-docs";
 
 function isIntroduction(file: string): boolean {
   const normalized = file.replaceAll("\\", "/");
@@ -52,6 +55,9 @@ const files: typeof raw.files = raw.files.map((file) => {
   const slug = pageSlug(file.path);
   if (slug === null) throw new Error(`[docs] no site slug for ${file.path}`);
   const sitePath = `${slug || "index"}.md`;
+  const existing = repoPaths.get(sitePath);
+  if (existing)
+    throw new Error(`[docs] ${file.path} and ${existing} both map to /${slug}`);
   repoPaths.set(sitePath, file.path);
   return { ...file, path: sitePath };
 });
@@ -69,10 +75,9 @@ const withBase = (text: string) => text.replaceAll("](/", `](${basePath}`);
 
 export const docsLlms = llms(source, {
   renderPage: async (page) => {
-    const body = (await page.data.getText("processed")).replace(/^# .*\n+/, "");
-    return withBase(
-      `# ${page.data.title} ([${basePath}${page.url.slice(1)}](/${page.url.slice(1)}))\n\n${body}`,
-    );
+    const text = (await page.data.getText("processed")).replace(/^# .*\n+/, "");
+    const url = `${basePath}${page.url.slice(1)}`;
+    return `# ${page.data.title} ([${url}](${url}))\n\n${rewriteMarkdownLinks(repoPath(page), text)}`;
   },
 });
 

@@ -107,17 +107,15 @@ async function htmlDocuments() {
 }
 
 /**
- * Short sidebar label from a page title: drops a one-word prefix ("Contract: results" → "Results")
+ * Short sidebar label from a page title: drops a one-word prefix ("Contract: results" → "Results", the rest kept as written)
  * or a subtitle ("Plan d'implémentation — solveur CFD" → "Plan d'implémentation").
  */
 export function sidebarLabel(title: string): string {
-  let label = title.split(" — ")[0];
+  const label = title.split(" — ")[0].trim();
   const colon = label.indexOf(": ");
-  if (colon !== -1)
-    label = /\s/.test(label.slice(0, colon))
-      ? label.slice(0, colon)
-      : label.slice(colon + 2);
-  return capitalize(label.trim());
+  if (colon === -1) return label;
+  const prefix = label.slice(0, colon);
+  return /\s/.test(prefix) ? prefix : capitalize(label.slice(colon + 2));
 }
 
 function capitalize(text: string): string {

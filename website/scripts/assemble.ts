@@ -15,6 +15,12 @@ renameSync(path.join(client, basePath), dist);
 cpSync(path.join(client, "assets"), path.join(dist, "assets"), {
   recursive: true,
 });
+// GitHub Pages also serves /x/ (from x/index.html), and React Router then fetches /x/_.data.
+for await (const data of glob("**/*.data", { cwd: dist })) {
+  const page = data.slice(0, -".data".length);
+  if (page !== "_" && existsSync(path.join(dist, page, "index.html")))
+    cpSync(path.join(dist, data), path.join(dist, page, "_.data"));
+}
 // The SPA fallback renders the not-found page for any URL that was not prerendered.
 cpSync(path.join(client, "index.html"), path.join(dist, "404.html"));
 

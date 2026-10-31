@@ -9,7 +9,13 @@ import {
   ScrollRestoration,
 } from "react-router";
 import StaticSearchDialog from "@/components/search";
+import favicon from "../../docs/assets/favicon.svg?url";
 import type { Route } from "./+types/root";
+
+export const links: Route.LinksFunction = () => [
+  { rel: "icon", href: favicon, type: "image/svg+xml" },
+];
+
 import NotFound from "./routes/not-found";
 
 export function Layout({ children }: { children: React.ReactNode }) {

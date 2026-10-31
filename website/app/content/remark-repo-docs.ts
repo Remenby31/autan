@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import type { Heading, Link, Nodes, Root } from "mdast";
+import type { Definition, Heading, Link, Nodes, Root } from "mdast";
 import type { VFile } from "vfile";
 import { basePath, githubBlobUrl, htmlAssetPath, pageSlug } from "./paths";
 
@@ -26,14 +26,17 @@ export function remarkRepoDocs() {
   };
 }
 
-function visitLinks(node: Nodes, fn: (link: Link) => void) {
-  if (node.type === "link") fn(node);
+function visitLinks(node: Nodes, fn: (link: Link | Definition) => void) {
+  if (node.type === "link" || node.type === "definition") fn(node);
   if ("children" in node)
     for (const child of node.children) visitLinks(child, fn);
 }
 
-/** Site URL for a link written in the repository file `from`. Page URLs omit the base path (the router adds it); HTML documents carry it. */
-export function resolveLink(from: string, url: string): string {
+/**
+ * Site URL for a link written in the repository file `from`. Page URLs omit the base path
+ * (the router adds it); HTML documents carry it. `warn: false` silences the missing-file report.
+ */
+export function resolveLink(from: string, url: string, warn = true): string {
   if (
     /^[a-z][a-z0-9+.-]*:/i.test(url) ||
     url.startsWith("#") ||
@@ -41,23 +44,46 @@ export function resolveLink(from: string, url: string): string {
   )
     return url;
 
-  const [target, hash = ""] = url.split("#", 2);
-  const anchor = hash ? `#${hash}` : "";
+  const match = url.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
+  const target = decodeURI(match?.[1] ?? url);
+  const query = match?.[2] ?? "";
+  const anchor = match?.[3] ?? "";
   const repoPath = path.posix.normalize(
     path.posix.join(path.posix.dirname(from), target),
   );
   const absolute = path.join(repoRoot(), repoPath);
 
-  if (!existsSync(absolute)) {
-    console.warn(`[docs] ${from}: link to missing file ${repoPath}`);
-    return githubBlobUrl(repoPath) + anchor;
+  if (repoPath.startsWith("../") || !existsSync(absolute)) {
+    if (warn) console.warn(`[docs] ${from}: link to missing file ${repoPath}`);
+    return githubBlobUrl(repoPath) + query + anchor;
   }
 
   const slug = pageSlug(repoPath);
   if (slug !== null) return `/${slug}${anchor}`;
 
   const asset = htmlAssetPath(repoPath);
-  if (asset !== null) return `${basePath}${asset}${anchor}`;
+  if (asset !== null) return `${basePath}${encodeURI(asset)}${query}${anchor}`;
 
-  return githubBlobUrl(repoPath, statSync(absolute).isDirectory()) + anchor;
+  return (
+    githubBlobUrl(repoPath, statSync(absolute).isDirectory()) + query + anchor
+  );
+}
+
+/** Rewrites the links of raw Markdown from `from` to absolute site URLs, for the Markdown exports. */
+export function rewriteMarkdownLinks(from: string, markdown: string): string {
+  const toSite = (url: string) => {
+    const resolved = resolveLink(from, url, false);
+    return resolved.startsWith("/") && !resolved.startsWith(basePath)
+      ? basePath + resolved.slice(1)
+      : resolved;
+  };
+  return markdown
+    .replace(
+      /\]\(([^)\s]+)(\s+"[^"]*")?\)/g,
+      (_, url: string, title = "") => `](${toSite(url)}${title})`,
+    )
+    .replace(
+      /^(\s{0,3}\[[^\]]+\]:\s*)(\S+)/gm,
+      (_, lead: string, url: string) => lead + toSite(url),
+    );
 }
