@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Definition, Heading, Link, Nodes, Root } from "mdast";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import type { VFile } from "vfile";
 import { basePath, githubBlobUrl, htmlAssetPath, pageSlug } from "./paths";
 
@@ -59,7 +60,7 @@ export function resolveLink(from: string, url: string, warn = true): string {
   }
 
   const slug = pageSlug(repoPath);
-  if (slug !== null) return `/${slug}${anchor}`;
+  if (slug !== null) return `/${slug}${query}${anchor}`;
 
   const asset = htmlAssetPath(repoPath);
   if (asset !== null) return `${basePath}${encodeURI(asset)}${query}${anchor}`;
@@ -69,21 +70,37 @@ export function resolveLink(from: string, url: string, warn = true): string {
   );
 }
 
-/** Rewrites the links of raw Markdown from `from` to absolute site URLs, for the Markdown exports. */
+/**
+ * Rewrites the link destinations of raw Markdown from `from` to absolute site URLs, for the
+ * Markdown exports. Only the destinations change, located by the parser, so code stays as written.
+ */
 export function rewriteMarkdownLinks(from: string, markdown: string): string {
-  const toSite = (url: string) => {
-    const resolved = resolveLink(from, url, false);
-    return resolved.startsWith("/") && !resolved.startsWith(basePath)
-      ? basePath + resolved.slice(1)
-      : resolved;
-  };
-  return markdown
-    .replace(
-      /\]\(([^)\s]+)(\s+"[^"]*")?\)/g,
-      (_, url: string, title = "") => `](${toSite(url)}${title})`,
-    )
-    .replace(
-      /^(\s{0,3}\[[^\]]+\]:\s*)(\S+)/gm,
-      (_, lead: string, url: string) => lead + toSite(url),
-    );
+  const edits: { start: number; end: number; url: string }[] = [];
+  visitLinks(fromMarkdown(markdown), (node) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start === undefined || end === undefined) return;
+    const resolved = resolveLink(from, node.url, false);
+    const url =
+      resolved.startsWith("/") && !resolved.startsWith("//")
+        ? basePath + resolved.slice(1)
+        : resolved;
+    if (url === node.url) return;
+    const source = markdown.slice(start, end);
+    const at =
+      node.type === "link"
+        ? source.lastIndexOf(node.url)
+        : source.indexOf(node.url);
+    if (at === -1) {
+      console.warn(
+        `[docs] ${from}: cannot rewrite link ${node.url} in the Markdown export`,
+      );
+      return;
+    }
+    edits.push({ start: start + at, end: start + at + node.url.length, url });
+  });
+  let out = markdown;
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    out = out.slice(0, edit.start) + edit.url + out.slice(edit.end);
+  return out;
 }
