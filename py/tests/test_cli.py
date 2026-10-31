@@ -78,7 +78,11 @@ def test_version_reports_build_commit_and_schemas(capsys: pytest.CaptureFixture[
     status, out = run_json(capsys, "version")
     assert status == 0
     assert re.fullmatch(r"[0-9a-f]{40}", out["commit"])
-    assert out["schemas"] == {"case": "cfd.case/1", "mesh-info": "cfd.mesh-info/1"}
+    assert out["schemas"] == {
+        "case": "cfd.case/1",
+        "mesh-info": "cfd.mesh-info/1",
+        "results": "cfd.results/1",
+    }
 
 
 def test_doctor_reports_checks_with_registered_codes(

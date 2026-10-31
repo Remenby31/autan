@@ -8,7 +8,7 @@ import secrets
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -212,37 +212,37 @@ class Results:
         """Read the run directory at ``path``; any departure from the contract is ``E0701``."""
         path = Path(path)
 
-        def broken(message: str, file: str | None = None) -> CaseError:
+        def broken(message: str, file: str | None = None) -> NoReturn:
             where = Location(file=str(path / file) if file else str(path))
-            return CaseError([diagnostic("E0701", message, location=where)])
+            raise CaseError([diagnostic("E0701", message, location=where)])
 
         try:
             document = json.loads((path / "run.json").read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            raise broken(f"cannot read run.json: {error}", "run.json") from None
+        except (OSError, ValueError) as error:
+            broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
-            raise broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
+            broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
         try:
             run = RunInfo.model_validate(document)
         except ValidationError as error:
-            raise broken(
+            broken(
                 f"run.json: {error.errors(include_url=False)[0]['msg']} at "
                 f"{error.errors()[0]['loc']}",
                 "run.json",
-            ) from None
+            )
         try:
             case_document = tomllib.loads((path / "case.toml").read_text())
             mesh_document = json.loads((path / "mesh-info.json").read_text())
         except (OSError, ValueError) as error:
-            raise broken(str(error)) from None
+            broken(str(error))
         case = CaseSpec.from_document(case_document, Location(file=str(path / "case.toml")))
         mesh_info = MeshInfo.from_document(
             mesh_document, Location(file=str(path / "mesh-info.json"))
         )
         if case.hash() != run.case.sha256:
-            raise broken("case.toml does not match run.json case.sha256", "case.toml")
+            broken("case.toml does not match run.json case.sha256", "case.toml")
         if mesh_info.source.sha256 != run.mesh.sha256:
-            raise broken("mesh-info.json does not match run.json mesh.sha256", "mesh-info.json")
+            broken("mesh-info.json does not match run.json mesh.sha256", "mesh-info.json")
         history_path = path / "history.jsonl"
         records = (
             [json.loads(line) for line in history_path.read_text().splitlines()]
@@ -251,9 +251,9 @@ class Results:
         )
         iterations = [r["iteration"] for r in records]
         if iterations != sorted(set(iterations)):
-            raise broken("history.jsonl iterations are not strictly increasing", "history.jsonl")
+            broken("history.jsonl iterations are not strictly increasing", "history.jsonl")
         if run.status in SOLUTION_REQUIRED and not (path / "solution.cgns").exists():
-            raise broken(f"a {run.status} run must have solution.cgns", "solution.cgns")
+            broken(f"a {run.status} run must have solution.cgns", "solution.cgns")
         return cls(path, run, case, mesh_info, History(records))
 
     @property

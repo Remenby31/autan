@@ -53,6 +53,11 @@ python_version = "3.12"
 files = ["py"]
 plugins = ["pydantic.mypy"]
 
+# h5py ships neither type hints nor stubs; py/cfd/cgns.py is the only module that uses it.
+[[tool.mypy.overrides]]
+module = ["h5py", "h5py.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["py/tests"]
 pythonpath = ["py"]

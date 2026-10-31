@@ -102,7 +102,7 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
     <cell zone>          ZoneSubRegion_t GridLocation CellCenter, PointList (NFACE ids), FamilyName
     FlowSolution         FlowSolution_t  GridLocation CellCenter, one R8 DataArray per field
     FlowSolutionMean     FlowSolution_t  same fields, time average (unsteady runs with average_from)
-    WallSolution         FlowSolution_t  GridLocation FaceCenter, PointList of every wall and slip face
+    WallSolution         ZoneSubRegion_t GridLocation FaceCenter, PointList of every wall and slip face, one R8 DataArray per field
 ```
 
 There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node.
@@ -122,8 +122,8 @@ BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` 
 | `TurbulentSANuTilde` | m²/s | SA and DDES on SA |
 | `TurbulentEnergyKinetic`, `TurbulentDissipationRate` | m²/s², 1/s | SST and DDES on SST (ω) |
 
-`WallSolution` fields, on wall and slip faces: `Pressure` (Pa, at the face) and `WallShearStressX`, `WallShearStressY`, `WallShearStressZ` (Pa, the tangential traction −τ·n the fluid exerts on the wall, n as in [History](#history); 0 on slip faces). Cp and Cf follow from these and q∞.
+`WallSolution` is a `ZoneSubRegion_t` because the CGNS library does not read a face-centred `FlowSolution_t` on unstructured zones; it is absent when the mesh has no wall or slip face. Its fields, on wall and slip faces: `Pressure` (Pa, at the face) and `WallShearStressX`, `WallShearStressY`, `WallShearStressZ` (Pa, the tangential traction −τ·n the fluid exerts on the wall, n as in [History](#history); 0 on slip faces). Cp and Cf follow from these and q∞.
 
 ## Results API
 
-`cfd.Results.open(path)` reads a run directory and checks it against this contract. `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name)` a cell-centred field as a NumPy array.
+`cfd.Results.open(path)` reads a run directory and checks it against this contract (`E0701` otherwise). `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name, mean=False)` a cell-centred field as a NumPy array, `results.wall(name)` a wall field with its face indices, `results.cell_zone(name)` the cell indices of a cell zone.

@@ -45,6 +45,7 @@ from cfd.schema import (
     SolidZone,
     Steady,
     Sutherland,
+    Unsteady,
 )
 from cfd.units import si
 from cfd.version import COMMIT, __version__
@@ -165,21 +166,19 @@ class Box:
     def cells(self, index: dict[tuple[str, int, int, int], int]) -> list[list[int]]:
         """Signed 1-based face ids per cell; positive when the normal points out of the cell."""
         n = self.n
-        cells = []
-        for k in range(n):
-            for j in range(n):
-                for i in range(n):
-                    cells.append(
-                        [
-                            -(index["x", i, j, k] + 1),
-                            index["x", i + 1, j, k] + 1,
-                            -(index["y", i, j, k] + 1),
-                            index["y", i, j + 1, k] + 1,
-                            -(index["z", i, j, k] + 1),
-                            index["z", i, j, k + 1] + 1,
-                        ]
-                    )
-        return cells
+        return [
+            [
+                -(index["x", i, j, k] + 1),
+                index["x", i + 1, j, k] + 1,
+                -(index["y", i, j, k] + 1),
+                index["y", i, j + 1, k] + 1,
+                -(index["z", i, j, k] + 1),
+                index["z", i, j, k + 1] + 1,
+            ]
+            for k in range(n)
+            for j in range(n)
+            for i in range(n)
+        ]
 
 
 def viscosity(gas: IdealGas, temperature: float) -> float:
@@ -189,7 +188,8 @@ def viscosity(gas: IdealGas, temperature: float) -> float:
     assert isinstance(law, Sutherland)
     t_ref, s = si(law.t_ref, "K"), si(law.s, "K")
     # Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S)
-    return si(law.mu_ref, "Pa * s") * (temperature / t_ref) ** 1.5 * (t_ref + s) / (temperature + s)
+    mu_ref = si(law.mu_ref, "Pa * s")
+    return mu_ref * math.pow(temperature / t_ref, 1.5) * (t_ref + s) / (temperature + s)
 
 
 def freestream_state(spec: CaseSpec) -> dict[str, Any]:
@@ -201,7 +201,8 @@ def freestream_state(spec: CaseSpec) -> dict[str, Any]:
     )
     if isinstance(physics, Compressible):
         gas = physics.gas
-        assert fs.temperature is not None and fs.mach is not None
+        assert fs.temperature is not None
+        assert fs.mach is not None
         temperature = si(fs.temperature, "K")
         r = GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
         speed = fs.mach * math.sqrt(gas.gamma * r * temperature)
@@ -240,8 +241,8 @@ def equations(spec: CaseSpec) -> list[str]:
         else ["pressure", "momentum-x", "momentum-y", "momentum-z"]
     )
     turbulence = spec.physics.turbulence
-    base = turbulence.base if isinstance(turbulence, DDES) else turbulence.model
-    return names + {"sa": ["nu-tilde"], "sst": ["k", "omega"]}.get(base, [])
+    model = turbulence.base.model if isinstance(turbulence, DDES) else turbulence.model
+    return names + {"sa": ["nu-tilde"], "sst": ["k", "omega"]}.get(model, [])
 
 
 @dataclass(frozen=True)
@@ -327,6 +328,7 @@ class FakeBackend:
         elif steady:
             changes["status"] = "converged"
         else:
+            assert isinstance(spec.time, Unsteady)
             changes["status"] = "completed" if count == budget else "stopped"
             if spec.time.average_from is not None and count == budget:
                 start = spec.time.average_from
@@ -386,11 +388,7 @@ class _History:
         e_s = np.cross(e_l, e_d)
         force = q * area * (cd * e_d + cl * e_l)
         length = si(fs.ref_length, "m") if fs.ref_length is not None else 1.0
-        center = (
-            np.array([si(c, "m") for c in monitor.moment_center])
-            if monitor.moment_center is not None
-            else np.zeros(3)
-        )
+        center = np.array([si(c, "m") for c in monitor.moment_center])
         moment = np.cross(np.array([0.25 * length, 0.0, 0.0]) - center, force)
         values = {key: float(v) for key, v in zip(("fx", "fy", "fz"), force, strict=True)}
         values.update({key: float(v) for key, v in zip(("mx", "my", "mz"), moment, strict=True)})
@@ -583,12 +581,14 @@ def _fields(
     if isinstance(spec.physics, Compressible):
         fields["Temperature"] = temperature
     turbulence = spec.physics.turbulence
+    if isinstance(turbulence, DDES):
+        turbulence = turbulence.base
     fluid = np.array([isinstance(media[z], Fluid) for z in layout])
-    if isinstance(turbulence, SA) or (isinstance(turbulence, DDES) and turbulence.base == "sa"):
+    if isinstance(turbulence, SA):
         fields["TurbulentSANuTilde"] = np.where(
             fluid, turbulence.nu_tilde_ratio * viscosity_ratio, 0.0
         )
-    if isinstance(turbulence, SST) or (isinstance(turbulence, DDES) and turbulence.base == "sst"):
+    if isinstance(turbulence, SST):
         k = 1.5 * (turbulence.intensity * state["speed"]) ** 2
         fields["TurbulentEnergyKinetic"] = np.where(fluid, k, 0.0)
         fields["TurbulentDissipationRate"] = np.where(

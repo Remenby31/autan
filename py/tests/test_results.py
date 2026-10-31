@@ -91,6 +91,7 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
         assert ("forces" in line["monitors"]) == (line["iteration"] % 10 == 0)
         assert line["time"] is None
     first, last = lines[0]["residuals"]["density"], lines[-1]["residuals"]["density"]
+    assert isinstance(crm_run.case.time, cfd.Steady)
     assert math.log10(first / last) >= crm_run.case.time.residual_orders - 1e-9
 
 
@@ -168,7 +169,7 @@ def test_cgns_tree_layout(crm_run: cfd.Results) -> None:
     tree = cgns.read(crm_run.path / "solution.cgns")
     base = tree.child("Base")
     zone = base.child("Zone")
-    nodes, cells, _ = np.asarray(zone.data).ravel()
+    _, cells, _ = np.asarray(zone.data).ravel()
     faces = int(zone.child("NGonElements").child("ElementRange").data[1])
     assert list(zone.child("NFaceElements").child("ElementRange").data) == [
         faces + 1,
@@ -225,7 +226,7 @@ def test_divergence_is_reported_with_its_cell(tmp_path: Path, crm_mesh: cfd.Mesh
 def test_unsteady_run_records_time_and_average(
     tmp_path: Path, write_case: Callable[[str], Path], crm_mesh: cfd.MeshInfo
 ) -> None:
-    body = CRM_HL.replace("cfd.SA()", "cfd.DDES(base='sa')") + (
+    body = CRM_HL.replace("cfd.SA()", "cfd.DDES(base=cfd.SA())") + (
         "from cfd.units import s\ncase.time = cfd.Unsteady(steps=40, dt=1e-4 * s, average_from=10)\n"
     )
     result = cfd.load(write_case(body)).run(crm_mesh, backend=cfd.FakeBackend(), runs=tmp_path)

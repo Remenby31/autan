@@ -36,6 +36,14 @@ The document's `schema` key is not `cfd.case/1`.
 
 Fix: Set `schema = "cfd.case/1"`.
 
+## D0107
+
+**Divergence** (divergence)
+
+The solution diverged: a residual or a state became non-finite or non-physical. `data` gives the iteration, the cell (0-based) and its cell zone.
+
+Fix: Lower the CFL number or use a more dissipative limiter; check the mesh quality near the cell.
+
 ## E0201
 
 **No mesh information** (error)
@@ -236,6 +244,30 @@ Two monitors share a name; results are keyed by monitor name.
 
 Fix: Name them: `cfd.forces("wing.*", name="wing")`.
 
+## E0701
+
+**The run directory does not conform to cfd.results/1** (error)
+
+A file is missing or unreadable, `run.json` has another schema, the stored case or MeshInfo does not match the hashes of `run.json`, or the history is out of order. See docs/contracts/results.md.
+
+Fix: Open a directory written by a backend of this solver version.
+
+## E0702
+
+**No such monitor** (error)
+
+The history has no monitor of that name, or `results.forces` was used on a case with zero or several forces monitors.
+
+Fix: Use `results.history.monitor(name)` with a name from `results.history.monitors`.
+
+## E0703
+
+**No such solution data** (error)
+
+The run has no `solution.cgns` (it failed or diverged before writing one), or the requested field is not in it.
+
+Fix: Check `results.run.status`, and use a field name listed in the message.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
@@ -256,6 +288,14 @@ Fix: Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support).
 
 **Solver core not built** (warning)
 
-This installation contains the SDK only: cases can be planned, not run.
+This installation contains the SDK only: cases can be planned, and run only with the `fake` backend, which writes synthetic results.
 
 Fix: Build the C++ core (see README) to run real computations.
+
+## E0804
+
+**No solver backend** (error)
+
+`case.run()` needs a backend. The C++ core is not part of this build, so only the `fake` backend exists; it writes synthetic results.
+
+Fix: Pass one explicitly: `case.run(mesh_info, backend=cfd.FakeBackend())`.

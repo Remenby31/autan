@@ -273,7 +273,8 @@ _CODES = [
     Code(
         "W0803",
         "Solver core not built",
-        "This installation contains the SDK only: cases can be planned, not run.",
+        "This installation contains the SDK only: cases can be planned, and run only with "
+        "the `fake` backend, which writes synthetic results.",
         "Build the C++ core (see README) to run real computations.",
     ),
     Code(
