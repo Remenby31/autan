@@ -250,7 +250,7 @@ Fix: Assign each entity to one zone in the meshing tool.
 
 A part count, rank, part index or cell weight is out of range, or an array has the wrong size.
 
-Fix: Ask for between 1 and the number of cells parts, one rank per part, and weights of at least 1 per cell.
+Fix: Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.
 
 ## E0141
 

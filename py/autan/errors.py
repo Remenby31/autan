@@ -214,7 +214,7 @@ _CODES = [
         "E0140",
         "Invalid partition request",
         "A part count, rank, part index or cell weight is out of range, or an array has the wrong size.",
-        "Ask for between 1 and the number of cells parts, one rank per part, and weights of at least 1 per cell.",
+        "Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.",
     ),
     Code(
         "E0141",
