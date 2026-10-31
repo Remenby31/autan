@@ -48,3 +48,10 @@ def test_mms_command_writes_header_and_json(tmp_path: Path) -> None:
     doc = json.loads((tmp_path / "euler.json").read_text())
     assert doc["schema"] == "autan.mms/1"
     assert "namespace autan::mms::euler" in (tmp_path / "euler.hpp").read_text()
+
+
+def test_cases_command_lists_the_catalogue(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["cases", "list"]) == 0
+    assert "tmr-2dzp-flatplate" in capsys.readouterr().out
+    assert main(["cases", "fetch", "no-such-case"]) == 2
+    assert "V0604" in capsys.readouterr().err

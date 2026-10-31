@@ -56,7 +56,7 @@ PartitionQuality partition_quality(const Mesh& mesh, std::span<const std::int32_
                                    std::span<const std::int32_t> cell_weights = {});
 
 /// What one rank exchanges with the others. Ghost cells are ordered by owning
-/// rank, then by global id, so the ghosts received from neighbours[i] are the
+/// rank, then by index in the global mesh, so the ghosts received from neighbours[i] are the
 /// contiguous local cells n_owned_cells + [recv_offsets[i], recv_offsets[i+1]).
 /// send_cells[send_offsets[i] .. send_offsets[i+1]) are the owned cells whose
 /// copies are those ghosts on neighbours[i], in the same order.
@@ -90,7 +90,8 @@ struct LocalPartition {
 };
 
 /// Builds the part `rank` of `parts` with one layer of ghost cells: owned
-/// cells in ascending global id, then ghosts ordered as HaloPattern states.
+/// cells in the order of `global`, then ghosts ordered as HaloPattern states;
+/// every cell keeps the cell_global_id it has in `global`.
 /// `global_geometry` must be compute_geometry(global). Throws E0141 if
 /// `global` has ghosts and E0140 if `parts`, `n_parts` or `rank` are out of
 /// range or `rank` owns no cell.

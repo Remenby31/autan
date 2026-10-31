@@ -1,10 +1,11 @@
 [files]
-# Design documents written in French, and binary or generated data.
+# French text (design documents, translations named *.fr.*), and binary or generated data.
 extend-exclude = [
   "docs/PLAN.md",
   "docs/plan.html",
   "docs/research/state-of-the-art*",
   "docs/design/*.html",
+  "*.fr.*",
   "*.msh",
   "*.cgns",
   "uv.lock",

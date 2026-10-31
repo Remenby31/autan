@@ -85,11 +85,11 @@ void check_entities(const MeshInput& in) {
       fail(ErrorCode::mesh_face_too_few_nodes, "face has fewer than 3 nodes" + where);
     }
     sorted.assign(begin, end);
-    std::sort(sorted.begin(), sorted.end());
+    std::ranges::sort(sorted);
     if (sorted.front() < 0 || sorted.back() >= n_points) {
       fail(ErrorCode::mesh_index_out_of_range, "node index out of range" + where);
     }
-    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+    if (std::ranges::adjacent_find(sorted) != sorted.end()) {
       fail(ErrorCode::mesh_face_repeated_node, "face lists a node twice" + where);
     }
     const index_t c0 = in.face_cell0[f];
@@ -129,8 +129,8 @@ void check_entities(const MeshInput& in) {
 
   if (!in.cell_global_id.empty()) {
     std::vector<std::int64_t> ids(in.cell_global_id);
-    std::sort(ids.begin(), ids.end());
-    if (ids.front() < 0 || std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
+    std::ranges::sort(ids);
+    if (ids.front() < 0 || std::ranges::adjacent_find(ids) != ids.end()) {
       fail(ErrorCode::mesh_duplicate_global_id, "cell global ids must be distinct and >= 0");
     }
   }
@@ -156,10 +156,10 @@ void check_cells_closed(const Mesh& mesh) {
         if (!outward) std::swap(a, b);
         const auto lo = static_cast<std::uint64_t>(std::min(a, b));
         const auto hi = static_cast<std::uint64_t>(std::max(a, b));
-        edges.push_back({(lo << 32) | hi, a < b});
+        edges.push_back({(lo << 32U) | hi, a < b});
       }
     }
-    std::sort(edges.begin(), edges.end(), [](const Edge& l, const Edge& r) {
+    std::ranges::sort(edges, [](const Edge& l, const Edge& r) {
       return l.key != r.key ? l.key < r.key : l.forward < r.forward;
     });
     bool closed = edges.size() % 2 == 0;
@@ -238,7 +238,7 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
 
   std::vector<index_t> order(n_faces);
   std::iota(order.begin(), order.end(), 0);
-  std::stable_sort(order.begin(), order.end(), [&in](index_t a, index_t b) {
+  std::ranges::stable_sort(order, [&in](index_t a, index_t b) {
     const auto ia = to_size(a);
     const auto ib = to_size(b);
     const bool boundary_a = in.face_cell1[ia] == no_cell;
