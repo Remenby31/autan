@@ -139,7 +139,7 @@ def test_case_prints_do_not_corrupt_json_output(
 def test_explain_all_json_lists_every_code(capsys: pytest.CaptureFixture[str]) -> None:
     status, out = run_json(capsys, "explain", "--all")
     assert status == 0
-    assert "E0412" in {entry["code"] for entry in out["codes"]}
+    assert out["codes"]["E0412"]["severity"] == "error"
 
 
 class _FakeUI(types.ModuleType):

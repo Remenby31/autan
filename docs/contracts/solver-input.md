@@ -16,7 +16,7 @@ autan-run --input solver-input.json --runs DIR
 |---|---|
 | 0 | The run ended `converged`, `completed`, `stopped` or `diverged`; the status is in `run.json`. |
 | 1 | The run `failed`; `run.json` carries `E0704`. |
-| 2 | The input cannot be run: invalid document (`E0705`, `data.path` names the key), mesh hash different from `mesh.sha256` (`E0203`), or no implementation of the physics, turbulence model, precision and device kind in this build (`E0706`). No directory is created; the diagnostics go to stderr as JSON in the shape of [case-schema.md](case-schema.md#diagnostics). |
+| 2 | The input cannot be run: invalid document (`E0705`, `data.path` names the key), mesh hash different from `mesh.sha256` (`E0203`), or no implementation of the physics, turbulence model, precision and device kind in this build (`E0706`). No directory is created; the diagnostics go to stderr as JSON in the shape of [case-schema.md](case-schema.md#diagnostics), with `fix` and `doc` taken from [`diagnostics.json`](diagnostics.json), as for every diagnostic the runtime writes. |
 | 130 | Stopped by SIGINT or SIGTERM; the run is finalized as `stopped` with its solution. |
 
 ## Document

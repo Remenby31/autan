@@ -587,6 +587,23 @@ class CaseError(Exception):
         return [d.code for d in self.diagnostics]
 
 
+def registry_document() -> dict[str, Any]:
+    """Every registered code as JSON, the form other components embed
+    (docs/contracts/diagnostics.json)."""
+    return {
+        "schema": "autan.diagnostics/1",
+        "codes": {
+            entry.code: {
+                "severity": entry.severity,
+                "title": entry.title,
+                "fix": entry.fix,
+                "doc": doc_url(entry.code),
+            }
+            for entry in sorted(REGISTRY.values(), key=lambda c: c.code[1:])
+        },
+    }
+
+
 def reference_page() -> str:
     """The Markdown reference of every registered code."""
     lines = [

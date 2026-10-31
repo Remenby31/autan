@@ -18,7 +18,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autan.case import Case, load
-from autan.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
+from autan.errors import (
+    REGISTRY,
+    CaseError,
+    Diagnostic,
+    diagnostic,
+    explain,
+    reference_page,
+    registry_document,
+)
 from autan.fake import FakeBackend
 from autan.meshinfo import MeshInfo
 from autan.results import Devices, RunInfo
@@ -299,22 +307,7 @@ def command_schema(args: argparse.Namespace) -> int:
 def command_explain(args: argparse.Namespace) -> int:
     if args.all:
         if args.json:
-            _emit(
-                {
-                    "codes": [
-                        {
-                            "code": c.code,
-                            "severity": c.severity,
-                            "title": c.title,
-                            "explanation": c.explanation,
-                            "fix": c.fix,
-                        }
-                        for c in REGISTRY.values()
-                    ]
-                },
-                True,
-                "",
-            )
+            sys.stdout.write(json.dumps(registry_document(), indent=2) + "\n")
         else:
             sys.stdout.write(reference_page())
         return 0
