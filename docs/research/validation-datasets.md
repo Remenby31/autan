@@ -158,7 +158,7 @@ The gate is "MMS Euler, Ringleb, NACA0012 and ONERA M6 inviscid; 10 orders of re
 | M 0.8, α 0° | 0 | 0.0083415–0.0083423 | CD 8e-7 |
 | M 0.8, α 1.25° | 0.34823–0.35621 | 0.022453–0.022685 | CL 0.008, CD 2.3e-4; the point-vortex runs give CD 0.022675–0.022685 |
 
-- **Farfield matters.** The CL band in the table mixes runs with and without a point-vortex farfield correction. We use the point-vortex farfield at about 150 c on the paper's own geometry and grids. The two point-vortex references then give **CL 0.35160–0.35621, CD 0.022675–0.022685** (FLO82, CFL3D with vortex).
+- **Farfield matters.** The CL band in the table mixes runs with and without a point-vortex farfield correction. We use the point-vortex farfield at about 150 c on the paper's own geometry and grids, so the farfield error is the same as the reference's; a domain at 300 c is run once to report the remaining farfield sensitivity. The two point-vortex references then give **CL 0.35160–0.35621, CD 0.022675–0.022685** (FLO82, CFL3D with vortex).
 - **Acceptance (gate, on our continuum estimate from at least three levels):**
   - M 0.8, α 0°: CD within 1 count of 0.008342.
   - M 0.8, α 1.25°: CL inside 0.3516–0.3562 widened by our own grid-convergence index; CD within 1 count of 0.02268.
@@ -203,7 +203,7 @@ The gate is "TMR flat plate, bump and NACA 0012 within tolerance; convergence on
 - **SA-neg has no published oracle.** MASA implements standard SA with ν̃ > 0, not the SA-neg branch, which changes production, destruction, diffusion and the eddy viscosity when ν̃ < 0 ([TMR SA page, `#saneg`](https://tmbwg.github.io/turbmodels/spalart.html#saneg)). For that branch, manufacture a field in which ν̃ changes sign, and check the `vv/` source terms against a second derivation written independently from the TMR equations.
 - **Quantities:** L2 and L∞ errors of the mean-flow variables and ν̃.
 - **Acceptance (gate):**
-  - Positive branch: pin the MASA solution identifier and check our source terms against it to round-off.
+  - Positive branch: check our source terms against MASA `fans_sa_steady_wall_bounded` and `fans_sa_transient_free_shear` (MASA commit `9c31838`) to round-off.
   - Coupled order with second-order turbulence advection: L2 order 2 ± 0.1 for the mean flow and for ν̃, positive and SA-neg branches.
   - A configuration with first-order turbulence advection is reported separately. Its error passes into the mean flow through ν_t, so every variable is then expected at order 1.
 
@@ -331,7 +331,7 @@ The gate is "dot-product test + finite differences; RAE 2822 and ONERA M6 drag m
 - **Conditions:**
   - Complex-step needs complex-safe versions of abs, min/max, limiters and every branch, following Martins, Sturdza & Alonso, *ACM TOMS* 29:245–262 (2003), [doi:10.1145/838250.838251](https://doi.org/10.1145/838250.838251). The branch conventions are fixed in the kernel generator.
   - Primal and adjoint are converged far enough that their residuals do not limit the gradient error: at least two decades below the tolerance, propagated through the objective.
-  - Compare with a mixed norm: |g − g_ref| ≤ tol · max(|g_ref|, 1e-3 ‖g_ref‖∞), so that near-zero sensitivities do not produce meaningless relative errors.
+  - Compare with a mixed norm: |g − g_ref| ≤ tol · max(|g_ref|, 1e-3 ‖g_ref‖∞, g_abs), where g_abs is the objective's scale divided by the design-variable scale. Near-zero sensitivities then do not produce meaningless relative errors, even when the whole gradient vanishes.
 - **Acceptance (gate):**
   - Dot-product test ⟨Jv, w⟩ = ⟨v, Jᵀw⟩ to a multiple of ε (with random v, w), per kernel and for the whole residual, in FP32 and FP64.
   - Gradient against complex-step on 5–10 design variables: tol = 1e-10 in FP64. In FP32 the tolerance is set after measuring the plateau, starting at 1e-3.
@@ -375,8 +375,8 @@ The PLAN gate is "cylinder, backward-facing step, Ahmed; CRM-HL near CLmax compa
 
 ### DDES shielding — V-ref · Must
 - The DDES shielding function must keep an attached boundary layer in RANS mode (Spalart et al., *Theor. Comput. Fluid Dyn.* 20:181–195, 2006, [doi:10.1007/s00162-006-0015-0](https://doi.org/10.1007/s00162-006-0015-0)).
-- Run the TMR flat plate with DDES on a grid fine enough in the streamwise and spanwise directions to trigger LES mode. Gate: Cf within 1 % of our own SA result on the same grid; the shielding function stays near 1 across the boundary layer.
-- Repeat for each DDES/IDDES branch we ship.
+- Run the TMR flat plate with DDES on a grid fine enough in the streamwise and spanwise directions to trigger LES mode. Gate: Cf within 1 % of our own SA result on the same grid; the delay function f_d stays near 0 across the boundary layer (RANS mode is shielded) and rises to 1 outside it.
+- Repeat for each DDES/IDDES branch we ship. The LES branch is tested by Taylor–Green and the channel; the IDDES wall-modelled branch by the channel at Re_τ 5200.
 
 ### Taylor–Green vortex, Re 1600 — V-ref · Must
 - **Definition:** HiOCFD5 case WS1, [how5.cenaero.be/content/ws1-dns-taylor-green-vortex-re1600](https://how5.cenaero.be/content/ws1-dns-taylor-green-vortex-re1600). Periodic box [−πL, πL]³, M0 = 0.1, Pr = 0.71, t_final = 10 t_c (case PDF `BS1_TaylorGreenVortexRe1600_0.pdf`, which places peak dissipation "at t ≈ 8 t_c"). Outputs: E_k, dE_k/dt and enstrophy over time; vorticity on the face x = −πL and energy spectra at t = 8 t_c.
@@ -440,12 +440,12 @@ The PLAN gate is "cylinder, backward-facing step, Ahmed; CRM-HL near CLmax compa
 - **TC1, CRM-HL wing–body verification (V-ref gate):**
   - Conditions: M 0.20, Re_c 5.6e6, α 11°, T_ref 521 °R. Cuboid domain ±65,000 in. (full-scale inches, MAC 275.8 in.).
   - Reference: 12 SA-neg results from different codes converge, as N^(−1/3) → 0, to a range of **ΔCL ≈ 0.005, ΔCD ≈ 0.0005, ΔCM ≈ 0.003**. SA-neg-R(crot1)-QCR2000: 7 results within ΔCL 0.004, ΔCD 0.0006, ΔCM 0.002.
-  - Gate: our SA-neg continuum estimate lies inside that range, widened by our own grid-convergence index.
+  - Gate: our SA-neg continuum estimate lies inside that range, widened by our own grid-convergence index. The summary gives the spread, not the values: take the absolute bounds from the submissions in `Workshop5.zip` when transcribing the case.
 - **TC2, configuration build-up (Val):**
   - Configurations 2.1 (WBHV), 2.2 (+ slat), 2.3 (+ flaps), 2.4 (+ nacelle, pylon, chine = CRM-HL-LDG). M 0.20; Re_c 5.4e6 (2.1) and 5.9e6 (2.2–2.4); α sweep up to 23.6° for 2.4; T_ref 518.67 °R.
   - Experiment: ONERA F1 data for the as-designed geometry, corrected to free air.
   - Scatter between submissions at α 23° (TC2.2): **≈ 0.15 in CL for HRLES and WMLES, ≈ 0.5 for RANS**. Many WMLES entries under-predicted CLmax; transition modelling on the slat changes the result strongly.
-  - Gate (WMLES, TC2.4): CLmax within ±0.075 of ONERA F1 (half the scale-resolving scatter), α at CLmax reported. RANS near CLmax: report only, because no RANS model predicted this flow.
+  - Report (TC2.4, all methods): CLmax and α at CLmax against ONERA F1, placed within the HLPW-5 distribution of submissions for the same configuration and method class. The summary gives scatter only for TC2.2 at one angle, so no gate band is derived for TC2.4 until the TC2.4 submissions in the archive are transcribed. RANS near CLmax predicts poorly in every HLPW summary.
 - **Background:** HLPW-4 (Rumsey et al., [NTRS 20220005271](https://ntrs.nasa.gov/citations/20220005271)) ran the QinetiQ 5 m semispan model at M 0.2, Re_MAC 5.49e6, with RANS scatter ≈ 0.1 in CL at α 7.05° and ≈ 0.68 at 19.57°. HLPW-6 takes place in June 2027; its test-case documents and committee grids (`.b8.ugrid`, `.cgns`, `.mapbc`, up to 18.4 GB per level) are already published.
 - **Capacity check:** RANS meshes for these cases run from 100 M to 500 M+ nodes, and HLPW-5 included meshes above a billion cells. That tests the GB10's 128 GB memory.
 
@@ -555,7 +555,7 @@ The gate is "jet mixing, reference CHT case; .msh zones mapped automatically". T
   - The *AIAA J* paper (doi:10.2514/1.5781) is paywalled.
 - **Data:** pitot pressure, T0, sampled mole fraction, RELIEF velocity and u_rms. **No electronic data found online**: digitise from the NTRS reports, or ask the authors (NASA Langley).
 - **Uncertainty:** probe pressure ±0.5 %, T ±2 K, mole fraction ±1–1.5 %, RELIEF velocity ±3 % (95 % bands).
-- **Scored quantity:** the sampled composition measures the He–O₂ jet gas mixed with air, not helium alone. Score the jet-gas mole fraction as measured, converting our species fields to that basis.
+- **Scored quantity:** the sampled composition measures the He–O₂ jet gas mixed with air, not helium alone. Helium enters only with the jet, so the jet-gas mole fraction is X_jet = X_He / 0.95, computed from our mass fractions through the mixture molar mass.
 - **Acceptance (report):** centreline jet-gas mole fraction within ±0.05 absolute; pitot within ±10 %; potential-core length within ±10 %. Report Sc_t and any compressibility correction.
 - **Why Must:** it is the only helium/air case that also tests compressible mixing, which is our differentiator, even though it needs digitising.
 
@@ -570,7 +570,7 @@ The gate is "jet mixing, reference CHT case; .msh zones mapped automatically". T
 - **Composite wall (1D, steady):** the exact solution is piecewise linear. Meshes fit the interface (our zones are cell zones, so the interface is always a set of faces). Gate: round-off error on orthogonal meshes; order 2 ± 0.1 on non-orthogonal, interface-fitted polyhedral meshes. Interfaces that cut cells are out of scope.
 - **Zone mapping:** a zone type in a Fluent `.msh` says "fluid" or "solid", not which gas or solid it is. Gate in two steps:
   1. The reader keeps every zone's identity and type, checked against the zone list in the file.
-  2. The case assigns a material to each zone explicitly, and an active problem then runs on it: two different gases plus one solid, with heat crossing both interfaces, judged on the energy balance above.
+  2. The case assigns a material to each zone explicitly, and the conjugate MMS then runs on that mesh with distinct properties per zone (two gases, one solid). A wrong assignment changes the source terms, so the order and balance gates fail.
 
 ### Conjugate heat transfer references — Useful
 - **Luikov (1974):** conjugate flat plate, *IJHMT* 17:257–265, [doi:10.1016/0017-9310(74)90087-8](https://doi.org/10.1016/0017-9310(74)90087-8), paywalled. Integral-method correlation in the Brun number; trend within ±10 %.
@@ -588,7 +588,7 @@ The gate is "jet mixing, reference CHT case; .msh zones mapped automatically". T
 - **Uncertainty:**
   - **Surface T ±1 °C**, gas T ±11 °C, vane conductivity ±3 %, pressure ±0.7 kPa.
   - **h ±6.2–7.3 %** over the first half of the arc, rising to **±23.5 %** at the trailing edge.
-- **Transcription:** a community transcription exists in pull request #886 of the GitHub repository `thiemom/combaero` (record the commit hash when used); its accuracy and licence are unverified. Transcribe from the NASA PDF ourselves and use that transcription only as the independent cross-check.
+- **Transcription:** a community transcription exists in pull request #886 of the GitHub repository `thiemom/combaero` (head commit `67faab9`); its accuracy and licence are unverified. Transcribe from the NASA PDF ourselves and use that transcription only as the independent cross-check.
 - **Acceptance (report for RANS):**
   - Wall temperature within ±2 % (about ±15 K) over 0–60 % of the surface arc.
   - Pressure distribution within ±2 % of p_t.
