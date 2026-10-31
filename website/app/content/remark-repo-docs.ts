@@ -1,9 +1,25 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import type { Definition, Heading, Link, Nodes, Root } from "mdast";
+import type {
+  Definition,
+  Heading,
+  Image,
+  Link,
+  Nodes,
+  Parents,
+  Root,
+} from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import type { VFile } from "vfile";
-import { basePath, githubBlobUrl, htmlAssetPath, pageSlug } from "./paths";
+import {
+  assetsDir,
+  basePath,
+  fileLocale,
+  githubBlobUrl,
+  htmlAssetPath,
+  localePath,
+  pageSlug,
+} from "./paths.ts";
 
 // Resolved on use: this module is also bundled for the browser (via lib/source.ts), where it never runs.
 const repoRoot = () => path.resolve(import.meta.dirname, "../../..");
@@ -24,13 +40,72 @@ export function remarkRepoDocs() {
     visitLinks(tree, (link) => {
       link.url = resolveLink(from, link.url);
     });
+    inlineDiagrams(tree, from);
   };
 }
 
-function visitLinks(node: Nodes, fn: (link: Link | Definition) => void) {
-  if (node.type === "link" || node.type === "definition") fn(node);
+const diagramsDir = `${assetsDir}/diagrams/`;
+
+/**
+ * Replaces images of `docs/assets/diagrams/*.svg` with the SVG itself, so the diagram's
+ * `var(--token, fallback)` colours follow the page theme. Its `<style>` blocks, which serve
+ * the standalone file (GitHub), are dropped: inlined, they would apply to the whole page.
+ */
+function inlineDiagrams(node: Nodes, from: string) {
+  if (!("children" in node)) return;
+  const parent = node as Parents;
+  parent.children = parent.children.map((child) => {
+    if (child.type !== "image") {
+      inlineDiagrams(child, from);
+      return child;
+    }
+    const svg = diagramSource(from, child);
+    if (svg === null) return child;
+    return {
+      type: "mdxJsxTextElement",
+      name: "Diagram",
+      attributes: [
+        { type: "mdxJsxAttribute", name: "svg", value: svg },
+        { type: "mdxJsxAttribute", name: "alt", value: child.alt ?? "" },
+      ],
+      children: [],
+    } as unknown as typeof child;
+  });
+}
+
+function diagramSource(from: string, image: Image): string | null {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(image.url) || image.url.startsWith("/"))
+    return null;
+  const repoPath = path.posix.normalize(
+    path.posix.join(path.posix.dirname(from), decodeURI(image.url)),
+  );
+  if (!repoPath.startsWith(diagramsDir) || !repoPath.endsWith(".svg"))
+    return null;
+  const absolute = path.join(repoRoot(), repoPath);
+  if (!existsSync(absolute)) {
+    console.warn(`[docs] ${from}: image of missing file ${repoPath}`);
+    return null;
+  }
+  return readFileSync(absolute, "utf8")
+    .replace(/<\?xml[^>]*\?>/g, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .trim();
+}
+
+function visitLinks(
+  node: Nodes,
+  fn: (link: Link | Definition | Image) => void,
+  images = false,
+) {
+  if (
+    node.type === "link" ||
+    node.type === "definition" ||
+    (images && node.type === "image")
+  )
+    fn(node);
   if ("children" in node)
-    for (const child of node.children) visitLinks(child, fn);
+    for (const child of node.children) visitLinks(child, fn, images);
 }
 
 /**
@@ -60,9 +135,12 @@ export function resolveLink(from: string, url: string, warn = true): string {
   }
 
   const slug = pageSlug(repoPath);
-  if (slug !== null) return `/${slug}${query}${anchor}`;
+  if (slug !== null)
+    return `${localePath(slug, fileLocale(from))}${query}${anchor}`;
 
-  const asset = htmlAssetPath(repoPath);
+  const asset =
+    htmlAssetPath(repoPath) ??
+    (repoPath.startsWith(`${assetsDir}/`) ? repoPath : null);
   if (asset !== null) return `${basePath}${encodeURI(asset)}${query}${anchor}`;
 
   return (
@@ -76,29 +154,36 @@ export function resolveLink(from: string, url: string, warn = true): string {
  */
 export function rewriteMarkdownLinks(from: string, markdown: string): string {
   const edits: { start: number; end: number; url: string }[] = [];
-  visitLinks(fromMarkdown(markdown), (node) => {
-    const start = node.position?.start.offset;
-    const end = node.position?.end.offset;
-    if (start === undefined || end === undefined) return;
-    const resolved = resolveLink(from, node.url, false);
-    const url =
-      resolved.startsWith("/") && !resolved.startsWith("//")
-        ? basePath + resolved.slice(1)
-        : resolved;
-    if (url === node.url) return;
-    const source = markdown.slice(start, end);
-    const at =
-      node.type === "link"
-        ? source.lastIndexOf(node.url)
-        : source.indexOf(node.url);
-    if (at === -1) {
-      console.warn(
-        `[docs] ${from}: cannot rewrite link ${node.url} in the Markdown export`,
-      );
-      return;
-    }
-    edits.push({ start: start + at, end: start + at + node.url.length, url });
-  });
+  // Images too: the exports reference diagrams by their published URL.
+  visitLinks(
+    fromMarkdown(markdown),
+    (node) => {
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if (start === undefined || end === undefined) return;
+      const resolved = resolveLink(from, node.url, false);
+      const url =
+        resolved.startsWith("/") &&
+        !resolved.startsWith("//") &&
+        !resolved.startsWith(basePath)
+          ? basePath + resolved.slice(1)
+          : resolved;
+      if (url === node.url) return;
+      const source = markdown.slice(start, end);
+      const at =
+        node.type !== "definition"
+          ? source.lastIndexOf(node.url)
+          : source.indexOf(node.url);
+      if (at === -1) {
+        console.warn(
+          `[docs] ${from}: cannot rewrite link ${node.url} in the Markdown export`,
+        );
+        return;
+      }
+      edits.push({ start: start + at, end: start + at + node.url.length, url });
+    },
+    true,
+  );
   let out = markdown;
   for (const edit of edits.sort((a, b) => b.start - a.start))
     out = out.slice(0, edit.start) + edit.url + out.slice(edit.end);
