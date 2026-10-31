@@ -1,4 +1,4 @@
-#include "cfd/core/cellwise.hpp"
+#include "autan/core/cellwise.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,9 +8,9 @@
 #include <string>
 #include <utility>
 
-#include "cfd/core/error.hpp"
+#include "autan/core/error.hpp"
 
-namespace cfd {
+namespace autan {
 namespace {
 
 std::size_t to_size(std::int64_t value) { return static_cast<std::size_t>(value); }
@@ -310,4 +310,4 @@ MeshInput to_face_based(CellwiseMesh mesh) {
   return out;
 }
 
-}  // namespace cfd
+}  // namespace autan

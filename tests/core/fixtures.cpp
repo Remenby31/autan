@@ -6,7 +6,7 @@
 #include <random>
 #include <vector>
 
-namespace cfd::test {
+namespace autan::test {
 namespace {
 
 // Labels every cell face whose nodes all lie on one side of the unit box
@@ -306,4 +306,4 @@ ReferenceCell affine_cell(CellShape shape, const std::array<std::array<double, 3
   return cell;
 }
 
-}  // namespace cfd::test
+}  // namespace autan::test

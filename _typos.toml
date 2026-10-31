@@ -8,6 +8,7 @@ extend-exclude = [
   "*.msh",
   "*.cgns",
   "uv.lock",
+  "tests/data/",
 ]
 
 [default.extend-words]
