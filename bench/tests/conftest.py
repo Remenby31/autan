@@ -31,8 +31,8 @@ def make_result(benchmarks: list[dict], *, gpu: str = "NVIDIA GB10", dirty: bool
             "host": "test",
             "image": None,
             "image_revision": None,
-            "cuda_runtime": 13000,
-            "cuda_driver": 13000,
+            "runtime_version": 13000,
+            "driver_version": 13000,
             "gpu": {
                 "name": gpu,
                 "uuid": "GPU-00000000-0000-0000-0000-000000000000",

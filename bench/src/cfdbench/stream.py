@@ -79,11 +79,11 @@ def run(
         "created": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "provenance": {
             **prov,
-            "backend": "cuda",
+            "backend": raw["backend"],
             "precision": "fp64",
-            "devices": {"kind": "cuda", "count": 1},
-            "cuda_runtime": raw["cuda_runtime"],
-            "cuda_driver": raw["cuda_driver"],
+            "devices": {"kind": raw["backend"], "count": 1},
+            "runtime_version": raw["runtime_version"],
+            "driver_version": raw["driver_version"],
             "gpu": raw["device"],
         },
         "conditions": {

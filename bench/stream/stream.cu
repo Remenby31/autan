@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include <cuda_runtime.h>
+#include "gpu_runtime.hpp"
 
 namespace {
 
@@ -186,7 +186,8 @@ int main(int argc, char** argv) {
       "\"sm_count\":%d,\"l2_bytes\":%d,\"memory_bytes\":%zu},",
       prop.name, uuid, prop.major, prop.minor, prop.multiProcessorCount, prop.l2CacheSize,
       prop.totalGlobalMem);
-  std::printf("\"cuda_runtime\":%d,\"cuda_driver\":%d,", runtime, driver);
+  std::printf("\"backend\":\"" CFD_BENCH_BACKEND "\",\"runtime_version\":%d,\"driver_version\":%d,",
+              runtime, driver);
   std::printf(
       "\"config\":{\"elements\":%ld,\"element_bytes\":8,\"warmup\":%d,\"reps\":%d,\"block\":%d},",
       o.elements, o.warmup, o.reps, o.block);

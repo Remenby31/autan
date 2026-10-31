@@ -38,7 +38,7 @@
     "provenance": {
       "description": "Run identity, named as in docs/contracts/results.md (solver.commit, backend, precision, devices), plus the host, image and GPU the numbers depend on.",
       "type": "object",
-      "required": ["solver", "backend", "precision", "devices", "host", "image", "image_revision", "cuda_runtime", "cuda_driver", "gpu"],
+      "required": ["solver", "backend", "precision", "devices", "host", "image", "image_revision", "runtime_version", "driver_version", "gpu"],
       "additionalProperties": false,
       "properties": {
         "solver": {
@@ -61,8 +61,8 @@
         "host": {"type": "string", "minLength": 1},
         "image": {"type": ["string", "null"]},
         "image_revision": {"type": ["string", "null"]},
-        "cuda_runtime": {"type": "integer"},
-        "cuda_driver": {"type": "integer"},
+        "runtime_version": {"type": "integer"},
+        "driver_version": {"type": "integer"},
         "gpu": {
           "type": "object",
           "required": ["name", "uuid", "compute_capability", "sm_count", "l2_bytes", "memory_bytes"],
