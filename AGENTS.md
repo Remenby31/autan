@@ -6,6 +6,21 @@ Rules for every contributor, human or agent. Read this before touching the code.
 
 A GPU-native, unstructured finite-volume CFD solver: arbitrary polyhedral cells, compressible first, discrete adjoint on GPU, typed Python SDK. Plan and gates: `docs/PLAN.md`. Research behind the choices: `docs/research/`.
 
+## Names
+
+The project is **Autan**, after the wind that blows over Toulouse. Write "Autan" in prose and `autan` in identifiers. No other name, and no compatibility aliases for the old one.
+
+| Thing | Name |
+|---|---|
+| Repository, docs site | `Remenby31/autan`, `https://remenby31.github.io/autan/` |
+| Python distribution, import, CLI | `autan` (`import autan`, `autan plan`) |
+| V&V package | `autan-vv` (`import autan_vv`) |
+| Schema identifiers | `autan.case/1`, `autan.mesh-info/1`, `autan.results/1` |
+| C++ | namespace `autan`, CMake project `autan`, library `autan_core`, tool `autan-mesh-info` |
+| Environment variables, images | `AUTAN_*`, `ghcr.io/remenby31/autan-*` |
+
+Error codes do not change.
+
 ## Non-negotiables
 
 1. **Correctness is proven, not claimed.** Any change to numerics lands with:
