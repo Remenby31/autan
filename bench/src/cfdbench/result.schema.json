@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Remenby31/cfd-solver/bench/result.schema.json",
+  "title": "cfd-solver benchmark result",
+  "description": "One benchmark run: provenance, measurement conditions and per-benchmark samples with summary statistics. Produced by `cfdbench`, consumed by `cfdbench compare` and the baselines in bench/baselines/.",
+  "type": "object",
+  "required": ["schema", "suite", "created", "provenance", "conditions", "config", "benchmarks"],
+  "additionalProperties": false,
+  "$defs": {
+    "spread": {
+      "type": ["object", "null"],
+      "required": ["min", "median", "max"],
+      "additionalProperties": false,
+      "properties": {"min": {"type": "number"}, "median": {"type": "number"}, "max": {"type": "number"}}
+    },
+    "stats": {
+      "type": "object",
+      "required": ["n", "median", "q1", "q3", "iqr", "mean", "stdev", "cv", "min", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "n": {"type": "integer", "minimum": 2},
+        "median": {"type": "number"},
+        "q1": {"type": "number"},
+        "q3": {"type": "number"},
+        "iqr": {"type": "number", "minimum": 0},
+        "mean": {"type": "number"},
+        "stdev": {"type": "number", "minimum": 0},
+        "cv": {"type": "number", "minimum": 0},
+        "min": {"type": "number"},
+        "max": {"type": "number"}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "cfd-bench-result/1"},
+    "suite": {"type": "string", "minLength": 1},
+    "created": {"type": "string", "format": "date-time"},
+    "provenance": {
+      "type": "object",
+      "required": ["commit", "dirty", "host", "image", "image_revision", "precision", "cuda_runtime", "cuda_driver", "gpu"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "dirty": {"type": "boolean"},
+        "host": {"type": "string", "minLength": 1},
+        "image": {"type": ["string", "null"]},
+        "image_revision": {"type": ["string", "null"]},
+        "precision": {"enum": ["fp16", "bf16", "fp32", "fp64", "mixed"]},
+        "cuda_runtime": {"type": "integer"},
+        "cuda_driver": {"type": "integer"},
+        "gpu": {
+          "type": "object",
+          "required": ["name", "uuid", "compute_capability", "sm_count", "l2_bytes", "memory_bytes"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string"},
+            "uuid": {"type": "string", "pattern": "^GPU-[0-9a-f-]{36}$"},
+            "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+            "sm_count": {"type": "integer", "minimum": 1},
+            "l2_bytes": {"type": "integer", "minimum": 0},
+            "memory_bytes": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "conditions": {
+      "type": "object",
+      "required": ["lock", "lock_wait_s", "idle_check", "during_run"],
+      "additionalProperties": false,
+      "properties": {
+        "lock": {"type": "string"},
+        "lock_wait_s": {"type": "number", "minimum": 0},
+        "idle_check": {
+          "type": "object",
+          "required": ["samples", "compute_apps_max", "utilization_pct_max"],
+          "additionalProperties": false,
+          "properties": {
+            "samples": {"type": "integer", "minimum": 1},
+            "compute_apps_max": {"const": 0},
+            "utilization_pct_max": {"type": "number"}
+          }
+        },
+        "during_run": {
+          "type": "object",
+          "required": ["samples", "sm_mhz", "sm_max_mhz", "power_w", "temperature_c", "clocks_event_reasons", "compute_apps_max"],
+          "additionalProperties": false,
+          "properties": {
+            "samples": {"type": "integer", "minimum": 1},
+            "sm_mhz": {"$ref": "#/$defs/spread"},
+            "sm_max_mhz": {"type": ["number", "null"]},
+            "power_w": {"$ref": "#/$defs/spread"},
+            "temperature_c": {"$ref": "#/$defs/spread"},
+            "clocks_event_reasons": {"type": "string", "pattern": "^0x[0-9a-f]{16}$"},
+            "compute_apps_max": {"type": "integer", "minimum": 0, "maximum": 1}
+          }
+        }
+      }
+    },
+    "config": {"type": "object"},
+    "benchmarks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "metric", "unit", "better", "samples", "stats"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$"},
+          "metric": {"enum": ["bandwidth", "time_per_cell_iteration"]},
+          "unit": {"enum": ["GB/s", "ns"]},
+          "better": {"enum": ["higher", "lower"]},
+          "bytes_per_rep": {"type": "integer", "minimum": 1},
+          "samples": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 2},
+          "stats": {"$ref": "#/$defs/stats"}
+        }
+      }
+    }
+  }
+}
