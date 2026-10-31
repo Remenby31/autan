@@ -244,6 +244,54 @@ An entity belongs to several zones in the source (Gmsh entity in two physical gr
 
 Fix: Assign each entity to one zone in the meshing tool.
 
+## E0140
+
+**Invalid partition request** (error)
+
+A part count, rank, part index or cell weight is out of range, or an array has the wrong size.
+
+Fix: Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.
+
+## E0141
+
+**Mesh already partitioned** (error)
+
+The mesh to partition already has ghost cells.
+
+Fix: Partition the global mesh, not one of its partitions.
+
+## E0142
+
+**Partitioner unavailable or failed** (error)
+
+The partitioner (METIS, Scotch) is not built or reports an error.
+
+Fix: Use a build with the partitioner enabled, or choose the other partitioning method.
+
+## E0143
+
+**Empty partition** (error)
+
+A part received no cell.
+
+Fix: Run on fewer ranks, or relax the cell weights.
+
+## E0144
+
+**Inconsistent halo** (error)
+
+The communicator size differs from the partition count, or two ranks disagree on what they exchange.
+
+Fix: Launch one MPI rank per part, each with the partition extracted for its own rank.
+
+## E0145
+
+**Device halo exchange unsupported** (error)
+
+A halo exchange on device memory without CUDA support in the build or in MPI.
+
+Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
+
 ## E0201
 
 **No mesh information** (error)
