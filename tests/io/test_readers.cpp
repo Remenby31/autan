@@ -120,7 +120,7 @@ void require_same_mesh(const autan::Mesh& a, const autan::Mesh& b, bool cell_zon
   }
 }
 
-const autan::FaceZone& zone_named(const autan::Mesh& mesh, const std::string& name) {
+autan::FaceZone zone_named(const autan::Mesh& mesh, const std::string& name) {
   const auto zones = mesh.face_zones();
   const auto it = std::find_if(zones.begin(), zones.end(),
                                [&](const autan::FaceZone& z) { return z.name == name; });
@@ -318,7 +318,7 @@ TEST_CASE("Hand-written files from the format specifications read as specified",
     CHECK_THAT(g.cell_volume[0], WithinRel(1.0 / 6.0, 1e-15));
     const auto closure = autan::cell_closure_error(mesh, g);
     CHECK(closure[0] < 1e-12);
-    const auto& sides = zone_named(mesh, "sides");
+    const autan::FaceZone sides = zone_named(mesh, "sides");
     CHECK(sides.bc_type == "velocity-inlet");
     CHECK(sides.kind == autan::BcKind::inlet);
     CHECK(sides.provenance.source_id == 4);
