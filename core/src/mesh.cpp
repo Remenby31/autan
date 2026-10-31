@@ -48,6 +48,13 @@ void check_sizes(const MeshInput& in) {
            "face_node_offsets decreases at face " + std::to_string(f));
     }
   }
+  if (!in.cell_global_id.empty() && in.cell_global_id.size() != in.cell_zone.size()) {
+    fail(ErrorCode::mesh_inconsistent_sizes, "cell_global_id must be empty or have one id per cell");
+  }
+  if (in.n_ghost_cells < 0 || to_size(in.n_ghost_cells) >= in.cell_zone.size()) {
+    fail(ErrorCode::mesh_inconsistent_sizes,
+         "n_ghost_cells must leave at least one owned cell");
+  }
 }
 
 template <typename Zone>
@@ -67,6 +74,7 @@ void check_entities(const MeshInput& in) {
   const auto n_face_zones = static_cast<index_t>(in.face_zones.size());
   const auto n_cell_zones = static_cast<index_t>(in.cell_zones.size());
   const std::size_t n_faces = in.face_cell0.size();
+  const index_t n_owned = n_cells - in.n_ghost_cells;
 
   std::vector<index_t> sorted;
   for (std::size_t f = 0; f < n_faces; ++f) {
@@ -93,6 +101,9 @@ void check_entities(const MeshInput& in) {
       fail(ErrorCode::mesh_face_same_cell_both_sides,
            "face has the same cell on both sides" + where);
     }
+    if (c0 >= n_owned && (c1 == no_cell || c1 >= n_owned)) {
+      fail(ErrorCode::mesh_face_without_owned_cell, "face touches no owned cell" + where);
+    }
     if (in.face_zone[f] < 0 || in.face_zone[f] >= n_face_zones) {
       fail(ErrorCode::mesh_index_out_of_range, "face zone index out of range" + where);
     }
@@ -107,15 +118,20 @@ void check_entities(const MeshInput& in) {
   check_unique_names(in.face_zones, "face zone");
   check_unique_names(in.cell_zones, "cell zone");
 
-  std::vector<unsigned char> zone_sides(in.face_zones.size(), 0);
   for (std::size_t f = 0; f < n_faces; ++f) {
-    zone_sides[to_size(in.face_zone[f])] |=
-        static_cast<unsigned char>(in.face_cell1[f] == no_cell ? 2 : 1);
+    const FaceZone& zone = in.face_zones[to_size(in.face_zone[f])];
+    if (zone.boundary != (in.face_cell1[f] == no_cell)) {
+      fail(ErrorCode::mesh_face_zone_role,
+           std::string(zone.boundary ? "interior" : "boundary") + " face " + std::to_string(f) +
+               " in " + (zone.boundary ? "boundary" : "interior") + " zone '" + zone.name + "'");
+    }
   }
-  for (std::size_t z = 0; z < zone_sides.size(); ++z) {
-    if (zone_sides[z] == 3) {
-      fail(ErrorCode::mesh_zone_mixes_interior_and_boundary,
-           "face zone '" + in.face_zones[z].name + "' holds both interior and boundary faces");
+
+  if (!in.cell_global_id.empty()) {
+    std::vector<std::int64_t> ids(in.cell_global_id);
+    std::sort(ids.begin(), ids.end());
+    if (ids.front() < 0 || std::adjacent_find(ids.begin(), ids.end()) != ids.end()) {
+      fail(ErrorCode::mesh_duplicate_global_id, "cell global ids must be distinct and >= 0");
     }
   }
 }
@@ -129,7 +145,7 @@ void check_cells_closed(const Mesh& mesh) {
     bool forward;
   };
   std::vector<Edge> edges;
-  for (index_t c = 0; c < mesh.n_cells(); ++c) {
+  for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
     edges.clear();
     for (const index_t f : mesh.cell_faces(c)) {
       const auto nodes = mesh.face_nodes(f);
@@ -180,6 +196,7 @@ MeshView Mesh::view() const noexcept {
   return MeshView{
       .n_points = n_points(),
       .n_cells = n_cells(),
+      .n_owned_cells = n_owned_cells(),
       .n_faces = n_faces(),
       .n_interior_faces = n_interior_faces(),
       .n_face_zones = static_cast<index_t>(face_zones_.size()),
@@ -193,22 +210,26 @@ MeshView Mesh::view() const noexcept {
       .neighbour = neighbour_.data(),
       .face_zone = face_zone_.data(),
       .cell_zone = cell_zone_.data(),
+      .cell_global_id = cell_global_id_.data(),
       .boundary_zone_offsets = boundary_zone_offsets_.data(),
       .cell_face_offsets = cell_face_offsets_.data(),
       .cell_faces = cell_faces_.data(),
   };
 }
 
-Mesh assemble(MeshInput in) {
+Mesh assemble(MeshInput in, AssemblyMap* map) {
   check_sizes(in);
   check_entities(in);
+  if (map != nullptr) *map = AssemblyMap{};
 
   const std::size_t n_faces = in.face_cell0.size();
   const std::size_t n_cells = in.cell_zone.size();
 
   // Orient interior faces from the lower to the higher cell index.
+  std::vector<std::uint8_t> reversed(n_faces, 0);
   for (std::size_t f = 0; f < n_faces; ++f) {
     if (in.face_cell1[f] != no_cell && in.face_cell1[f] < in.face_cell0[f]) {
+      reversed[f] = 1;
       std::swap(in.face_cell0[f], in.face_cell1[f]);
       std::reverse(in.face_nodes.begin() + in.face_node_offsets[f] + 1,
                    in.face_nodes.begin() + in.face_node_offsets[f + 1]);
@@ -238,6 +259,7 @@ Mesh assemble(MeshInput in) {
   for (std::size_t p = 0; p < point_map.size(); ++p) {
     if (point_map[p] == 0) {
       point_map[p] = n_used++;
+      if (map != nullptr) map->point_source.push_back(static_cast<index_t>(p));
       mesh.x_.push_back(in.x[p]);
       mesh.y_.push_back(in.y[p]);
       mesh.z_.push_back(in.z[p]);
@@ -274,10 +296,11 @@ Mesh assemble(MeshInput in) {
     ++mesh.cell_face_offsets_[to_size(mesh.owner_[f]) + 1];
     if (f < mesh.neighbour_.size()) ++mesh.cell_face_offsets_[to_size(mesh.neighbour_[f]) + 1];
   }
+  const auto n_owned = n_cells - to_size(in.n_ghost_cells);
   for (std::size_t c = 0; c < n_cells; ++c) {
-    if (mesh.cell_face_offsets_[c + 1] < 4) {
+    if (mesh.cell_face_offsets_[c + 1] < (c < n_owned ? 4 : 1)) {
       fail(ErrorCode::mesh_cell_too_few_faces,
-           "cell " + std::to_string(c) + " has fewer than 4 faces");
+           "cell " + std::to_string(c) + " has too few faces (4 for an owned cell, 1 for a ghost)");
     }
   }
   std::partial_sum(mesh.cell_face_offsets_.begin(), mesh.cell_face_offsets_.end(),
@@ -292,6 +315,18 @@ Mesh assemble(MeshInput in) {
     }
   }
 
+  mesh.n_owned_cells_ = static_cast<index_t>(n_owned);
+  if (in.cell_global_id.empty()) {
+    mesh.cell_global_id_.resize(n_cells);
+    std::iota(mesh.cell_global_id_.begin(), mesh.cell_global_id_.end(), std::int64_t{0});
+  } else {
+    mesh.cell_global_id_ = std::move(in.cell_global_id);
+  }
+  if (map != nullptr) {
+    map->face_source = order;
+    map->face_reversed.resize(n_faces);
+    for (std::size_t f = 0; f < n_faces; ++f) map->face_reversed[f] = reversed[to_size(order[f])];
+  }
   mesh.cell_zone_ = std::move(in.cell_zone);
   mesh.face_zones_ = std::move(in.face_zones);
   mesh.cell_zones_ = std::move(in.cell_zones);

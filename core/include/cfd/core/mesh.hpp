@@ -44,6 +44,7 @@ struct FaceZone {
   std::string name;
   std::string bc_type;  ///< type exactly as written in the source; empty if none
   BcKind kind = BcKind::unspecified;
+  bool boundary = true;  ///< role: holds boundary faces (true) or interior faces (false)
   Provenance provenance;
 };
 
@@ -60,10 +61,13 @@ struct MeshSource {
   std::string path;
 };
 
-/// Face-based mesh as a reader produces it: faces in any order, each oriented
-/// so that its right-hand-rule normal points away from `face_cell0` and into
-/// `face_cell1` (`no_cell` on the boundary). Every array is indexed by the
-/// entity it describes; `cell_zone` defines the number of cells.
+/// Face-based mesh as a reader or partitioner produces it: faces in any order,
+/// each oriented so that its right-hand-rule normal points away from
+/// `face_cell0` and into `face_cell1` (`no_cell` on the boundary). Every array
+/// is indexed by the entity it describes; `cell_zone` defines the number of
+/// cells. The last `n_ghost_cells` cells are halo copies of cells owned by
+/// another partition; `cell_global_id` is empty (identity) or gives the
+/// global index of every cell.
 struct MeshInput {
   std::vector<double> x, y, z;
   std::vector<offset_t> face_node_offsets;  ///< size n_faces + 1, starts at 0
@@ -72,9 +76,19 @@ struct MeshInput {
   std::vector<index_t> face_cell1;
   std::vector<index_t> face_zone;
   std::vector<index_t> cell_zone;
+  std::vector<std::int64_t> cell_global_id;
+  index_t n_ghost_cells = 0;
   std::vector<FaceZone> face_zones;
   std::vector<CellZone> cell_zones;
   MeshSource source;
+};
+
+/// Where each entity of an assembled mesh comes from in its MeshInput, for
+/// callers that hold data attached to the input numbering.
+struct AssemblyMap {
+  std::vector<index_t> face_source;          ///< input face of each mesh face
+  std::vector<std::uint8_t> face_reversed;  ///< 1 if the face was flipped (owner <-> neighbour)
+  std::vector<index_t> point_source;         ///< input point of each mesh point
 };
 
 /// Non-owning view of a mesh's arrays for kernels. Plain pointers so that the
@@ -83,6 +97,7 @@ struct MeshInput {
 struct MeshView {
   index_t n_points;
   index_t n_cells;
+  index_t n_owned_cells;
   index_t n_faces;
   index_t n_interior_faces;
   index_t n_face_zones;
@@ -96,6 +111,7 @@ struct MeshView {
   const index_t* neighbour;
   const index_t* face_zone;
   const index_t* cell_zone;
+  const std::int64_t* cell_global_id;
   const index_t* boundary_zone_offsets;
   const offset_t* cell_face_offsets;
   const index_t* cell_faces;
@@ -107,6 +123,7 @@ class Mesh {
  public:
   [[nodiscard]] index_t n_points() const noexcept { return static_cast<index_t>(x_.size()); }
   [[nodiscard]] index_t n_cells() const noexcept { return static_cast<index_t>(cell_zone_.size()); }
+  [[nodiscard]] index_t n_owned_cells() const noexcept { return n_owned_cells_; }
   [[nodiscard]] index_t n_faces() const noexcept { return static_cast<index_t>(owner_.size()); }
   [[nodiscard]] index_t n_interior_faces() const noexcept {
     return static_cast<index_t>(neighbour_.size());
@@ -125,6 +142,9 @@ class Mesh {
   [[nodiscard]] std::span<const index_t> neighbour() const noexcept { return neighbour_; }
   [[nodiscard]] std::span<const index_t> face_zone() const noexcept { return face_zone_; }
   [[nodiscard]] std::span<const index_t> cell_zone() const noexcept { return cell_zone_; }
+  [[nodiscard]] std::span<const std::int64_t> cell_global_id() const noexcept {
+    return cell_global_id_;
+  }
   [[nodiscard]] std::span<const index_t> boundary_zone_offsets() const noexcept {
     return boundary_zone_offsets_;
   }
@@ -140,7 +160,7 @@ class Mesh {
   [[nodiscard]] MeshView view() const noexcept;
 
  private:
-  friend Mesh assemble(MeshInput input);
+  friend Mesh assemble(MeshInput input, AssemblyMap* map);
 
   std::vector<double> x_, y_, z_;
   std::vector<offset_t> face_node_offsets_;
@@ -149,6 +169,8 @@ class Mesh {
   std::vector<index_t> neighbour_;
   std::vector<index_t> face_zone_;
   std::vector<index_t> cell_zone_;
+  std::vector<std::int64_t> cell_global_id_;
+  index_t n_owned_cells_ = 0;
   std::vector<index_t> boundary_zone_offsets_;
   std::vector<offset_t> cell_face_offsets_;
   std::vector<index_t> cell_faces_;
@@ -160,8 +182,8 @@ class Mesh {
 /// Validates `input` and returns it in canonical order: owner < neighbour on
 /// interior faces, interior faces first sorted by (owner, neighbour), then
 /// boundary faces grouped by zone index and sorted by owner; points that no
-/// face references are removed. Cell order is kept. Throws cfd::Error with an
-/// E01xx code on the first invariant violation.
-Mesh assemble(MeshInput input);
+/// face references are removed. Cell order is kept. Fills `map` when given.
+/// Throws cfd::Error with an E01xx code on the first invariant violation.
+Mesh assemble(MeshInput input, AssemblyMap* map = nullptr);
 
 }  // namespace cfd

@@ -39,7 +39,9 @@ struct CellwiseMesh {
 /// Merges coincident cell faces (same node set) into face-based form. A face
 /// seen from two cells must be listed with opposite orientations (E0114) and
 /// by at most two cells (E0108); a labelled face must match exactly one cell
-/// face (E0111) and be labelled once (E0115). Unlabelled interior faces go to
+/// face (E0111) and be labelled once (E0115). A zone that labels faces takes
+/// the role (interior or boundary) of those faces and may not mix them
+/// (E0109); a zone that labels none keeps its declared role. Unlabelled interior faces go to
 /// a synthesised zone "interior"; unlabelled boundary faces go to a
 /// synthesised zone "unassigned", so that missing boundary conditions stay
 /// visible downstream.

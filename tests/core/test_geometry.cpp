@@ -225,3 +225,57 @@ TEST_CASE("A prism on a concave polygon has its shoelace area, volume and centro
   CHECK(caps == 2);
   CHECK(max_closure(mesh, g) < closure_tolerance);
 }
+
+TEST_CASE("Face centroids and area vectors integrate linear fields exactly on planar faces",
+          "[geometry]") {
+  // Divergence theorem: sum_f (c_f)_i (S_f)_j = V delta_ij for every cell
+  // whose faces are planar, so Green-Gauss is exact for linear fields. Warped
+  // faces break this at the order of the warp (documented in the contract).
+  auto check = [](const cfd::Mesh& mesh) {
+    const cfd::Geometry g = cfd::compute_geometry(mesh);
+    for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+      std::array<std::array<double, 3>, 3> m{};
+      for (const index_t f : mesh.cell_faces(c)) {
+        const std::size_t i = at(f);
+        const double sign = mesh.owner()[i] == c ? 1.0 : -1.0;
+        const std::array<double, 3> cf{g.face_centroid_x[i], g.face_centroid_y[i], g.face_centroid_z[i]};
+        const std::array<double, 3> s{g.face_area_x[i], g.face_area_y[i], g.face_area_z[i]};
+        for (std::size_t a = 0; a < 3; ++a)
+          for (std::size_t b = 0; b < 3; ++b) m[a][b] += sign * cf[a] * s[b];
+      }
+      const double v = g.cell_volume[at(c)];
+      for (std::size_t a = 0; a < 3; ++a)
+        for (std::size_t b = 0; b < 3; ++b) CHECK_THAT(m[a][b] / v, WithinAbs(a == b ? 1.0 : 0.0, 1e-12));
+    }
+  };
+  SECTION("boxes") {
+    const auto fill = GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
+                               cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
+    CAPTURE(cfd::test::to_string(fill));
+    check(cfd::assemble(cfd::to_face_based(cfd::test::box(3, fill))));
+  }
+  SECTION("105-face cell with hanging nodes") {
+    check(cfd::assemble(cfd::to_face_based(cfd::test::hanging_node_box())));
+  }
+}
+
+TEST_CASE("Geometry holds at extreme length scales", "[geometry]") {
+  const double scale = GENERATE(1e-90, 1e80);
+  CAPTURE(scale);
+  const std::array<std::array<double, 3>, 3> a{{{scale, 0, 0}, {0, scale, 0}, {0, 0, scale}}};
+  const auto ref = cfd::test::affine_cell(cfd::CellShape::hexa, a, {0, 0, 0});
+  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
+  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  CHECK_THAT(g.cell_volume[0], WithinRel(ref.volume, 1e-14));
+  CHECK_THAT(g.face_area[0], WithinRel(scale * scale, 1e-14));
+}
+
+TEST_CASE("Closure of a geometry computed for another mesh is rejected", "[geometry]") {
+  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(1, cfd::test::BoxFill::hexa)));
+  try {
+    (void)cfd::cell_closure_error(mesh, cfd::Geometry{});
+    FAIL("expected an error");
+  } catch (const cfd::Error& e) {
+    CHECK(e.code() == cfd::ErrorCode::mesh_inconsistent_sizes);
+  }
+}

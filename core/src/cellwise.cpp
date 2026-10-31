@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <functional>
 #include <numeric>
 #include <string>
 #include <utility>
@@ -85,10 +86,32 @@ bool is_reversed_cycle(std::span<const index_t> a, std::span<const index_t> b) {
   return true;
 }
 
-index_t append_zone(std::vector<FaceZone>& zones, const char* name, const char* detail) {
+// Faces of a CSR must be well formed before anything indexes through them.
+void check_faces(std::span<const offset_t> offsets, std::span<const index_t> nodes,
+                 std::size_t n_points, const char* what) {
+  if (offsets.empty() || offsets.front() != 0 || to_size(offsets.back()) != nodes.size()) {
+    fail(ErrorCode::mesh_inconsistent_sizes,
+         std::string(what) + " offsets must start at 0 and end at the node count");
+  }
+  for (std::size_t f = 0; f + 1 < offsets.size(); ++f) {
+    if (offsets[f + 1] - offsets[f] < 3) {
+      fail(ErrorCode::mesh_face_too_few_nodes,
+           std::string(what) + " " + std::to_string(f) + " has fewer than 3 nodes (or decreasing offsets)");
+    }
+  }
+  for (const index_t p : nodes) {
+    if (p < 0 || to_size(p) >= n_points) {
+      fail(ErrorCode::mesh_index_out_of_range, std::string(what) + " node index out of range");
+    }
+  }
+}
+
+index_t append_zone(std::vector<FaceZone>& zones, const char* name, bool boundary,
+                    const char* detail) {
   zones.push_back(FaceZone{.name = name,
                            .bc_type = "",
                            .kind = BcKind::unspecified,
+                           .boundary = boundary,
                            .provenance = Provenance{.source_id = -1, .detail = detail}});
   return static_cast<index_t>(zones.size() - 1);
 }
@@ -132,11 +155,26 @@ void CellwiseMesh::add_labelled_face(std::span<const index_t> nodes, index_t zon
 }
 
 MeshInput to_face_based(CellwiseMesh mesh) {
-  if (mesh.cell_face_offsets.size() != mesh.cell_zone.size() + 1 ||
+  const std::size_t n_points = mesh.x.size();
+  if (mesh.y.size() != n_points || mesh.z.size() != n_points ||
+      mesh.cell_face_offsets.size() != mesh.cell_zone.size() + 1 ||
+      mesh.cell_face_offsets.front() != 0 ||
       to_size(mesh.cell_face_offsets.back()) + 1 != mesh.face_node_offsets.size() ||
-      to_size(mesh.face_node_offsets.back()) != mesh.face_nodes.size() ||
       mesh.labelled_face_node_offsets.size() != mesh.labelled_face_zone.size() + 1) {
     fail(ErrorCode::mesh_inconsistent_sizes, "cellwise mesh arrays disagree on their sizes");
+  }
+  if (std::adjacent_find(mesh.cell_face_offsets.begin(), mesh.cell_face_offsets.end(),
+                         std::greater<>()) != mesh.cell_face_offsets.end()) {
+    fail(ErrorCode::mesh_inconsistent_sizes, "cell_face_offsets decreases");
+  }
+  check_faces(mesh.face_node_offsets, mesh.face_nodes, n_points, "cell face");
+  check_faces(mesh.labelled_face_node_offsets, mesh.labelled_face_nodes, n_points,
+              "labelled face");
+  const std::size_t n_source_zones = mesh.face_zones.size();
+  for (const index_t zone : mesh.labelled_face_zone) {
+    if (zone < 0 || to_size(zone) >= n_source_zones) {
+      fail(ErrorCode::mesh_index_out_of_range, "labelled face zone index out of range");
+    }
   }
 
   const FaceKeys cell_faces(mesh.face_node_offsets, mesh.face_nodes);
@@ -199,33 +237,35 @@ MeshInput to_face_based(CellwiseMesh mesh) {
     }
     i = j;
   }
-  std::sort(groups.begin(), groups.end(),
-            [](const Group& l, const Group& r) { return l.first < r.first; });
-
+  // Groups are in key order: look labels up by binary search.
   std::vector<index_t> group_zone(groups.size(), -1);
-  if (!mesh.labelled_face_zone.empty()) {
-    std::vector<std::size_t> by_key(groups.size());
-    std::iota(by_key.begin(), by_key.end(), std::size_t{0});
-    std::sort(by_key.begin(), by_key.end(), [&](std::size_t a, std::size_t b) {
-      return compare_keys(cell_faces.key(groups[a].first), cell_faces.key(groups[b].first)) < 0;
-    });
-    const FaceKeys labelled(mesh.labelled_face_node_offsets, mesh.labelled_face_nodes);
-    for (std::size_t l = 0; l < labelled.size(); ++l) {
-      const auto key = labelled.key(l);
-      const auto it = std::lower_bound(
-          by_key.begin(), by_key.end(), key, [&](std::size_t g, std::span<const index_t> k) {
-            return compare_keys(cell_faces.key(groups[g].first), k) < 0;
-          });
-      if (it == by_key.end() || compare_keys(cell_faces.key(groups[*it].first), key) != 0) {
-        fail(ErrorCode::mesh_labelled_face_not_found,
-             "labelled face " + std::to_string(l) + " matches no cell face");
-      }
-      if (group_zone[*it] != -1) {
-        fail(ErrorCode::mesh_face_labelled_twice,
-             "labelled face " + std::to_string(l) + " labels a face that is already labelled");
-      }
-      group_zone[*it] = mesh.labelled_face_zone[l];
+  const FaceKeys labelled(mesh.labelled_face_node_offsets, mesh.labelled_face_nodes);
+  std::vector<unsigned char> zone_sides(n_source_zones, 0);
+  for (std::size_t l = 0; l < labelled.size(); ++l) {
+    const auto key = labelled.key(l);
+    const auto it = std::lower_bound(groups.begin(), groups.end(), key,
+                                     [&](const Group& g, std::span<const index_t> k) {
+                                       return compare_keys(cell_faces.key(g.first), k) < 0;
+                                     });
+    if (it == groups.end() || compare_keys(cell_faces.key(it->first), key) != 0) {
+      fail(ErrorCode::mesh_labelled_face_not_found,
+           "labelled face " + std::to_string(l) + " matches no cell face");
     }
+    const auto g = static_cast<std::size_t>(it - groups.begin());
+    if (group_zone[g] != -1) {
+      fail(ErrorCode::mesh_face_labelled_twice,
+           "labelled face " + std::to_string(l) + " labels a face that is already labelled");
+    }
+    const index_t zone = mesh.labelled_face_zone[l];
+    group_zone[g] = zone;
+    zone_sides[to_size(zone)] |= static_cast<unsigned char>(it->second == none ? 2 : 1);
+  }
+  for (std::size_t z = 0; z < n_source_zones; ++z) {
+    if (zone_sides[z] == 3) {
+      fail(ErrorCode::mesh_face_zone_role,
+           "face zone '" + mesh.face_zones[z].name + "' labels both interior and boundary faces");
+    }
+    if (zone_sides[z] != 0) mesh.face_zones[z].boundary = zone_sides[z] == 2;
   }
 
   MeshInput out;
@@ -239,13 +279,13 @@ MeshInput to_face_based(CellwiseMesh mesh) {
     index_t zone = group_zone[g];
     if (zone == -1 && interior) {
       if (interior_zone == -1) {
-        interior_zone =
-            append_zone(mesh.face_zones, "interior", "synthesised: unlabelled interior faces");
+        interior_zone = append_zone(mesh.face_zones, "interior", false,
+                                    "synthesised: unlabelled interior faces");
       }
       zone = interior_zone;
     } else if (zone == -1) {
       if (unassigned_zone == -1) {
-        unassigned_zone = append_zone(mesh.face_zones, "unassigned",
+        unassigned_zone = append_zone(mesh.face_zones, "unassigned", true,
                                       "synthesised: boundary faces without a label in the source");
       }
       zone = unassigned_zone;

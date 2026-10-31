@@ -34,14 +34,17 @@ struct GeometryView {
 /// Computes face and cell geometry in FP64. Each face is split into a fan of
 /// triangles around the mean of its nodes; the cell is the polyhedron bounded
 /// by these triangles, decomposed into tetrahedra (pyramids on each fan
-/// triangle). Throws E0120 for a face of zero area and E0121 for a cell of
-/// non-positive volume.
+/// triangle). Ghost cells get NaN volume and centroid: the partitioner fills
+/// them from the owning partition. Throws E0120 for a face of zero or
+/// non-finite area and E0121 for an owned cell of non-positive or non-finite
+/// volume.
 Geometry compute_geometry(const Mesh& mesh);
 
 [[nodiscard]] GeometryView view(const Geometry& geometry) noexcept;
 
-/// Per-cell closure error |sum_f S_f| / sum_f |S_f| with outward area vectors;
-/// zero for a closed cell up to round-off.
+/// Closure error |sum_f S_f| / sum_f |S_f| of each owned cell, with outward
+/// area vectors; zero for a closed cell up to round-off. Throws E0101 if
+/// `geometry` was not computed for `mesh`.
 std::vector<double> cell_closure_error(const Mesh& mesh, const Geometry& geometry);
 
 }  // namespace cfd

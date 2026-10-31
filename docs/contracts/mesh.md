@@ -4,7 +4,7 @@ The in-memory mesh that readers produce and that kernels, the partitioner and th
 
 ## Model
 
-A mesh is **face-based**: cells are arbitrary polyhedra known only through their faces; faces are arbitrary polygons (three or more nodes, non-planar allowed, collinear hanging nodes allowed). There is no cell→node connectivity and no cell type. A mesh is 3D and describes one partition.
+A mesh is **face-based**: cells are arbitrary polyhedra known only through their faces; faces are arbitrary polygons (three or more nodes, non-planar allowed, collinear hanging nodes allowed). There is no cell→node connectivity and no cell type. A mesh is 3D and describes one partition: owned cells `[0, n_owned_cells)` followed by ghost cells `[n_owned_cells, n_cells)`, which are halo copies of cells owned by another partition. An unpartitioned mesh has no ghost cells.
 
 | Type | Meaning |
 |---|---|
@@ -25,6 +25,7 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 | `neighbour` | n_interior_faces | Cell on the side the normal points into. |
 | `face_zone` | n_faces | Index into `face_zones`. |
 | `cell_zone` | n_cells | Index into `cell_zones`. |
+| `cell_global_id` | n_cells | `int64` index of the cell in the unpartitioned mesh; the identity when the mesh was not partitioned. |
 | `boundary_zone_offsets` | n_face_zones + 1 | Boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_faces`. Interior zones have an empty range. |
 | `cell_face_offsets`, `cell_faces` | n_cells + 1, 2·n_interior + n_boundary | CSR of the faces of each cell, in increasing face index. A face is outward for cell `c` iff `owner[f] == c`. |
 
@@ -35,11 +36,12 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 1. Faces `[0, n_interior_faces)` are interior, faces `[n_interior_faces, n_faces)` are boundary.
 2. Interior faces have `owner < neighbour` and are sorted by `(owner, neighbour)`. Two cells may share several faces.
 3. Boundary faces are grouped by ascending zone index and sorted by owner within a zone.
-4. Each face has ≥ 3 distinct nodes; each cell has ≥ 4 faces.
-5. Every cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction.
-6. A face zone holds only interior faces or only boundary faces. Face-zone names are unique; cell-zone names are unique.
-7. Every point is referenced by a face (unreferenced points are removed).
-8. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit.
+4. Each face has ≥ 3 distinct nodes; each owned cell has ≥ 4 faces; each ghost cell has ≥ 1 face.
+5. Every owned cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction. Ghost cells carry only the faces they share with owned cells.
+6. Every face touches an owned cell, so `owner[f] < n_owned_cells` for every face: a face loop over all faces visits each owned cell's faces, and its contributions to ghost cells (`neighbour[f] ≥ n_owned_cells`) are partial sums that a reverse halo exchange adds to the owning partition, as an adjoint (transposed) kernel needs.
+7. A face zone's `boundary` flag says whether it holds boundary or interior faces, and every face matches the role of its zone (a declared zone may be empty). Face-zone names are unique; cell-zone names are unique. Global ids are distinct and ≥ 0.
+8. Every point is referenced by a face (unreferenced points are removed).
+9. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit. `assemble(input, &map)` returns, in a `cfd::AssemblyMap`, the input face of each face, whether it was reversed, and the input point of each point.
 
 ## Zones
 
@@ -50,6 +52,7 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 | `name` | Name in the source (Fluent zone name, Gmsh physical name, OpenFOAM patch). | Same. |
 | `bc_type` / `type` | Type exactly as written in the source; empty if the format has none. | Same. |
 | `kind` | `BcKind`: `unspecified`, `wall`, `thermal_wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
+| `boundary` | Role: boundary (true) or interior (false) faces. | — |
 | `provenance.source_id` | Identifier in the source file, or −1 for a zone the reader synthesised. | Same. |
 | `provenance.detail` | Human-readable origin. | Same. |
 
@@ -69,11 +72,15 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 | `cell_volume` | n_cells | Volume of the polyhedron bounded by the fan triangles, summed over tetrahedra (apex, m, pᵢ, pᵢ₊₁) with signed volumes; the apex is the mean of the face centroids. Volumes of all cells sum to the volume enclosed by the boundary triangles. |
 | `cell_centroid_{x,y,z}` | n_cells | Volume-weighted centroid of the same tetrahedra. |
 
-`cfd::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ per cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
+Ghost cells get NaN volume and centroid: the partitioner fills them from the owning partition.
+
+On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Green–Gauss with face-centroid values is exact for linear fields. On warped faces a single (c_f, S_f) pair cannot integrate a linear field over the fan exactly; the error is of the order of the warp, as in other cell-centred codes. Kernels that need exactness there must use least-squares gradients or per-triangle quadrature.
+
+`cfd::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
 
 ## Building a mesh
 
-Readers of face-based formats (Fluent, OpenFOAM) fill a `cfd::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary). Readers of element-based formats (Gmsh, CGNS) fill a `cfd::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `cfd::to_face_based`, which merges coincident faces by node set.
+Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `cfd::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary); ghost cells last with `n_ghost_cells`, and `cell_global_id` when partitioned. Readers of element-based formats (Gmsh, CGNS) fill a `cfd::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `cfd::to_face_based`, which merges coincident faces by node set. A zone that labels faces takes their role (interior or boundary); a zone that labels none keeps its declared role.
 
 ## Errors
 
@@ -86,18 +93,20 @@ Every failure throws `cfd::Error`; callers branch on `code()`, never on the mess
 | E0103 | `mesh_face_too_few_nodes` | A face has fewer than 3 nodes. |
 | E0104 | `mesh_face_repeated_node` | A face lists a node twice. |
 | E0105 | `mesh_face_same_cell_both_sides` | A face has the same cell on both sides. |
-| E0106 | `mesh_cell_too_few_faces` | A cell has fewer than 4 faces (including none). |
+| E0106 | `mesh_cell_too_few_faces` | An owned cell has fewer than 4 faces, or a ghost cell none. |
 | E0107 | `mesh_cell_not_closed` | Invariant 5 fails for a cell. |
 | E0108 | `mesh_face_shared_by_more_than_two_cells` | More than two cells list the same face. |
-| E0109 | `mesh_zone_mixes_interior_and_boundary` | Invariant 6, first part. |
-| E0110 | `mesh_duplicate_zone_name` | Invariant 6, second part. |
+| E0109 | `mesh_face_zone_role` | A face does not match its zone's role, or labels put one zone on both interior and boundary faces. |
+| E0110 | `mesh_duplicate_zone_name` | Two face zones or two cell zones share a name. |
 | E0111 | `mesh_labelled_face_not_found` | A labelled face matches no cell face. |
 | E0112 | `mesh_empty` | No cell, face or point. |
 | E0113 | `mesh_too_large` | A count exceeds the `index_t` range. |
 | E0114 | `mesh_shared_face_orientation` | Two cells list their common face with the same orientation (one is inverted). |
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
-| E0120 | `geometry_degenerate_face` | A face has zero area. |
-| E0121 | `geometry_non_positive_volume` | A cell has zero or negative volume. |
+| E0116 | `mesh_face_without_owned_cell` | A face touches only ghost cells. |
+| E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
+| E0120 | `geometry_degenerate_face` | A face has zero or non-finite area. |
+| E0121 | `geometry_non_positive_volume` | An owned cell has zero, negative or non-finite volume. |
 | E0130 | `io_cannot_open` | The file or directory cannot be opened or read. |
 | E0131 | `io_unknown_format` | The content matches no supported format. |
 | E0132 | `io_malformed` | The file violates its format specification (syntax, truncation, inconsistent counts). |

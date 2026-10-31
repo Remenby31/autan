@@ -1,6 +1,7 @@
 #include "cfd/core/geometry.hpp"
 
 #include <cmath>
+#include <limits>
 #include <cstddef>
 #include <string>
 
@@ -20,7 +21,7 @@ double dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 Vec3 cross(Vec3 a, Vec3 b) {
   return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-double norm(Vec3 a) { return std::sqrt(dot(a, a)); }
+double norm(Vec3 a) { return std::hypot(a.x, a.y, a.z); }
 
 std::size_t to_size(index_t value) { return static_cast<std::size_t>(value); }
 
@@ -61,9 +62,9 @@ Geometry compute_geometry(const Mesh& mesh) {
       area = area + 0.5 * cross(point(mesh, nodes[i]) - m, point(mesh, nodes[(i + 1) % n]) - m);
     }
     const double magnitude = norm(area);
-    if (!(magnitude > 0.0)) {
+    if (!(magnitude > 0.0) || !std::isfinite(magnitude)) {
       throw Error(ErrorCode::geometry_degenerate_face,
-                  "face " + std::to_string(f) + " has zero area");
+                  "face " + std::to_string(f) + " has zero or non-finite area");
     }
     const Vec3 normal = (1.0 / magnitude) * area;
     // Fan triangles are weighted by their area projected on the face normal,
@@ -87,11 +88,14 @@ Geometry compute_geometry(const Mesh& mesh) {
     g.face_centroid_z[f] = centroid.z;
   }
 
-  g.cell_volume.resize(n_cells);
-  g.cell_centroid_x.resize(n_cells);
-  g.cell_centroid_y.resize(n_cells);
-  g.cell_centroid_z.resize(n_cells);
-  for (std::size_t c = 0; c < n_cells; ++c) {
+  // Ghost cells have only the faces they share with owned cells; their
+  // geometry comes from the owning partition through the halo exchange.
+  constexpr double unset = std::numeric_limits<double>::quiet_NaN();
+  g.cell_volume.assign(n_cells, unset);
+  g.cell_centroid_x.assign(n_cells, unset);
+  g.cell_centroid_y.assign(n_cells, unset);
+  g.cell_centroid_z.assign(n_cells, unset);
+  for (std::size_t c = 0; c < to_size(mesh.n_owned_cells()); ++c) {
     const auto cell = static_cast<index_t>(c);
     const auto faces = mesh.cell_faces(cell);
     // Apex of the decomposition: any point gives the exact signed volume and
@@ -119,7 +123,7 @@ Geometry compute_geometry(const Mesh& mesh) {
         moment = moment + (v / 4.0) * (m + a + b);
       }
     }
-    if (!(volume > 0.0)) {
+    if (!(volume > 0.0) || !std::isfinite(volume)) {
       throw Error(ErrorCode::geometry_non_positive_volume,
                   "cell " + std::to_string(c) + " has non-positive volume");
     }
@@ -149,8 +153,13 @@ GeometryView view(const Geometry& g) noexcept {
 }
 
 std::vector<double> cell_closure_error(const Mesh& mesh, const Geometry& g) {
-  std::vector<double> error(to_size(mesh.n_cells()));
-  for (index_t c = 0; c < mesh.n_cells(); ++c) {
+  const auto n_faces = to_size(mesh.n_faces());
+  if (g.face_area_x.size() != n_faces || g.face_area_y.size() != n_faces ||
+      g.face_area_z.size() != n_faces || g.face_area.size() != n_faces) {
+    throw Error(ErrorCode::mesh_inconsistent_sizes, "geometry does not belong to this mesh");
+  }
+  std::vector<double> error(to_size(mesh.n_owned_cells()));
+  for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
     Vec3 sum{0.0, 0.0, 0.0};
     double magnitude = 0.0;
     for (const index_t f : mesh.cell_faces(c)) {
