@@ -71,9 +71,10 @@ def create_app(
 
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
-        """`runs` snapshot first, then `run` (upsert), `removed` (run id) and `rejected` (the
-        whole list) as they change. Every wake-up rescans, timeouts included, so a change made
-        before the watcher starts is still reported."""
+        """`runs` snapshot first, then `run` (upsert), `removed` (run id), `rejected` (the
+        whole list) and `progress` (last iteration of each running run) as they change.
+        Every wake-up rescans, timeouts included, so a change made before the watcher starts is
+        still reported."""
         previous = await asyncio.to_thread(registry.scan)
         yield ServerSentEvent(event="runs", data=previous.document())
         stop = asyncio.Event()
@@ -86,6 +87,8 @@ def create_app(
                         yield ServerSentEvent(event="run", data=run)
                 for run_id in sorted(previous.runs.keys() - current.runs.keys()):
                     yield ServerSentEvent(event="removed", data=run_id)
+                if current.progress != previous.progress:
+                    yield ServerSentEvent(event="progress", data=current.progress)
                 if current.rejected != previous.rejected:
                     yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
                 previous = current
@@ -148,15 +151,20 @@ def create_app(
 
     if static is not None and (static / "index.html").is_file():
         index = static / "index.html"
+        # Built once from the files on disk: a request selects an entry by name and never
+        # becomes a path, so `..`, absolute paths and links cannot reach outside the build.
+        assets = {
+            path.relative_to(static).as_posix(): path
+            for path in static.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa(path: str) -> FileResponse:
             if path.startswith("api/"):
                 raise HTTPException(404)
-            candidate = (static / path).resolve()
-            if candidate.is_file() and candidate.is_relative_to(static.resolve()):
-                return FileResponse(candidate)
-            return FileResponse(index)
+            return FileResponse(assets.get(path, index))
+
     else:
         log.warning("no built web app in %s: serving the API only (run `bun run build`)", static)
 

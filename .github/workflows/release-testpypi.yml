@@ -1,0 +1,107 @@
+# Publishes the SDK wheel and sdist to TestPyPI as a dev release, with PEP 740 attestations from
+# Trusted Publishing and GitHub build provenance, then installs it from TestPyPI with install.sh.
+# Real PyPI publishing needs the lead's approval and a separate workflow.
+name: release-testpypi
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-testpypi
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        # TestPyPI never accepts a version twice: one dev release per run.
+        run: echo "version=$(cat version.txt).dev${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    # actionlint 1.7.12 predates the $/ self-repository syntax.
+    uses: ./.github/workflows/wheels.yml # zizmor: ignore[self-repository]
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/autan/
+    permissions:
+      id-token: write # Trusted Publishing and attestation signing
+      attestations: write # GitHub build provenance
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-sdk
+          path: dist
+      - name: Check the distribution name
+        run: ls dist/autan-*.whl dist/autan-*.tar.gz
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*
+            install.sh
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  verify:
+    name: Install from TestPyPI on ${{ matrix.runner }}
+    needs: [version, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: Fetch autan alone from TestPyPI; its dependencies come from PyPI
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        # TestPyPI serves anything under any name, so only autan itself is taken from it.
+        run: |
+          for _ in 1 2 3 4 5 6; do
+            uvx pip download --no-deps --only-binary :all: -d testpypi \
+              --index-url https://test.pypi.org/simple/ "autan==$VERSION" && break
+            sleep 20
+          done
+          ls testpypi/autan-*.whl
+      - name: Install with install.sh and check the version installed
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          home=$(mktemp -d)
+          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            AUTAN_VERSION="$VERSION" AUTAN_FIND_LINKS="$PWD/testpypi" sh install.sh
+          "$home/.local/bin/autan" version --json | tee version.json
+          grep -q "\"autan\": \"$VERSION\"" version.json

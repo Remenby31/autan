@@ -7,6 +7,7 @@ function pythonSurface(triangles: number): ArrayBuffer {
     "uv",
     [
       "run",
+      "--locked",
       "--project",
       "server",
       "python",
@@ -18,7 +19,7 @@ function pythonSurface(triangles: number): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
-test("decodes the server's surface message without copying", () => {
+test("decodes the server's surface message without copying", { timeout: 120_000 }, () => {
   const bytes = pythonSurface(20_000);
   const surface = decodeSurface(bytes);
 

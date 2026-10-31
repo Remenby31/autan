@@ -1,3 +1,7 @@
+---
+lang: fr
+---
+
 # Autan — état de l'art et opportunités (2026-10-31)
 
 Synthèse de 9 recherches parallèles (commercial, open source/recherche, frontière numérique, IA×CFD, marché, stacks GPU, solveurs linéaires, matériel/précision, techniques de kernels).
