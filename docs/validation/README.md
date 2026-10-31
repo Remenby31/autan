@@ -5,7 +5,7 @@ The `vv/` package makes correctness measurable before and alongside the solver. 
 ```sh
 cd vv
 uv sync --locked                       # dev + mesh groups; gmsh is not installable on linux-aarch64
-uv run pytest -m "not network"         # all tests; add -m slow to run only the order studies
+uv run pytest -m "not network"         # offline tests; -m network fetches every reference case
 uv run autan-vv --help
 ```
 
@@ -14,6 +14,8 @@ uv run autan-vv --help
 | [mms.md](mms.md) | Manufactured solutions, their source-term convention, and the C++ and JSON exports the kernel generator consumes |
 | [meshes.md](meshes.md) | Mesh families of the unit cube: kinds, files, zones, perturbation, manifest, reproducibility |
 | [order.md](order.md) | Observed order, Richardson extrapolation and GCI; the order-study report; the reference finite-volume solve and its measured orders |
+| [cases.md](cases.md) | Reference cases (TMR, ONERA M6, RAE 2822): pinned downloads, checksums, parsers |
+| [acceptance.md](acceptance.md) | The numbers each milestone gate must meet, with their sources |
 
 ## Typical use by a numerical PR
 
