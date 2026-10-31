@@ -1,5 +1,7 @@
 # Hooks are pinned by commit SHA with a "frozen" tag comment; Dependabot updates them.
 # clang-format stays at the version named in .clang-format (Dependabot ignores it).
+# Files under tests/data/ are written by independent tools (Gmsh, OpenFOAM) and are test oracles:
+# no hook rewrites them, and .gitattributes keeps Git from converting them.
 default_install_hook_types: [pre-commit]
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -13,9 +15,12 @@ repos:
       - id: check-toml
       - id: check-yaml
       - id: end-of-file-fixer
+        exclude: ^tests/data/
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: ^tests/data/
       - id: trailing-whitespace
+        exclude: ^tests/data/
       - id: no-commit-to-branch
         args: [--branch, main]
 
