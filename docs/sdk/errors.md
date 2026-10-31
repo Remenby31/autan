@@ -524,6 +524,22 @@ The backend stopped on an unexpected error; the message names it. The run direct
 
 Fix: Report the message with the run directory.
 
+## E0705
+
+**Invalid solver input** (error)
+
+`autan-run` rejected its input: an unknown or missing key, a wrong type or schema, or a value that the boundary kind or turbulence model requires or forbids. `data.path` is the path of the key. See docs/contracts/solver-input.md.
+
+Fix: Regenerate the input with `autan prepare` from the same Autan version as the runtime.
+
+## E0706
+
+**Physics not in this solver build** (error)
+
+The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind; `data` names the combination.
+
+Fix: Use a build that includes it, or change the case or the devices.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

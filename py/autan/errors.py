@@ -444,6 +444,21 @@ _CODES = [
         "Report the message with the run directory.",
     ),
     Code(
+        "E0705",
+        "Invalid solver input",
+        "`autan-run` rejected its input: an unknown or missing key, a wrong type or schema, or "
+        "a value that the boundary kind or turbulence model requires or forbids. `data.path` "
+        "is the path of the key. See docs/contracts/solver-input.md.",
+        "Regenerate the input with `autan prepare` from the same Autan version as the runtime.",
+    ),
+    Code(
+        "E0706",
+        "Physics not in this solver build",
+        "The solver build has no implementation for the requested combination of physics, "
+        "turbulence model, precision and device kind; `data` names the combination.",
+        "Use a build that includes it, or change the case or the devices.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
