@@ -52,7 +52,7 @@ def test_gpu_green_gauss_equals_host(
     case: tuple[s.Mesh, dict[str, np.ndarray]], strategy: str
 ) -> None:
     m, d = case
-    host, lo, hi = s.gradients(m, "fp64", "gg", d["q"], d["q_b"], 3, d["grad"])
+    host, _, _ = s.gradients(m, "fp64", "gg", d["q"], d["q_b"], 3, d["grad"])
     dev, _, _ = s.gpu_gradients(m, "fp64", "gg", strategy, 128, d["q"], d["q_b"], 3, d["grad"])
     assert np.abs(dev - host).max() <= 200 * eps("fp64") * np.abs(host).max()
     lsq_h, lo_h, hi_h = s.gradients(m, "fp64", "lsq", d["q"], d["q_b"])
