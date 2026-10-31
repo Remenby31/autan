@@ -196,7 +196,7 @@ Rules the generator enforces with coded errors: `Inc` targets are in their accum
 
 Arguments declare a role, not a C type. A policy maps each role to a storage type, a compute type and an accumulation type; adjoint variables have their own entry:
 
-| Role | `fp64` (reference) | `mixed` (default target) | `fp32` |
+| Role | `fp64` (reference) | `fp32+acc64` (default target) | `fp32` |
 |---|---|---|---|
 | `State` (solution) | f64 | store f32, compute f32 | f32 |
 | `Grad` (gradients, limiter values) | f64 | store f32; Green-Gauss `Inc` accumulates in f64 scratch, then converts | f32 |
@@ -207,7 +207,7 @@ Arguments declare a role, not a C type. A policy maps each role to a storage typ
 | Adjoint of each role | f64 | accumulate f64, store f64 until M6 measures f32 | f32 |
 | Reductions (norms, dot products) | f64 | f64 | f64 |
 
-The emitted body is `template<class P>`; loads convert storage → compute, `Inc` and reductions use `P::accum`, and the operations that need more than the compute type (`rel` on geometry, reductions) are DSL functions with defined promotion, not implicit casts. Only policies the build lists are instantiated. A loop can override a role's type ("FP64 per kernel" in the PLAN risk table); `plan` prints the override and the run logs it.
+`fp64` and `fp32+acc64` are the two values of `precision` in the case schema ([`case-schema.md`](../contracts/case-schema.md)); `fp32` is an internal policy for tests and studies, not selectable from a case unless that contract changes. The emitted body is `template<class P>`; loads convert storage → compute, `Inc` and reductions use `P::accum`, and the operations that need more than the compute type (`rel` on geometry, reductions) are DSL functions with defined promotion, not implicit casts. Only policies the build lists are instantiated. A loop can override a role's type ("FP64 per kernel" in the PLAN risk table); `plan` prints the override and the run logs it.
 
 `Jac` storage serves only the preconditioner. Each block is scaled by its largest magnitude before conversion; values that overflow or underflow the 16-bit format are counted and logged per assembly. Convergence and adjoint checks always use the exact operator (tangent or adjoint of the residual chain) and FP64 residual norms, never the stored `Jac`. FP16 vs BF16 is measured: FUN3D stores its Jacobian in FP16 ([state of the art §1.2](state-of-the-art-2026-10.md)); MFC found FP16 storage of the state visibly changed results where FP32 did not [S15], which is why `State` is never 16-bit here.
 
@@ -222,7 +222,7 @@ Kernels: second-order upwind advection face loop (§3.3), central diffusion with
 | 1–2 | Parser, IR, type check, serial C++ emitter; face loops and cell reductions; MMS and analytic gradient tests on CPU in FP64 |
 | 3 | CUDA emitter; strategies 1–6 of §6; first runs on `spark` |
 | 4 | HIP emitter; build for `gfx942`; run where AMD access exists |
-| 5 | Policies `fp64`, `fp32`, `mixed`; MMS in FP32 and `mixed` |
+| 5 | Policies `fp64`, `fp32`, `fp32+acc64`; MMS in FP32 and `fp32+acc64` |
 | 6–7 | Tangent and adjoint of bodies and loops, Roe flux included; analytic, conservation, complex-step and dot-product tests |
 | 8 | Enzyme cross-check on CPU; one pinned attempt with clang for `sm_121` / CUDA 13.0 |
 | 9 | Benchmarks; option B comparison (Roe flux and its 10-direction dual-number Jacobian hand-written in C++ against the generated ones: lines written, time, registers); compile time; `#line` debugging check |
@@ -232,10 +232,10 @@ Every run records mesh hash, case hash, commit and precision policy. Timings com
 
 | Area | Criterion |
 |---|---|
-| Bandwidth | For the advection face loop and the LSQ cell loop in the `fp32` and `mixed` policies: useful bytes (analytic minimum per loop) divided by the complete time of the strategy (all its kernels, e.g. both passes of store-then-gather) ≥ 70 % of the GB10 peak measured by a copy kernel on the same machine (spec 273 GB/s [S21]). Measured DRAM traffic is reported beside it for diagnosis; extra traffic cannot pass the gate because the numerator is fixed. `fp64` is reported only (GB10 FP64 throughput is a separate ceiling). Working set ≥ 10× L2. Reported for every strategy, layout (SoA, AoS) and policy, with ns/cell/iteration and the one-off cost of renumbering and colouring |
-| MMS | Steady advection-diffusion with second-order reconstruction: observed order of the discrete solution error in L2 ≥ 1.9 on all four cell types, in FP64, FP32 and `mixed` (FP32 measured on levels where the error is ≥ 100× the rounding floor). Gradient orders reported separately against the literature: on meshes where the line between cell centroids misses the face centroid, LSQ is first order and the common Green-Gauss variant (linear interpolation to the face) is zeroth order [S23]; "corrected" Green-Gauss below means the iterative skewness correction of [S23] |
+| Bandwidth | For the advection face loop and the LSQ cell loop in the `fp32` and `fp32+acc64` policies: useful bytes (analytic minimum per loop) divided by the complete time of the strategy (all its kernels, e.g. both passes of store-then-gather) ≥ 70 % of the GB10 peak measured by a copy kernel on the same machine (spec 273 GB/s [S21]). Measured DRAM traffic is reported beside it for diagnosis; extra traffic cannot pass the gate because the numerator is fixed. `fp64` is reported only (GB10 FP64 throughput is a separate ceiling). Working set ≥ 10× L2. Reported for every strategy, layout (SoA, AoS) and policy, with ns/cell/iteration and the one-off cost of renumbering and colouring |
+| MMS | Steady advection-diffusion with second-order reconstruction: observed order of the discrete solution error in L2 ≥ 1.9 on all four cell types, in FP64, FP32 and `fp32+acc64` (FP32 measured on levels where the error is ≥ 100× the rounding floor). Gradient orders reported separately against the literature: on meshes where the line between cell centroids misses the face centroid, LSQ is first order and the common Green-Gauss variant (linear interpolation to the face) is zeroth order [S23]; "corrected" Green-Gauss below means the iterative skewness correction of [S23] |
 | Analytic and conservation | LSQ and corrected Green-Gauss exact to rounding on linear fields; periodic residual sum and adjoint of ȳ = 1 zero to rounding. At least the composed residual and its adjoint are exercised through a C++ solver-API function, not only through generated-kernel test drivers |
-| Adjoint correctness | Dot-product gap `|⟨ȳ,Jẋ⟩ − ⟨Jᵀȳ,ẋ⟩| / (‖ȳ‖‖Jẋ‖ + ‖Jᵀȳ‖‖ẋ‖)` ≤ 1×10⁻¹³ in FP64, ≤ 1×10⁻⁵ in FP32 and `mixed`, random seeds, every loop and the composed residual; dedicated cases for branch merges (Roe entropy fix), loop-carried values (unrolled loops, reductions with ties) and names reassigned before a predicate (SSA renaming); tangent vs complex step ≤ 1×10⁻¹² relative in FP64 on smooth paths. A failure here triggers fallback (a) if unfixed on day 8 |
+| Adjoint correctness | Dot-product gap `|⟨ȳ,Jẋ⟩ − ⟨Jᵀȳ,ẋ⟩| / (‖ȳ‖‖Jẋ‖ + ‖Jᵀȳ‖‖ẋ‖)` ≤ 1×10⁻¹³ in FP64, ≤ 1×10⁻⁵ in FP32 and `fp32+acc64`, random seeds, every loop and the composed residual; dedicated cases for branch merges (Roe entropy fix), loop-carried values (unrolled loops, reductions with ties) and names reassigned before a predicate (SSA renaming); tangent vs complex step ≤ 1×10⁻¹² relative in FP64 on smooth paths. A failure here triggers fallback (a) if unfixed on day 8 |
 | Adjoint cost | Adjoint loop time alone / primal loop time alone: target ≤ 3×; above 6× is investigated before M6 (published range: 2.07–6.26× for CuAD [S5]; forward + reverse 2.0–18× for Enzyme [S1]). Not a fallback trigger on its own |
 | Determinism | Strategies 4–6: bitwise-identical residual, gradient, norms and adjoint over 10 runs and two launch configurations |
 | Portability | CUDA and HIP built from the same DSL source with no per-backend edits; HIP equals CPU to rounding where AMD hardware is available |
