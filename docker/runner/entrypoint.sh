@@ -7,8 +7,11 @@ files=(.runner .credentials .credentials_rsaparams)
 
 case ${1:-run} in
   register)
-    read -r token
-    ./config.sh --unattended --replace --name "$2" --labels "$3" --url "$4" --token "$token" --work /work
+    # The runner reads the token from its environment, which keeps it out of the process list.
+    read -r ACTIONS_RUNNER_INPUT_TOKEN
+    export ACTIONS_RUNNER_INPUT_TOKEN
+    ./config.sh --unattended --replace --name "$2" --labels "$3" --url "$4" --work /work
+    unset ACTIONS_RUNNER_INPUT_TOKEN
     cp "${files[@]}" /state/
     ;;
   run)

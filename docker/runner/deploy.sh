@@ -20,7 +20,18 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 prepare() {
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
-  docker network inspect "$internal_net" >/dev/null 2>&1 || docker network create --internal "$internal_net" >/dev/null
+  # Internal: no route out. Isolated gateway: the host gets no address on this bridge, so a job
+  # cannot reach host services listening on all interfaces.
+  if ! docker network inspect "$internal_net" >/dev/null 2>&1; then
+    docker network create --internal -o com.docker.network.bridge.gateway_mode_ipv4=isolated \
+      "$internal_net" >/dev/null
+  fi
+  local shape
+  shape=$(docker network inspect -f '{{.Internal}} {{index .Options "com.docker.network.bridge.gateway_mode_ipv4"}}' "$internal_net")
+  [[ $shape == "true isolated" ]] || {
+    echo "error: $internal_net is not internal with an isolated gateway ($shape); remove it" >&2
+    exit 1
+  }
   docker network inspect "$egress_net" >/dev/null 2>&1 || docker network create "$egress_net" >/dev/null
 }
 
@@ -37,13 +48,21 @@ runner_args=(
   -v "$state":/state
   -v "$work":/work
   -v "$lock":"$lock"
+  --log-opt max-size=20m --log-opt max-file=3
 )
 
 start_proxy() {
+  # A proxy built from an older image keeps its old policy: replace it.
+  local running
+  running=$(docker container inspect -f '{{.Image}}' autan-runner-proxy 2>/dev/null || true)
+  if [[ -n $running && $running != "$(docker image inspect -f '{{.Id}}' "$proxy_image")" ]]; then
+    docker rm -f autan-runner-proxy >/dev/null
+  fi
   if ! docker container inspect autan-runner-proxy >/dev/null 2>&1; then
     docker run -d --name autan-runner-proxy --restart unless-stopped \
       --network "$egress_net" --cap-drop ALL --security-opt no-new-privileges \
-      --memory 1g --pids-limit 256 "$proxy_image" >/dev/null
+      --memory 1g --pids-limit 256 --log-opt max-size=20m --log-opt max-file=3 \
+      "$proxy_image" >/dev/null
     docker network connect "$internal_net" autan-runner-proxy
   fi
   docker start autan-runner-proxy >/dev/null
@@ -52,10 +71,14 @@ start_proxy() {
 case ${1:-} in
   build)
     dev_image=${2:?usage: deploy.sh build DEV_IMAGE}
-    # Benchmarks record the dev image by digest, not by a movable tag.
-    dev_image="${dev_image%@*}@$(docker image inspect -f '{{.Id}}' "$dev_image")"
+    # Build from, and record, the exact image the reference resolves to now: a tag named after
+    # its ID cannot move to another image.
+    id=$(docker image inspect -f '{{.Id}}' "$dev_image")
+    base=autan-runner-base:${id#sha256:}
+    docker tag "$id" "$base"
     docker build -t "$proxy_image" "$here/proxy"
-    docker build -t "$image" --build-arg DEV_IMAGE="${dev_image%@*}" --label org.autan.dev-image="$dev_image" "$here"
+    docker build -t "$image" --build-arg DEV_IMAGE="$base" \
+      --label org.autan.dev-image="${dev_image%@*}@$id" "$here"
     ;;
   register)
     prepare
