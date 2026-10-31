@@ -21,14 +21,14 @@ Partitioning is serial: every rank reads the global mesh, rank 0 partitions it a
 
 `extract_partition(global, compute_geometry(global), parts, n_parts, rank)` returns a `LocalPartition`:
 
-- `mesh`: owned cells in global order, then one layer of ghost cells (every cell outside the part that shares a face with it), ordered by owning rank then global order. Built through `assemble`, so it meets every invariant of the mesh contract.
+- `mesh`: owned cells in the order of the global mesh, then one layer of ghost cells (every cell outside the part that shares a face with it), ordered by owning rank then the same order. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
 - `geometry`: the global geometry, copied bit for bit. A face whose orientation flips (its owned cell has the higher global index) has its area vector negated, which is exact. Ghost cells are NaN until a forward exchange fills them (`exchange_ghost_geometry`). `compute_geometry` on the partition would agree only to round-off, because a reversed face sums its nodes in another order.
 - `face_global_id`: the global face of each local face, the key for summing a cell's faces in an order that no partition changes.
 - `halo`: the `HaloPattern` below.
 
 ## Halo pattern
 
-Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is adjacent to `q`, so both lists are the cells of one part adjacent to the other, in global order. `interface_faces` lists the interior faces that touch a ghost.
+Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is adjacent to `q`, so both lists are the cells of one part adjacent to the other, in the order of the global mesh. `interface_faces` lists the interior faces that touch a ghost.
 
 ## Exchange
 
