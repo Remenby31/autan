@@ -89,9 +89,7 @@ def test_fetch_verifies_files_and_archive_members(tmp_path: Path) -> None:
     )
     with pytest.raises(urllib.error.URLError):
         fetch(_case((missing,)), tmp_path / "cache4")
-    leftovers = [p for p in (tmp_path / "cache2").rglob("*")] + [
-        p for p in (tmp_path / "cache4").rglob("*")
-    ]
+    leftovers = [*(tmp_path / "cache2").rglob("*"), *(tmp_path / "cache4").rglob("*")]
     assert all(p.is_dir() for p in leftovers), "no temporary file may survive a failed fetch"
 
 
