@@ -1,0 +1,52 @@
+[project]
+name = "autan-vv"
+version = "0.1.0"
+description = "Verification and validation tools for Autan: manufactured solutions, observed order, mesh families, reference cases."
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11",
+    "numpy>=2.5",
+    "scipy>=1.18",
+    "sympy>=1.14",
+]
+
+[project.scripts]
+autan-vv = "autan_vv.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "scipy-stubs>=1.18.1.1",
+]
+# Gmsh is GPL-2.0-or-later: a development-time tool only, never imported by shipped code.
+# No linux-aarch64 wheel exists, so mesh families are generated on macOS or x86-64 CI.
+mesh = [
+    "gmsh>=4.15.2; platform_machine != 'aarch64'",
+]
+
+[tool.uv]
+default-groups = ["dev", "mesh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = [
+    "network: downloads reference data from the internet",
+    "slow: takes more than a few seconds",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["gmsh", "sympy.*", "matplotlib.*"]
+ignore_missing_imports = true
