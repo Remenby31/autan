@@ -7,6 +7,16 @@ target_compile_definitions(
   autan_io_tests
   PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
 )
+if(AUTAN_ENABLE_CGNS)
+  find_program(AUTAN_CGNSCHECK cgnscheck REQUIRED)
+  target_sources(autan_io_tests PRIVATE test_cgns.cpp)
+  target_include_directories(autan_io_tests SYSTEM PRIVATE ${CGNS_INCLUDE_DIR})
+  target_link_libraries(autan_io_tests PRIVATE ${CGNS_LIBRARY})
+  target_compile_definitions(
+    autan_io_tests
+    PRIVATE AUTAN_HAVE_CGNS AUTAN_CGNSCHECK="${AUTAN_CGNSCHECK}"
+  )
+endif()
 catch_discover_tests(autan_io_tests)
 
 # The command-line tool through its output and exit status.
