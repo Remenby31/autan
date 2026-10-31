@@ -534,8 +534,6 @@ def _drop_last_line(path: Path) -> None:
             (p / "history.jsonl").read_text().replace("1.0, ", "NaN, ", 1)
         ),
         lambda p: (p / "history.jsonl").write_text((p / "history.jsonl").read_text()[:-20]),
-        lambda p: h5py.File(p / "solution.cgns", "w").close(),
-        lambda p: _shrink_density(p / "solution.cgns"),
     ],
 )
 def test_reader_checks_every_contract_invariant(
@@ -553,6 +551,25 @@ def _shrink_density(path: Path) -> None:
         values = data[()]
         del handle["Base/Zone/FlowSolution/Density/ data"]
         handle["Base/Zone/FlowSolution/Density"].create_dataset(" data", data=values[:1])
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda path: path.write_bytes(b"not a CGNS file"),
+        lambda path: h5py.File(path, "w").close(),
+        _shrink_density,
+    ],
+)
+def test_solution_is_checked_on_first_use(
+    damage: Callable[[Path], object], crm_run: autan.Results
+) -> None:
+    damage(crm_run.path / "solution.cgns")
+    reopened = autan.Results.open(crm_run.path)
+    assert reopened.history.iterations[-1] == reopened.run.iterations
+    with pytest.raises(autan.CaseError) as error:
+        reopened.field("Density")
+    assert set(error.value.codes) == {"E0701"}
 
 
 def test_unsteady_metadata_and_mean_describe_the_run(

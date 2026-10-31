@@ -122,8 +122,8 @@ Defined in [`tokens.css`](tokens.css), light and dark. Dark is the default for L
 | Type | Geist Sans for UI, Geist Mono for numbers, paths, code (both SIL OFL 1.1, self-hosted). A compact base size, three weights. `font-variant-numeric: tabular-nums` on every number. | Dense UI needs a compact sans; numbers must align in columns and not jitter while they update. |
 | Neutrals | `--bg-0…3`, `--line`, `--line-strong`, `--fg`, `--fg-2`, `--fg-3`. Every text colour, `--fg-3` included, reaches 4.5:1 on `--bg-0` and `--bg-1` in both themes. | Chrome stays out of the way of the colour map. |
 | Accent | One blue, `--accent`: focus, selection, primary action, running state. | A single accent keeps state colours readable. |
-| Semantic | `--success` converged, `--warning` stalled or risky (W-codes), `--danger` diverged or error (E/D-codes), `--info` = accent. Each has a `-soft` fill. | Mirrors the CLI's coded messages. |
-| Run states | `--state-queued`, `-planning`, `-running`, `-converged`, `-stalled`, `-diverged`, `-stopped`. | One glyph language for rows, tabs, tree and favicon. |
+| Semantic | `--success` converged, `--warning` risky (W-codes), `--danger` diverged or failed (D/E-codes), `--info` = accent. Each has a `-soft` fill. | Mirrors the CLI's coded messages. |
+| Run states | `--state-queued`, `-planning` (before the run exists), then one per `status` of [`results.md`](../../contracts/results.md): `-running`, `-converged`, `-completed`, `-stopped`, `-diverged`, `-failed`. | One glyph language for rows, tabs, tree and favicon. |
 | Series | `--series-1…8`, assigned in order to compared runs and kept for the session. | Same run, same colour on every chart and in the 3D legend. |
 | Field colour maps | Diverging: cool–warm (Moreland 2009) for signed fields (Cp, Δ). Sequential: viridis for magnitudes. Never jet/rainbow. | Perceptually uniform and readable by colour-blind users. Lightness alone does not carry the sign, so signed fields are normalised around zero and the legend marks 0 and the sign. |
 | Density | A 4 px grid; regular and compact row heights; one control height, a taller one for primary actions. | Tables of hundreds of runs fit on one screen. |
@@ -141,9 +141,10 @@ Defined in [`tokens.css`](tokens.css), light and dark. Dark is the default for L
   | planning | dashed ring | `--state-planning` | same |
   | running | filled circle with an expanding halo | `--state-running` | filled circle with a static halo |
   | converged | filled circle | `--state-converged` | same |
-  | stalled | filled circle with a horizontal bar | `--state-stalled` | same |
-  | diverged | ring with `!` | `--state-diverged` | same |
+  | completed | filled circle with a horizontal bar | `--state-completed`, neutral: the budget or every unsteady step is done, which is a success for an unsteady run and not for a steady one; a steady run that ends without converging also shows `--warning` on its residual tile | same |
   | stopped | filled square | `--state-stopped` | same |
+  | diverged | ring with `!` | `--state-diverged` | same |
+  | failed | `×` | `--state-failed` | same |
 
   Used in rows, tabs, the setup tree and the tab favicon.
 - **Run row.** Dot · name · case diff summary (mono, muted) · wall time · GPUs × precision chip · mesh hash · relative date. `Space` peeks (residual sparkline + thumbnail), `↵` opens, `x` selects, `c` compares the selection.

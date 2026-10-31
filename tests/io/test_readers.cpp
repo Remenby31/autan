@@ -180,6 +180,14 @@ void require_constructed(const autan::Mesh& mesh, const std::string& name) {
                                   g.face_centroid_z[at(f)]};
     CHECK_THAT(c[static_cast<std::size_t>(it->second.first)], WithinAbs(it->second.second, 1e-9));
   }
+  // hybrid: cells below z = 1/2 form the volume group "lower", the others
+  // "upper" (Fluent files from foamMeshToFluent keep a single cell zone).
+  if (name == "hybrid" && mesh.cell_zones().size() == 2) {
+    for (index_t c = 0; c < mesh.n_cells(); ++c) {
+      CHECK(mesh.cell_zones()[at(mesh.cell_zone()[at(c)])].name ==
+            (g.cell_centroid_z[at(c)] < 0.5 ? "lower" : "upper"));
+    }
+  }
   const std::map<std::string, int> cubes_per_side{
       {"hex", 3}, {"prism", 3}, {"pyramid", 2}, {"tet", 2}, {"hybrid", 4}};
   const auto n = cubes_per_side.find(name);
@@ -456,15 +464,16 @@ std::string foam_header(const char* format, const char* object_class, const char
 fs::path single_hex_polymesh() {
   const fs::path dir = temp_dir() / "single-hex";
   fs::create_directories(dir);
-  write_temp("single-hex/points", foam_header("ascii", "vectorField", "points") +
-                                      "8 // points\n(\n(0 0 0) (1 0 0) /* c */ (1 1 0) (0 1 0)\n"
-                                      "(0 0 1) (1 0 1) (1 1 1) (0 1 1)\n)\n");
+  write_temp("single-hex/points",
+             foam_header("ascii", "vectorField", "points") +
+                 "8 // points\n(\n(0 0 0) (1/* x */ 0 0) /* c */ (1 1 0) (0 1 0)\n"
+                 "(0 0 1) (1 0 1) (1 1 1) (0 1 1)\n)\n");
   write_temp(
       "single-hex/faces",
       foam_header("ascii", "faceCompactList", "faces") +
           "6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n4(1 2 6 5)\n4(2 3 7 6)\n4(3 0 4 7)\n)\n");
   write_temp("single-hex/owner", foam_header("ascii", "labelList", "owner") + "6{0}\n");
-  write_temp("single-hex/neighbour", foam_header("binary", "labelList", "neighbour") + "0\n");
+  write_temp("single-hex/neighbour", foam_header("ascii", "labelList", "neighbour") + "0{}\n");
   write_temp("single-hex/boundary",
              foam_header("ascii", "polyBoundaryMesh", "boundary") +
                  "1\n(\n    walls // the only patch\n    {\n        type wall /* no slip */;\n"
@@ -488,6 +497,9 @@ TEST_CASE("Legal variants of each format read as specified", "[io]") {
     CHECK(zone_named(mesh, "walls").bc_type == "wall");
     REQUIRE(mesh.cell_zones().size() == 1);
     CHECK(mesh.cell_zones()[0].name == "block");
+    // OpenFOAM writes an empty binary list as a bare size.
+    write_temp("single-hex/neighbour", foam_header("binary", "labelList", "neighbour") + "0\n");
+    CHECK(autan::io::read_mesh(temp_dir() / "single-hex").n_cells() == 1);
   }
   SECTION("Gmsh $PhysicalNames after $Elements, and a group without elements") {
     std::string text = replace(
@@ -520,6 +532,15 @@ TEST_CASE("Hostile or contradictory sizes are coded errors, not crashes", "[io]"
     require_error(ErrorCode::io_malformed,
                   write_temp("count.msh",
                              replace(gmsh_tet, "2 4 10 40\n", "2 18446744073709551615 10 40\n")));
+  }
+  SECTION("Gmsh element count") {
+    require_error(
+        ErrorCode::io_malformed,
+        write_temp("elements.msh", replace(gmsh_tet, "3 3 1 3\n", "3 18446744073709551615 1 3\n")));
+  }
+  SECTION("Gmsh non-positive physical name tag") {
+    require_error(ErrorCode::io_malformed,
+                  write_temp("name.msh", replace(gmsh_tet, "2 7 \"base\"", "2 -7 \"base\"")));
   }
   SECTION("Gmsh non-positive physical tag") {
     require_error(ErrorCode::io_malformed,
