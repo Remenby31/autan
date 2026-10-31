@@ -165,12 +165,14 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
             e.w(f"    A out[{n}];")
             for k in range(n):
                 e.w(f"    out[{k}] = scratch[{k} * d.topo.n_faces + f];" if k else "    out[0] = scratch[f];")
-            e.w("    const bool left = d.topo.owner[f] == c;")
+            if lm.kind == "face":
+                e.w("    const bool left = d.topo.owner[f] == c;")
         else:
             e.w(f"    typename P::compute out[{n}];")
             for s in _face_eval(lm, "    "):
                 e.w(s)
-            e.w("    const bool left = l == c;")
+            if lm.kind == "face":
+                e.w("    const bool left = l == c;")
         for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
             assert isinstance(o, dsl.Inc)
             for c in range(o.dataset.type.size):

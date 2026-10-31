@@ -50,6 +50,10 @@ target_include_directories(
 target_link_libraries(autan_kernels PUBLIC autan::core PRIVATE autan_compile_options)
 set_target_properties(autan_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# The spike drivers are shared libraries loaded by ctypes, so the static core they link must be
+# position independent.
+set_target_properties(autan_core autan_io PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Spike driver: C ABI over the generated host loops, loaded by codegen/tests through ctypes.
 add_library(autan_spike SHARED spike/capi.cpp)
 target_link_libraries(autan_spike PRIVATE autan::kernels autan::io autan_compile_options)
