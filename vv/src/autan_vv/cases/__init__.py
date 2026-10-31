@@ -280,35 +280,35 @@ def read_plot3d_2d(path: Path) -> list[tuple[FloatArray, FloatArray]]:
     return blocks
 
 
-def read_tape_1981(path: Path) -> dict[int, FloatArray]:
-    """Data files of the 1980-81 AFOSR-HTTM-Stanford conference tape (Bradshaw's f8621.txt).
+_TAPE_REAL = re.compile(r"^(?:[ -]\d\.\d{6}E[ +-]\d{2})+$")
+_TAPE_INT = re.compile(r"^(?:[ -]{0,5}\d{1,6})+$")
 
-    Each `FILE NUMBER n` holds one record of maxima and one of minima (E13.6 with a blank exponent
-    sign meaning +), then integer records I in 0..10000 per variable: value = min + (max - min) I
-    / 10000; I = 20000 means no value (NaN). Returns {file number: array (rows, variables)}.
+
+def read_tape_1981(path: Path) -> dict[int, FloatArray]:
+    """Coded data files of the 1980-81 AFOSR-HTTM-Stanford conference tape (Bradshaw's f8621.txt).
+
+    A coded file holds one record of maxima and one of minima (E13.6, a blank exponent sign meaning
+    +), then integer records (I6) I in 0..10000 per variable: value = min + (max - min) I / 10000;
+    I = 20000 means no value (NaN). Text files of the tape (descriptions, tables) are skipped.
+    Returns {file number: array (rows, variables)}.
     """
     out: dict[int, FloatArray] = {}
-    for number, body in re.findall(
-        r"FILE NUMBER\s+(\d+)-+\s*\n(.*?)\n-+ END OF FILE", _open_text(path), re.DOTALL
-    ):
-        reals: list[float] = []
-        ints: list[int] = []
-        for line in body.splitlines():
-            if "E" in line:
-                fixed = re.sub(r"E ", "E+", line.rstrip())
-                reals += [
-                    float(fixed[k : k + 13])
-                    for k in range(0, len(fixed), 13)
-                    if fixed[k : k + 13].strip()
-                ]
-            elif line.strip():
-                ints += [
-                    int(line[k : k + 6])
-                    for k in range(0, len(line.rstrip()), 6)
-                    if line[k : k + 6].strip()
-                ]
+    pattern = r"FILE NUMBER\s+(\d+)-+\s*\n(.*?)\n-+ END OF FILE"
+    for number, body in re.findall(pattern, _open_text(path), re.DOTALL):
+        lines = [ln.rstrip() for ln in body.splitlines() if ln.strip()]
+        n_real = 0
+        while n_real < len(lines) and _TAPE_REAL.match(lines[n_real]):
+            n_real += 1
+        if n_real == 0 or not all(_TAPE_INT.match(ln) for ln in lines[n_real:]):
+            continue
+        reals = [
+            float(ln[k : k + 13].replace("E ", "E+"))
+            for ln in lines[:n_real]
+            for k in range(0, len(ln), 13)
+        ]
+        ints = [int(ln[k : k + 6]) for ln in lines[n_real:] for k in range(0, len(ln), 6)]
         nv = len(reals) // 2
-        if nv == 0 or len(reals) != 2 * nv or len(ints) % nv:
+        if len(reals) != 2 * nv or len(ints) % nv:
             msg = f"{path.name}: file {number} has {len(reals)} bounds and {len(ints)} integers"
             raise VVError(msg, code="V0603")
         hi, lo = np.array(reals[:nv]), np.array(reals[nv:])
@@ -316,6 +316,9 @@ def read_tape_1981(path: Path) -> dict[int, FloatArray]:
         values = lo + (hi - lo) * coded / 10000.0
         values[coded == 20000] = np.nan
         out[int(number)] = values
+    if not out:
+        msg = f"{path.name}: no coded data file"
+        raise VVError(msg, code="V0603")
     return out
 
 

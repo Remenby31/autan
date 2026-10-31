@@ -855,13 +855,15 @@
      "mach": 0.729,
      "alpha_deg": 2.31,
      "reynolds": 6500000.0,
-     "corrected": true
+     "corrected": true,
+     "source": "NPARC raetaf page (wind-tunnel corrections of the NPARC study; the 1981 tape gives alpha 2.54 corrected)"
     },
     "case_9": {
      "mach": 0.73,
      "alpha_deg": 2.79,
      "reynolds": 6500000.0,
-     "corrected": true
+     "corrected": true,
+     "source": "1981 tape, file 1122"
     }
    },
    "reference_values": {
@@ -895,15 +897,6 @@
      "size": 7734,
      "parser": "columns",
      "description": "Case 6 Cp (corrected M=0.729, alpha=2.31)"
-    },
-    {
-     "name": "raetaf04_cp.exp.gen",
-     "role": "experiment",
-     "url": "https://www.grc.nasa.gov/www/wind/valid/raetaf/raetaf04/cp.exp.gen",
-     "sha256": "739bbec6bd8775240bcf571fc8356701cab4c773c4e3d3b21deea5a3f627f001",
-     "size": 7665,
-     "parser": "columns",
-     "description": "Case 6 Cp (same data as raetaf01 variant, different header)"
     },
     {
      "name": "f8621.txt",

@@ -21,7 +21,7 @@ Every file has a URL, a size and a SHA-256. TMR data files use `raw.githubuserco
 | `tmr-2dn00-naca0012` | 5 grids (113×33 … 1793×513, 110 MB zip) and the exact airfoil points; CFL3D SA cp, cf, CL, CD at α = 0, 10, 15°; experiments of Ladson, Gregory and O'Reilly, Abbott and von Doenhoff, McCroskey | PLOT3D 2D, Tecplot |
 | `tmr-2dn00-naca0012-numerics` | CFL3D and FUN3D SA forces on grid families I–III at α = 10° (Diskin et al. 2015), cp and cf | Tecplot |
 | `onera-m6` | Schmitt and Charpin pressure at 7 span stations, runs 2308 (M 0.8395, α 3.06°) and 2565 (M 0.8372, α 6.06°), from TMR and NPARC (NPARC `.ex` files store −Cp); section profiles | Tecplot, columns |
-| `rae2822` | Geometry; case 6 Cp (NPARC); cases 1, 6, 7, 9, 12 conditions, forces, Cp, cf from the 1981 AFOSR-HTTM-Stanford conference tape | columns, 1981 tape |
+| `rae2822` | Geometry; case 6 Cp (NPARC); cases 1, 6, 7, 9, 12 conditions, forces, Cp, cf from the 1981 AFOSR-HTTM-Stanford conference tape (72 coded files; its text files are skipped) | columns, 1981 tape |
 
 Pointers only (too large to fetch): HLPW-5 (CRM-HL, finest grids 2×10⁸–10⁹ cells, archive 1.75 GB at aiaa-hlpw.org) and DPW-7/DPW-8 (dpw.larc.nasa.gov; DPW-7 Vassberg grids 5.3–221 M points), in `pointers()`.
 
