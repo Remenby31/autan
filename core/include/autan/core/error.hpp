@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace cfd {
+namespace autan {
 
 // Codes are stable identifiers shared with the SDK error registry; the number
 // is printed as E#### (see docs/contracts/mesh.md, "Errors").
@@ -40,7 +40,7 @@ enum class ErrorCode : std::uint16_t {
 /// Returns the registry form of a code, for example "E0107".
 std::string error_code_string(ErrorCode code);
 
-/// Exception thrown by every cfd_core and cfd_io entry point. Callers branch on
+/// Exception thrown by every autan library entry point. Callers branch on
 /// code(); what() is a human-readable message whose wording is not part of the
 /// contract.
 class Error : public std::runtime_error {
@@ -52,4 +52,4 @@ class Error : public std::runtime_error {
   ErrorCode code_;
 };
 
-}  // namespace cfd
+}  // namespace autan
