@@ -12,9 +12,11 @@ on:
 
 permissions: {}
 
+# An image build takes about an hour and saves its layer cache only when it finishes:
+# queue builds instead of cancelling them.
 concurrency:
   group: gpu-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/remenby31/autan-dev
