@@ -9,14 +9,13 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
-#include "cfd/core/error.hpp"
-#include "cfd/core/geometry.hpp"
-
+#include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
 #include "fixtures.hpp"
 
+using autan::index_t;
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
-using cfd::index_t;
 
 namespace {
 
@@ -24,26 +23,26 @@ constexpr double closure_tolerance = 1e-12;
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
-double max_closure(const cfd::Mesh& mesh, const cfd::Geometry& g) {
-  const auto error = cfd::cell_closure_error(mesh, g);
+double max_closure(const autan::Mesh& mesh, const autan::Geometry& g) {
+  const auto error = autan::cell_closure_error(mesh, g);
   return *std::max_element(error.begin(), error.end());
 }
 
-double total_volume(const cfd::Geometry& g) {
+double total_volume(const autan::Geometry& g) {
   return std::accumulate(g.cell_volume.begin(), g.cell_volume.end(), 0.0);
 }
 
 }  // namespace
 
 TEST_CASE("Reference cells have the analytic volume and centroid", "[geometry]") {
-  const auto shape = GENERATE(cfd::CellShape::tetra, cfd::CellShape::pyramid, cfd::CellShape::prism,
-                              cfd::CellShape::hexa);
+  const auto shape = GENERATE(autan::CellShape::tetra, autan::CellShape::pyramid,
+                              autan::CellShape::prism, autan::CellShape::hexa);
   const std::array<std::array<double, 3>, 3> a{
       {{1.7, 0.3, -0.2}, {0.1, 0.9, 0.4}, {-0.3, 0.2, 1.3}}};
   const std::array<double, 3> b{0.25, -1.5, 3.0};
-  const auto ref = cfd::test::affine_cell(shape, a, b);
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  const auto ref = autan::test::affine_cell(shape, a, b);
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(ref.mesh));
+  const autan::Geometry g = autan::compute_geometry(mesh);
 
   REQUIRE(mesh.n_cells() == 1);
   CHECK_THAT(g.cell_volume[0], WithinRel(ref.volume, 1e-14));
@@ -56,12 +55,12 @@ TEST_CASE("Reference cells have the analytic volume and centroid", "[geometry]")
 TEST_CASE("A warped face's area vector is the loop integral of its boundary", "[geometry]") {
   // Any surface spanning a closed loop has vector area 1/2 sum p_i x p_{i+1};
   // lifting one hex corner makes three of its faces non-planar.
-  auto ref =
-      cfd::test::affine_cell(cfd::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
+  auto ref = autan::test::affine_cell(autan::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                      {0, 0, 0});
   ref.mesh.z[6] = 1.4;
   ref.mesh.x[6] = 1.2;
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(ref.mesh));
+  const autan::Geometry g = autan::compute_geometry(mesh);
 
   for (index_t f = 0; f < mesh.n_faces(); ++f) {
     const auto nodes = mesh.face_nodes(f);
@@ -82,12 +81,13 @@ TEST_CASE("A warped face's area vector is the loop integral of its boundary", "[
 
 TEST_CASE("Box meshes close every cell and fill the box exactly", "[geometry]") {
   const auto fill =
-      GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
-               cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
+      GENERATE(autan::test::BoxFill::hexa, autan::test::BoxFill::tetra, autan::test::BoxFill::prism,
+               autan::test::BoxFill::pyramid, autan::test::BoxFill::hybrid);
   const double perturbation = GENERATE(0.0, 0.3);
-  CAPTURE(cfd::test::to_string(fill), perturbation);
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(4, fill, perturbation)));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  CAPTURE(autan::test::to_string(fill), perturbation);
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(4, fill, perturbation)));
+  const autan::Geometry g = autan::compute_geometry(mesh);
 
   CHECK(max_closure(mesh, g) < closure_tolerance);
   CHECK_THAT(total_volume(g), WithinRel(1.0, 1e-13));
@@ -109,14 +109,14 @@ TEST_CASE("Box meshes close every cell and fill the box exactly", "[geometry]") 
 }
 
 TEST_CASE("Geometry is invariant under translation far from the origin", "[geometry]") {
-  auto input = cfd::test::box(4, cfd::test::BoxFill::hybrid, 0.3);
-  const cfd::Mesh near = cfd::assemble(cfd::to_face_based(input));
+  auto input = autan::test::box(4, autan::test::BoxFill::hybrid, 0.3);
+  const autan::Mesh near = autan::assemble(autan::to_face_based(input));
   for (auto& x : input.x) x += 1e6;
   for (auto& y : input.y) y -= 3e6;
   for (auto& z : input.z) z += 7e5;
-  const cfd::Mesh far = cfd::assemble(cfd::to_face_based(input));
-  const cfd::Geometry g_near = cfd::compute_geometry(near);
-  const cfd::Geometry g_far = cfd::compute_geometry(far);
+  const autan::Mesh far = autan::assemble(autan::to_face_based(input));
+  const autan::Geometry g_near = autan::compute_geometry(near);
+  const autan::Geometry g_far = autan::compute_geometry(far);
 
   // Coordinates near 1e6 carry an absolute rounding of ~1e-10 on a spacing
   // of 0.25, which bounds the attainable relative accuracy at ~1e-9.
@@ -129,8 +129,8 @@ TEST_CASE("Geometry is invariant under translation far from the origin", "[geome
 
 TEST_CASE("A 105-face cell with hanging nodes has the volume and centroid of its cube",
           "[geometry]") {
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::hanging_node_box()));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::hanging_node_box()));
+  const autan::Geometry g = autan::compute_geometry(mesh);
 
   REQUIRE(mesh.cell_faces(0).size() == 105);
   CHECK_THAT(g.cell_volume[0], WithinRel(1.0, 1e-14));
@@ -154,27 +154,27 @@ TEST_CASE("A 105-face cell with hanging nodes has the volume and centroid of its
 TEST_CASE("Degenerate cells are rejected with a geometry error code", "[geometry]") {
   SECTION("zero-area face") {
     // Nodes 0, 1, 2 collinear: face (0, 2, 1) has no area.
-    auto ref = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
-                                      {0, 0, 0});
+    auto ref = autan::test::affine_cell(autan::CellShape::tetra,
+                                        {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
     ref.mesh.x[2] = 2.0;
     ref.mesh.y[2] = 0.0;
-    const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
+    const autan::Mesh mesh = autan::assemble(autan::to_face_based(ref.mesh));
     try {
-      (void)cfd::compute_geometry(mesh);
+      (void)autan::compute_geometry(mesh);
       FAIL("expected an error");
-    } catch (const cfd::Error& e) {
-      CHECK(e.code() == cfd::ErrorCode::geometry_degenerate_face);
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::geometry_degenerate_face);
     }
   }
   SECTION("inverted cell") {
-    auto ref = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, -1}}},
-                                      {0, 0, 0});
-    const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
+    auto ref = autan::test::affine_cell(autan::CellShape::tetra,
+                                        {{{1, 0, 0}, {0, 1, 0}, {0, 0, -1}}}, {0, 0, 0});
+    const autan::Mesh mesh = autan::assemble(autan::to_face_based(ref.mesh));
     try {
-      (void)cfd::compute_geometry(mesh);
+      (void)autan::compute_geometry(mesh);
       FAIL("expected an error");
-    } catch (const cfd::Error& e) {
-      CHECK(e.code() == cfd::ErrorCode::geometry_non_positive_volume);
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::geometry_non_positive_volume);
     }
   }
 }
@@ -185,9 +185,9 @@ TEST_CASE("A prism on a concave polygon has its shoelace area, volume and centro
   // ((16 * 2 - 6 * 2.5) / 10, 2) = (1.7, 2).
   const std::array<std::array<double, 2>, 8> outline{
       {{0, 0}, {4, 0}, {4, 1}, {1, 1}, {1, 3}, {4, 3}, {4, 4}, {0, 4}}};
-  cfd::CellwiseMesh cw;
-  cw.cell_zones.push_back(cfd::CellZone{
-      .name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}});
+  autan::CellwiseMesh cw;
+  cw.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
   for (const double z : {0.0, 1.0}) {
     for (const auto& p : outline) {
       cw.x.push_back(p[0]);
@@ -195,20 +195,20 @@ TEST_CASE("A prism on a concave polygon has its shoelace area, volume and centro
       cw.z.push_back(z);
     }
   }
-  std::vector<cfd::offset_t> offsets{0};
+  std::vector<autan::offset_t> offsets{0};
   std::vector<index_t> nodes;
   for (index_t i = 7; i >= 0; --i) nodes.push_back(i);  // bottom, normal -z
-  offsets.push_back(static_cast<cfd::offset_t>(nodes.size()));
+  offsets.push_back(static_cast<autan::offset_t>(nodes.size()));
   for (index_t i = 0; i < 8; ++i) nodes.push_back(8 + i);  // top, normal +z
-  offsets.push_back(static_cast<cfd::offset_t>(nodes.size()));
+  offsets.push_back(static_cast<autan::offset_t>(nodes.size()));
   for (index_t i = 0; i < 8; ++i) {
     const index_t j = (i + 1) % 8;
     nodes.insert(nodes.end(), {i, j, static_cast<index_t>(8 + j), static_cast<index_t>(8 + i)});
-    offsets.push_back(static_cast<cfd::offset_t>(nodes.size()));
+    offsets.push_back(static_cast<autan::offset_t>(nodes.size()));
   }
   cw.add_polyhedron(offsets, nodes, 0);
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cw));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
+  const autan::Geometry g = autan::compute_geometry(mesh);
 
   CHECK_THAT(g.cell_volume[0], WithinRel(10.0, 1e-14));
   CHECK_THAT(g.cell_centroid_x[0], WithinAbs(1.7, 1e-14));
@@ -231,8 +231,8 @@ TEST_CASE("Face centroids and area vectors integrate linear fields exactly on pl
   // Divergence theorem: sum_f (c_f)_i (S_f)_j = V delta_ij for every cell
   // whose faces are planar, so Green-Gauss is exact for linear fields. Warped
   // faces break this at the order of the warp (documented in the contract).
-  auto check = [](const cfd::Mesh& mesh) {
-    const cfd::Geometry g = cfd::compute_geometry(mesh);
+  auto check = [](const autan::Mesh& mesh) {
+    const autan::Geometry g = autan::compute_geometry(mesh);
     for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
       std::array<std::array<double, 3>, 3> m{};
       for (const index_t f : mesh.cell_faces(c)) {
@@ -251,26 +251,26 @@ TEST_CASE("Face centroids and area vectors integrate linear fields exactly on pl
     }
   };
   SECTION("boxes") {
-    const auto fill =
-        GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
-                 cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
-    CAPTURE(cfd::test::to_string(fill));
-    check(cfd::assemble(cfd::to_face_based(cfd::test::box(3, fill))));
+    const auto fill = GENERATE(autan::test::BoxFill::hexa, autan::test::BoxFill::tetra,
+                               autan::test::BoxFill::prism, autan::test::BoxFill::pyramid,
+                               autan::test::BoxFill::hybrid);
+    CAPTURE(autan::test::to_string(fill));
+    check(autan::assemble(autan::to_face_based(autan::test::box(3, fill))));
   }
   SECTION("105-face cell with hanging nodes") {
-    check(cfd::assemble(cfd::to_face_based(cfd::test::hanging_node_box())));
+    check(autan::assemble(autan::to_face_based(autan::test::hanging_node_box())));
   }
 }
 
 TEST_CASE("Geometry holds at extreme length scales", "[geometry]") {
   const double scale = GENERATE(1e-90, 1e80);
-  const auto shape = GENERATE(cfd::CellShape::tetra, cfd::CellShape::pyramid, cfd::CellShape::prism,
-                              cfd::CellShape::hexa);
+  const auto shape = GENERATE(autan::CellShape::tetra, autan::CellShape::pyramid,
+                              autan::CellShape::prism, autan::CellShape::hexa);
   CAPTURE(scale);
   const std::array<std::array<double, 3>, 3> a{{{scale, 0, 0}, {0, scale, 0}, {0, 0, scale}}};
-  const auto ref = cfd::test::affine_cell(shape, a, {0, 0, 0});
-  const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
-  const cfd::Geometry g = cfd::compute_geometry(mesh);
+  const auto ref = autan::test::affine_cell(shape, a, {0, 0, 0});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(ref.mesh));
+  const autan::Geometry g = autan::compute_geometry(mesh);
   CHECK_THAT(g.cell_volume[0], WithinRel(ref.volume, 1e-14));
   CHECK_THAT(g.cell_centroid_x[0], WithinRel(ref.centroid[0], 1e-14));
   CHECK_THAT(g.cell_centroid_y[0], WithinRel(ref.centroid[1], 1e-14));
@@ -278,12 +278,12 @@ TEST_CASE("Geometry holds at extreme length scales", "[geometry]") {
 }
 
 TEST_CASE("Closure of a geometry computed for another mesh is rejected", "[geometry]") {
-  const cfd::Mesh mesh =
-      cfd::assemble(cfd::to_face_based(cfd::test::box(1, cfd::test::BoxFill::hexa)));
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(1, autan::test::BoxFill::hexa)));
   try {
-    (void)cfd::cell_closure_error(mesh, cfd::Geometry{});
+    (void)autan::cell_closure_error(mesh, autan::Geometry{});
     FAIL("expected an error");
-  } catch (const cfd::Error& e) {
-    CHECK(e.code() == cfd::ErrorCode::mesh_inconsistent_sizes);
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
   }
 }

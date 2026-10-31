@@ -2,7 +2,7 @@
 
 ## Report a vulnerability
 
-Report it privately through GitHub: [open a draft security advisory](https://github.com/Remenby31/cfd-solver/security/advisories/new). Do not open a public issue.
+Report it privately through GitHub: [open a draft security advisory](https://github.com/Remenby31/autan/security/advisories/new). Do not open a public issue.
 
 Include the commit you tested, the input that triggers the problem (a mesh or case file, or a script that writes one) and what an attacker gains.
 
@@ -22,7 +22,7 @@ The solver reads mesh, case and results files that a user may receive from someo
 
 Out of scope:
 
-- a wrong or inaccurate numerical result: use the [numerical discrepancy form](https://github.com/Remenby31/cfd-solver/issues/new?template=2-numerical-discrepancy.yml);
-- a crash or a coded error on invalid input that reads no memory it should not: use the [bug form](https://github.com/Remenby31/cfd-solver/issues/new?template=1-bug.yml);
+- a wrong or inaccurate numerical result: use the [numerical discrepancy form](https://github.com/Remenby31/autan/issues/new?template=2-numerical-discrepancy.yml);
+- a crash or a coded error on invalid input that reads no memory it should not: use the [bug form](https://github.com/Remenby31/autan/issues/new?template=1-bug.yml);
 - running out of memory or time on a mesh that is simply large;
 - vulnerabilities in a dependency that our code does not reach. Report those upstream.

@@ -3,9 +3,9 @@
 #include <array>
 #include <string>
 
-#include "cfd/core/cellwise.hpp"
+#include "autan/core/cellwise.hpp"
 
-namespace cfd::test {
+namespace autan::test {
 
 enum class BoxFill { hexa, tetra, prism, pyramid, hybrid };
 
@@ -37,4 +37,4 @@ struct ReferenceCell {
 ReferenceCell affine_cell(CellShape shape, const std::array<std::array<double, 3>, 3>& a,
                           const std::array<double, 3>& b);
 
-}  // namespace cfd::test
+}  // namespace autan::test
