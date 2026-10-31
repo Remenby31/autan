@@ -8,7 +8,7 @@
 
 ## Plan the case
 
-The heat-exchanger case has two gases and a copper plate. Plan it with the MeshInfo of its mesh:
+The heat-exchanger case has two gases and a copper plate. Plan it with the MeshInfo fixture that stands in for its mesh:
 
 ```sh
 uv run autan plan py/examples/heat_exchanger.py --mesh-info py/tests/fixtures/heat-exchanger.meshinfo.json
@@ -24,6 +24,7 @@ cell zones
   co2        0.5 M cells  fluid(co2)               code
   plate      0.2 M cells  solid(copper)            code
 memory      1.5 GB total · 1.5 GB/GPU on 1 GPU · 7 equations (autan.memory/1)
+warning[W0205]: mesh '…/heat-exchanger.msh' not found; the MeshInfo is taken as given
 plan OK
 ```
 
@@ -31,6 +32,7 @@ Read it zone by zone:
 
 - `casing` has no rule in the case: it is a wall because the mesh file says so (`mesh`).
 - `co2` and `plate` take the materials the case gives them (`code`).
+- `W0205` is expected: the mesh file is not in the repository, so `plan` takes the MeshInfo as given.
 - The memory line is a lower bound; [autan plan](../sdk/plan.md#memory-model-autanmemory1) lists what it counts.
 
 ## Read a diagnostic

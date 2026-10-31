@@ -1,6 +1,6 @@
 # Boundary conditions
 
-Every boundary zone of the mesh needs a condition before a run can start. Autan takes it from your case when you set one, and otherwise from the type the mesh file gives the zone. `autan plan` shows the result for every zone, with where it came from: its **provenance**.
+Every boundary zone of the mesh that has faces needs a condition before a run can start. Autan takes it from your case when you set one, and otherwise from the type the mesh file gives the zone. `autan plan` shows the result for every zone, with where it came from: its **provenance**.
 
 ## How a zone gets its condition
 
@@ -10,7 +10,7 @@ Every boundary zone of the mesh needs a condition before a run can start. Autan 
 |---|---|
 | `code` | A rule of your case, such as `case.boundary("wing.*").wall()`. |
 | `mesh` | The zone type in the mesh file, such as a Fluent `wall` or a CGNS `BCFarfield`. |
-| `default` | Cell zones only: a cell zone the mesh leaves untyped is a fluid with the case's gas. |
+| `default` | Cell zones only: a cell zone the mesh leaves untyped is a fluid with the physics' default medium. |
 
 A rule may override the mesh type; `autan plan` then reports `W0415` so the override is visible. A mesh type that needs values only you can give, such as an inlet's total pressure, stops the plan with `E0413`.
 

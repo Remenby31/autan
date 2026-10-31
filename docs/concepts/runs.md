@@ -1,6 +1,6 @@
 # Runs
 
-A run is one execution of a case on a mesh. It writes one directory that holds everything needed to read, compare and reproduce it. The layout is the [results contract](../contracts/results.md); `autan.Results` reads it.
+A run is one execution of a case on a mesh. It writes one directory with its results and what identifies them: the case as run, the mesh hash and the solver commit. The layout is the [results contract](../contracts/results.md); `autan.Results` reads it.
 
 ## Run states
 
@@ -24,10 +24,10 @@ A run is one execution of a case on a mesh. It writes one directory that holds e
 | `case.toml` | At start: the case as run, every default filled in. |
 | `mesh-info.json` | At start: the MeshInfo of the mesh read. |
 | `history.jsonl` | One line per recorded iteration, during the run. |
-| `solution.cgns` | At the end, before the state leaves `running`. |
+| `solution.cgns` | At the end, before the state leaves `running`; see the diagram for which end states have one. |
 
 You can open a run while it is `running`: the history is readable, the solution is not.
 
 ## How runs are identified
 
-Every run records the mesh hash, the case hash, the solver commit and the precision. Their combination, with the backend and the devices, is the run's `identity`. In the bitwise-deterministic mode, two runs with the same identity give the same bits; [run.json](../contracts/results.md#runjson) defines each field.
+Every run records the mesh hash, the case hash, the solver commit and the precision. Their combination, with the backend and the devices, is the run's `identity`. In the bitwise-deterministic mode, two runs with the same identity that stop at the same iteration write the same history and solution data, bit for bit. [run.json](../contracts/results.md#runjson) defines each field.

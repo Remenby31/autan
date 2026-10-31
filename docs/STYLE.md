@@ -23,9 +23,9 @@ The first sentence under the title says what the thing is or what the page lets 
 
 Vercel: "Use the Node.js runtime to run Vercel Functions written in JavaScript or TypeScript." "Environment variables are key-value pairs configured outside your source code…"
 
-> Before: `autan plan CASE --mesh-info MESHINFO [--gpus N] [--json]` checks a case against its mesh before any GPU is reserved: it resolves every boundary and cell zone and shows where each condition comes from (…), reports coded diagnostics (…) and estimates device memory.
->
-> After: `autan plan` checks a case against its mesh before you reserve a GPU. It shows the condition of every zone and where it comes from, reports coded diagnostics and estimates device memory.
+| Before | After |
+|---|---|
+| `autan plan CASE --mesh-info MESHINFO [--gpus N] [--json]` checks a case against its mesh before any GPU is reserved: it resolves every boundary and cell zone and shows where each condition comes from (…), reports coded diagnostics (…) and estimates device memory. | `autan plan` checks a case against its mesh before you reserve a GPU. It shows the condition of every zone and where it comes from, reports coded diagnostics and estimates device memory. |
 
 A guide then lists its prerequisites, its numbered steps, and ends on **Next steps** with links. A concept page ends on links to the reference that defines it.
 
@@ -36,13 +36,13 @@ A guide then lists its prerequisites, its numbered steps, and ends on **Next ste
 - **Short sentences, short paragraphs.** Vercel's median sentence is 15 words (90th percentile 28); the median paragraph is one sentence of 15 words, the 90th percentile 42 words.
 - **One idea per paragraph.** Lists for parallel items, tables for anything with two or more attributes.
 
-> Before: Units are parsed by Pint with its default registry.
->
-> After: Autan parses units with Pint's default registry.
+| Before | After |
+|---|---|
+| Units are parsed by Pint with its default registry. | Autan parses units with Pint's default registry. |
 
-> Before: Until the C++ mesh readers exist, the MeshInfo is passed explicitly.
->
-> After: Until the mesh readers ship, pass the MeshInfo yourself with `--mesh-info`.
+| Before | After |
+|---|---|
+| Until the C++ mesh readers exist, the MeshInfo is passed explicitly. | Until the mesh readers ship, pass the MeshInfo yourself with `--mesh-info`. |
 
 ## Headings say what the section does
 
@@ -51,9 +51,9 @@ A guide then lists its prerequisites, its numbered steps, and ends on **Next ste
 - In reference: the exact name of the option, field or code, one heading each, so the table of contents lists them. Vercel gives each `vercel deploy` option its own heading.
 - Sentence case. No numbering, no trailing punctuation.
 
-> Before: `## Building a mesh`
->
-> After (concept): `## How readers build a mesh`
+| Before | After |
+|---|---|
+| `## Building a mesh` | `## How readers build a mesh` |
 
 ## Code carries the example
 
@@ -102,4 +102,4 @@ Project pages written in French (the plan, the state of the art) carry `lang: fr
 
 ## Sources
 
-Read on 2026-10-31 at <https://vercel.com/docs>: the home page, `getting-started-with-vercel`, `functions`, `functions/quickstart`, `fundamentals/what-is-compute`, `cli/deploy`, `deployments`, `project-configuration`, `builds/build-image`, `environment-variables/managing-environment-variables`, `functions/runtimes/node-js`, `incremental-static-regeneration` and `rolling-releases`. Counts are over the paragraph text of these pages (438 sentences).
+Read on 2026-10-31 at <https://vercel.com/docs>: the home page, `getting-started-with-vercel`, `functions`, `functions/quickstart`, `fundamentals/what-is-compute`, `cli/deploy`, `deployments`, `project-configuration`, `builds/build-image`, `environment-variables/managing-environment-variables`, `functions/runtimes/node-js`, and `incremental-static-regeneration`; counts are over the paragraph text of these twelve pages (438 sentences). Notes were also read on `rolling-releases`.

@@ -31,7 +31,7 @@ struct FaceBlock {
 
 // Fluent boundary-condition codes of section 13 headers, used when no zone
 // section names the type.
-std::string bc_type_from_code(std::int64_t code) {
+std::string_view bc_type_from_code(std::int64_t code) {
   switch (code) {
     case 2:
       return "interior";
@@ -226,7 +226,7 @@ class FluentReader {
     } else {
       std::vector<float> raw(3 * n);
       c_.binary(raw.data(), raw.size());
-      std::copy(raw.begin(), raw.end(), out);
+      std::ranges::copy(raw, out);
       end_binary(id);
     }
     std::fill(node_seen_.begin() + first - 1, node_seen_.begin() + last, 1);
@@ -262,15 +262,14 @@ class FluentReader {
         c_.binary(types.data(), n);
         end_binary(id);
       }
-      std::copy(types.begin(), types.end(), cell_element_.begin() + first - 1);
+      std::ranges::copy(types, cell_element_.begin() + first - 1);
     } else {
       std::fill(cell_element_.begin() + first - 1, cell_element_.begin() + last,
                 static_cast<std::int32_t>(element));
       if (c_.peek() == '(') skip_balanced_body();
     }
     c_.expect(')');
-    if (std::find(cell_zone_order_.begin(), cell_zone_order_.end(), zone) ==
-        cell_zone_order_.end()) {
+    if (std::ranges::find(cell_zone_order_, zone) == cell_zone_order_.end()) {
       cell_zone_order_.push_back(zone);
     }
   }
@@ -295,7 +294,7 @@ class FluentReader {
       c_.fail("unknown face type " + std::to_string(face_type));
     }
     const bool binary = id == 2013;
-    auto next = [&]() -> std::int64_t {
+    const auto next = [&]() -> std::int64_t {
       return binary ? c_.binary<std::int32_t>() : c_.integer<std::int64_t>(16);
     };
     const std::size_t n = span_of(first, last);
@@ -375,14 +374,12 @@ class FluentReader {
       if (v > n_nodes_) c_.fail("face node index out of range");
       in.face_nodes.push_back(static_cast<index_t>(v - 1));
     }
-    std::vector<std::int64_t> zone_of_block;
     std::map<std::int64_t, index_t> face_zone_index;
-    for (std::size_t b = 0; b < face_blocks_.size(); ++b) {
-      const FaceBlock& block = face_blocks_[b];
+    for (const FaceBlock& block : face_blocks_) {
       if (face_zone_index.contains(block.zone)) continue;
       const auto it = zones_.find(block.zone);
       const std::string type =
-          it != zones_.end() ? it->second.type : bc_type_from_code(block.bc_code);
+          it != zones_.end() ? it->second.type : std::string(bc_type_from_code(block.bc_code));
       const std::string name =
           it != zones_.end() ? it->second.name : "zone-" + std::to_string(block.zone);
       face_zone_index[block.zone] = static_cast<index_t>(in.face_zones.size());
@@ -396,8 +393,7 @@ class FluentReader {
     }
     // Zones declared without faces stay visible; cell-zone types excluded.
     for (const auto& [id, info] : zones_) {
-      const bool cells =
-          std::find(cell_zone_order_.begin(), cell_zone_order_.end(), id) != cell_zone_order_.end();
+      const bool cells = std::ranges::find(cell_zone_order_, id) != cell_zone_order_.end();
       if (cells || face_zone_index.contains(id) || info.type == "fluid" || info.type == "solid") {
         continue;
       }
@@ -445,14 +441,14 @@ class FluentReader {
     for (std::size_t c = 0; c < std::min(n_cells, cell_fluent_zone_.size()); ++c) {
       if (cell_fluent_zone_[c] != 0) in.cell_zone[c] = cell_zone_index[cell_fluent_zone_[c]];
     }
-    if (std::find(in.cell_zone.begin(), in.cell_zone.end(), -1) != in.cell_zone.end()) {
+    if (std::ranges::find(in.cell_zone, -1) != in.cell_zone.end()) {
       if (!cell_zone_order_.empty()) c_.fail("some cells belong to no cell section");
       in.cell_zones.push_back(CellZone{
           .name = "fluid",
           .type = "",
           .kind = CellKind::unspecified,
           .provenance = Provenance{.source_id = -1, .detail = "synthesised: no cell section"}});
-      std::fill(in.cell_zone.begin(), in.cell_zone.end(), 0);
+      std::ranges::fill(in.cell_zone, 0);
     }
     check_element_types(in);
     return in;

@@ -135,7 +135,7 @@ class GmshReader {
       const int tag = c_.integer<int>(10, "");
       if (tag <= 0) c_.fail("non-positive physical tag " + std::to_string(tag));
       c_.skip_space();
-      std::string_view name = c_.line();
+      const std::string_view name = c_.line();
       if (name.size() < 2 || name.front() != '"' || name.back() != '"')
         c_.fail("unquoted physical name");
       names_[{dim, tag}] = std::string(name.substr(1, name.size() - 2));
@@ -220,7 +220,7 @@ class GmshReader {
     if (binary_) c_.skip_space();
     // Contiguous tags (what Gmsh writes) index directly; sparse ones go
     // through a sorted table. Both detect duplicate tags.
-    const auto [lo, hi] = std::minmax_element(tags_.begin(), tags_.end());
+    const auto [lo, hi] = std::ranges::minmax_element(tags_);
     dense_ = !tags_.empty() && *hi - *lo + 1 == tags_.size();
     order_.assign(tags_.size(), -1);
     if (dense_) {
@@ -233,7 +233,7 @@ class GmshReader {
       return;
     }
     for (std::size_t i = 0; i < order_.size(); ++i) order_[i] = static_cast<index_t>(i);
-    std::sort(order_.begin(), order_.end(), [&](index_t a, index_t b) {
+    std::ranges::sort(order_, [&](index_t a, index_t b) {
       return tags_[static_cast<std::size_t>(a)] < tags_[static_cast<std::size_t>(b)];
     });
     for (std::size_t i = 1; i < order_.size(); ++i) {
@@ -252,9 +252,9 @@ class GmshReader {
       }
       return order_[static_cast<std::size_t>(tag - first_tag_)];
     }
-    const auto it = std::lower_bound(
-        order_.begin(), order_.end(), tag,
-        [&](index_t i, std::uint64_t t) { return tags_[static_cast<std::size_t>(i)] < t; });
+    const auto it = std::ranges::lower_bound(order_, tag, [&](index_t i, std::uint64_t t) {
+      return tags_[static_cast<std::size_t>(i)] < t;
+    });
     if (it == order_.end() || tags_[static_cast<std::size_t>(*it)] != tag) {
       c_.fail("element refers to undefined node " + std::to_string(tag));
     }

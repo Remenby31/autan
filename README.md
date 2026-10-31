@@ -26,7 +26,9 @@
 
 Autan is a GPU-native finite-volume solver for compressible flow on unstructured meshes of arbitrary polyhedra, with a discrete adjoint on the GPU and a typed Python SDK.
 
-> **Status: pre-alpha. Nothing runs yet.** The repository holds the plan, the research behind it, the contracts between components and the first foundations (milestone M0). There is no release, no installable package and no stable API. Do not use it for engineering work.
+> **Status: pre-alpha. The solver does not compute a flow yet.** The repository holds the plan, the research behind it, the contracts between components and the first foundations of milestone M0: the polyhedral mesh core, the Gmsh, Fluent and OpenFOAM readers, and the SDK's case schema and CLI skeleton. There is no release and no stable API. Do not use it for engineering work.
+
+**Documentation: [remenby31.github.io/autan](https://remenby31.github.io/autan/)**
 
 ## Why
 
@@ -74,7 +76,7 @@ Development hardware is two NVIDIA DGX Spark (GB10). Production targets are B200
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pull request flow, and [AGENTS.md](AGENTS.md) for the rules every contributor follows. Report a wrong numerical result with the [numerical discrepancy form](https://github.com/Remenby31/autan/issues/new?template=2-numerical-discrepancy.yml), and a vulnerability as described in [SECURITY.md](SECURITY.md). Everyone follows the [code of conduct](CODE_OF_CONDUCT.md).
+The [documentation site](https://remenby31.github.io/autan/) renders `docs/`. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pull request flow, and [AGENTS.md](AGENTS.md) for the rules every contributor follows. Report a wrong numerical result with the [numerical discrepancy form](https://github.com/Remenby31/autan/issues/new?template=2-numerical-discrepancy.yml), and a vulnerability as described in [SECURITY.md](SECURITY.md). Everyone follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Citing
 
