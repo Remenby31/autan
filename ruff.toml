@@ -1,0 +1,20 @@
+# The one ruff configuration for py/ and vv/. Keep [tool.ruff] out of every pyproject.toml: in a
+# subdirectory it would override this file, and beside it it would be ignored.
+target-version = "py312"
+line-length = 100
+
+[lint]
+# Scientific Python Development Guide, "Style and static checks" (PD dropped: no pandas).
+extend-select = [
+  "ARG", "B", "C4", "EM", "EXE", "FURB", "G", "I", "ICN", "ISC", "LOG", "NPY", "PERF", "PGH",
+  "PL", "PT", "PTH", "PYI", "Q", "RET", "RSE", "RUF", "SIM", "SLOT", "T10", "T20", "TC", "TRY",
+  "UP",
+]
+ignore = [
+  "PLR09",   # complexity counts: numerical routines legitimately take many arguments
+  "PLR2004", # magic values: numerical constants come from the source they cite
+  "ISC001",  # conflicts with the formatter
+]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["T20"]
