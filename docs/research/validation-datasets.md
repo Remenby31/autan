@@ -30,26 +30,44 @@ Every URL was opened on 2026-10-31 and returned HTTP 200 unless stated otherwise
 Policy for the case library:
 - Permission to *use* data and permission to *redistribute* it are separate questions. Record the rights evidence for each asset (licence text, terms page, date read) in the case library.
 - Vendor only assets with recorded CC0, public-domain, CC-BY or CC-BY-SA rights. Every other asset is stored as URL plus SHA-256 and downloaded at test time.
-- Downloading at test time does not lift a use restriction. Non-commercial (NC) terms and reserved automated-analysis or AI uses still apply to how we use the data; those cases need permission or a replacement (see [decisions](#gaps-and-decisions-for-the-lead)).
+- Downloading at test time does not lift a use restriction. Non-commercial (NC) terms and reserved automated-analysis or AI uses still apply to how we use the data; see [Restricted data](#restricted-data).
 
 | Source | Licence / access | Vendor in repo? |
 |---|---|---|
 | NASA TMR (grids, CFL3D/FUN3D results, experiment transcriptions), [github.com/TMBWG/turbmodels](https://github.com/TMBWG/turbmodels) | **CC0-1.0** (GitHub licence field). `.gz`/`.zip`/`.x` files are in Git LFS, which has a bandwidth quota. Plain files come from `raw.githubusercontent.com`. | Yes |
 | NASA NTRS reports, NPARC/Wind-US archive, CRM, DPW and HLPW pages and grids | Per asset. Works by NASA staff are not under US copyright, but contractor reports, contributed experimental data and workshop meshes can carry third-party rights. NASA states that its permission to publish such material does not pass to recipients ([sti.nasa.gov/disclaimers](https://sti.nasa.gov/disclaimers/)). | Only with rights evidence for that asset; otherwise download by hash |
 | AGARD AR-138, AR-303 (NATO STO) | Free download, no registration. No licence text. | No: store pointers and transcribed tables, with citation |
-| ERCOFTAC Classic Collection, [cfd.mace.manchester.ac.uk/ercoftac](http://cfd.mace.manchester.ac.uk/ercoftac/) | **CC BY-NC-SA 4.0**. No login. **HTTP only**: HTTPS refuses the connection. Commercial use needs ERCOFTAC's permission. | No. Use is blocked pending a decision. |
-| ERCOFTAC KBwiki, [kbwiki.ercoftac.org](https://kbwiki.ercoftac.org/) | [Terms and Conditions](https://kbwiki.ercoftac.org/w/index.php?title=Terms_and_Conditions), revised 2026-10-25. Human reading and reuse with attribution are allowed, commercial included. **Text and data mining, and use to train, evaluate or otherwise develop AI systems, are reserved**: a licence from admin@cado-ercoftac.org is required before any bulk download or mining. | No. Automated scoring and M11 use are blocked pending a decision. |
+| ERCOFTAC Classic Collection, [cfd.mace.manchester.ac.uk/ercoftac](http://cfd.mace.manchester.ac.uk/ercoftac/) | **CC BY-NC-SA 4.0**. No login. **HTTP only**: HTTPS refuses the connection. Commercial use needs ERCOFTAC's permission. | No. [Restricted](#restricted-data). |
+| ERCOFTAC KBwiki, [kbwiki.ercoftac.org](https://kbwiki.ercoftac.org/) | [Terms and Conditions](https://kbwiki.ercoftac.org/w/index.php?title=Terms_and_Conditions), revised 2026-10-25. Human reading and reuse with attribution are allowed, commercial included. **Text and data mining, and use to train, evaluate or otherwise develop AI systems, are reserved**: a licence from admin@cado-ercoftac.org is required before any bulk download or mining. | No. [Restricted](#restricted-data). |
 | DrivAerML, AhmedML, WindsorML (Hugging Face `neashton/*`) | **CC-BY-SA-4.0** | Yes (share-alike for derived data) |
 | ADODG CRM grids, [Mendeley 10.17632/7jnyjdbvf9.1](https://data.mendeley.com/datasets/7jnyjdbvf9/1) | **CC BY 4.0** | Yes |
 | Lee & Moser, Madrid channel DNS, HiOCFD files, Featflow, TNF archive | No licence stated. The files ask for citation. | No: download by hash |
 | DrivAer CAD (TU München) | Free, **registration required**, no licence text | No |
-| Loughborough DrivAer experiment | **CC-BY-NC-4.0**. Commercial use needs permission. | No. Use is blocked pending a decision. |
+| Loughborough DrivAer experiment | **CC-BY-NC-4.0**. Commercial use needs permission. | No. [Restricted](#restricted-data). |
 | ONERA OAT15A (DPW-8) | ONERA property, conditions of use. The Jacquin 2009 paper is for personal use only. | No |
 | MASA (MMS library) | **LGPL-2.1** (`COPYING`) | Test-only dependency |
 | LANL ExactPack (exact Riemann, Noh, Sedov) | **BSD-3-Clause** (`LICENSE.txt`) | Test-only dependency |
 | SU2 tutorials (ONERA M6 design mesh) | LGPL-2.1 | Test-only data |
 | preCICE tutorials | LGPL-3.0 | Test-only data |
 | Journal papers (Roy, Eça, Ghia, Botella–Peyret, Schäfer–Turek, …) | Paywalled | No: transcribe only the numbers we need, with the citation |
+
+### Restricted data
+
+The lead's rules for data whose licence restricts use: ERCOFTAC Classic Collection (NC), ERCOFTAC KBwiki (reserved text and data mining and AI uses), and the Loughborough DrivAer experiment (NC).
+- Never redistributed in the repository.
+- Never downloaded automatically, in CI or anywhere else.
+- Never used to train or evaluate AI (M11 included).
+- Public CI relies on open data only. Each restricted case lists an open alternative below; experimental alternatives are preferred.
+- Where no open alternative exists, V&V provides a **manual import path**: the user supplies the file locally together with its licence, and the run records both. This is not used in CI.
+- Requesting permission from ERCOFTAC is a later decision for the lead, not a prerequisite for anything in this catalogue.
+
+| Restricted case | Open alternative (used in CI) | Manual import |
+|---|---|---|
+| Ahmed body, Lienhart & Becker (ERCOFTAC case 082), M7 Must | No open experimental dataset found on 2026-10-31. Open path: Cd values published by Ahmed, Ramm & Faltin (1984), cited as facts, plus code-to-code comparison with the AhmedML baseline (CC-BY-SA-4.0) | Yes: LDA profiles and rear Cp |
+| Le, Moin & Kim BFS DNS (ERCOFTAC case 031) | Driver–Seegmiller experiment on TMR (CC0) for reattachment and profiles | Yes |
+| Periodic hill, Breuer et al. 2009 (KBwiki UFR 3-30) | On TMR (CC0 repository): the Fröhlich/Temmerman/Leschziner LES at Re_h 10,595 ([2dhill_periodic.html](https://tmbwg.github.io/turbmodels/Other_LES_Data/2dhill_periodic.html)); the Balakumar compressible DNS at Re_h 2800, M 0.2 ([2dhill_periodic_compress.html](https://tmbwg.github.io/turbmodels/Other_DNS_Data/2dhill_periodic_compress.html)); and the Xiao et al. 29-geometry DNS at Re_h 5600 ([parameterized_periodic_hills.html](https://tmbwg.github.io/turbmodels/Other_DNS_Data/parameterized_periodic_hills.html)) | Yes, for the Rapp & Manhart experiments |
+| O'Hern helium plume (KBwiki UFR 1-07) | None found | Yes |
+| Loughborough DrivAer experiment | No open DrivAer experiment found. Open path: DrivAerML baseline (CC-BY-SA-4.0), code-to-code | Yes |
 
 ### Hosts that have moved
 
@@ -76,8 +94,8 @@ Several well-known references point to dead hosts. Use the current ones:
 | M4 | The M3 TMR cases driven through the SDK | — |
 | M5 | ONERA M6 viscous (reference forces), NACA 0012 numerics | DPW CRM |
 | M6 | Adjoint dot-product and complex-step checks, ADODG case 2 (RAE 2822), SU2 ONERA M6 constrained design | ADODG case 4.1 (CRM wing), ADODG case 1, Giles–Pierce quasi-1D adjoint |
-| M7 | SST MMS, BDF2 temporal order, DDES shielding, Taylor–Green Re 1600, channel DNS (Lee & Moser), cylinder Re 3900, Driver–Seegmiller step, Ahmed 25°/35°, HLPW-5 CRM-HL (TC1 and TC2.4) | Le–Moin–Kim DNS, periodic hill, DPW CRM, AGARD AR-303 cases |
-| M8 | Incompressible MMS (pressure order, discrete divergence), lid-driven cavity (Botella–Peyret, Ghia), Schäfer–Turek 2D-1/2D-2/2D-3/3D, DrivAerML baseline (code-to-code) | Erturk high-Re cavity, Loughborough DrivAer |
+| M7 | SST MMS, BDF2 temporal order, DDES shielding, Taylor–Green Re 1600, channel DNS (Lee & Moser), cylinder Re 3900, Driver–Seegmiller step, Ahmed 25°/35° (open path; LDA by manual import), HLPW-5 CRM-HL (TC1 and TC2.4) | Periodic hill (TMR LES and DNS), Le–Moin–Kim DNS (manual import), DPW CRM, AGARD AR-303 cases |
+| M8 | Incompressible MMS (pressure order, discrete divergence), lid-driven cavity (Botella–Peyret, Ghia), Schäfer–Turek 2D-1/2D-2/2D-3/3D, DrivAerML baseline (code-to-code) | Erturk high-Re cavity, Loughborough DrivAer (manual import) |
 | M9 | Species MMS with per-species balance, 1D diffusion, He/air shock tube, conjugate MMS and composite wall, Sandia propane jet, Cutler He/air coaxial jet, NASA C3X vane | Brown–Roshko layer, preCICE heated plate, Vynnycky plate, O'Hern He plume, Panchapakesan–Lumley jet |
 
 ---
@@ -245,14 +263,17 @@ These cases use the same TMR conventions and CC0 files. Gate code correctness ag
 | ACC-SBLI Mach 7 cone–cylinder flare (`axiswblim7_val.html`) | Kussoy & Horstman, M 7.11, T_w 311 K | p_w, q_w, upstream profiles | **p_w and q_w ±10 %**; profiles u ±3 %, T ±6 % (NASA TM-101075, [NTRS 19890010729](https://ntrs.nasa.gov/citations/19890010729)) | p_w, q_w within ±10 % outside separation; peak q_w within ±20 % |
 | Supersonic flat plate (`ZPGflatplateSS_val.html`) | M 2 and 5, T_w/T_aw 0.2–1.0 | van Driest II theory (not an experiment) | — | Cf within 3 % of van Driest II at M 2. This is the first wall heat-flux check before CHT. |
 
-### RAE 2822 — Val · Useful (report); also the M6 baseline
+### RAE 2822 — Val · Useful (report)
 - **Source:** Cook, McDonald & Firmin, AGARD AR-138 chapter A6. The PDF is above; its accuracy table is unreadable in the scan (unverified).
 - **Data:** NPARC [raetaf.html](https://www.grc.nasa.gov/www/wind/valid/raetaf/raetaf.html) has `geom.txt` and study #4 (case 6, corrected **M 0.729, α 2.31°**, 369×65 C-grid). Its stated Cp measurement error is **≈ 0.0026**. A new Airbus/NWTF pETW dataset (2025) adds wall pressures: [nwtf.ac.uk/dataset/2687](https://www.nwtf.ac.uk/dataset/2687/); licence not stated.
 - **Conditions (AR-138 headers, tripped):**
   - Case 6: M 0.725, α 2.92°, Re 6.5e6.
   - Case 9: M 0.730, α 3.19°, Re 6.5e6.
   - Case 10: M 0.750, α 3.19°, Re 6.2e6.
-- **Wind-tunnel corrections are not unique.** ADODG case 2 and HiOCFD case C2.2 use case 9 at M 0.734, α 2.79°. 2.54° is also widely quoted (unverified). Proposed: **case 9 at M 0.734 with fixed CL = 0.824** (the ADODG definition), which removes the α ambiguity. This awaits the lead's sign-off ([decision 2](#gaps-and-decisions-for-the-lead)).
+- **Wind-tunnel corrections are not unique.** ADODG case 2 and HiOCFD case C2.2 use case 9 at M 0.734, α 2.79°; 2.54° is also widely quoted (unverified).
+- **Two uses, two definitions (lead's decision):**
+  - *Validation against experiment (this entry):* AR-138 case 9 at the corrected conditions **M 0.734, Re 6.5e6**. The solver targets the **measured CL of case 9** (read from the AR-138 table at transcription), or alternatively the corrected incidence. Results are compared with the measured pressures.
+  - *Adjoint optimisation (M6):* the ADODG definition, M 0.734 with **CL fixed at 0.824**; see [ADODG case 2](#adodg-case-2-rae-2822-drag-minimisation--must).
 - **Acceptance (report):** Cp within 0.03–0.05 away from the shock; shock x/c within ±0.02. Do not gate on CL or CD against experiment: the α correction itself is uncertain by about ±0.25°.
 
 ### ONERA M6 viscous — V-ref · Useful in M3, Must in M5
@@ -340,7 +361,7 @@ The gate is "dot-product test + finite differences; RAE 2822 and ONERA M6 drag m
 
 ### ADODG case 2: RAE 2822 drag minimisation — Must
 - **Definition:** AIAA Aerodynamic Design Optimization Discussion Group (ADODG). Official PDFs at [sites.google.com/view/mcgill-computational-aerogroup/adodg](https://sites.google.com/view/mcgill-computational-aerogroup/adodg), mirrored on the [MDO Lab wiki](https://mdolab.engin.umich.edu/wiki/aerodynamic-design-optimization-workshop).
-  - Conditions: RAE 2822 at M 0.734, Re 6.5e6, **CL = 0.824**.
+  - Conditions: RAE 2822 at M 0.734, Re 6.5e6, **CL = 0.824**. This is the optimisation definition only; validation against experiment uses AR-138 case 9 with its measured CL ([RAE 2822](#rae-2822--val--useful-report)).
   - Constraints: cm ≥ −0.092, area ≥ initial.
 - **References:** He et al. 2019 (MDO Lab) report a drag *reduction* of **88.66 counts**. Lee & Zingg (Jetstream) report an *absolute* optimised drag of 119.22 counts on their finest mesh (their baseline is unverified). These figures differ in mesh, baseline and design space, so they do not define a scatter band for the optimum. A frozen-turbulence adjoint converges poorly here (He 2019): the SA adjoint must be complete.
 - **Acceptance (gate):** gradients pass [Gradient correctness](#gradient-correctness--v-exact--must); the optimiser converges (optimality and feasibility tolerances recorded) with every constraint satisfied; drag decreases. Report the achieved reduction next to He 2019. Gating on the optimum value would require reproducing a reference's mesh and parameterisation exactly.
@@ -419,17 +440,18 @@ The PLAN gate is "cylinder, backward-facing step, Ahmed; CRM-HL near CLmax compa
 
 ### Backward-facing step — Val · Must
 - **RANS and DDES:** Driver–Seegmiller (M3 entry). Gate: x_reatt/H = 6.26 ± 0.3 for SST and DDES.
-- **LES:** Le, Moin & Kim (1997) DNS, ERCOFTAC case 031 ([case031](http://cfd.mace.manchester.ac.uk/ercoftac/doku.php?id=cases:case031), `bwst-allfiles.zip`). Re_h 5100, expansion ratio 1.20, profiles and Reynolds-stress budgets at x/h = −3 to 19.
+- **LES:** in CI, the Driver–Seegmiller experiment (TMR, CC0), with the same reattachment gate. Le, Moin & Kim (1997) DNS, ERCOFTAC case 031 ([case031](http://cfd.mace.manchester.ac.uk/ercoftac/doku.php?id=cases:case031)), is [restricted](#restricted-data) and used by manual import only. Its data: Re_h 5100, expansion ratio 1.20, profiles and Reynolds-stress budgets at x/h = −3 to 19.
   - Reattachment about 6.28 h (unverified).
   - The DNS averaged over only about 4.5 flow-throughs, so compare budgets qualitatively.
   - Acceptance: x_R/h = 6.28 ± 0.3; profile RMS ≤ 0.04 U₀. Useful.
 
 ### Ahmed body, 25° and 35° — Val · Must
-- **Source:** Lienhart & Becker (LSTM Erlangen), ERCOFTAC case 082, [case082](http://cfd.mace.manchester.ac.uk/ercoftac/doku.php?id=cases:case082). CC BY-NC-SA 4.0: use is blocked until [decision 3](#gaps-and-decisions-for-the-lead) is settled. If permission is refused, fall back on the Ahmed (1984) drag only plus code-to-code comparison with AhmedML.
+- **Source:** Lienhart & Becker (LSTM Erlangen), ERCOFTAC case 082, [case082](http://cfd.mace.manchester.ac.uk/ercoftac/doku.php?id=cases:case082). CC BY-NC-SA 4.0: [restricted](#restricted-data), manual import only. In CI the case runs on the open path: the Ahmed (1984) drag values plus code-to-code comparison with the AhmedML baseline.
   - Data: `ahby-allfiles.zip` (2.4 MB, ASCII): inlet profiles, LDA in the symmetry plane and in cross planes, hot-wire boundary layers, rear Cp.
   - Conditions: U 40 m/s, Re_h 768,000, blockage 4 %.
 - **Drag:** the drag reference is Ahmed, Ramm & Faltin (1984), SAE 840300. Values are read from a figure: about 0.285 at 25° and 0.257 at 35° (unverified to three digits). Their force error is ±0.2 N (about ±0.001 Cd), but facilities disagree by more than that: later 25° measurements reach about 0.30 (unverified).
-- **Open alternative:** AhmedML (Hugging Face `neashton/ahmedml`, CC-BY-SA-4.0) gives 500 hybrid RANS-LES variants. These are another code's results, usable only for code-to-code comparison.
+- **Open alternative:** AhmedML (Hugging Face `neashton/ahmedml`, CC-BY-SA-4.0) gives 500 hybrid RANS-LES variants. Its baseline geometry is an independent numerical reference (V-ref); the variants are not used. No open-licence experimental Ahmed campaign was found on 2026-10-31.
+- **CI gate (open path):** 35° Cd within ±5 % of 0.257 and 25° reattachment (DDES/WMLES), plus Cd within ±5 % of the AhmedML baseline at the same setup. The wake criterion below applies only with manually imported Lienhart & Becker data.
 - **Acceptance:**
   - 35°: Cd within ±5 % of 0.257; wake U/U∞ RMS error ≤ 0.10.
   - 25°: DDES/WMLES must reattach on the slant, with Cd within ±8 %. Report only for RANS.
@@ -449,11 +471,14 @@ The PLAN gate is "cylinder, backward-facing step, Ahmed; CRM-HL near CLmax compa
 - **Background:** HLPW-4 (Rumsey et al., [NTRS 20220005271](https://ntrs.nasa.gov/citations/20220005271)) ran the QinetiQ 5 m semispan model at M 0.2, Re_MAC 5.49e6, with RANS scatter ≈ 0.1 in CL at α 7.05° and ≈ 0.68 at 19.57°. HLPW-6 takes place in June 2027; its test-case documents and committee grids (`.b8.ugrid`, `.cgns`, `.mapbc`, up to 18.4 GB per level) are already published.
 - **Capacity check:** RANS meshes for these cases run from 100 M to 500 M+ nodes, and HLPW-5 included meshes above a billion cells. That tests the GB10's 128 GB memory.
 
-### Periodic hill, Re_h 10,595 — V-ref (LES) · Useful
-- **Source:** Breuer, Peller, Rapp & Manhart, *Comput. Fluids* 38:433–457 (2009), and the Rapp & Manhart experiments. ERCOFTAC KBwiki [UFR 3-30](https://kbwiki.ercoftac.org/w/index.php/UFR_3-30). About 145 `.dat` files on S3, no login. Columns y/h, U, V, uu, vv, uv. Re_h 5600, 10,600, 19,000, 37,000.
+### Periodic hill — V-ref (LES/DNS) · Useful
+- **Open data, used in CI** (TMR, CC0 repository):
+  - LES at Re_h 10,595 (Fröhlich et al., *JFM* 526:19–66, 2005; Temmerman et al. 2003): grid and averaged pressure, velocity and turbulence fields. Separation near x = 0.2h, reattachment near 4.6–4.7h. [2dhill_periodic.html](https://tmbwg.github.io/turbmodels/Other_LES_Data/2dhill_periodic.html).
+  - Compressible DNS at Re_h 2800, M 0.2 (Balakumar, AIAA 2015-2783): the same physics with a compressible code, close to our own setting. [2dhill_periodic_compress.html](https://tmbwg.github.io/turbmodels/Other_DNS_Data/2dhill_periodic_compress.html).
+  - Xiao, Wu, Laizet & Duan (*Comput. Fluids* 200:104431, 2020): DNS of 29 hill geometries at Re_h 5600. [parameterized_periodic_hills.html](https://tmbwg.github.io/turbmodels/Other_DNS_Data/parameterized_periodic_hills.html). The authors' GitHub copy (`xiaoh/para-database-for-PIML`) states no licence, so use the TMR copy.
+- **Restricted, manual import only:** Breuer, Peller, Rapp & Manhart, *Comput. Fluids* 38:433–457 (2009), and the Rapp & Manhart experiments, on ERCOFTAC KBwiki [UFR 3-30](https://kbwiki.ercoftac.org/w/index.php/UFR_3-30). About 145 `.dat` files on S3, no login. Columns y/h, U, V, uu, vv, uv. Re_h 5600, 10,600, 19,000, 37,000.
 - **Reference:** LESOCC gives separation x/h = 0.19 and reattachment 4.69; MGLET about 0.22 and 4.72 (unverified).
-- **Acceptance (LES/WMLES):** x_reatt/h = 4.69 ± 0.25, profile RMS ≤ 0.05 U_b. Report only for RANS.
-- **Licence:** KBwiki terms reserve text and data mining and AI development or evaluation (see the licence table). Automated scoring by the harness needs ERCOFTAC's licence first ([decision 3](#gaps-and-decisions-for-the-lead)).
+- **Acceptance (LES/WMLES):** at Re_h 10,595 against the TMR LES, x_reatt/h within ±0.25 of its value and profile RMS ≤ 0.05 U_b; at Re_h 2800 against the compressible DNS, the same criteria. Report only for RANS.
 
 ### DPW CRM — Val + workshop scatter · Useful
 - **Sources:** [aiaa-dpw.org](https://www.aiaa-dpw.org/), grids at [dpw.larc.nasa.gov](https://dpw.larc.nasa.gov/) (DPW1–DPW8). Geometry and NTF/Ames/ETW data at [commonresearchmodel.larc.nasa.gov](https://commonresearchmodel.larc.nasa.gov/): IGES/STP; WB, WBNP and WBT configurations; aeroelastic shapes; PSP.
@@ -518,7 +543,7 @@ The gate is "cavity, cylinder, DrivAer compared with references". Cavity and cyl
 - **Acceptance:**
   - DrivAerML baseline (V-ref): same geometry, domain, boundary conditions and turbulence model class. Cd within ±3 %, surface Cp L2 difference ≤ 0.05, our values judged on their confidence intervals.
   - DrivAerML gives one mesh level only, so its own numerical uncertainty is unknown. The ±3 % band is a proposal to tighten once a second independent code result exists.
-  - Against experiment (report): |ΔCd| ≤ 0.010, in the same facility and configuration. The Loughborough data are NC-licensed ([decision 3](#gaps-and-decisions-for-the-lead)).
+  - Against experiment (report): |ΔCd| ≤ 0.010, in the same facility and configuration. The Loughborough data are [restricted](#restricted-data): manual import only, never in CI.
 - **Why:** `AGENTS.md` excludes golden files produced by our own code, not independent published results. The baseline is an independent numerical reference; its comparison with experiment does not prove each of its outputs numerically accurate.
 
 ---
@@ -561,7 +586,7 @@ The gate is "jet mixing, reference CHT case; .msh zones mapped automatically". T
 
 ### Other mixing data — Val · Useful
 - **Brown & Roshko (1974):** He/N₂ mixing layer, [doi:10.1017/S002211207400190X](https://doi.org/10.1017/S002211207400190X). Spreading rate only, no tables. Spreading rate within ±15 %.
-- **O'Hern et al. (2005), 1 m helium plume:** *JFM* 544, paywalled; ERCOFTAC KBwiki [UFR 1-07](https://kbwiki.ercoftac.org/w/index.php/UFR_1-07). Puffing, unsteady LES case; data files not found on the page.
+- **O'Hern et al. (2005), 1 m helium plume:** *JFM* 544, paywalled; ERCOFTAC KBwiki [UFR 1-07](https://kbwiki.ercoftac.org/w/index.php/UFR_1-07). Puffing, unsteady LES case; data files not found on the page. [Restricted](#restricted-data): manual import only, no open alternative found.
 - **Panchapakesan & Lumley (1993) helium jet:** *JFM* 246, [doi:10.1017/S0022112093000102](https://doi.org/10.1017/S0022112093000102), paywalled. Far-field decay constants within ±10 %.
 - **Burrows–Kurkov Mach 2.44 H₂ injection:** NPARC `bk`. A reacting case, but its non-reacting setup could serve; data content unverified.
 
@@ -604,10 +629,10 @@ The gate is "jet mixing, reference CHT case; .msh zones mapped automatically". T
    - Settles CR-177638, Schülein (TM-2013-216604), Cutler, C3X Appendix A.
    - AR-138 RAE 2822 and ONERA M6 tables. NPARC and TMR files partly cover these.
    - Ghia, Botella & Peyret and Schäfer–Turek paper bounds.
-2. **RAE 2822 corrected conditions.** Proposal: case 9 at M 0.734 with fixed CL 0.824 (the ADODG definition). This needs the lead's sign-off, since it changes the case hash.
-3. **Restricted data.** These need the lead's decision before integration:
-   - Non-commercial licences: ERCOFTAC Classic Collection (CC BY-NC-SA; Ahmed case 082, Le–Moin–Kim case 031) and Loughborough DrivAer (CC BY-NC). The options are to request permission or to replace them.
-   - KBwiki (periodic hill, O'Hern plume): the terms reserve automated analysis and AI evaluation and require a licence from ERCOFTAC before bulk download.
+2. **Decided by the lead.**
+   - RAE 2822 has two definitions: AR-138 case 9 for validation, ADODG for optimisation (see [RAE 2822](#rae-2822--val--useful-report)).
+   - Restricted data follow the rules in [Restricted data](#restricted-data). Requesting permission from ERCOFTAC is a later decision for the lead.
+3. **Open points on data rights.**
    - No licence stated: TNF, Lee & Moser, Madrid, HiOCFD and Featflow files. These are downloaded by hash and never committed.
    - NASA-hosted material: rights evidence must be recorded per asset before anything is vendored.
 4. **Still missing.**
@@ -619,6 +644,7 @@ The gate is "jet mixing, reference CHT case; .msh zones mapped automatically". T
    - Botella & Peyret digits.
    - Schäfer–Turek 1996 bounds.
    - Ahmed Cd.
+   - The measured CL of RAE 2822 case 9, from the AR-138 table.
    - The DPW core-solution band.
    - Cylinder Cd at Re 3900.
    - Le–Moin–Kim reattachment.
