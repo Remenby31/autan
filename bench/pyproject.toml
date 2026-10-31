@@ -21,4 +21,3 @@ packages = ["src/autan_bench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["gpu: needs an NVIDIA GPU and the built stream binary (set AUTAN_BENCH_STREAM)"]

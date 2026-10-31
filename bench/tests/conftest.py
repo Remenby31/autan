@@ -6,6 +6,14 @@ from autan_bench import result
 from autan_bench.stats import summarize
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    # Declared here, not in bench/pyproject.toml, so the marker exists whichever configuration
+    # file pytest picks (CI runs these tests from the repository root).
+    config.addinivalue_line(
+        "markers", "gpu: needs an NVIDIA GPU and the built stream binary (AUTAN_BENCH_STREAM)"
+    )
+
+
 def bench(name: str, samples: list[float], *, unit: str = "GB/s", better: str = "higher") -> dict:
     metric = "bandwidth" if unit == "GB/s" else "time_per_cell_iteration"
     return {
