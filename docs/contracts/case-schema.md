@@ -4,7 +4,7 @@ A case is a typed document that says what to compute on which mesh. Python code 
 
 ## Example
 
-The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to:
+The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
 
 ```python
 import cfd
@@ -15,7 +15,7 @@ case.physics = cfd.Compressible(turbulence=cfd.SA(), precision="fp32+acc64")
 case.freestream(mach=0.20, aoa=19.57 * deg, re=5.49e6, ref_length=7.0 * m)
 case.boundary("wing.*").wall()
 case.boundary("symmetry").symmetry()
-case.monitor(cfd.forces("wing.*"), every=10)
+case.monitor(cfd.forces("wing.*", ref_area=191.84 * m**2), every=10)
 ```
 
 ```toml
@@ -26,7 +26,7 @@ mesh = "crm-hl.cgns"
 [physics]
 kind = "compressible"
 precision = "fp32+acc64"
-turbulence = { model = "sa" }
+turbulence = { model = "sa", nu_tilde_ratio = 3.0 }
 gas = { kind = "ideal-gas", name = "air", molar_mass = "0.0289647 kg / mol", gamma = 1.4, prandtl = 0.72, viscosity = { law = "sutherland", mu_ref = "1.716e-05 Pa * s", t_ref = "273.15 K", s = "110.4 K" } }
 
 [freestream]
@@ -39,6 +39,8 @@ temperature = "288.15 K"
 
 [time]
 kind = "steady"
+max_iterations = 10000
+residual_orders = 8.0
 
 [[boundaries]]
 zones = "wing.*"
@@ -53,6 +55,7 @@ kind = "forces"
 name = "forces"
 surfaces = "wing.*"
 every = 10
+ref_area = "191.84 m ** 2"
 ```
 
 ## Quantities
@@ -107,10 +110,12 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `"inviscid"` | — | Euler equations. |
 | `"laminar"` | — | Navier-Stokes without a turbulence model. |
-| `"sa"` | — | Spalart-Allmaras, negative variant (SA-neg). |
-| `"sst"` | — | Menter k-ω SST. |
-| `"ddes"` | `base = "sa"` · `"sst"` (default `"sst"`) | Delayed detached-eddy simulation. Needs `time.kind = "unsteady"` (`E0305`). |
+| `"sa"` | `nu_tilde_ratio` > 0, default 3.0 | Spalart-Allmaras, negative variant (SA-neg). |
+| `"sst"` | `intensity` > 0, default 0.001; `viscosity_ratio` > 0, default 0.009 | Menter k-ω SST. |
+| `"ddes"` | `base = "sa"` · `"sst"` (default `"sst"`), and the options of the base model | Delayed detached-eddy simulation. Needs `time.kind = "unsteady"` (`E0305`). |
 | `"wmles"` | `wall_model = "equilibrium"` (default) | Wall-modelled LES. Needs `time.kind = "unsteady"` (`E0305`). |
+
+The options set the turbulence state of the freestream and of every inlet, from the local laminar viscosity ν = μ/ρ and speed V: SA takes ν̃ = `nu_tilde_ratio` · ν; SST takes k = 1.5 (`intensity` · V)² and ω = ρ k / (`viscosity_ratio` · μ). The defaults follow the NASA Turbulence Modeling Resource: ν̃/ν = 3 for SA, μt/μ = 0.009 for SST; the SST intensity default (0.1 %) is our choice.
 
 ### Freestream
 
@@ -135,8 +140,14 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | — (local time stepping) |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0 |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
+
+A steady run uses local time stepping and has converged when every residual of [results.md](results.md#history) has dropped `residual_orders` orders of magnitude below its value at iteration 1; it stops after `max_iterations` otherwise.
+
+With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
+
+Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `cfd.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 
@@ -152,7 +163,7 @@ A rule applies a condition to every boundary zone whose name matches `zones`, a 
 | `"velocity-inlet"` | `velocity` (speed > 0) | incompressible (`E0414` otherwise) |
 | `"outlet"` | `static_pressure` (pressure > 0) | all |
 
-Inlet flow is normal to the boundary face.
+`inlet`, `velocity-inlet` and `outlet` are subsonic conditions. Inlet flow is normal to the boundary face. Where the outflow is supersonic, the outlet extrapolates every variable and ignores `static_pressure`. The solver reports inlet faces with supersonic or reversed flow and outlet faces with reversed flow (codes defined with the M2 boundary conditions).
 
 ### Cell zones
 
@@ -161,7 +172,7 @@ A rule assigns a medium to every cell zone whose name matches `zones` (same glob
 | `medium.kind` | Keys |
 |---|---|
 | `"fluid"` | `material`: an [IdealGas](#materials) (compressible) or a [ConstantDensityFluid](#materials) (incompressible); `E0504` otherwise |
-| `"solid"` | `material`: a [Solid](#materials) |
+| `"solid"` | `material`: a [Solid](#materials); compressible physics only (`E0506`), since `cfd.case/1` gives incompressible flow no energy equation |
 
 ### Materials
 
@@ -179,7 +190,7 @@ Materials are stored in full, never by reference to a library entry, so the case
 |---|---|
 | `"forces"` | `name` (unique among monitors, default `"forces"`, `E0602`); `surfaces` glob over boundary zones; `every` integer ≥ 1, default 1; `ref_area` area > 0, optional; `moment_center` three lengths, default origin |
 
-Coefficients are reported only when `ref_area` is set; moment coefficients use `freestream.ref_length`. The recorded quantities are listed in [results.md](results.md#history).
+Coefficients are reported only when `ref_area` is set; moment coefficients also need `freestream.ref_length`. The force definition and the recorded quantities are in [results.md](results.md#history).
 
 ## Boundary resolution
 
@@ -187,7 +198,7 @@ The solver needs one condition per boundary zone of the mesh. The SDK resolves t
 
 1. Each rule must match at least one zone (`E0410`). A zone matched by two rules is ambiguous (`E0411`): narrow the patterns.
 2. A zone matched by a rule takes the rule's condition. Provenance `code`. If the mesh typed the zone with a different kind, the override is reported (`W0415`).
-3. Otherwise the zone's mesh type applies. Provenance `mesh`. `wall` becomes an adiabatic wall, `slip`, `symmetry` and `farfield` map one to one. `inlet` and `outlet` need values that only the case can give (`E0413`).
+3. Otherwise the zone's mesh type applies. Provenance `mesh`. `wall` becomes an adiabatic no-slip wall, or a slip wall with `inviscid` turbulence; `slip`, `symmetry` and `farfield` map one to one. `thermal-wall`, `inlet` and `outlet` need values that only the case can give (`E0413`).
 4. Otherwise the zone has no condition (`E0412`), unless it has no faces.
 
 Cell zones resolve the same way: rules (`E0501` no match, `E0502` ambiguous), then the mesh type (`fluid` takes the physics' default medium; `solid` needs a material, `E0503`), then, for a zone the mesh leaves untyped, a fluid with the physics' default medium (provenance `default`). Two fluid zones with different materials that share an interface would need species transport, which `cfd.case/1` does not provide (`E0505`).
@@ -198,8 +209,26 @@ Monitor surfaces must match at least one boundary zone (`E0601`).
 
 ## Case hash
 
-The case hash is the SHA-256 of the case's canonical JSON: the document with defaults filled in, keys sorted, no insignificant whitespace (`separators=(",", ":")`), UTF-8, numbers in shortest round-trip form. Two documents that differ only in formatting or key order have the same hash; writing the same value in another unit changes it.
+The case hash is the SHA-256 of the case document with every default filled in, canonicalized by the JSON Canonicalization Scheme ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)) and encoded in UTF-8. Non-finite numbers cannot occur: the schema rejects them. Two documents that differ only in formatting, key order or TOML/JSON syntax have the same hash; writing the same value in another unit changes it.
 
 ## Diagnostics
 
-Every problem is a diagnostic with a code, a location, a suggested fix and a documentation page. The registry and its generated reference are in `docs/sdk/errors.md`, generated from `cfd.errors`.
+Every problem is reported as a diagnostic, in this JSON shape wherever diagnostics appear (`cfd plan --json`, `run.json`, the SDK's `CaseError`):
+
+```json
+{"code": "E0412", "severity": "error", "message": "boundary zone 'empennage' has no condition",
+ "location": {"file": "crm-hl.py", "line": 4, "path": "boundaries"},
+ "fix": "case.boundary('empennage').wall()", "doc": "https://…/docs/sdk/errors.md#e0412",
+ "data": {"zone": "empennage"}}
+```
+
+| Field | Meaning |
+|---|---|
+| `code` | `E####` (error, blocks the run), `W####` (warning) or `D####` (divergence during a run). `E0101`–`E0199` belong to the mesh readers ([mesh.md](mesh.md)). |
+| `severity` | `error`, `warning` or `divergence`, given by the code's letter. |
+| `message` | Human-readable; never parse it. |
+| `location` | `null`, or any of `file`, `line` (1-based), `path` (document path such as `boundaries[2].condition`). |
+| `fix`, `doc` | A suggested correction, and the code's documentation page. |
+| `data` | Machine-readable details. Mesh entities use `zone` (name), `cell` and `face` (0-based indices in the mesh's cell and face order, the order of `NFaceElements` and `NGonElements` in [results.md](results.md#solutioncgns)), `iteration`. |
+
+Codes are registered in `cfd.errors`; their reference page `docs/sdk/errors.md` is generated from it.
