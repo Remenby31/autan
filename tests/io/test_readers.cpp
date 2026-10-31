@@ -316,8 +316,8 @@ TEST_CASE("Hand-written files from the format specifications read as specified",
     const autan::Geometry g = autan::compute_geometry(mesh);
     REQUIRE(mesh.n_cells() == 1);
     CHECK_THAT(g.cell_volume[0], WithinRel(1.0 / 6.0, 1e-15));
-    CHECK(*std::max_element(autan::cell_closure_error(mesh, g).begin(),
-                            autan::cell_closure_error(mesh, g).end()) < 1e-12);
+    const auto closure = autan::cell_closure_error(mesh, g);
+    CHECK(closure[0] < 1e-12);
     const auto& sides = zone_named(mesh, "sides");
     CHECK(sides.bc_type == "velocity-inlet");
     CHECK(sides.kind == autan::BcKind::inlet);
