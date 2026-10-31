@@ -87,15 +87,25 @@ function diagramSource(from: string, image: Image): string | null {
     return null;
   }
   return readFileSync(absolute, "utf8")
-    .replace(/<\?xml[^>]*>/g, "")
-    .replace(/<style[\s\S]*?<\/style>/g, "")
+    .replace(/<\?xml[^>]*\?>/g, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, "")
     .trim();
 }
 
-function visitLinks(node: Nodes, fn: (link: Link | Definition) => void) {
-  if (node.type === "link" || node.type === "definition") fn(node);
+function visitLinks(
+  node: Nodes,
+  fn: (link: Link | Definition | Image) => void,
+  images = false,
+) {
+  if (
+    node.type === "link" ||
+    node.type === "definition" ||
+    (images && node.type === "image")
+  )
+    fn(node);
   if ("children" in node)
-    for (const child of node.children) visitLinks(child, fn);
+    for (const child of node.children) visitLinks(child, fn, images);
 }
 
 /**
@@ -128,7 +138,9 @@ export function resolveLink(from: string, url: string, warn = true): string {
   if (slug !== null)
     return `${localePath(slug, fileLocale(from))}${query}${anchor}`;
 
-  const asset = htmlAssetPath(repoPath);
+  const asset =
+    htmlAssetPath(repoPath) ??
+    (repoPath.startsWith(`${assetsDir}/`) ? repoPath : null);
   if (asset !== null) return `${basePath}${encodeURI(asset)}${query}${anchor}`;
 
   return (
@@ -142,29 +154,36 @@ export function resolveLink(from: string, url: string, warn = true): string {
  */
 export function rewriteMarkdownLinks(from: string, markdown: string): string {
   const edits: { start: number; end: number; url: string }[] = [];
-  visitLinks(fromMarkdown(markdown), (node) => {
-    const start = node.position?.start.offset;
-    const end = node.position?.end.offset;
-    if (start === undefined || end === undefined) return;
-    const resolved = resolveLink(from, node.url, false);
-    const url =
-      resolved.startsWith("/") && !resolved.startsWith("//")
-        ? basePath + resolved.slice(1)
-        : resolved;
-    if (url === node.url) return;
-    const source = markdown.slice(start, end);
-    const at =
-      node.type === "link"
-        ? source.lastIndexOf(node.url)
-        : source.indexOf(node.url);
-    if (at === -1) {
-      console.warn(
-        `[docs] ${from}: cannot rewrite link ${node.url} in the Markdown export`,
-      );
-      return;
-    }
-    edits.push({ start: start + at, end: start + at + node.url.length, url });
-  });
+  // Images too: the exports reference diagrams by their published URL.
+  visitLinks(
+    fromMarkdown(markdown),
+    (node) => {
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if (start === undefined || end === undefined) return;
+      const resolved = resolveLink(from, node.url, false);
+      const url =
+        resolved.startsWith("/") &&
+        !resolved.startsWith("//") &&
+        !resolved.startsWith(basePath)
+          ? basePath + resolved.slice(1)
+          : resolved;
+      if (url === node.url) return;
+      const source = markdown.slice(start, end);
+      const at =
+        node.type !== "definition"
+          ? source.lastIndexOf(node.url)
+          : source.indexOf(node.url);
+      if (at === -1) {
+        console.warn(
+          `[docs] ${from}: cannot rewrite link ${node.url} in the Markdown export`,
+        );
+        return;
+      }
+      edits.push({ start: start + at, end: start + at + node.url.length, url });
+    },
+    true,
+  );
   let out = markdown;
   for (const edit of edits.sort((a, b) => b.start - a.start))
     out = out.slice(0, edit.start) + edit.url + out.slice(edit.end);

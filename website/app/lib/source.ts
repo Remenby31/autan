@@ -61,8 +61,9 @@ export const docs = defineDocs({
 });
 
 const repoPaths = new Map<string, string>();
+// Fumadocs URL-encodes slugs ("été" → "%C3%A9t%C3%A9"); keys use the decoded form.
 const key = (locale: string | undefined, slug: string) =>
-  `${locale ?? defaultLocale}:${slug}`;
+  `${locale ?? defaultLocale}:${decodeURIComponent(slug)}`;
 
 // Site paths mirror the slugs (contracts/results.md, index.fr.md), so search results show the section.
 const raw = docs.toFumadocsSource();

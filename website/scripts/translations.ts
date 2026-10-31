@@ -29,11 +29,11 @@ if (command === "hash" && file) {
     const source = sourceOf(translation);
     const frontmatter =
       readFileSync(path.join(repoRoot, translation), "utf8").match(
-        /^---\n([\s\S]*?)\n---/,
+        /^---\r?\n([\s\S]*?)\r?\n---/,
       )?.[1] ?? "";
     const recorded = frontmatter.match(
-      /^source_hash:\s*["']?([0-9a-f]{12})["']?\s*$/m,
-    )?.[1];
+      /^source_hash:\s*(["']?)([0-9a-f]{12})\1\s*(?:#.*)?\r?$/m,
+    )?.[2];
     let current: string;
     try {
       current = hashOf(source);
