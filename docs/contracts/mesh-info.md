@@ -1,14 +1,14 @@
 # Contract: MeshInfo
 
-`MeshInfo` is the JSON summary of a mesh that the C++ core emits after reading it. The SDK consumes it to resolve boundary and cell zones, to check coverage and to estimate memory, without loading the mesh itself. Schema identifier: `cfd.mesh-info/1`. The JSON Schema is generated from the SDK (`cfd schema mesh-info`).
+`MeshInfo` is the JSON summary of a mesh that the C++ core emits after reading it. The SDK consumes it to resolve boundary and cell zones, to check coverage and to estimate memory, without loading the mesh itself. Schema identifier: `autan.mesh-info/1`. The JSON Schema is generated from the SDK (`autan schema mesh-info`).
 
-Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py/cfd` (owner: CFD - SDK & contrats). Until the core emits it, the SDK reads MeshInfo files passed explicitly (`cfd plan --mesh-info FILE`).
+Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py/autan` (owner: CFD - SDK & contrats). Until the core emits it, the SDK reads MeshInfo files passed explicitly (`autan plan --mesh-info FILE`).
 
 ## Document
 
 ```json
 {
-  "schema": "cfd.mesh-info/1",
+  "schema": "autan.mesh-info/1",
   "source": {"path": "crm-hl.cgns", "format": "cgns", "sha256": "9f2c…"},
   "counts": {
     "cells": 48200000, "faces": 151000000, "nodes": 52000000,
@@ -26,7 +26,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 
 | Field | Type | Meaning |
 |---|---|---|
-| `schema` | `"cfd.mesh-info/1"` | Contract version. Any other value is rejected. |
+| `schema` | `"autan.mesh-info/1"` | Contract version. Any other value is rejected. |
 | `source.path` | string | Mesh file path as given to the reader. |
 | `source.format` | `"cgns"` · `"gmsh"` · `"fluent"` · `"polymesh"` | Reader used. |
 | `source.sha256` | 64 lowercase hex chars | The **mesh hash** recorded by every run: SHA-256 of the mesh file bytes. For a polyMesh directory, SHA-256 of the concatenation, for each file in the order `points`, `faces`, `owner`, `neighbour`, `boundary`, `cellZones` (when present), of `<name>\n<byte length in decimal>\n<bytes>`. |

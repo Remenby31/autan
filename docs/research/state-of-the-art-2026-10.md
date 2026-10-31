@@ -1,4 +1,4 @@
-# Solveur CFD « gold standard » — état de l'art et opportunités (2026-10-31)
+# Autan — état de l'art et opportunités (2026-10-31)
 
 Synthèse de 9 recherches parallèles (commercial, open source/recherche, frontière numérique, IA×CFD, marché, stacks GPU, solveurs linéaires, matériel/précision, techniques de kernels).
 Les chiffres viennent des sources citées ; ceux marqués *(non vérifié)* viennent de résumés ou de mémoire.
