@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>État de l'art CFD 2026</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: rapport d'ingénierie à une colonne de lecture, tableaux en pleine largeur ; bande Cp (bleu→rouge) comme seul ornement */
+:root{
+  --bg:#f5f7f9; --surface:#ffffff; --fg:#17202a; --muted:#56636f; --line:#d8dfe5;
+  --accent:#1f5fa8; --accent-soft:#e3edf8;
+  --ok:#1d7a4f; --ok-bg:#e1f2e9; --warn:#93620a; --warn-bg:#fbefd6; --bad:#b3362c; --bad-bg:#f8e1de; --plus:#5a3fa6; --plus-bg:#ebe5f8; --unk:#5b6670; --unk-bg:#e8ecef;
+  --cp1:#2b4c9b; --cp2:#4f8fd0; --cp3:#e8edf2; --cp4:#e3895a; --cp5:#b3362c;
+  --f-display:"Archivo","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f151b; --surface:#151d25; --fg:#e4e9ee; --muted:#9aa6b2; --line:#2a3540;
+  --accent:#7fb0ea; --accent-soft:#1b2c40;
+  --ok:#6fd0a0; --ok-bg:#15301f; --warn:#e7b85a; --warn-bg:#352a12; --bad:#f08a80; --bad-bg:#3a1a17; --plus:#b8a2f2; --plus-bg:#2a2140; --unk:#a7b1ba; --unk-bg:#232c34;
+  --cp3:#2a3540; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f151b; --surface:#151d25; --fg:#e4e9ee; --muted:#9aa6b2; --line:#2a3540;
+  --accent:#7fb0ea; --accent-soft:#1b2c40;
+  --ok:#6fd0a0; --ok-bg:#15301f; --warn:#e7b85a; --warn-bg:#352a12; --bad:#f08a80; --bad-bg:#3a1a17; --plus:#b8a2f2; --plus-bg:#2a2140; --unk:#a7b1ba; --unk-bg:#232c34;
+  --cp3:#2a3540; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:17px;line-height:1.55}
+.wrap{max-width:1040px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 64px;display:flex;flex-direction:column;gap:56px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:var(--f-display);font-stretch:85%;text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:clamp(2rem,5vw,3rem);font-weight:800;letter-spacing:-.01em}
+h2{font-size:1.6rem;font-weight:700}
+h3{font-size:1.1rem;font-weight:700}
+p{margin:0}
+section{display:flex;flex-direction:column;gap:18px;min-width:0}
+.eyebrow{font-family:var(--f-mono);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.cp{height:6px;border-radius:3px;background:linear-gradient(90deg,var(--cp1),var(--cp2),var(--cp3),var(--cp4),var(--cp5));max-width:320px}
+.cp-legend{display:flex;justify-content:space-between;max-width:320px;font-family:var(--f-mono);font-size:.7rem;color:var(--muted)}
+header{display:flex;flex-direction:column;gap:14px}
+.lede{font-size:1.15rem;color:var(--muted);max-width:62ch}
+.verdict{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.verdict div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:6px}
+.verdict b{font-family:var(--f-display);font-stretch:85%;font-size:1.05rem}
+.verdict span{color:var(--muted);font-size:.95rem}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.94rem}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th{font-family:var(--f-mono);font-weight:500;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--bg);white-space:nowrap}
+td.n{font-family:var(--f-mono);color:var(--muted);font-variant-numeric:tabular-nums;width:2ch}
+.matrix td,.matrix th{text-align:center;white-space:nowrap}
+.matrix td:first-child,.matrix th:first-child{text-align:left;white-space:normal;min-width:180px}
+.matrix th.us,.matrix td.us{background:var(--accent-soft)}
+.pill{display:inline-block;font-family:var(--f-mono);font-size:.72rem;font-weight:500;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.ok{color:var(--ok);background:var(--ok-bg)} .warn{color:var(--warn);background:var(--warn-bg)} .bad{color:var(--bad);background:var(--bad-bg)} .plus{color:var(--plus);background:var(--plus-bg)} .unk{color:var(--unk);background:var(--unk-bg)}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:.85rem;color:var(--muted);align-items:center}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.panel.pick{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+ul{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:6px}
+code,.mono{font-family:var(--f-mono);font-size:.86em}
+pre{margin:0;font-family:var(--f-mono);font-size:.82rem;line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:12px;overflow-x:auto}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-family:var(--f-mono);font-size:.82rem}
+.flow span{border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:6px 10px}
+.flow span.core{border-color:var(--accent);color:var(--accent);font-weight:500}
+.flow i{font-style:normal;color:var(--muted)}
+.axes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.axes .panel p,.axes .panel li{font-size:.95rem}
+.k{font-family:var(--f-mono);font-variant-numeric:tabular-nums;color:var(--accent)}
+.note{font-size:.9rem;color:var(--muted)}
+a{color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.src{font-size:.85rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 14px}
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">Étude · 31 octobre 2026 · 9 recherches</span>
+  <h1>État de l'art CFD 2026</h1>
+  <p class="lede">Ce que font les meilleurs solveurs aujourd'hui, où ils laissent des trous, et la spec d'un solveur volumes finis polyédrique, natif GPU, qui viserait ces trous.</p>
+  <div><div class="cp" aria-hidden="true"></div><div class="cp-legend" aria-hidden="true"><span>Cp −</span><span>0</span><span>Cp +</span></div></div>
+</header>
+
+<section>
+  <span class="eyebrow">En bref</span>
+  <div class="verdict">
+    <div><b>La vérification est résolue</b><span>Sur un cas bien défini, les codes RANS concordent à 0,005 de CL. L'erreur restante vient des modèles et des pratiques.</span></div>
+    <div><b>Le GPU est acquis, partiellement</b><span>Fluent, STAR-CCM+ et Charles tournent sur GPU, mais sans adjoint, sans overset et sur des sous-ensembles différents.</span></div>
+    <div><b>Le FP64 disparaît</b><span>B300 ≈ 1,2 TF FP64, Rubin moins que B200. L'émulation ne couvre que les GEMM denses. Un code conçu en FP64 vieillira mal.</span></div>
+    <div><b>Personne n'a l'adjoint sur GPU</b><span>SU2, Fluent et STAR-CCM+ le gardent sur CPU. C'est le trou le plus net.</span></div>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Comparatif</span>
+  <h2>Qui fait quoi sur GPU</h2>
+  <div class="legend"><span class="pill ok">oui</span><span class="pill warn">partiel</span><span class="pill bad">non</span><span class="pill unk">?</span> non confirmé par la recherche</div>
+  <div class="tbl">
+    <table class="matrix">
+      <thead><tr><th>Capacité</th><th>Fluent GPU</th><th>STAR-CCM+</th><th>Charles</th><th>FUN3D</th><th>SPUMA</th><th>SU2</th><th class="us">Cible</th></tr></thead>
+      <tbody>
+        <tr><td>Polyèdres arbitraires</td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill ok">Voronoi</span></td><td><span class="pill warn">mixte</span></td><td><span class="pill ok">oui</span></td><td><span class="pill warn">mixte</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>Entièrement résident GPU</td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill warn">repli CPU</span></td><td><span class="pill bad">non</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>Compressible implicite sur GPU</td><td><span class="pill bad">non</span></td><td><span class="pill ok">couplé</span></td><td><span class="pill warn">explicite</span></td><td><span class="pill ok">oui</span></td><td><span class="pill warn">limité</span></td><td><span class="pill bad">non</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>RANS stationnaire</td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill unk">?</span></td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill warn">CPU</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>WMLES</td><td><span class="pill ok">oui</span></td><td><span class="pill unk">?</span></td><td><span class="pill ok">référence</span></td><td><span class="pill ok">oui</span></td><td><span class="pill unk">?</span></td><td><span class="pill bad">non</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>Adjoint sur GPU</td><td><span class="pill bad">CPU</span></td><td><span class="pill bad">CPU</span></td><td><span class="pill unk">?</span></td><td><span class="pill unk">?</span></td><td><span class="pill bad">non</span></td><td><span class="pill bad">CPU</span></td><td class="us"><span class="pill plus">v1</span></td></tr>
+        <tr><td>Overset sur GPU</td><td><span class="pill bad">non</span></td><td><span class="pill bad">non</span></td><td><span class="pill unk">?</span></td><td><span class="pill unk">?</span></td><td><span class="pill bad">non</span></td><td><span class="pill bad">non</span></td><td class="us"><span class="pill warn">v2</span></td></tr>
+        <tr><td>NVIDIA + AMD</td><td><span class="pill warn">AMD Linux</span></td><td><span class="pill ok">oui</span></td><td><span class="pill unk">?</span></td><td><span class="pill ok">oui</span></td><td><span class="pill ok">oui</span></td><td><span class="pill bad">—</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>Utilisable on-prem sans contrainte</td><td><span class="pill warn">licence</span></td><td><span class="pill warn">licence</span></td><td><span class="pill warn">licence</span></td><td><span class="pill bad">ITAR</span></td><td><span class="pill ok">ouvert</span></td><td><span class="pill ok">ouvert</span></td><td class="us"><span class="pill ok">oui</span></td></tr>
+        <tr><td>Benchmarks publics reproductibles</td><td><span class="pill bad">non</span></td><td><span class="pill bad">non</span></td><td><span class="pill bad">non</span></td><td><span class="pill warn">papiers</span></td><td><span class="pill warn">papiers</span></td><td><span class="pill warn">partiel</span></td><td class="us"><span class="pill plus">CI publique</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Opportunités</span>
+  <h2>Où battre l'état de l'art</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th></th><th>Opportunité</th><th>Pourquoi c'est un trou</th><th>Difficulté</th></tr></thead>
+      <tbody>
+        <tr><td class="n">1</td><td><b>Adjoint discret sur GPU</b></td><td>CPU partout. Devient abordable si les kernels sont générés puis différentiés automatiquement.</td><td><span class="pill bad">élevée</span></td></tr>
+        <tr><td class="n">2</td><td><b>Un code ouvert et portable : densité + pression, RANS → DDES → WMLES</b></td><td>Fluent GPU sans solveur densité, STAR-CCM+ fermé, Charles LES seul, FUN3D sous ITAR.</td><td><span class="pill bad">élevée</span></td></tr>
+        <tr><td class="n">3</td><td><b>Conçu pour un FP64 rare, avec CLmax invariant prouvé</b></td><td>NASA LAVA est restée en FP64 faute de preuve. Question ouverte du rapport CFD Vision 2030.</td><td><span class="pill warn">moyenne</span></td></tr>
+        <tr><td class="n">4</td><td><b>Robustesse et vérification par défaut</b></td><td>La dispersion des workshops est en partie auto-infligée. La robustesse est le premier souhait des utilisateurs.</td><td><span class="pill warn">moyenne</span></td></tr>
+        <tr><td class="n">5</td><td><b>V&amp;V publique en CI</b> (TMR, HLPW, DPW, DrivAer)</td><td>Aucun éditeur ne publie de benchmark comparable.</td><td><span class="pill ok">faible</span></td></tr>
+        <tr><td class="n">6</td><td><b>IA native</b> : warm start par surrogate, résidu comme signal de confiance, API typée pour agents</td><td>La boucle surrogate ↔ solveur n'existe chez personne. Le warm start est le gain le mieux documenté (jusqu'à 16×).</td><td><span class="pill warn">moyenne</span></td></tr>
+        <tr><td class="n">7</td><td><b>Adaptation de maillage sur GPU</b>, puis métriques pour WMLES</td><td>Inexistante. Non démontrée pour la WMLES.</td><td><span class="pill bad">très élevée</span></td></tr>
+        <tr><td class="n">8</td><td><b>On-prem, prix simple, NVIDIA + AMD</b></td><td>Les startups GPU sont toutes cloud, les licences sont opaques.</td><td><span class="pill ok">faible</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note prose">À ne pas viser d'entrée : mailleur CAO complet, multiphasique et combustion, haut ordre.</p>
+</section>
+
+<section>
+  <span class="eyebrow">Interface</span>
+  <h2>Interface visuelle ou DX ?</h2>
+  <p class="prose">Les deux, mais dans cet ordre de dépendance. Le gold standard historique est l'interface intégrée de STAR-CCM+ : CAO, maillage, calcul et post-traitement dans une seule fenêtre, avec chaque clic enregistrable en macro. Les nouveaux venus (Flow360, Luminary) ont un SDK Python et une interface web qui pilotent le même modèle de données. C'est cette seconde forme qui gagne.</p>
+  <div class="two">
+    <div class="panel"><h3>Tout visuel</h3><ul><li>Indispensable pour l'adoption : personne n'assigne des conditions aux limites à 200 surfaces sans les cliquer en 3D.</li><li>Seul, il n'est ni reproductible, ni versionnable, ni automatisable.</li><li>Les agents LLM échouent sur ce qui n'a pas d'API propre : 34 à 68 % de cas corrects sur les fichiers texte d'OpenFOAM.</li></ul></div>
+    <div class="panel"><h3>Tout DX</h3><ul><li>Parfait pour les équipes méthodes, la CI, les plans d'expériences et les agents.</li><li>Seul, il bloque la majorité des ingénieurs CFD, habitués aux interfaces graphiques.</li><li>Le maillage, les conditions aux limites et le post-traitement restent visuels par nature.</li></ul></div>
+  </div>
+  <div class="panel pick">
+    <h3>Recommandation : le cas est du code, l'interface en est une vue</h3>
+    <div class="flow"><span>Interface web 3D</span><i>→</i><span class="core">Schéma de cas typé</span><i>←</i><span>SDK Python · CLI</span><i>←</i><span>Agent LLM</span></div>
+    <ul>
+      <li>Une seule source de vérité : un schéma de cas déclaratif et typé, versionnable dans git et validé avant de lancer le calcul (dry-run, erreurs structurées).</li>
+      <li>Chaque action dans l'interface produit le code équivalent, lisible. C'est la macro de STAR-CCM+, en version propre.</li>
+      <li>v1 : SDK, CLI, suivi en direct des résidus et un viewer 3D de résultats. Le post-traitement lourd reste sur ParaView via CGNS et VTK.</li>
+      <li>v2 : éditeur visuel complet (sélection de surfaces, qualité de maillage, conditions aux limites).</li>
+    </ul>
+<pre>case = Case(mesh="crm-hl.cgns", physics=Compressible(model=SA()))
+case.boundary("wing*").wall()
+case.freestream(mach=0.2, aoa=19.57, re=5.49e6)
+case.precision = "fp32/fp64-accum"
+case.validate()   # avant de réserver un GPU</pre>
+    <p class="note">Exemple d'API illustratif, rien n'est encore écrit.</p>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Spec révisée</span>
+  <h2>Ce que la recherche change dans la spec</h2>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Point</th><th>Choix</th><th>Appui</th></tr></thead>
+      <tbody>
+        <tr><td><b>Langage</b></td><td>C++20. Kernels face/cellule décrits une fois, puis générateur maison émettant CUDA et HIP natifs et leurs versions adjointes (AD source ou Enzyme). Kokkos en repli CPU. Rust seulement pour l'outillage côté hôte.</td><td>OP2 (Rolls-Royce Hydra), PyFR. Rust GPU en alpha, sans AMD.</td></tr>
+        <tr><td><b>Précision</b></td><td>Calcul FP32, Jacobiens et préconditionneurs stockés en FP16/BF16. FP64 pour l'accumulation de la solution, les normes, la géométrie et les niveaux grossiers de l'AMG. Pression de jauge à bas Mach.</td><td>FUN3D (Jacobien FP16), Fluent GPU, OpenSBLI.</td></tr>
+        <tr><td><b>Kernels</b></td><td>Boucles sur les faces avec atomiques après pré-agrégation au niveau du warp. Coloration hiérarchique en repli déterministe. RCM ou Hilbert, SoA, fusion gradient → limiteur → flux, CUDA Graphs.</td><td>FUN3D 81 % du pic de bande passante, MFC ~4 ns/cellule/pas.</td></tr>
+        <tr><td><b>Solveurs linéaires</b></td><td>Pression : AmgX ou hypre derrière une interface, préconditionneur FP32. À construire : BSR 5×5, multigrille d'agglomération, lissage line-implicit, JFNK.</td><td>hypre sans AMG systèmes sur GPU. ExaWind : setup et assemblage dominent.</td></tr>
+        <tr><td><b>Matériel</b></td><td>Développement sur RTX PRO 6000 et GB10. Production sur B200/GB200 ou MI300X/MI355X, puis Rubin et MI430X.</td><td>Dimensionner sur Go et TB/s, pas sur les FLOPS.</td></tr>
+        <tr><td><b>Mesure</b></td><td><span class="k">≥ 70 %</span> du pic de bande passante sur les kernels chauds. ns/cellule/itération publiés face à Fluent GPU, SPUMA et Flow360 sur cas identiques.</td><td>Aucun benchmark vendeur standard n'existe.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Détail par axe</span>
+  <h2>État de l'art</h2>
+  <div class="axes">
+    <div class="panel"><h3>Codes commerciaux</h3><ul>
+      <li>Fluent 2026 R1 : GPU solveur pression, 3D, jusqu'à WMLES et SBES. 2,2 Md cellules, 38,5 h → 1,5 h sur 1024 MI250X.</li>
+      <li>STAR-CCM+ 2606 : ségrégé et couplé sur GPU, 1 GPU ≈ 115 à 384 cœurs. Pas d'overset ni d'adjoint GPU.</li>
+      <li>Cadence Charles : LES explicite 100 % GPU sur maillages Voronoi. 1800 WMLES pour HiLiftAeroML.</li>
+      <li>Maillage CPU partout. Licences opaques.</li></ul></div>
+    <div class="panel"><h3>Open source et laboratoires</h3><ul>
+      <li>FUN3D : C++ conçu pour le GPU, zéro bibliothèque externe, 73 Md points sur Frontier. ITAR.</li>
+      <li>NASA LAVA : WMLES Voronoi sur GPU, environ 10× moins d'énergie, restée en FP64.</li>
+      <li>SPUMA (OpenFOAM) : port complet CUDA/HIP fin 2025, DrivAer DDES 2,6× moins cher que sur CPU.</li>
+      <li>SU2 : adjoint par AD, CPU uniquement.</li></ul></div>
+    <div class="panel"><h3>Frontière numérique</h3><ul>
+      <li>Près de CLmax : dispersion RANS ~0,5 de CL contre ~0,15 en HRLES/WMLES.</li>
+      <li>Plus de dispersion sans données expérimentales : pas de consensus pour la prédiction aveugle.</li>
+      <li>L'adaptation rend les équipes cohérentes, pas plus justes. Aucune n'existe sur GPU.</li>
+      <li>Jalons Vision 2030 probablement manqués : estimation d'erreur, maillage automatique, UQ.</li></ul></div>
+    <div class="panel"><h3>IA et CFD</h3><ul>
+      <li>Surrogates DrivAerML : R² Cd ≈ 0,985, ~3,6 counts RMSE. Faibles hors de leur famille de formes.</li>
+      <li>Warm start appris : jusqu'à 16×. AMG appris : +4 à 37 %, rien en production.</li>
+      <li>Agents LLM sur OpenFOAM : 34 à 68 % de cas physiquement corrects.</li></ul></div>
+    <div class="panel"><h3>Matériel</h3><ul>
+      <li>NVIDIA réduit le FP64 (B300, Rubin, RTX PRO, GB10). AMD MI430X sera la seule puce FP64 forte, en 2027.</li>
+      <li>Sur ces puces, un kernel FP64 devient limité par le calcul.</li>
+      <li>Bande passante : B200 et MI300X en tête par watt et par dollar.</li></ul></div>
+    <div class="panel"><h3>Marché</h3><ul>
+      <li>Consolidation : Synopsys-Ansys, Siemens-Altair, Cadence-Hexagon.</li>
+      <li>Douleurs : préparation du modèle (44 %), coût des licences, robustesse.</li>
+      <li>Startups GPU et IA toutes cloud-first (Flow360, Luminary, PhysicsX).</li></ul></div>
+  </div>
+</section>
+
+<section>
+  <span class="eyebrow">Limites</span>
+  <h2>Ce qui reste à vérifier</h2>
+  <ul class="prose">
+    <li>Quatre agents ont épuisé leur budget de recherche : specs H100/MI300, prix, MueLu, rocALUTION et PCHPDDM viennent de résumés ou de mémoire.</li>
+    <li>Aucune comparaison publique d'AmgX, hypre et GAMG sur CFD non structurée.</li>
+    <li>Aucune étude atomiques contre coloration sur Hopper et Blackwell.</li>
+    <li>Pas de résumé publié de DPW-8 (juin 2026).</li>
+  </ul>
+  <div class="src">
+    <a href="https://ntrs.nasa.gov/api/citations/20240014255/downloads/HLPW5_Summary.pdf">HLPW-5</a>
+    <a href="https://ntrs.nasa.gov/api/citations/20240007678/downloads/2024_AIAA_Aviation_Exascale_Paper.pdf">FUN3D Exascale</a>
+    <a href="https://ntrs.nasa.gov/api/citations/20240015729/downloads/LAVA_WMLES_Final.pdf">LAVA WMLES</a>
+    <a href="https://arxiv.org/html/2512.22215v1">SPUMA</a>
+    <a href="https://arxiv.org/abs/2309.10075">SYCL MG-CFD</a>
+    <a href="https://fun3d.larc.nasa.gov/papers/LowPrecisionSolver.pdf">FUN3D FP16</a>
+    <a href="https://arxiv.org/html/2505.07392">MFC Gordon Bell</a>
+    <a href="https://www.cfd2030.com/Aviation24/CFD-2030-Aviation-2024-Malik-10-Years-Since-CFD-Vision-2030.pdf">CFD Vision 2030</a>
+    <a href="https://developer.nvidia.com/blog/unlocking-tensor-core-performance-with-floating-point-emulation-in-cublas/">Émulation FP64</a>
+    <a href="https://arxiv.org/html/2502.09692v3">AB-UPT</a>
+  </div>
+</section>
+
+</div>
+
+</html>
