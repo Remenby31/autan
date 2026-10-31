@@ -122,7 +122,7 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
 TEST_CASE("Zone node names follow the results.md rule", "[cgns]") {
   const auto names =
       autan::io::zone_node_names({"wall", "shared", "Zone", std::string(33, 'a'), "a/b",
-                                  "boundary-0005", ".", "ZoneBC", "calf\xc3\xa9"},
+                                  "boundary-0005", ".", "ZoneBC", "z\xc3\xb4ne"},
                                  {"shared", "fluid", "ZoneBC-cells", "FlowSolution"});
   const std::vector<std::string> boundary{"wall",          "boundary-0001", "boundary-0002",
                                           "boundary-0003", "boundary-0004", "boundary-0005",
