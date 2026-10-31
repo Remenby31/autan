@@ -15,7 +15,7 @@ from autan_codegen import dsl
 from autan_codegen.ad import adjoint, tangent
 from autan_codegen.errors import Code, CodegenError
 from autan_codegen.frontend import Signature
-from autan_codegen.ir import Function, dce
+from autan_codegen.ir import Function, Instr, dce
 from autan_codegen.model import LoopModel, Module
 
 _TAN: dict[int, dsl.Dataset] = {}
@@ -99,9 +99,10 @@ def tangent_loop(lm: LoopModel, m: Module) -> LoopModel:
     bindings = dict(lm.loop.bindings)
     for k in active:
         b = lm.loop.bindings[lm.sig.names[k]]
+        assert isinstance(b.dataset, dsl.Dataset)
         bindings[names[len(lm.sig.names) + active.index(k)]] = dsl.Binding(
             tan_ds(b.dataset), b.via, None
-        )  # type: ignore[arg-type]
+        )
     n_primal = len(lm.fn.outputs)
     if lm.kind in ("face", "boundary", "cell"):
         out = _single_output(lm)
@@ -116,9 +117,7 @@ def tangent_loop(lm: LoopModel, m: Module) -> LoopModel:
         m.extra_bodies.append((fn_t, types))
         return res
     # Cell reduction: accumulate primal values (not written) and their tangents.
-    accs: list[object] = []
-    for o in lm.loop.outputs:
-        accs.append(type(o)(o.dataset, write=False))  # type: ignore[call-arg]
+    accs: list[object] = [type(o)(o.dataset, write=False) for o in lm.loop.outputs]  # type: ignore[call-arg]
     for k, o in enumerate(lm.loop.outputs):
         t = tan_ds(o.dataset)
         accs.append(dsl.Sum(t) if isinstance(o, dsl.Sum) else dsl.Follow(t, leader=k))
@@ -161,7 +160,8 @@ def adjoint_loop(lm: LoopModel, m: Module) -> LoopModel:
         n = len(lm.fn.outputs)
         seed_t = dsl.Type(dsl.Role.RESIDUAL, out.type.shape)
         if lm.kind == "face":
-            assert isinstance(o, dsl.Inc) and o.right is not None
+            assert isinstance(o, dsl.Inc)
+            assert o.right is not None
             seeds = [[float(o.left)] * n, [float(o.right)] * n]
             seed_b = [adj_ds(out).left, adj_ds(out).right]
         elif lm.kind == "boundary":
@@ -201,8 +201,7 @@ def adjoint_loop(lm: LoopModel, m: Module) -> LoopModel:
     fin_adj = None
     fin_active: list[int] = []
     datasets = [adj_ds(o.dataset) for o in lm.loop.outputs]
-    for k in active:
-        datasets.append(adj_ds(lm.loop.bindings[lm.sig.names[k]].dataset))  # type: ignore[arg-type]
+    datasets += [adj_ds(lm.loop.bindings[lm.sig.names[k]].dataset) for k in active]  # type: ignore[arg-type]
     if lm.fin_fn is not None and lm.fin_sig is not None:
         n_acc = len(lm.loop.outputs)
         fin_active = list(range(n_acc)) + _active(lm.fin_sig, lm.loop.finalise_bindings, skip=n_acc)
@@ -210,8 +209,10 @@ def adjoint_loop(lm: LoopModel, m: Module) -> LoopModel:
         fin_adj = adjoint(lm.fin_fn, fin_active, [[1.0] * n_fin])
         fin_adj.name = f"{name}_finalise"
         m.extra_bodies.append((fin_adj, [*lm.fin_sig.types, dsl.Type(dsl.Role.RESIDUAL, (n_fin,))]))
-        for k in fin_active[n_acc:]:
-            datasets.append(adj_ds(lm.loop.finalise_bindings[lm.fin_sig.names[k]].dataset))  # type: ignore[arg-type]
+        datasets += [
+            adj_ds(lm.loop.finalise_bindings[lm.fin_sig.names[k]].dataset)  # type: ignore[arg-type]
+            for k in fin_active[n_acc:]
+        ]
     res = LoopModel(
         name,
         dsl.Loop("reduce_adjoint", lm.loop.body, lm.loop.bindings, [], name=name),
@@ -226,8 +227,6 @@ def adjoint_loop(lm: LoopModel, m: Module) -> LoopModel:
 
 
 def _zero(fn: Function) -> int:
-    from autan_codegen.ir import Instr
-
     return fn.add(Instr("const", (), 0.0))
 
 

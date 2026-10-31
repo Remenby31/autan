@@ -56,7 +56,7 @@ def test_residual_tangent_equals_complex_step(mesh: s.Mesh) -> None:
     assert np.abs(jx - cs).max() <= 1e-12 * np.abs(cs).max()
 
 
-def test_adjoint_of_the_residual_sum_vanishes_away_from_the_boundary(mesh: s.Mesh) -> None:
+def test_adjoint_of_the_residual_sum_vanishes_away_from_the_boundary() -> None:
     # Interior fluxes cancel in sum_c R_c, so d(sum R)/dq is zero on cells whose values reach no
     # boundary flux (more than two layers from the boundary).
     m = s.mesh(meshes.build("tet", 8, 0.15, seed=4))

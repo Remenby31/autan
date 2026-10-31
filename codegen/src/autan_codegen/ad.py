@@ -7,9 +7,12 @@ inputs are passive.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from autan_codegen.ir import Function, Instr, optimise
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 ZERO = None  # a structurally zero derivative
 
