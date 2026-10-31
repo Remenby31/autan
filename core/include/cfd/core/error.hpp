@@ -27,6 +27,12 @@ enum class ErrorCode : std::uint16_t {
   mesh_face_labelled_twice = 115,
   geometry_degenerate_face = 120,
   geometry_non_positive_volume = 121,
+  io_cannot_open = 130,
+  io_unknown_format = 131,
+  io_malformed = 132,
+  io_unsupported = 133,
+  io_external_reference = 134,
+  io_ambiguous_zone = 135,
 };
 
 /// Returns the registry form of a code, for example "E0107".

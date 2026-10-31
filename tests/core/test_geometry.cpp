@@ -1,7 +1,3 @@
-#include <catch2/catch_test_macros.hpp>
-#include <catch2/generators/catch_generators.hpp>
-#include <catch2/matchers/catch_matchers_floating_point.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -9,8 +5,13 @@
 #include <numeric>
 #include <vector>
 
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+
 #include "cfd/core/error.hpp"
 #include "cfd/core/geometry.hpp"
+
 #include "fixtures.hpp"
 
 using Catch::Matchers::WithinAbs;
@@ -37,7 +38,8 @@ double total_volume(const cfd::Geometry& g) {
 TEST_CASE("Reference cells have the analytic volume and centroid", "[geometry]") {
   const auto shape = GENERATE(cfd::CellShape::tetra, cfd::CellShape::pyramid, cfd::CellShape::prism,
                               cfd::CellShape::hexa);
-  const std::array<std::array<double, 3>, 3> a{{{1.7, 0.3, -0.2}, {0.1, 0.9, 0.4}, {-0.3, 0.2, 1.3}}};
+  const std::array<std::array<double, 3>, 3> a{
+      {{1.7, 0.3, -0.2}, {0.1, 0.9, 0.4}, {-0.3, 0.2, 1.3}}};
   const std::array<double, 3> b{0.25, -1.5, 3.0};
   const auto ref = cfd::test::affine_cell(shape, a, b);
   const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
@@ -54,7 +56,8 @@ TEST_CASE("Reference cells have the analytic volume and centroid", "[geometry]")
 TEST_CASE("A warped face's area vector is the loop integral of its boundary", "[geometry]") {
   // Any surface spanning a closed loop has vector area 1/2 sum p_i x p_{i+1};
   // lifting one hex corner makes three of its faces non-planar.
-  auto ref = cfd::test::affine_cell(cfd::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
+  auto ref =
+      cfd::test::affine_cell(cfd::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
   ref.mesh.z[6] = 1.4;
   ref.mesh.x[6] = 1.2;
   const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
@@ -78,9 +81,9 @@ TEST_CASE("A warped face's area vector is the loop integral of its boundary", "[
 }
 
 TEST_CASE("Box meshes close every cell and fill the box exactly", "[geometry]") {
-  const auto fill = GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra,
-                             cfd::test::BoxFill::prism, cfd::test::BoxFill::pyramid,
-                             cfd::test::BoxFill::hybrid);
+  const auto fill =
+      GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
+               cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
   const double perturbation = GENERATE(0.0, 0.3);
   CAPTURE(cfd::test::to_string(fill), perturbation);
   const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(4, fill, perturbation)));
@@ -151,7 +154,8 @@ TEST_CASE("A 105-face cell with hanging nodes has the volume and centroid of its
 TEST_CASE("Degenerate cells are rejected with a geometry error code", "[geometry]") {
   SECTION("zero-area face") {
     // Nodes 0, 1, 2 collinear: face (0, 2, 1) has no area.
-    auto ref = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
+    auto ref = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                      {0, 0, 0});
     ref.mesh.x[2] = 2.0;
     ref.mesh.y[2] = 0.0;
     const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
@@ -163,7 +167,8 @@ TEST_CASE("Degenerate cells are rejected with a geometry error code", "[geometry
     }
   }
   SECTION("inverted cell") {
-    auto ref = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, -1}}}, {0, 0, 0});
+    auto ref = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, -1}}},
+                                      {0, 0, 0});
     const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
     try {
       (void)cfd::compute_geometry(mesh);
@@ -174,15 +179,15 @@ TEST_CASE("Degenerate cells are rejected with a geometry error code", "[geometry
   }
 }
 
-TEST_CASE("A prism on a concave polygon has its shoelace area, volume and centroid",
-          "[geometry]") {
+TEST_CASE("A prism on a concave polygon has its shoelace area, volume and centroid", "[geometry]") {
   // C-shaped octagon whose node mean (2.25, 2) lies in the notch, outside the
   // polygon, so part of the fan folds back. Area 16 - 6 = 10, centroid
   // ((16 * 2 - 6 * 2.5) / 10, 2) = (1.7, 2).
   const std::array<std::array<double, 2>, 8> outline{
       {{0, 0}, {4, 0}, {4, 1}, {1, 1}, {1, 3}, {4, 3}, {4, 4}, {0, 4}}};
   cfd::CellwiseMesh cw;
-  cw.cell_zones.push_back(cfd::CellZone{.name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}});
+  cw.cell_zones.push_back(cfd::CellZone{
+      .name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}});
   for (const double z : {0.0, 1.0}) {
     for (const auto& p : outline) {
       cw.x.push_back(p[0]);

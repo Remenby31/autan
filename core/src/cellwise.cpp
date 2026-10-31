@@ -31,9 +31,8 @@ constexpr ShapeFaces shape_faces(CellShape shape) {
     case CellShape::pyramid:
       return {5, 5, {{{4, 0, 3, 2, 1}, {3, 0, 1, 4}, {3, 1, 2, 4}, {3, 2, 3, 4}, {3, 3, 0, 4}}}};
     case CellShape::prism:
-      return {6,
-              5,
-              {{{3, 0, 2, 1}, {3, 3, 4, 5}, {4, 0, 1, 4, 3}, {4, 1, 2, 5, 4}, {4, 0, 3, 5, 2}}}};
+      return {
+          6, 5, {{{3, 0, 2, 1}, {3, 3, 4, 5}, {4, 0, 1, 4, 3}, {4, 1, 2, 5, 4}, {4, 0, 3, 5, 2}}}};
     case CellShape::hexa:
       return {8,
               6,
@@ -103,7 +102,8 @@ void CellwiseMesh::add_cell(CellShape shape, std::span<const index_t> nodes, ind
   }
   for (std::size_t f = 0; f < sf.n_faces; ++f) {
     const auto& local = sf.faces[f];
-    for (int k = 1; k <= local[0]; ++k) face_nodes.push_back(nodes[static_cast<std::size_t>(local[static_cast<std::size_t>(k)])]);
+    for (int k = 1; k <= local[0]; ++k)
+      face_nodes.push_back(nodes[static_cast<std::size_t>(local[static_cast<std::size_t>(k)])]);
     face_node_offsets.push_back(static_cast<offset_t>(face_nodes.size()));
   }
   cell_face_offsets.push_back(static_cast<offset_t>(face_node_offsets.size() - 1));
@@ -164,7 +164,8 @@ MeshInput to_face_based(CellwiseMesh mesh) {
   std::vector<Group> groups;
   for (std::size_t i = 0; i < n_cell_faces;) {
     std::size_t j = i + 1;
-    while (j < n_cell_faces && compare_keys(cell_faces.key(order[i]), cell_faces.key(order[j])) == 0) {
+    while (j < n_cell_faces &&
+           compare_keys(cell_faces.key(order[i]), cell_faces.key(order[j])) == 0) {
       ++j;
     }
     const std::size_t a = std::min(order[i], j - i > 1 ? order[i + 1] : order[i]);
@@ -179,12 +180,14 @@ MeshInput to_face_based(CellwiseMesh mesh) {
         fail(ErrorCode::mesh_face_same_cell_both_sides,
              "cell " + std::to_string(face_cell[a]) + " lists the same face twice");
       }
-      const auto nodes_a = std::span<const index_t>(mesh.face_nodes)
-                               .subspan(to_size(mesh.face_node_offsets[a]),
-                                        to_size(mesh.face_node_offsets[a + 1] - mesh.face_node_offsets[a]));
-      const auto nodes_b = std::span<const index_t>(mesh.face_nodes)
-                               .subspan(to_size(mesh.face_node_offsets[b]),
-                                        to_size(mesh.face_node_offsets[b + 1] - mesh.face_node_offsets[b]));
+      const auto nodes_a =
+          std::span<const index_t>(mesh.face_nodes)
+              .subspan(to_size(mesh.face_node_offsets[a]),
+                       to_size(mesh.face_node_offsets[a + 1] - mesh.face_node_offsets[a]));
+      const auto nodes_b =
+          std::span<const index_t>(mesh.face_nodes)
+              .subspan(to_size(mesh.face_node_offsets[b]),
+                       to_size(mesh.face_node_offsets[b + 1] - mesh.face_node_offsets[b]));
       if (!is_reversed_cycle(nodes_a, nodes_b)) {
         fail(ErrorCode::mesh_shared_face_orientation,
              "cells " + std::to_string(face_cell[a]) + " and " + std::to_string(face_cell[b]) +
@@ -209,10 +212,10 @@ MeshInput to_face_based(CellwiseMesh mesh) {
     const FaceKeys labelled(mesh.labelled_face_node_offsets, mesh.labelled_face_nodes);
     for (std::size_t l = 0; l < labelled.size(); ++l) {
       const auto key = labelled.key(l);
-      const auto it = std::lower_bound(by_key.begin(), by_key.end(), key,
-                                       [&](std::size_t g, std::span<const index_t> k) {
-                                         return compare_keys(cell_faces.key(groups[g].first), k) < 0;
-                                       });
+      const auto it = std::lower_bound(
+          by_key.begin(), by_key.end(), key, [&](std::size_t g, std::span<const index_t> k) {
+            return compare_keys(cell_faces.key(groups[g].first), k) < 0;
+          });
       if (it == by_key.end() || compare_keys(cell_faces.key(groups[*it].first), key) != 0) {
         fail(ErrorCode::mesh_labelled_face_not_found,
              "labelled face " + std::to_string(l) + " matches no cell face");
@@ -236,7 +239,8 @@ MeshInput to_face_based(CellwiseMesh mesh) {
     index_t zone = group_zone[g];
     if (zone == -1 && interior) {
       if (interior_zone == -1) {
-        interior_zone = append_zone(mesh.face_zones, "interior", "synthesised: unlabelled interior faces");
+        interior_zone =
+            append_zone(mesh.face_zones, "interior", "synthesised: unlabelled interior faces");
       }
       zone = interior_zone;
     } else if (zone == -1) {

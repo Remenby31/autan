@@ -21,7 +21,8 @@ inline constexpr index_t no_cell = -1;
 /// meaning (OpenFOAM `patch`, Fluent `interior`, every Gmsh group).
 enum class BcKind : std::uint8_t {
   unspecified,
-  wall,
+  wall,          ///< no thermal condition: adiabatic unless the case says otherwise
+  thermal_wall,  ///< the source declares a thermal condition whose value the case must give
   slip,
   symmetry,
   far_field,
@@ -54,7 +55,8 @@ struct CellZone {
 };
 
 struct MeshSource {
-  std::string format;  ///< "gmsh", "fluent", "polymesh", "cgns", or "memory" for meshes built in code
+  std::string
+      format;  ///< "gmsh", "fluent", "polymesh", "cgns", or "memory" for meshes built in code
   std::string path;
 };
 

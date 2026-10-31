@@ -90,7 +90,8 @@ void check_entities(const MeshInput& in) {
       fail(ErrorCode::mesh_index_out_of_range, "cell index out of range" + where);
     }
     if (c0 == c1) {
-      fail(ErrorCode::mesh_face_same_cell_both_sides, "face has the same cell on both sides" + where);
+      fail(ErrorCode::mesh_face_same_cell_both_sides,
+           "face has the same cell on both sides" + where);
     }
     if (in.face_zone[f] < 0 || in.face_zone[f] >= n_face_zones) {
       fail(ErrorCode::mesh_index_out_of_range, "face zone index out of range" + where);
@@ -108,7 +109,8 @@ void check_entities(const MeshInput& in) {
 
   std::vector<unsigned char> zone_sides(in.face_zones.size(), 0);
   for (std::size_t f = 0; f < n_faces; ++f) {
-    zone_sides[to_size(in.face_zone[f])] |= in.face_cell1[f] == no_cell ? 2 : 1;
+    zone_sides[to_size(in.face_zone[f])] |=
+        static_cast<unsigned char>(in.face_cell1[f] == no_cell ? 2 : 1);
   }
   for (std::size_t z = 0; z < zone_sides.size(); ++z) {
     if (zone_sides[z] == 3) {

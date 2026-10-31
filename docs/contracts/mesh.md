@@ -49,7 +49,7 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 |---|---|---|
 | `name` | Name in the source (Fluent zone name, Gmsh physical name, OpenFOAM patch). | Same. |
 | `bc_type` / `type` | Type exactly as written in the source; empty if the format has none. | Same. |
-| `kind` | `BcKind`: `unspecified`, `wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
+| `kind` | `BcKind`: `unspecified`, `wall`, `thermal_wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
 | `provenance.source_id` | Identifier in the source file, or −1 for a zone the reader synthesised. | Same. |
 | `provenance.detail` | Human-readable origin. | Same. |
 
@@ -98,5 +98,9 @@ Every failure throws `cfd::Error`; callers branch on `code()`, never on the mess
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
 | E0120 | `geometry_degenerate_face` | A face has zero area. |
 | E0121 | `geometry_non_positive_volume` | A cell has zero or negative volume. |
-
-Reader codes start at E0130 and are listed with the readers.
+| E0130 | `io_cannot_open` | The file or directory cannot be opened or read. |
+| E0131 | `io_unknown_format` | The content matches no supported format. |
+| E0132 | `io_malformed` | The file violates its format specification (syntax, truncation, inconsistent counts). |
+| E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
+| E0134 | `io_external_reference` | The mesh refers to another file (CGNS link); meshes must be self-contained. |
+| E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |

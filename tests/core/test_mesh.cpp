@@ -1,6 +1,3 @@
-#include <catch2/catch_test_macros.hpp>
-#include <catch2/generators/catch_generators.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -8,9 +5,13 @@
 #include <string>
 #include <vector>
 
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+
 #include "cfd/core/error.hpp"
 #include "cfd/core/geometry.hpp"
 #include "cfd/core/mesh.hpp"
+
 #include "fixtures.hpp"
 
 using cfd::index_t;
@@ -60,9 +61,13 @@ cfd::MeshInput two_cubes() {
     face({p(c, 0, 1), p(c + 1, 0, 1), p(c + 1, 1, 1), p(c, 1, 1)}, ci, cfd::no_cell, 0);
   }
   in.cell_zone = {0, 0};
-  in.face_zones = {cfd::FaceZone{.name = "walls", .bc_type = "wall", .kind = cfd::BcKind::wall, .provenance = {}},
-                   cfd::FaceZone{.name = "interior", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}}};
-  in.cell_zones = {cfd::CellZone{.name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}}};
+  in.face_zones = {
+      cfd::FaceZone{
+          .name = "walls", .bc_type = "wall", .kind = cfd::BcKind::wall, .provenance = {}},
+      cfd::FaceZone{
+          .name = "interior", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}}};
+  in.cell_zones = {cfd::CellZone{
+      .name = "fluid", .type = "", .kind = cfd::CellKind::unspecified, .provenance = {}}};
   in.source = cfd::MeshSource{.format = "memory", .path = ""};
   return in;
 }
@@ -70,9 +75,9 @@ cfd::MeshInput two_cubes() {
 }  // namespace
 
 TEST_CASE("Assembled meshes satisfy the canonical ordering of the mesh contract", "[mesh]") {
-  const auto fill = GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra,
-                             cfd::test::BoxFill::prism, cfd::test::BoxFill::pyramid,
-                             cfd::test::BoxFill::hybrid);
+  const auto fill =
+      GENERATE(cfd::test::BoxFill::hexa, cfd::test::BoxFill::tetra, cfd::test::BoxFill::prism,
+               cfd::test::BoxFill::pyramid, cfd::test::BoxFill::hybrid);
   CAPTURE(cfd::test::to_string(fill));
   const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(cfd::test::box(4, fill, 0.0)));
   const cfd::Geometry g = cfd::compute_geometry(mesh);
@@ -226,7 +231,9 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     require_error(ErrorCode::mesh_cell_not_closed, [&] { (void)cfd::assemble(in); });
   }
   SECTION("E0108 face shared by three cells") {
-    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0}).mesh;
+    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                     {0, 0, 0})
+                  .mesh;
     cw.x.push_back(0.3);
     cw.y.push_back(0.3);
     cw.z.push_back(-1.0);
@@ -235,12 +242,14 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     cw.z.push_back(-2.0);
     cw.add_cell(cfd::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 4}, 0);
     cw.add_cell(cfd::CellShape::tetra, std::array<index_t, 4>{0, 1, 2, 5}, 0);
-    require_error(ErrorCode::mesh_face_shared_by_more_than_two_cells, [&] { (void)cfd::to_face_based(cw); });
+    require_error(ErrorCode::mesh_face_shared_by_more_than_two_cells,
+                  [&] { (void)cfd::to_face_based(cw); });
   }
   SECTION("E0109 zone with interior and boundary faces") {
     auto in = two_cubes();
     in.face_zone[0] = 0;
-    require_error(ErrorCode::mesh_zone_mixes_interior_and_boundary, [&] { (void)cfd::assemble(in); });
+    require_error(ErrorCode::mesh_zone_mixes_interior_and_boundary,
+                  [&] { (void)cfd::assemble(in); });
   }
   SECTION("E0110 duplicate zone name") {
     auto in = two_cubes();
@@ -249,7 +258,8 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
   }
   SECTION("E0111 labelled face matching no cell face") {
     auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa, 0.0, false);
-    cw.face_zones.push_back(cfd::FaceZone{.name = "stray", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
+    cw.face_zones.push_back(cfd::FaceZone{
+        .name = "stray", .bc_type = "", .kind = cfd::BcKind::unspecified, .provenance = {}});
     cw.add_labelled_face(std::array<index_t, 3>{0, 1, 2}, 0);
     require_error(ErrorCode::mesh_labelled_face_not_found, [&] { (void)cfd::to_face_based(cw); });
   }
@@ -259,7 +269,9 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     require_error(ErrorCode::mesh_empty, [&] { (void)cfd::assemble(in); });
   }
   SECTION("E0114 inverted neighbour in a cellwise mesh") {
-    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0}).mesh;
+    auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
+                                     {0, 0, 0})
+                  .mesh;
     cw.x.push_back(0.3);
     cw.y.push_back(0.3);
     cw.z.push_back(-1.0);
@@ -283,8 +295,8 @@ TEST_CASE("Unlabelled boundary faces land in the synthesised zone 'unassigned'",
   CHECK(zones[0].kind == cfd::BcKind::inlet);
   const auto offsets = mesh.boundary_zone_offsets();
   CHECK(offsets[1] - offsets[0] == 1);
-  const auto unassigned = std::find_if(zones.begin(), zones.end(),
-                                       [](const cfd::FaceZone& z) { return z.name == "unassigned"; });
+  const auto unassigned = std::find_if(
+      zones.begin(), zones.end(), [](const cfd::FaceZone& z) { return z.name == "unassigned"; });
   REQUIRE(unassigned != zones.end());
   CHECK(unassigned->provenance.source_id == -1);
   const auto u = static_cast<std::size_t>(unassigned - zones.begin());
