@@ -96,9 +96,12 @@ jobs:
             sleep 20
           done
           ls testpypi/autan-*.whl
-      - name: Install with install.sh and run autan doctor
+      - name: Install with install.sh and check the version installed
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           home=$(mktemp -d)
           env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-            AUTAN_FIND_LINKS="$PWD/testpypi" sh install.sh
-          "$home/.local/bin/autan" version
+            AUTAN_VERSION="$VERSION" AUTAN_FIND_LINKS="$PWD/testpypi" sh install.sh
+          "$home/.local/bin/autan" version --json | tee version.json
+          grep -q "\"autan\": \"$VERSION\"" version.json

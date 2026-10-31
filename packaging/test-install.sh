@@ -19,15 +19,23 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 cd "$HOME"
-AUTAN_FIND_LINKS="$repo/wheelhouse" sh "$repo/install.sh"
+# Pin the version of the wheel under test, so an index release can never stand in for it.
+wheel=$(ls "$repo"/wheelhouse/autan-[0-9]*-py3-none-any.whl)
+version=$(basename "$wheel" | cut -d- -f2)
+AUTAN_VERSION=$version AUTAN_FIND_LINKS="$repo/wheelhouse" sh "$repo/install.sh"
 
 bin=$HOME/.local/bin
 "$bin/autan" doctor --json >doctor.json
-"$bin/autan" version
+installed=$("$bin/autan" version --json | sed -n 's/.*"autan": "\([^"]*\)".*/\1/p')
+[ "$installed" = "$version" ] || {
+  echo "installed autan $installed, expected $version" >&2
+  exit 1
+}
 
 # The probe is not a dependency of autan yet: install it with the uv that install.sh fetched.
 uv=$(ls "${XDG_DATA_HOME:-$HOME/.local/share}"/autan/uv-*/uv)
-"$uv" tool install --quiet --python 3.13 --find-links "$repo/wheelhouse" autan-probe
+probe=$(ls "$repo"/wheelhouse/autan_probe-*.whl | head -n1 | xargs basename | cut -d- -f2)
+"$uv" tool install --quiet --python 3.13 --find-links "$repo/wheelhouse" "autan-probe==$probe"
 if [ "${REQUIRE_GPU:-0}" = 1 ]; then
   "$bin/autan-probe" --require-gpu
 else

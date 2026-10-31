@@ -11,7 +11,8 @@
 #   AUTAN_GPU              auto | cuda | cpu (default: auto, only reported: the Linux wheel
 #                          carries the CUDA code and the GPU is chosen at run time)
 #   AUTAN_FIND_LINKS       directory of wheels searched before PyPI
-#   AUTAN_OFFLINE          set to 1 to install from AUTAN_FIND_LINKS only (air-gapped wheelhouse)
+#   AUTAN_OFFLINE          set to 1 to install from the wheelhouse in AUTAN_FIND_LINKS only:
+#                          uv-<target>.tar.gz, python/ (a uv Python mirror) and every wheel
 #   AUTAN_NO_MODIFY_PATH   set to 1 to leave shell startup files untouched
 #
 # The whole script is one function called on the last line, so a truncated download runs
@@ -68,13 +69,16 @@ platform() {
 gpu_report() {
   wanted=${AUTAN_GPU:-auto}
   case "$wanted" in auto | cuda | cpu) ;; *) die "AUTAN_GPU=$wanted: expected auto, cuda or cpu" ;; esac
-  [ "$os" = Linux ] || return 0
+  if [ "$os" != Linux ]; then
+    [ "$wanted" != cuda ] || die "AUTAN_GPU=cuda: CUDA needs Linux with an NVIDIA GPU"
+    return 0
+  fi
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
     say "NVIDIA GPU: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -n1)"
-  elif [ -e /dev/kfd ]; then
-    say "AMD GPU found: ROCm builds are not published yet, Autan will run on the CPU"
   elif [ "$wanted" = cuda ]; then
     die "AUTAN_GPU=cuda but nvidia-smi finds no GPU; install the NVIDIA driver (580 or newer) first"
+  elif [ -e /dev/kfd ]; then
+    say "AMD GPU found: ROCm builds are not published yet, Autan will run on the CPU"
   else
     say "no GPU driver found: Autan will run on the CPU"
   fi
@@ -107,9 +111,13 @@ install_uv() {
   [ -x "$uv" ] && return 0
   tmp=$(mktemp -d) || die "mktemp failed"
   archive=$tmp/uv.tar.gz
-  say "downloading uv $UV_VERSION"
-  fetch "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$triple.tar.gz" "$archive" ||
-    die "could not download uv"
+  if [ "${AUTAN_OFFLINE:-0}" = 1 ]; then
+    cp "$AUTAN_FIND_LINKS/uv-$triple.tar.gz" "$archive" || die "the wheelhouse has no uv-$triple.tar.gz"
+  else
+    say "downloading uv $UV_VERSION"
+    fetch "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$triple.tar.gz" "$archive" ||
+      die "could not download uv"
+  fi
   actual=$(sha256_of "$archive")
   [ "$actual" = "$sha" ] || die "uv checksum mismatch: expected $sha, got $actual"
   tar -xzf "$archive" -C "$tmp" || die "could not unpack uv"
@@ -124,8 +132,10 @@ install_autan() {
   set -- tool install --force --python "${AUTAN_PYTHON:-3.13}" "$spec"
   [ -n "${AUTAN_FIND_LINKS:-}" ] && set -- "$@" --find-links "$AUTAN_FIND_LINKS"
   if [ "${AUTAN_OFFLINE:-0}" = 1 ]; then
-    [ -n "${AUTAN_FIND_LINKS:-}" ] || die "AUTAN_OFFLINE=1 needs AUTAN_FIND_LINKS"
     set -- "$@" --offline --no-index
+    # --offline also forbids Python downloads, even from a local mirror: install it first.
+    UV_PYTHON_INSTALL_MIRROR="file://$AUTAN_FIND_LINKS/python" \
+      "$uv" python install "${AUTAN_PYTHON:-3.13}" || die "the wheelhouse has no Python ${AUTAN_PYTHON:-3.13}"
   fi
   say "installing $spec"
   "$uv" "$@" || die "uv could not install $spec"
@@ -149,6 +159,10 @@ update_path() {
 
 main() {
   [ "$(id -u)" -ne 0 ] || say "warning: running as root installs Autan for root only"
+  if [ "${AUTAN_OFFLINE:-0}" = 1 ]; then
+    [ -d "${AUTAN_FIND_LINKS:-}" ] || die "AUTAN_OFFLINE=1 needs AUTAN_FIND_LINKS, the wheelhouse directory"
+    AUTAN_FIND_LINKS=$(cd "$AUTAN_FIND_LINKS" && pwd)
+  fi
   platform
   gpu_report
   install_uv

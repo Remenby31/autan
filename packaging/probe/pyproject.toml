@@ -1,5 +1,6 @@
 [build-system]
-requires = ["scikit-build-core>=1.1", "nanobind>=2.9"]
+# Exact pins: a rebuild of the same commit uses the same build tools.
+requires = ["scikit-build-core==1.1.1", "nanobind==3.1.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -7,6 +8,8 @@ name = "autan-probe"
 version = "0.0.0"
 description = "Throwaway native wheel that proves Autan's GPU wheel pipeline before the solver core ships"
 license = "Apache-2.0"
+# nanobind is linked statically (NB_STATIC): its BSD licence travels with the binary.
+license-files = ["LICENSE", "LICENSES/*"]
 requires-python = ">=3.12"
 dependencies = ["nvidia-cuda-runtime>=13.0,<14; sys_platform == 'linux'"]
 

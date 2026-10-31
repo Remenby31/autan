@@ -65,6 +65,7 @@ CudaReport probe_cuda() {
   int count = 0;
   const cudaError_t status = cudaGetDeviceCount(&count);
   if (status != cudaSuccess) {
+    report.error_code = static_cast<int>(status);
     report.error = describe(status);
     return report;
   }

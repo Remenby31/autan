@@ -108,6 +108,40 @@ jobs:
           home=$(mktemp -d)
           env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin sh packaging/test-install.sh "$PWD"
 
+  offline:
+    name: Offline wheelhouse (${{ matrix.target }})
+    needs: [sdk]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-sdk
+          path: dist
+      - name: Build the wheelhouse
+        env:
+          TARGET: ${{ matrix.target }}
+        run: sh packaging/wheelhouse.sh wheelhouse "$TARGET" dist
+      - name: Install with networking disabled
+        run: >-
+          docker run --rm --network none -v "$PWD/wheelhouse:/w:ro" ubuntu:24.04 sh -c
+          'useradd -m u && su u -c "cd && AUTAN_OFFLINE=1 AUTAN_FIND_LINKS=/w sh /w/install.sh
+          && ~/.local/bin/autan version"'
+
   refuse:
     name: install.sh refuses ${{ matrix.image }}
     strategy:
@@ -155,6 +189,17 @@ jobs:
           path: wheelhouse
           merge-multiple: true
       - name: Install in a fresh container that sees only the driver, and require native GPU code
-        run: >-
-          flock /tmp/cfd-gpu.lock docker run --rm --gpus all --name "autan-wheels-${GITHUB_RUN_ID}"
-          -e REQUIRE_GPU=1 -v "$PWD:/w:ro" ubuntu:24.04 sh /w/packaging/test-install.sh /w
+        # The lock must cover the container, not only the docker client: on cancellation the
+        # trap removes the container while flock still holds the lock.
+        run: |
+          name="autan-wheels-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "AUTAN_CONTAINER=$name" >> "$GITHUB_ENV"
+          # shellcheck disable=SC2016 # the inner script expands $1 itself
+          flock /tmp/cfd-gpu.lock sh -c '
+            trap "docker rm -f \"$1\" >/dev/null 2>&1" EXIT INT TERM
+            docker run --rm --gpus all --name "$1" -e REQUIRE_GPU=1 -v "$PWD:/w:ro" \
+              ubuntu:24.04 sh /w/packaging/test-install.sh /w
+          ' sh "$name"
+      - name: Remove the container if the step was killed
+        if: always()
+        run: docker rm -f "$AUTAN_CONTAINER" >/dev/null 2>&1 || true

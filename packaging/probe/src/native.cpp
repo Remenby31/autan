@@ -15,6 +15,7 @@ nb::dict cuda_report() {
   out["architectures"] = report.architectures;
   out["runtime_version"] = report.runtime_version;
   out["driver_version"] = report.driver_version;
+  out["error_code"] = report.error_code;
   out["error"] = report.error;
   nb::list devices;
   for (const auto& d : report.devices) {

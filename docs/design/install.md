@@ -26,7 +26,12 @@ The only system requirement is the GPU driver: NVIDIA driver ≥ 580 on Linux fo
 
 Measured on the prototype: about 40 s on a fresh `ubuntu:24.04` container on the DGX Spark, most of it the Python and NumPy downloads.
 
-Options, all environment variables so `curl | sh` can pass them: `AUTAN_VERSION`, `AUTAN_PYTHON` (default 3.13), `AUTAN_GPU` (`auto`, `cuda`, `cpu`; `cuda` fails without a driver), `AUTAN_FIND_LINKS` (extra wheel directory), `AUTAN_OFFLINE=1` (wheelhouse only), `AUTAN_NO_MODIFY_PATH=1`. Upgrade: rerun the script or `uv tool upgrade autan`. Uninstall: `uv tool uninstall autan` and `rm -rf ~/.local/share/autan`.
+Options, all environment variables so `curl | sh` can pass them: `AUTAN_VERSION`, `AUTAN_PYTHON` (default 3.13), `AUTAN_GPU` (`auto`, `cuda`, `cpu`; `cuda` fails without a driver), `AUTAN_FIND_LINKS` (extra wheel directory), `AUTAN_OFFLINE=1` (wheelhouse only, see below), `AUTAN_NO_MODIFY_PATH=1`. Upgrade: rerun the script. Uninstall, with the uv the script installed (users with their own uv can call it instead):
+
+```sh
+~/.local/share/autan/uv-*/uv tool uninstall autan     # $XDG_DATA_HOME/autan when it is set
+rm -rf ~/.local/share/autan
+```
 
 ## What `autan doctor` checks
 
@@ -62,12 +67,12 @@ site-packages/
 /usr/lib/…/libcuda.so.1        from the driver
 ```
 
-`auditwheel repair --exclude` keeps every NVIDIA library out of our wheel; `packaging/probe/check_wheel.py` fails the build if one slips in, if the wheel exceeds 90 MB, or if a listed architecture is missing from the fatbin. Later CUDA libraries (NVRTC for user kernels, `@autan.kernel`) arrive the same way, as `nvidia-*` dependencies with a `sys_platform == 'linux'` marker.
+`auditwheel repair --exclude` keeps every NVIDIA library out of our wheel; `packaging/probe/check_wheel.py` fails the build if the wheel holds any shared library besides our extension modules, lacks the licence of nanobind (linked statically), exceeds 90 MB, or misses a listed architecture in the fatbin. Later CUDA libraries (NVRTC for user kernels, `@autan.kernel`) arrive the same way, as `nvidia-*` dependencies with a `sys_platform == 'linux'` marker.
 
 ## Release pipeline
 
 1. `wheels.yml` builds the SDK wheel and sdist, and the native wheels with cibuildwheel on `ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-15`.
-2. The same workflow installs them with `install.sh` on fresh `ubuntu:24.04`, `debian:12`, `rockylinux:8` containers and a macOS runner with an empty home, checks that `alpine` and `ubuntu:18.04` are refused before any download, and, on a self-hosted Spark, runs the GPU probe in a container that sees only the driver.
+2. The same workflow installs them with `install.sh` on fresh `ubuntu:24.04`, `debian:12`, `rockylinux:8` containers and a macOS runner with an empty home, pinned to the version under test and checked after install; builds the offline wheelhouse and installs it with networking disabled; checks that `alpine` and `ubuntu:18.04` are refused before any download; and, on a self-hosted Spark, runs the GPU probe in a container that sees only the driver, under the GPU lock.
 3. `release-testpypi.yml` (manual) publishes a `.devN` build to TestPyPI with Trusted Publishing and PEP 740 attestations, attests every file and `install.sh` with GitHub artifact attestations, then installs it from TestPyPI on Linux and macOS.
 4. The real release (not written yet, lead's approval required) follows the same path to PyPI on a release-please tag, uploads `install.sh`, the wheels and their `SHA256SUMS` to an immutable GitHub release, and publishes the runtime image.
 
@@ -85,7 +90,7 @@ sh install.sh
 |---|---|---|
 | Container | `ghcr.io/remenby31/autan-runtime:<version>`, `ubuntu:24.04` + uv + the wheel, amd64 and arm64, attested; GPU through `--gpus all`; no `nvidia/cuda` base needed | with the first PyPI release |
 | Homebrew | tap `Remenby31/homebrew-autan`, `Language::Python::Virtualenv` formula built from the sdist; macOS only (CPU, later Metal) | with the first PyPI release; homebrew-core once stable |
-| Offline wheelhouse | `autan-wheelhouse-<version>-<platform>.tar.gz` on the release: `install.sh`, the uv binary, a python-build-standalone archive and every wheel with hashes; `AUTAN_OFFLINE=1 sh install.sh` | with the first PyPI release, tested in CI with networking disabled |
+| Offline wheelhouse | `packaging/wheelhouse.sh` builds, per platform: `install.sh`, the pinned uv archive, the Python build that uv picks laid out as a uv Python mirror, and every wheel autan needs (67 MB on aarch64 today). `AUTAN_OFFLINE=1 AUTAN_FIND_LINKS=<dir> sh <dir>/install.sh` installs with no network. | prototype, tested in CI in a container with networking disabled; published as `autan-wheelhouse-<version>-<target>.tar.gz` with the first PyPI release |
 | conda-forge | feedstock with a `__cuda` CUDA variant | after v1 |
 
 ## What we refuse
@@ -101,13 +106,12 @@ sh install.sh
 
 ## Open decisions
 
-These need a human; the prototype works without them except where noted.
+1. **TestPyPI Trusted Publisher** for `autan`: owner `Remenby31`, repository `autan`, workflow `release-testpypi.yml`, environment `testpypi` (the GitHub environment exists, protected branches only). Needs the lead's TestPyPI account; until then step 3 of the pipeline fails at upload.
+2. **PyPI organization** for `autan`, raising the limits to 200 MB per file and 20 GB per project: at the first real release.
+3. **Hosting `install.sh`** at `remenby31.github.io/autan/install.sh`, copied from the latest release by the docs site build.
+4. **Spark runner gate:** the GPU job runs when the repository variable `AUTAN_SPARK_RUNNER` is `true`.
 
-1. **Licence of a dependency on `nvidia-cuda-runtime`** (`LicenseRef-NVIDIA-Proprietary`). We do not ship it, but AGENTS.md does not say whether depending on proprietary runtime wheels is acceptable. Every GPU project on PyPI does it. Alternative: the driver API only (`libcuda.so.1`, no runtime library), which constrains the kernel generator.
-2. **TestPyPI Trusted Publisher** for `autan`: owner `Remenby31`, repository `autan`, workflow `release-testpypi.yml`, environment `testpypi`. Needs the lead's TestPyPI account. Blocks step 3 of the pipeline.
-3. **PyPI organization** for `autan`: raises the limits to 200 MB per file and 20 GB per project. Not needed before the core is in the wheel.
-4. **Hosting `install.sh`** at `remenby31.github.io/autan/install.sh`, copied from the latest release by the docs site build.
-5. **Spark runner gate:** the GPU job runs when the repository variable `AUTAN_SPARK_RUNNER` is `true`.
+Depending on the proprietary `nvidia-*` wheels, never bundling them, is the licence exception recorded in [AGENTS.md](../../AGENTS.md#design). Keep CUDA runtime calls behind one seam in the core so that a driver-API-only build (`libcuda.so.1`, no runtime wheel) stays possible.
 
 ## Coordination
 

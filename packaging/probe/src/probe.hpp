@@ -20,6 +20,7 @@ struct CudaReport {
   std::string architectures;
   int runtime_version = 0;
   int driver_version = 0;  // highest CUDA version the installed driver supports, 0 without a driver
+  int error_code = 0;      // cudaError_t of cudaGetDeviceCount
   std::string error;
   std::vector<Device> devices;
 };

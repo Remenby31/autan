@@ -17,6 +17,7 @@ from typing import Any
 # Any CUDA 13.x runtime runs on a driver that supports CUDA 13.0, i.e. driver 580 or later (CUDA
 # minor version compatibility). cudaDriverGetVersion reports the highest version it supports.
 CUDA_RUNTIME_MIN = 13000
+CUDA_ERROR_NO_DEVICE = 100  # cudaErrorNoDevice, CUDA Runtime API reference
 
 
 def _check(name: str, status: str, detail: str, fix: str | None = None) -> dict[str, Any]:
@@ -78,7 +79,9 @@ def _gpu_checks(cuda: dict[str, Any]) -> list[dict[str, Any]]:
             f"runtime {_cuda_version(cuda['runtime_version'])}",
         )
     ]
-    if cuda["error"]:
+    if cuda["error_code"] == CUDA_ERROR_NO_DEVICE or (not cuda["error"] and not cuda["devices"]):
+        checks.append(_check("gpu", "info", "driver present but no GPU visible: CPU backend"))
+    elif cuda["error"]:
         checks.append(_check("gpu", "fail", cuda["error"], "run nvidia-smi to check the driver"))
     for device in cuda["devices"]:
         label = f"gpu{device['index']}"
@@ -104,16 +107,23 @@ def _gpu_checks(cuda: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _path_check() -> dict[str, Any]:
-    command = Path(sys.argv[0]).name
+    invoked = Path(sys.argv[0]).absolute()
+    command = invoked.name
     found = shutil.which(command)
-    if found:
+    if found and Path(found).resolve() == invoked.resolve():
         return _check("path", "ok", f"{command} -> {found}")
-    directory = Path(sys.argv[0]).absolute().parent
+    if found:
+        return _check(
+            "path",
+            "warn",
+            f"`{command}` on PATH runs {found}, not this installation ({invoked})",
+            f"remove the other installation, or put {invoked.parent} first on PATH",
+        )
     return _check(
         "path",
         "warn",
-        f"{command} is not on PATH ({directory})",
-        f'export PATH="{directory}:$PATH", or run `uv tool update-shell`',
+        f"{command} is not on PATH ({invoked.parent})",
+        f'export PATH="{invoked.parent}:$PATH", or run `uv tool update-shell`',
     )
 
 
