@@ -38,6 +38,7 @@ target_compile_options(
 )
 
 add_subdirectory(core)
+add_subdirectory(io)
 add_subdirectory(partition)
 
 if(AUTAN_BUILD_TESTS)
@@ -52,5 +53,6 @@ if(AUTAN_BUILD_TESTS)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
   include(Catch)
   add_subdirectory(tests/core)
+  add_subdirectory(tests/io)
   add_subdirectory(tests/partition)
 endif()
