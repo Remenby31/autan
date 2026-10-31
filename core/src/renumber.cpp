@@ -29,21 +29,32 @@ struct Graph {
 
 Graph owned_graph(const Mesh& mesh) {
   const index_t n = mesh.n_owned_cells();
-  std::vector<std::vector<index_t>> lists(at(n));
+  std::vector<offset_t> count(at(n) + 1, 0);
+  for (index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+    const index_t b = mesh.neighbour()[at(f)];
+    if (b >= n) continue;
+    ++count[at(mesh.owner()[at(f)]) + 1];
+    ++count[at(b) + 1];
+  }
+  std::partial_sum(count.begin(), count.end(), count.begin());
+  std::vector<index_t> all(static_cast<std::size_t>(count.back()));
+  std::vector<offset_t> fill(count.begin(), count.end() - 1);
   for (index_t f = 0; f < mesh.n_interior_faces(); ++f) {
     const index_t a = mesh.owner()[at(f)];
     const index_t b = mesh.neighbour()[at(f)];
     if (b >= n) continue;
-    lists[at(a)].push_back(b);
-    lists[at(b)].push_back(a);
+    all[static_cast<std::size_t>(fill[at(a)]++)] = b;
+    all[static_cast<std::size_t>(fill[at(b)]++)] = a;
   }
   Graph g;
   g.offsets.reserve(at(n) + 1);
   g.offsets.push_back(0);
-  for (auto& l : lists) {
-    std::sort(l.begin(), l.end());
-    l.erase(std::unique(l.begin(), l.end()), l.end());
-    g.neighbours.insert(g.neighbours.end(), l.begin(), l.end());
+  g.neighbours.reserve(all.size());
+  for (index_t c = 0; c < n; ++c) {
+    const auto begin = all.begin() + count[at(c)];
+    const auto end = all.begin() + count[at(c) + 1];
+    std::sort(begin, end);
+    g.neighbours.insert(g.neighbours.end(), begin, std::unique(begin, end));
     g.offsets.push_back(static_cast<offset_t>(g.neighbours.size()));
   }
   return g;
