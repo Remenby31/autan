@@ -98,10 +98,11 @@
         },
         "during_run": {
           "type": "object",
-          "required": ["samples", "sm_mhz", "sm_max_mhz", "power_w", "temperature_c", "clocks_event_reasons", "compute_apps_max"],
+          "required": ["samples", "busy_samples", "sm_mhz", "sm_max_mhz", "power_w", "temperature_c", "clocks_event_reasons", "compute_apps_max"],
           "additionalProperties": false,
           "properties": {
             "samples": {"type": "integer", "minimum": 1},
+            "busy_samples": {"type": "integer", "minimum": 1, "description": "Samples at >= 50 % utilization; the clock, power and temperature spreads cover only these."},
             "sm_mhz": {"$ref": "#/$defs/spread"},
             "sm_max_mhz": {"type": ["number", "null"]},
             "power_w": {"$ref": "#/$defs/spread"},

@@ -56,6 +56,7 @@ def make_result(
             "idle_check": {"samples": 5, "compute_apps_max": 0, "utilization_pct_max": 0.0},
             "during_run": {
                 "samples": 3,
+                "busy_samples": 2,
                 "sm_mhz": {"min": 2400.0, "median": 2400.0, "max": 2400.0},
                 "sm_max_mhz": 3003.0,
                 "power_w": None,

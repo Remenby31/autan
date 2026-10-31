@@ -17,6 +17,7 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_LOCK = Path("/tmp/cfd-gpu.lock")
 IDLE_UTILIZATION_PCT = 5.0
+BUSY_UTILIZATION_PCT = 50.0
 
 _GPU_FIELDS = (
     "utilization.gpu",
@@ -167,14 +168,21 @@ class Sampler:
         if not self.samples:
             raise BenchError(Code.NO_SAMPLES, "the run ended before any clock sample was taken")
 
+        # Clocks, power and temperature describe the GPU while it works: setup and host-side
+        # verification leave it idle at base clock for part of the run.
+        busy = [s for s in self.samples if (s.utilization_pct or 0.0) >= BUSY_UTILIZATION_PCT]
+        if not busy:
+            raise BenchError(Code.NO_SAMPLES, "no clock sample was taken while the GPU was busy")
+
         def values(name: str) -> list[float]:
-            return [v for s in self.samples if (v := getattr(s, name)) is not None]
+            return [v for s in busy if (v := getattr(s, name)) is not None]
 
         reasons = 0
-        for s in self.samples:
+        for s in busy:
             reasons |= s.event_reasons or 0
         return {
             "samples": len(self.samples),
+            "busy_samples": len(busy),
             "sm_mhz": _spread(values("sm_mhz")),
             "sm_max_mhz": max(values("sm_max_mhz"), default=None),
             "power_w": _spread(values("power_w")),
