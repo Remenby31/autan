@@ -21,7 +21,7 @@ export function pageSlug(repoPath: string): string | null {
 
 /**
  * Published path of a standalone HTML document under `docs/`: its repository path, so it never
- * shadows a page (GitHub Pages serves `plan.html` for `/plan`).
+ * shadows a page (GitHub Pages serves `x.html` for `/x`).
  */
 export function htmlAssetPath(repoPath: string): string | null {
   if (!repoPath.startsWith(`${docsDir}/`) || !repoPath.endsWith(".html"))

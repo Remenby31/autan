@@ -46,4 +46,4 @@ By contributing, you agree that your contribution is licensed under the [Apache 
 
 ## Releases
 
-Once a `feat` or `fix` PR merges, [release-please](https://github.com/googleapis/release-please) opens a release PR. It bumps [version.txt](version.txt) and writes [CHANGELOG.md](CHANGELOG.md) from the merged PR titles. The lead edits the changelog in that PR and merges it to tag a release. Below 1.0.0, a breaking change bumps the minor version, and a `feat` or `fix` the patch.
+There is no release before the first alpha. From then on, the lead runs the Release Please workflow by hand: [release-please](https://github.com/googleapis/release-please) opens a release PR from the `feat` and `fix` PRs merged since the last release. It bumps [version.txt](version.txt) and writes [CHANGELOG.md](CHANGELOG.md) from the merged PR titles. The lead edits the changelog in that PR and merges it to tag a release. Below 1.0.0, a breaking change bumps the minor version, and a `feat` or `fix` the patch.

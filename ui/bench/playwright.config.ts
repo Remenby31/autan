@@ -17,7 +17,7 @@ export default defineConfig({
     launchOptions: { args: ["--disable-gpu-vsync", "--disable-frame-rate-limit"] },
   },
   webServer: {
-    command: `bun run build && uv run --project server python -m autan_ui --runs bench/.runs --port ${port} --no-open`,
+    command: `bun run build && uv run --locked --project server python -m autan_ui --runs bench/.runs --port ${port} --no-open`,
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     url: `http://127.0.0.1:${port}/api/runs`,
     reuseExistingServer: false,

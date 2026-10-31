@@ -30,7 +30,7 @@ function upsert(registry: RunRegistry | undefined, run: Run): RunRegistry {
   const runs = (registry?.runs ?? []).filter((r) => r.run_id !== run.run_id);
   runs.push(run);
   runs.sort((a, b) => b.started.localeCompare(a.started));
-  return { runs, rejected: registry?.rejected ?? [] };
+  return { runs, rejected: registry?.rejected ?? [], progress: registry?.progress ?? {} };
 }
 
 /** Keeps the run registry query live from the server's event stream. */
@@ -56,7 +56,11 @@ export function subscribeRegistry(client: QueryClient): () => void {
   });
   source.addEventListener("rejected", (e) => {
     const rejected = JSON.parse(e.data) as RunRegistry["rejected"];
-    update((old) => ({ runs: old?.runs ?? [], rejected }));
+    update((old) => ({ runs: old?.runs ?? [], rejected, progress: old?.progress ?? {} }));
+  });
+  source.addEventListener("progress", (e) => {
+    const progress = JSON.parse(e.data) as RunRegistry["progress"];
+    update((old) => ({ runs: old?.runs ?? [], rejected: old?.rejected ?? [], progress }));
   });
   return () => source.close();
 }

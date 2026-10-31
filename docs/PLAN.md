@@ -1,6 +1,6 @@
 # Plan d'implémentation — Autan
 
-Validé le 2026-10-31. Sources : `research/etat-de-l-art-2026-10.md`, `research/dx.html`, `mockup/ux.html`.
+Validé le 2026-10-31. Sources : [état de l'art](research/state-of-the-art-2026-10.md), [DX](design/dx.html), [maquette UX](design/ux-mockup.html).
 
 ## Décisions figées
 
