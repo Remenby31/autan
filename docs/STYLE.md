@@ -88,17 +88,7 @@ Add a diagram only when it removes a paragraph; the prose around it does not rep
 
 ## French pages
 
-A user page exists in English first. Its French version sits next to it as `<page>.fr.md` and starts with the hash of the English file it translates:
-
-```yaml
----
-source_hash: 3f9c2a7b1d04
----
-```
-
-`bun scripts/translations.ts hash <file>` in `website/` prints the value; CI fails when it no longer matches the English page. Update the translation in the same change as its source. The same rules apply in French: *vous*, active voice, short sentences. Keep code, identifiers, error codes and field names in English.
-
-Project pages written in French (the plan, the state of the art) carry `lang: fr` instead and are shown as they are on both sites.
+A French page follows the same rules: *vous*, active voice, short sentences. Keep code, identifiers, error codes and field names in English. Where a translation lives, how its `source_hash` is kept and how French-only project pages are marked is in [docs-site.md](design/docs-site.md#french).
 
 ## Sources
 

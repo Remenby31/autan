@@ -1,5 +1,5 @@
 ---
-source_hash: de8ef4d140b6
+source_hash: "de8ef4d140b6"
 ---
 
 # Vérifier un cas avant de le lancer

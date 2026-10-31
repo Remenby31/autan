@@ -1,4 +1,4 @@
-"""`autan-vv` command line: manufactured solutions, mesh families and order studies."""
+"""`autan-vv` command line: manufactured solutions, mesh families, order studies, reference cases."""
 
 from __future__ import annotations
 
@@ -65,6 +65,19 @@ def _cmd_verify(args: argparse.Namespace) -> None:
         _say(f"{norm}: p = {fit['order']:.3f}, finest pair {fit['pairwise_orders'][-1]:.3f}")
 
 
+def _cmd_cases(args: argparse.Namespace) -> None:
+    from autan_vv.cases import fetch, get_case, list_cases  # noqa: PLC0415
+
+    if args.action == "list":
+        for case in list_cases():
+            _say(f"{case.name}: {case.title} ({len(case.files)} files)")
+        return
+    cases = list_cases() if args.case == "all" else [get_case(args.case)]
+    for case in cases:
+        for path in fetch(case, args.cache):
+            _say(str(path))
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
     parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
@@ -101,6 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_verify)
+
+    p = sub.add_parser("cases", help="list or download reference cases, verifying checksums")
+    p.add_argument("action", choices=("list", "fetch"))
+    p.add_argument("case", nargs="?", default="all")
+    p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
+    p.set_defaults(func=_cmd_cases)
 
     args = parser.parse_args(argv)
     try:

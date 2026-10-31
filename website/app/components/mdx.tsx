@@ -4,20 +4,39 @@ import { TypeTable } from "fumadocs-ui/components/type-table";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { MDXComponents } from "mdx/types";
 import type { ComponentProps } from "react";
-import { basePath } from "@/content/paths";
+import { useLocation } from "react-router";
+import { Diagram } from "@/components/diagram";
+import { basePath, defaultLocale, localePath } from "@/content/paths";
+import { parsePath } from "@/lib/locale";
 
 const DefaultLink = defaultMdxComponents.a;
 
-/** Published HTML documents are files, not routes: link to them without the router. */
-function Link(props: ComponentProps<"a">) {
-  if (props.href?.startsWith(basePath)) return <a {...props} />;
-  return <DefaultLink {...props} />;
+/**
+ * Published files (HTML documents, assets) carry the base path and bypass the router. A page shown
+ * in another locale than its file's (an untranslated page on the French site) keeps the reader's
+ * locale on its links.
+ */
+function Link({ href, ...props }: ComponentProps<"a">) {
+  const { locale } = parsePath(useLocation().pathname);
+  if (href?.startsWith(basePath)) return <a href={href} {...props} />;
+  if (
+    href?.startsWith("/") &&
+    !href.startsWith("//") &&
+    locale !== defaultLocale
+  ) {
+    const path = href.split(/[?#]/)[0];
+    const target = parsePath(path);
+    if (target.locale !== locale)
+      href = localePath(target.slug, locale) + href.slice(path.length);
+  }
+  return <DefaultLink href={href} {...props} />;
 }
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     a: Link,
+    Diagram,
     Step,
     Steps,
     Tab,

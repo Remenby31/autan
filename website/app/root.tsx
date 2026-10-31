@@ -1,4 +1,5 @@
 import "./app.css";
+import { i18nProvider } from "fumadocs-ui/i18n";
 import { RootProvider } from "fumadocs-ui/provider/react-router";
 import {
   isRouteErrorResponse,
@@ -7,8 +8,13 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useLocation,
+  useNavigate,
 } from "react-router";
 import StaticSearchDialog from "@/components/search";
+import { localePath } from "@/content/paths";
+import { translations } from "@/lib/layout.shared";
+import { parsePath } from "@/lib/locale";
 import favicon from "../../docs/assets/favicon.svg?url";
 import type { Route } from "./+types/root";
 
@@ -19,8 +25,16 @@ export const links: Route.LinksFunction = () => [
 import NotFound from "./routes/not-found";
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const { pathname, hash } = useLocation();
+  const navigate = useNavigate();
+  const { locale, slug } = parsePath(pathname);
+  const i18n = {
+    ...i18nProvider(translations, locale),
+    onLocaleChange: (next: string) =>
+      navigate(localePath(slug, next as typeof locale) + hash),
+  };
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -29,6 +43,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </head>
       <body className="flex flex-col min-h-screen">
         <RootProvider
+          i18n={i18n}
           search={{ SearchDialog: StaticSearchDialog }}
           theme={{ attribute: ["class", "data-theme"] }}
         >
