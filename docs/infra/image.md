@@ -24,12 +24,15 @@ Libraries built from source install to `/opt/autan`, which is on `PATH`, `CMAKE_
 On a DGX Spark, from the repository root:
 
 ```sh
-docker pull ghcr.io/remenby31/autan-dev:main          # or: docker build -t autan-dev:local docker/dev
+image=ghcr.io/remenby31/autan-dev:main                 # or: docker build -t autan-dev:local docker/dev
+docker pull "$image"
+[ -e /tmp/cfd-gpu.lock ] || install -m 0666 /dev/null /tmp/cfd-gpu.lock
 docker run --rm -it --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD:/src" -w /src ghcr.io/remenby31/autan-dev:main bash
+  -e AUTAN_IMAGE="$(docker image inspect -f '{{index .RepoDigests 0}}' "$image")" \
+  -v /tmp/cfd-gpu.lock:/tmp/cfd-gpu.lock -v "$PWD:/src" -w /src "$image" bash
 ```
 
-Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Name your containers with a `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
+Mount the host's `/tmp/cfd-gpu.lock`: GPU jobs in every container then queue on the same lock. `AUTAN_IMAGE` records the image digest in benchmark results (for a local build, use `{{.Id}}`). Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Run as your own user so `git` accepts the mounted checkout. Name your containers with an `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
 
 ## Smoke test
 

@@ -26,7 +26,6 @@ def _run_binary(binary: Path, args: list[str]) -> dict[str, Any]:
 
 def run(
     binary: Path,
-    repo: Path,
     *,
     elements: int,
     warmup: int,
@@ -48,7 +47,6 @@ def run(
         "--block",
         str(block),
     ]
-    prov = provenance.collect(repo)
     with gpu.gpu_lock(lock) as waited:
         idle = gpu.require_idle()
         with gpu.Sampler() as sampler:
@@ -59,6 +57,7 @@ def run(
             Code.GPU_CONTENDED,
             f"{during['compute_apps_max']} compute processes shared the GPU during the run",
         )
+    prov = provenance.collect(binary, raw["revision"])
     if raw.get("verified") is not True:
         raise BenchError(Code.VERIFY_FAILED, "the binary did not verify its arrays")
 

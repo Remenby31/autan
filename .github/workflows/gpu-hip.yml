@@ -25,13 +25,14 @@ jobs:
     container:
       image: rocm/dev-ubuntu-24.04:7.2.4@sha256:bdc8e61026cbb844ede93d44d2c50055f51ebb2041906b60182bf3bee3139054
     steps:
+      - name: Install Git, CMake and Ninja
+        run: apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install CMake and Ninja
-        run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build
       - name: Build for gfx942
         run: >-
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" &&
           cmake -S bench -B build -G Ninja -DAUTAN_BENCH_BACKEND=HIP -DCMAKE_HIP_ARCHITECTURES=gfx942
           -DCMAKE_PREFIX_PATH=/opt/rocm && cmake --build build
       - name: Check the binary carries gfx942 code

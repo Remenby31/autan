@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "gpu_runtime.hpp"
+#include "revision.h"
 
 namespace {
 
@@ -190,6 +191,8 @@ int main(int argc, char** argv) {
       "\"sm_count\":%d,\"l2_bytes\":%d,\"memory_bytes\":%zu},",
       prop.name, uuid, prop.major, prop.minor, prop.multiProcessorCount, prop.l2CacheSize,
       prop.totalGlobalMem);
+  std::printf("\"revision\":{\"commit\":\"%s\",\"dirty\":%s},", AUTAN_BENCH_COMMIT,
+              AUTAN_BENCH_DIRTY);
   std::printf("\"backend\":\"" AUTAN_BENCH_BACKEND
               "\",\"runtime_version\":%d,\"driver_version\":%d,",
               runtime, driver);

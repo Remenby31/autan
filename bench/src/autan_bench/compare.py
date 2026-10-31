@@ -4,6 +4,8 @@ from typing import Any
 from autan_bench.errors import BenchError, Code
 
 DEFAULT_THRESHOLD = 0.05
+# A change of exactly the threshold is tolerated; the ratio carries a few ulps of round-off.
+_ROUND_OFF = 1e-12
 
 
 @dataclass(frozen=True)
@@ -52,7 +54,7 @@ def compare(
                 baseline=base["stats"]["median"],
                 current=now["stats"]["median"],
                 change=change,
-                regression=worse > threshold,
+                regression=worse - threshold > _ROUND_OFF,
             )
         )
     return rows

@@ -24,6 +24,7 @@ def make_result(
     gpu: str = "NVIDIA GB10",
     dirty: bool = False,
     config: dict | None = None,
+    image: str | None = "autan-dev@sha256:" + "0" * 64,
 ) -> dict:
     doc = {
         "schema": result.SCHEMA_ID,
@@ -31,11 +32,12 @@ def make_result(
         "created": "2026-10-31T12:00:00+00:00",
         "provenance": {
             "solver": {"commit": "0" * 40, "dirty": dirty},
+            "binary_sha256": "0" * 64,
             "backend": "cuda",
             "precision": "fp64",
             "devices": {"kind": "cuda", "count": 1},
             "host": "test",
-            "image": None,
+            "image": image,
             "image_revision": None,
             "runtime_version": 13000,
             "driver_version": 13000,
@@ -62,7 +64,7 @@ def make_result(
                 "compute_apps_max": 1,
             },
         },
-        "config": config or {"elements": 1 << 28},
+        "config": config or {"elements": 1 << 28, "element_bytes": 8},
         "benchmarks": benchmarks,
     }
     result.validate(doc)

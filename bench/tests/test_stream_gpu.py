@@ -23,8 +23,7 @@ def stream_binary() -> Path:
 
 def test_stream_run_produces_a_valid_physical_result(stream_binary, tmp_path):
     out = tmp_path / "stream.json"
-    repo = Path(__file__).resolve().parents[2]
-    argv = ["stream", "--binary", str(stream_binary), "--out", str(out), "--repo", str(repo)]
+    argv = ["stream", "--binary", str(stream_binary), "--out", str(out)]
     assert main([*argv, "--elements", str(1 << 25), "--warmup", "3", "--reps", "20"]) == 0
     doc = json.loads(out.read_text())
     assert [b["name"] for b in doc["benchmarks"]] == [

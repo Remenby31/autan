@@ -9,6 +9,7 @@ from autan_bench.compare import DEFAULT_THRESHOLD, compare
 from autan_bench.errors import BenchError, Code
 
 MAX_BASELINE_CV = 0.02
+MIN_ARRAY_OVER_L2 = 4
 
 
 def _say(text: str, *, err: bool = False) -> None:
@@ -28,7 +29,6 @@ def _table(doc: dict) -> str:
 def _stream(args: argparse.Namespace) -> int:
     doc = stream.run(
         args.binary,
-        args.repo,
         elements=args.elements,
         warmup=args.warmup,
         reps=args.reps,
@@ -70,7 +70,21 @@ def _compare(args: argparse.Namespace) -> int:
 def _baseline(args: argparse.Namespace) -> int:
     doc = result.load(args.result)
     if doc["provenance"]["solver"]["dirty"]:
-        raise BenchError(Code.DIRTY_TREE, "a baseline must come from a clean checkout")
+        raise BenchError(
+            Code.DIRTY_TREE, "a baseline must come from a binary built from a clean checkout"
+        )
+    if not doc["provenance"]["image"]:
+        raise BenchError(
+            Code.IMAGE_UNKNOWN, "a baseline must record its image digest (AUTAN_IMAGE)"
+        )
+    if doc["suite"] == "stream":
+        array_bytes = doc["config"]["elements"] * doc["config"]["element_bytes"]
+        l2 = doc["provenance"]["gpu"]["l2_bytes"]
+        if array_bytes < MIN_ARRAY_OVER_L2 * l2:
+            raise BenchError(
+                Code.FOOTPRINT_TOO_SMALL,
+                f"each array is {array_bytes} B; a DRAM baseline needs {MIN_ARRAY_OVER_L2} x L2 ({l2} B)",
+            )
     noisy = [
         f"{b['name']} ({b['stats']['cv']:.2%})"
         for b in doc["benchmarks"]

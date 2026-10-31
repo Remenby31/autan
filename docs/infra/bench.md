@@ -4,7 +4,7 @@
 
 ## Run
 
-Inside the dev image on a DGX Spark, from the repository root:
+Inside the dev image on a DGX Spark, started as [image.md](image.md#use) shows, from the repository root:
 
 ```sh
 cmake -S bench -B build/bench && cmake --build build/bench
@@ -17,11 +17,11 @@ uv run --project bench --locked autan-bench compare results/stream.json bench/ba
 
 `autan-bench` applies the same procedure to every benchmark:
 
-1. Takes an exclusive `flock` on `/tmp/cfd-gpu.lock`, waiting as long as needed. The runner container mounts the host's lock file, so CI and interactive runs queue on the same lock.
-2. Refuses to start (`GPU_BUSY`) unless, within 5 s, five consecutive `nvidia-smi` samples over one second show no compute process and at most 5 % utilisation (the utilisation counter is a trailing average, so a GPU released a moment ago needs a second to read idle). Another team's job is not something to wait for: rerun later.
+1. Takes an exclusive `flock` on `/tmp/cfd-gpu.lock`, waiting as long as needed. Containers mount the host's lock file, so CI and interactive runs queue on the same lock.
+2. Refuses to start (`GPU_BUSY`) unless, within 5 s, five consecutive `nvidia-smi` samples over one second show no compute process and at most 5 % utilisation (the utilisation counter is a trailing average, so a GPU released a moment ago needs a second to read idle). A GPU that reports no utilisation fails (`NVIDIA_SMI_FAILED`): idleness is measured, never assumed. Another team's job is not something to wait for: rerun later.
 3. Samples SM clock, power, temperature, clock event reasons and the number of compute processes every 200 ms during the run, and fails (`GPU_CONTENDED`) if another process appeared. GB10 reports no memory clock, so none is recorded.
 4. Times each repetition with CUDA events around the kernel after warm-up repetitions, and reports the median, quartiles (Hyndman–Fan type 7), IQR and coefficient of variation (CV = standard deviation / mean) of the per-repetition metric.
-5. Records provenance with the run-identity names of [results.md](../contracts/results.md) (`solver.commit`, `backend`, `precision`, `devices`), plus a dirty-tree flag, host, image (`AUTAN_IMAGE`, `AUTAN_IMAGE_REVISION`), CUDA runtime and driver, GPU name, UUID and properties.
+5. Records provenance with the run-identity names of [results.md](../contracts/results.md) (`solver.commit`, `backend`, `precision`, `devices`). The commit and dirty flag are those the binary was built from (CMake embeds them at every build), so a stale binary cannot borrow a newer checkout's identity; the binary's SHA-256, the host, the image (`AUTAN_IMAGE`, `AUTAN_IMAGE_REVISION`), the runtime and driver versions and the GPU's name, UUID and properties complete it.
 
 ## STREAM and the GB10 peak
 
@@ -31,6 +31,6 @@ The **GB10 peak bandwidth** is the highest median of the four kernels in `bench/
 
 ## Results, baselines and the regression gate
 
-Results follow `bench/src/autan_bench/result.schema.json` (`autan.bench-result/1`); `autan-bench validate` checks a file. `autan-bench compare RESULT BASELINE` compares medians benchmark by benchmark and exits 1 when one is more than 5 % worse, 2 when the files cannot be compared (different GPU, missing benchmark, different metric). `autan-bench baseline RESULT --out bench/baselines/<gpu>.json` promotes a result only if it comes from a clean checkout and every benchmark has a CV below 2 %.
+Results follow `bench/src/autan_bench/result.schema.json` (`autan.bench-result/1`); `autan-bench validate` checks a file: the schema, finite numbers only, and statistics that match their samples. `autan-bench compare RESULT BASELINE` compares medians benchmark by benchmark and exits 1 when one is more than 5 % worse (exactly 5 % passes), 2 when the files cannot be compared (different GPU, configuration or metric, missing benchmark). `autan-bench baseline RESULT --out bench/baselines/<gpu>.json` promotes a result only if its binary was built from a clean checkout, it records its image digest, each STREAM array is at least 4 × L2, and every benchmark has a CV below 2 %.
 
 To refresh a baseline, run `autan-bench stream` on an idle Spark from a clean checkout of `main`, promote it with `autan-bench baseline`, and commit the file with the reason in the pull request.

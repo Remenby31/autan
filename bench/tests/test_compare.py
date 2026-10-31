@@ -14,10 +14,10 @@ BASE = [100.0, 101.0, 99.0, 100.5, 99.5]
     ("factor", "unit", "better", "exit_code"),
     [
         (1.0, "GB/s", "higher", 0),
-        (0.951, "GB/s", "higher", 0),
+        (0.95, "GB/s", "higher", 0),
         (0.949, "GB/s", "higher", 1),
         (1.30, "GB/s", "higher", 0),
-        (1.049, "ns", "lower", 0),
+        (1.05, "ns", "lower", 0),
         (1.051, "ns", "lower", 1),
         (0.70, "ns", "lower", 0),
     ],
@@ -39,7 +39,12 @@ def test_compare_fails_only_beyond_five_percent_worse(
         (make_result([bench("stream.copy", BASE)]), "MISSING_BENCHMARK"),
         (make_result([bench("stream.triad", BASE)], gpu="NVIDIA RTX PRO 6000"), "GPU_MISMATCH"),
         (make_result([bench("stream.triad", BASE, unit="ns", better="lower")]), "INCOMPATIBLE"),
-        (make_result([bench("stream.triad", BASE)], config={"elements": 1 << 25}), "INCOMPATIBLE"),
+        (
+            make_result(
+                [bench("stream.triad", BASE)], config={"elements": 1 << 25, "element_bytes": 8}
+            ),
+            "INCOMPATIBLE",
+        ),
     ],
 )
 def test_compare_refuses_results_it_cannot_judge(write_json, capsys, current, code):

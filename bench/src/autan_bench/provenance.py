@@ -1,29 +1,20 @@
+import hashlib
 import os
 import socket
-import subprocess
 from pathlib import Path
+from typing import Any
 
 from autan_bench.errors import BenchError, Code
 
 
-def _git(repo: Path, *args: str) -> str:
-    try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise BenchError(
-            Code.NO_COMMIT, f"cannot read the solver commit from {repo}; run inside a git checkout"
-        ) from exc
-
-
-def collect(repo: Path) -> dict[str, object]:
-    """Commit, dirty flag, host and container image of the current run."""
+def collect(binary: Path, revision: dict[str, Any]) -> dict[str, object]:
+    """Solver revision the binary was built from, the binary's digest, host and image."""
+    commit = revision.get("commit", "")
+    if len(commit) != 40:
+        raise BenchError(Code.NO_COMMIT, f"{binary} records no git commit ({commit!r})")
     return {
-        "solver": {
-            "commit": _git(repo, "rev-parse", "HEAD"),
-            "dirty": bool(_git(repo, "status", "--porcelain", "--untracked-files=no")),
-        },
+        "solver": {"commit": commit, "dirty": revision["dirty"]},
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "host": os.environ.get("AUTAN_HOST") or socket.gethostname(),
         "image": os.environ.get("AUTAN_IMAGE"),
         "image_revision": os.environ.get("AUTAN_IMAGE_REVISION"),

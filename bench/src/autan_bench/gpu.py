@@ -104,10 +104,16 @@ def require_idle(
     seen: list[GpuSample] = []
     deadline = time.monotonic() + timeout_s
     while True:
-        seen.append(sample(gpu_index))
+        current = sample(gpu_index)
+        if current.utilization_pct is None:
+            raise BenchError(
+                Code.NVIDIA_SMI_FAILED,
+                f"GPU {gpu_index} reports no utilization; cannot prove it idle",
+            )
+        seen.append(current)
         recent = seen[-window:]
         apps = max(s.compute_apps for s in recent)
-        util = max((s.utilization_pct or 0.0) for s in recent)
+        util = max(s.utilization_pct or 0.0 for s in recent)
         if len(recent) == window and not apps and util <= IDLE_UTILIZATION_PCT:
             return {"samples": window, "compute_apps_max": apps, "utilization_pct_max": util}
         if time.monotonic() > deadline:
