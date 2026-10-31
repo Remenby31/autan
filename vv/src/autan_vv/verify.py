@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from cfd_vv.meshes.families import generate_family
-from cfd_vv.mms import advection_diffusion
-from cfd_vv.reference_fv import solve
-from cfd_vv.study import order_study, write_report
+from autan_vv.meshes.families import generate_family
+from autan_vv.mms import advection_diffusion
+from autan_vv.reference_fv import solve
+from autan_vv.study import order_study, write_report
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,7 +39,7 @@ def advection_diffusion_study(
     report |= {
         "mesh_family": family.manifest(),
         "precision": "fp64",
-        "solver": "cfd_vv.reference_fv",
+        "solver": "autan_vv.reference_fv",
     }
     write_report(report, out_dir / "order.json", out_dir / "order.png")
     return report

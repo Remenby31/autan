@@ -1,6 +1,6 @@
 # Manufactured solutions
 
-Source: `vv/src/cfd_vv/mms/`. Derived symbolically with sympy; exported with `cfd-vv mms <name|all> --out DIR`.
+Source: `vv/src/autan_vv/mms/`. Derived symbolically with sympy; exported with `autan-vv mms <name|all> --out DIR`.
 
 ## Convention
 
@@ -20,15 +20,15 @@ The RANS fields follow the principles of Eça et al. (2007) and Oliver et al. (2
 
 ## Exports
 
-**C++20 header** (`<name>.hpp`, namespace `cfd::mms::<name>`): `Parameters` holds the constants; for each group `fields`, `gradients` (∂/∂x, ∂/∂y, ∂/∂z of each field), `conserved`, `sources` and, for RANS, `auxiliary` (wall distance, μ_t, χ, r, S̃) there is
+**C++20 header** (`<name>.hpp`, namespace `autan::mms::<name>`): `Parameters` holds the constants; for each group `fields`, `gradients` (∂/∂x, ∂/∂y, ∂/∂z of each field), `conserved`, `sources` and, for RANS, `auxiliary` (wall distance, μ_t, χ, r, S̃) there is
 
 ```cpp
-template <typename T> CFD_MMS_HD void sources(T x, T y, T z, T* out);   // out[i] is sources_names[i]
+template <typename T> AUTAN_MMS_HD void sources(T x, T y, T z, T* out);   // out[i] is sources_names[i]
 ```
 
-`CFD_MMS_HD` is `__host__ __device__` under CUDA or HIP. Literals are written `T(p)/T(q)` and π as `std::numbers::pi_v<T>`, so one body serves `float` and `double` without promotion. Common subexpressions are shared.
+`AUTAN_MMS_HD` is `__host__ __device__` under CUDA or HIP. Literals are written `T(p)/T(q)` and π as `std::numbers::pi_v<T>`, so one body serves `float` and `double` without promotion. Common subexpressions are shared.
 
-**JSON** (`<name>.json`, schema `cfd-vv/mms/1`): `name`, `equations`, `coordinates` (`x, y, z`), `domain`, `parameters`, `validity`, `references`, and one object per group with `subexpressions` (ordered `[name, expr]` pairs, each may use earlier ones) and `outputs` (`{name: expr}`). Expressions use C99 syntax restricted to `+ - * /`, unary minus, `pow`, `sqrt`, `sin`, `cos`, `exp`, `log`, decimal literals and the constant `pi`. `cfd_vv.mms.parse_json_expressions` is a reference reader.
+**JSON** (`<name>.json`, schema `autan.mms/1`): `name`, `equations`, `coordinates` (`x, y, z`), `domain`, `parameters`, `validity`, `references`, and one object per group with `subexpressions` (ordered `[name, expr]` pairs, each may use earlier ones) and `outputs` (`{name: expr}`). Expressions use C99 syntax restricted to `+ - * /`, unary minus, `pow`, `sqrt`, `sin`, `cos`, `exp`, `log`, decimal literals and the constant `pi`. `autan_vv.mms.parse_json_expressions` is a reference reader.
 
 ## Verification of the generator
 

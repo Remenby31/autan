@@ -12,14 +12,14 @@ import matplotlib as mpl
 mpl.use("Agg")
 import matplotlib.pyplot as plt
 
-from cfd_vv.errors import VVError
-from cfd_vv.order import fit_order, mesh_size
+from autan_vv.errors import VVError
+from autan_vv.order import fit_order, mesh_size
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-REPORT_SCHEMA = "cfd-vv/order-study/1"
+REPORT_SCHEMA = "autan.order-study/1"
 
 
 def order_study(label: str, dim: int, levels: Sequence[dict[str, Any]]) -> dict[str, Any]:

@@ -9,7 +9,7 @@ random vector of length up to `perturbation` times its shortest incident edge, t
 boundary, to make the "dirty" variant of a family.
 
 Gmsh (GPL-2.0-or-later) is a development-time dependency of this package only; it is imported
-lazily so that the rest of `cfd_vv` works without it.
+lazily so that the rest of `autan_vv` works without it.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cfd_vv.errors import VVError
-from cfd_vv.meshes.dual import median_dual
-from cfd_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
-from cfd_vv.meshes.fluent import write_fluent
+from autan_vv.errors import VVError
+from autan_vv.meshes.dual import median_dual
+from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
+from autan_vv.meshes.fluent import write_fluent
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,7 +35,7 @@ BOX_ZONES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 # The y = 0 face is the wall of the RANS-SA manufactured solution (wall distance d = y).
 BC_TYPES = {name: ("wall" if name == "ymin" else "pressure-far-field") for name in BOX_ZONES}
 CELL_ZONE = "fluid"
-MANIFEST_SCHEMA = "cfd-vv/mesh-family/1"
+MANIFEST_SCHEMA = "autan.mesh-family/1"
 
 # Local faces of Gmsh linear elements, ordered so that the right-hand normal points out of a
 # positively oriented element (Gmsh reference elements, "Node ordering" in the Gmsh manual).

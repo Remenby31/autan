@@ -2,8 +2,8 @@ import math
 
 import numpy as np
 import pytest
-from cfd_vv.errors import VVError
-from cfd_vv.order import fit_order, gci_two_grids, mesh_size, richardson
+from autan_vv.errors import VVError
+from autan_vv.order import fit_order, gci_two_grids, mesh_size, richardson
 
 
 def test_mesh_size_is_the_dth_root_of_mean_cell_volume() -> None:

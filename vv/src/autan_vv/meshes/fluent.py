@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from cfd_vv.meshes.facemesh import FaceMesh
+    from autan_vv.meshes.facemesh import FaceMesh
 
 # Fluent boundary-condition type codes (section 13 header) and names (section 45).
 BC_CODES = {"interior": 2, "wall": 3, "pressure-far-field": 9}
@@ -22,7 +22,7 @@ CELL_TYPE_CODES = {"tet": 2, "hex": 4, "pyramid": 5, "prism": 6, "polyhedron": 7
 
 def write_fluent(mesh: FaceMesh, path: Path, cell_zone: str) -> None:
     """Write `mesh` as a 3D Fluent ASCII mesh with one cell zone and its face zones."""
-    lines: list[str] = ['(0 "cfd-vv median-dual mesh")', "(2 3)"]
+    lines: list[str] = ['(0 "autan-vv median-dual mesh")', "(2 3)"]
     npts = mesh.points.shape[0]
     lines.append(f"(10 (0 1 {npts:x} 0 3))")
     lines.append(f"(10 (1 1 {npts:x} 1 3)(")

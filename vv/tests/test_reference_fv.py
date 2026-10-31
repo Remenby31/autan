@@ -6,13 +6,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 import sympy as sp
-from cfd_vv.cli import main
-from cfd_vv.errors import VVError
-from cfd_vv.meshes.families import KINDS, generate_level
-from cfd_vv.mms import advection_diffusion, euler
-from cfd_vv.mms.solutions import X
-from cfd_vv.order import fit_order
-from cfd_vv.reference_fv import solve
+from autan_vv.cli import main
+from autan_vv.errors import VVError
+from autan_vv.meshes.families import KINDS, generate_level
+from autan_vv.mms import advection_diffusion, euler
+from autan_vv.mms.solutions import X
+from autan_vv.order import fit_order
+from autan_vv.reference_fv import solve
 
 pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
 x, y, z = X
@@ -66,7 +66,7 @@ def test_solver_rejects_other_equations() -> None:
 def test_cli_verify_writes_report_plot_and_manifest(tmp_path: Path) -> None:
     assert main(["verify", "hex", "--levels", "4,8", "--out", str(tmp_path)]) == 0
     report = json.loads((tmp_path / "order.json").read_text())
-    assert report["schema"] == "cfd-vv/order-study/1"
+    assert report["schema"] == "autan.order-study/1"
     assert report["mesh_family"]["levels"][0]["file"] == "hex-n004.msh"
     assert report["fits"]["L2"]["order"] > 1.8
     assert (tmp_path / "order.png").stat().st_size > 0

@@ -16,7 +16,7 @@ from functools import cached_property
 import numpy as np
 import numpy.typing as npt
 
-from cfd_vv.errors import VVError
+from autan_vv.errors import VVError
 
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]

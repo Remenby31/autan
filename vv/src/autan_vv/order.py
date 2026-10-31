@@ -11,7 +11,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy import stats
 
-from cfd_vv.errors import VVError
+from autan_vv.errors import VVError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

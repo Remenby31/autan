@@ -15,8 +15,8 @@ from itertools import pairwise
 
 import numpy as np
 
-from cfd_vv.errors import VVError
-from cfd_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces
+from autan_vv.errors import VVError
+from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces
 
 _TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
 _TET_FACES = ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))

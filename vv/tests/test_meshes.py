@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from cfd_vv.errors import VVError
-from cfd_vv.meshes.facemesh import FaceMesh, from_faces
-from cfd_vv.meshes.families import BOX_ZONES, KINDS, generate_family, generate_level
+from autan_vv.errors import VVError
+from autan_vv.meshes.facemesh import FaceMesh, from_faces
+from autan_vv.meshes.families import BOX_ZONES, KINDS, generate_family, generate_level
 
 gmsh = pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
 
@@ -72,7 +72,7 @@ def test_families_regenerate_bit_for_bit(kind: str, tmp_path: Path) -> None:
     other_seed, _ = generate_family(kind, (4,), tmp_path / "c", perturbation=0.2, seed=12)
     assert other_seed.levels[0].file_sha256 != first.levels[0].file_sha256
     manifest = json.loads((tmp_path / "a" / "manifest.json").read_text())
-    assert manifest["schema"] == "cfd-vv/mesh-family/1"
+    assert manifest["schema"] == "autan.mesh-family/1"
     assert [lv["n"] for lv in manifest["levels"]] == [4, 6]
 
 

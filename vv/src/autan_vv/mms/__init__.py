@@ -1,7 +1,7 @@
 """Manufactured solutions: symbolic derivation and export to C++ and JSON."""
 
-from cfd_vv.mms.export import dump_json, parse_json_expressions, to_cpp, to_json
-from cfd_vv.mms.solutions import (
+from autan_vv.mms.export import dump_json, parse_json_expressions, to_cpp, to_json
+from autan_vv.mms.solutions import (
     CATALOG,
     Flow,
     ManufacturedSolution,

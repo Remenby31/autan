@@ -9,14 +9,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import sympy as sp
-from cfd_vv.mms import CATALOG, dump_json, parse_json_expressions, to_cpp
-from cfd_vv.mms.solutions import ManufacturedSolution, X
+from autan_vv.mms import CATALOG, dump_json, parse_json_expressions, to_cpp
+from autan_vv.mms.solutions import ManufacturedSolution, X
 
 GROUPS = ("fields", "gradients", "conserved", "sources", "auxiliary")
 
 WRAPPER = """
 #include "solution.hpp"
-namespace m = cfd::mms::{name};
+namespace m = autan::mms::{name};
 {wrappers}
 """
 
@@ -122,7 +122,7 @@ def test_cpp_header_matches_symbolic_values_in_fp64_and_fp32(name: str, tmp_path
 def test_json_document_round_trips_through_a_parser(name: str) -> None:
     ms = CATALOG[name]()
     doc = json.loads(dump_json(ms))
-    assert doc["schema"] == "cfd-vv/mms/1"
+    assert doc["schema"] == "autan.mms/1"
     assert doc["parameters"] == dict(ms.parameters)
     pts = _points()
     expected = _expected(ms, pts)

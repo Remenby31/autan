@@ -1,4 +1,4 @@
-"""`cfd-vv` command line: manufactured solutions, mesh families and order studies."""
+"""`autan-vv` command line: manufactured solutions, mesh families and order studies."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from cfd_vv.errors import VVError
+from autan_vv.errors import VVError
 
 
 def _say(line: str) -> None:
@@ -19,7 +19,7 @@ def _levels(text: str) -> tuple[int, ...]:
 
 
 def _cmd_mms(args: argparse.Namespace) -> None:
-    from cfd_vv.mms import CATALOG, dump_json, to_cpp  # noqa: PLC0415
+    from autan_vv.mms import CATALOG, dump_json, to_cpp  # noqa: PLC0415
 
     names = sorted(CATALOG) if args.name == "all" else [args.name]
     args.out.mkdir(parents=True, exist_ok=True)
@@ -31,7 +31,7 @@ def _cmd_mms(args: argparse.Namespace) -> None:
 
 
 def _cmd_meshes(args: argparse.Namespace) -> None:
-    from cfd_vv.meshes.families import generate_family  # noqa: PLC0415
+    from autan_vv.meshes.families import generate_family  # noqa: PLC0415
 
     family, _ = generate_family(
         args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
@@ -41,7 +41,7 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
 
 
 def _cmd_order(args: argparse.Namespace) -> None:
-    from cfd_vv.study import order_study, write_report  # noqa: PLC0415
+    from autan_vv.study import order_study, write_report  # noqa: PLC0415
 
     data = json.loads(args.errors.read_text())
     report = order_study(data.get("label", args.errors.stem), int(data["dim"]), data["levels"])
@@ -51,7 +51,7 @@ def _cmd_order(args: argparse.Namespace) -> None:
 
 
 def _cmd_verify(args: argparse.Namespace) -> None:
-    from cfd_vv.verify import advection_diffusion_study  # noqa: PLC0415
+    from autan_vv.verify import advection_diffusion_study  # noqa: PLC0415
 
     report = advection_diffusion_study(
         args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
@@ -61,8 +61,8 @@ def _cmd_verify(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the `cfd-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
-    parser = argparse.ArgumentParser(prog="cfd-vv", description=__doc__)
+    """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
+    parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
     sub = parser.add_subparsers(required=True)
 
     p = sub.add_parser("mms", help="export manufactured solutions to C++ and JSON")

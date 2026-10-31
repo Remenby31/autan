@@ -1,10 +1,10 @@
-"""The `cfd-vv` command line, through its outputs."""
+"""The `autan-vv` command line, through its outputs."""
 
 import json
 from pathlib import Path
 
 import pytest
-from cfd_vv.cli import main
+from autan_vv.cli import main
 
 
 def test_order_command_reports_the_order_of_synthetic_errors(tmp_path: Path) -> None:
@@ -46,5 +46,5 @@ def test_order_command_returns_2_on_a_coded_error(
 def test_mms_command_writes_header_and_json(tmp_path: Path) -> None:
     assert main(["mms", "euler", "--out", str(tmp_path)]) == 0
     doc = json.loads((tmp_path / "euler.json").read_text())
-    assert doc["schema"] == "cfd-vv/mms/1"
-    assert "namespace cfd::mms::euler" in (tmp_path / "euler.hpp").read_text()
+    assert doc["schema"] == "autan.mms/1"
+    assert "namespace autan::mms::euler" in (tmp_path / "euler.hpp").read_text()

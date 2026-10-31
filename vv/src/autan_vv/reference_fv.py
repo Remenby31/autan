@@ -26,11 +26,11 @@ import numpy as np
 import scipy.sparse as sps
 import scipy.sparse.linalg as spla
 
-from cfd_vv.errors import VVError
+from autan_vv.errors import VVError
 
 if TYPE_CHECKING:
-    from cfd_vv.meshes.facemesh import FaceMesh, FloatArray
-    from cfd_vv.mms.solutions import ManufacturedSolution
+    from autan_vv.meshes.facemesh import FaceMesh, FloatArray
+    from autan_vv.mms.solutions import ManufacturedSolution
 
 ALPHA = 4.0 / 3.0
 # Boundary faces: the quadratic through phi_P, its derivative along d and phi_b gives
@@ -80,7 +80,7 @@ def _lsq_gradient(mesh: FaceMesh, phi_b: FloatArray) -> tuple[list[sps.csr_matri
 
 
 def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solution:
-    """Solve the advection-diffusion problem `ms` (from `cfd_vv.mms.advection_diffusion`) on `mesh`."""
+    """Solve the advection-diffusion problem `ms` (from `autan_vv.mms.advection_diffusion`) on `mesh`."""
     if ms.equations != "scalar advection-diffusion":
         msg = f"the reference solver handles scalar advection-diffusion, not {ms.equations}"
         raise VVError(msg, code="V0401")

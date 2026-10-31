@@ -1,6 +1,6 @@
 # Mesh families
 
-Source: `vv/src/cfd_vv/meshes/`. Generate with `cfd-vv meshes <kind> --levels 8,16,32,64 [--perturbation 0.3] [--seed S] --out DIR`.
+Source: `vv/src/autan_vv/meshes/`. Generate with `autan-vv meshes <kind> --levels 8,16,32,64 [--perturbation 0.3] [--seed S] --out DIR`.
 
 ## Kinds
 
@@ -29,7 +29,7 @@ Agreed with the core mesh readers (#1):
 
 ## Manifest and reproducibility
 
-Each family directory has `manifest.json` (schema `cfd-vv/mesh-family/1`): kind, perturbation, seed, Gmsh version, and per level the file name, `file_sha256`, `mesh_sha256` (topology and coordinates, format-independent), counts per cell type, total volume, h = (V/N)^(1/3) and `min_subvolume_ratio`. The same seed, Gmsh version and platform give byte-identical files; a different seed gives different files (`test_families_regenerate_bit_for_bit`).
+Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, perturbation, seed, Gmsh version, and per level the file name, `file_sha256`, `mesh_sha256` (topology and coordinates, format-independent), counts per cell type, total volume, h = (V/N)^(1/3) and `min_subvolume_ratio`. The same seed, Gmsh version and platform give byte-identical files; a different seed gives different files (`test_families_regenerate_bit_for_bit`).
 
 `min_subvolume_ratio` is the smallest (sub-tetrahedron / cell volume) of the decomposition used by the core (triangle fan around each face's mean point, apex at the cell's mean face point). It is slightly negative (≈ −0.005) on median-dual meshes because their faces are strongly non-planar; volumes and closure are still exact.
 
