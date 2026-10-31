@@ -1,5 +1,6 @@
 """The solver input through `autan prepare`; expected values recomputed from the contracts."""
 
+import hashlib
 import json
 import math
 import tomllib
@@ -8,9 +9,12 @@ from pathlib import Path
 from typing import Any
 
 import autan
+import autan.solver_input
 import jsonschema
 import pytest
+import rfc8785
 from autan.cli import json_schema, main
+from pydantic import ValidationError
 
 from tests.conftest import FIXTURES
 
@@ -43,8 +47,9 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     assert document["devices"] == {"kind": "cuda", "count": 8}
     assert document["deterministic"] is True
 
-    case = tomllib.loads(document["case"]["toml"])
-    assert autan.CaseSpec.from_document(case, autan.Location()).hash() == document["case"]["sha256"]
+    # The case hash is SHA-256 of the RFC 8785 form of the (fully defaulted) case document.
+    canonical = rfc8785.dumps(tomllib.loads(document["case"]["toml"]))
+    assert hashlib.sha256(canonical).hexdigest() == document["case"]["sha256"]
 
     temperature, mach, re_number, length = 288.15, 0.2, 5.49e6, 7.0
     r = R_UNIVERSAL / 0.0289647
@@ -124,12 +129,87 @@ def test_plan_errors_block_the_input(
     assert [d["code"] for d in out["diagnostics"]] == ["E0412"]
 
 
-def test_input_rejects_unknown_keys() -> None:
-    schema = json_schema("solver-input")
+def _valid(
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path], name: str, mesh: str
+) -> dict[str, Any]:
+    status, document = prepare(capsys, example(name), mesh)
+    assert status == 0
+    result: dict[str, Any] = document
+    return result
+
+
+def _set_boundary(document: dict[str, Any], **values: Any) -> None:
+    document["boundaries"][0].update(values)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d.update(extra=1),
+        lambda d: d.pop("schema"),
+        lambda d: d["time"].pop("kind"),
+        lambda d: d["monitors"][0].pop("kind"),
+        lambda d: _set_boundary(d, kind="inlet"),
+        lambda d: _set_boundary(d, static_pressure=1.0),
+        lambda d: d["physics"]["turbulence"].update(nu_tilde_ratio=None),
+        lambda d: d["physics"]["turbulence"].update(intensity=0.1),
+        lambda d: d.update(
+            time={"kind": "unsteady", "steps": 10, "dt": None, "cfl": None, "average_from": None}
+        ),
+        lambda d: d.update(
+            time={"kind": "unsteady", "steps": 10, "dt": 1e-3, "cfl": 1.0, "average_from": None}
+        ),
+        lambda d: d["physics"]["turbulence"].update(
+            model="wmles", wall_model="equilibrium", nu_tilde_ratio=None
+        ),
+    ],
+)
+def test_schema_and_reader_reject_the_same_documents(
+    edit: Callable[[dict[str, Any]], None],
+    capsys: pytest.CaptureFixture[str],
+    example: Callable[[str], Path],
+) -> None:
+    document = _valid(capsys, example, "crm_hl.py", "crm-hl.meshinfo.json")
+    validator = jsonschema.Draft202012Validator(json_schema("solver-input"))
+    validator.validate(document)
+    autan.solver_input.SolverInput.model_validate(document)
+    edit(document)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.Draft202012Validator(schema).validate(
-            {"schema": "autan.solver-input/1", "extra": 1}
-        )
+        validator.validate(document)
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(document)
+
+
+def test_each_zone_starts_in_its_own_medium(
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path]
+) -> None:
+    document = _valid(capsys, example, "heat_exchanger.py", "heat-exchanger.meshinfo.json")
+    initial = {z["zone"]: z["initial"] for z in document["cell_zones"]}
+    pressure, temperature = 101325.0, 300.0
+    rho = pressure / (R_UNIVERSAL / 0.0440095 * temperature)
+    mu = 1.370e-5 * (temperature / 273.15) ** 1.5 * (273.15 + 222.0) / (temperature + 222.0)
+    speed = 0.1 * math.sqrt(1.4 * R_UNIVERSAL / 0.0289647 * temperature)
+    k = 1.5 * (0.001 * speed) ** 2
+    assert initial["co2"]["density"] == pytest.approx(rho, rel=1e-12)
+    assert initial["co2"]["pressure"] == pytest.approx(pressure)
+    assert initial["co2"]["omega"] == pytest.approx(rho * k / (0.009 * mu), rel=1e-12)
+    assert initial["plate"] == {"kind": "solid", "temperature": temperature}
+
+
+def test_prepare_reports_plan_warnings_and_bad_arguments(
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path], tmp_path: Path
+) -> None:
+    case = example("crm_hl.py")
+    case.write_text(case.read_text() + 'case.boundary("fuselage").slip()\n')
+    argv = ["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]
+    assert main([*argv, "--json"]) == 0
+    warnings = json.loads(capsys.readouterr().err)
+    assert [w["code"] for w in warnings] == ["W0415"]
+    with pytest.raises(SystemExit) as exit_:
+        main([*argv, "--device-count", "0"])
+    assert exit_.value.code == 2
+    assert main([*argv, "--json", "--output", str(tmp_path)]) == 1
+    assert [d["code"] for d in json.loads(capsys.readouterr().out)["diagnostics"]] == ["E0806"]
 
 
 @pytest.mark.parametrize("name", ["case", "mesh-info", "results", "solver-input"])

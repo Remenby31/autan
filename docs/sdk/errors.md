@@ -563,3 +563,11 @@ Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
 `autan ui` needs the optional `autan-ui` package, which this installation lacks.
 
 Fix: Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).
+
+## E0806
+
+**Cannot write the output file** (error)
+
+The file given to `-o`/`--output` cannot be written: missing directory, a directory in its place, or no permission.
+
+Fix: Give a writable file path.

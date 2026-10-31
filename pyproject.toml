@@ -26,6 +26,7 @@ autan = "autan.cli:main"
 
 [dependency-groups]
 dev = [
+    "editables>=0.6",
     "hatchling>=1.33.0",
     "jsonschema>=4.26.0",
     "mypy>=1.15",

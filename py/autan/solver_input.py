@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import math
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from autan.errors import CaseError
 from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
@@ -31,6 +31,7 @@ from autan.schema import (
     SolidZone,
     Steady,
     Sutherland,
+    require_tags,
 )
 from autan.units import parse, si
 
@@ -51,6 +52,36 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# Values each boundary kind requires; every other value is null ("wall" may have temperature).
+BOUNDARY_VALUES: dict[str, frozenset[str]] = {
+    "wall": frozenset(),
+    "slip": frozenset(),
+    "symmetry": frozenset(),
+    "farfield": frozenset(),
+    "inlet": frozenset({"total_pressure", "total_temperature"}),
+    "velocity-inlet": frozenset({"velocity"}),
+    "outlet": frozenset({"static_pressure"}),
+}
+BOUNDARY_KEYS = (
+    "temperature",
+    "total_pressure",
+    "total_temperature",
+    "velocity",
+    "static_pressure",
+)
+# Turbulence parameters each (model, base) requires; every other parameter is null.
+TURBULENCE_VALUES: dict[tuple[str, str | None], frozenset[str]] = {
+    ("inviscid", None): frozenset(),
+    ("laminar", None): frozenset(),
+    ("sa", None): frozenset({"nu_tilde_ratio"}),
+    ("sst", None): frozenset({"intensity", "viscosity_ratio"}),
+    ("ddes", "sa"): frozenset({"base", "nu_tilde_ratio"}),
+    ("ddes", "sst"): frozenset({"base", "intensity", "viscosity_ratio"}),
+    ("wmles", None): frozenset({"wall_model"}),
+}
+TURBULENCE_KEYS = ("base", "wall_model", "nu_tilde_ratio", "intensity", "viscosity_ratio")
+
+
 class CaseRef(_Strict):
     name: str
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -63,19 +94,19 @@ class MeshRef(_Strict):
 
 
 class SutherlandLaw(_Strict):
-    law: Literal["sutherland"] = "sutherland"
+    law: Literal["sutherland"]
     mu_ref: Positive
     t_ref: Positive
     s: Positive
 
 
 class ConstantLaw(_Strict):
-    law: Literal["constant"] = "constant"
+    law: Literal["constant"]
     mu: Positive
 
 
 class Gas(_Strict):
-    kind: Literal["ideal-gas"] = "ideal-gas"
+    kind: Literal["ideal-gas"]
     name: str
     gas_constant: Positive
     gamma: Annotated[float, Field(gt=1)]
@@ -84,14 +115,14 @@ class Gas(_Strict):
 
 
 class Liquid(_Strict):
-    kind: Literal["constant-density-fluid"] = "constant-density-fluid"
+    kind: Literal["constant-density-fluid"]
     name: str
     density: Positive
     viscosity: Positive
 
 
 class SolidMedium(_Strict):
-    kind: Literal["solid"] = "solid"
+    kind: Literal["solid"]
     name: str
     density: Positive
     specific_heat: Positive
@@ -108,6 +139,15 @@ class TurbulenceInput(_Strict):
     nu_tilde_ratio: Positive | None
     intensity: Positive | None
     viscosity_ratio: Positive | None
+
+    @model_validator(mode="after")
+    def _values_match_model(self) -> Self:
+        expected = TURBULENCE_VALUES.get((self.model, self.base))
+        given = {k for k in TURBULENCE_KEYS if getattr(self, k) is not None}
+        if expected is None or given != expected:
+            message = f"turbulence {self.model!r} takes exactly {sorted(expected or ())}"
+            raise ValueError(message)
+        return self
 
 
 class PhysicsInput(_Strict):
@@ -141,28 +181,72 @@ class BoundaryInput(_Strict):
     velocity: Positive | None
     static_pressure: Positive | None
 
+    @model_validator(mode="after")
+    def _values_match_kind(self) -> Self:
+        required = BOUNDARY_VALUES[self.kind]
+        given = {k for k in BOUNDARY_KEYS if getattr(self, k) is not None}
+        allowed = required | ({"temperature"} if self.kind == "wall" else set())
+        if not required <= given <= allowed:
+            message = f"boundary {self.kind!r} takes {sorted(required)} (wall: temperature)"
+            raise ValueError(message)
+        return self
+
+
+class FluidInitial(_Strict):
+    kind: Literal["fluid"]
+    density: Positive
+    pressure: Number
+    temperature: Positive | None
+    velocity: Vector
+    nu_tilde: Positive | None
+    k: Positive | None
+    omega: Positive | None
+
+
+class SolidInitial(_Strict):
+    kind: Literal["solid"]
+    temperature: Positive
+
 
 class CellZoneInput(_Strict):
     zone: str
     medium: MediumInput
+    initial: Annotated[FluidInitial | SolidInitial, Field(discriminator="kind")]
+
+    @model_validator(mode="after")
+    def _initial_matches_medium(self) -> Self:
+        if (self.medium.kind == "solid") != (self.initial.kind == "solid"):
+            message = "a solid zone has a solid initial state, a fluid zone a fluid one"
+            raise ValueError(message)
+        return self
 
 
 class SteadyInput(_Strict):
-    kind: Literal["steady"] = "steady"
+    kind: Literal["steady"]
     max_iterations: Annotated[int, Field(ge=1)]
     residual_orders: Positive
 
 
 class UnsteadyInput(_Strict):
-    kind: Literal["unsteady"] = "unsteady"
+    kind: Literal["unsteady"]
     steps: Annotated[int, Field(ge=1)]
     dt: Positive | None
     cfl: Positive | None
     average_from: Annotated[int, Field(ge=0)] | None
 
+    @model_validator(mode="after")
+    def _one_step_rule(self) -> Self:
+        if (self.dt is None) == (self.cfl is None):
+            message = "give exactly one of dt or cfl"
+            raise ValueError(message)
+        if self.average_from is not None and self.average_from >= self.steps:
+            message = "average_from must be < steps"
+            raise ValueError(message)
+        return self
+
 
 class ForcesInput(_Strict):
-    kind: Literal["forces"] = "forces"
+    kind: Literal["forces"]
     name: str
     every: Annotated[int, Field(ge=1)]
     zones: tuple[str, ...]
@@ -174,7 +258,7 @@ class ForcesInput(_Strict):
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
-    schema_: Literal["autan.solver-input/1"] = Field(default="autan.solver-input/1", alias="schema")
+    schema_: Literal["autan.solver-input/1"] = Field(alias="schema")
     case: CaseRef
     mesh: MeshRef
     precision: Literal["fp32+acc64", "fp64"]
@@ -188,6 +272,30 @@ class SolverInput(_Strict):
     monitors: tuple[ForcesInput, ...]
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        turbulence, fs = self.physics.turbulence, self.freestream
+        if turbulence.model in ("ddes", "wmles") and self.time.kind != "unsteady":
+            message = f"{turbulence.model} needs an unsteady time"
+            raise ValueError(message)
+        sa = turbulence.nu_tilde_ratio is not None
+        sst = turbulence.intensity is not None
+        if (fs.nu_tilde is not None) != sa or (fs.k is not None, fs.omega is not None) != (
+            sst,
+            sst,
+        ):
+            message = "freestream turbulence values do not match the turbulence model"
+            raise ValueError(message)
+        compressible = self.physics.kind == "compressible"
+        if (fs.temperature is not None) != compressible:
+            message = "freestream temperature is given exactly for compressible physics"
+            raise ValueError(message)
+        fluid = "ideal-gas" if compressible else "constant-density-fluid"
+        if any(z.medium.kind not in (fluid, "solid") for z in self.cell_zones):
+            message = f"{self.physics.kind} fluid zones need a {fluid} medium"
+            raise ValueError(message)
+        return self
 
     def document(self) -> dict[str, Any]:
         return self.model_dump(mode="json", by_alias=True)
@@ -242,7 +350,7 @@ def freestream_state(spec: CaseSpec) -> FreestreamInput:
         density = si(physics.fluid.density, "kg / m**3")
         mu = si(physics.fluid.viscosity, "Pa * s")
         speed = si(fs.velocity, "m / s")
-    turbulence = _turbulence(spec)
+    turbulence = turbulence_input(spec)
     nu_tilde = k = omega = None
     if turbulence.nu_tilde_ratio is not None:
         nu_tilde = turbulence.nu_tilde_ratio * mu / density
@@ -267,7 +375,7 @@ def freestream_state(spec: CaseSpec) -> FreestreamInput:
     )
 
 
-def _turbulence(spec: CaseSpec) -> TurbulenceInput:
+def turbulence_input(spec: CaseSpec) -> TurbulenceInput:
     turbulence = spec.physics.turbulence
     base = turbulence.base if isinstance(turbulence, DDES) else turbulence
     return TurbulenceInput(
@@ -280,10 +388,11 @@ def _turbulence(spec: CaseSpec) -> TurbulenceInput:
     )
 
 
-def _medium(medium: Fluid | SolidZone) -> MediumInput:
+def medium_input(medium: Fluid | SolidZone) -> MediumInput:
     material = medium.material
     if isinstance(material, Solid):
         return SolidMedium(
+            kind="solid",
             name=material.name,
             density=si(material.density, "kg / m**3"),
             specific_heat=si(material.specific_heat, "J / kg / K"),
@@ -291,22 +400,79 @@ def _medium(medium: Fluid | SolidZone) -> MediumInput:
         )
     if isinstance(material, ConstantDensityFluid):
         return Liquid(
+            kind="constant-density-fluid",
             name=material.name,
             density=si(material.density, "kg / m**3"),
             viscosity=si(material.viscosity, "Pa * s"),
         )
     law = material.viscosity
     viscosity_law: SutherlandLaw | ConstantLaw = (
-        SutherlandLaw(mu_ref=si(law.mu_ref, "Pa * s"), t_ref=si(law.t_ref, "K"), s=si(law.s, "K"))
+        SutherlandLaw(
+            law="sutherland",
+            mu_ref=si(law.mu_ref, "Pa * s"),
+            t_ref=si(law.t_ref, "K"),
+            s=si(law.s, "K"),
+        )
         if isinstance(law, Sutherland)
-        else ConstantLaw(mu=si(law.mu, "Pa * s"))
+        else ConstantLaw(law="constant", mu=si(law.mu, "Pa * s"))
     )
     return Gas(
+        kind="ideal-gas",
         name=material.name,
         gas_constant=gas_constant(material),
         gamma=material.gamma,
         prandtl=material.prandtl,
         viscosity=viscosity_law,
+    )
+
+
+def zone_viscosity(medium: Gas | Liquid, temperature: float | None) -> float:
+    """Dynamic viscosity of a resolved fluid medium, in Pa s."""
+    if isinstance(medium, Liquid):
+        return medium.viscosity
+    assert temperature is not None
+    law = medium.viscosity
+    if isinstance(law, ConstantLaw):
+        return law.mu
+    # Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S)
+    ratio = math.pow(temperature / law.t_ref, 1.5)
+    return law.mu_ref * ratio * (law.t_ref + law.s) / (temperature + law.s)
+
+
+def initial_state(
+    medium: MediumInput, freestream: FreestreamInput, turbulence: TurbulenceInput
+) -> FluidInitial | SolidInitial:
+    """Initial state of a cell zone: the freestream pressure, temperature and velocity in
+    the zone's own medium (solver-input.md#initial-state)."""
+    if isinstance(medium, SolidMedium):
+        assert freestream.temperature is not None
+        return SolidInitial(kind="solid", temperature=freestream.temperature)
+    if isinstance(medium, Gas):
+        assert freestream.temperature is not None
+        density = freestream.pressure / (medium.gas_constant * freestream.temperature)
+    else:
+        density = medium.density
+    nu = zone_viscosity(medium, freestream.temperature) / density
+    k = (
+        1.5 * (turbulence.intensity * freestream.speed) ** 2
+        if turbulence.intensity is not None
+        else None
+    )
+    return FluidInitial(
+        kind="fluid",
+        density=density,
+        pressure=freestream.pressure,
+        temperature=freestream.temperature,
+        velocity=freestream.velocity,
+        nu_tilde=(
+            turbulence.nu_tilde_ratio * nu if turbulence.nu_tilde_ratio is not None else None
+        ),
+        k=k,
+        omega=(
+            k / (turbulence.viscosity_ratio * nu)
+            if k is not None and turbulence.viscosity_ratio is not None
+            else None
+        ),
     )
 
 
@@ -336,13 +502,18 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
                 static_pressure=_si(condition, "static_pressure", "Pa"),
             )
         )
+    freestream, turbulence = freestream_state(spec), turbulence_input(spec)
+    media = [(z.zone, medium_input(_MEDIUM.validate_python(z.medium))) for z in plan.cell_zones]
     cell_zones = tuple(
-        CellZoneInput(zone=z.zone, medium=_medium(_MEDIUM.validate_python(z.medium)))
-        for z in plan.cell_zones
+        CellZoneInput(
+            zone=zone, medium=medium, initial=initial_state(medium, freestream, turbulence)
+        )
+        for zone, medium in media
     )
     zone_names = [b.zone for b in plan.boundaries]
     monitors = tuple(
         ForcesInput(
+            kind="forces",
             name=m.name,
             every=m.every,
             zones=tuple(n for n in zone_names if fnmatchcase(n, m.surfaces)),
@@ -362,10 +533,13 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
     )
     time: SteadyInput | UnsteadyInput = (
         SteadyInput(
-            max_iterations=spec.time.max_iterations, residual_orders=spec.time.residual_orders
+            kind="steady",
+            max_iterations=spec.time.max_iterations,
+            residual_orders=spec.time.residual_orders,
         )
         if isinstance(spec.time, Steady)
         else UnsteadyInput(
+            kind="unsteady",
             steps=spec.time.steps,
             dt=si(spec.time.dt, "s") if spec.time.dt is not None else None,
             cfl=spec.time.cfl,
@@ -373,15 +547,74 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
         )
     )
     return SolverInput(
+        schema_=SCHEMA_ID,
         case=CaseRef(name=spec.name, sha256=spec.hash(), toml=case.to_toml()),
         mesh=MeshRef(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
         precision=spec.physics.precision,
         deterministic=deterministic,
         devices=devices,
-        physics=PhysicsInput(kind=spec.physics.kind, turbulence=_turbulence(spec)),
-        freestream=freestream_state(spec),
+        physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
+        freestream=freestream,
         boundaries=tuple(boundaries),
         cell_zones=cell_zones,
         time=time,
         monitors=monitors,
     )
+
+
+def json_schema() -> dict[str, Any]:
+    """The published JSON Schema of ``autan.solver-input/1``, with the value rules of
+    BOUNDARY_VALUES and TURBULENCE_VALUES and the cross-field rules of the contract."""
+    schema = SolverInput.model_json_schema(by_alias=True, mode="validation")
+    require_tags(schema)
+    defs = schema["$defs"]
+
+    def exactly(
+        keys: frozenset[str], all_keys: tuple[str, ...], optional: frozenset[str]
+    ) -> dict[str, Any]:
+        return {
+            "properties": {
+                k: ({"not": {"type": "null"}} if k in keys else {"type": "null"})
+                for k in all_keys
+                if k not in optional
+            }
+        }
+
+    defs["BoundaryInput"]["allOf"] = [
+        {
+            "if": {"properties": {"kind": {"const": kind}}},
+            "then": exactly(
+                values, BOUNDARY_KEYS, frozenset({"temperature"}) if kind == "wall" else frozenset()
+            ),
+        }
+        for kind, values in BOUNDARY_VALUES.items()
+    ]
+    defs["TurbulenceInput"]["anyOf"] = [
+        {
+            "properties": {
+                "model": {"const": model},
+                "base": {"type": "null"} if base is None else {"const": base},
+                **exactly(values - {"base"}, TURBULENCE_KEYS[1:], frozenset())["properties"],
+            }
+        }
+        for (model, base), values in TURBULENCE_VALUES.items()
+    ]
+    defs["UnsteadyInput"]["oneOf"] = [
+        {"properties": {"dt": {"type": "number"}, "cfl": {"type": "null"}}},
+        {"properties": {"dt": {"type": "null"}, "cfl": {"type": "number"}}},
+    ]
+    schema["allOf"] = [
+        {
+            "if": {
+                "properties": {
+                    "physics": {
+                        "properties": {
+                            "turbulence": {"properties": {"model": {"enum": ["ddes", "wmles"]}}}
+                        }
+                    }
+                }
+            },
+            "then": {"properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}}},
+        }
+    ]
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}

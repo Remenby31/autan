@@ -483,6 +483,13 @@ _CODES = [
         "`autan ui` needs the optional `autan-ui` package, which this installation lacks.",
         "Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).",
     ),
+    Code(
+        "E0806",
+        "Cannot write the output file",
+        "The file given to `-o`/`--output` cannot be written: missing directory, a directory "
+        "in its place, or no permission.",
+        "Give a writable file path.",
+    ),
 ]
 
 REGISTRY: dict[str, Code] = {code.code: code for code in _CODES}
