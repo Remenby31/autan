@@ -7,12 +7,13 @@ from typing import TYPE_CHECKING
 from autan_codegen import model
 from autan_codegen.emit_cpp import emit_common_header
 from autan_codegen.emit_cpu import emit_cpu_header
+from autan_codegen.emit_gpu import emit_gpu_header
 from autan_codegen.errors import Code, CodegenError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-BACKENDS = ("cpu",)
+BACKENDS = ("cpu", "gpu")
 
 
 def generate(
@@ -26,6 +27,8 @@ def generate(
     files = {f"{m.name}.hpp": emit_common_header(m, line_directives)}
     if "cpu" in backends:
         files[f"{m.name}_cpu.hpp"] = emit_cpu_header(m)
+    if "gpu" in backends:
+        files[f"{m.name}_gpu.cuh"] = emit_gpu_header(m)
     out.mkdir(parents=True, exist_ok=True)
     written = []
     for name, text in files.items():

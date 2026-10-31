@@ -13,6 +13,11 @@ namespace autan::kernels {
 struct PackedGeometry {
   std::vector<double> face_area;      ///< 3 x n_faces, owner -> neighbour
   std::vector<double> face_centroid;  ///< 3 x n_faces
+  std::vector<double> face_normal;    ///< 3 x n_faces, unit
+  std::vector<double> face_area_magnitude;
+  std::vector<double> face_r_left;  ///< 3 x n_faces: face centroid - owner centroid
+  std::vector<double>
+      face_r_right;  ///< 3 x n_faces: face centroid - neighbour centroid, 0 on boundary
   /// 9 x n_faces: sum over the face's fan triangles t of (c_t - x_f) (x) S_t. Zero on a planar
   /// face; with it the flux of a linear field u through any face is u(x_f) S_f + M_f^T grad(u).
   std::vector<double> face_moment;

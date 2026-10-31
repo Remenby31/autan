@@ -12,60 +12,24 @@
 #include <string_view>
 #include <vector>
 
+#include "advection_cpu.hpp"
 #include "advection_diffusion_cpu.hpp"
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/io/read_mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "gradients_cpu.hpp"
+#include "spike.hpp"
 
 namespace {
 
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
-
-struct SpikeMesh {
-  autan::Mesh mesh;
-  autan::Geometry geometry;
-  autan::kernels::PackedGeometry packed;
-  autan::kernels::Topology topo{};
-};
-
-int fail(char* err, std::size_t len, const std::string& code, const char* what) {
-  if (err != nullptr && len > 0) {
-    const std::string s = code + ": " + what;
-    std::strncpy(err, s.c_str(), len - 1);
-    err[len - 1] = '\0';
-  }
-  return 1;
-}
-
-template <class F>
-int guarded(char* err, std::size_t len, F&& body) {
-  try {
-    body();
-    return 0;
-  } catch (const autan::Error& e) {
-    return fail(err, len, autan::error_code_string(e.code()), e.what());
-  } catch (const std::exception& e) {
-    return fail(err, len, "E1100", e.what());
-  }
-}
-
-/// Geometry arrays converted to the policy's Geom storage type.
-template <class P>
-struct GeomCopy {
-  using G = typename P::geom;
-  std::vector<G> face_area, face_centroid, face_moment, cell_centroid, cell_volume, lsq_weight;
-  explicit GeomCopy(const autan::kernels::PackedGeometry& g)
-      : face_area(autan::kernels::converted<G>(g.face_area)),
-        face_centroid(autan::kernels::converted<G>(g.face_centroid)),
-        face_moment(autan::kernels::converted<G>(g.face_moment)),
-        cell_centroid(autan::kernels::converted<G>(g.cell_centroid)),
-        cell_volume(autan::kernels::converted<G>(g.cell_volume)),
-        lsq_weight(autan::kernels::converted<G>(g.lsq_weight)) {}
-};
+using autan::spike::GeomCopy;
+using autan::spike::guarded;
+using autan::spike::SpikeMesh;
 
 template <class T>
 std::vector<T> copy_in(const double* p, std::size_t n) {
@@ -167,28 +131,42 @@ void gradients(const SpikeMesh& m, const char* method, const double* q, const do
   }
 }
 
+template <class P>
+void advection(const SpikeMesh& m, const double* q, const double* grad, const double* velocity,
+               double* res) {
+  namespace av = autan::kernels::advection;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<typename P::state>(q, nc);
+  auto gs = copy_in<typename P::grad>(grad, 3 * nc);
+  std::vector<typename P::residual> rs(nc, typename P::residual(0));
+  av::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.grad = gs.data();
+  d.res = rs.data();
+  d.face_r_left = g.face_r_left.data();
+  d.face_r_right = g.face_r_right.data();
+  d.face_normal = g.face_normal.data();
+  d.face_area_magnitude = g.face_area_magnitude.data();
+  for (int i = 0; i < 3; ++i) {
+    d.velocity[i] = typename P::param(velocity[i]);
+  }
+  av::cpu::residual(d);
+  copy_out(rs, res);
+}
+
 }  // namespace autan::spike
 
 namespace {
 
 template <class F>
 int dispatch(const char* policy, char* err, std::size_t len, F&& f) {
-  const std::string_view p(policy);
-  return guarded(err, len, [&] {
-    if (p == "fp64") {
-      f(autan::kernels::fp64{});
-    } else if (p == "fp32+acc64") {
-      f(autan::kernels::fp32_acc64{});
-    } else if (p == "fp32") {
-      f(autan::kernels::fp32{});
-    } else {
-      throw std::invalid_argument("unknown precision policy");
-    }
-  });
+  return guarded(err, len, [&] { autan::spike::with_policy(policy, f); });
 }
 
-std::unique_ptr<SpikeMesh> finish(autan::MeshInput in) {
-  auto m = std::make_unique<SpikeMesh>(SpikeMesh{autan::assemble(std::move(in)), {}, {}, {}});
+std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
+  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}});
   m->geometry = autan::compute_geometry(m->mesh);
   m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
   m->topo = autan::kernels::topology(m->mesh.view());
@@ -228,8 +206,13 @@ int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::i
                      {"boundary", "", autan::BcKind::unspecified, true, {}}};
     in.cell_zones = {{"fluid", "", autan::CellKind::unspecified, {}}};
     in.source = {"memory", ""};
-    *out = finish(std::move(in)).release();
+    *out = finish(autan::assemble(std::move(in))).release();
   });
+}
+
+/// Reads a mesh file through the core readers (autan::io::read_mesh).
+int autan_spike_mesh_read(const char* path, void** out, char* err, std::size_t err_len) {
+  return guarded(err, err_len, [&] { *out = finish(autan::io::read_mesh(path)).release(); });
 }
 
 void autan_spike_mesh_free(void* mesh) { delete static_cast<SpikeMesh*>(mesh); }
@@ -282,6 +265,14 @@ int autan_spike_gradients(const void* mesh, const char* policy, const char* meth
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len, [&](auto p) {
     autan::spike::gradients<decltype(p)>(*m, method, q, q_b, iterations, grad, qmin, qmax);
+  });
+}
+
+int autan_spike_advection(const void* mesh, const char* policy, const double* q, const double* grad,
+                          const double* velocity, double* res, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::advection<decltype(p)>(*m, q, grad, velocity, res);
   });
 }
 

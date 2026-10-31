@@ -148,3 +148,89 @@ def gradients(
     )  # fmt: skip
     _check(rc, err)
     return grad.reshape(3, -1).T, qmin, qmax
+
+
+def advection(m: Mesh, policy: str, q: F64, grad: F64, velocity: tuple[float, float, float]) -> F64:
+    """Residual of the section 3.3 upwind face loop on the host."""
+    err = ctypes.create_string_buffer(512)
+    res = np.zeros(m.n_cells)
+    vel = np.array(velocity, dtype=np.float64)
+    q, g = np.ascontiguousarray(q, dtype=np.float64), soa(grad)
+    rc = lib().autan_spike_advection(
+        m.handle, policy.encode(), _p(q), _p(g), _p(vel), _p(res), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    return res
+
+
+STRATEGIES = ("atomic", "warp-aggregated", "coloured", "store-gather", "gather-recompute")
+DETERMINISTIC = ("coloured", "store-gather", "gather-recompute")
+
+
+def gpu_advdiff_residual(
+    m: Mesh,
+    policy: str,
+    strategy: str,
+    block: int,
+    q: F64,
+    q_b: F64,
+    source: F64,
+    velocity: tuple[float, float, float],
+    nu: float,
+) -> tuple[F64, F64]:
+    err = ctypes.create_string_buffer(512)
+    res = np.zeros(m.n_cells)
+    grad = np.zeros(3 * m.n_cells)
+    vel = np.array(velocity, dtype=np.float64)
+    q, q_b, source = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b, source))
+    rc = lib().autan_spike_gpu_advdiff_residual(
+        m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(q_b), _p(source),
+        _p(vel), ctypes.c_double(nu), _p(res), _p(grad), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return res, grad.reshape(3, -1).T
+
+
+def gpu_gradients(
+    m: Mesh,
+    policy: str,
+    method: str,
+    strategy: str,
+    block: int,
+    q: F64,
+    q_b: F64,
+    iterations: int = 1,
+    grad0: F64 | None = None,
+) -> tuple[F64, F64, F64]:
+    err = ctypes.create_string_buffer(512)
+    grad = np.zeros(3 * m.n_cells) if grad0 is None else soa(grad0)
+    qmin = np.zeros(m.n_cells)
+    qmax = np.zeros(m.n_cells)
+    q, q_b = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b))
+    rc = lib().autan_spike_gpu_gradients(
+        m.handle, policy.encode(), method.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(q_b),
+        ctypes.c_int(iterations), _p(grad), _p(qmin), _p(qmax), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return grad.reshape(3, -1).T, qmin, qmax
+
+
+def gpu_advection(
+    m: Mesh,
+    policy: str,
+    strategy: str,
+    block: int,
+    q: F64,
+    grad: F64,
+    velocity: tuple[float, float, float],
+) -> F64:
+    err = ctypes.create_string_buffer(512)
+    res = np.zeros(m.n_cells)
+    vel = np.array(velocity, dtype=np.float64)
+    q, g = np.ascontiguousarray(q, dtype=np.float64), soa(grad)
+    rc = lib().autan_spike_gpu_advection(
+        m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(g), _p(vel), _p(res),
+        err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return res

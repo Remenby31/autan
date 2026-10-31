@@ -146,6 +146,11 @@ class geometry:
     # Sum over the face's fan triangles of (triangle centroid - face centroid) (x) area vector:
     # zero on planar faces, makes the flux of a linear field through a warped face exact.
     face_moment = Dataset("face_moment", MeshSet.FACES, Geom.Mat3, geometry=True)
+    face_normal = Dataset("face_normal", MeshSet.FACES, Geom.Vec3, geometry=True)
+    face_area_magnitude = Dataset("face_area_magnitude", MeshSet.FACES, Geom.scalar, geometry=True)
+    # Face centroid minus owner (left) and neighbour (right) centroid; right is zero on boundaries.
+    face_r_left = Dataset("face_r_left", MeshSet.FACES, Geom.Vec3, geometry=True)
+    face_r_right = Dataset("face_r_right", MeshSet.FACES, Geom.Vec3, geometry=True)
     cell_centroid = Dataset("cell_centroid", MeshSet.CELLS, Geom.Vec3, geometry=True)
     cell_volume = Dataset("cell_volume", MeshSet.CELLS, Geom.scalar, geometry=True)
     lsq_weight = Dataset("lsq_weight", MeshSet.INCIDENCES, Geom.Vec3, geometry=True)

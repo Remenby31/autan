@@ -63,6 +63,25 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {
     p.cell_centroid[nc + c] = g.cell_centroid_y[c];
     p.cell_centroid[2 * nc + c] = g.cell_centroid_z[c];
   }
+  p.face_area_magnitude = g.face_area;
+  p.face_normal.resize(3 * nf);
+  p.face_r_left.resize(3 * nf);
+  p.face_r_right.assign(3 * nf, 0.0);
+  {
+    const auto own = mesh.owner();
+    const auto nei = mesh.neighbour();
+    for (std::size_t f = 0; f < nf; ++f) {
+      const auto l = static_cast<std::size_t>(own[f]);
+      for (std::size_t u = 0; u < 3; ++u) {
+        p.face_normal[u * nf + f] = p.face_area[u * nf + f] / g.face_area[f];
+        p.face_r_left[u * nf + f] = p.face_centroid[u * nf + f] - p.cell_centroid[u * nc + l];
+        if (f < nei.size()) {
+          const auto r = static_cast<std::size_t>(nei[f]);
+          p.face_r_right[u * nf + f] = p.face_centroid[u * nf + f] - p.cell_centroid[u * nc + r];
+        }
+      }
+    }
+  }
 
   // Face moments over the same fan as the core's geometry (triangles (m, p_i, p_i+1)).
   const auto x = mesh.x(), y = mesh.y(), z = mesh.z();

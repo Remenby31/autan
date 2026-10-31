@@ -26,7 +26,10 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["spike"]
 addopts = ["--strict-markers", "-ra"]
-markers = ["slow: takes more than a few seconds"]
+markers = [
+    "slow: takes more than a few seconds",
+    "gpu: needs libautan_spike_gpu and a CUDA device",
+]
 
 [tool.mypy]
 strict = true
