@@ -1,5 +1,6 @@
 #include "cfd/core/geometry.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -107,27 +108,33 @@ Geometry compute_geometry(const Mesh& mesh) {
     }
     apex = (1.0 / static_cast<double>(faces.size())) * apex;
 
-    double volume = 0.0;
+    // Work in units of the cell size so that volume moments neither overflow
+    // nor underflow at extreme length scales.
+    double length = 0.0;
+    for (const index_t f : faces) length = std::max(length, std::sqrt(g.face_area[to_size(f)]));
+    const double inv = 1.0 / length;
+    double scaled_volume = 0.0;
     Vec3 moment{0.0, 0.0, 0.0};
     for (const index_t f : faces) {
       const double sign = mesh.owner()[to_size(f)] == cell ? 1.0 : -1.0;
       const auto nodes = mesh.face_nodes(f);
       const std::size_t n = nodes.size();
-      const Vec3 m = node_mean(mesh, nodes) - apex;
+      const Vec3 m = inv * (node_mean(mesh, nodes) - apex);
       for (std::size_t i = 0; i < n; ++i) {
-        const Vec3 a = point(mesh, nodes[i]) - apex;
-        const Vec3 b = point(mesh, nodes[(i + 1) % n]) - apex;
+        const Vec3 a = inv * (point(mesh, nodes[i]) - apex);
+        const Vec3 b = inv * (point(mesh, nodes[(i + 1) % n]) - apex);
         // Tetrahedron (apex, m, a, b): V = (1/3) A_tri . (m - apex).
         const double v = sign * dot(0.5 * cross(a - m, b - m), m) / 3.0;
-        volume += v;
+        scaled_volume += v;
         moment = moment + (v / 4.0) * (m + a + b);
       }
     }
-    if (!(volume > 0.0) || !std::isfinite(volume)) {
+    const double volume = scaled_volume * length * length * length;
+    if (!(scaled_volume > 0.0) || !std::isfinite(volume) || !(volume > 0.0)) {
       throw Error(ErrorCode::geometry_non_positive_volume,
-                  "cell " + std::to_string(c) + " has non-positive volume");
+                  "cell " + std::to_string(c) + " has non-positive or non-finite volume");
     }
-    const Vec3 centroid = apex + (1.0 / volume) * moment;
+    const Vec3 centroid = apex + (length / scaled_volume) * moment;
     g.cell_volume[c] = volume;
     g.cell_centroid_x[c] = centroid.x;
     g.cell_centroid_y[c] = centroid.y;

@@ -264,13 +264,17 @@ TEST_CASE("Face centroids and area vectors integrate linear fields exactly on pl
 
 TEST_CASE("Geometry holds at extreme length scales", "[geometry]") {
   const double scale = GENERATE(1e-90, 1e80);
+  const auto shape = GENERATE(cfd::CellShape::tetra, cfd::CellShape::pyramid, cfd::CellShape::prism,
+                              cfd::CellShape::hexa);
   CAPTURE(scale);
   const std::array<std::array<double, 3>, 3> a{{{scale, 0, 0}, {0, scale, 0}, {0, 0, scale}}};
-  const auto ref = cfd::test::affine_cell(cfd::CellShape::hexa, a, {0, 0, 0});
+  const auto ref = cfd::test::affine_cell(shape, a, {0, 0, 0});
   const cfd::Mesh mesh = cfd::assemble(cfd::to_face_based(ref.mesh));
   const cfd::Geometry g = cfd::compute_geometry(mesh);
   CHECK_THAT(g.cell_volume[0], WithinRel(ref.volume, 1e-14));
-  CHECK_THAT(g.face_area[0], WithinRel(scale * scale, 1e-14));
+  CHECK_THAT(g.cell_centroid_x[0], WithinRel(ref.centroid[0], 1e-14));
+  CHECK_THAT(g.cell_centroid_y[0], WithinRel(ref.centroid[1], 1e-14));
+  CHECK_THAT(g.cell_centroid_z[0], WithinRel(ref.centroid[2], 1e-14));
 }
 
 TEST_CASE("Closure of a geometry computed for another mesh is rejected", "[geometry]") {

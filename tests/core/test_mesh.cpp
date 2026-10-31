@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -270,10 +271,12 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto cw = cfd::test::affine_cell(cfd::CellShape::tetra, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}},
                                      {0, 0, 0})
                   .mesh;
+    auto overflow = cw;
     cw.face_node_offsets[1] = 1000;
-    require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)cfd::to_face_based(cw); });
-    cw.face_node_offsets.back() = 1000;
     require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)cfd::to_face_based(cw); });
+    overflow.face_node_offsets[1] = std::numeric_limits<offset_t>::max();
+    overflow.face_node_offsets[2] = -6;
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)cfd::to_face_based(overflow); });
   }
   SECTION("E0102 labelled face with an invalid zone") {
     auto cw = cfd::test::box(1, cfd::test::BoxFill::hexa, 0.0, false);

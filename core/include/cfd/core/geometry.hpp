@@ -43,8 +43,9 @@ Geometry compute_geometry(const Mesh& mesh);
 [[nodiscard]] GeometryView view(const Geometry& geometry) noexcept;
 
 /// Closure error |sum_f S_f| / sum_f |S_f| of each owned cell, with outward
-/// area vectors; zero for a closed cell up to round-off. Throws E0101 if
-/// `geometry` was not computed for `mesh`.
+/// area vectors; zero for a closed cell up to round-off. `geometry` must come
+/// from compute_geometry(mesh); a geometry whose sizes do not match throws
+/// E0101.
 std::vector<double> cell_closure_error(const Mesh& mesh, const Geometry& geometry);
 
 }  // namespace cfd

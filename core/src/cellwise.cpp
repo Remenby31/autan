@@ -93,11 +93,13 @@ void check_faces(std::span<const offset_t> offsets, std::span<const index_t> nod
     fail(ErrorCode::mesh_inconsistent_sizes,
          std::string(what) + " offsets must start at 0 and end at the node count");
   }
+  if (std::adjacent_find(offsets.begin(), offsets.end(), std::greater<>()) != offsets.end()) {
+    fail(ErrorCode::mesh_inconsistent_sizes, std::string(what) + " offsets decrease");
+  }
   for (std::size_t f = 0; f + 1 < offsets.size(); ++f) {
     if (offsets[f + 1] - offsets[f] < 3) {
       fail(ErrorCode::mesh_face_too_few_nodes,
-           std::string(what) + " " + std::to_string(f) +
-               " has fewer than 3 nodes (or decreasing offsets)");
+           std::string(what) + " " + std::to_string(f) + " has fewer than 3 nodes");
     }
   }
   for (const index_t p : nodes) {
