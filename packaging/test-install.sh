@@ -34,7 +34,7 @@ installed=$("$bin/autan" version --json | sed -n 's/.*"autan": "\([^"]*\)".*/\1/
 
 # The probe is not a dependency of autan yet: install it with the uv that install.sh fetched.
 uv=$(ls "${XDG_DATA_HOME:-$HOME/.local/share}"/autan/uv-*/uv)
-probe=$(ls "$repo"/wheelhouse/autan_probe-*.whl | head -n1 | xargs basename | cut -d- -f2)
+probe=$(basename "$(ls "$repo"/wheelhouse/autan_probe-*.whl | head -n1)" | cut -d- -f2)
 "$uv" tool install --quiet --python 3.13 --find-links "$repo/wheelhouse" "autan-probe==$probe"
 if [ "${REQUIRE_GPU:-0}" = 1 ]; then
   "$bin/autan-probe" --require-gpu
