@@ -10,6 +10,8 @@ from typing import Any
 import autan
 from autan.errors import CaseError
 
+from autan_ui.summary import Summaries
+
 log = logging.getLogger(__name__)
 
 RUN_ID = re.compile(r"run-\d{8}T\d{6}Z-[0-9a-f]{8}")
@@ -32,18 +34,12 @@ CHECKED_FILES = ("run.json", "case.toml", "mesh-info.json", "solution.cgns")
 class Snapshot:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejected: dict[str, str] = field(default_factory=dict)
-    progress: dict[str, int] = field(default_factory=dict)
+    summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def document(self) -> dict[str, Any]:
         runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
         rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
-        return {"runs": runs, "rejected": rejected, "progress": self.progress}
-
-
-@dataclass(frozen=True)
-class HistoryChunk:
-    records: list[dict[str, Any]]
-    offset: int
+        return {"runs": runs, "rejected": rejected, "summaries": self.summaries}
 
 
 class Registry:
@@ -56,6 +52,7 @@ class Registry:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self._checked: dict[str, tuple[tuple[Any, ...], dict[str, Any] | str]] = {}
+        self._summaries = Summaries()
         self._lock = threading.Lock()
 
     def run_dir(self, run_id: str) -> Path:
@@ -82,12 +79,14 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
-                        if outcome["status"] == "running":
-                            last = last_iteration(child)
-                            if last is not None:
-                                snapshot.progress[child.name] = last
-            for gone in self._checked.keys() - names:
-                del self._checked[gone]
+                        live = outcome["status"] == "running"
+                        summary = self._summaries.update(child, live=live)
+                        if summary is not None:
+                            snapshot.summaries[child.name] = summary
+            gone = self._checked.keys() - names
+            for name in gone:
+                del self._checked[name]
+            self._summaries.forget(gone)
         return snapshot
 
     def _check(self, directory: Path) -> dict[str, Any] | str:
@@ -134,40 +133,3 @@ def read_run(directory: Path) -> dict[str, Any]:
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
-
-
-def last_iteration(directory: Path) -> int | None:
-    """Iteration of the last complete history line: run.json is rewritten only when the status
-    changes, so this is how far a running run has got."""
-    try:
-        with (directory / "history.jsonl").open("rb") as file:
-            size = file.seek(0, 2)
-            file.seek(max(size - 65536, 0))
-            tail = file.read()
-    except OSError:
-        return None
-    lines = tail[: tail.rfind(b"\n") + 1].splitlines()
-    try:
-        return int(json.loads(lines[-1])["iteration"]) if lines else None
-    except (ValueError, KeyError, TypeError):
-        return None
-
-
-def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:
-    """Complete lines of history.jsonl after byte `offset`.
-
-    While the run is live its last line may still be being written and waits; once the run has
-    ended, an unterminated last line violates autan.results/1 and raises ValueError.
-    """
-    path = directory / "history.jsonl"
-    if not path.is_file():
-        return HistoryChunk([], offset)
-    with path.open("rb") as file:
-        file.seek(offset)
-        data = file.read()
-    end = data.rfind(b"\n") + 1
-    if end < len(data) and not live:
-        msg = "history.jsonl: the last line is not terminated"
-        raise ValueError(msg)
-    records = [json.loads(line) for line in data[:end].splitlines() if line.strip()]
-    return HistoryChunk(records, offset + end)
