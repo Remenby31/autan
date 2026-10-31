@@ -16,6 +16,7 @@ import numpy.typing as npt
 from autan_vv.errors import VVError
 
 FloatArray = npt.NDArray[np.float64]
+EPS = float(np.finfo(np.float64).eps)
 
 
 @dataclass(frozen=True)
@@ -59,21 +60,23 @@ def star_region(left: State, right: State, gamma: float) -> StarRegion:
         msg = "the initial data generate vacuum"
         raise VVError(msg, code="V0702")
     z = (gamma - 1.0) / (2.0 * gamma)
+    # Two-rarefaction pressure (Toro eq. 4.46): exact when both waves are rarefactions.
     p = (
         (a_l + a_r - 0.5 * (gamma - 1.0) * (right.u - left.u))
         / (a_l / left.p**z + a_r / right.p**z)
     ) ** (1.0 / z)
-    for _ in range(100):
-        f_l, d_l = _f(p, left, gamma)
-        f_r, d_r = _f(p, right, gamma)
-        p_new = max(p - (f_l + f_r + right.u - left.u) / (d_l + d_r), 1e-14 * p)
-        if abs(p_new - p) <= 1e-15 * 0.5 * (p_new + p):
+    if p > min(left.p, right.p):
+        for _ in range(100):
+            f_l, d_l = _f(p, left, gamma)
+            f_r, d_r = _f(p, right, gamma)
+            p_new = max(p - (f_l + f_r + right.u - left.u) / (d_l + d_r), 1e-14 * p)
+            converged = abs(p_new - p) <= 64.0 * EPS * p_new
             p = p_new
-            break
-        p = p_new
-    else:
-        msg = "the star-pressure iteration did not converge"
-        raise VVError(msg, code="V0703")
+            if converged:
+                break
+        else:
+            msg = "the star-pressure iteration did not converge"
+            raise VVError(msg, code="V0703")
     f_l, _ = _f(p, left, gamma)
     f_r, _ = _f(p, right, gamma)
     u = 0.5 * (left.u + right.u) + 0.5 * (f_r - f_l)

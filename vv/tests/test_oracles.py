@@ -10,7 +10,7 @@ import pytest
 from autan_vv.errors import VVError
 from autan_vv.mms import euler
 from autan_vv.oracles import Oracle, conserved, from_mms
-from autan_vv.oracles.inviscid import isentropic_vortex, ringleb, shock_tube
+from autan_vv.oracles.inviscid import SHOCK_TUBES, isentropic_vortex, ringleb, shock_tube
 from autan_vv.oracles.registry import ORACLES, get_oracle
 from autan_vv.oracles.riemann import State, sample, star_region
 from autan_vv.oracles.shu_osher import shu_osher, solve_1d
@@ -54,18 +54,20 @@ def _euler_residual(oracle: Oracle, point: np.ndarray, time: float | None, h: fl
     return np.asarray(total)
 
 
-def _ringleb_point(speed: float, k: float, gamma: float = 1.4, lower: bool = False) -> np.ndarray:
-    c = math.sqrt(1 - 0.5 * (gamma - 1) * speed**2)
-    rho = c ** (2 / (gamma - 1))
+def _ringleb_point(speed: float, k: float, lower: bool = False) -> np.ndarray:
+    """HiOCFD1 C1.2, eqs. 1-2 (gamma = 1.4): position of the point of speed V on streamline k."""
+    c = math.sqrt(1 - 0.2 * speed**2)
+    rho = c**5
     j = 1 / c + 1 / (3 * c**3) + 1 / (5 * c**5) - 0.5 * math.log((1 + c) / (1 - c))
-    x = (1 / speed**2 - 2 / k**2) / (2 * rho) + j / 2
+    x = (2 / k**2 - 1 / speed**2) / (2 * rho) - j / 2
     y = math.sqrt(1 - speed**2 / k**2) / (k * rho * speed)
     return np.array([x, -y if lower else y, 0.0])
 
 
+# Interior points: the finite-difference stencil must stay inside the domain.
 @pytest.mark.parametrize(
     ("speed", "k", "lower"),
-    [(0.5, 0.7, False), (0.6, 1.0, True), (0.9, 1.2, False), (1.3, 1.5, True)],
+    [(0.55, 0.75, False), (0.6, 1.0, True), (0.9, 1.2, False), (1.3, 1.45, True)],
 )
 def test_ringleb_solves_the_euler_equations_and_recovers_its_hodograph(
     speed: float, k: float, lower: bool
@@ -79,12 +81,37 @@ def test_ringleb_solves_the_euler_equations_and_recovers_its_hodograph(
     assert f["Temperature"][0] + 0.2 * speed**2 == pytest.approx(1.0, rel=1e-12)
 
 
+def test_ringleb_follows_the_hiocfd_conventions() -> None:
+    # HiOCFD1 C1.2 at V = 0.5, k = 1 (theta = 30 deg): x = -0.8543492035, y = 1.9690267405, inflow at
+    # y > 0 moving down: rho = 0.95^2.5, u = V cos(theta), v = -V sin(theta).
+    point = np.array([[-0.8543492035, 1.9690267405, 0.0]])
+    f = ringleb().fields(point)
+    assert f["Density"][0] == pytest.approx(0.95**2.5, rel=1e-9)
+    assert f["VelocityX"][0] == pytest.approx(0.5 * math.cos(math.pi / 6), rel=1e-9)
+    assert f["VelocityY"][0] == pytest.approx(-0.25, rel=1e-9)
+    np.testing.assert_allclose(_ringleb_point(0.5, 1.0)[:2], point[0, :2], rtol=1e-9)
+
+
 def test_ringleb_velocity_is_continuous_across_the_symmetry_axis() -> None:
     oracle = ringleb()
     above = oracle.fields(_ringleb_point(0.7, 0.7000001)[None, :])
     below = oracle.fields(_ringleb_point(0.7, 0.7000001, lower=True)[None, :])
     assert above["VelocityX"][0] == pytest.approx(below["VelocityX"][0], abs=1e-3)
     assert above["VelocityY"][0] == pytest.approx(below["VelocityY"][0], rel=1e-6)
+
+
+@pytest.mark.parametrize("point", [[100.0, 100.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]])
+def test_ringleb_rejects_points_outside_its_domain(point: list[float]) -> None:
+    with pytest.raises(VVError) as err:
+        ringleb().fields(np.array([point]))
+    assert err.value.code == "V0706"
+
+
+@pytest.mark.parametrize("kwargs", [{"strength": 9.0}, {"period": (2.0, 2.0)}])
+def test_vortex_rejects_parameters_that_break_the_exact_solution(kwargs: dict[str, object]) -> None:
+    with pytest.raises(VVError) as err:
+        isentropic_vortex(**kwargs)  # type: ignore[arg-type]
+    assert err.value.code == "V0709"
 
 
 @pytest.mark.parametrize("time", [0.0, 3.7, 40.0])
@@ -145,6 +172,34 @@ def test_riemann_star_states_match_toro(test: int) -> None:
         assert value == pytest.approx(float(text), abs=0.5 * unit + extra)
 
 
+def test_riemann_solver_handles_strong_rarefactions_and_soft_gases() -> None:
+    # Two rarefactions: Toro eq. 4.46 is then exact; independent closed form below.
+    left, right = State(0.5, 0.0, 0.1), State(0.5, 5.0, 1.0)
+    a_l, a_r, z = math.sqrt(1.4 * 0.1 / 0.5), math.sqrt(1.4 * 1.0 / 0.5), 0.4 / 2.8
+    p_tr = ((a_l + a_r - 0.2 * 5.0) / (a_l / 0.1**z + a_r / 1.0**z)) ** (1 / z)
+    assert star_region(left, right, 1.4).p == pytest.approx(p_tr, rel=1e-14)
+    for name, gamma in (("sod", 1.04), ("lax", 1.02)):
+        left, right = SHOCK_TUBES[name]
+        star = star_region(left, right, gamma)
+        # Left rarefaction: isentropic, and the Riemann invariant u + 2a/(gamma - 1) is constant.
+        assert star.p / left.p == pytest.approx((star.rho_left / left.rho) ** gamma, rel=1e-12)
+        a_l, a_star = (
+            math.sqrt(gamma * left.p / left.rho),
+            math.sqrt(gamma * star.p / star.rho_left),
+        )
+        assert left.u + 2 * a_l / (gamma - 1) == pytest.approx(
+            star.u + 2 * a_star / (gamma - 1), rel=1e-12
+        )
+        # Right shock: mass, momentum and energy fluxes balance in the shock frame.
+        speed = (star.rho_right * star.u - right.rho * right.u) / (star.rho_right - right.rho)
+        m = right.rho * (right.u - speed)
+        assert star.rho_right * (star.u - speed) == pytest.approx(m, rel=1e-10)
+        assert m * right.u + right.p == pytest.approx(m * star.u + star.p, rel=1e-10)
+        h_r = gamma / (gamma - 1) * right.p / right.rho + 0.5 * (right.u - speed) ** 2
+        h_s = gamma / (gamma - 1) * star.p / star.rho_right + 0.5 * (star.u - speed) ** 2
+        assert h_r == pytest.approx(h_s, rel=1e-10)
+
+
 def test_sod_shock_satisfies_rankine_hugoniot() -> None:
     left, right = State(1.0, 0.0, 1.0), State(0.125, 0.0, 0.1)
     xi = np.linspace(-2, 2, 400001)
@@ -186,6 +241,13 @@ def test_blasius_fields_have_the_classical_wall_shear_and_edge_velocity() -> Non
     assert slope == pytest.approx(0.332057336 * 10.0 * math.sqrt(10.0 / (nu * x)), rel=1e-5)
     assert f["VelocityX"][2] == pytest.approx(10.0, rel=1e-12)
     assert f["VelocityY"][2] == pytest.approx(0.5 * 1.72078766 * math.sqrt(nu * 10.0 / x), rel=1e-8)
+
+
+@pytest.mark.parametrize("point", [[0.0, 0.1, 0.0], [-1.0, 0.1, 0.0], [1.0, -0.01, 0.0]])
+def test_blasius_rejects_points_outside_the_boundary_layer_domain(point: list[float]) -> None:
+    with pytest.raises(VVError) as err:
+        blasius().fields(np.array([point]))
+    assert err.value.code == "V0708"
 
 
 def test_couette_temperature_balances_viscous_heating() -> None:
@@ -248,16 +310,31 @@ def test_reference_1d_solver_converges_to_the_exact_sod_solution() -> None:
     assert errors[-1] < 4e-3
 
 
-def test_shu_osher_reference_places_the_shock_and_keeps_positivity(tmp_path: Path) -> None:
-    oracle = shu_osher(cells=1600, cache_dir=tmp_path)
-    x = np.linspace(-5, 5, 2001)
-    f = oracle.fields(np.column_stack([x, np.zeros((x.size, 2))]), 1.8)
+def test_shu_osher_reference_places_the_shock_and_leaves_the_upstream_flow_untouched(
+    tmp_path: Path,
+) -> None:
+    cells = 1600
+    oracle = shu_osher(cells=cells, cache_dir=tmp_path)
+    x = -5.0 + (np.arange(cells) + 0.5) * (10.0 / cells)  # the reference's cell centres
+    f = oracle.fields(np.column_stack([x, np.zeros((cells, 2))]), 1.8)
     assert oracle.reference_only
     assert np.all(f["Density"] > 0)
     assert np.all(f["Pressure"] > 0)
     shock = x[int(np.argmax(np.abs(np.diff(f["Pressure"]))))]
     # Shock near x = 2.4 at t = 1.8 (Shu and Osher 1989, Fig. 14).
     assert 2.2 < shock < 2.6
+    # Ahead of the shock the flow is the undisturbed initial state, exactly (domain of dependence).
+    ahead = x > shock + 0.2
+    np.testing.assert_allclose(
+        f["Density"][ahead], 1.0 + 0.2 * np.sin(5.0 * x[ahead]), rtol=0, atol=1e-13
+    )
+    np.testing.assert_allclose(f["VelocityX"][ahead], 0.0, atol=1e-13)
+    # Behind it the entropy wave survives as density oscillations.
+    behind = (x > 0.5) & (x < shock - 0.2)
+    assert np.ptp(f["Density"][behind]) > 0.5
+    with pytest.raises(VVError) as err:
+        oracle.fields(np.zeros((1, 3)), 0.0)
+    assert err.value.code == "V0707"
     assert list(tmp_path.glob("shu-osher-*.npy")), "the reference is cached"
 
 
