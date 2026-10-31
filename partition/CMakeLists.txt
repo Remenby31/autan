@@ -15,7 +15,7 @@ if(AUTAN_ENABLE_METIS)
 endif()
 
 if(AUTAN_ENABLE_SCOTCH)
-  find_path(SCOTCH_INCLUDE_DIR scotch.h REQUIRED)
+  find_path(SCOTCH_INCLUDE_DIR scotch.h PATH_SUFFIXES scotch REQUIRED)
   find_library(SCOTCH_LIBRARY scotch REQUIRED)
   find_library(SCOTCH_ERR_LIBRARY scotcherr REQUIRED)
   target_include_directories(autan_partition SYSTEM PRIVATE ${SCOTCH_INCLUDE_DIR})
@@ -45,4 +45,7 @@ if(AUTAN_ENABLE_MPI)
 endif()
 
 add_executable(autan-partition-report tools/partition_report.cpp)
-target_link_libraries(autan-partition-report PRIVATE autan::partition autan_compile_options)
+target_link_libraries(
+  autan-partition-report
+  PRIVATE autan::partition autan::io autan_compile_options
+)

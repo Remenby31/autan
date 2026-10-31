@@ -1,9 +1,12 @@
 #include "autan/partition/halo_exchange.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -79,7 +82,15 @@ struct HaloExchange::State {
   std::array<std::byte, sizeof(halo::Components<double>)> pending_components{};
   void* pending_stream = nullptr;
 
+  void prepare(index_t n_owned_cells);
+
   ~State() {
+    // An exchange interrupted by an exception still has requests on the
+    // buffers below; the peers complete their side, so finish ours first.
+    if (!receives.empty())
+      MPI_Waitall(static_cast<int>(receives.size()), receives.data(), MPI_STATUSES_IGNORE);
+    if (!sends.empty())
+      MPI_Waitall(static_cast<int>(sends.size()), sends.data(), MPI_STATUSES_IGNORE);
 #ifdef AUTAN_HAVE_CUDA
     for (void* p : device_arrays) cudaFree(p);
     if (space == MemorySpace::cuda) {
@@ -163,7 +174,8 @@ struct HaloExchange::State {
     const MPI_Datatype type = std::is_same_v<T, double> ? MPI_DOUBLE : MPI_FLOAT;
     receives.assign(neighbours.size(), MPI_REQUEST_NULL);
     for (std::size_t i = 0; i < neighbours.size(); ++i) {
-      const auto count = n * (in_offsets[i + 1] - in_offsets[i]);
+      const auto count =
+          static_cast<int>(static_cast<std::int64_t>(n) * (in_offsets[i + 1] - in_offsets[i]));
       MPI_Irecv(static_cast<T*>(in) + at(n) * at(in_offsets[i]), count, type, neighbours[i], tag,
                 comm, &receives[i]);
     }
@@ -173,7 +185,8 @@ struct HaloExchange::State {
     const MPI_Datatype type = std::is_same_v<T, double> ? MPI_DOUBLE : MPI_FLOAT;
     sends.assign(neighbours.size(), MPI_REQUEST_NULL);
     for (std::size_t i = 0; i < neighbours.size(); ++i) {
-      const auto count = n * (out_offsets[i + 1] - out_offsets[i]);
+      const auto count =
+          static_cast<int>(static_cast<std::int64_t>(n) * (out_offsets[i + 1] - out_offsets[i]));
       MPI_Isend(static_cast<T*>(out) + at(n) * at(out_offsets[i]), count, type, neighbours[i], tag,
                 comm, &sends[i]);
     }
@@ -201,14 +214,14 @@ struct HaloExchange::State {
     const halo::Components<T> c = components(fields);
     const auto n = static_cast<std::size_t>(c.n);
     if (reverse) {
-      post_receives<T>(slots, send_offsets, c.n, reverse_tag);
       run(halo::Kernel::pack_reverse, c, ghosts, n * at(layout.n_ghost), stream);
       synchronize(stream);
+      post_receives<T>(slots, send_offsets, c.n, reverse_tag);
       post_sends<T>(ghosts, recv_offsets, c.n, reverse_tag);
     } else {
-      post_receives<T>(ghosts, recv_offsets, c.n, forward_tag);
       run(halo::Kernel::pack_forward, c, slots, n * at(layout.n_send), stream);
       synchronize(stream);
+      post_receives<T>(ghosts, recv_offsets, c.n, forward_tag);
       post_sends<T>(slots, send_offsets, c.n, forward_tag);
     }
     pending = true;
@@ -293,6 +306,18 @@ HaloExchange::HaloExchange(const HaloPattern& pattern, index_t n_owned_cells, MP
   agree(s.comm, shape_ok && received == expected, ErrorCode::halo_inconsistent,
         "rank " + std::to_string(rank) + " expects ghost counts its neighbours do not send");
 
+  // MPI counts are int: the largest message, at max_components values per
+  // cell, must fit.
+  std::int64_t largest = 0;
+  for (std::size_t i = 0; shape_ok && i < n_neighbours; ++i) {
+    largest =
+        std::max<std::int64_t>({largest, pattern.send_offsets[i + 1] - pattern.send_offsets[i],
+                                pattern.recv_offsets[i + 1] - pattern.recv_offsets[i]});
+  }
+  agree(s.comm, largest * max_components <= std::numeric_limits<int>::max(),
+        ErrorCode::partition_invalid_request,
+        "a halo message of " + std::to_string(largest) + " cells exceeds the MPI count range");
+
   s.neighbours = pattern.neighbours;
   s.send_offsets = pattern.send_offsets;
   s.recv_offsets = pattern.recv_offsets;
@@ -309,6 +334,21 @@ HaloExchange::HaloExchange(const HaloPattern& pattern, index_t n_owned_cells, MP
     }
   }
 
+  // Device copies and buffers may fail on one rank only; agree before any
+  // rank leaves the constructor and starts exchanging.
+  bool prepared = true;
+  std::string failure;
+  try {
+    s.prepare(n_owned_cells);
+  } catch (const std::exception& e) {
+    prepared = false;
+    failure = e.what();
+  }
+  agree(s.comm, prepared, ErrorCode::halo_device_unsupported, failure);
+}
+
+void HaloExchange::State::prepare(index_t n_owned_cells) {
+  State& s = *this;
   halo::Layout& l = s.layout;
   l.n_owned = n_owned_cells;
   l.n_send = static_cast<index_t>(s.send_cells.size());

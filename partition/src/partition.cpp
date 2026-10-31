@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -78,15 +79,26 @@ void check_weights(const Mesh& mesh, std::span<const std::int32_t> weights) {
   }
 }
 
+/// Throws E0142 unless the graph's arc count and total vertex weight fit the
+/// backend's integer type `Int`, which also accumulates the weights.
+template <class Int>
+void check_fits(const DualGraph& graph, std::span<const std::int32_t> weights, const char* name) {
+  const auto limit = static_cast<std::uint64_t>(std::numeric_limits<Int>::max());
+  std::uint64_t total = 0;
+  for (const std::int32_t w : weights) total += static_cast<std::uint64_t>(w);
+  if (weights.empty()) total = graph.offsets.size() - 1;
+  if (graph.adjacency.size() > limit || total > limit) {
+    throw Error(ErrorCode::partition_backend_failed,
+                std::string("the dual graph (") + std::to_string(graph.adjacency.size()) +
+                    " arcs, total weight " + std::to_string(total) + ") exceeds the " +
+                    std::to_string(8 * sizeof(Int)) + "-bit integers of this " + name + " build");
+  }
+}
+
 #ifdef AUTAN_HAVE_METIS
 std::vector<std::int32_t> partition_metis(const DualGraph& graph, std::int32_t n_parts,
                                           const PartitionOptions& options) {
-  constexpr auto idx_max = static_cast<std::int64_t>(std::numeric_limits<idx_t>::max());
-  if (graph.adjacency.size() > static_cast<std::size_t>(idx_max)) {
-    throw Error(ErrorCode::partition_backend_failed,
-                "the dual graph has " + std::to_string(graph.adjacency.size()) +
-                    " arcs, more than this METIS build's idx_t holds");
-  }
+  check_fits<idx_t>(graph, options.cell_weights, "METIS");
   idx_t n_vertices = static_cast<idx_t>(graph.offsets.size() - 1);
   idx_t n_constraints = 1;
   idx_t n = n_parts;
@@ -114,6 +126,7 @@ std::vector<std::int32_t> partition_metis(const DualGraph& graph, std::int32_t n
 #ifdef AUTAN_HAVE_SCOTCH
 std::vector<std::int32_t> partition_scotch(const DualGraph& graph, std::int32_t n_parts,
                                            const PartitionOptions& options) {
+  check_fits<SCOTCH_Num>(graph, options.cell_weights, "Scotch");
   const auto n_vertices = static_cast<SCOTCH_Num>(graph.offsets.size() - 1);
   std::vector<SCOTCH_Num> verttab(graph.offsets.begin(), graph.offsets.end());
   std::vector<SCOTCH_Num> edgetab(graph.adjacency.begin(), graph.adjacency.end());
