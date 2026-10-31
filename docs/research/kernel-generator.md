@@ -62,7 +62,9 @@ Option A, because reverse-mode AD and in-loop fusion are what the plan needs the
   def lsq_gradient_and_bounds(c, nb, acc, w: Geom.Vec3 = incidence.lsq_weight):
       dq = q[nb] - q[c]
       acc.g += w * dq
-      acc.qmin = min(acc.qmin, q[nb]); acc.qmax = max(acc.qmax, q[nb])
+      acc.qmin = min(acc.qmin, q[nb])
+      acc.qmax = max(acc.qmax, q[nb])
+
 
   @finalise(lsq_gradient_and_bounds)
   def limiter(c, acc) -> (Vec3, State):
@@ -75,19 +77,34 @@ Option A, because reverse-mode AD and in-loop fusion are what the plan needs the
 
   ```python
   @pointwise
-  def upwind(qc: State, gc: State.Vec3, rc: Geom.Vec3,
-             qn: State, gn: State.Vec3, rn: Geom.Vec3,
-             n: Geom.Vec3, area: Geom, a: Param.Vec3) -> State:
-      qL = qc + dot(gc, rc)          # reconstruction to the face
+  def upwind(
+      qc: State,
+      gc: State.Vec3,
+      rc: Geom.Vec3,
+      qn: State,
+      gn: State.Vec3,
+      rn: Geom.Vec3,
+      n: Geom.Vec3,
+      area: Geom,
+      a: Param.Vec3,
+  ) -> State:
+      qL = qc + dot(gc, rc)  # reconstruction to the face
       qR = qn + dot(gn, rn)
       un = dot(a, n)
       return area * (un * qL if un > 0.0 else un * qR)
 
+
   residual = face_loop(
       upwind,
-      qc=cells.q.left, gc=cells.grad.left, rc=faces.r_left,
-      qn=cells.q.right, gn=cells.grad.right, rn=faces.r_right,
-      n=faces.normal, area=faces.area, a=params.velocity,
+      qc=cells.q.left,
+      gc=cells.grad.left,
+      rc=faces.r_left,
+      qn=cells.q.right,
+      gn=cells.grad.right,
+      rn=faces.r_right,
+      n=faces.normal,
+      area=faces.area,
+      a=params.velocity,
       out=Inc(cells.res, left=+1, right=-1),
   )
   ```
