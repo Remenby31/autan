@@ -72,7 +72,7 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 | `cell_volume` | n_cells | Volume of the polyhedron bounded by the fan triangles, summed over tetrahedra (apex, m, pᵢ, pᵢ₊₁) with signed volumes; the apex is the mean of the face centroids. Volumes of all cells sum to the volume enclosed by the boundary triangles. |
 | `cell_centroid_{x,y,z}` | n_cells | Volume-weighted centroid of the same tetrahedra. |
 
-Ghost cells get NaN volume and centroid: the partitioner fills them from the owning partition.
+Ghost cells get NaN volume and centroid: the forward halo exchange fills them from the owning partition. `compute_geometry` on a partition is valid but not bitwise identical to the global computation; the bitwise path is the geometry distributed by the partitioner ([partitioning.md](../design/partitioning.md)).
 
 On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Green–Gauss with face-centroid values is exact for linear fields. On warped faces a single (c_f, S_f) pair cannot integrate a linear field over the fan exactly; the error is of the order of the warp, as in other cell-centred codes. Kernels that need exactness there must use least-squares gradients or per-triangle quadrature.
 
@@ -84,7 +84,7 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 
 ## Errors
 
-Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers; the SDK registry carries their fix and doc page.
+Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core, readers (up to E0139), partitioner and halo exchange; the SDK registry carries their fix and doc page.
 
 | Code | Name | Raised when |
 |---|---|---|
@@ -113,3 +113,9 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
 | E0134 | `io_external_reference` | The mesh refers to another file (CGNS link); meshes must be self-contained. |
 | E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |
+| E0140 | `partition_invalid_request` | A part count, rank, part index or cell weight is out of range, or an array has the wrong size. |
+| E0141 | `partition_input_has_ghosts` | The mesh to partition already has ghost cells. |
+| E0142 | `partition_backend_failed` | The partitioner (METIS, Scotch) is not built or reports an error. |
+| E0143 | `partition_empty_part` | A part received no cell. |
+| E0144 | `halo_inconsistent` | The communicator size differs from the partition count, or two ranks disagree on what they exchange. |
+| E0145 | `halo_device_unsupported` | A halo exchange on device memory without CUDA support in the build or in MPI. |
