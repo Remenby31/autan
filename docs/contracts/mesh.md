@@ -78,6 +78,12 @@ On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Gree
 
 `autan::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
 
+## Quality and ordering
+
+`autan::compute_quality(mesh, geometry)` (`core/include/autan/core/quality.hpp`) returns the checkMesh metrics of OpenFOAM: per-face non-orthogonality (degrees) and skewness, per-interior-face volume ratio, per-owned-cell aspect ratio; the header gives each definition.
+
+`autan::rcm_order(mesh)` returns a reverse Cuthill–McKee order of the owned cells (ghosts stay last); `autan::renumber_cells(mesh, new_to_old)` applies any such permutation and re-sorts the faces, so other orderings (Hilbert) plug in through the same call. An unpartitioned mesh keeps identity global ids; a partition keeps its cells' global ids.
+
 ## Building a mesh
 
 Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `autan::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary); ghost cells last with `n_ghost_cells`, and `cell_global_id` when partitioned. Readers of element-based formats (Gmsh, CGNS) fill a `autan::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `autan::to_face_based`, which merges coincident faces by node set. A zone that labels faces takes their role (interior or boundary); a zone that labels none keeps its declared role.
@@ -91,6 +97,8 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 | Gmsh MSH 4.1, ASCII and binary | Linear tetra, pyramid, prism, hexa; triangles and quadrilaterals label faces; sparse node tags; parametric nodes; unknown sections are skipped as the format prescribes. | Physical volumes → cell zones, physical surfaces → face zones, named from `$PhysicalNames` or the tag; type empty, kind `unspecified`. | MSH 2 and other versions, higher-order elements, `$PartitionedEntities`, `$Periodic`, `$GhostElements`, big-endian files; an entity in two physical groups (E0135). |
 | Fluent mesh, ASCII and binary (2010/3010, 2012, 2013) | Sections 0, 1, 2, 10, 12, 13, 39, 45; 4, 37, 38, 40 are skipped. Mixed and polygonal faces, polyhedral cells (type 7). The face normal points toward c0. | Zone sections 39/45 give names and types; a zone without one is named `zone-<id>` and typed from its face-section code. A zone's role is that of its faces. Declared element types must match the cell's face count (E0132). | 2D meshes, periodic shadow faces (18), hanging-node trees and interface parents (58, 59, 61–63), any other section. |
 | OpenFOAM polyMesh, ASCII and binary, 32/64-bit labels and scalars | The `polyMesh` directory or a case directory holding `constant/polyMesh`; `faceList` and `faceCompactList`. | Patches → boundary zones (type as written), `cellZones` → cell zones (type empty). `faceZones`, `pointZones` and `sets` are selections, not zones, and are not read. | Compressed files, processor patches; a cell in two cell zones (E0135). |
+
+`autan::io::mesh_hash(path)` computes the mesh hash and `autan::io::mesh_info_json(mesh, hash)` the MeshInfo document, both as [mesh-info.md](mesh-info.md) defines them. The `autan-mesh-info [--json] MESH` tool prints a summary (counts, zones, quality maxima, closure) or that document; it exits 1 with the E01xx code on a read error.
 
 The test meshes and how they are generated: [tests/data/mesh/README.md](../../tests/data/mesh/README.md).
 

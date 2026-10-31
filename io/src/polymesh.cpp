@@ -286,13 +286,6 @@ BcKind patch_kind(std::string_view type) {
   return BcKind::unspecified;
 }
 
-fs::path locate(const fs::path& path) {
-  std::error_code ec;
-  if (fs::exists(path / "points", ec) || fs::exists(path / "points.gz", ec)) return path;
-  if (fs::is_directory(path / "constant" / "polyMesh", ec)) return path / "constant" / "polyMesh";
-  return path;
-}
-
 index_t to_index(const Cursor& c, std::int64_t v, std::int64_t limit, const char* what) {
   if (v < 0 || v >= limit) c.fail(std::string(what) + " out of range");
   return static_cast<index_t>(v);
@@ -300,8 +293,15 @@ index_t to_index(const Cursor& c, std::int64_t v, std::int64_t limit, const char
 
 }  // namespace
 
+fs::path polymesh_directory(const fs::path& path) {
+  std::error_code ec;
+  if (fs::exists(path / "points", ec) || fs::exists(path / "points.gz", ec)) return path;
+  if (fs::is_directory(path / "constant" / "polyMesh", ec)) return path / "constant" / "polyMesh";
+  return path;
+}
+
 Mesh read_polymesh(const fs::path& directory) {
-  const fs::path dir = locate(directory);
+  const fs::path dir = polymesh_directory(directory);
   std::error_code ec;
   for (const char* name : {"points", "faces", "owner", "neighbour", "boundary"}) {
     if (!fs::exists(dir / name, ec)) {
