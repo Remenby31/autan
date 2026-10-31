@@ -5,6 +5,7 @@ type: software
 authors:
   - family-names: Cruvellier
     given-names: Baptiste
+    alias: Remenby31
 abstract: >-
   A GPU-native, cell-centred finite-volume solver for compressible flow on
   unstructured meshes of arbitrary polyhedra, with a discrete adjoint on the

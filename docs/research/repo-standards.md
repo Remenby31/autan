@@ -61,7 +61,7 @@ Decision: `CONTRIBUTING.md` holds the setup, the hooks, the PR flow and where ea
 - Contributor Covenant 3.0 is the current version ([3.0](https://www.contributor-covenant.org/version/3/0/code_of_conduct/)). The reference repositories use older versions: 1.4 (SU2, deal.II, DOLFINx, Kokkos, PyTorch) or 2.0 (Trixi.jl, Astral). PETSc uses the NumFOCUS code.
 - The text asks to fill in a reporting channel and to review the enforcement section. A private channel is the norm.
 
-Decision: Contributor Covenant 3.0, unchanged except the reporting channel. Reports go by email to the lead.
+Decision: Contributor Covenant 3.0, unchanged except the reporting channel. Reports go privately to the maintainer through the repository's private reporting form, which only the maintainer reads. The repository publishes no personal email address.
 
 ### Security policy
 
