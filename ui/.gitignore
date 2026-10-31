@@ -1,0 +1,8 @@
+node_modules/
+server/src/autan_ui/static/
+test-results/
+playwright-report/
+bench/results/
+bench/.runs/
+e2e/.runs/
+*.tsbuildinfo
