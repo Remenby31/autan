@@ -175,16 +175,13 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
     in.face_cell0[at(f)] = old_to_new[at(mesh.owner()[at(f)])];
     if (f < mesh.n_interior_faces()) in.face_cell1[at(f)] = old_to_new[at(mesh.neighbour()[at(f)])];
   }
-  // An unpartitioned mesh (no ghosts, global ids = identity) stays its own global
-  // numbering; a partition keeps the global ids of its cells.
+  // Every cell keeps its global id, so ids stay traceable to the source.
   const auto ids = mesh.cell_global_id();
-  bool identity = mesh.n_owned_cells() == mesh.n_cells();
-  for (std::size_t i = 0; i < n_cells && identity; ++i) identity = std::cmp_equal(ids[i], i);
   in.cell_zone.resize(n_cells);
-  if (!identity) in.cell_global_id.resize(n_cells);
+  in.cell_global_id.resize(n_cells);
   for (std::size_t i = 0; i < n_cells; ++i) {
     in.cell_zone[i] = mesh.cell_zone()[at(new_to_old[i])];
-    if (!identity) in.cell_global_id[i] = ids[at(new_to_old[i])];
+    in.cell_global_id[i] = ids[at(new_to_old[i])];
   }
   in.n_ghost_cells = mesh.n_cells() - mesh.n_owned_cells();
   in.face_zones.assign(mesh.face_zones().begin(), mesh.face_zones().end());

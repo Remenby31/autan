@@ -25,7 +25,7 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 | `neighbour` | n_interior_faces | Cell on the side the normal points into. |
 | `face_zone` | n_faces | Index into `face_zones`. |
 | `cell_zone` | n_cells | Index into `cell_zones`. |
-| `cell_global_id` | n_cells | `int64` index of the cell in the unpartitioned mesh; the identity when the mesh was not partitioned. |
+| `cell_global_id` | n_cells | `int64` identity of the cell: its index in the mesh as first assembled (the identity then), kept through partitioning and renumbering. |
 | `boundary_zone_offsets` | n_face_zones + 1 | Boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_faces`. Interior zones have an empty range. |
 | `cell_face_offsets`, `cell_faces` | n_cells + 1, 2·n_interior + n_boundary | CSR of the faces of each cell, in increasing face index. A face is outward for cell `c` iff `owner[f] == c`. |
 
@@ -82,7 +82,7 @@ On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Gree
 
 `autan::compute_quality(mesh, geometry)` (`core/include/autan/core/quality.hpp`) returns the checkMesh metrics of OpenFOAM: per-face non-orthogonality (degrees) and skewness, per-interior-face volume ratio, per-owned-cell aspect ratio; the header gives each definition.
 
-`autan::rcm_order(mesh)` returns a reverse Cuthill–McKee order of the owned cells (ghosts stay last); `autan::renumber_cells(mesh, new_to_old)` applies any such permutation and re-sorts the faces, so other orderings (Hilbert) plug in through the same call. An unpartitioned mesh keeps identity global ids; a partition keeps its cells' global ids.
+`autan::rcm_order(mesh)` returns a reverse Cuthill–McKee order of the owned cells (ghosts stay last); `autan::renumber_cells(mesh, new_to_old)` applies any such permutation and re-sorts the faces, so other orderings (Hilbert) plug in through the same call. Every cell keeps its global id.
 
 ## Building a mesh
 

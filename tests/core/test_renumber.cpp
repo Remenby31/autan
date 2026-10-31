@@ -90,7 +90,7 @@ TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   for (std::size_t i = 0; i < order.size(); ++i) {
     CHECK_THAT(g1.cell_volume[i], WithinRel(g0.cell_volume[at(order[i])], 1e-13));
     CHECK(again.cell_zone()[i] == mesh.cell_zone()[at(order[i])]);
-    CHECK(again.cell_global_id()[i] == static_cast<std::int64_t>(i));
+    CHECK(again.cell_global_id()[i] == mesh.cell_global_id()[at(order[i])]);
   }
   for (std::size_t z = 0; z + 1 < mesh.boundary_zone_offsets().size(); ++z) {
     CHECK(again.boundary_zone_offsets()[z + 1] - again.boundary_zone_offsets()[z] ==
