@@ -107,9 +107,7 @@ __host__ __device__ inline void physical_flux(const T* u, const float* n, T* f) 
   const T gm1 = constant<T::n>(0.4f);
   const T vx = u[1] / u[0], vy = u[2] / u[0], vz = u[3] / u[0];
   const T p = gm1 * (u[4] - 0.5f * u[0] * (vx * vx + vy * vy + vz * vz));
-  const T vn = vx * constant<T::n>(n[0]) +
-               vy * constant<T::n>(n[1]) +
-               vz * constant<T::n>(n[2]);
+  const T vn = vx * constant<T::n>(n[0]) + vy * constant<T::n>(n[1]) + vz * constant<T::n>(n[2]);
   f[0] = u[0] * vn;
   for (int k = 0; k < 3; ++k) f[1 + k] = u[1 + k] * vn + p * constant<T::n>(n[k]);
   f[4] = (u[4] + p) * vn;
@@ -282,10 +280,14 @@ int main(int argc, char** argv) {
   const unsigned block = 128, grid = static_cast<unsigned>((nfi + block - 1) / block);
   const index_t ncell = mesh.n_cells();
   const double ta = time_kernel(
-      [&] { jacobian_option_a<<<grid, block>>>(nfi, d_owner, d_neigh, ncell, d_u, d_n, d_a, nf, ja); },
+      [&] {
+        jacobian_option_a<<<grid, block>>>(nfi, d_owner, d_neigh, ncell, d_u, d_n, d_a, nf, ja);
+      },
       reps);
   const double tb = time_kernel(
-      [&] { jacobian_option_b<<<grid, block>>>(nfi, d_owner, d_neigh, ncell, d_u, d_n, d_a, nf, jb); },
+      [&] {
+        jacobian_option_b<<<grid, block>>>(nfi, d_owner, d_neigh, ncell, d_u, d_n, d_a, nf, jb);
+      },
       reps);
   std::vector<float> ha(nj), hb(nj);
   cudaMemcpy(ha.data(), ja, nj * sizeof(float), cudaMemcpyDeviceToHost);

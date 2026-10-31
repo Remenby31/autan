@@ -98,6 +98,12 @@ if(AUTAN_ENABLE_CUDA)
   target_link_libraries(autan_loop_bench PRIVATE autan::kernels autan::io)
   set_target_properties(autan_loop_bench PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
   target_compile_options(autan_loop_bench PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo -Xptxas=-v>)
+
+  # Option B of research section 3: the Roe Jacobian hand-written on dual numbers.
+  add_executable(autan_option_b bench/option_b.cu)
+  target_link_libraries(autan_option_b PRIVATE autan::kernels autan::io)
+  set_target_properties(autan_option_b PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+  target_compile_options(autan_option_b PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-v>)
 endif()
 
 if(AUTAN_ENABLE_HIP)
