@@ -167,7 +167,7 @@ class FoamFile {
       if (header_.label_bytes == 4) {
         std::vector<std::int32_t> raw(*n);
         cursor_.binary(raw.data(), *n);
-        std::copy(raw.begin(), raw.end(), out.begin());
+        std::ranges::copy(raw, out.begin());
       } else {
         cursor_.binary(out.data(), *n);
       }
@@ -202,7 +202,7 @@ class FoamFile {
       } else {
         std::vector<float> raw(out.size());
         cursor_.binary(raw.data(), raw.size());
-        std::copy(raw.begin(), raw.end(), out.begin());
+        std::ranges::copy(raw, out.begin());
       }
     } else {
       for (std::size_t p = 0; p < *n; ++p) {
@@ -266,7 +266,7 @@ Faces read_faces(const fs::path& path) {
   file.require_class({"faceList", "faceCompactList"});
   Cursor& c = file.cursor();
   Faces faces;
-  auto narrow = [&](std::int64_t v) {
+  const auto narrow = [&](std::int64_t v) {
     if (v < 0 || v > std::numeric_limits<index_t>::max()) c.fail("point label out of range");
     return static_cast<index_t>(v);
   };
@@ -279,7 +279,7 @@ Faces read_faces(const fs::path& path) {
     const auto nodes = file.labels();
     if (offsets.empty() || offsets.front() != 0 ||
         static_cast<std::size_t>(offsets.back()) != nodes.size() ||
-        std::adjacent_find(offsets.begin(), offsets.end(), std::greater<>()) != offsets.end()) {
+        std::ranges::adjacent_find(offsets, std::greater<>()) != offsets.end()) {
       c.fail("faceCompactList offsets do not match its labels");
     }
     faces.offsets.assign(offsets.begin(), offsets.end());
@@ -349,13 +349,6 @@ BcKind patch_kind(std::string_view type) {
   return BcKind::unspecified;
 }
 
-fs::path locate(const fs::path& path) {
-  std::error_code ec;
-  if (fs::exists(path / "points", ec) || fs::exists(path / "points.gz", ec)) return path;
-  if (fs::is_directory(path / "constant" / "polyMesh", ec)) return path / "constant" / "polyMesh";
-  return path;
-}
-
 index_t to_index(const Cursor& c, std::int64_t v, std::int64_t limit, const char* what) {
   if (v < 0 || v >= limit) c.fail(std::string(what) + " out of range");
   return static_cast<index_t>(v);
@@ -363,8 +356,15 @@ index_t to_index(const Cursor& c, std::int64_t v, std::int64_t limit, const char
 
 }  // namespace
 
+fs::path polymesh_directory(const fs::path& path) {
+  std::error_code ec;
+  if (fs::exists(path / "points", ec) || fs::exists(path / "points.gz", ec)) return path;
+  if (fs::is_directory(path / "constant" / "polyMesh", ec)) return path / "constant" / "polyMesh";
+  return path;
+}
+
 Mesh read_polymesh(const fs::path& directory) {
-  const fs::path dir = locate(directory);
+  const fs::path dir = polymesh_directory(directory);
   std::error_code ec;
   for (const char* name : {"points", "faces", "owner", "neighbour", "boundary"}) {
     if (!fs::exists(dir / name, ec)) {
@@ -428,7 +428,7 @@ Mesh read_polymesh(const fs::path& directory) {
   Cursor& bc = boundary_file.cursor();
   std::size_t expected_start = neighbour.size();
   for (const auto& patch : read_dict_list(boundary_file, "")) {
-    auto value = [&](const char* key) {
+    const auto value = [&](const char* key) {
       const auto it = patch.values.find(key);
       if (it == patch.values.end()) bc.fail("patch '" + patch.name + "' has no '" + key + "'");
       return it->second;
@@ -499,7 +499,7 @@ Mesh read_polymesh(const fs::path& directory) {
       }
     }
   }
-  if (std::find(in.cell_zone.begin(), in.cell_zone.end(), -1) != in.cell_zone.end()) {
+  if (std::ranges::find(in.cell_zone, -1) != in.cell_zone.end()) {
     const auto fluid = static_cast<index_t>(in.cell_zones.size());
     in.cell_zones.push_back(CellZone{
         .name = "fluid",
@@ -507,7 +507,7 @@ Mesh read_polymesh(const fs::path& directory) {
         .kind = CellKind::unspecified,
         .provenance =
             Provenance{.source_id = -1, .detail = "synthesised: cells outside every cellZone"}});
-    std::replace(in.cell_zone.begin(), in.cell_zone.end(), index_t{-1}, fluid);
+    std::ranges::replace(in.cell_zone, index_t{-1}, fluid);
   }
   return assemble(std::move(in));
 }

@@ -115,6 +115,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "autan-ui", marker = "extra == 'ui'", editable = "." },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "pint", specifier = ">=0.24" },
@@ -122,6 +123,7 @@ requires-dist = [
     { name = "rfc8785", specifier = ">=0.1.4" },
     { name = "tomli-w", specifier = ">=1.1" },
 ]
+provides-extras = ["ui"]
 
 [package.metadata.requires-dev]
 dev = [

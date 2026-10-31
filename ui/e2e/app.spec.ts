@@ -73,7 +73,9 @@ test("⌘K opens a run by name and state", async ({ page }) => {
 
 test("viewer renders on WebGPU and picks the zone under the cursor", async ({ page }) => {
   await page.goto("/viewer?triangles=500000");
-  await expect(page.getByTestId("viewer-status")).toHaveAttribute("data-backend", "webgpu");
+  // CPU-only CI sets AUTAN_UI_E2E_BACKEND=webgl2; GPU runners keep the WebGPU default.
+  const backend = process.env.AUTAN_UI_E2E_BACKEND ?? "webgpu";
+  await expect(page.getByTestId("viewer-status")).toHaveAttribute("data-backend", backend);
   const box = await page.getByTestId("viewport").boundingBox();
   if (!box) throw new Error("no viewport");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
