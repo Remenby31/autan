@@ -190,3 +190,36 @@ def test_synthetic_surface_layout() -> None:
     assert indices.size == 3 * header["triangles"]
     assert int(indices.max()) < header["nodes"]
     assert [zone["name"] for zone in header["zones"]] == ["wing.upper", "wing.lower", "wing.tip"]
+
+
+def test_a_running_run_reports_its_last_recorded_iteration(runs: Path) -> None:
+    source = next(runs.iterdir())
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    with (source / "history.jsonl").open("a") as history:
+        history.write('{"iteration": 31, "time": null, "resid')
+
+    snapshot = Registry(runs).scan()
+
+    assert snapshot.runs[source.name]["iterations"] == 30
+    assert snapshot.progress == {source.name: 30}
+
+
+def test_progress_survives_long_and_malformed_last_lines(runs: Path) -> None:
+    source = next(runs.iterdir())
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    registry = Registry(runs)
+    assert registry.scan().progress == {source.name: 30}
+
+    # Lines appended after the directory was checked are not re-validated by the registry.
+    long_record = {"iteration": 31, "padding": "x" * 200_000}
+    with (source / "history.jsonl").open("a") as history:
+        history.write(json.dumps(long_record) + "\n")
+    assert registry.scan().progress == {source.name: 31}
+
+    with (source / "history.jsonl").open("a") as history:
+        history.write('{"iteration": 1e400}\n')
+    snapshot = registry.scan()
+    assert source.name in snapshot.runs
+    assert snapshot.progress == {}

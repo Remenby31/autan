@@ -4,7 +4,7 @@
 set -eu
 runs=${1:?usage: sample-runs.sh RUNS [--live]}
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-autan() { uv run --project "$repo/ui/server" autan "$@" >/dev/null 2>&1; }
+autan() { uv run --locked --project "$repo/ui/server" autan "$@" >/dev/null 2>&1; }
 crm="$repo/py/examples/crm_hl.py --mesh-info $repo/py/tests/fixtures/crm-hl.meshinfo.json"
 hx="$repo/py/examples/heat_exchanger.py --mesh-info $repo/py/tests/fixtures/heat-exchanger.meshinfo.json"
 autan run $crm --runs "$runs"
