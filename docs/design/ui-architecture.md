@@ -9,8 +9,8 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
   React app (static, served by the same process)        surface extraction (NumPy) → binary
 ```
 
-- **One process, one port, loopback only.** `autan_ui.serve(runs, host, port)` serves the built app and the API. `autan ui [--runs DIR] [--port N] [--no-open]` in the SDK CLI is a thin call to it; the default runs directory is `./runs`, the same one `autan run` writes.
-- **The registry is the runs directory.** Every `<runs>/*/run.json` that the SDK's model of `autan.results/1` accepts is a run, whoever wrote it; names starting with `.` are directories still being written. There is no database and no UI-side state: a run started from a notebook appears in the UI the moment its directory does. Directories that do not conform are listed as rejected with the reason, never hidden.
+- **One process, one port, loopback only.** Requests whose `Host` is not the served address are refused (DNS rebinding). `autan_ui.serve(runs, host, port)` serves the built app and the API. `autan ui [--runs DIR] [--port N] [--no-open]` in the SDK CLI is a thin call to it; the default runs directory is `./runs`, the same one `autan run` writes.
+- **The registry is the runs directory.** Every directory under `<runs>` that the SDK's reader (`autan.Results.open`) accepts is a run, whoever wrote it; names starting with `.` are directories still being written. There is no database and no UI-side state: a run started from a notebook appears in the UI the moment its directory does. Directories that do not conform are listed as rejected with the reason, never hidden.
 - **Heavy data stays on the server.** Volume fields (tens of millions of cells) never reach the browser. The server extracts what is displayed (wall surfaces, slices, iso-surfaces, probes) and sends triangles and node values. Slices and probes are server-side NumPy operations, so the browser renderer only needs to draw triangle surfaces fast.
 
 ## API
@@ -18,12 +18,12 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 | Endpoint | Returns |
 |---|---|
 | `GET /api/runs` | `{runs: [run.json…], rejected: [{dir, reason}]}`, newest first |
-| `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json) and `removed` (run id) |
+| `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json), `removed` (run id) and `rejected` (the whole list) as they change |
 | `GET /api/runs/{id}` | `{run, case, mesh_info}`: run.json, case.toml as JSON, mesh-info.json |
-| `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline. |
+| `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 before any stream starts. |
 | `GET /api/surfaces/synthetic?triangles=N` | A synthetic wing surface for the viewer and its benchmark, until `solution.cgns` surfaces are served |
 
-Live updates come from file-system events (`watchfiles`, 50 ms debounce): the server re-reads history.jsonl from the last offset and run.json when its mtime changes. SSE rather than WebSocket: traffic is server → browser only, `EventSource` reconnects by itself, and FastAPI ships SSE natively.
+Live updates come from file-system events (`watchfiles`, 50 ms debounce) and a 1 s timeout: every wake-up rescans, so a change made before the watcher started is still reported. A directory is checked by `autan.Results.open` again only when its run.json changes; history.jsonl is re-read from the last offset. SSE rather than WebSocket: traffic is server → browser only, `EventSource` reconnects by itself, and FastAPI ships SSE natively.
 
 ### Surface message `autan-ui.surface/1`
 
@@ -44,7 +44,7 @@ Chosen on the project's criteria: fluid 3D on 5–20 M faces, live data, keyboar
 
 | Concern | Choice | Licence | Why, and what was rejected |
 |---|---|---|---|
-| Server | FastAPI 0.162 + uvicorn + watchfiles, Python ≥ 3.12, own `uv.lock` | MIT, BSD-3, MIT | Same language as the SDK, so `autan ui` is a function call and the server reads results through `autan.Results` once it lands; native SSE. |
+| Server | FastAPI 0.162 + uvicorn + watchfiles, Python ≥ 3.12, own `uv.lock` | MIT, BSD-3, MIT | Same language as the SDK, so `autan ui` is a function call and the server checks run directories with `autan.Results.open`; native SSE. |
 | Package manager | Bun 1.3, text `bun.lock` | MIT | Fast installs, one binary; Vite and Vitest run unchanged. |
 | Build | Vite 8 (Rolldown) + TypeScript 7 (native compiler) | MIT, Apache-2.0 | Sub-second builds and type checks. |
 | UI | React 19 | MIT | Largest ecosystem for accessible primitives, palette and charts. |
@@ -62,25 +62,25 @@ Chosen on the project's criteria: fluid 3D on 5–20 M faces, live data, keyboar
 
 ### 3D renderer: three.js against vtk.js
 
-Same synthetic surface (swept NACA 0012 wing, structured triangulation, one node field), same 1600 × 1000 canvas, camera orbiting, headless Chrome 156 on an Apple M4 Pro (Metal), vsync off. Frame time is measured to GPU completion (`queue.onSubmittedWorkDone` on WebGPU, a 1-pixel `readPixels` on WebGL2), median of 180 frames after 20 warm-up frames. First frame is from data received to the first frame completed. three.js renders with 4× MSAA, vtk.js with its defaults.
+Same synthetic surface (swept NACA 0012 wing, structured triangulation, one node field), same 1600 × 1000 canvas, camera orbiting, headless Chrome 156 on an Apple M4 Pro (Metal), vsync off. Frame time is measured to GPU completion (`queue.onSubmittedWorkDone` on WebGPU, a 1-pixel `readPixels` on WebGL2), median of 180 frames after 20 warm-up frames. First frame (ms) runs from the surface message received to the first frame completed on the GPU, including geometry set-up (one bounding-sphere pass) and shader compilation. three.js renders with 4× MSAA, vtk.js with its defaults.
 
 | Triangles | three.js WebGPU: first / frame | three.js WebGL2: first / frame | vtk.js 38 WebGL: first / frame |
 |---|---|---|---|
-| 1 M | 370 / 1.0 ms | 160 / 2.1 ms | 376 / 1.2 ms |
-| 5 M | 69 / 2.3 ms | 69 / 3.1 ms | 1158 / 2.1 ms |
-| 10 M | 167 / 3.6 ms | 106 / 4.2 ms | 2246 / 3.1 ms |
-| 20 M | 284 / 5.5 ms | 263 / 6.4 ms | 4550 / 5.3 ms |
+| 1 M | 287 / 1.0 ms | 172 / 1.9 ms | 376 / 1.2 ms |
+| 5 M | 190 / 2.4 ms | 100 / 3.1 ms | 1158 / 2.1 ms |
+| 10 M | 457 / 3.3 ms | 223 / 4.2 ms | 2246 / 3.1 ms |
+| 20 M | 782 / 5.3 ms | 413 / 6.2 ms | 4550 / 5.3 ms |
 
-Once loaded, all three draw 20 M triangles in about 5–6 ms, far under a 16.7 ms frame. vtk.js takes 16× longer to show the first frame at 20 M, because it rebuilds its own vertex buffers on the CPU, and that cost returns at every change of surface or snapshot during a live run. Its WebGPU backend did not initialise in this setup. vtk.js's strengths (cutters, contour filters, transfer functions) are server-side operations in this architecture. The first case of each browser session (1 M row) includes shader compilation.
+Once loaded, all three draw 20 M triangles in about 5–6 ms, far under a 16.7 ms frame. vtk.js takes 6–11× longer to show the first frame at 20 M, because it rebuilds its own vertex buffers on the CPU, and that cost returns at every change of surface or snapshot during a live run. Its WebGPU backend did not initialise in this setup. vtk.js's strengths (cutters, contour filters, transfer functions) are server-side operations in this architecture.
 
-Transfer of the 20 M-triangle message (400 MB, loopback): 1.0–1.5 s; at 5 M triangles the whole path from request to first frame is under 0.5 s. The measurement uses a structured triangulation with good vertex locality; an unstructured surface will be slower to draw and is re-measured when `solution.cgns` surfaces are served.
+Transfer of the 20 M-triangle message (400 MB, loopback): 1.0–1.5 s; at 5 M triangles the whole path from request to first frame is about 0.4 s. The measurement uses a structured triangulation with good vertex locality; an unstructured surface will be slower to draw and is re-measured when `solution.cgns` surfaces are served.
 
 Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench/results/`. The vtk.js comparison was a one-off prototype and is not kept.
 
 ### Viewer
 
-- Geometry: `position`, `index` and the displayed field as a `float` attribute; no normals (flat shading from screen-space derivatives), so a 20 M-triangle surface costs 400 MB of buffers and no CPU work beyond the upload.
-- Colour: the field is normalised by uniforms and looked up in a 256-texel colormap texture; changing the range or the colormap is a uniform update, not a buffer rebuild. Cool–warm (Moreland 2009) for signed fields; viridis for magnitudes comes with the first real fields.
+- Geometry: `position`, `index` and the displayed field as a `float` attribute; no normals (flat shading from screen-space derivatives), so a 20 M-triangle surface costs 400 MB of buffers and one CPU pass (the bounding sphere) before the upload.
+- Colour: the field is normalised by uniforms and looked up in a 256-texel colormap texture; changing the range or the colormap is a uniform update, not a buffer rebuild. A field that changes sign gets a range symmetric about zero, so the neutral colour marks zero and the legend shows it. Cool–warm (Moreland 2009) for signed fields; viridis for magnitudes comes with the first real fields.
 - Picking: each zone is drawn with its id as colour into a 1 × 1 render target under the cursor, then read back: one GPU pass whatever the triangle count.
 - Rendering is on demand (camera or state change), not a continuous loop.
 - Buffer limits: the WebGPU device is requested with the adapter's `maxBufferSize`, since 10 M+ triangles exceed the 256 MiB default.
@@ -98,4 +98,4 @@ bun run dev                                                          # app on :5
 
 Checks: `bun run check` (Biome, `tsc`), `bun run test` (Vitest), `bun run e2e` (Playwright, builds the app and starts the server on synthetic runs), `uv run --project server pytest`, `bun run bench:viewer`.
 
-Sample and test runs come from the SDK's fake backend (`autan run`, `autan.FakeBackend`), the real producer of `autan.results/1`, so the tests send its output through this server. `run.json` is validated with the SDK's own model (`autan.results.RunInfo`).
+Sample and test runs come from the SDK's fake backend (`autan run`, `autan.FakeBackend`), the real producer of `autan.results/1`, so the tests send its output through this server.

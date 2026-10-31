@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { fetchSurface, type Surface } from "../api/surface";
-import { COOL_WARM, cssGradient } from "../viewer/colormap";
+import { COOL_WARM, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
 
 interface Search {
@@ -53,23 +53,27 @@ function Viewer() {
     if (!el) return;
     const abort = new AbortController();
     let disposed = false;
+    const surfaceRequest = fetchSurface(
+      `/api/surfaces/synthetic?triangles=${triangles}`,
+      abort.signal,
+    );
+    surfaceRequest.catch(() => {});
     (async () => {
       const t0 = performance.now();
-      const [v, s] = await Promise.all([
-        SurfaceViewer.create(el, { forceWebGL: webgl }),
-        fetchSurface(`/api/surfaces/synthetic?triangles=${triangles}`, abort.signal),
-      ]);
-      const fetched = performance.now();
+      const v = await SurfaceViewer.create(el, { forceWebGL: webgl });
       if (disposed) {
         v.dispose();
         return;
       }
       viewer.current = v;
       setBackend(v.backend);
+      const s = await surfaceRequest;
+      const fetched = performance.now();
       setSurface(s);
       v.setSurface(s, "Cp");
       if (!bench) return;
-      const firstFrame = (await v.benchmark(1))[0] ?? Number.NaN;
+      await v.benchmark(1);
+      const firstFrame = performance.now() - fetched;
       window.__bench = {
         backend: v.backend,
         triangles: s.indices.length / 3,
@@ -98,6 +102,7 @@ function Viewer() {
   };
 
   const field = surface?.fields[0];
+  const range = field ? displayRange(field.min, field.max) : null;
   return (
     <div className="absolute inset-0">
       <canvas
@@ -124,13 +129,14 @@ function Viewer() {
           ))}
         </aside>
       )}
-      {field && (
+      {field && range && (
         <div className="pointer-events-none absolute right-4 bottom-10 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs">
           <span>{field.name} · synthetic</span>
           <div className="h-2 rounded" style={{ background: cssGradient(COOL_WARM) }} />
           <div className="flex justify-between">
-            <span>{field.min.toFixed(2)}</span>
-            <span>{field.max.toFixed(2)}</span>
+            <span>{range.min.toFixed(2)}</span>
+            {range.min < 0 && range.max > 0 && <span>0</span>}
+            <span>{range.max.toFixed(2)}</span>
           </div>
         </div>
       )}

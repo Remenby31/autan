@@ -1,13 +1,14 @@
 import json
 import logging
 import re
+import threading
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from autan.results import SCHEMA_ID, RunInfo
-from pydantic import ValidationError
+import autan
+from autan.errors import CaseError
 
 log = logging.getLogger(__name__)
 
@@ -19,9 +20,14 @@ class RunNotFoundError(LookupError):
 
 
 @dataclass(frozen=True)
-class Rejected:
-    dir: str
-    reason: str
+class Snapshot:
+    runs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rejected: dict[str, str] = field(default_factory=dict)
+
+    def document(self) -> dict[str, Any]:
+        runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
+        rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
+        return {"runs": runs, "rejected": rejected}
 
 
 @dataclass(frozen=True)
@@ -31,31 +37,60 @@ class HistoryChunk:
 
 
 class Registry:
-    """Every run directory directly under `root`, whoever wrote it (UI, SDK, CLI, agent)."""
+    """Every run directory directly under `root`, whoever wrote it (UI, SDK, CLI, agent).
+
+    A directory is checked by the SDK's reader (`autan.Results.open`) and checked again only
+    when its run.json changes, so rescanning costs one stat per directory.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
+        self._checked: dict[str, tuple[tuple[int, int] | None, dict[str, Any] | str]] = {}
+        self._lock = threading.Lock()
 
     def run_dir(self, run_id: str) -> Path:
         if not RUN_ID.fullmatch(run_id) or not (self.root / run_id / "run.json").is_file():
             raise RunNotFoundError(run_id)
         return self.root / run_id
 
-    def scan(self) -> tuple[list[dict[str, Any]], list[Rejected]]:
-        runs: list[dict[str, Any]] = []
-        rejected: list[Rejected] = []
-        if not self.root.is_dir():
-            return runs, rejected
-        for child in sorted(self.root.iterdir()):
-            if not child.is_dir() or child.name.startswith("."):
-                continue
+    def scan(self) -> Snapshot:
+        snapshot = Snapshot()
+        with self._lock:
+            names = set()
+            if self.root.is_dir():
+                for child in sorted(self.root.iterdir()):
+                    if not child.is_dir() or child.name.startswith("."):
+                        continue
+                    names.add(child.name)
+                    outcome = self._check(child)
+                    if isinstance(outcome, str):
+                        snapshot.rejected[child.name] = outcome
+                    else:
+                        snapshot.runs[child.name] = outcome
+            for gone in self._checked.keys() - names:
+                del self._checked[gone]
+        return snapshot
+
+    def _check(self, directory: Path) -> dict[str, Any] | str:
+        try:
+            stat = (directory / "run.json").stat()
+            key: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            key = None
+        cached = self._checked.get(directory.name)
+        if cached and cached[0] == key:
+            return cached[1]
+        outcome: dict[str, Any] | str
+        if key is None:
+            outcome = "no run.json"
+        else:
             try:
-                runs.append(read_run(child))
-            except (OSError, ValueError) as error:
-                log.warning("run directory %s rejected: %s", child, error)
-                rejected.append(Rejected(child.name, str(error)))
-        runs.sort(key=lambda run: run["started"], reverse=True)
-        return runs, rejected
+                outcome = autan.Results.open(directory).run.document()
+            except CaseError as error:
+                outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
+                log.warning("run directory %s rejected: %s", directory, outcome)
+        self._checked[directory.name] = (key, outcome)
+        return outcome
 
     def details(self, run_id: str) -> dict[str, Any]:
         directory = self.run_dir(run_id)
@@ -67,29 +102,16 @@ class Registry:
 
 
 def read_run(directory: Path) -> dict[str, Any]:
-    """run.json of `directory`, validated by the SDK's model of autan.results/1."""
-    run_json = directory / "run.json"
-    if not run_json.is_file():
-        msg = "no run.json"
-        raise ValueError(msg)
-    document = json.loads(run_json.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
-        msg = f"run.json schema is not {SCHEMA_ID}"
-        raise ValueError(msg)
-    try:
-        run = RunInfo.model_validate(document)
-    except ValidationError as error:
-        first = error.errors(include_url=False)[0]
-        msg = f"run.json: {first['msg']} at {first['loc']}"
-        raise ValueError(msg) from error
-    if run.run_id != directory.name:
-        msg = "run.json run_id differs from the directory name"
-        raise ValueError(msg)
-    return document
+    run: dict[str, Any] = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+    return run
 
 
-def read_history(directory: Path, offset: int) -> HistoryChunk:
-    """Complete lines of history.jsonl after byte `offset`; a line still being written waits."""
+def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:
+    """Complete lines of history.jsonl after byte `offset`.
+
+    While the run is live its last line may still be being written and waits; once the run has
+    ended, an unterminated last line violates autan.results/1 and raises ValueError.
+    """
     path = directory / "history.jsonl"
     if not path.is_file():
         return HistoryChunk([], offset)
@@ -97,5 +119,8 @@ def read_history(directory: Path, offset: int) -> HistoryChunk:
         file.seek(offset)
         data = file.read()
     end = data.rfind(b"\n") + 1
+    if end < len(data) and not live:
+        msg = "history.jsonl: the last line is not terminated"
+        raise ValueError(msg)
     records = [json.loads(line) for line in data[:end].splitlines() if line.strip()]
     return HistoryChunk(records, offset + end)

@@ -1,4 +1,4 @@
-import { appendFileSync, cpSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { RUNS } from "../playwright.config";
@@ -26,9 +26,17 @@ test("a run written by another process appears and updates live", async ({ page 
   const source = (await runs(page))[0] as Run;
   const runId = "run-20261031T235959Z-0123abcd";
   const directory = join(RUNS, runId);
-  cpSync(join(RUNS, source.run_id), directory, { recursive: true });
-  const run: Run = { ...source, run_id: runId, status: "running", started: "2026-10-31T23:59:59Z" };
-  writeFileSync(join(directory, "run.json"), JSON.stringify(run));
+  const staging = join(RUNS, ".staging");
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  const run: Run = {
+    ...source,
+    run_id: runId,
+    status: "running",
+    started: "2026-10-31T23:59:59Z",
+    finished: null,
+  };
+  writeFileSync(join(staging, "run.json"), JSON.stringify(run));
+  renameSync(staging, directory);
   await expect(rows).toHaveCount(5);
   await expect(rows.first().getByRole("img", { name: "running" })).toBeVisible();
 
@@ -40,7 +48,8 @@ test("a run written by another process appears and updates live", async ({ page 
     `${JSON.stringify({ iteration: last + 1, time: null, residuals: { density: 1e-9 } })}\n`,
   );
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 1));
-  writeFileSync(join(directory, "run.json"), JSON.stringify({ ...run, status: "converged" }));
+  const finished = { ...run, status: "converged", finished: "2026-11-01T00:10:00Z" };
+  writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
   await expect(page.getByTestId("status")).toContainText("converged");
 });
 

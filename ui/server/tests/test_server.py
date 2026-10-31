@@ -1,10 +1,12 @@
 import json
+import shutil
 import socket
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import ANY
 
 import autan
 import httpx
@@ -53,29 +55,65 @@ def sse_events(response: httpx.Response) -> Iterator[tuple[str, Any]]:
 
 
 def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
+    source = next(runs.iterdir())
     (runs / "notes").mkdir()
     foreign = runs / "run-20261031T000000Z-00000000"
     foreign.mkdir()
     (foreign / "run.json").write_text('{"schema": "other/1"}')
+    bad_time = shutil.copytree(source, runs / "run-20261031T000001Z-00000001")
+    run = json.loads((bad_time / "run.json").read_text())
+    run |= {"run_id": bad_time.name, "started": "not-a-timestamp"}
+    (bad_time / "run.json").write_text(json.dumps(run))
+    (runs / ".run-20261031T000002Z-00000002.tmp").mkdir()
 
-    listed, rejected = Registry(runs).scan()
+    snapshot = Registry(runs).scan()
 
-    assert [(run["case"]["name"], run["status"]) for run in listed] == [("crm-hl", "stopped")]
-    assert sorted(r.dir for r in rejected) == ["notes", foreign.name]
+    assert [(r["case"]["name"], r["status"]) for r in snapshot.runs.values()] == [
+        ("crm-hl", "stopped")
+    ]
+    assert sorted(snapshot.rejected) == sorted(["notes", foreign.name, bad_time.name])
+    assert snapshot.rejected[foreign.name].startswith("E0701")
 
 
-def test_history_waits_for_a_complete_line(runs: Path) -> None:
+def test_history_holds_a_partial_line_only_while_live(runs: Path) -> None:
     directory = next(runs.iterdir())
-    first = read_history(directory, 0)
+    first = read_history(directory, 0, live=False)
     assert [r["iteration"] for r in first.records] == list(range(1, 31))
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
-    assert read_history(directory, first.offset).records == []
+    assert read_history(directory, first.offset, live=True).records == []
+    with pytest.raises(ValueError, match="not terminated"):
+        read_history(directory, first.offset, live=False)
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('uals": {"density": 1e-9}}\n')
-    assert [r["iteration"] for r in read_history(directory, first.offset).records] == [31]
+    chunk = read_history(directory, first.offset, live=True)
+    assert [r["iteration"] for r in chunk.records] == [31]
+
+
+def test_registry_stream_reports_runs_and_rejections_as_they_appear(
+    runs: Path, server: str
+) -> None:
+    source = next(runs.iterdir())
+    with httpx.stream("GET", f"{server}/api/runs/events", timeout=10) as response:
+        events = sse_events(response)
+        kind, snapshot = next(events)
+        assert (kind, len(snapshot["runs"])) == ("runs", 1)
+
+        staging = shutil.copytree(source, runs / ".staging")
+        run = json.loads((staging / "run.json").read_text())
+        run |= {"run_id": "run-20261031T235959Z-0123abcd", "started": "2026-10-31T23:59:59Z"}
+        (staging / "run.json").write_text(json.dumps(run))
+        copy = staging.rename(runs / run["run_id"])
+        kind, data = next(events)
+        assert (kind, data["run_id"]) == ("run", copy.name)
+
+        (copy / "run.json").write_text("{")
+        assert [next(events), next(events)] == [
+            ("removed", copy.name),
+            ("rejected", [{"dir": copy.name, "reason": ANY}]),
+        ]
 
 
 def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: str) -> None:
@@ -100,9 +138,15 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
         assert (kind, data["status"]) == ("run", "failed")
 
 
-def test_unknown_run_is_404(server: str) -> None:
-    assert httpx.get(f"{server}/api/runs/run-20261031T000000Z-deadbeef").status_code == 404
+def test_unknown_run_is_404_before_any_stream(server: str) -> None:
+    unknown = "run-20261031T000000Z-deadbeef"
+    assert httpx.get(f"{server}/api/runs/{unknown}").status_code == 404
+    assert httpx.get(f"{server}/api/runs/{unknown}/history/events").status_code == 404
     assert httpx.get(f"{server}/api/runs/..%2F..%2Fetc").status_code == 404
+
+
+def test_foreign_host_header_is_refused(server: str) -> None:
+    assert httpx.get(f"{server}/api/runs", headers={"Host": "evil.example"}).status_code == 400
 
 
 def test_synthetic_surface_layout() -> None:

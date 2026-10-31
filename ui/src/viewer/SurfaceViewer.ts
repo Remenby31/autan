@@ -2,7 +2,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { attribute, clamp, float, mix, texture, uniform, vec2, vec3, vec4 } from "three/tsl";
 import * as THREE from "three/webgpu";
 import type { Surface } from "../api/surface";
-import { COOL_WARM, sampleColormap } from "./colormap";
+import { COOL_WARM, displayRange, sampleColormap } from "./colormap";
 
 export type Backend = "webgpu" | "webgl2";
 
@@ -89,8 +89,9 @@ export class SurfaceViewer {
     const field = surface.fields.find((f) => f.name === fieldName);
     if (!field) throw new Error(`surface has no field ${fieldName}`);
     geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
-    this.range.min.value = field.min;
-    this.range.span.value = field.max - field.min || 1;
+    const range = displayRange(field.min, field.max);
+    this.range.min.value = range.min;
+    this.range.span.value = range.max - range.min || 1;
     geometry.computeBoundingSphere();
 
     const t = clamp(

@@ -36,19 +36,27 @@ function upsert(registry: RunRegistry | undefined, run: Run): RunRegistry {
 /** Keeps the run registry query live from the server's event stream. */
 export function subscribeRegistry(client: QueryClient): () => void {
   const source = new EventSource("/api/runs/events");
+  const update = (change: (old: RunRegistry | undefined) => RunRegistry | undefined) => {
+    // A /api/runs response still in flight is older than this event and must not land after it.
+    void client.cancelQueries({ queryKey: runsQuery.queryKey });
+    client.setQueryData(runsQuery.queryKey, change);
+  };
   source.addEventListener("runs", (e) => {
-    client.setQueryData(runsQuery.queryKey, JSON.parse(e.data) as RunRegistry);
+    const registry = JSON.parse(e.data) as RunRegistry;
+    update(() => registry);
   });
   source.addEventListener("run", (e) => {
     const run = JSON.parse(e.data) as Run;
-    client.setQueryData(runsQuery.queryKey, (old) => upsert(old, run));
+    update((old) => upsert(old, run));
     client.setQueryData(runQuery(run.run_id).queryKey, (old) => (old ? { ...old, run } : old));
   });
   source.addEventListener("removed", (e) => {
     const runId = JSON.parse(e.data) as string;
-    client.setQueryData(runsQuery.queryKey, (old) =>
-      old ? { ...old, runs: old.runs.filter((r) => r.run_id !== runId) } : old,
-    );
+    update((old) => (old ? { ...old, runs: old.runs.filter((r) => r.run_id !== runId) } : old));
+  });
+  source.addEventListener("rejected", (e) => {
+    const rejected = JSON.parse(e.data) as RunRegistry["rejected"];
+    update((old) => ({ runs: old?.runs ?? [], rejected }));
   });
   return () => source.close();
 }
@@ -58,21 +66,31 @@ export function useRegistrySubscription(): void {
   useEffect(() => subscribeRegistry(client), [client]);
 }
 
-/** Columnar history: `iteration` plus one column per residual and per force coefficient. */
+export interface ForceColumns {
+  iteration: number[];
+  cl: number[];
+  cd: number[];
+}
+
+/** Columnar history: `iteration`, one column per residual, and coefficients per forces monitor. */
 export interface HistoryColumns {
   iteration: number[];
   residuals: Map<string, number[]>;
-  forces: { iteration: number[]; cl: number[]; cd: number[] };
+  forces: Map<string, ForceColumns>;
   version: number;
 }
 
 function emptyColumns(): HistoryColumns {
-  return {
-    iteration: [],
-    residuals: new Map(),
-    forces: { iteration: [], cl: [], cd: [] },
-    version: 0,
-  };
+  return { iteration: [], residuals: new Map(), forces: new Map(), version: 0 };
+}
+
+function column<T>(map: Map<string, T>, name: string, create: () => T): T {
+  let value = map.get(name);
+  if (value === undefined) {
+    value = create();
+    map.set(name, value);
+  }
+  return value;
 }
 
 /** Appends in place, so a long history is never copied; returns a new handle for React. */
@@ -80,27 +98,29 @@ export function appendHistory(columns: HistoryColumns, records: HistoryRecord[])
   for (const record of records) {
     columns.iteration.push(record.iteration);
     for (const [name, value] of Object.entries(record.residuals)) {
-      let column = columns.residuals.get(name);
-      if (!column) {
-        column = [];
-        columns.residuals.set(name, column);
-      }
-      column.push(value);
+      column(columns.residuals, name, () => []).push(value);
     }
-    const forces = record.monitors?.forces;
-    if (forces?.cl !== undefined && forces.cd !== undefined) {
-      columns.forces.iteration.push(record.iteration);
-      columns.forces.cl.push(forces.cl);
-      columns.forces.cd.push(forces.cd);
+    for (const [name, forces] of Object.entries(record.monitors ?? {})) {
+      if (forces.cl === undefined || forces.cd === undefined) continue;
+      const series = column(columns.forces, name, () => ({ iteration: [], cl: [], cd: [] }));
+      series.iteration.push(record.iteration);
+      series.cl.push(forces.cl);
+      series.cd.push(forces.cd);
     }
   }
   return { ...columns, version: columns.version + 1 };
+}
+
+/** The coefficients of the case's forces monitor, when exactly one reports them. */
+export function soleForces(history: HistoryColumns): ForceColumns | null {
+  return history.forces.size === 1 ? ([...history.forces.values()][0] ?? null) : null;
 }
 
 export interface LiveRun {
   run: Run | null;
   history: HistoryColumns;
   connected: boolean;
+  invalid: string | null;
 }
 
 /** run.json and history.jsonl of one run, streamed: appended lines arrive as they are written. */
@@ -109,10 +129,11 @@ export function useLiveRun(runId: string): LiveRun {
     run: null,
     history: emptyColumns(),
     connected: false,
+    invalid: null,
   }));
   useEffect(() => {
     let history = emptyColumns();
-    setState({ run: null, history, connected: false });
+    setState({ run: null, history, connected: false, invalid: null });
     const source = new EventSource(`/api/runs/${runId}/history/events`);
     source.onopen = () => setState((s) => ({ ...s, connected: true }));
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
@@ -126,6 +147,11 @@ export function useLiveRun(runId: string): LiveRun {
       history = appendHistory(history, records);
       const next = history;
       setState((s) => ({ ...s, history: next }));
+    });
+    source.addEventListener("invalid", (e) => {
+      const reason = JSON.parse(e.data) as string;
+      source.close();
+      setState((s) => ({ ...s, connected: false, invalid: reason }));
     });
     return () => source.close();
   }, [runId]);

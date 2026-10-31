@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useLiveRun } from "../api/runs";
+import { soleForces, useLiveRun } from "../api/runs";
 import { ResidualChart } from "../components/ResidualChart";
 import { StateGlyph } from "../components/StateGlyph";
 
@@ -7,8 +7,8 @@ export const Route = createFileRoute("/runs/$runId")({ component: RunView });
 
 function RunView() {
   const { runId } = Route.useParams();
-  const { run, history, connected } = useLiveRun(runId);
-  const last = history.forces.cl.length - 1;
+  const { run, history, connected, invalid } = useLiveRun(runId);
+  const forces = soleForces(history);
 
   return (
     <div className="flex h-full flex-col gap-4 px-4 py-4">
@@ -21,13 +21,14 @@ function RunView() {
           </span>
         )}
         <Metric label="iteration" value={history.iteration.at(-1)} testId="iteration" />
-        <Metric label="CL" value={history.forces.cl[last]} digits={4} />
-        <Metric label="CD" value={history.forces.cd[last]} digits={5} />
+        <Metric label="CL" value={forces?.cl.at(-1)} digits={4} />
+        <Metric label="CD" value={forces?.cd.at(-1)} digits={5} />
         <span className="ml-auto font-mono text-fg-3 text-xs">
           {run?.status === "running" && (connected ? "live · " : "offline · ")}
           {run?.precision} · {run?.solver.backend}
         </span>
       </div>
+      {invalid && <p className="m-0 font-mono text-danger text-sm">{invalid}</p>}
       {run?.diagnostics.map((d) => (
         <p key={`${d.code}-${String(d.data.iteration)}`} className="m-0 font-mono text-sm">
           <span className="text-danger">{d.code}</span> {d.message}

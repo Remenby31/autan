@@ -36,3 +36,13 @@ export function sampleColormap(map: Colormap, size = 256): Uint8Array {
 export function cssGradient(map: Colormap): string {
   return `linear-gradient(90deg, ${map.stops.map(([r, g, b]) => `rgb(${r} ${g} ${b})`).join(", ")})`;
 }
+
+/** Display range of a field: symmetric about zero when the field changes sign, so the neutral
+ * colour of a diverging map marks zero. */
+export function displayRange(min: number, max: number): { min: number; max: number } {
+  if (min < 0 && max > 0) {
+    const bound = Math.max(-min, max);
+    return { min: -bound, max: bound };
+  }
+  return { min, max };
+}

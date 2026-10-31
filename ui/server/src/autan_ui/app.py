@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import webbrowser
-from collections.abc import AsyncIterator, Iterable
-from dataclasses import asdict
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
@@ -40,44 +40,47 @@ async def _until_disconnected(request: Request, stop: asyncio.Event) -> None:
     stop.set()
 
 
-def _touched_runs(root: Path, changes: Iterable[tuple[Change, str]]) -> set[str]:
-    touched = set()
-    for _, raw in changes:
-        parts = Path(raw).relative_to(root).parts
-        if parts and not parts[0].startswith("."):
-            touched.add(parts[0])
-    return touched
+LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 
 
-def create_app(runs_root: Path, static: Path | None = STATIC) -> FastAPI:
+def create_app(
+    runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
+) -> FastAPI:
     registry = Registry(runs_root)
     app = FastAPI(title="Autan", docs_url=None, redoc_url=None)
+    # A page on another origin that rebinds its DNS name to 127.0.0.1 sends its own Host header.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(hosts))
+
+    def existing_run(run_id: str) -> Path:
+        try:
+            return registry.run_dir(run_id)
+        except RunNotFoundError as error:
+            raise HTTPException(404, f"no run {run_id}") from error
 
     @app.get("/api/runs")
-    def list_runs() -> dict[str, Any]:
-        runs, rejected = registry.scan()
-        return {"runs": runs, "rejected": [asdict(r) for r in rejected]}
+    async def list_runs() -> dict[str, Any]:
+        return (await asyncio.to_thread(registry.scan)).document()
 
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
-        """`runs` snapshot first, then `run` (upsert) and `removed` events."""
-        runs, rejected = registry.scan()
-        yield ServerSentEvent(
-            event="runs", data={"runs": runs, "rejected": [asdict(r) for r in rejected]}
-        )
+        """`runs` snapshot first, then `run` (upsert), `removed` (run id) and `rejected` (the
+        whole list) as they change. Every wake-up rescans, timeouts included, so a change made
+        before the watcher starts is still reported."""
+        previous = await asyncio.to_thread(registry.scan)
+        yield ServerSentEvent(event="runs", data=previous.document())
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
         try:
-            async for changes in _changes(registry.root, stop):
-                for name in sorted(_touched_runs(registry.root, changes)):
-                    directory = registry.root / name
-                    if not directory.exists():
-                        yield ServerSentEvent(event="removed", data=name)
-                        continue
-                    try:
-                        yield ServerSentEvent(event="run", data=read_run(directory))
-                    except (OSError, ValueError):
-                        continue
+            async for _ in _changes(registry.root, stop):
+                current = await asyncio.to_thread(registry.scan)
+                for run_id, run in current.runs.items():
+                    if previous.runs.get(run_id) != run:
+                        yield ServerSentEvent(event="run", data=run)
+                for run_id in sorted(previous.runs.keys() - current.runs.keys()):
+                    yield ServerSentEvent(event="removed", data=run_id)
+                if current.rejected != previous.rejected:
+                    yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
+                previous = current
         finally:
             stop.set()
             watcher.cancel()
@@ -91,40 +94,38 @@ def create_app(runs_root: Path, static: Path | None = STATIC) -> FastAPI:
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(
-        run_id: str,
+        directory: Annotated[Path, Depends(existing_run)],
         request: Request,
         last_event_id: Annotated[str | None, Header()] = None,
     ) -> AsyncIterator[ServerSentEvent]:
         """`run` with the current run.json, then `history` batches; the event id is the byte
-        offset reached, so a reconnecting EventSource resumes where it stopped."""
-        try:
-            directory = registry.run_dir(run_id)
-        except RunNotFoundError as error:
-            raise HTTPException(404, f"no run {run_id}") from error
+        offset reached, so a reconnecting EventSource resumes where it stopped. A history that
+        breaks the contract ends the stream with `invalid` and its reason."""
         offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
         run_json = directory / "run.json"
         run_mtime = run_json.stat().st_mtime_ns
-        yield ServerSentEvent(event="run", data=read_run(directory))
-        chunk = read_history(directory, offset)
-        yield ServerSentEvent(event="history", data=chunk.records, id=str(chunk.offset))
-        offset = chunk.offset
+        run = read_run(directory)
+        yield ServerSentEvent(event="run", data=run)
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
+        changes = _changes(directory, stop)
         try:
-            # Re-read on every wake-up, timeouts included: an append that lands before the
-            # watcher starts is still picked up.
-            async for _ in _changes(directory, stop):
-                chunk = read_history(directory, offset)
-                if chunk.records:
+            while True:
+                try:
+                    chunk = read_history(directory, offset, live=run["status"] == "running")
+                except ValueError as error:
+                    yield ServerSentEvent(event="invalid", data=str(error))
+                    return
+                if chunk.records or offset == 0:
                     offset = chunk.offset
                     yield ServerSentEvent(event="history", data=chunk.records, id=str(offset))
+                # Every wake-up re-reads, timeouts included: an append that lands before the
+                # watcher starts is still picked up.
+                if await anext(changes, None) is None:
+                    return
                 mtime = run_json.stat().st_mtime_ns
                 if mtime != run_mtime:
-                    try:
-                        run = read_run(directory)
-                    except (OSError, ValueError):
-                        continue
-                    run_mtime = mtime
+                    run_mtime, run = mtime, read_run(directory)
                     yield ServerSentEvent(event="run", data=run)
         finally:
             stop.set()
@@ -160,7 +161,7 @@ def serve(
     if not runs.is_dir():
         log.info("creating the runs directory %s", runs)
         runs.mkdir(parents=True)
-    app = create_app(runs)
+    app = create_app(runs, hosts=tuple({*LOOPBACK, host}))
     if open_browser:
         webbrowser.open(f"http://{host}:{port}/")
     uvicorn.run(app, host=host, port=port, log_level="info")
