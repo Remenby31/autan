@@ -10,7 +10,7 @@ from autan.errors import CaseError, Diagnostic, Location
 from autan.fake import FakeBackend
 from autan.meshinfo import MeshInfo
 from autan.plan import Plan
-from autan.results import Results
+from autan.results import Results, RunInfo
 from autan.schema import (
     DDES,
     SA,
@@ -52,6 +52,7 @@ __all__ = [
     "MeshInfo",
     "Plan",
     "Results",
+    "RunInfo",
     "Solid",
     "Steady",
     "Sutherland",
