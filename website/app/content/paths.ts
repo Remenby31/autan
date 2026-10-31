@@ -15,7 +15,8 @@ export function pageSlug(repoPath: string): string | null {
   return repoPath
     .slice(docsDir.length + 1)
     .replace(/\.mdx?$/, "")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/(^|\/)readme$/, "");
 }
 
 /**

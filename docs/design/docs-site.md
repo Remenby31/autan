@@ -4,7 +4,7 @@ The site at <https://remenby31.github.io/autan/> renders the Markdown of this re
 
 ## Writing for the site
 
-- A page is any `.md` or `.mdx` file under `docs/`, plus `README.md`, which becomes the introduction. Its URL is its path under `docs/`, lower-cased, without the extension: `docs/contracts/results.md` → `/autan/contracts/results`.
+- A page is any `.md` or `.mdx` file under `docs/`, plus `README.md`, which becomes the introduction. Its URL is its path under `docs/`, lower-cased, without the extension: `docs/contracts/results.md` → `/autan/contracts/results`. A `README.md` is its folder's page: `docs/design/ui-inspiration/README.md` → `/autan/design/ui-inspiration`.
 - The first `#` heading is the page title. The sidebar shortens it: a one-word prefix before `: ` is dropped ("Contract: results" → "Results"), and so is a subtitle after ` — `.
 - The folder is the sidebar section. Known sections come in this order: Contracts, SDK, Validation, Design, Research; a new folder gets its own section after them, so a page never needs a site change to appear.
 - Link to other files with relative paths, as on GitHub. The build rewrites a link to a page into a site link, a link to an HTML document into its published copy, and any other link (source files, `AGENTS.md`) into a GitHub link. A link to a missing file is reported by the build as `[docs] <file>: link to missing file <target>`.

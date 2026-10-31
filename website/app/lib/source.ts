@@ -29,7 +29,10 @@ export const docs = defineDocs({
         title: pageSchema.shape.title.default(
           isIntroduction(path)
             ? "Introduction"
-            : (source.match(/^# (.+)$/m)?.[1]?.trim() ?? path),
+            : (source
+                .match(/^# (.+)$/m)?.[1]
+                ?.replaceAll("`", "")
+                .trim() ?? path),
         ),
       }),
     mdxOptions: applyMdxPreset({
