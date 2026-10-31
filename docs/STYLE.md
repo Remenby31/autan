@@ -73,10 +73,10 @@ Never put the main content, a summary or a quotation in a note.
 Add a diagram only when it removes a paragraph; the prose around it does not repeat what it shows. Diagrams are SVG files in `docs/assets/diagrams/`, linked as images (`![Owner and neighbour of a face](../assets/diagrams/mesh-faces.svg)`), and the site inlines them.
 
 - Colours come from [tokens.css](design/ui-inspiration/tokens.css) with a fallback, `fill="var(--fg-2, #52525b)"`, so the diagram follows the theme toggle. A `<style>` block may redefine the variables under `prefers-color-scheme: dark` for GitHub; the site drops it.
-- The logo's language: polyhedral cells in outline, flow in the Cp palette (`--series-1` blue for low pressure, `--fg-3` neutral, `--series-2` red for high), `--accent` for the one thing the eye should land on.
+- The logo's language: polyhedral cells in outline, flow in the colours of the logo (`--accent` blue for low pressure, `--fg` neutral, `--danger` red for high). Outside flow, `--accent` marks the one thing the eye should land on.
 - Labels in Geist, 12–13 px, a word or an identifier each. No sentences inside a diagram.
 - `viewBox` without `width` or `height`; `<title>` and `<desc>` first, referenced by `aria-labelledby`; ids prefixed with the file name, since inlined diagrams share one document.
-- Hand-written, under 6 kB, no embedded fonts or raster images.
+- Hand-written, under 8 kB, no embedded fonts or raster images.
 
 ## What we never write
 

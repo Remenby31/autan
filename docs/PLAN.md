@@ -1,3 +1,7 @@
+---
+lang: fr
+---
+
 # Plan d'implémentation — Autan
 
 Validé le 2026-10-31. Sources : `research/etat-de-l-art-2026-10.md`, `research/dx.html`, `mockup/ux.html`.

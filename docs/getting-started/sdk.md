@@ -1,0 +1,72 @@
+# Getting started with the Autan SDK
+
+Check a case against its mesh and write a run directory with the Python SDK, from a clone of the repository. The solver does not exist yet: the only backend is `fake`, which writes synthetic results in the real formats.
+
+> Results of the `fake` backend are synthetic. Never use them as reference data.
+
+## Prerequisites
+
+- A clone of [Remenby31/autan](https://github.com/Remenby31/autan).
+- [uv](https://docs.astral.sh/uv/) and Python 3.12 or later.
+
+No GPU is needed.
+
+## Set up the environment
+
+From the root of the clone, install the SDK and its locked dependencies:
+
+```sh
+uv sync --locked
+```
+
+## Check a case
+
+The repository ships a case for the NASA CRM-HL high-lift configuration, `py/examples/crm_hl.py`, and the MeshInfo summary of its mesh. Plan it:
+
+```sh
+uv run autan plan py/examples/crm_hl.py --mesh-info py/tests/fixtures/crm-hl.meshinfo.json
+```
+
+```text
+boundaries  7/7 zones covered
+  wing.slat      0.4 M faces  wall           code
+  …
+  fuselage       0.7 M faces  wall           mesh
+  …
+memory      46.6 GB total · 46.6 GB/GPU on 1 GPU · 6 equations (autan.memory/1)
+warning[W0205]: mesh '…/crm-hl.cgns' not found; the MeshInfo is taken as given
+plan OK
+```
+
+Every boundary zone has a condition, and the last column says where it comes from: your code or the mesh file. The warning is expected: the mesh file itself is not in the repository. [Boundary conditions](../concepts/boundary-conditions.md) explains the resolution.
+
+## Run it on the fake backend
+
+```sh
+uv run autan run py/examples/crm_hl.py --mesh-info py/tests/fixtures/crm-hl.meshinfo.json --runs /tmp/autan-runs
+```
+
+The command prints the run id, its final state and its directory. The directory holds the case as run, the metadata, the residual history and a CGNS solution, as [Runs](../concepts/runs.md) describes.
+
+## Read the results
+
+Open the run with `autan.Results`:
+
+```python
+from pathlib import Path
+
+import autan
+
+run_dir = max(Path("/tmp/autan-runs").glob("run-*"))
+results = autan.Results.open(run_dir)
+print(results.run.status, results.run.solver.backend)
+print(results.forces.cl[-1])
+```
+
+`results.run.solver.backend` is `fake`: the lift coefficient is synthetic.
+
+## Next steps
+
+- [Check a case before you run it](../guides/check-a-case.md): read the plan and fix what it reports.
+- [Meshes](../concepts/meshes.md): how Autan stores cells, faces and zones.
+- [Case schema](../contracts/case-schema.md): every field of a case.
