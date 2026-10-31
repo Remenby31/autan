@@ -21,7 +21,9 @@ Vec = npt.NDArray[np.float64]
 
 
 def test_advection_diffusion_source_matches_hand_derivation() -> None:
-    ms = advection_diffusion(velocity=("1", "0.7", "0.4"), diffusivity="0.1", solution=sp.sin(sp.pi * x))
+    ms = advection_diffusion(
+        velocity=("1", "0.7", "0.4"), diffusivity="0.1", solution=sp.sin(sp.pi * x)
+    )
     expected = sp.pi * sp.cos(sp.pi * x) + sp.Rational(1, 10) * sp.pi**2 * sp.sin(sp.pi * x)
     assert sp.simplify(ms.sources["phi"] - expected) == 0
 
@@ -68,6 +70,7 @@ def test_navier_stokes_source_differs_from_euler_by_the_viscous_terms() -> None:
 
 # --- independent finite-difference residual for RANS-SA ------------------------------------------------------
 
+
 def _grad(f: Callable[[Vec], Vec], p: Vec, h: float) -> Vec:
     """Fourth-order central differences of a scalar or vector function of a point."""
     cols = []
@@ -81,7 +84,13 @@ def _grad(f: Callable[[Vec], Vec], p: Vec, h: float) -> Vec:
 def _sa_residual(ms: ManufacturedSolution, p: Vec, h: float) -> dict[str, float]:
     """RANS-SA residual from the TMR equations (SA, compressible conservative form), by finite differences."""
     c = ms.parameters
-    gamma, gas, mu, pr, prt = c["gamma"], c["gas_constant"], c["viscosity"], c["prandtl"], c["prandtl_turbulent"]
+    gamma, gas, mu, pr, prt = (
+        c["gamma"],
+        c["gas_constant"],
+        c["viscosity"],
+        c["prandtl"],
+        c["prandtl_turbulent"],
+    )
     cp = gamma * gas / (gamma - 1)
     fns = {k: sp.lambdify(X, v, "numpy") for k, v in ms.fields.items()}
 
@@ -117,7 +126,13 @@ def _sa_residual(ms: ManufacturedSolution, p: Vec, h: float) -> dict[str, float]
 
     rho, nu_hat = prim(p)[[0, 5]]
     grad_vel = _grad(lambda s: prim(s)[1:4], p, h)
-    vort = np.array([grad_vel[2, 1] - grad_vel[1, 2], grad_vel[0, 2] - grad_vel[2, 0], grad_vel[1, 0] - grad_vel[0, 1]])
+    vort = np.array(
+        [
+            grad_vel[2, 1] - grad_vel[1, 2],
+            grad_vel[0, 2] - grad_vel[2, 0],
+            grad_vel[1, 0] - grad_vel[0, 1],
+        ]
+    )
     omega = np.linalg.norm(vort)
     d = p[1]
     nu = mu / rho
@@ -132,9 +147,11 @@ def _sa_residual(ms: ManufacturedSolution, p: Vec, h: float) -> dict[str, float]
     ft2 = c["ft2"] * c["ct3"] * np.exp(-c["ct4"] * chi**2)
     grad_nu = _grad(lambda s: np.array(prim(s)[5]), p, h)
     grad_rho = _grad(lambda s: np.array(prim(s)[0]), p, h)
-    rhs = (rho * c["cb1"] * (1 - ft2) * s_tilde * nu_hat
-           - rho * (cw1 * fw - c["cb1"] / c["kappa"] ** 2 * ft2) * (nu_hat / d) ** 2
-           + (rho * c["cb2"] * grad_nu @ grad_nu - (nu + nu_hat) * grad_rho @ grad_nu) / c["sigma"])
+    rhs = (
+        rho * c["cb1"] * (1 - ft2) * s_tilde * nu_hat
+        - rho * (cw1 * fw - c["cb1"] / c["kappa"] ** 2 * ft2) * (nu_hat / d) ** 2
+        + (rho * c["cb2"] * grad_nu @ grad_nu - (nu + nu_hat) * grad_rho @ grad_nu) / c["sigma"]
+    )
     names = ["rho", "rhou", "rhov", "rhow", "rhoE", "rhonu"]
     out = {n: float(div[i]) for i, n in enumerate(names)}
     out["rhonu"] -= float(rhs)
@@ -143,7 +160,9 @@ def _sa_residual(ms: ManufacturedSolution, p: Vec, h: float) -> dict[str, float]
 
 @pytest.mark.parametrize("ft2", [True, False])
 @pytest.mark.parametrize("point", [(0.3, 0.4, 0.6), (0.71, 0.12, 0.23), (0.55, 0.03, 0.85)])
-def test_rans_sa_source_matches_independent_finite_differences(ft2: bool, point: tuple[float, float, float]) -> None:
+def test_rans_sa_source_matches_independent_finite_differences(
+    ft2: bool, point: tuple[float, float, float]
+) -> None:
     ms = rans_sa(ft2=ft2)
     p = np.array(point)
     numerical = _sa_residual(ms, p, h=min(2e-3, p[1] / 20))
@@ -164,7 +183,9 @@ def test_rans_sa_exercises_eddy_viscosity_and_destruction() -> None:
 
 def test_validity_violation_raises_a_coded_error() -> None:
     ms = euler()
-    broken = ManufacturedSolution(**{**ms.__dict__, "validity": (Validity("negative", -ms.fields["p"], lower=0.0),)})
+    broken = ManufacturedSolution(
+        **{**ms.__dict__, "validity": (Validity("negative", -ms.fields["p"], lower=0.0),)}
+    )
     with pytest.raises(VVError) as err:
         broken.check_validity()
     assert err.value.code == "V0201"

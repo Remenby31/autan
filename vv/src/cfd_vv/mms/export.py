@@ -3,37 +3,41 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sympy as sp
+from sympy.parsing.sympy_parser import parse_expr
 from sympy.printing.c import C99CodePrinter
 from sympy.printing.cxx import CXX17CodePrinter
 
 from cfd_vv.mms.solutions import ManufacturedSolution, X
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 JSON_SCHEMA = "cfd-vv/mms/1"
 REFERENCES: dict[str, str] = {
     "roache2002": "P. J. Roache, Code verification by the method of manufactured solutions, "
-                  "J. Fluids Eng. 124(1):4-10, 2002. doi:10.1115/1.1436090",
+    "J. Fluids Eng. 124(1):4-10, 2002. doi:10.1115/1.1436090",
     "salari2000": "K. Salari and P. Knupp, Code verification by the method of manufactured solutions, "
-                  "Sandia report SAND2000-1444, 2000. doi:10.2172/759450",
+    "Sandia report SAND2000-1444, 2000. doi:10.2172/759450",
     "roy2004": "C. J. Roy, C. C. Nelson, T. M. Smith and C. C. Ober, Verification of Euler/Navier-Stokes codes "
-               "using the method of manufactured solutions, Int. J. Numer. Meth. Fluids 44(6):599-620, 2004. "
-               "doi:10.1002/fld.660",
+    "using the method of manufactured solutions, Int. J. Numer. Meth. Fluids 44(6):599-620, 2004. "
+    "doi:10.1002/fld.660",
     "spalart1994": "P. R. Spalart and S. R. Allmaras, A one-equation turbulence model for aerodynamic flows, "
-                   "La Recherche Aerospatiale 1:5-21, 1994.",
+    "La Recherche Aerospatiale 1:5-21, 1994.",
     "allmaras2012": "S. R. Allmaras, F. T. Johnson and P. R. Spalart, Modifications and clarifications for the "
-                    "implementation of the Spalart-Allmaras turbulence model, ICCFD7-1902, 2012.",
+    "implementation of the Spalart-Allmaras turbulence model, ICCFD7-1902, 2012.",
     "eca2007": "L. Eca, M. Hoekstra, A. Hay and D. Pelletier, On the construction of manufactured solutions for "
-               "one and two-equation eddy-viscosity models, Int. J. Numer. Meth. Fluids 54(2):119-154, 2007. "
-               "doi:10.1002/fld.1387",
+    "one and two-equation eddy-viscosity models, Int. J. Numer. Meth. Fluids 54(2):119-154, 2007. "
+    "doi:10.1002/fld.1387",
     "oliver2012": "T. A. Oliver, K. C. Estacio-Hiroms, N. Malaya and G. F. Carey, Manufactured solutions for the "
-                  "Favre-averaged Navier-Stokes equations with eddy-viscosity turbulence models, AIAA 2012-0080. "
-                  "doi:10.2514/6.2012-80",
+    "Favre-averaged Navier-Stokes equations with eddy-viscosity turbulence models, AIAA 2012-0080. "
+    "doi:10.2514/6.2012-80",
     "tmr_sa": "NASA Turbulence Modeling Resource, The Spalart-Allmaras turbulence model, "
-              "https://tmbwg.github.io/turbmodels/spalart.html",
+    "https://tmbwg.github.io/turbmodels/spalart.html",
 }
+
 
 def _outputs(ms: ManufacturedSolution) -> list[tuple[str, str, sp.Expr]]:
     """Every exported expression as (group, name, expr), in a fixed order."""
@@ -48,14 +52,16 @@ def _outputs(ms: ManufacturedSolution) -> list[tuple[str, str, sp.Expr]]:
 
 
 def _cse(exprs: list[sp.Expr]) -> tuple[list[tuple[sp.Symbol, sp.Expr]], list[sp.Expr]]:
-    subs, reduced = sp.cse(exprs, symbols=sp.numbered_symbols("t"), optimizations="basic", order="none")
+    subs, reduced = sp.cse(
+        exprs, symbols=sp.numbered_symbols("t"), optimizations="basic", order="none"
+    )
     return list(subs), list(reduced)
 
 
 class _CxxPrinter(CXX17CodePrinter):  # type: ignore[misc]
     """Prints literals as T(...) so one template body serves float and double without promotion to double."""
 
-    def _print_Pi(self, expr: sp.Expr) -> str:
+    def _print_Pi(self, _expr: sp.Expr) -> str:
         return "std::numbers::pi_v<T>"
 
     def _print_Rational(self, expr: sp.Rational) -> str:
@@ -80,7 +86,7 @@ class _CxxPrinter(CXX17CodePrinter):  # type: ignore[misc]
 class _JsonPrinter(C99CodePrinter):  # type: ignore[misc]
     """C99 syntax with the constant pi spelt `pi` and rationals as exact decimal quotients."""
 
-    def _print_Pi(self, expr: sp.Expr) -> str:
+    def _print_Pi(self, _expr: sp.Expr) -> str:
         return "pi"
 
     def _print_Rational(self, expr: sp.Rational) -> str:
@@ -88,7 +94,9 @@ class _JsonPrinter(C99CodePrinter):  # type: ignore[misc]
 
 
 def _cxx_identifier(name: str) -> str:
-    return name if name.isidentifier() else "_" + "".join(ch if ch.isalnum() else "_" for ch in name)
+    return (
+        name if name.isidentifier() else "_" + "".join(ch if ch.isalnum() else "_" for ch in name)
+    )
 
 
 def to_cpp(ms: ManufacturedSolution, namespace: str = "cfd::mms") -> str:
@@ -128,11 +136,15 @@ def to_cpp(ms: ManufacturedSolution, namespace: str = "cfd::mms") -> str:
         "",
         "struct Parameters {",
     ]
-    lines += [f"  static constexpr double {_cxx_identifier(k)} = {v!r};" for k, v in ms.parameters.items()]
+    lines += [
+        f"  static constexpr double {_cxx_identifier(k)} = {v!r};" for k, v in ms.parameters.items()
+    ]
     lines += ["};", ""]
     for group, items in groups.items():
         names = ", ".join(f'"{n}"' for n, _ in items)
-        lines.append(f"inline constexpr std::array<std::string_view, {len(items)}> {group}_names = {{{names}}};")
+        lines.append(
+            f"inline constexpr std::array<std::string_view, {len(items)}> {group}_names = {{{names}}};"
+        )
     lines.append("")
     for group, items in groups.items():
         subs, reduced = _cse([e for _, e in items])
@@ -142,8 +154,10 @@ def to_cpp(ms: ManufacturedSolution, namespace: str = "cfd::mms") -> str:
             "  (void)x; (void)y; (void)z;",
         ]
         lines += [f"  const T {s} = {printer.doprint(e)};" for s, e in subs]
-        lines += [f"  out[{i}] = {printer.doprint(e)};  // {n}"
-                  for i, ((n, _), e) in enumerate(zip(items, reduced, strict=True))]
+        lines += [
+            f"  out[{i}] = {printer.doprint(e)};  // {n}"
+            for i, ((n, _), e) in enumerate(zip(items, reduced, strict=True))
+        ]
         lines += ["}", ""]
     lines += [f"}}  // namespace {namespace}::{ms.name}", ""]
     return "\n".join(lines)
@@ -169,8 +183,10 @@ def to_json(ms: ManufacturedSolution) -> dict[str, Any]:
         "coordinates": [str(c) for c in X],
         "domain": {"lower": [0.0, 0.0, 0.0], "upper": [1.0, 1.0, 1.0]},
         "parameters": dict(ms.parameters),
-        "validity": [{"name": v.name, "lower": _finite_or_none(v.lower), "upper": _finite_or_none(v.upper)}
-                     for v in ms.validity],
+        "validity": [
+            {"name": v.name, "lower": _finite_or_none(v.lower), "upper": _finite_or_none(v.upper)}
+            for v in ms.validity
+        ],
         "references": {k: REFERENCES[k] for k in ms.references},
         **groups,
     }
@@ -187,11 +203,13 @@ def dump_json(ms: ManufacturedSolution) -> str:
 
 def parse_json_expressions(doc: Mapping[str, Any], group: str) -> dict[str, sp.Expr]:
     """Rebuild the sympy expressions of one group from a JSON document (a reference consumer of the format)."""
-    from sympy.parsing.sympy_parser import parse_expr
-
-    local: dict[str, Any] = {name: getattr(sp, name) for name in ("sin", "cos", "exp", "log", "sqrt")}
+    local: dict[str, Any] = {
+        name: getattr(sp, name) for name in ("sin", "cos", "exp", "log", "sqrt")
+    }
     local |= {"pow": sp.Pow, "pi": sp.pi} | {str(c): c for c in X}
     for name, text in doc[group]["subexpressions"]:
         local[name] = parse_expr(text, local_dict=local, evaluate=False)
-    return {name: parse_expr(text, local_dict=local, evaluate=False)
-            for name, text in doc[group]["outputs"].items()}
+    return {
+        name: parse_expr(text, local_dict=local, evaluate=False)
+        for name, text in doc[group]["outputs"].items()
+    }

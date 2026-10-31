@@ -61,8 +61,12 @@ def test_richardson_is_exact_for_a_power_law_with_non_constant_refinement() -> N
     assert res.gci_fine == pytest.approx(1.25 * abs(a) * h[0] ** p, rel=1e-9)
 
 
-@pytest.mark.parametrize(("values", "code"), [([1.0, 1.1, 1.05], "V0107"), ([1.0, 1.1, 1.15], "V0108")])
-def test_richardson_rejects_oscillatory_and_divergent_triplets(values: list[float], code: str) -> None:
+@pytest.mark.parametrize(
+    ("values", "code"), [([1.0, 1.1, 1.05], "V0107"), ([1.0, 1.1, 1.15], "V0108")]
+)
+def test_richardson_rejects_oscillatory_and_divergent_triplets(
+    values: list[float], code: str
+) -> None:
     with pytest.raises(VVError) as err:
         richardson([0.1, 0.2, 0.4], values)
     assert err.value.code == code

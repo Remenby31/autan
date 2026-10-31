@@ -36,7 +36,9 @@ def _expected(ms: ManufacturedSolution, pts: np.ndarray) -> dict[str, np.ndarray
             out[group] = np.stack([np.broadcast_to(f(*pts.T), pts.shape[:1]) for f in cols], axis=1)
         else:
             values = ms.evaluator(group)(pts)
-            out[group] = np.stack(list(values.values()), axis=1) if values else np.zeros((len(pts), 0))
+            out[group] = (
+                np.stack(list(values.values()), axis=1) if values else np.zeros((len(pts), 0))
+            )
     return out
 
 
@@ -48,16 +50,36 @@ def _compile(ms: ManufacturedSolution, tmp: Path) -> ctypes.CDLL:
     (tmp / "solution.hpp").write_text(to_cpp(ms))
     wrappers = "\n".join(
         f'extern "C" void {g}_{real}({real} x, {real} y, {real} z, {real}* o) {{ m::{g}<{real}>(x, y, z, o); }}'
-        for g in GROUPS if _size(ms, g) > 0 for real in ("double", "float")
+        for g in GROUPS
+        if _size(ms, g) > 0
+        for real in ("double", "float")
     )
     (tmp / "wrapper.cpp").write_text(WRAPPER.format(name=ms.name, wrappers=wrappers))
     lib = tmp / "libmms.so"
-    subprocess.run([compiler, "-std=c++20", "-O1", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
-                    "-o", str(lib), str(tmp / "wrapper.cpp")], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++20",
+            "-O1",
+            "-shared",
+            "-fPIC",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-o",
+            str(lib),
+            str(tmp / "wrapper.cpp"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return ctypes.CDLL(str(lib))
 
 
-def _run_cpp(lib: ctypes.CDLL, ms: ManufacturedSolution, real: str, pts: np.ndarray) -> dict[str, np.ndarray]:
+def _run_cpp(
+    lib: ctypes.CDLL, ms: ManufacturedSolution, real: str, pts: np.ndarray
+) -> dict[str, np.ndarray]:
     ctype = ctypes.c_double if real == "double" else ctypes.c_float
     out = {}
     for g in GROUPS:
@@ -107,7 +129,12 @@ def test_json_document_round_trips_through_a_parser(name: str) -> None:
         if _size(ms, group) == 0:
             continue
         parsed = parse_json_expressions(doc, group)
-        got = np.stack([np.broadcast_to(sp.lambdify(X, e, "numpy")(*pts.T), pts.shape[:1]) for e in parsed.values()],
-                       axis=1)
+        got = np.stack(
+            [
+                np.broadcast_to(sp.lambdify(X, e, "numpy")(*pts.T), pts.shape[:1])
+                for e in parsed.values()
+            ],
+            axis=1,
+        )
         scale = np.max(np.abs(expected[group]), axis=0) + 1e-300
         assert np.max(np.abs(got - expected[group]) / scale) < 1e-12, group
