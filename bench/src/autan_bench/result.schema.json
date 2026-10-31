@@ -33,7 +33,7 @@
   },
   "properties": {
     "schema": {"const": "autan.bench-result/1"},
-    "suite": {"type": "string", "minLength": 1},
+    "suite": {"type": "string", "pattern": "^[a-z0-9_]+$"},
     "created": {"type": "string", "format": "date-time"},
     "provenance": {
       "description": "Run identity, named as in docs/contracts/results.md (solver.commit, backend, precision, devices), plus the host, image and GPU the numbers depend on.",
@@ -127,6 +127,8 @@
           "unit": {"enum": ["GB/s", "ns"]},
           "better": {"enum": ["higher", "lower"]},
           "bytes_per_rep": {"type": "integer", "minimum": 1},
+          "cells_per_rep": {"type": "integer", "minimum": 1},
+          "params": {"type": "object", "description": "Kernel parameters reported by the binary (strategy, layout, ...)."},
           "samples": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 2},
           "stats": {"$ref": "#/$defs/stats"}
         }

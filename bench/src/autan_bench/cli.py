@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from autan_bench import gpu, result, stream
+from autan_bench import gpu, result, runner
 from autan_bench.compare import DEFAULT_THRESHOLD, compare
 from autan_bench.errors import BenchError, Code
 
@@ -17,29 +17,42 @@ def _say(text: str, *, err: bool = False) -> None:
 
 
 def _table(doc: dict) -> str:
-    lines = [f"{'benchmark':<16} {'median':>10} {'IQR':>8} {'CV':>7}  unit"]
+    width = max(len(b["name"]) for b in doc["benchmarks"])
+    lines = [f"{'benchmark':<{width}} {'median':>10} {'IQR':>8} {'CV':>7}  unit"]
     for b in doc["benchmarks"]:
         s = b["stats"]
         lines.append(
-            f"{b['name']:<16} {s['median']:>10.2f} {s['iqr']:>8.2f} {s['cv']:>6.2%}  {b['unit']}"
+            f"{b['name']:<{width}} {s['median']:>10.2f} {s['iqr']:>8.2f} {s['cv']:>6.2%}  {b['unit']}"
         )
     return "\n".join(lines)
 
 
+def _report(doc: dict, out: Path) -> int:
+    result.write(doc, out)
+    _say(_table(doc))
+    _say(f"wrote {out}")
+    return 0
+
+
 def _stream(args: argparse.Namespace) -> int:
-    doc = stream.run(
+    binary_args = ["--elements", args.elements, "--warmup", args.warmup, "--reps", args.reps]
+    binary_args += ["--batch", args.batch, "--block", args.block]
+    doc = runner.run(
         args.binary,
-        elements=args.elements,
-        warmup=args.warmup,
-        reps=args.reps,
-        batch=args.batch,
-        block=args.block,
+        [str(a) for a in binary_args],
+        suite="stream",
+        precision="fp64",
         lock=args.lock,
     )
-    result.write(doc, args.out)
-    _say(_table(doc))
-    _say(f"wrote {args.out}")
-    return 0
+    return _report(doc, args.out)
+
+
+def _run(args: argparse.Namespace) -> int:
+    binary_args = args.binary_args[1:] if args.binary_args[:1] == ["--"] else args.binary_args
+    doc = runner.run(
+        args.binary, binary_args, suite=args.suite, precision=args.precision, lock=args.lock
+    )
+    return _report(doc, args.out)
 
 
 def _validate(args: argparse.Namespace) -> int:
@@ -105,7 +118,7 @@ def _peak(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="autan_bench", description=__doc__)
+    p = argparse.ArgumentParser(prog="autan-bench", description=__doc__)
     sub = p.add_subparsers(required=True)
 
     s = sub.add_parser("stream", help="measure device memory bandwidth with the STREAM kernels")
@@ -113,9 +126,6 @@ def parser() -> argparse.ArgumentParser:
         "--binary", type=Path, required=True, help="the stream executable built from bench/"
     )
     s.add_argument("--out", type=Path, required=True, help="result JSON to write")
-    s.add_argument(
-        "--repo", type=Path, default=Path(), help="solver checkout recorded in provenance"
-    )
     s.add_argument("--elements", type=int, default=1 << 28, help="FP64 elements per array")
     s.add_argument("--warmup", type=int, default=10)
     s.add_argument("--reps", type=int, default=100)
@@ -125,6 +135,21 @@ def parser() -> argparse.ArgumentParser:
         "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
     )
     s.set_defaults(func=_stream)
+
+    r = sub.add_parser(
+        "run",
+        help="time any benchmark binary that prints the raw result format",
+        description=runner.run.__doc__,
+    )
+    r.add_argument("--suite", required=True, help="suite name, the prefix of every benchmark")
+    r.add_argument("--binary", type=Path, required=True)
+    r.add_argument("--precision", required=True, choices=["fp32", "fp32+acc64", "fp64"])
+    r.add_argument("--out", type=Path, required=True, help="result JSON to write")
+    r.add_argument(
+        "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
+    )
+    r.add_argument("binary_args", nargs=argparse.REMAINDER, help="-- then the binary's arguments")
+    r.set_defaults(func=_run)
 
     v = sub.add_parser("validate", help="check result files against the result schema")
     v.add_argument("results", type=Path, nargs="+")

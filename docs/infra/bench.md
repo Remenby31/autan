@@ -13,6 +13,17 @@ uv run --project bench --locked autan-bench stream --binary build/bench/stream -
 uv run --project bench --locked autan-bench compare results/stream.json bench/baselines/gb10.json
 ```
 
+## Benchmark any kernel
+
+`autan-bench run` applies the same method to any benchmark binary:
+
+```sh
+uv run --project bench --locked autan-bench run --suite codegen --binary build/codegen/bench \
+  --precision fp32 --out results/codegen.json -- <binary arguments>
+```
+
+The binary prints one JSON object on stdout: `revision` (`commit`, `dirty`, embedded at build time with `bench/cmake/revision.cmake`), `backend`, `runtime_version`, `driver_version`, `device`, a free-form `config`, `verified` (its own check of the results against the specification), and `kernels`, each with `name`, `bytes_per_rep` (useful bytes moved per repetition), `seconds` (one entry per timed sample), and optionally `cells` (cells processed per repetition) and a free-form `params`. Each kernel gives a `<suite>.<kernel>` bandwidth benchmark (GB/s, the numerator of "% of peak") and, with `cells`, a `<suite>.<kernel>.time_per_cell` benchmark (ns per cell per iteration). `autan-bench stream` is `run` with the STREAM binary's arguments.
+
 ## Timing method
 
 `autan-bench` applies the same procedure to every benchmark:
