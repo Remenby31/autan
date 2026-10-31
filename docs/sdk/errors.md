@@ -1,6 +1,6 @@
 # Diagnostic codes
 
-Generated from `py/cfd/errors.py` by `cfd explain --all`; do not edit by hand.
+Generated from `py/autan/errors.py` by `autan explain --all`; do not edit by hand.
 
 `E` codes are errors and block the run, `W` codes are warnings, `D` codes report a divergence detected during a run. Codes `E0101` to `E0199` belong to the mesh readers ([mesh.md](../contracts/mesh.md)).
 
@@ -16,15 +16,15 @@ Fix: Fix the file at the reported location.
 
 **The case file does not define exactly one case** (error)
 
-A Python case file must create exactly one `cfd.Case`, at module level.
+A Python case file must create exactly one `autan.Case`, at module level.
 
-Fix: Create one case: `case = cfd.Case("name", mesh="mesh.cgns")`.
+Fix: Create one case: `case = autan.Case("name", mesh="mesh.cgns")`.
 
 ## E0003
 
 **The case document does not match the schema** (error)
 
-A field is missing, has the wrong type, or is not part of `cfd.case/1`. The location gives the path of the field in the document. See docs/contracts/case-schema.md.
+A field is missing, has the wrong type, or is not part of `autan.case/1`. The location gives the path of the field in the document. See docs/contracts/case-schema.md.
 
 Fix: Correct the field named in the message.
 
@@ -32,9 +32,17 @@ Fix: Correct the field named in the message.
 
 **Unsupported case schema version** (error)
 
-The document's `schema` key is not `cfd.case/1`.
+The document's `schema` key is not `autan.case/1`.
 
-Fix: Set `schema = "cfd.case/1"`.
+Fix: Set `schema = "autan.case/1"`.
+
+## D0107
+
+**Divergence** (divergence)
+
+The solution diverged: a residual or a state became non-finite or non-physical. `data` gives the iteration, the cell (0-based) and its cell zone.
+
+Fix: Lower the CFL number or use a more dissipative limiter; check the mesh quality near the cell.
 
 ## E0201
 
@@ -42,13 +50,13 @@ Fix: Set `schema = "cfd.case/1"`.
 
 Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The C++ mesh readers are not part of this build, so it must be passed explicitly.
 
-Fix: Pass the MeshInfo JSON: `cfd plan case.py --mesh-info mesh.meshinfo.json`.
+Fix: Pass the MeshInfo JSON: `autan plan case.py --mesh-info mesh.meshinfo.json`.
 
 ## E0202
 
 **The MeshInfo document is invalid** (error)
 
-The JSON does not match `cfd.mesh-info/1`, or its counts are inconsistent (zone counts that do not sum to the cell count, duplicate names, unknown interface zones).
+The JSON does not match `autan.mesh-info/1`, or its counts are inconsistent (zone counts that do not sum to the cell count, duplicate names, unknown interface zones).
 
 Fix: Regenerate the MeshInfo with the mesh reader of the same solver version.
 
@@ -82,7 +90,7 @@ Fix: Put the mesh at the path the case gives, relative to the case file.
 
 The value has a dimension other than the one the field expects, for example a speed given for the Mach number.
 
-Fix: Pass a value of the expected dimension, with a unit from `cfd.units`.
+Fix: Pass a value of the expected dimension, with a unit from `autan.units`.
 
 ## E0302
 
@@ -114,7 +122,7 @@ Fix: Use a physically valid value.
 
 DDES and WMLES resolve turbulent structures in time and cannot run steady.
 
-Fix: Set `case.time = cfd.Unsteady(steps=..., dt=...)`.
+Fix: Set `case.time = autan.Unsteady(steps=..., dt=...)`.
 
 ## E0306
 
@@ -130,7 +138,7 @@ Fix: Set the freestream parameters required by the physics.
 
 The pattern of `case.boundary(...)` matches no boundary zone of the mesh.
 
-Fix: Use one of the zone names listed by `cfd plan`, or a glob that matches some.
+Fix: Use one of the zone names listed by `autan plan`, or a glob that matches some.
 
 ## E0411
 
@@ -178,7 +186,7 @@ Fix: Check that the override is intended.
 
 The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.
 
-Fix: Use one of the cell zone names listed by `cfd plan`.
+Fix: Use one of the cell zone names listed by `autan plan`.
 
 ## E0502
 
@@ -194,7 +202,7 @@ Fix: Narrow the patterns so each zone matches one rule.
 
 The mesh declares the zone solid and the case gives it no material.
 
-Fix: Set it: `case.cell_zone("name").solid(cfd.materials.COPPER)`.
+Fix: Set it: `case.cell_zone("name").solid(autan.materials.COPPER)`.
 
 ## E0504
 
@@ -208,7 +216,7 @@ Fix: Use a material of the right kind for the physics.
 
 **Fluids of different materials in contact** (error)
 
-Two fluid zones with different materials share an interface. Mixing them needs species transport, which `cfd.case/1` does not provide.
+Two fluid zones with different materials share an interface. Mixing them needs species transport, which `autan.case/1` does not provide.
 
 Fix: Use the same material on both sides, or separate them by a solid zone.
 
@@ -216,9 +224,9 @@ Fix: Use the same material on both sides, or separate them by a solid zone.
 
 **Solid zone with incompressible physics** (error)
 
-Conjugate heat transfer needs an energy equation in the fluid, which incompressible flow does not solve in `cfd.case/1`.
+Conjugate heat transfer needs an energy equation in the fluid, which incompressible flow does not solve in `autan.case/1`.
 
-Fix: Use `cfd.Compressible(...)`, or remove the solid zone from the mesh.
+Fix: Use `autan.Compressible(...)`, or remove the solid zone from the mesh.
 
 ## E0601
 
@@ -234,7 +242,39 @@ Fix: Use a pattern that matches the zones to integrate over.
 
 Two monitors share a name; results are keyed by monitor name.
 
-Fix: Name them: `cfd.forces("wing.*", name="wing")`.
+Fix: Name them: `autan.forces("wing.*", name="wing")`.
+
+## E0701
+
+**The run directory does not conform to autan.results/1** (error)
+
+A file is missing or unreadable, `run.json` has another schema, the stored case or MeshInfo does not match the hashes of `run.json`, or the history is out of order. See docs/contracts/results.md.
+
+Fix: Open a directory written by a backend of this solver version.
+
+## E0702
+
+**No such monitor** (error)
+
+The history has no monitor of that name, or `results.forces` was used on a case with zero or several forces monitors.
+
+Fix: Use `results.history.monitor(name)` with a name from `results.history.monitors`.
+
+## E0703
+
+**No such solution data** (error)
+
+The run has no `solution.cgns` (it failed or diverged before writing one), or the requested field is not in it.
+
+Fix: Check `results.run.status`, and use a field name listed in the message.
+
+## E0704
+
+**The run failed** (error)
+
+The backend stopped on an unexpected error; the message names it. The run directory keeps the history written so far.
+
+Fix: Report the message with the run directory.
 
 ## W0801
 
@@ -256,6 +296,14 @@ Fix: Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support).
 
 **Solver core not built** (warning)
 
-This installation contains the SDK only: cases can be planned, not run.
+This installation contains the SDK only: cases can be planned, and run only with the `fake` backend, which writes synthetic results.
 
 Fix: Build the C++ core (see README) to run real computations.
+
+## E0804
+
+**No solver backend** (error)
+
+`case.run()` needs a backend. The C++ core is not part of this build, so only the `fake` backend exists; it writes synthetic results.
+
+Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
