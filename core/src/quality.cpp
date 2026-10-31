@@ -44,6 +44,23 @@ MeshQuality compute_quality(const Mesh& mesh, const Geometry& g) {
   q.skewness.resize(n_faces);
   q.volume_ratio.resize(n_interior);
   constexpr double infinite = std::numeric_limits<double>::infinity();
+  // OpenFOAM primitiveMeshTools::faceSkewness / boundaryFaceSkewness: the
+  // skewness vector is normalised by the face extent along it, at least
+  // 0.2 |d| (interior) or 0.4 |d| (boundary).
+  auto skewness = [&](std::size_t f, Vec3 cpf, Vec3 d, Vec3 s, Vec3 cf, double floor) {
+    const double ds = dot(s, d);
+    if (!(ds > 0.0)) return infinite;
+    const Vec3 sv = cpf - (dot(s, cpf) / ds) * d;
+    const double length = norm(sv);
+    if (length == 0.0) return 0.0;
+    const Vec3 dir = (1.0 / length) * sv;
+    double extent = floor * norm(d);
+    for (const index_t p : mesh.face_nodes(static_cast<index_t>(f))) {
+      const Vec3 x{mesh.x()[at(p)], mesh.y()[at(p)], mesh.z()[at(p)]};
+      extent = std::max(extent, std::abs(dot(dir, x - cf)));
+    }
+    return length / extent;
+  };
   for (std::size_t f = 0; f < n_faces; ++f) {
     const Vec3 s{g.face_area_x[f], g.face_area_y[f], g.face_area_z[f]};
     const Vec3 cf{g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]};
@@ -52,19 +69,15 @@ MeshQuality compute_quality(const Mesh& mesh, const Geometry& g) {
       const index_t neighbour = mesh.neighbour()[f];
       const Vec3 d = cell_centre(neighbour) - cp;
       q.non_orthogonality[f] = angle_deg(s, d);
-      const double ds = dot(d, s);
-      const Vec3 crossing = cp + (dot(cf - cp, s) / ds) * d;
-      q.skewness[f] = ds > 0.0 ? norm(cf - crossing) / norm(d) : infinite;
+      q.skewness[f] = skewness(f, cf - cp, d, s, cf, 0.2);
       const double vp = g.cell_volume[at(mesh.owner()[f])];
       const double vn = g.cell_volume[at(neighbour)];
-      q.volume_ratio[f] = std::max(vp, vn) / std::min(vp, vn);
+      q.volume_ratio[f] = std::min(vp, vn) / std::max(vp, vn);
     } else {
-      const Vec3 d = cf - cp;
-      q.non_orthogonality[f] = angle_deg(s, d);
+      const Vec3 cpf = cf - cp;
+      q.non_orthogonality[f] = angle_deg(s, cpf);
       const Vec3 n = (1.0 / norm(s)) * s;
-      const Vec3 normal_step = dot(n, d) * n;
-      const double length = norm(normal_step);
-      q.skewness[f] = dot(n, d) > 0.0 ? norm(cf - (cp + normal_step)) / length : infinite;
+      q.skewness[f] = skewness(f, cpf, dot(n, cpf) * n, s, cf, 0.4);
     }
   }
 
@@ -77,8 +90,8 @@ MeshQuality compute_quality(const Mesh& mesh, const Geometry& g) {
     }
     const double a_max = std::max({a.x, a.y, a.z});
     const double a_min = std::min({a.x, a.y, a.z});
-    const double closedness =
-        (a.x + a.y + a.z) / (6.0 * std::cbrt(g.cell_volume[at(c)] * g.cell_volume[at(c)]));
+    const double edge = std::cbrt(g.cell_volume[at(c)]);
+    const double closedness = (a.x + a.y + a.z) / (6.0 * edge * edge);
     q.aspect_ratio[at(c)] = std::max(a_max / a_min, closedness);
   }
   return q;

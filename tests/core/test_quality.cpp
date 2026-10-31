@@ -53,6 +53,11 @@ TEST_CASE("Sheared and stretched boxes have their analytic quality", "[quality]"
   CHECK_THAT(max_angle, WithinAbs(expected, 1e-9));
   for (index_t f = 0; f < mesh.n_interior_faces(); ++f)
     CHECK_THAT(q.skewness[at(f)], WithinAbs(0.0, eps));
+  // zmin, zmax faces (h x h squares): the cell centroid sits t h / 2 off the
+  // face centroid along x and 2 h above it; skewness (t h / 2) / (0.4 * 2 h).
+  const auto offsets = mesh.boundary_zone_offsets();
+  for (index_t f = offsets[4]; f < offsets[6]; ++f)
+    CHECK_THAT(q.skewness[at(f)], WithinAbs(0.625 * t, eps));
   if (t == 0.0) {
     for (const double v : q.aspect_ratio) CHECK_THAT(v, WithinRel(4.0, eps));
   }
@@ -61,8 +66,10 @@ TEST_CASE("Sheared and stretched boxes have their analytic quality", "[quality]"
 TEST_CASE("Faces across a hanging-node interface have their analytic quality", "[quality]") {
   // Coarse centroid P = (1/2, 1/2, 1/2); fine centroid N = (3/2, y, z); face
   // centroid (1, y, z); normal e_x. With d = (1, y - 1/2, z - 1/2):
-  // angle = acos(1 / |d|), the line P -> N crosses x = 1 at P + d / 2, so
-  // skewness = |(y, z) - (1/2, 1/2)| / (2 |d|); volume ratio 1 / 0.01.
+  // angle = acos(1 / |d|); the line P -> N crosses x = 1 at P + d / 2, so the
+  // skewness vector has length r / 2, r = |(y, z) - (1/2, 1/2)|; the face
+  // (side 0.1) extends at most 0.05 sqrt(2) < 0.2 |d| along it, so the
+  // skewness is (r / 2) / (0.2 |d|); volume ratio 0.01 / 1.
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::hanging_node_box()));
   const autan::Geometry g = autan::compute_geometry(mesh);
   const autan::MeshQuality q = autan::compute_quality(mesh, g);
@@ -74,9 +81,22 @@ TEST_CASE("Faces across a hanging-node interface have their analytic quality", "
     const double d = std::sqrt(1.0 + y * y + z * z);
     CHECK_THAT(q.non_orthogonality[at(f)],
                WithinAbs(std::acos(1.0 / d) * 180.0 / std::numbers::pi, 1e-9));
-    CHECK_THAT(q.skewness[at(f)], WithinAbs(std::sqrt(y * y + z * z) / (2.0 * d), eps));
-    CHECK_THAT(q.volume_ratio[at(f)], WithinRel(100.0, eps));
+    CHECK_THAT(q.skewness[at(f)], WithinAbs(std::sqrt(y * y + z * z) / 2.0 / (0.2 * d), eps));
+    CHECK_THAT(q.volume_ratio[at(f)], WithinRel(0.01, eps));
     ++checked;
   }
   CHECK(checked == 100);
+}
+
+TEST_CASE("Quality metrics are scale invariant", "[quality]") {
+  auto cw = autan::test::box(2, autan::test::BoxFill::hexa);
+  for (std::size_t p = 0; p < cw.x.size(); ++p) {
+    cw.x[p] *= 1e-60;
+    cw.y[p] *= 1e-60;
+    cw.z[p] *= 1e-60;
+  }
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
+  const autan::MeshQuality q = autan::compute_quality(mesh, autan::compute_geometry(mesh));
+  for (const double v : q.aspect_ratio) CHECK_THAT(v, WithinRel(1.0, eps));
+  for (const double v : q.volume_ratio) CHECK_THAT(v, WithinRel(1.0, eps));
 }

@@ -349,7 +349,6 @@ BcKind patch_kind(std::string_view type) {
   return BcKind::unspecified;
 }
 
-
 index_t to_index(const Cursor& c, std::int64_t v, std::int64_t limit, const char* what) {
   if (v < 0 || v >= limit) c.fail(std::string(what) + " out of range");
   return static_cast<index_t>(v);

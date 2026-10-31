@@ -1,12 +1,15 @@
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <string>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <nlohmann/json.hpp>
 
+#include "autan/core/cellwise.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 
@@ -104,4 +107,45 @@ TEST_CASE("MeshInfo types follow the normalisation table", "[mesh-info]") {
     }
   }
   CHECK(doc["cell_zones"][0]["type"] == "fluid");
+}
+
+TEST_CASE("Only cells with the topology of a standard shape count as that shape", "[mesh-info]") {
+  // A triangular prism with one rectangular side split by a diagonal and the
+  // two cap edges it ends on split at their midpoints: six quadrilaterals and
+  // eight vertices, but a vertex of degree 4, so not a hexahedron.
+  autan::CellwiseMesh cw;
+  const std::array<std::array<double, 3>, 8> points{
+      {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {0.5, 0, 0}, {0.5, 0, 1}}};
+  for (const auto& p : points) {
+    cw.x.push_back(p[0]);
+    cw.y.push_back(p[1]);
+    cw.z.push_back(p[2]);
+  }
+  const std::vector<autan::offset_t> offsets{0, 4, 8, 12, 16, 20, 24};
+  const std::vector<autan::index_t> faces{0, 2, 1, 6, 3, 7, 4, 5, 0, 6, 1, 4,
+                                          0, 4, 7, 3, 1, 2, 5, 4, 2, 0, 3, 5};
+  cw.add_polyhedron(offsets, faces, 0);
+  cw.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(mesh, std::string(64, '0')));
+  CHECK(doc["counts"]["cells_by_type"]["hexa"] == 0);
+  CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
+}
+
+TEST_CASE("MeshInfo omits cell zones without cells", "[mesh-info]") {
+  const fs::path dir = fresh_dir("polyMesh");
+  for (const auto& entry : fs::directory_iterator(data_dir / "hex" / "polyMesh")) {
+    fs::copy(entry.path(), dir / entry.path().filename());
+  }
+  std::string labels;
+  for (int c = 0; c < 27; ++c) labels += std::to_string(c) + " ";
+  write(dir / "cellZones",
+        "FoamFile { version 2.0; format ascii; class regIOobject; object cellZones; }\n"
+        "2 ( fluid { type cellZone; cellLabels List<label> 27(" +
+            labels + "); } unused { type cellZone; cellLabels List<label> 0(); } )\n");
+  const auto doc = nlohmann::json::parse(
+      autan::io::mesh_info_json(autan::io::read_mesh(dir), autan::io::mesh_hash(dir)));
+  REQUIRE(doc["cell_zones"].size() == 1);
+  CHECK(doc["cell_zones"][0]["name"] == "fluid");
 }

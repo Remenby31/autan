@@ -175,10 +175,10 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
     in.face_cell0[at(f)] = old_to_new[at(mesh.owner()[at(f)])];
     if (f < mesh.n_interior_faces()) in.face_cell1[at(f)] = old_to_new[at(mesh.neighbour()[at(f)])];
   }
-  // An unpartitioned mesh (global ids = identity) stays its own global
+  // An unpartitioned mesh (no ghosts, global ids = identity) stays its own global
   // numbering; a partition keeps the global ids of its cells.
   const auto ids = mesh.cell_global_id();
-  bool identity = true;
+  bool identity = mesh.n_owned_cells() == mesh.n_cells();
   for (std::size_t i = 0; i < n_cells && identity; ++i)
     identity = ids[i] == static_cast<std::int64_t>(i);
   in.cell_zone.resize(n_cells);

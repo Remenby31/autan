@@ -68,26 +68,46 @@ const char* bc_type_name(BcKind kind) {
 Json name_or_null(const char* name) { return name == nullptr ? Json(nullptr) : Json(name); }
 Json string_or_null(const std::string& s) { return s.empty() ? Json(nullptr) : Json(s); }
 
-// A cell is one of the four standard shapes when its faces and nodes have
-// exactly that shape's counts; anything else is a polyhedron.
+// A cell is one of the four standard shapes when its face sizes, vertex
+// count and vertex degrees (faces per vertex) are that shape's: the only
+// simple polyhedra with six quadrilaterals, or two triangles and three
+// quadrilaterals, are the hexahedron and the triangular prism; a pyramid's
+// apex is its one vertex of degree 4, off its quadrilateral.
 std::size_t shape_index(const Mesh& mesh, index_t cell, std::vector<index_t>& nodes) {
   const auto faces = mesh.cell_faces(cell);
   int triangles = 0, quads = 0;
   nodes.clear();
+  index_t quad_face = -1;
   for (const index_t f : faces) {
     const auto fn = mesh.face_nodes(f);
-    triangles += fn.size() == 3 ? 1 : 0;
-    quads += fn.size() == 4 ? 1 : 0;
+    if (fn.size() == 3) ++triangles;
+    if (fn.size() == 4) {
+      ++quads;
+      quad_face = f;
+    }
     nodes.insert(nodes.end(), fn.begin(), fn.end());
   }
   std::sort(nodes.begin(), nodes.end());
-  const auto distinct =
-      static_cast<std::size_t>(std::unique(nodes.begin(), nodes.end()) - nodes.begin());
+  std::vector<int> degrees;
+  for (std::size_t i = 0; i < nodes.size();) {
+    std::size_t j = i;
+    while (j < nodes.size() && nodes[j] == nodes[i]) ++j;
+    degrees.push_back(static_cast<int>(j - i));
+    i = j;
+  }
+  const auto count = [&](int d) { return std::count(degrees.begin(), degrees.end(), d); };
   const std::size_t n = faces.size();
-  if (n == 4 && triangles == 4 && distinct == 4) return 0;                // tetra
-  if (n == 5 && triangles == 4 && quads == 1 && distinct == 5) return 1;  // pyramid
-  if (n == 5 && triangles == 2 && quads == 3 && distinct == 6) return 2;  // prism
-  if (n == 6 && quads == 6 && distinct == 8) return 3;                    // hexa
+  const std::size_t v = degrees.size();
+  if (n == 4 && triangles == 4 && v == 4) return 0;
+  if (n == 5 && triangles == 4 && quads == 1 && v == 5 && count(3) == 4 && count(4) == 1) {
+    for (const index_t p : mesh.face_nodes(quad_face)) {
+      const auto range = std::equal_range(nodes.begin(), nodes.end(), p);
+      if (range.second - range.first != 3) return 4;
+    }
+    return 1;
+  }
+  if (n == 5 && triangles == 2 && quads == 3 && v == 6 && count(3) == 6) return 2;
+  if (n == 6 && quads == 6 && v == 8 && count(3) == 8) return 3;
   return 4;
 }
 
@@ -138,8 +158,10 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
 
   std::vector<std::int64_t> cells_in_zone(mesh.cell_zones().size(), 0);
   for (const index_t z : mesh.cell_zone()) ++cells_in_zone[at(z)];
+  // MeshInfo lists only cell zones that hold cells.
   Json cell_zones = Json::array();
   for (std::size_t z = 0; z < mesh.cell_zones().size(); ++z) {
+    if (cells_in_zone[z] == 0) continue;
     const CellZone& zone = mesh.cell_zones()[z];
     const char* type = zone.kind == CellKind::fluid   ? "fluid"
                        : zone.kind == CellKind::solid ? "solid"

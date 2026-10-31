@@ -11,12 +11,15 @@ catch_discover_tests(autan_io_tests)
 
 # The command-line tool through its output and exit status.
 set(mesh_dir ${PROJECT_SOURCE_DIR}/tests/data/mesh)
-add_test(NAME autan-mesh-info.json COMMAND autan-mesh-info --json ${mesh_dir}/hanging/polyMesh)
-set_tests_properties(
-  autan-mesh-info.json
-  PROPERTIES PASS_REGULAR_EXPRESSION "\"max_faces_per_cell\": 105"
-)
-add_test(NAME autan-mesh-info.text COMMAND autan-mesh-info ${mesh_dir}/hex/hex.binary.msh)
-set_tests_properties(autan-mesh-info.text PROPERTIES PASS_REGULAR_EXPRESSION "cells +27\n")
-add_test(NAME autan-mesh-info.coded-error COMMAND autan-mesh-info ${mesh_dir}/missing.msh)
-set_tests_properties(autan-mesh-info.coded-error PROPERTIES PASS_REGULAR_EXPRESSION "E0130")
+function(add_cli_test name code regex)
+  add_test(
+    NAME autan-mesh-info.${name}
+    COMMAND
+      ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-mesh-info> "-DARGS=${ARGN}" -DEXPECT_CODE=${code}
+      "-DEXPECT=${regex}" -P ${CMAKE_CURRENT_SOURCE_DIR}/run_cli.cmake
+  )
+endfunction()
+add_cli_test(json 0 "\"max_faces_per_cell\": 105" --json ${mesh_dir}/hanging/polyMesh)
+add_cli_test(text 0 "cells +27\n" ${mesh_dir}/hex/hex.binary.msh)
+add_cli_test(coded-error 1 "E0130" ${mesh_dir}/missing.msh)
+add_cli_test(usage 2 "usage: autan-mesh-info" --unknown)

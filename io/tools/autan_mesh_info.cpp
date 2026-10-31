@@ -53,12 +53,15 @@ void print_text(const autan::Mesh& mesh, const std::string& hash) {
     std::printf("  %-24s %-20s %td cells\n", zone.name.c_str(),
                 zone.type.empty() ? "-" : zone.type.c_str(), cells);
   }
-  std::printf("\nquality (max)\n");
-  std::printf("  non-orthogonality  %.3f deg\n", max_of(q.non_orthogonality));
-  std::printf("  skewness           %.3g\n", max_of(q.skewness));
-  std::printf("  aspect ratio       %.3g\n", max_of(q.aspect_ratio));
-  std::printf("  volume ratio       %.3g\n", max_of(q.volume_ratio));
-  std::printf("  closure error      %.3g\n", max_of(closure));
+  std::printf("\nquality\n");
+  const double min_ratio = q.volume_ratio.empty()
+                               ? 1.0
+                               : *std::min_element(q.volume_ratio.begin(), q.volume_ratio.end());
+  std::printf("  max non-orthogonality  %.3f deg\n", max_of(q.non_orthogonality));
+  std::printf("  max skewness           %.3g\n", max_of(q.skewness));
+  std::printf("  max aspect ratio       %.3g\n", max_of(q.aspect_ratio));
+  std::printf("  min volume ratio       %.3g\n", min_ratio);
+  std::printf("  max closure error      %.3g\n", max_of(closure));
 }
 
 }  // namespace

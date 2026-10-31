@@ -109,3 +109,49 @@ TEST_CASE("Renumbering rejects an invalid permutation", "[renumber]") {
     CHECK(e.code() == autan::ErrorCode::mesh_index_out_of_range);
   }
 }
+
+TEST_CASE("Renumbering a partition keeps the global id of every cell", "[renumber]") {
+  // Three cubes in a row: cells 0 and 1 owned, cell 2 a ghost carrying only
+  // the face it shares with cell 1; global ids 0, 1, 2 look like an identity.
+  autan::CellwiseMesh cw;
+  for (int i = 0; i <= 3; ++i)
+    for (int k = 0; k < 2; ++k)
+      for (int j = 0; j < 2; ++j) {
+        cw.x.push_back(i);
+        cw.y.push_back(j);
+        cw.z.push_back(k);
+      }
+  auto p = [](int i, int j, int k) { return static_cast<index_t>(4 * i + 2 * k + j); };
+  for (int i = 0; i < 3; ++i) {
+    cw.add_cell(autan::CellShape::hexa,
+                std::array<index_t, 8>{p(i, 0, 0), p(i + 1, 0, 0), p(i + 1, 1, 0), p(i, 1, 0),
+                                       p(i, 0, 1), p(i + 1, 0, 1), p(i + 1, 1, 1), p(i, 1, 1)},
+                0);
+  }
+  cw.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::MeshInput in = autan::to_face_based(cw);
+  autan::MeshInput part = in;
+  part.face_node_offsets = {0};
+  part.face_nodes.clear();
+  part.face_cell0.clear();
+  part.face_cell1.clear();
+  part.face_zone.clear();
+  for (std::size_t f = 0; f + 1 < in.face_node_offsets.size(); ++f) {
+    if (in.face_cell0[f] == 2 && in.face_cell1[f] == autan::no_cell) continue;
+    part.face_nodes.insert(part.face_nodes.end(), in.face_nodes.begin() + in.face_node_offsets[f],
+                           in.face_nodes.begin() + in.face_node_offsets[f + 1]);
+    part.face_node_offsets.push_back(static_cast<autan::offset_t>(part.face_nodes.size()));
+    part.face_cell0.push_back(in.face_cell0[f]);
+    part.face_cell1.push_back(in.face_cell1[f]);
+    part.face_zone.push_back(in.face_zone[f]);
+  }
+  part.n_ghost_cells = 1;
+  part.cell_global_id = {0, 1, 2};
+  const autan::Mesh mesh = autan::assemble(part);
+  const std::array<index_t, 3> swap{1, 0, 2};
+  const autan::Mesh renumbered = autan::renumber_cells(mesh, swap);
+  CHECK(renumbered.cell_global_id()[0] == 1);
+  CHECK(renumbered.cell_global_id()[1] == 0);
+  CHECK(renumbered.cell_global_id()[2] == 2);
+}
