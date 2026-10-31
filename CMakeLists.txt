@@ -10,6 +10,17 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(AUTAN_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(AUTAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(AUTAN_ENABLE_METIS "Partition with METIS" OFF)
+option(AUTAN_ENABLE_SCOTCH "Partition with Scotch" OFF)
+option(AUTAN_ENABLE_MPI "Build the MPI halo exchange" OFF)
+option(AUTAN_ENABLE_CUDA "Build the CUDA paths" OFF)
+
+if(AUTAN_ENABLE_CUDA)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+  endif()
+  enable_language(CUDA)
+endif()
 
 add_library(autan_compile_options INTERFACE)
 target_compile_options(
@@ -27,6 +38,8 @@ target_compile_options(
 )
 
 add_subdirectory(core)
+add_subdirectory(io)
+add_subdirectory(partition)
 
 if(AUTAN_BUILD_TESTS)
   include(CTest)
@@ -40,4 +53,6 @@ if(AUTAN_BUILD_TESTS)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
   include(Catch)
   add_subdirectory(tests/core)
+  add_subdirectory(tests/io)
+  add_subdirectory(tests/partition)
 endif()

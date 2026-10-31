@@ -1,0 +1,52 @@
+# Partitioning and halo exchange
+
+How a mesh is cut into one partition per rank and how ranks exchange cell values. Code: `partition/`, libraries `autan::partition` (no MPI) and `autan::halo` (MPI). The partition layout itself is part of the [mesh contract](../contracts/mesh.md).
+
+## Partitioning
+
+`partition_cells(mesh, n_parts, options)` cuts the dual graph of an unpartitioned mesh: one vertex per cell, one edge per pair of cells that share at least one interior face.
+
+| Method | Library | Licence | Build option |
+|---|---|---|---|
+| `metis` (default) | METIS 5 `METIS_PartGraphKway` | Apache-2.0 | `AUTAN_ENABLE_METIS` |
+| `scotch` | Scotch 7 `SCOTCH_graphPart`, quality strategy | CeCILL-C | `AUTAN_ENABLE_SCOTCH` |
+
+ParMETIS is excluded by its licence. Both methods are seeded (`options.seed`) and Scotch runs in its deterministic threading mode, so a mesh and its options always give the same parts. A method the build lacks throws E0142; nothing falls back to the other.
+
+`options.cell_weights` balances cost instead of cell count. `cell_cost_weights(mesh)` gives the number of faces of each cell, the cost of a face loop: a 100-face polyhedron weighs as much as about 17 hexahedra.
+
+Partitioning is serial: every rank reads the global mesh, rank 0 partitions it and broadcasts the parts, and each rank extracts its own share. Distributed reading and PT-Scotch's parallel partitioner come with distributed readers.
+
+## A partition
+
+`extract_partition(global, compute_geometry(global), parts, n_parts, rank)` returns a `LocalPartition`:
+
+- `mesh`: owned cells in the order of the global mesh, then one layer of ghost cells (every cell outside the part that shares a face with it), ordered by owning rank then the same order. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
+- `geometry`: the global geometry, copied bit for bit. A face whose orientation flips (its owned cell has the higher global index) has its area vector negated, which is exact. Ghost cells are NaN until a forward exchange fills them (`exchange_ghost_geometry`). `compute_geometry` on the partition would agree only to round-off, because a reversed face sums its nodes in another order.
+- `face_global_id`: the global face of each local face, the key for summing a cell's faces in an order that no partition changes.
+- `halo`: the `HaloPattern` below.
+
+## Halo pattern
+
+Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is adjacent to `q`, so both lists are the cells of one part adjacent to the other, in the order of the global mesh. `interface_faces` lists the interior faces that touch a ghost.
+
+## Exchange
+
+`HaloExchange(pattern, n_owned, comm, space)` checks with one all-to-all that every send count matches the receiver's ghost count (E0144 otherwise), allocates its buffers once in `space`, and moves 1 to 16 components of `float` or `double` per call.
+
+| Operation | Effect | Use |
+|---|---|---|
+| `forward` | ghost ← owner value | residuals, gradients, geometry |
+| `reverse` | owner += Σ ghost values held by other ranks; ghosts ← 0 | partial sums of a face loop scattered to ghosts, adjoint (transposed) kernels |
+
+`reverse` is the transpose of `forward`: for any `u` and `v` over all owned and ghost entries of all ranks, ⟨forward(u), v⟩ = ⟨u, reverse(v)⟩.
+
+With `MemorySpace::cuda`, packing and unpacking run as CUDA kernels and device buffers go straight to a CUDA-aware MPI (Open MPI over UCX in the dev image). A build without CUDA, or an MPI that `MPIX_Query_cuda_support` reports as not CUDA-aware, throws E0145: there is no host staging path.
+
+**Overlap.** `begin_forward(field, stream)` posts the receives, packs on `stream`, waits for the pack and posts the sends; `end_forward()` waits for the messages and unpacks. Between the two, a kernel may process every face except `interface_faces`. `begin_reverse` / `end_reverse` work the same way; between them the ghosts must not be written.
+
+**Determinism.** No exchange uses atomics. Reverse sums each owned cell's contributions in FP64 in ascending neighbour rank, then rounds once, so a run repeats bit for bit. A gather kernel that reads ghosts after a forward exchange and sums each cell's faces in ascending `face_global_id` gives the same bits on any number of ranks, since geometry and ghost values are identical to the global ones. A reverse sum groups contributions by rank, so its result across different rank counts agrees to round-off, not bit for bit.
+
+## Tests
+
+`tests/partition/`: analytic halo sizes of slab partitions, valid extraction for every cell type and a 105-face polyhedron, balance and reproducibility of METIS and Scotch, and error codes. `autan_halo_tests` runs on 1, 2, 4 and 8 ranks, on the host and on the GPU: ghost geometry and a Green–Gauss gradient match the single-rank values bit for bit in FP32 and FP64, reverse passes the dot-product test against forward, and reverse counts the ranks that hold each cell as a ghost.

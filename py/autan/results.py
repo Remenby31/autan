@@ -261,15 +261,7 @@ class Results:
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
         results = cls(path, run, case, mesh_info, History(records))
-        solution = path / "solution.cgns"
-        if run.status != "running" and solution.exists():
-            try:
-                results._solution = cgns.read(solution)
-            except (OSError, ValueError, KeyError) as error:
-                broken(f"cannot read solution.cgns: {error}", "solution.cgns")
-            for problem in solution_problems(results._solution, run, case, mesh_info):
-                broken(problem, "solution.cgns")
-        elif run.status in SOLUTION_REQUIRED:
+        if run.status in SOLUTION_REQUIRED and not (path / "solution.cgns").exists():
             broken(f"a {run.status} run must have solution.cgns", "solution.cgns")
         return results
 
@@ -290,12 +282,25 @@ class Results:
         return Forces(self.history.monitor(names[0]))
 
     def _tree(self) -> cgns.Node:
-        if self._solution is None:
-            path = self.path / "solution.cgns"
+        """The solution, read and checked against the contract on first use."""
+        if self._solution is not None:
+            return self._solution
+        path = self.path / "solution.cgns"
+        where = Location(file=str(path))
+        if self.run.status == "running" or not path.exists():
             reason = "is still running" if self.run.status == "running" else "has no solution"
             message = f"run {self.run.run_id} ({self.run.status}) {reason}"
-            raise CaseError([diagnostic("E0703", message, location=Location(file=str(path)))])
-        return self._solution
+            raise CaseError([diagnostic("E0703", message, location=where)])
+        try:
+            tree = cgns.read(path)
+        except (OSError, ValueError, KeyError) as error:
+            message = f"cannot read solution.cgns: {error}"
+            raise CaseError([diagnostic("E0701", message, location=where)]) from None
+        problems = solution_problems(tree, self.run, self.case, self.mesh_info)
+        if problems:
+            raise CaseError(diagnostic("E0701", p, location=where) for p in problems)
+        self._solution = tree
+        return tree
 
     def _zone(self) -> cgns.Node:
         return self._tree().child("Base").child("Zone")
