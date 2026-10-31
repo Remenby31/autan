@@ -10,7 +10,7 @@ from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-BUILD_INFO = "py/cfd/_build_info.py"
+BUILD_INFO = "py/autan/_build_info.py"
 
 
 def _git(root: str, *args: str) -> str:
