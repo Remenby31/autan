@@ -1,2 +1,1 @@
-def hello() -> str:
-    return "Hello from cfd-vv!"
+"""Verification and validation tools for cfd-solver."""
