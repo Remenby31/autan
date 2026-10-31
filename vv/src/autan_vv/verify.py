@@ -14,11 +14,10 @@ from autan_vv.reference_fv import solve
 from autan_vv.study import order_study, write_report
 
 
-def _commit() -> str:
-    """Commit of the checkout holding this package, with `-dirty` if it has local changes."""
+def _git(*args: str) -> str:
     try:
         out = subprocess.run(
-            ["git", "describe", "--always", "--dirty", "--abbrev=40"],
+            ["git", *args],
             cwd=Path(__file__).parent,
             capture_output=True,
             text=True,
@@ -28,6 +27,14 @@ def _commit() -> str:
         msg = "cannot record the V&V commit: not running from a git checkout"
         raise VVError(msg, code="V0502") from exc
     return out.stdout.strip()
+
+
+def _provenance() -> dict[str, Any]:
+    """SHA of the checkout holding this package, and whether it has uncommitted changes."""
+    return {
+        "commit": _git("rev-parse", "--verify", "HEAD"),
+        "dirty": bool(_git("status", "--porcelain")),
+    }
 
 
 def advection_diffusion_study(
@@ -68,7 +75,7 @@ def advection_diffusion_study(
         "precision": precision,
         "solver": "autan_vv.reference_fv",
         "mms_sha256": hashlib.sha256(dump_json(ms).encode()).hexdigest(),
-        "commit": _commit(),
+        **_provenance(),
     }
     write_report(report, out_dir / "order.json", out_dir / "order.png")
     return report

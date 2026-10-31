@@ -86,9 +86,22 @@ def test_gmsh_file_reads_back_through_gmsh(tmp_path: Path) -> None:
         assert path.read_text().startswith("$MeshFormat\n4.1 0 8")
         names = {gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups()}
         assert names == {*BOX_ZONES, "fluid"}
-        types, tags, _ = gmsh.model.mesh.getElements(3)
+        types, tags, nodes = gmsh.model.mesh.getElements(3)
         assert sum(len(t) for t in tags) == mesh.n_cells
         assert {int(t) for t in types} == {4, 5, 6, 7}
+        # Element i of the file is cell i of the mesh: same type, same vertices.
+        npe = {4: 4, 5: 8, 6: 6, 7: 5}
+        kinds = {4: "tet", 5: "hex", 6: "prism", 7: "pyramid"}
+        file_cells = [
+            (kinds[int(t)], set((c - 1).tolist()))
+            for t, conn in zip(types, nodes, strict=True)
+            for c in np.asarray(conn, dtype=np.int64).reshape(-1, npe[int(t)])
+        ]
+        own = np.r_[mesh.owner, mesh.neighbour]
+        face_ids = np.r_[np.arange(mesh.n_faces), np.arange(mesh.n_interior)]
+        for i in (0, mesh.n_cells // 2, mesh.n_cells - 1):
+            vertices = set(np.concatenate([mesh.face(int(f)) for f in face_ids[own == i]]).tolist())
+            assert file_cells[i] == (mesh.cell_kinds[i], vertices)
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         xyz = np.asarray(coords).reshape(-1, 3)[np.argsort(node_tags)]
         np.testing.assert_array_equal(xyz, mesh.points)

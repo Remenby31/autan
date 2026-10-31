@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -92,3 +93,17 @@ def test_two_grid_gci_uses_safety_factor_three() -> None:
     gci = gci_two_grids([0.1, 0.2], [1.0, 1.03], order=2.0)
     assert gci == pytest.approx(3.0 * 0.03 / 3.0)
     assert math.isfinite(gci)
+
+
+def test_non_finite_inputs_are_rejected() -> None:
+    inf, nan = float("inf"), float("nan")
+    calls: list[Callable[[], object]] = [
+        lambda: fit_order([0.1, inf], [1.0, 2.0]),
+        lambda: richardson([0.1, 0.2, 0.4], [nan, nan, nan]),
+        lambda: gci_two_grids([1.0, inf], [1.0, 2.0], 2.0),
+        lambda: mesh_size(10, nan, 3),
+    ]
+    for call in calls:
+        with pytest.raises(VVError) as err:
+            call()
+        assert err.value.code in {"V0101", "V0103"}

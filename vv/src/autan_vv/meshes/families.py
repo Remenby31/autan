@@ -47,7 +47,9 @@ _LOCAL_FACES: dict[str, tuple[tuple[int, ...], ...]] = {
 }
 _GMSH_TYPES = {4: "tet", 5: "hex", 6: "prism", 7: "pyramid"}
 _NODES = {"tet": 4, "hex": 8, "prism": 6, "pyramid": 5}
-_CELL_ORDER = ("hex", "prism", "pyramid", "tet")
+# Gmsh writes elements grouped by type number (tet 4, hex 5, prism 6, pyramid 7): cells follow the
+# same order so that cell i of the FaceMesh is element i of the file.
+_CELL_ORDER = ("tet", "hex", "prism", "pyramid")
 
 
 def _gmsh() -> ModuleType:

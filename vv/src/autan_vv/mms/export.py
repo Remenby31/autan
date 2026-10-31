@@ -62,8 +62,14 @@ def _cse(exprs: list[sp.Expr]) -> tuple[list[tuple[sp.Symbol, sp.Expr]], list[sp
 class _CxxPrinter(CXX17CodePrinter):  # type: ignore[misc]
     """Prints literals as T(...) so one template body serves float and double without promotion to double."""
 
+    def __init__(self) -> None:
+        super().__init__({"math_macros": {}})
+
     def _print_Pi(self, _expr: sp.Expr) -> str:
         return "std::numbers::pi_v<T>"
+
+    def _print_Exp1(self, _expr: sp.Expr) -> str:
+        return "std::numbers::e_v<T>"
 
     def _print_Rational(self, expr: sp.Rational) -> str:
         return f"(T({expr.p}) / T({expr.q}))"
@@ -87,8 +93,14 @@ class _CxxPrinter(CXX17CodePrinter):  # type: ignore[misc]
 class _JsonPrinter(C99CodePrinter):  # type: ignore[misc]
     """C99 syntax with the constant pi spelt `pi` and rationals as exact decimal quotients."""
 
+    def __init__(self) -> None:
+        super().__init__({"math_macros": {}})
+
     def _print_Pi(self, _expr: sp.Expr) -> str:
         return "pi"
+
+    def _print_Exp1(self, _expr: sp.Expr) -> str:
+        return "exp(1)"
 
     def _print_Rational(self, expr: sp.Rational) -> str:
         return f"({expr.p}.0/{expr.q}.0)"

@@ -1,6 +1,7 @@
 """The reference finite-volume solve: exact on linear fields, second order on every mesh family."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,18 @@ def test_linear_solution_is_reproduced_to_rounding(kind: str) -> None:
     sol = solve(mesh, ms, rtol=1e-15)
     # |phi| <= 4 on the cube; a few hundred ulps covers the conditioning of the solve.
     assert sol.error_linf < 256 * np.finfo(np.float64).eps * 4.0
+
+
+@pytest.mark.parametrize("precision", ["fp64", "fp32"])
+@pytest.mark.parametrize("diffusivity", ["1e-24", "1", "1e20"])
+def test_solve_is_invariant_to_the_scale_of_the_operator(precision: str, diffusivity: str) -> None:
+    # A constant field is linear: exact up to rounding whatever the magnitude of the coefficients.
+    ms = advection_diffusion(
+        velocity=("0", "0", "0"), diffusivity=diffusivity, solution=sp.Integer(1)
+    )
+    mesh, _ = generate_level("hex", 3)
+    eps = float(np.finfo(np.float32 if precision == "fp32" else np.float64).eps)
+    assert solve(mesh, ms, precision).error_linf < 64 * eps
 
 
 # Levels chosen so that every family is in its asymptotic range while the test stays fast.
@@ -84,7 +97,9 @@ def test_cli_verify_writes_report_plot_and_manifest(tmp_path: Path) -> None:
     report = json.loads((tmp_path / "order.json").read_text(), parse_constant=reject)
     assert report["precision"] == "fp32"
     assert len(report["mms_sha256"]) == 64
-    assert len(report["commit"].removesuffix("-dirty")) == 40
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+    assert report["commit"] == head.stdout.strip()
+    assert isinstance(report["dirty"], bool)
     assert report["fits"]["L2"]["order_ci95"] == [None, None]
     assert report["schema"] == "autan.order-study/1"
     assert report["mesh_family"]["levels"][0]["file"] == "hex-n004.msh"

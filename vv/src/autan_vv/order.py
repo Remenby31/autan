@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 def mesh_size(n_cells: int, volume: float, dim: int) -> float:
     """Return the representative mesh size h = (V / N)^(1/d) of a mesh with N cells filling volume V."""
-    if n_cells <= 0 or volume <= 0.0 or dim not in (1, 2, 3):
+    if n_cells <= 0 or not math.isfinite(volume) or volume <= 0.0 or dim not in (1, 2, 3):
         msg = f"invalid mesh size inputs: n_cells={n_cells}, volume={volume}, dim={dim}"
         raise VVError(msg, code="V0101")
     return float((volume / n_cells) ** (1.0 / dim))
@@ -47,7 +47,8 @@ def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
     if h_arr.shape != e_arr.shape or h_arr.ndim != 1 or h_arr.size < 2:
         msg = "need at least two (h, error) pairs of equal length"
         raise VVError(msg, code="V0102")
-    if np.any(h_arr <= 0.0) or np.any(e_arr <= 0.0) or not np.all(np.isfinite(e_arr)):
+    finite = np.all(np.isfinite(h_arr)) and np.all(np.isfinite(e_arr))
+    if not finite or np.any(h_arr <= 0.0) or np.any(e_arr <= 0.0):
         msg = "mesh sizes and errors must be finite and strictly positive"
         raise VVError(msg, code="V0103")
     order_idx = np.argsort(h_arr)[::-1]
@@ -95,9 +96,20 @@ GCI_SAFETY_THREE_GRIDS = 1.25
 GCI_SAFETY_TWO_GRIDS = 3.0
 
 
+def _log_expm1(x: float) -> float:
+    """log(e^x - 1) for x > 0 without overflow."""
+    return x + math.log(-math.expm1(-x)) if x > 1.0 else math.log(math.expm1(x))
+
+
 def _log_ratio_model(p: float, ln21: float, ln32: float) -> float:
     """log of (f3 - f2)/(f2 - f1) for f = f0 + a h^p: p ln r21 + log((r32^p - 1)/(r21^p - 1))."""
-    return p * ln21 + math.log(math.expm1(p * ln32)) - math.log(math.expm1(p * ln21))
+    return p * ln21 + _log_expm1(p * ln32) - _log_expm1(p * ln21)
+
+
+def _require_finite(*values: float) -> None:
+    if not all(math.isfinite(v) for v in values):
+        msg = "mesh sizes, values and orders must be finite"
+        raise VVError(msg, code="V0103")
 
 
 def richardson(h: Sequence[float], values: Sequence[float]) -> RichardsonResult:
@@ -112,6 +124,7 @@ def richardson(h: Sequence[float], values: Sequence[float]) -> RichardsonResult:
     if len(h) != 3 or len(values) != 3:
         msg = "Richardson extrapolation needs exactly three grids"
         raise VVError(msg, code="V0105")
+    _require_finite(*h, *values)
     pairs = sorted(zip(h, values, strict=True), key=lambda hv: hv[0])
     (h1, f1), (h2, f2), (h3, f3) = pairs
     if not (0.0 < h1 < h2 < h3):
@@ -142,9 +155,12 @@ def richardson(h: Sequence[float], values: Sequence[float]) -> RichardsonResult:
         else:
             p_hi = p
     p = 0.5 * (p_lo + p_hi)
-    extrapolated = f1 - eps21 / math.expm1(p * ln21)
-    gci21 = GCI_SAFETY_THREE_GRIDS * abs(eps21) / math.expm1(p * ln21)
-    gci32 = GCI_SAFETY_THREE_GRIDS * abs(eps32) / math.expm1(p * ln32)
+    # eps / (r^p - 1) evaluated as eps * exp(-log(expm1(p ln r))) so that large r^p cannot overflow.
+    scale21 = math.exp(-_log_expm1(p * ln21))
+    scale32 = math.exp(-_log_expm1(p * ln32))
+    extrapolated = f1 - eps21 * scale21
+    gci21 = GCI_SAFETY_THREE_GRIDS * abs(eps21) * scale21
+    gci32 = GCI_SAFETY_THREE_GRIDS * abs(eps32) * scale32
     return RichardsonResult(
         order=p,
         extrapolated=extrapolated,
@@ -160,6 +176,7 @@ def gci_two_grids(h: Sequence[float], values: Sequence[float], order: float) -> 
     if len(h) != 2 or len(values) != 2 or order <= 0.0:
         msg = "two-grid GCI needs two grids and a positive assumed order"
         raise VVError(msg, code="V0110")
+    _require_finite(*h, *values, order)
     (h1, f1), (h2, f2) = sorted(zip(h, values, strict=True), key=lambda hv: hv[0])
     if not 0.0 < h1 < h2:
         msg = "mesh sizes must be distinct and positive"
