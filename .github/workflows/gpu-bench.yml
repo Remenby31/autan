@@ -21,7 +21,8 @@ concurrency:
 jobs:
   bench:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, ARM64, gpu, gb10]
+    # `bench`: runners whose GPU is not shared with another team's long-running process.
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
     timeout-minutes: 60
     permissions:
       contents: read

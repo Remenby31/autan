@@ -1,6 +1,6 @@
 # GPU runners on the DGX Spark
 
-Each Spark (`spark`, `spark-5359`) runs one GitHub Actions runner registered on `Remenby31/autan` with the labels `self-hosted, linux, ARM64, gpu, gb10`. GPU workflows (`.github/workflows/gpu-*.yml`) target them with `runs-on: [self-hosted, linux, ARM64, gpu, gb10]`.
+Each Spark (`spark`, `spark-5359`) runs one GitHub Actions runner registered on `Remenby31/autan` with the labels `self-hosted, linux, ARM64, gpu, gb10`. GPU workflows (`.github/workflows/gpu-*.yml`) target them with `runs-on: [self-hosted, linux, ARM64, gpu, gb10]`. Timed benchmarks add `bench`, a label only spark-5359 carries: spark's GPU is used continuously by another team's process, which the idle check rightly refuses. Register with `AUTAN_RUNNER_LABELS=gpu,gb10,bench` to give a runner that label, or add it with `gh api -X POST repos/Remenby31/autan/actions/runners/<id>/labels -f 'labels[]=bench'`.
 
 ## Threat model
 

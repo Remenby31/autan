@@ -8,7 +8,7 @@ set -euo pipefail
 
 name=${AUTAN_RUNNER_NAME:-$(hostname)}
 repo_url=https://github.com/Remenby31/autan
-labels=gpu,gb10
+labels=${AUTAN_RUNNER_LABELS:-gpu,gb10}
 image=autan-runner:local
 proxy_image=autan-runner-proxy:local
 internal_net=autan-runner-internal
