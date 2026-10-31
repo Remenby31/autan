@@ -38,7 +38,7 @@ What the reference repositories do:
 - uv and ruff open with a tagline and evidence: a benchmark chart ([uv](https://github.com/astral-sh/uv/blob/main/README.md)). JAX shows a platform × accelerator support matrix ([README](https://github.com/jax-ml/jax/blob/main/README.md)).
 - PyFR's README has no install, no quickstart, no citation and no status ([README](https://github.com/PyFR/PyFR/blob/develop/README.md)): the counter-example.
 
-Decision: the README states "pre-alpha, nothing runs yet" before anything else. It shows a done-versus-planned table by milestone, the hardware targets, the evidence every change must carry and how to cite. It has no install section and no example until there is something to install: an example that does not run would be worse than none. We add no badges until they report something: a Scorecard badge after the first published run, test badges once tests exist.
+Decision: the README states "pre-alpha, nothing runs yet" before anything else. It shows a done-versus-planned table by milestone, the hardware targets, the evidence every change must carry and how to cite. It has no install section and no example until there is something to install: an example that does not run would be worse than none. Badges come in two kinds. Static badges state the stack, the licence and the project's origin, which are facts a visitor scans for (the lead's choice). Status badges appear only when they report something real: CI, and Scorecard once it has published a score; test and benchmark badges once they exist.
 
 ## 2. Community health files
 
