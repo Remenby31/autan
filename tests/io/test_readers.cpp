@@ -18,9 +18,9 @@
 #include "autan/core/geometry.hpp"
 #include "autan/io/read_mesh.hpp"
 
+using autan::index_t;
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
-using autan::index_t;
 
 namespace {
 

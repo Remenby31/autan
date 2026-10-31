@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "autan/io/read_mesh.hpp"
-
 #include "cursor.hpp"
 
 namespace autan::io {
