@@ -41,15 +41,15 @@ from autan.schema import (
     SST,
     CaseSpec,
     Compressible,
-    ConstantViscosity,
     Fluid,
     IdealGas,
     Medium,
     SolidZone,
     Steady,
-    Sutherland,
     Unsteady,
 )
+from autan.solver_input import freestream_state as closed_freestream
+from autan.solver_input import gas_constant, viscosity
 from autan.units import si
 from autan.version import COMMIT, __version__
 
@@ -63,7 +63,6 @@ if TYPE_CHECKING:
     from autan.plan import Plan
 
 MEDIUM: TypeAdapter[Fluid | SolidZone] = TypeAdapter(Medium)
-GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact value
 
 BC_TYPES = {
     "slip": "BCWallInviscid",
@@ -193,56 +192,16 @@ class Box:
         ]
 
 
-def viscosity(gas: IdealGas, temperature: float) -> float:
-    law = gas.viscosity
-    if isinstance(law, ConstantViscosity):
-        return si(law.mu, "Pa * s")
-    assert isinstance(law, Sutherland)
-    t_ref, s = si(law.t_ref, "K"), si(law.s, "K")
-    # Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S)
-    mu_ref = si(law.mu_ref, "Pa * s")
-    return mu_ref * math.pow(temperature / t_ref, 1.5) * (t_ref + s) / (temperature + s)
-
-
 def freestream_state(spec: CaseSpec) -> dict[str, Any]:
-    """Density, pressure, temperature, speed, viscosity of the freestream (case-schema.md)."""
-    fs, physics = spec.freestream, spec.physics
-    alpha, beta = si(fs.aoa, "rad"), si(fs.sideslip, "rad")
-    direction = np.array(
-        [math.cos(alpha) * math.cos(beta), -math.sin(beta), math.sin(alpha) * math.cos(beta)]
-    )
-    if isinstance(physics, Compressible):
-        gas = physics.gas
-        assert fs.temperature is not None
-        assert fs.mach is not None
-        temperature = si(fs.temperature, "K")
-        r = GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
-        speed = fs.mach * math.sqrt(gas.gamma * r * temperature)
-        mu = viscosity(gas, temperature)
-        if fs.re is not None:
-            assert fs.ref_length is not None
-            density = fs.re * mu / (speed * si(fs.ref_length, "m"))
-            pressure = density * r * temperature
-        else:
-            assert fs.pressure is not None
-            pressure = si(fs.pressure, "Pa")
-            density = pressure / (r * temperature)
-        return {
-            "density": density,
-            "pressure": pressure,
-            "temperature": temperature,
-            "speed": speed,
-            "viscosity": mu,
-            "direction": direction,
-        }
-    assert fs.velocity is not None
+    """The closed freestream state of the solver input, as the fake's working values."""
+    state = closed_freestream(spec)
     return {
-        "density": si(physics.fluid.density, "kg / m**3"),
-        "pressure": 0.0,
-        "temperature": None,
-        "speed": si(fs.velocity, "m / s"),
-        "viscosity": si(physics.fluid.viscosity, "Pa * s"),
-        "direction": direction,
+        "density": state.density,
+        "pressure": state.pressure,
+        "temperature": state.temperature,
+        "speed": state.speed,
+        "viscosity": state.viscosity,
+        "direction": np.array(state.velocity) / state.speed,
     }
 
 
@@ -609,7 +568,7 @@ def _fields(
             continue
         material = medium.material
         if isinstance(material, IdealGas):
-            r = GAS_CONSTANT / si(material.molar_mass, "kg / mol")
+            r = gas_constant(material)
             density[cell] = state["pressure"] / (r * state["temperature"])
             mu = viscosity(material, state["temperature"])
             temperature[cell] = state["temperature"]

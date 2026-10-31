@@ -21,11 +21,16 @@ from autan.case import Case, load
 from autan.errors import REGISTRY, CaseError, Diagnostic, diagnostic, explain, reference_page
 from autan.fake import FakeBackend
 from autan.meshinfo import MeshInfo
+from autan.results import Devices, RunInfo
 from autan.schema import json_schema as case_json_schema
+from autan.solver_input import SolverInput
+from autan.solver_input import build as build_solver_input
 from autan.version import COMMIT, DIRTY, SCHEMAS, __version__
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from pydantic import BaseModel
 
     from autan.plan import Plan
 
@@ -148,6 +153,26 @@ def command_ui(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_prepare(args: argparse.Namespace) -> int:
+    try:
+        case = _load_quietly(args.case)
+        devices = Devices(kind=args.device_kind, count=args.device_count)
+        document = build_solver_input(
+            case,
+            MeshInfo.load(args.mesh_info),
+            devices=devices,
+            deterministic=args.deterministic,
+        ).document()
+    except CaseError as error:
+        return _fail(error, args.json)
+    text = json.dumps(document, indent=2) + "\n"
+    if args.output:
+        Path(args.output).write_text(text)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def _interrupt(_signal: int, _frame: object) -> None:
     raise KeyboardInterrupt
 
@@ -232,10 +257,17 @@ def command_version(args: argparse.Namespace) -> int:
 
 
 def json_schema(name: str) -> dict[str, Any]:
-    """The published JSON Schema of the ``case`` or ``mesh-info`` document."""
+    """The published JSON Schema of a document: ``case``, ``mesh-info``, ``results`` (run.json)
+    or ``solver-input``."""
     if name == "case":
         return case_json_schema()
-    schema = MeshInfo.model_json_schema(by_alias=True, mode="validation")
+    models: dict[str, type[BaseModel]] = {
+        "mesh-info": MeshInfo,
+        "results": RunInfo,
+        "solver-input": SolverInput,
+    }
+    model = models[name]
+    schema = model.model_json_schema(by_alias=True, mode="validation")
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMAS[name],
@@ -310,6 +342,18 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--diverge-at", type=int, help="fake: diverge at this iteration")
     sub.add_argument("--json", action="store_true", help="print JSON")
     sub.set_defaults(func=command_run)
+
+    sub = commands.add_parser(
+        "prepare", help="write the solver input (autan.solver-input/1) of a planned case"
+    )
+    sub.add_argument("case", help="case file: .py, .toml or .json")
+    sub.add_argument("--mesh-info", required=True, help="MeshInfo JSON of the case's mesh")
+    sub.add_argument("--device-kind", choices=["cpu", "cuda", "hip"], default="cpu")
+    sub.add_argument("--device-count", type=int, default=1)
+    sub.add_argument("--deterministic", action="store_true", help="bitwise-deterministic run")
+    sub.add_argument("-o", "--output", help="file to write (default: stdout)")
+    sub.add_argument("--json", action="store_true", help="diagnostics as JSON on failure")
+    sub.set_defaults(func=command_prepare)
 
     sub = commands.add_parser("ui", help="browse run directories in the web UI (extra `ui`)")
     sub.add_argument("--runs", default="runs", help="directory of run directories")

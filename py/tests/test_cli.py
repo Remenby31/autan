@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from autan import version as autan_version
 from autan.cli import main
 
 from tests.conftest import EXAMPLES, FIXTURES, mesh_document
@@ -78,11 +79,13 @@ def test_plan_failures_are_coded(
 def test_version_reports_build_commit_and_schemas(capsys: pytest.CaptureFixture[str]) -> None:
     status, out = run_json(capsys, "version")
     assert status == 0
+    assert out["autan"] == autan_version.__version__
     assert re.fullmatch(r"[0-9a-f]{40}", out["commit"])
     assert out["schemas"] == {
         "case": "autan.case/1",
         "mesh-info": "autan.mesh-info/1",
         "results": "autan.results/1",
+        "solver-input": "autan.solver-input/1",
     }
 
 
