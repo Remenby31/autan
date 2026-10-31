@@ -94,3 +94,15 @@ body {
 .prose blockquote p::after {
   content: none;
 }
+
+/* Badge rows (an image inside a link, several per paragraph) stay on one line. */
+.prose a:has(> img) {
+  display: inline-block;
+  margin: 0 0.25rem 0.25rem 0;
+}
+
+.prose a > img {
+  display: inline;
+  margin: 0;
+  border-radius: 0;
+}
