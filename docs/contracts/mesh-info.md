@@ -1,0 +1,66 @@
+# Contract: MeshInfo
+
+`MeshInfo` is the JSON summary of a mesh that the C++ core emits after reading it. The SDK consumes it to resolve boundary and cell zones, to check coverage and to estimate memory, without loading the mesh itself. Schema identifier: `cfd.mesh-info/1`. The JSON Schema is generated from the SDK (`cfd schema mesh-info`).
+
+Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py/cfd` (owner: CFD - SDK & contrats). Until the core emits it, the SDK reads MeshInfo files passed explicitly (`cfd plan --mesh-info FILE`).
+
+## Document
+
+```json
+{
+  "schema": "cfd.mesh-info/1",
+  "source": {"path": "crm-hl.cgns", "format": "cgns", "sha256": "9f2c…"},
+  "counts": {
+    "cells": 48200000, "faces": 151000000, "nodes": 52000000,
+    "cells_by_type": {"tetra": 964000, "pyramid": 0, "prism": 13014000, "hexa": 0, "polyhedron": 34222000}
+  },
+  "boundary_zones": [
+    {"name": "wing.main", "type": "wall", "native_type": "BCWall", "faces": 812000},
+    {"name": "empennage", "type": null, "native_type": null, "faces": 95000}
+  ],
+  "cell_zones": [{"name": "fluid", "type": null, "native_type": null, "cells": 48200000}],
+  "interfaces": [],
+  "quality": {"max_non_orthogonality_deg": 62.0, "max_faces_per_cell": 214}
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema` | `"cfd.mesh-info/1"` | Contract version. Any other value is rejected. |
+| `source.path` | string | Mesh file path as given to the reader. |
+| `source.format` | `"cgns"` · `"gmsh"` · `"fluent"` · `"polymesh"` | Reader used. |
+| `source.sha256` | 64 lowercase hex chars | The **mesh hash** recorded by every run: SHA-256 of the mesh file bytes. For a polyMesh directory, SHA-256 of the concatenation, for each file in the order `points`, `faces`, `owner`, `neighbour`, `boundary`, `cellZones` (when present), of `<name>\n<byte length in decimal>\n<bytes>`. |
+| `counts.cells`, `counts.faces`, `counts.nodes` | integer ≥ 1 | Global counts after reading, before partitioning. `faces` counts each face once, interior and boundary. |
+| `counts.cells_by_type` | object, keys `tetra` `pyramid` `prism` `hexa` `polyhedron`, integers ≥ 0 | Cells by shape. A cell is `polyhedron` unless it is exactly one of the four standard shapes. The values sum to `counts.cells`. |
+| `boundary_zones[]` | list, names unique | Every boundary face belongs to exactly one zone. Boundary faces the file leaves outside any group form a zone named `unassigned` with `type: null`; a file that also names a zone `unassigned` is rejected by the reader. |
+| `boundary_zones[].name` | non-empty string | Zone name from the file (Fluent zone name, Gmsh physical name, CGNS `BC_t` or family name). |
+| `boundary_zones[].type` | normalized type or `null` | See the mapping below. `null` means the file carries no usable type. |
+| `boundary_zones[].native_type` | string or `null` | The type exactly as written in the file, for display. |
+| `boundary_zones[].faces` | integer ≥ 0 | Face count. A zone the file declares without faces is kept so its name stays visible; it needs no condition. |
+| `cell_zones[]` | list, names unique, at least one | Every cell belongs to exactly one zone. A file without cell zones yields one zone named `fluid` with `type: null`; cells outside every zone (Gmsh cells outside any 3D physical group) go to that zone. |
+| `cell_zones[].type` | `"fluid"` · `"solid"` · `null` | Medium declared by the file. |
+| `cell_zones[].native_type` | string or `null` | As written in the file. |
+| `cell_zones[].cells` | integer ≥ 1 | Cell count. The values sum to `counts.cells`. |
+| `interfaces[]` | list | One entry per pair of cell zones that share at least one face. |
+| `interfaces[].zones` | two distinct cell-zone names, sorted | The pair. Each pair appears once. |
+| `interfaces[].faces` | integer ≥ 1 | Shared faces. |
+| `quality.max_non_orthogonality_deg` | number in [0, 180] | Max over interior faces of the angle between the face normal and the vector joining the two cell centroids; over boundary faces, between the normal and the vector from the cell centroid to the face centroid. |
+| `quality.max_faces_per_cell` | integer ≥ 4 | Largest face count of any cell. |
+
+Unknown fields are rejected. Readers fill every field; there are no optional fields. Reader errors (malformed files, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
+
+## Normalized boundary types
+
+| Normalized | Fluent `.msh` | CGNS `BCType_t` | polyMesh | Gmsh |
+|---|---|---|---|---|
+| `wall` | `wall` | `BCWall`, `BCWallViscous`, `BCWallViscousHeatFlux`, `BCWallViscousIsothermal` | `wall` | — |
+| `slip` | — | `BCWallInviscid` | — | — |
+| `symmetry` | `symmetry` | `BCSymmetryPlane` | `symmetry`, `symmetryPlane` | — |
+| `farfield` | `pressure-far-field` | `BCFarfield` | — | — |
+| `inlet` | `velocity-inlet`, `pressure-inlet`, `mass-flow-inlet` | `BCInflow`, `BCInflowSubsonic`, `BCInflowSupersonic`, `BCTunnelInflow` | — | — |
+| `outlet` | `pressure-outlet`, `outflow` | `BCOutflow`, `BCOutflowSubsonic`, `BCOutflowSupersonic`, `BCTunnelOutflow` | — | — |
+| `null` | every other type | every other type, `FamilySpecified` resolved to the family's type first | every other type (`patch`, `empty`, `cyclic`, …) | every physical group |
+
+Fluent `interior` zones are interior faces, not boundary zones. A Fluent cell zone of type `fluid` or `solid` maps to that type; CGNS, polyMesh and Gmsh cell zones map to `null`.
+
+How the SDK turns these types into boundary conditions is part of the case contract: [case-schema.md](case-schema.md#boundary-resolution).
