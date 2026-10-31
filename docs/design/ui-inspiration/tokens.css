@@ -2,8 +2,8 @@
    Fonts: Geist Sans and Geist Mono, SIL OFL 1.1 (github.com/vercel/geist-font), self-hosted. */
 
 :root {
-  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   --text-xs: 11px;
   --text-sm: 12px;
@@ -72,14 +72,15 @@
   --scrim: rgba(10, 10, 11, 0.32);
   --glass: rgba(255, 255, 255, 0.82);
 
-  /* Run states */
+  /* Run states: queued and planning precede run.json; the others are its `status` (docs/contracts/results.md) */
   --state-queued: var(--fg-3);
   --state-planning: var(--fg-2);
   --state-running: var(--accent);
   --state-converged: var(--success);
-  --state-stalled: var(--warning);
-  --state-diverged: var(--danger);
+  --state-completed: var(--fg);
   --state-stopped: var(--fg-2);
+  --state-diverged: var(--danger);
+  --state-failed: var(--danger);
 
   /* Series colours for compared runs, in assignment order */
   --series-1: #0a66d8;
