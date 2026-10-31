@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cfd"
+version = "0.1.0"
+description = "GPU-native unstructured finite-volume CFD solver: Python SDK and CLI"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.1",
+    "pint>=0.24",
+    "pydantic>=2.10",
+    "tomli-w>=1.1",
+]
+
+[project.scripts]
+cfd = "cfd.cli:main"
+
+[dependency-groups]
+dev = [
+    "h5py>=3.16.0",
+    "jsonschema>=4.26.0",
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+
+[tool.hatch.build.hooks.custom]
+path = "py/build_hook.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["py/cfd"]
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true } }]
+
+[tool.ruff]
+line-length = 100
+src = ["py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT", "N"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["py"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["py/tests"]
+addopts = ["--strict-markers", "-ra"]

@@ -1,0 +1,77 @@
+{
+  "schema": "cfd.mesh-info/1",
+  "source": {
+    "path": "crm-hl.cgns",
+    "format": "cgns",
+    "sha256": "9933a79571244040a48c983d0c14c9818acf8d1281e213ab0ec6bdd9099a47fa"
+  },
+  "counts": {
+    "cells": 48200000,
+    "faces": 151000000,
+    "nodes": 52000000,
+    "cells_by_type": {
+      "tetra": 964000,
+      "pyramid": 0,
+      "prism": 13014000,
+      "hexa": 0,
+      "polyhedron": 34222000
+    }
+  },
+  "boundary_zones": [
+    {
+      "name": "wing.slat",
+      "type": "wall",
+      "native_type": "BCWall",
+      "faces": 402000
+    },
+    {
+      "name": "wing.main",
+      "type": "wall",
+      "native_type": "BCWall",
+      "faces": 812000
+    },
+    {
+      "name": "wing.flap",
+      "type": "wall",
+      "native_type": "BCWall",
+      "faces": 388000
+    },
+    {
+      "name": "fuselage",
+      "type": "wall",
+      "native_type": "BCWall",
+      "faces": 655000
+    },
+    {
+      "name": "empennage",
+      "type": "wall",
+      "native_type": "BCWall",
+      "faces": 95000
+    },
+    {
+      "name": "symmetry",
+      "type": "symmetry",
+      "native_type": "BCSymmetryPlane",
+      "faces": 210000
+    },
+    {
+      "name": "farfield",
+      "type": "farfield",
+      "native_type": "BCFarfield",
+      "faces": 48000
+    }
+  ],
+  "cell_zones": [
+    {
+      "name": "fluid",
+      "type": null,
+      "native_type": null,
+      "cells": 48200000
+    }
+  ],
+  "interfaces": [],
+  "quality": {
+    "max_non_orthogonality_deg": 62.0,
+    "max_faces_per_cell": 214
+  }
+}
