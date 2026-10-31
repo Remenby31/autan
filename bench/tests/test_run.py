@@ -97,6 +97,8 @@ def test_run_derives_bandwidth_and_time_per_cell_from_kernel_times(fake_gpu, tmp
 def test_run_refuses_an_unverified_result(fake_gpu, tmp_path, capsys):
     out = tmp_path / "r.json"
     argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu(verified=False))]
-    assert main([*argv, "--precision", "fp32", "--out", str(out), "--lock", str(tmp_path / "l")]) == 2
+    assert (
+        main([*argv, "--precision", "fp32", "--out", str(out), "--lock", str(tmp_path / "l")]) == 2
+    )
     assert "error[VERIFY_FAILED]" in capsys.readouterr().err
     assert not out.exists()
