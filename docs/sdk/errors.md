@@ -36,6 +36,62 @@ The document's `schema` key is not `autan.case/1`.
 
 Fix: Set `schema = "autan.case/1"`.
 
+## E0101
+
+**Inconsistent mesh array sizes** (error)
+
+Input arrays disagree on a size, or CSR offsets are not monotone.
+
+Fix: Regenerate the mesh with the meshing tool; the file or partition is corrupt.
+
+## E0102
+
+**Mesh index out of range** (error)
+
+A node, cell or zone index is out of range.
+
+Fix: Regenerate the mesh; an index points past the end of its array.
+
+## E0103
+
+**Face with fewer than 3 nodes** (error)
+
+A face has fewer than 3 nodes.
+
+Fix: Remove or repair the degenerate face in the meshing tool.
+
+## E0104
+
+**Face with a repeated node** (error)
+
+A face lists a node twice.
+
+Fix: Repair the face in the meshing tool so each node appears once.
+
+## E0105
+
+**Face with the same cell on both sides** (error)
+
+A face has the same cell on both sides.
+
+Fix: Repair the mesh connectivity in the meshing tool.
+
+## E0106
+
+**Cell with too few faces** (error)
+
+An owned cell has fewer than 4 faces, or a ghost cell none.
+
+Fix: Repair the cell in the meshing tool, or regenerate the partition.
+
+## E0107
+
+**Cell not closed** (error)
+
+Invariant 5 fails for a cell.
+
+Fix: Repair the cell in the meshing tool: its faces must enclose a volume.
+
 ## D0107
 
 **Divergence** (divergence)
@@ -43,6 +99,150 @@ Fix: Set `schema = "autan.case/1"`.
 The solution diverged: a residual or a state became non-finite or non-physical. `data` gives the iteration, the cell (0-based) and its cell zone.
 
 Fix: Lower the CFL number or use a more dissipative limiter; check the mesh quality near the cell.
+
+## E0108
+
+**Face shared by more than two cells** (error)
+
+More than two cells list the same face.
+
+Fix: Repair non-manifold faces in the meshing tool.
+
+## E0109
+
+**Face does not match its zone's role** (error)
+
+A face does not match its zone's role, or labels put one zone on both interior and boundary faces.
+
+Fix: Put interior and boundary faces in separate zones in the meshing tool.
+
+## E0110
+
+**Duplicate zone name** (error)
+
+Two face zones or two cell zones share a name.
+
+Fix: Rename one of the zones in the meshing tool; `interior`, `unassigned` and `fluid` are reserved.
+
+## E0111
+
+**Labelled face not found** (error)
+
+A labelled face matches no cell face.
+
+Fix: Regenerate the mesh; a zone references a face that does not exist.
+
+## E0112
+
+**Empty mesh** (error)
+
+No cell, face or point.
+
+Fix: Check that the file is the intended mesh and was exported completely.
+
+## E0113
+
+**Mesh too large** (error)
+
+A count exceeds the `index_t` range.
+
+Fix: Partition the mesh, or use a build with 64-bit indices.
+
+## E0114
+
+**Inverted cell** (error)
+
+Two cells list their common face with the same orientation (one is inverted).
+
+Fix: Repair the inverted cell in the meshing tool.
+
+## E0115
+
+**Face labelled twice** (error)
+
+A face carries two labels.
+
+Fix: Assign each face to one zone in the meshing tool.
+
+## E0116
+
+**Face without an owned cell** (error)
+
+A face touches only ghost cells.
+
+Fix: Regenerate the partition; every face needs an owned cell.
+
+## E0117
+
+**Duplicate or negative global cell id** (error)
+
+Two cells share a global id, or one is negative.
+
+Fix: Regenerate the partition; global cell ids must be unique and non-negative.
+
+## E0120
+
+**Degenerate face** (error)
+
+A face has zero or non-finite area.
+
+Fix: Repair the face in the meshing tool; it has no area.
+
+## E0121
+
+**Non-positive cell volume** (error)
+
+An owned cell has zero, negative or non-finite volume.
+
+Fix: Repair the cell in the meshing tool; it is inverted or flat.
+
+## E0130
+
+**Mesh file cannot be opened** (error)
+
+The file or directory cannot be opened or read.
+
+Fix: Check the path and the file permissions.
+
+## E0131
+
+**Unknown mesh format** (error)
+
+The content matches no supported format.
+
+Fix: Export the mesh as CGNS, Gmsh, Fluent .msh or an OpenFOAM polyMesh.
+
+## E0132
+
+**Malformed mesh file** (error)
+
+The file violates its format specification (syntax, truncation, inconsistent counts).
+
+Fix: Re-export the mesh; the file does not follow its format specification.
+
+## E0133
+
+**Unsupported mesh feature** (error)
+
+The file is valid but uses a feature the reader does not support yet; the message names it.
+
+Fix: Export the mesh without the feature named in the message.
+
+## E0134
+
+**Mesh refers to another file** (error)
+
+The mesh refers to another file (CGNS link); meshes must be self-contained.
+
+Fix: Export a self-contained mesh (no CGNS links to other files).
+
+## E0135
+
+**Entity in several zones** (error)
+
+An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones).
+
+Fix: Assign each entity to one zone in the meshing tool.
 
 ## E0201
 
