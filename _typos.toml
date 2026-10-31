@@ -1,0 +1,17 @@
+[files]
+# Design documents written in French, and binary or generated data.
+extend-exclude = [
+  "docs/PLAN.md",
+  "docs/plan.html",
+  "docs/research/state-of-the-art*",
+  "docs/design/*.html",
+  "*.msh",
+  "*.cgns",
+  "uv.lock",
+]
+
+[default.extend-words]
+contrats = "contrats" # lane name "CFD - SDK & contrats"
+Comput = "Comput"     # journal abbreviation, "PLoS Comput Biol"
+Numer = "Numer"       # journal abbreviation, "Int. J. Numer. Meth. Fluids"
+strat = "strat"       # Scotch API, SCOTCH_Strat

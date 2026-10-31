@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Rules for every contributor, human or agent. Read this before touching the code.
+Rules for every contributor, human or agent. Read this before touching the code. Setup, hooks and the pull request mechanics are in `CONTRIBUTING.md`.
 
 ## What this project is
 
@@ -47,6 +47,7 @@ The code, this file, `docs/PLAN.md`, the contracts in `docs/contracts/` and the 
 - A test protects behaviour at a public seam: a mesh read through the public reader, a kernel through the solver API, a case through the SDK, a CLI command through its output.
 - **Expected values come from the specification, never from the code under test**: analytic solutions, manufactured solutions, conservation laws, published reference data. A golden file produced by our own code is not an oracle unless a second, independent source confirms it.
 - One behaviour, one primary test; extend it rather than adding another. No parametrisation over equivalent cases; do parametrise over cell types, precisions and backends, which are not equivalent.
+- Floating-point tolerances scale with the precision under test (a multiple of its machine epsilon), so one test covers FP32 and FP64. Make a test robust to round-off rather than adding a second reference value per platform.
 - A regression test fails on the code before the fix, for the reason the bug gives.
 - No mocks of our own classes; fakes only at external boundaries. Assert outcomes and error codes, never exact message text.
 - No redundant tests: delete a test that guards nothing another test does not.
@@ -72,7 +73,10 @@ Need a change in someone else's area? Say so in your PR description instead of e
 
 - One branch and one worktree per task. Before every push: `git fetch origin && git merge origin/main`.
 - Stage named files only. Commit messages follow Conventional Commits.
-- A PR title is a Conventional Commit that reads on its own: the squash keeps it as the only commit on `main`. The body opens with the impact, one bullet per topic, then the verification evidence. ≤ ~250 words; details in a `<details>` block. After a review, rewrite the body to describe the change as it stands.
+- Run `pre-commit run --all-files` before every push; CI runs the same hooks. Fix what a hook reports, never bypass it with `--no-verify`.
+- A failing check is yours until you show it fails on `main` too.
+- A PR title is a Conventional Commit that reads on its own: the squash keeps it as the only commit on `main`. The body opens with the impact, one bullet per topic, then the verification evidence. ≤ ~250 words; details in a `<details>` block. Fill in `.github/pull_request_template.md`. If an agent wrote the change, the body names the tool and the model. After a review, rewrite the body to describe the change as it stands.
+- Code, comments and PR text describe the change itself; prompts, session history and discarded attempts stay out of them.
 - An issue states the present, the expected result, how to verify it and what is out of scope. When the target changes, rewrite the body instead of commenting.
 - Open a PR and stop. Do not merge; the lead reviews and merges. Never enable auto-merge.
 - Ask before anything destructive: force-push, rewriting pushed history, deleting a branch you did not create, discarding uncommitted work.
