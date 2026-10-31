@@ -104,3 +104,22 @@ def test_gpu_tangent_and_adjoint_equal_host(
         m, policy, strategy, 128, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU, y
     )
     assert np.abs(dev - host).max() <= 500 * eps(policy) * np.abs(host).max()
+
+
+@pytest.mark.parametrize("strategy", s.DETERMINISTIC)
+def test_face_loop_adjoints_are_bitwise_reproducible(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], strategy: str
+) -> None:
+    # The adjoint of a face loop is a face loop: it runs in the same race strategies. (The adjoint
+    # of a cell reduction scatters with atomics in this spike and is not covered.)
+    m, _ = case
+    rng = np.random.default_rng(5)
+    rho = 1.0 + 0.2 * rng.random(m.n_cells)
+    vel = 0.3 * rng.standard_normal((m.n_cells, 3))
+    u = np.column_stack([rho, rho[:, None] * vel, 2.5 + 0.5 * rho * np.sum(vel * vel, axis=1)])
+    y = rng.standard_normal(u.shape)
+    runs = {
+        s.gpu_roe(m, "fp32+acc64", strategy, 64 if k % 2 else 256, "adjoint", u, y).tobytes()
+        for k in range(10)
+    }
+    assert len(runs) == 1

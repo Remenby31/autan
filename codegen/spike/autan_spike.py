@@ -66,6 +66,17 @@ class Mesh:
         return float((self.cell_volume.sum() / self.n_cells) ** (1.0 / 3.0))
 
 
+def read(path: str) -> Mesh:
+    """Mesh file through the core readers (autan::io::read_mesh)."""
+    err = ctypes.create_string_buffer(512)
+    h = ctypes.c_void_p()
+    _check(
+        lib().autan_spike_mesh_read(path.encode(), ctypes.byref(h), err, ctypes.c_size_t(len(err))),
+        err,
+    )
+    return _wrap(h)
+
+
 def mesh(fa: FaceArrays) -> Mesh:
     err = ctypes.create_string_buffer(512)
     h = ctypes.c_void_p()
@@ -76,6 +87,10 @@ def mesh(fa: FaceArrays) -> Mesh:
         ctypes.byref(h), err, ctypes.c_size_t(len(err)),
     )  # fmt: skip
     _check(rc, err)
+    return _wrap(h)
+
+
+def _wrap(h: ctypes.c_void_p) -> Mesh:
     counts = np.zeros(5, dtype=np.int64)
     lib().autan_spike_mesh_counts(h, _p(counts))
     nc, _, nf, ni, nk = (int(c) for c in counts)

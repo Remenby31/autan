@@ -1,9 +1,11 @@
-"""MMS order study of the generated advection-diffusion scheme on exported V&V mesh families.
+"""MMS order study of the generated advection-diffusion scheme on V&V mesh families.
 
-uv run python spike/mms_study.py FAMILY_DIR OUT_DIR [policy,...]
+uv run python spike/mms_study.py FAMILIES_DIR OUT_DIR [policy,...]
 
-Writes one errors file per (family, policy) in the input format of `autan-vv order`, with the mesh
-hash, solver commit and precision of every level, and prints the observed orders.
+FAMILIES_DIR holds one directory per family as `autan-vv meshes` writes it (mesh files and
+manifest.json); every level is read by the core readers. Writes one errors file per (family,
+policy) in the input format of `autan-vv order`, with the mesh hash, solver commit and precision
+of every level, and prints the observed orders.
 """
 
 from __future__ import annotations
@@ -11,13 +13,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import autan_spike as s
 import mms
-import numpy as np
-from meshes import FaceArrays
 
 
 def load(path: Path) -> tuple[FaceArrays, str]:
@@ -35,15 +34,14 @@ def main() -> None:
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
-    families: dict[str, list[Path]] = defaultdict(list)
-    for p in sorted(src.glob("*.npz")):
-        families[p.stem.rsplit("-n", 1)[0]].append(p)
-    for family, paths in families.items():
+    for fam_dir in sorted(d for d in src.iterdir() if (d / "manifest.json").exists()):
+        manifest = json.loads((fam_dir / "manifest.json").read_text())
+        family = fam_dir.name
         for policy in policies:
             levels = []
-            for p in paths:
-                fa, sha = load(p)
-                m = s.mesh(fa)
+            for lv in manifest["levels"]:
+                sha = lv["mesh_sha256"]
+                m = s.read(str(fam_dir / lv["file"]))
                 sol = mms.solve(m, policy, tol=1e-12 if policy == "fp64" else 1e-6)
                 levels.append({
                     "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),
