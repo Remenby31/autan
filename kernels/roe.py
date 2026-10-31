@@ -42,7 +42,9 @@ def physical_flux(u: State.Vec5, n: Geom.Vec3) -> State.Vec5:
     vel = Vec3(u[1] / rho, u[2] / rho, u[3] / rho)
     p = (GAMMA - 1.0) * (u[4] - 0.5 * rho * dot(vel, vel))
     vn = dot(vel, n)
-    return Vec5(rho * vn, u[1] * vn + p * n[0], u[2] * vn + p * n[1], u[3] * vn + p * n[2], (u[4] + p) * vn)
+    return Vec5(
+        rho * vn, u[1] * vn + p * n[0], u[2] * vn + p * n[1], u[3] * vn + p * n[2], (u[4] + p) * vn
+    )
 
 
 @pointwise

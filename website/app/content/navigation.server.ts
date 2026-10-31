@@ -8,7 +8,7 @@ const repoRoot = path.resolve(import.meta.dirname, "../../..");
 
 /** Sidebar sections, in order. A folder of `docs/` not listed here gets its own section after these. */
 const sections: { title?: string; dir?: string; slugs?: string[] }[] = [
-  { slugs: ["", "plan", "plan.html"] },
+  { slugs: ["", "plan"] },
   { title: "Contracts", dir: "contracts" },
   { title: "SDK", dir: "sdk" },
   { title: "Validation", dir: "validation" },

@@ -2,10 +2,9 @@
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 
 set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients roe)
-option(AUTAN_ENABLE_CUDA "Generate and build the CUDA loops" OFF)
+# AUTAN_ENABLE_CUDA (root) adds the GPU loops and the GPU spike driver.
 set(AUTAN_KERNEL_BACKENDS cpu)
 if(AUTAN_ENABLE_CUDA)
-  enable_language(CUDA)
   list(APPEND AUTAN_KERNEL_BACKENDS gpu)
 endif()
 

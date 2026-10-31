@@ -1,0 +1,950 @@
+{
+ "schema": "autan.case-library/1",
+ "cases": {
+  "tmr-2dzp-flatplate": {
+   "title": "TMR 2D zero-pressure-gradient flat plate (2DZP), SA verification",
+   "conditions": {
+    "mach": 0.2,
+    "reynolds_per_unit_length": 5000000.0,
+    "plate": [
+     0.0,
+     2.0
+    ],
+    "reference_area": 2.0,
+    "cf_station_x": 0.970084071,
+    "model": "SA"
+   },
+   "reference_values": {
+    "source": "FlatPlate/SA/cf_convergence.dat and drag_convergence.dat, finest grid 545x385 (N = 208896)",
+    "cf_x0.97": {
+     "CFL3D": 0.00270562153,
+     "FUN3D": 0.00270540473
+    },
+    "cd": {
+     "CFL3D": 0.00285985288,
+     "FUN3D": 0.002852469
+    }
+   },
+   "references": [
+    "Rumsey, Smith and Huang, Description of a website resource for turbulence modeling verification and validation, AIAA 2010-4742. doi:10.2514/6.2010-4742",
+    "https://tmbwg.github.io/turbmodels/flatplate.html"
+   ],
+   "licence": "TMR repository TMBWG/turbmodels: CC0-1.0; grid archives on nasa.gov: US Government work",
+   "files": [
+    {
+     "name": "flatplate_clust2.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/flatplategrids-grids.zip",
+     "sha256": "4b0a64c2c1648f696f92bf9a91e64e972e6c32e76e8daa70ffa65ed8dd641412",
+     "size": 16445241,
+     "parser": "plot3d2d",
+     "description": "2DZP flat plate grid 545x385 (L0, finest)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/FlatPlate/Grids/flatplate_clust2.p2dfmt.gz",
+     "member_sha256": "a2b2075ac51944ca2c845b9dfe12129337cee7abe15ec0cd77fc3576640ee889"
+    },
+    {
+     "name": "flatplate_clust2_1leveldown_273x193.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/flatplategrids-grids.zip",
+     "sha256": "4b0a64c2c1648f696f92bf9a91e64e972e6c32e76e8daa70ffa65ed8dd641412",
+     "size": 16445241,
+     "parser": "plot3d2d",
+     "description": "2DZP flat plate grid 273x193 (L1)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/FlatPlate/Grids/flatplate_clust2_1leveldown_273x193.p2dfmt.gz",
+     "member_sha256": "40be4c0a92b75892189263a5c3efb63fa112030912480427e1e0787c6cb97955"
+    },
+    {
+     "name": "flatplate_clust2_2levelsdown_137x97.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/flatplategrids-grids.zip",
+     "sha256": "4b0a64c2c1648f696f92bf9a91e64e972e6c32e76e8daa70ffa65ed8dd641412",
+     "size": 16445241,
+     "parser": "plot3d2d",
+     "description": "2DZP flat plate grid 137x97 (L2)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/FlatPlate/Grids/flatplate_clust2_2levelsdown_137x97.p2dfmt",
+     "member_sha256": "55ae965f2151e5644e3c7c1b6fecea7ce0a16cf4c34eae6997f27683a4e2ac44"
+    },
+    {
+     "name": "flatplate_clust2_3levelsdown_69x49.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/flatplategrids-grids.zip",
+     "sha256": "4b0a64c2c1648f696f92bf9a91e64e972e6c32e76e8daa70ffa65ed8dd641412",
+     "size": 16445241,
+     "parser": "plot3d2d",
+     "description": "2DZP flat plate grid 69x49 (L3)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/FlatPlate/Grids/flatplate_clust2_3levelsdown_69x49.p2dfmt",
+     "member_sha256": "18c1d1c82cf91bdad89b2c2963129fc992fcd8b98fda4b3e79b7397ee52ba223"
+    },
+    {
+     "name": "flatplate_clust2_4levelsdown_35x25.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/flatplategrids-grids.zip",
+     "sha256": "4b0a64c2c1648f696f92bf9a91e64e972e6c32e76e8daa70ffa65ed8dd641412",
+     "size": 16445241,
+     "parser": "plot3d2d",
+     "description": "2DZP flat plate grid 35x25 (L4, coarsest)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/FlatPlate/Grids/flatplate_clust2_4levelsdown_35x25.p2dfmt",
+     "member_sha256": "41c409f49afca8affaafd4a0a49c6ba934eca9007da502fe0c20afbd091500b0"
+    },
+    {
+     "name": "cf_convergence.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/cf_convergence.dat",
+     "sha256": "966a9f9c8036c3c6d8a1f2c4f1744b6a79f395f5986c8a2b37941803faf67695",
+     "size": 653,
+     "parser": "tecplot",
+     "description": "SA: cf at x=0.970084071 vs N, 5 grids, zones CFL3D and FUN3D (quad)"
+    },
+    {
+     "name": "drag_convergence.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/drag_convergence.dat",
+     "sha256": "c665787fdcd2257da8552973fe373e2f037e055d39e0d148c21f473d5a46bc39",
+     "size": 591,
+     "parser": "tecplot",
+     "description": "SA: CD vs N, 5 grids, zones CFL3D and FUN3D (ref area 2)"
+    },
+    {
+     "name": "cf_plate.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/cf_plate.dat",
+     "sha256": "f2995d18cb4f5d603f63ecfe609044844ef45fb3af3a7373923048eb3d364577",
+     "size": 43857,
+     "parser": "tecplot",
+     "description": "SA: cf(x) on 545x385, zones CFL3D, FUN3D"
+    },
+    {
+     "name": "mut_0.97.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/mut_0.97.dat",
+     "sha256": "939e494d5f9e1c19705849971c59d218b4ee3fb57497a0101136a8cb9a5846fb",
+     "size": 37737,
+     "parser": "tecplot",
+     "description": "SA: mu_t/mu_inf vs y at x~0.97 on 545x385, zones CFL3D, FUN3D"
+    },
+    {
+     "name": "flatplate_u.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/flatplate_u.dat",
+     "sha256": "cc8ed1a4e6320f8a198f4eae2f10170113496bb6adf976241fccf60b44a86894",
+     "size": 23936,
+     "parser": "tecplot",
+     "description": "SA: u/U_inf vs y at x=0.97008 and 1.90334, CFL3D only"
+    },
+    {
+     "name": "flatplate_u+y+.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/flatplate_u+y+.dat",
+     "sha256": "acac7c1a7038a385b9032f79e0bf72e1d8f43f04e95477bcf995f44494c3715f",
+     "size": 23881,
+     "parser": "tecplot",
+     "description": "SA: u+ vs log10(y+) at x=0.97008 and 1.90334, CFL3D only"
+    },
+    {
+     "name": "u+y+theory.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/u+y+theory.dat",
+     "sha256": "e4439ae7f484cf63599e053dfa03e6746d4c4519b47d1345644db4010afc6e69",
+     "size": 380438,
+     "parser": "tecplot",
+     "description": "SA: law-of-the-wall theory curves (inner, log kappa=0.41 B=5, Spalding x2)"
+    },
+    {
+     "name": "find_peak_mut.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/find_peak_mut.dat",
+     "sha256": "60c8e5f805e7f457b1e7f8a7311bfcd3894ebc356acacd085739141cac457ae4",
+     "size": 16895,
+     "parser": "tecplot",
+     "description": "SA: max mu_t/mu_inf vs x, CFL3D only"
+    },
+    {
+     "name": "cf_convergence_fun3d_tri.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/cf_convergence_fun3d_tri.dat",
+     "sha256": "ccb841e62bd2cfb92682625b0aa4abbce64cda6db2e1248849bd7c2ecd29bfe2",
+     "size": 400,
+     "parser": "tecplot",
+     "description": "SA: cf(x=0.97) vs N, FUN3D on triangle grids"
+    },
+    {
+     "name": "drag_convergence_fun3d_tri.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/drag_convergence_fun3d_tri.dat",
+     "sha256": "f2a4603d3773184f63cb05dad4a4383fead9f94ef59924f8e875e48b39ad4810",
+     "size": 338,
+     "parser": "tecplot",
+     "description": "SA: CD vs N, FUN3D on triangle grids"
+    },
+    {
+     "name": "cf_plate_fun3d_tri.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate/SA/cf_plate_fun3d_tri.dat",
+     "sha256": "0aefcc0402052b58dbefd68fd9f2bca74b86b1ab86ccf8d1ed0b0c5b5e84a6c0",
+     "size": 14797,
+     "parser": "tecplot",
+     "description": "SA: cf(x) on 545x385 triangles, FUN3D"
+    },
+    {
+     "name": "cf_incomp_results_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/FlatPlate_validation/cf_incomp_results_sa.dat",
+     "sha256": "23dbf72d3a8396b1524c03fd7fc2d56b93b7f64ef0955429ee4b37b68b3c78db",
+     "size": 670,
+     "parser": "tecplot",
+     "description": "SA incompressible codes cf(x=0.97) vs N (FUN3D-incomp, SC/TETRA)"
+    }
+   ]
+  },
+  "tmr-2dbc-bump": {
+   "title": "TMR 2D bump-in-channel (2DBC), SA verification",
+   "conditions": {
+    "mach": 0.2,
+    "reynolds_per_unit_length": 3000000.0,
+    "bump": "y = 0.05 sin^4(pi x/0.9 - pi/3), 0.3 <= x <= 1.2",
+    "wall": [
+     0.0,
+     1.5
+    ],
+    "model": "SA"
+   },
+   "reference_values": {
+    "source": "Bump/SA/force_convergence.dat and cf_convergence_sa.dat, finest grid 1409x641 (N = 901120)",
+    "cl": {
+     "CFL3D": 0.02490011,
+     "FUN3D": 0.02494156
+    },
+    "cd": {
+     "CFL3D": 0.003572382,
+     "FUN3D": 0.003561061
+    },
+    "cf_x0.75": {
+     "CFL3D": 0.00614936603,
+     "FUN3D": 0.00615136286
+    }
+   },
+   "references": [
+    "Rumsey, Smith and Huang, Description of a website resource for turbulence modeling verification and validation, AIAA 2010-4742. doi:10.2514/6.2010-4742",
+    "https://tmbwg.github.io/turbmodels/bump.html"
+   ],
+   "licence": "TMR repository TMBWG/turbmodels: CC0-1.0; grid archives on nasa.gov: US Government work",
+   "files": [
+    {
+     "name": "bump_0levelsdown_1409x641.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/bumpgrids-grids.zip",
+     "sha256": "4542e3bd6d2be6f88c6e6e903a2439e2cffe9d1ada2df88cfcab912f11e519d4",
+     "size": 166394812,
+     "parser": "plot3d2d",
+     "description": "2DBC bump-in-channel grid 1409x641 (L0, finest)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/Bump/Grids/bump_0levelsdown_1409x641.p2dfmt.gz",
+     "member_sha256": "a174194fbc5ca085aaabbc79bad732e7c1bb20a214e52649f56e2dc1ff60f55e"
+    },
+    {
+     "name": "bump_1levelsdown_705x321.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/bumpgrids-grids.zip",
+     "sha256": "4542e3bd6d2be6f88c6e6e903a2439e2cffe9d1ada2df88cfcab912f11e519d4",
+     "size": 166394812,
+     "parser": "plot3d2d",
+     "description": "2DBC bump-in-channel grid 705x321 (L1)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/Bump/Grids/bump_1levelsdown_705x321.p2dfmt.gz",
+     "member_sha256": "aafb33803490f8db69430774592c957c2cd4aea1f9c2ebc5362e736776065fad"
+    },
+    {
+     "name": "bump_2levelsdown_353x161.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/bumpgrids-grids.zip",
+     "sha256": "4542e3bd6d2be6f88c6e6e903a2439e2cffe9d1ada2df88cfcab912f11e519d4",
+     "size": 166394812,
+     "parser": "plot3d2d",
+     "description": "2DBC bump-in-channel grid 353x161 (L2)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/Bump/Grids/bump_2levelsdown_353x161.p2dfmt.gz",
+     "member_sha256": "e0b49f79da69ff2cdab2f0d7f8628af2a7823b6afb0e1d48d587af0186ba6689"
+    },
+    {
+     "name": "bump_3levelsdown_177x81.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/bumpgrids-grids.zip",
+     "sha256": "4542e3bd6d2be6f88c6e6e903a2439e2cffe9d1ada2df88cfcab912f11e519d4",
+     "size": 166394812,
+     "parser": "plot3d2d",
+     "description": "2DBC bump-in-channel grid 177x81 (L3)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/Bump/Grids/bump_3levelsdown_177x81.p2dfmt",
+     "member_sha256": "0f11cf2818516326be73b4523d84b7132f395df354b300aa1caf3971bff16902"
+    },
+    {
+     "name": "bump_4levelsdown_89x41.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/bumpgrids-grids.zip",
+     "sha256": "4542e3bd6d2be6f88c6e6e903a2439e2cffe9d1ada2df88cfcab912f11e519d4",
+     "size": 166394812,
+     "parser": "plot3d2d",
+     "description": "2DBC bump-in-channel grid 89x41 (L4, coarsest)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/Bump/Grids/bump_4levelsdown_89x41.p2dfmt",
+     "member_sha256": "0ce600d67ef2dced8c14ee936f3f68578767541deeafa718ce32cabefd7486ba"
+    },
+    {
+     "name": "cf_bump.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/cf_bump.dat",
+     "sha256": "85dd51f5bdb13f80ca2815b8e618ef9f237f5fec9d17ea5698523781bbb41c54",
+     "size": 42357,
+     "parser": "tecplot",
+     "description": "SA: cf(x) along bump wall on 1409x641, zones CFL3D, FUN3D"
+    },
+    {
+     "name": "cp_bump.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/cp_bump.dat",
+     "sha256": "482ec6ca03757293e2ddd8dc11a217f8a948fe6e292e5345c823381a034479ef",
+     "size": 42553,
+     "parser": "tecplot",
+     "description": "SA: cp(x) along bump wall on 1409x641, zones CFL3D, FUN3D"
+    },
+    {
+     "name": "cf_convergence_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/cf_convergence_sa.dat",
+     "sha256": "b3d3fc28a7adf8eece328a94fddff22bd0a64266d9ea8566b16c626dad65559c",
+     "size": 1928,
+     "parser": "tecplot",
+     "description": "SA: cf vs N at x=0.75, 0.6321975, 0.8678025; 6 zones (code x station)"
+    },
+    {
+     "name": "force_convergence.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/force_convergence.dat",
+     "sha256": "18efb5c53ec48ffdadfd3eff04a2a57ad18c74148b34997bfb8bfa2faf756f5a",
+     "size": 1306,
+     "parser": "tecplot",
+     "description": "SA: CL, CD, CDp, CDv vs N, zones CFL3D, FUN3D (ref length 1.5)"
+    },
+    {
+     "name": "mut_0.75.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/mut_0.75.dat",
+     "sha256": "8beffe3f01babc422f7fed938ec6e4f9253f6e1bf14b02e22900f24bd8bfd16e",
+     "size": 58581,
+     "parser": "tecplot",
+     "description": "SA: mu_t/mu_inf vs y at x=0.75 on 1409x641, zones CFL3D, FUN3D"
+    },
+    {
+     "name": "bump_u.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/bump_u.dat",
+     "sha256": "425fd0a0ce0b444c1de21c5c42087c468d818f50641104a2005a6552247510eb",
+     "size": 62880,
+     "parser": "tecplot",
+     "description": "SA: u vs y-y0 at x=0.75 and 1.20148, CFL3D only"
+    },
+    {
+     "name": "find_peak_mut.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bump/SA/find_peak_mut.dat",
+     "sha256": "de08f08b970c549418c9acca24082b6b482b1a12b1954d0b9dd6637da0833287",
+     "size": 43679,
+     "parser": "tecplot",
+     "description": "SA: max mu_t/mu_inf vs x, CFL3D only"
+    }
+   ]
+  },
+  "tmr-2dn00-naca0012": {
+   "title": "TMR 2D NACA 0012 airfoil validation (2DN00), SA",
+   "conditions": {
+    "mach": 0.15,
+    "reynolds_chord": 6000000.0,
+    "alpha_deg": [
+     0,
+     10,
+     15
+    ],
+    "farfield_chords": 500,
+    "model": "SA"
+   },
+   "reference_values": {
+    "source": "NACA0012_validation/n0012clcd_cfl3d_sa.dat (CFL3D, 897x257 grid)",
+    "cl": {
+     "0": -6.8553224298e-06,
+     "10": 1.0909146672,
+     "15": 1.5460981214
+    },
+    "cd": {
+     "0": 0.0081924676041,
+     "10": 0.012310544747,
+     "15": 0.021236647158
+    }
+   },
+   "references": [
+    "Rumsey, Smith and Huang, Description of a website resource for turbulence modeling verification and validation, AIAA 2010-4742. doi:10.2514/6.2010-4742",
+    "https://tmbwg.github.io/turbmodels/naca0012_val.html",
+    "C. L. Ladson, Effects of independent variation of Mach and Reynolds numbers on the low-speed aerodynamic characteristics of the NACA 0012 airfoil section, NASA TM-4074, 1988",
+    "N. Gregory and C. L. O'Reilly, Low-speed aerodynamic characteristics of NACA 0012 aerofoil section, ARC R&M 3726, 1970",
+    "W. J. McCroskey, A critical assessment of wind tunnel results for the NACA 0012 airfoil, NASA TM-100019, 1987",
+    "I. H. Abbott and A. E. von Doenhoff, Theory of Wing Sections, Dover, 1959"
+   ],
+   "licence": "TMR repository TMBWG/turbmodels: CC0-1.0; grid archives on nasa.gov: US Government work",
+   "files": [
+    {
+     "name": "n0012_1793-513.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012-grids.zip",
+     "sha256": "b4418dd04ab6aee04dc700f9f7769b6eca1af0dd31ccefb958b7d89da53ff1c4",
+     "size": 110097999,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 validation grid 1793x513 (finest)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012_grids/n0012_1793-513.p2dfmt.gz",
+     "member_sha256": "2d2b51a4e7d519970a579a102f33a514fa98bec17969cac2aaaace46e8443e66"
+    },
+    {
+     "name": "n0012_897-257.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012-grids.zip",
+     "sha256": "b4418dd04ab6aee04dc700f9f7769b6eca1af0dd31ccefb958b7d89da53ff1c4",
+     "size": 110097999,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 validation grid 897x257 (grid used for all TMR SA validation results)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012_grids/n0012_897-257.p2dfmt.gz",
+     "member_sha256": "c603ea77017ae8b97af581237b81a8251fd2d3af1c49c8c6f2cd2687aafcb28e"
+    },
+    {
+     "name": "n0012_449-129.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012-grids.zip",
+     "sha256": "b4418dd04ab6aee04dc700f9f7769b6eca1af0dd31ccefb958b7d89da53ff1c4",
+     "size": 110097999,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 validation grid 449x129",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012_grids/n0012_449-129.p2dfmt.gz",
+     "member_sha256": "6d60dfa6ef9c7544ee156276fcc5487d7eacddadbdf6e81cc6f10e78fb03eff8"
+    },
+    {
+     "name": "n0012_225-65.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012-grids.zip",
+     "sha256": "b4418dd04ab6aee04dc700f9f7769b6eca1af0dd31ccefb958b7d89da53ff1c4",
+     "size": 110097999,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 validation grid 225x65",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012_grids/n0012_225-65.p2dfmt",
+     "member_sha256": "66817d6bbc9353cb0ca9867f958da1bcce6485f7d68ec7038362a341bdb0fa8c"
+    },
+    {
+     "name": "n0012_113-33.p2dfmt",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012-grids.zip",
+     "sha256": "b4418dd04ab6aee04dc700f9f7769b6eca1af0dd31ccefb958b7d89da53ff1c4",
+     "size": 110097999,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 validation grid 113x33 (coarsest)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012_grids/n0012_113-33.p2dfmt",
+     "member_sha256": "669fff259b59ac4df557ad3bfef6be0794ac5eacc0f45ec1ce9715f75dfd1654"
+    },
+    {
+     "name": "n0012points_superbig_clust_fix.dat",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012-grids.zip",
+     "sha256": "b4418dd04ab6aee04dc700f9f7769b6eca1af0dd31ccefb958b7d89da53ff1c4",
+     "size": 110097999,
+     "parser": "columns",
+     "description": "NACA 0012 validation grid surface points of the TMR sharp-TE NACA 0012 definition",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012_grids/n0012points_superbig_clust_fix.dat",
+     "member_sha256": "74e147db4fa052be7ab79465a756c55b39b1786bfd7141a86257e89586728ae1"
+    },
+    {
+     "name": "n0012clcd_cfl3d_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/n0012clcd_cfl3d_sa.dat",
+     "sha256": "b07afec6ce3ae4bf2f2d1a1d53785fde0a5ca68481a0d4186aa92754d811944e",
+     "size": 354,
+     "parser": "tecplot",
+     "description": "CFL3D SA CL, CD at alpha 0/10/15 on 897x257 (point vortex BC)"
+    },
+    {
+     "name": "n0012cp_cfl3d_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/n0012cp_cfl3d_sa.dat",
+     "sha256": "2f1231eba6a7da0e988a6954ac34f2f420ff59a5e24fca331110f980cd881dd2",
+     "size": 48082,
+     "parser": "tecplot",
+     "description": "CFL3D SA cp(x) at alpha 0/10/15 on 897x257 (both surfaces in one zone)"
+    },
+    {
+     "name": "n0012cf_cfl3d_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/n0012cf_cfl3d_sa.dat",
+     "sha256": "e7372151e535d3f89c2eb8b8260a1e69e6b6681bb33aacdd677967ad5403ba5e",
+     "size": 37903,
+     "parser": "tecplot",
+     "description": "CFL3D SA cf(x) at alpha 0/10/15 on 897x257, upper surface only"
+    },
+    {
+     "name": "CLCD_Ladson_expdata.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/CLCD_Ladson_expdata.dat",
+     "sha256": "78cd2f6aa4968e80f44cbf6c96f699bd9c6e45681d958ec528a10cf72ed23357",
+     "size": 1343,
+     "parser": "tecplot",
+     "description": "Ladson NASA TM-4074 (1988): alpha, CL, CD, Re=6e6, M=0.15, tripped; zones 80/120/180 grit"
+    },
+    {
+     "name": "CP_Ladson.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/CP_Ladson.dat",
+     "sha256": "547e022634a360cd7697813543348cd447ee0038cdbc8f00a5296c7822ec7af8",
+     "size": 6331,
+     "parser": "tecplot",
+     "description": "Ladson, Hill & Johnson NASA TM-100526 (1987): x/c, cp, M=0.3; 9 zones Re 3/6/9e6 x alpha 0/10/15"
+    },
+    {
+     "name": "CP_Gregory_expdata.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/CP_Gregory_expdata.dat",
+     "sha256": "38d8474bc67661c3cef5e4cd9eeddb95d4a436d06abc1f58a8518066f510647c",
+     "size": 1608,
+     "parser": "tecplot",
+     "description": "Gregory & O'Reilly R&M 3726 (1970): x/c, cp upper surface, Re=2.88e6, alpha 0/10/15 (digitized)"
+    },
+    {
+     "name": "CL_Gregory_expdata.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/CL_Gregory_expdata.dat",
+     "sha256": "0b7381a45412de50fcf0e0dddf67f1e8e35ba1a278bd4734fb7f16ad08df1f74",
+     "size": 308,
+     "parser": "tecplot",
+     "description": "Gregory & O'Reilly: alpha, CL (digitized)"
+    },
+    {
+     "name": "0012.abbottdata.cl.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/0012.abbottdata.cl.dat",
+     "sha256": "3ee6a0c198f6402c9fc5fd8affc1115c1e87ff943b8b02775df86a7cfa3c55f3",
+     "size": 696,
+     "parser": "tecplot",
+     "description": "Abbott & von Doenhoff (1959): alpha, CL, Re=6e6, untripped (digitized)"
+    },
+    {
+     "name": "0012.abbottdata.cd.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/0012.abbottdata.cd.dat",
+     "sha256": "21321fe22883672c344f3cd1369c69cdaf045ed8496cd0a976b741645c79e3d9",
+     "size": 569,
+     "parser": "tecplot",
+     "description": "Abbott & von Doenhoff (1959): CL, CD, Re=6e6, untripped (digitized)"
+    },
+    {
+     "name": "0012.mccroskeydata.cl.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012_validation/0012.mccroskeydata.cl.dat",
+     "sha256": "bf5848c235cedffef4e307f5cb52be1e7146bd5e480c202824a59d6d9754924e",
+     "size": 250,
+     "parser": "tecplot",
+     "description": "McCroskey AGARD CP-429 (1988) CL-alpha best-fit line, 2 points, Re=6e6, M=0.15"
+    }
+   ]
+  },
+  "tmr-2dn00-naca0012-numerics": {
+   "title": "TMR NACA 0012 numerical analysis, alpha = 10 deg, grid families I-III",
+   "conditions": {
+    "mach": 0.15,
+    "reynolds_chord": 6000000.0,
+    "alpha_deg": 10,
+    "model": "SA"
+   },
+   "reference_values": {
+    "source": "Diskin et al., grid-converged range on the TMR NACA 0012 numerical analysis page (family II, with point vortex)",
+    "cl": [
+     1.0912,
+     1.0913
+    ],
+    "cd": [
+     0.01221,
+     0.01222
+    ],
+    "cm_quarter_chord": [
+     0.00677,
+     0.00679
+    ]
+   },
+   "references": [
+    "Rumsey, Smith and Huang, Description of a website resource for turbulence modeling verification and validation, AIAA 2010-4742. doi:10.2514/6.2010-4742",
+    "B. Diskin, J. L. Thomas, C. L. Rumsey and A. Schwoppe, Grid convergence for turbulent flows, AIAA 2015-1746; AIAA J. 54(9):2563-2588, 2016. doi:10.2514/1.J054555"
+   ],
+   "licence": "TMR repository TMBWG/turbmodels: CC0-1.0; grid archives on nasa.gov: US Government work",
+   "files": [
+    {
+     "name": "cfl3d_results_sa_withN.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012numerics_val/cfl3d_results_sa_withN.dat",
+     "sha256": "b1d31071acf7b92690cbc7565c30a6d10d4fe8123e5685579e1dce0c13f7b583",
+     "size": 2226,
+     "parser": "tecplot",
+     "description": "CFL3D SA alpha=10: CL, CD, CDp, CDv, CMy vs N, families I/II/III up to 7169x2049 (PV BC)"
+    },
+    {
+     "name": "fun3d_results_sa_withN.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012numerics_val/fun3d_results_sa_withN.dat",
+     "sha256": "34c8dea9cc1cd775fbab1ca63787f5ee9d9c8421a5c1c66f87c249832b50859f",
+     "size": 1594,
+     "parser": "tecplot",
+     "description": "FUN3D SA-neg alpha=10: CL, CD, CMy, CDp, CDv vs N, families I/II/III (PV BC); NOTE column order differs from CFL3D file"
+    },
+    {
+     "name": "cfl3d_cp_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012numerics_val/cfl3d_cp_sa.dat",
+     "sha256": "1d5a21e90f4b7f9dbb76b7267baae03db658b6f357931a26fdc95ce834ce81ae",
+     "size": 204282,
+     "parser": "tecplot",
+     "description": "CFL3D cp(x,z) alpha=10 on 7169x2049 family II"
+    },
+    {
+     "name": "cfl3d_cf_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012numerics_val/cfl3d_cf_sa.dat",
+     "sha256": "b9b00b51fa1ad3949fcfb2496da54e0d07b41b2846f1a2701a31de0b8b2fff0f",
+     "size": 202933,
+     "parser": "tecplot",
+     "description": "CFL3D cf,x(x,z) alpha=10 on 7169x2049 family II"
+    },
+    {
+     "name": "fun3d_cp_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012numerics_val/fun3d_cp_sa.dat",
+     "sha256": "53e2ea40067a3bdd3b3af3038f23e530fd939cdae63ec57a86661f80e32d20d2",
+     "size": 299095,
+     "parser": "tecplot",
+     "description": "FUN3D cp(x,z) alpha=10 on 7169x2049 family II"
+    },
+    {
+     "name": "fun3d_cf_sa.dat",
+     "role": "reference",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/NACA0012numerics_val/fun3d_cf_sa.dat",
+     "sha256": "694e86655a839edd75cf4e06944d37e7e6e3a7a74efa69831a013513f02bcb2e",
+     "size": 299097,
+     "parser": "tecplot",
+     "description": "FUN3D cf,x(x,z) alpha=10 on 7169x2049 family II"
+    }
+   ]
+  },
+  "onera-m6": {
+   "title": "ONERA M6 wing, transonic pressure distributions (experiment)",
+   "conditions": {
+    "run_2308": {
+     "mach": 0.8395,
+     "alpha_deg": 3.06,
+     "reynolds_mac": 11720000.0
+    },
+    "section_eta": [
+     0.2,
+     0.44,
+     0.65,
+     0.8,
+     0.9,
+     0.96,
+     0.99
+    ],
+    "cp_uncertainty": 0.02
+   },
+   "reference_values": {
+    "source": "Onerawingnumerics_val/case_2308.dat: 7 sections, 5-digit Cp; NPARC cp*.ex store -Cp"
+   },
+   "references": [
+    "V. Schmitt and F. Charpin, Pressure distributions on the ONERA-M6-wing at transonic Mach numbers, AGARD AR-138, 1979",
+    "https://tmbwg.github.io/turbmodels/onerawingnumerics_val.html",
+    "https://www.grc.nasa.gov/www/wind/valid/m6wing/m6wing.html"
+   ],
+   "licence": "TMR files: CC0-1.0; NPARC files: NASA Glenn web content, US Government work",
+   "files": [
+    {
+     "name": "case_2308.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Onerawingnumerics_val/case_2308.dat",
+     "sha256": "020c5fcc58060737024eb87d9404f56bc563f3f6f15e337675c47477fa91f0d0",
+     "size": 22695,
+     "parser": "tecplot",
+     "description": "Schmitt & Charpin test 2308: M=0.8395, alpha=3.06, Re_MAC=11.72e6; 7 zones (sections 1-7), cols Section,Tap,X/L,Z/L,CP"
+    },
+    {
+     "name": "case_2565.dat",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Onerawingnumerics_val/case_2565.dat",
+     "sha256": "6345287f200034492fe258bfa3748920e6b76661727b2eb22f74f1458747f95e",
+     "size": 22695,
+     "parser": "tecplot",
+     "description": "Schmitt & Charpin test 2565: M=0.8372, alpha=6.06, Re_MAC=11.71e6; same layout"
+    },
+    {
+     "name": "profile_ONERA-D.dat",
+     "role": "grid",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Onerawingnumerics_val/profile_ONERA-D.dat",
+     "sha256": "855972cf06b1bcd753006791b6a34e7dbb08ccbc03275192fd3b38694efc5b8a",
+     "size": 12636,
+     "parser": "tecplot",
+     "description": "ONERA D section normal to 40.18% chord line, blunt TE, 0<=x<=1"
+    },
+    {
+     "name": "profile_M6_streamwise_alongy=0.dat",
+     "role": "grid",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Onerawingnumerics_val/profile_M6_streamwise_alongy=0.dat",
+     "sha256": "cd9531b8720eb9ac2c60eb700f4d23b33dcdfbfa01e68b24cf0a46dcf11d34c6",
+     "size": 1712,
+     "parser": "tecplot",
+     "description": "M6 streamwise root section (from NPARC), upper surface only"
+    },
+    {
+     "name": "ONERAb114.tec",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/ONERAb114.tec",
+     "sha256": "1e99e2ba5b70c2988c3a12b3daeaf1d31ebeed5a4241f15a77af5f95d49ba0ea",
+     "size": 18597,
+     "parser": "tecplot",
+     "description": "NPARC Tecplot of test 2308 Cp, all 7 sections incl. Y/b"
+    },
+    {
+     "name": "cp1u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp1u.ex",
+     "sha256": "a8627b71ec1c52c735449eb7805430ccc4f1d9a6e42446cd75994f8ee6c32a7d",
+     "size": 968,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 1 upper surface (-Cp)"
+    },
+    {
+     "name": "cp1l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp1l.ex",
+     "sha256": "be359618173376678544df0541be6807499c6a7cb2aac08ab72f747f5d435378",
+     "size": 528,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 1 lower surface (-Cp)"
+    },
+    {
+     "name": "cp2u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp2u.ex",
+     "sha256": "e3a504325e8b7bde352ef734c671f4a7b1f06036df8c159e5eaba463244361a3",
+     "size": 1012,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 2 upper surface (-Cp)"
+    },
+    {
+     "name": "cp2l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp2l.ex",
+     "sha256": "4ae7855d346dbb5d3d4cb5f243db9a9022016c0bebd9f018df395d45e767fb82",
+     "size": 484,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 2 lower surface (-Cp)"
+    },
+    {
+     "name": "cp3u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp3u.ex",
+     "sha256": "28085a18c727276f72ed8b3ab2aa63c2e38db37587e389a1d04e7703422dd6eb",
+     "size": 1012,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 3 upper surface (-Cp)"
+    },
+    {
+     "name": "cp3l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp3l.ex",
+     "sha256": "97f9a8d46e6f1d7991c0e9e6ecf4da0558ae3bc350ec476e477a8ecb15d7df23",
+     "size": 484,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 3 lower surface (-Cp)"
+    },
+    {
+     "name": "cp4u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp4u.ex",
+     "sha256": "e70e342d769dfbe43b28b8b5ec7f40dec6a3671705edc91e7808bd66c1b4ca2e",
+     "size": 1012,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 4 upper surface (-Cp)"
+    },
+    {
+     "name": "cp4l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp4l.ex",
+     "sha256": "63be5e5686fe0c28623a60ed7e5735c6b858b7eac6ecc48b4f277209da907603",
+     "size": 484,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 4 lower surface (-Cp)"
+    },
+    {
+     "name": "cp5u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp5u.ex",
+     "sha256": "f8d1910d6cfcfbbf591ce403743467f975f406eb602227a1ae3e03aa7eb79ec0",
+     "size": 1428,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 5 upper surface (-Cp)"
+    },
+    {
+     "name": "cp5l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp5l.ex",
+     "sha256": "27f29407f411dbc28b1f0b94fe7e3ccdfaff3642684e8c787dad0fa364704802",
+     "size": 672,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 5 lower surface (-Cp)"
+    },
+    {
+     "name": "cp6u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp6u.ex",
+     "sha256": "c57b9e6d6d2ea83318c94ca840bd1a4c92912301a15c570d029047c84d2435df",
+     "size": 1364,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 6 upper surface (-Cp)"
+    },
+    {
+     "name": "cp6l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp6l.ex",
+     "sha256": "131ff760c83a7449600752bcee44e596a6642d12c3626f81cc8e4a113a095a2c",
+     "size": 616,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 6 lower surface (-Cp)"
+    },
+    {
+     "name": "cp7u.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp7u.ex",
+     "sha256": "641c8d461cd27a7cf3fc5c8ce700fab1820e32a60babbfd195197177fa0f57d2",
+     "size": 1364,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 7 upper surface (-Cp)"
+    },
+    {
+     "name": "cp7l.ex",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/cp7l.ex",
+     "sha256": "387692bcc5f099a87e77262d31fcf3b06903705827740ef4ce9146dfc1b68b7d",
+     "size": 616,
+     "parser": "columns",
+     "description": "NPARC test 2308 section 7 lower surface (-Cp)"
+    },
+    {
+     "name": "airfoil.txt",
+     "role": "grid",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/airfoil.txt",
+     "sha256": "66b2a7bcd5a0cab274396de1c5c55d0f5cad90911a1e19ddae4e77db16834ab7",
+     "size": 1512,
+     "parser": "columns",
+     "description": "ONERA D root section coordinates (Table B1-1), finite TE"
+    },
+    {
+     "name": "foilmod.txt",
+     "role": "grid",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/m6wing/foilmod.txt",
+     "sha256": "915dee1b2d97166886a075aef59ac9e928f637965da1fbaf4b8bfb8272f81094",
+     "size": 1800,
+     "parser": "columns",
+     "description": "same, TE thickness scaled to zero"
+    }
+   ]
+  },
+  "rae2822": {
+   "title": "RAE 2822 airfoil, transonic (experiment, Cook, McDonald and Firmin)",
+   "conditions": {
+    "case_6": {
+     "mach": 0.729,
+     "alpha_deg": 2.31,
+     "reynolds": 6500000.0,
+     "corrected": true,
+     "source": "NPARC raetaf page (wind-tunnel corrections of the NPARC study; the 1981 tape gives alpha 2.54 corrected)"
+    },
+    "case_9": {
+     "mach": 0.73,
+     "alpha_deg": 2.79,
+     "reynolds": 6500000.0,
+     "corrected": true,
+     "source": "1981 tape, file 1122"
+    }
+   },
+   "reference_values": {
+    "source": "Bradshaw/d2/f8621.txt file 1122 (case 9 row) decoded by read_tape_1981",
+    "case_9": {
+     "cn": 0.803,
+     "cm": -0.099,
+     "cd": 0.0168
+    }
+   },
+   "references": [
+    "P. H. Cook, M. A. McDonald and M. C. P. Firmin, Aerofoil RAE 2822 - pressure distributions, and boundary layer and wake measurements, AGARD AR-138, 1979",
+    "https://www.grc.nasa.gov/www/wind/valid/raetaf/raetaf.html"
+   ],
+   "licence": "TMR files: CC0-1.0; NPARC files: NASA Glenn web content, US Government work",
+   "files": [
+    {
+     "name": "geom.txt",
+     "role": "grid",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/raetaf/geom.txt",
+     "sha256": "0bef162c8778247a4746f02a1b487f33083a1ae80fdc82ea58afc259c87da736",
+     "size": 1914,
+     "parser": "columns",
+     "description": "RAE 2822 measured ordinates, AGARD AR-138 Table 6.1"
+    },
+    {
+     "name": "raetaf01_cp.exp.gen",
+     "role": "experiment",
+     "url": "https://www.grc.nasa.gov/www/wind/valid/raetaf/raetaf01/cp.exp.gen",
+     "sha256": "498b8ccc63348bc5b1007f5c5d61cdd24283159a728f1f56c17b8ba73ed3658b",
+     "size": 7734,
+     "parser": "columns",
+     "description": "NPARC case 6 pressure, columns x/c and -Cp (sign flipped, as the NPARC .ex files), M 0.729, alpha 2.31 deg corrected"
+    },
+    {
+     "name": "f8621.txt",
+     "role": "experiment",
+     "url": "https://raw.githubusercontent.com/TMBWG/turbmodels/20a39f549dbff988a6accc421ac84dafc4487695/Bradshaw/d2/f8621.txt",
+     "sha256": "7118a3b36922cf34b24f68d8620ff30897593be6c7c0ec83c0d5724112c8f876",
+     "size": 237062,
+     "parser": "tape1981",
+     "description": "Cook/McDonald/Firmin Cases 1,6,7,9,12: geometry, conditions (ALPHA, ALPHAC, CN, CM, CD), Cp both surfaces, BL/wake profiles, cf/delta*/theta/H at stations. No Case 10. Section 1124 (case 6 Cp) is damaged in this copy: its records 23-29 are bit-shifted bytes; take case 6 Cp from NPARC.",
+     "corrupt_sections": [
+      1124
+     ]
+    }
+   ]
+  }
+ },
+ "pointers": {
+  "HLPW5": {
+   "landing": "http://aiaa-hlpw.org/HLPW5/",
+   "archive_zip": "https://hlpw5.s3.us-east-1.amazonaws.com/website/Workshop5.zip (1,750,486,485 B)",
+   "cad": "https://commonresearchmodel.larc.nasa.gov/high-lift-prediction-workshop-5-cad-files/",
+   "grid_sizes": "9 RANS families + 4 high-order + 1 adapted + 2 LES; finest 200M to >1B cells, best-practice 100-200M (NTRS 20240014255, 20240014696)",
+   "note": "hiliftpw.larc.nasa.gov now redirects to a generic nasa.gov page"
+  },
+  "DPW7": {
+   "landing": "https://www.aiaa-dpw.org/",
+   "grids": "https://dpw.larc.nasa.gov/DPW7/",
+   "vassberg_MB5_points": {
+    "L1": 5286597,
+    "L2": 17644325,
+    "L3": 41590149,
+    "L4": 80957925,
+    "L5": 139581509,
+    "L6": 221294757
+   },
+   "source": "https://dpw.larc.nasa.gov/DPW7/Vassberg_Grids.REV00/Vassberg_DPW7_GridFamilyDimensions.pdf"
+  },
+  "DPW8": {
+   "grids": "https://dpw.larc.nasa.gov/DPW8/",
+   "folders": [
+    "Buffet",
+    "ONERA_OAT15A",
+    "Scatter",
+    "Static_Deformation",
+    "Test_Environment"
+   ],
+   "guidelines": "https://www.aiaa-dpw.org/ref/gridding_guidelines_v3_07012024.pdf",
+   "grid_sizes": "not checked"
+  }
+ }
+}

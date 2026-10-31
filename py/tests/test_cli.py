@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -136,3 +137,33 @@ def test_explain_all_json_lists_every_code(capsys: pytest.CaptureFixture[str]) -
     status, out = run_json(capsys, "explain", "--all")
     assert status == 0
     assert "E0412" in {entry["code"] for entry in out["codes"]}
+
+
+class _FakeUI(types.ModuleType):
+    """Stands in for the external `autan_ui` package and records the serve call."""
+
+    def __init__(self) -> None:
+        super().__init__("autan_ui")
+        self.calls: list[tuple[Any, ...]] = []
+
+    def serve(self, runs: Path, host: str, port: int, *, open_browser: bool) -> None:
+        self.calls.append((runs, host, port, open_browser))
+
+
+def test_ui_serves_the_runs_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeUI()
+    monkeypatch.setitem(sys.modules, "autan_ui", fake)
+    assert main(["ui", "--runs", "out", "--port", "9000", "--no-open"]) == 0
+    assert main(["ui"]) == 0
+    assert fake.calls == [
+        (Path("out"), "127.0.0.1", 9000, False),
+        (Path("runs"), "127.0.0.1", 8765, True),
+    ]
+
+
+def test_ui_without_its_package_is_e0805(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setitem(sys.modules, "autan_ui", None)
+    assert main(["ui"]) == 1
+    assert "E0805" in capsys.readouterr().err

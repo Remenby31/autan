@@ -8,8 +8,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <deque>
-#include <numeric>
 #include <random>
 #include <string>
 #include <string_view>
@@ -17,6 +15,7 @@
 
 #include "advection_cpu.hpp"
 #include "advection_gpu.cuh"
+#include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "device.cuh"
 #include "gradients_cpu.hpp"
@@ -74,78 +73,6 @@ Options parse(int argc, char** argv) {
       fail("unknown flag " + std::string(f));
   }
   return o;
-}
-
-/// Reverse Cuthill-McKee order of the cell graph (George and Liu 1981, section 4.3): the cell
-/// renumbering applied before assembly so that neighbouring cells are close in memory.
-std::vector<index_t> rcm(const autan::Mesh& m) {
-  const auto nc = static_cast<std::size_t>(m.n_cells());
-  const auto off = m.cell_face_offsets();
-  const auto cf = m.cell_faces();
-  const auto own = m.owner();
-  const auto nei = m.neighbour();
-  auto degree = [&](std::size_t c) { return off[c + 1] - off[c]; };
-  std::vector<index_t> order;
-  order.reserve(nc);
-  std::vector<char> seen(nc, 0);
-  std::vector<std::size_t> by_degree(nc);
-  std::iota(by_degree.begin(), by_degree.end(), 0);
-  std::stable_sort(by_degree.begin(), by_degree.end(),
-                   [&](std::size_t a, std::size_t b) { return degree(a) < degree(b); });
-  std::vector<index_t> nb;
-  for (const std::size_t start : by_degree) {
-    if (seen[start]) continue;
-    std::deque<std::size_t> queue{start};
-    seen[start] = 1;
-    while (!queue.empty()) {
-      const std::size_t c = queue.front();
-      queue.pop_front();
-      order.push_back(static_cast<index_t>(c));
-      nb.clear();
-      for (auto k = off[c]; k < off[c + 1]; ++k) {
-        const auto f = static_cast<std::size_t>(cf[static_cast<std::size_t>(k)]);
-        if (f >= nei.size()) continue;
-        const auto o = static_cast<std::size_t>(own[f]) == c ? nei[f] : own[f];
-        if (!seen[static_cast<std::size_t>(o)]) {
-          seen[static_cast<std::size_t>(o)] = 1;
-          nb.push_back(o);
-        }
-      }
-      std::stable_sort(nb.begin(), nb.end(), [&](index_t a, index_t b) {
-        return degree(static_cast<std::size_t>(a)) < degree(static_cast<std::size_t>(b));
-      });
-      for (const index_t o : nb) queue.push_back(static_cast<std::size_t>(o));
-    }
-  }
-  std::reverse(order.begin(), order.end());
-  return order;
-}
-
-autan::Mesh renumbered(const autan::Mesh& m, const std::vector<index_t>& order) {
-  std::vector<index_t> new_of(order.size());
-  for (std::size_t k = 0; k < order.size(); ++k)
-    new_of[static_cast<std::size_t>(order[k])] = static_cast<index_t>(k);
-  autan::MeshInput in;
-  in.x.assign(m.x().begin(), m.x().end());
-  in.y.assign(m.y().begin(), m.y().end());
-  in.z.assign(m.z().begin(), m.z().end());
-  in.face_node_offsets.assign(m.face_node_offsets().begin(), m.face_node_offsets().end());
-  in.face_nodes.assign(m.face_nodes().begin(), m.face_nodes().end());
-  const auto nf = static_cast<std::size_t>(m.n_faces());
-  for (std::size_t f = 0; f < nf; ++f) {
-    in.face_cell0.push_back(new_of[static_cast<std::size_t>(m.owner()[f])]);
-    in.face_cell1.push_back(f < m.neighbour().size()
-                                ? new_of[static_cast<std::size_t>(m.neighbour()[f])]
-                                : autan::no_cell);
-  }
-  in.face_zone.assign(m.face_zone().begin(), m.face_zone().end());
-  in.cell_zone.resize(order.size());
-  for (std::size_t k = 0; k < order.size(); ++k)
-    in.cell_zone[k] = m.cell_zone()[static_cast<std::size_t>(order[k])];
-  in.face_zones.assign(m.face_zones().begin(), m.face_zones().end());
-  in.cell_zones.assign(m.cell_zones().begin(), m.cell_zones().end());
-  in.source = m.source();
-  return autan::assemble(std::move(in));
 }
 
 struct Timed {
@@ -352,7 +279,7 @@ int main(int argc, char** argv) {
   const auto t1 = std::chrono::steady_clock::now();
   double renumber_seconds = 0.0;
   if (o.order == "rcm") {
-    mesh = renumbered(mesh, rcm(mesh));
+    mesh = autan::renumber_cells(mesh, autan::rcm_order(mesh));
     renumber_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
   } else if (o.order != "input") {
     fail("--order is input or rcm");

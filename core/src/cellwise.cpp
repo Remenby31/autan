@@ -77,7 +77,7 @@ int compare_keys(std::span<const index_t> a, std::span<const index_t> b) {
 // True when `b` is the cycle `a` walked in the opposite direction.
 bool is_reversed_cycle(std::span<const index_t> a, std::span<const index_t> b) {
   const std::size_t n = a.size();
-  const auto start = std::find(b.begin(), b.end(), a[0]);
+  const auto start = std::ranges::find(b, a[0]);
   if (n != b.size() || start == b.end()) return false;
   const auto j = static_cast<std::size_t>(start - b.begin());
   for (std::size_t k = 0; k < n; ++k) {
@@ -93,7 +93,7 @@ void check_faces(std::span<const offset_t> offsets, std::span<const index_t> nod
     fail(ErrorCode::mesh_inconsistent_sizes,
          std::string(what) + " offsets must start at 0 and end at the node count");
   }
-  if (std::adjacent_find(offsets.begin(), offsets.end(), std::greater<>()) != offsets.end()) {
+  if (std::ranges::adjacent_find(offsets, std::greater<>()) != offsets.end()) {
     fail(ErrorCode::mesh_inconsistent_sizes, std::string(what) + " offsets decrease");
   }
   for (std::size_t f = 0; f + 1 < offsets.size(); ++f) {
@@ -166,8 +166,8 @@ MeshInput to_face_based(CellwiseMesh mesh) {
       mesh.labelled_face_node_offsets.size() != mesh.labelled_face_zone.size() + 1) {
     fail(ErrorCode::mesh_inconsistent_sizes, "cellwise mesh arrays disagree on their sizes");
   }
-  if (std::adjacent_find(mesh.cell_face_offsets.begin(), mesh.cell_face_offsets.end(),
-                         std::greater<>()) != mesh.cell_face_offsets.end()) {
+  if (std::ranges::adjacent_find(mesh.cell_face_offsets, std::greater<>()) !=
+      mesh.cell_face_offsets.end()) {
     fail(ErrorCode::mesh_inconsistent_sizes, "cell_face_offsets decreases");
   }
   check_faces(mesh.face_node_offsets, mesh.face_nodes, n_points, "cell face");
@@ -190,7 +190,7 @@ MeshInput to_face_based(CellwiseMesh mesh) {
 
   std::vector<std::size_t> order(n_cell_faces);
   std::iota(order.begin(), order.end(), std::size_t{0});
-  std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+  std::ranges::stable_sort(order, [&](std::size_t a, std::size_t b) {
     return compare_keys(cell_faces.key(a), cell_faces.key(b)) < 0;
   });
 
@@ -200,7 +200,7 @@ MeshInput to_face_based(CellwiseMesh mesh) {
     std::size_t first;
     std::size_t second;
   };
-  constexpr std::size_t none = static_cast<std::size_t>(-1);
+  constexpr auto none = static_cast<std::size_t>(-1);
   std::vector<Group> groups;
   for (std::size_t i = 0; i < n_cell_faces;) {
     std::size_t j = i + 1;
@@ -245,10 +245,8 @@ MeshInput to_face_based(CellwiseMesh mesh) {
   std::vector<unsigned char> zone_sides(n_source_zones, 0);
   for (std::size_t l = 0; l < labelled.size(); ++l) {
     const auto key = labelled.key(l);
-    const auto it = std::lower_bound(groups.begin(), groups.end(), key,
-                                     [&](const Group& g, std::span<const index_t> k) {
-                                       return compare_keys(cell_faces.key(g.first), k) < 0;
-                                     });
+    const auto it = std::ranges::partition_point(
+        groups, [&](const Group& g) { return compare_keys(cell_faces.key(g.first), key) < 0; });
     if (it == groups.end() || compare_keys(cell_faces.key(it->first), key) != 0) {
       fail(ErrorCode::mesh_labelled_face_not_found,
            "labelled face " + std::to_string(l) + " matches no cell face");

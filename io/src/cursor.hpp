@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -19,6 +20,10 @@ static_assert(std::endian::native == std::endian::little,
 
 /// Reads a whole file into memory; throws E0130 when it cannot.
 std::string read_file(const std::string& path);
+
+/// The polyMesh directory designated by `path`: itself, or
+/// `path/constant/polyMesh` for a case directory.
+std::filesystem::path polymesh_directory(const std::filesystem::path& path);
 
 /// Forward-only reader over a file held in memory, shared by the text and
 /// binary parts of the mesh formats. Errors carry the path and line.
