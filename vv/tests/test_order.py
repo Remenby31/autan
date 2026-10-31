@@ -2,7 +2,6 @@ import math
 
 import numpy as np
 import pytest
-
 from cfd_vv.errors import VVError
 from cfd_vv.order import fit_order, gci_two_grids, mesh_size, richardson
 

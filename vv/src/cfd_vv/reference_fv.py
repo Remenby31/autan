@@ -5,10 +5,11 @@ solver, and to serve as a second-order baseline its results can be compared with
 
 - gradients: weighted least squares over face neighbours and boundary face centroids, weights
   1/|d|^2 (Mavriplis, AIAA 2003-3986);
-- convection: upwind face value reconstructed with the upwind cell gradient; exact Dirichlet value
-  on boundary faces;
-- diffusion: alpha-damping face gradient, grad_f = mean(grad) + alpha (dphi - mean(grad).d)/(d.n) n,
-  alpha = 4/3 (Nishikawa, AIAA 2010-5093);
+- convection: upwind cell value reconstructed with the upwind cell gradient and integrated over
+  the face's triangle fan; exact Dirichlet value on boundary faces (planar box faces);
+- diffusion: face gradient grad_f = mean(grad) + alpha (dphi - mean(grad).d) d/|d|^2, alpha = 4/3
+  inside (alpha-damping, Nishikawa, AIAA 2010-5093) and 2 on boundary faces; correcting along d
+  keeps the coefficients bounded on non-convex cells where d.n can be negative;
 - source: the manufactured source at the cell centroid times the cell volume.
 
 All Dirichlet data come from the manufactured solution. The operator is affine in phi; it is
@@ -32,6 +33,9 @@ if TYPE_CHECKING:
     from cfd_vv.mms.solutions import ManufacturedSolution
 
 ALPHA = 4.0 / 3.0
+# Boundary faces: the quadratic through phi_P, its derivative along d and phi_b gives
+# d(phi)/dd at the face = 2 (phi_b - phi_P)/|d| - grad_P.d/|d|, i.e. alpha = 2.
+ALPHA_BOUNDARY = 2.0
 
 
 @dataclass(frozen=True)
@@ -95,35 +99,35 @@ def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solu
     sel_own = sps.csr_matrix((np.ones(ni), (np.arange(ni), own[:ni])), shape=(ni, nc))
     sel_nb = sps.csr_matrix((np.ones(ni), (np.arange(ni), nb)), shape=(ni, nc))
     area = g.face_area
-    mag = np.linalg.norm(area, axis=1)
-    n_hat = area / mag[:, None]
 
-    # Convection, interior faces: upwind value phi_U + grad_U . (x_f - x_U).
+    # Convection, interior faces: phi_U + grad_U.(x - x_U) integrated over the face's fan triangles,
+    # = mdot phi_U + grad_U.q with q = M_f a - mdot x_U, exact for linear fields on warped faces.
     mdot = area[:ni] @ a
-    up_is_owner = mdot >= 0.0
-    up = np.where(up_is_owner, own[:ni], nb)
+    up = np.where(mdot >= 0.0, own[:ni], nb)
     sel_up = sps.csr_matrix((np.ones(ni), (np.arange(ni), up)), shape=(ni, nc))
-    r = g.face_centroid[:ni] - g.cell_centroid[up]
+    q = g.face_moment[:ni] @ a - mdot[:, None] * g.cell_centroid[up]
     grad_up = [sel_up @ gx, sel_up @ gy, sel_up @ gz]
-    conv = sel_up + sum(sps.diags(r[:, k]) @ grad_up[k] for k in range(3))
-    conv_rows = sps.diags(mdot) @ conv
-    conv_const = mdot * np.einsum("ij,ij->i", r, g0[up])
+    conv_rows = sps.diags(mdot) @ sel_up + sum(sps.diags(q[:, k]) @ grad_up[k] for k in range(3))
+    conv_const = np.einsum("ij,ij->i", q, g0[up])
 
     # Diffusion, interior faces: alpha-damping face gradient dotted with the area vector.
     d = g.cell_centroid[nb] - g.cell_centroid[own[:ni]]
-    dn = np.einsum("ij,ij->i", d, n_hat[:ni])
+    w = ALPHA * np.einsum("ij,ij->i", d, area[:ni]) / np.einsum("ij,ij->i", d, d)
     mean_grad = [0.5 * (sel_own + sel_nb) @ gk for gk in (gx, gy, gz)]
-    coef = area[:ni] - (ALPHA * mag[:ni] / dn)[:, None] * d
-    diff_rows = sum(sps.diags(coef[:, k]) @ mean_grad[k] for k in range(3)) + sps.diags(
-        ALPHA * mag[:ni] / dn
-    ) @ (sel_nb - sel_own)
+    coef = area[:ni] - w[:, None] * d
+    diff_rows = sum(sps.diags(coef[:, k]) @ mean_grad[k] for k in range(3)) + sps.diags(w) @ (
+        sel_nb - sel_own
+    )
     mean_g0 = 0.5 * (g0[own[:ni]] + g0[nb])
     diff_const = np.einsum("ij,ij->i", coef, mean_g0)
 
     flux_rows = conv_rows - nu * diff_rows
     flux_const = conv_const - nu * diff_const
     div_int = sps.csr_matrix(
-        (np.r_[np.ones(ni), -np.ones(ni)], (np.r_[own[:ni], nb], np.r_[np.arange(ni), np.arange(ni)])),
+        (
+            np.r_[np.ones(ni), -np.ones(ni)],
+            (np.r_[own[:ni], nb], np.r_[np.arange(ni), np.arange(ni)]),
+        ),
         shape=(nc, ni),
     )
     matrix = div_int @ flux_rows
@@ -132,12 +136,12 @@ def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solu
     # Boundary faces: exact Dirichlet value for convection; alpha-damping with the boundary value.
     ob = own[bf]
     db = g.face_centroid[bf] - g.cell_centroid[ob]
-    dnb = np.einsum("ij,ij->i", db, n_hat[bf])
-    coef_b = area[bf] - (ALPHA * mag[bf] / dnb)[:, None] * db
+    wb = ALPHA_BOUNDARY * np.einsum("ij,ij->i", db, area[bf]) / np.einsum("ij,ij->i", db, db)
+    coef_b = area[bf] - wb[:, None] * db
     sel_b = sps.csr_matrix((np.ones(bf.size), (np.arange(bf.size), ob)), shape=(bf.size, nc))
     diff_b = sum(sps.diags(coef_b[:, k]) @ (sel_b @ gk) for k, gk in enumerate((gx, gy, gz)))
-    diff_b = diff_b - sps.diags(ALPHA * mag[bf] / dnb) @ sel_b
-    diff_b_const = np.einsum("ij,ij->i", coef_b, g0[ob]) + ALPHA * mag[bf] / dnb * phi_b
+    diff_b = diff_b - sps.diags(wb) @ sel_b
+    diff_b_const = np.einsum("ij,ij->i", coef_b, g0[ob]) + wb * phi_b
     div_b = sps.csr_matrix((np.ones(bf.size), (ob, np.arange(bf.size))), shape=(nc, bf.size))
     matrix = (matrix - nu * (div_b @ diff_b)).tocsc()
     rhs = rhs - div_b @ ((area[bf] @ a) * phi_b - nu * diff_b_const)
@@ -145,14 +149,16 @@ def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solu
     # Preconditioner: first-order upwind convection and two-point diffusion (compact stencil).
     up_coef = np.maximum(mdot, 0.0)
     dn_coef = np.minimum(mdot, 0.0)
-    tp = nu * mag[:ni] / dn
+    tp = nu * np.abs(w)
     rows = np.r_[own[:ni], own[:ni], nb, nb]
     cols = np.r_[own[:ni], nb, own[:ni], nb]
     vals = np.r_[up_coef + tp, dn_coef - tp, -up_coef - tp, -dn_coef + tp]
     diag_b = np.zeros(nc)
-    np.add.at(diag_b, ob, np.maximum(area[bf] @ a, 0.0) + nu * mag[bf] / dnb)
-    low = sps.csc_matrix((np.r_[vals, diag_b], (np.r_[rows, np.arange(nc)], np.r_[cols, np.arange(nc)])),
-                         shape=(nc, nc))
+    np.add.at(diag_b, ob, np.maximum(area[bf] @ a, 0.0) + nu * np.abs(wb))
+    low = sps.csc_matrix(
+        (np.r_[vals, diag_b], (np.r_[rows, np.arange(nc)], np.r_[cols, np.arange(nc)])),
+        shape=(nc, nc),
+    )
     lu = spla.splu(low)
     precond = spla.LinearOperator((nc, nc), matvec=lu.solve)
     iterations = 0
@@ -161,8 +167,17 @@ def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solu
         nonlocal iterations
         iterations += 1
 
-    phi, info = spla.gmres(matrix, rhs, M=precond, rtol=rtol, atol=0.0, restart=200, maxiter=50,
-                           callback=count, callback_type="pr_norm")
+    phi, info = spla.gmres(
+        matrix,
+        rhs,
+        M=precond,
+        rtol=rtol,
+        atol=0.0,
+        restart=200,
+        maxiter=50,
+        callback=count,
+        callback_type="pr_norm",
+    )
     if info != 0:
         msg = f"GMRES did not converge (info={info})"
         raise VVError(msg, code="V0402")

@@ -38,6 +38,7 @@ class Geometry:
 
     face_area: FloatArray  # (n_faces, 3) area vectors
     face_centroid: FloatArray  # (n_faces, 3)
+    face_moment: FloatArray  # (n_faces, 3, 3): sum over fan triangles of centroid (x) area vector
     cell_volume: FloatArray  # (n_cells,)
     cell_centroid: FloatArray  # (n_cells, 3)
     min_subvolume: FloatArray  # (n_cells,) smallest signed tetrahedron of the decomposition
@@ -92,6 +93,9 @@ class FaceMesh:
         wsum = np.zeros(self.n_faces)
         np.add.at(wsum, face_of_node, weight)
         face_centroid /= wsum[:, None]
+        # Integral of x dS^T over the fan: exact flux of any linear field through a warped face.
+        face_moment = np.zeros((self.n_faces, 3, 3))
+        np.add.at(face_moment, face_of_node, tri_centroid[:, :, None] * tri_area[:, None, :])
 
         # Cell reference point: mean of its face mean points.
         ref = np.zeros((self.n_cells, 3))
@@ -108,7 +112,9 @@ class FaceMesh:
         apex_owner = ref[self.owner][face_of_node]
         # Tetrahedron (ref, mean, p_i, p_i+1); positive when the face normal points away from ref.
         tet_owner = np.einsum("ij,ij->i", tri_area, mean[face_of_node] - apex_owner) / 3.0
-        cen_owner = 0.25 * (apex_owner + mean[face_of_node] + pts[self.face_nodes] + pts[self.face_nodes[nxt]])
+        cen_owner = 0.25 * (
+            apex_owner + mean[face_of_node] + pts[self.face_nodes] + pts[self.face_nodes[nxt]]
+        )
         owner_of_tri = self.owner[face_of_node]
         np.add.at(volume, owner_of_tri, tet_owner)
         np.add.at(moment, owner_of_tri, tet_owner[:, None] * cen_owner)
@@ -118,13 +124,18 @@ class FaceMesh:
         apex_nb = ref[self.neighbour[fi]]
         tet_nb = -np.einsum("ij,ij->i", tri_area[interior_tris], mean[fi] - apex_nb) / 3.0
         cen_nb = 0.25 * (
-            apex_nb + mean[fi] + pts[self.face_nodes[interior_tris]] + pts[self.face_nodes[nxt][interior_tris]]
+            apex_nb
+            + mean[fi]
+            + pts[self.face_nodes[interior_tris]]
+            + pts[self.face_nodes[nxt][interior_tris]]
         )
         nb_of_tri = self.neighbour[fi]
         np.add.at(volume, nb_of_tri, tet_nb)
         np.add.at(moment, nb_of_tri, tet_nb[:, None] * cen_nb)
         np.minimum.at(min_sub, nb_of_tri, tet_nb)
-        return Geometry(face_area, face_centroid, volume, moment / volume[:, None], min_sub)
+        return Geometry(
+            face_area, face_centroid, face_moment, volume, moment / volume[:, None], min_sub
+        )
 
     def check(self, rtol: float = 1e-12) -> None:
         """Raise V0301 unless every cell is closed and has a positive volume.
@@ -208,3 +219,41 @@ def from_faces(
         zones=tuple(zones),
         cell_kinds=cell_kinds,
     )
+
+
+def merge_cells(mesh: FaceMesh, cell_map: IntArray, n_cells: int) -> FaceMesh:
+    """Agglomerate cells: cell c becomes cell_map[c]; faces inside a new cell disappear.
+
+    A pair of new cells may share several faces, so new cells keep every original face on their
+    boundary (polyhedra with many faces, like agglomeration multigrid levels).
+    """
+    own = cell_map[mesh.owner]
+    nb = cell_map[mesh.neighbour]
+    ni = mesh.n_interior
+    keep = own[:ni] != nb
+    faces = [mesh.face(f) for f in range(mesh.n_faces)]
+    width = max(len(f) for f in faces)
+
+    def rows(index: IntArray, flip: npt.NDArray[np.bool_] | None = None) -> IntArray:
+        out = np.full((index.size, width), -1, dtype=np.int64)
+        for r, f in enumerate(index):
+            nodes = faces[f][::-1] if flip is not None and flip[r] else faces[f]
+            out[r, : nodes.size] = nodes
+        return out
+
+    idx = np.flatnonzero(keep)
+    swap = own[idx] > nb[idx]
+    interior = (
+        rows(idx, swap),
+        np.where(swap, nb[idx], own[idx]),
+        np.where(swap, own[idx], nb[idx]),
+    )
+    zones = {
+        z.name: (
+            z.bc_type,
+            rows(np.arange(z.start, z.start + z.count)),
+            own[z.start : z.start + z.count],
+        )
+        for z in mesh.zones
+    }
+    return from_faces(mesh.points, n_cells, interior, zones, ("polyhedron",) * n_cells)

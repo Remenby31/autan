@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import sympy as sp
-
 from cfd_vv.mms import CATALOG, dump_json, parse_json_expressions, to_cpp
 from cfd_vv.mms.solutions import ManufacturedSolution, X
 
@@ -112,9 +111,11 @@ def test_cpp_header_matches_symbolic_values_in_fp64_and_fp32(name: str, tmp_path
         if _size(ms, group) == 0:
             continue
         scale = np.max(np.abs(expected[group]), axis=0) + 1e-300
-        assert np.max(np.abs(fp64[group] - expected[group]) / scale) < 1e-12, group
-        # Relative to each output's magnitude over the domain: about four float epsilons of cancellation.
-        assert np.max(np.abs(fp32[group] - expected[group]) / scale) < 2e-6, group
+        # Relative to each output's magnitude over the domain, in units of the precision's epsilon.
+        for got, real in ((fp64, np.float64), (fp32, np.float32)):
+            assert np.max(np.abs(got[group] - expected[group]) / scale) < 32 * np.finfo(real).eps, (
+                group
+            )
 
 
 @pytest.mark.parametrize("name", sorted(CATALOG))

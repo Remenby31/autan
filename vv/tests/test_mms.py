@@ -11,7 +11,6 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 import sympy as sp
-
 from cfd_vv.errors import VVError
 from cfd_vv.mms import CATALOG, Flow, advection_diffusion, euler, navier_stokes, rans_sa
 from cfd_vv.mms.solutions import GAMMA, ManufacturedSolution, Validity, X

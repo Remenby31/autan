@@ -11,6 +11,7 @@ boundary zone, closed through the vertex itself where the zone ends (edges and c
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import pairwise
 
 import numpy as np
 
@@ -106,16 +107,19 @@ def median_dual(
     fourth = tets[:, others[:, 1]].ravel()
     tet_idx = np.repeat(np.arange(nt), 6)
     order = np.lexsort((hi, lo))
-    lo, hi, third, fourth, tet_idx = lo[order], hi[order], third[order], fourth[order], tet_idx[order]
+    lo, hi, third, fourth, tet_idx = (
+        lo[order],
+        hi[order],
+        third[order],
+        fourth[order],
+        tet_idx[order],
+    )
     starts = np.flatnonzero(np.r_[True, (lo[1:] != lo[:-1]) | (hi[1:] != hi[:-1]), True])
-
-    is_boundary_face = np.zeros(faces.shape[0], dtype=bool)
-    is_boundary_face[boundary_faces] = True
 
     polys: list[list[int]] = []
     owners: list[int] = []
     neighbours: list[int] = []
-    for s, e in zip(starts[:-1], starts[1:], strict=True):
+    for s, e in pairwise(starts):
         a, b = int(lo[s]), int(hi[s])
         links = [(int(tet_idx[i]), int(third[i]), int(fourth[i])) for i in range(s, e)]
         degree: dict[int, int] = defaultdict(int)
@@ -178,7 +182,11 @@ def median_dual(
     edge_dir = [points[b] - points[a] for a, b in zip(owners, neighbours, strict=True)]
     interior = (oriented(polys, edge_dir), np.array(owners), np.array(neighbours))
     zones = {
-        name: (bc_types[name], oriented(zone_polys[name], zone_normal[name]), np.array(zone_owner[name]))
+        name: (
+            bc_types[name],
+            oriented(zone_polys[name], zone_normal[name]),
+            np.array(zone_owner[name]),
+        )
         for name in boundary
     }
     # Drop dual points no face uses (interior primal vertices), keeping the order of the others.

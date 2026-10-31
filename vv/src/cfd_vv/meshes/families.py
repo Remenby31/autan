@@ -2,7 +2,9 @@
 
 Kinds: `tet` (unstructured Delaunay), `hex` (structured), `prism` (unstructured triangles extruded
 in z), `hybrid` (hex slab, tet slab with pyramids at the quad interface, prism slab) and `poly`
-(median-dual polyhedra of the tet mesh). A positive `perturbation` moves every node by a seeded
+(median-dual polyhedra of the tet mesh) and `agglomerated` (the median dual with the cells of every
+other box of a lattice of edge about 4/n merged, giving non-convex polyhedra with about a hundred faces or more
+among ordinary ones). A positive `perturbation` moves every node by a seeded
 random vector of length up to `perturbation` times its shortest incident edge, tangentially on the
 boundary, to make the "dirty" variant of a family.
 
@@ -15,20 +17,20 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from cfd_vv.errors import VVError
 from cfd_vv.meshes.dual import median_dual
-from cfd_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces
+from cfd_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from cfd_vv.meshes.fluent import write_fluent
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from types import ModuleType
 
-KINDS = ("tet", "hex", "prism", "hybrid", "poly")
+KINDS = ("tet", "hex", "prism", "hybrid", "poly", "agglomerated")
 BOX_ZONES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 # The y = 0 face is the wall of the RANS-SA manufactured solution (wall distance d = y).
 BC_TYPES = {name: ("wall" if name == "ymin" else "pressure-far-field") for name in BOX_ZONES}
@@ -54,7 +56,8 @@ def _gmsh() -> ModuleType:
     except ImportError as exc:
         msg = "gmsh is not installed: run `uv sync` with the 'mesh' group on macOS or x86-64"
         raise VVError(msg, code="V0303") from exc
-    return gmsh
+    module: ModuleType = gmsh
+    return module
 
 
 @dataclass(frozen=True)
@@ -165,11 +168,14 @@ def perturb(
     step[on_face] = 0.0
     width = max(c.shape[1] for c in cells.values())
     cell_nodes = np.concatenate(
-        [np.pad(cells[k], ((0, 0), (0, width - cells[k].shape[1])), constant_values=-1)
-         for k in _CELL_ORDER if k in cells]
+        [
+            np.pad(cells[k], ((0, 0), (0, width - cells[k].shape[1])), constant_values=-1)
+            for k in _CELL_ORDER
+            if k in cells
+        ]
     )
     for _ in range(60):
-        moved = points + step
+        moved: FloatArray = points + step
         bad = _to_facemesh(moved, cells, boundary).geometry.min_subvolume <= 0.0
         if not bad.any():
             return moved
@@ -179,7 +185,9 @@ def perturb(
     raise VVError(msg, code="V0308")
 
 
-def _to_facemesh(points: FloatArray, cells: dict[str, IntArray], boundary: dict[str, IntArray]) -> FaceMesh:
+def _to_facemesh(
+    points: FloatArray, cells: dict[str, IntArray], boundary: dict[str, IntArray]
+) -> FaceMesh:
     """Vectorised element-to-face conversion: match faces by sorted nodes; orientation from the tables."""
     polys, owners = [], []
     cell_kinds: list[str] = []
@@ -246,18 +254,37 @@ def _structured_hybrid(n: int) -> tuple[FloatArray, dict[str, IntArray]]:
         return (i * (n + 1) + j) * (n + 1) + k
 
     def corners(k: int) -> IntArray:
-        i, j = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
-        i, j = i.ravel(), j.ravel()
+        ii, jj = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+        i, j = ii.ravel(), jj.ravel()
         kk = np.full(i.size, k)
-        bits = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+        bits = [
+            (0, 0, 0),
+            (1, 0, 0),
+            (1, 1, 0),
+            (0, 1, 0),
+            (0, 0, 1),
+            (1, 0, 1),
+            (1, 1, 1),
+            (0, 1, 1),
+        ]
         return np.stack([node(i + a, j + b, kk + c) for a, b, c in bits], axis=1)
 
     cells: dict[str, list[IntArray]] = {"hex": [], "pyramid": [], "tet": [], "prism": []}
     kuhn = [(0, 1, 2, 6), (0, 1, 5, 6), (0, 4, 5, 6), (0, 4, 7, 6), (0, 3, 7, 6), (0, 3, 2, 6)]
     # Other faces of the transition hexahedron as triangle pairs split on their min-max diagonal.
-    side_tris = [(0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5), (3, 2, 6), (3, 6, 7),
-                 (0, 3, 7), (0, 7, 4), (4, 5, 6), (4, 6, 7)]
-    centres = []
+    side_tris = [
+        (0, 1, 5),
+        (0, 5, 4),
+        (1, 2, 6),
+        (1, 6, 5),
+        (3, 2, 6),
+        (3, 6, 7),
+        (0, 3, 7),
+        (0, 7, 4),
+        (4, 5, 6),
+        (4, 6, 7),
+    ]
+    centres: list[FloatArray] = []
     for k in range(n):
         c = corners(k)
         if k < n_hex:
@@ -302,7 +329,9 @@ def _box_boundary(points: FloatArray, cells: dict[str, IntArray]) -> dict[str, I
     return out
 
 
-def _gmsh_mesh(gmsh: ModuleType, kind: str, n: int, seed: int) -> tuple[FloatArray, dict[str, IntArray]]:
+def _gmsh_mesh(
+    gmsh: ModuleType, kind: str, n: int, seed: int
+) -> tuple[FloatArray, dict[str, IntArray]]:
     gmsh.option.setNumber("Mesh.RandomSeed", seed)
     gmsh.option.setNumber("Mesh.MeshSizeMin", 1.0 / n)
     gmsh.option.setNumber("Mesh.MeshSizeMax", 1.0 / n)
@@ -317,19 +346,30 @@ def _gmsh_mesh(gmsh: ModuleType, kind: str, n: int, seed: int) -> tuple[FloatArr
     return points, cells
 
 
-def _write_msh(gmsh: ModuleType, points: FloatArray, cells: dict[str, IntArray],
-               boundary: dict[str, IntArray], path: Path) -> None:
+def _write_msh(
+    gmsh: ModuleType,
+    points: FloatArray,
+    cells: dict[str, IntArray],
+    boundary: dict[str, IntArray],
+    path: Path,
+) -> None:
     """Write arrays as MSH 4.1 ASCII through a discrete Gmsh model, so the file is exactly the arrays."""
     gmsh.model.add("export")
     volume = gmsh.model.addDiscreteEntity(3)
-    gmsh.model.mesh.addNodes(3, volume, list(range(1, points.shape[0] + 1)), points.ravel().tolist())
+    gmsh.model.mesh.addNodes(
+        3, volume, list(range(1, points.shape[0] + 1)), points.ravel().tolist()
+    )
     tag = 1
     for kind in _CELL_ORDER:
         if kind in cells:
             conn = cells[kind]
             gmsh_type = {v: k for k, v in _GMSH_TYPES.items()}[kind]
-            gmsh.model.mesh.addElementsByType(volume, gmsh_type, list(range(tag, tag + conn.shape[0])),
-                                              (conn + 1).ravel().tolist())
+            gmsh.model.mesh.addElementsByType(
+                volume,
+                gmsh_type,
+                list(range(tag, tag + conn.shape[0])),
+                (conn + 1).ravel().tolist(),
+            )
             tag += conn.shape[0]
     for name in BOX_ZONES:
         surface = gmsh.model.addDiscreteEntity(2)
@@ -337,13 +377,29 @@ def _write_msh(gmsh: ModuleType, points: FloatArray, cells: dict[str, IntArray],
         for k, gmsh_type in ((3, 2), (4, 3)):
             rows = faces[(faces >= 0).sum(axis=1) == k][:, :k]
             if rows.size:
-                gmsh.model.mesh.addElementsByType(surface, gmsh_type, list(range(tag, tag + rows.shape[0])),
-                                                  (rows + 1).ravel().tolist())
+                gmsh.model.mesh.addElementsByType(
+                    surface,
+                    gmsh_type,
+                    list(range(tag, tag + rows.shape[0])),
+                    (rows + 1).ravel().tolist(),
+                )
                 tag += rows.shape[0]
         gmsh.model.addPhysicalGroup(2, [surface], name=name)
     gmsh.model.addPhysicalGroup(3, [volume], name=CELL_ZONE)
     gmsh.write(str(path))
     gmsh.model.remove()
+
+
+def _agglomerate(mesh: FaceMesh, primal_points: FloatArray, n: int) -> FaceMesh:
+    """Merge the dual cells whose primal vertex lies in the same box of a lattice of edge about 4/n,
+    in a checkerboard (at least two boxes per side)."""
+    m = max(n // 4, 2)
+    box = np.minimum(np.floor(primal_points * m).astype(np.int64), m - 1)
+    box_id = (box[:, 0] * m + box[:, 1]) * m + box[:, 2]
+    merged = box.sum(axis=1) % 2 == 0
+    key = np.where(merged, box_id, -1 - np.arange(mesh.n_cells))
+    _, cell_map = np.unique(key, return_inverse=True)
+    return merge_cells(mesh, cell_map.astype(np.int64), int(cell_map.max()) + 1)
 
 
 def generate_level(
@@ -370,14 +426,18 @@ def generate_level(
         if kind == "hybrid":
             points, cells = _structured_hybrid(n)
         else:
-            points, cells = _gmsh_mesh(gmsh, "tet" if kind == "poly" else kind, n, seed)
+            points, cells = _gmsh_mesh(
+                gmsh, "tet" if kind in ("poly", "agglomerated") else kind, n, seed
+            )
         boundary = _box_boundary(points, cells)
         if perturbation > 0.0:
             ss = np.random.SeedSequence([seed, n, KINDS.index(kind)])
             points = perturb(points, cells, boundary, perturbation, int(ss.generate_state(1)[0]))
         points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
-        if kind == "poly":
+        if kind in ("poly", "agglomerated"):
             mesh = median_dual(points, cells["tet"], boundary, BC_TYPES)
+            if kind == "agglomerated":
+                mesh = _agglomerate(mesh, points, n)
             if path is not None:
                 write_fluent(mesh, path, CELL_ZONE)
         else:
@@ -392,16 +452,17 @@ def generate_level(
 
 def generate_family(
     kind: str, levels: tuple[int, ...], out_dir: Path, *, perturbation: float = 0.0, seed: int = 0
-) -> Family:
-    """Generate all levels of a family into `out_dir` and write its `manifest.json`."""
+) -> tuple[Family, list[FaceMesh]]:
+    """Generate all levels of a family into `out_dir`, write its `manifest.json`, return both."""
     out_dir.mkdir(parents=True, exist_ok=True)
     records = []
+    meshes = []
     version = ""
-    suffix = ".msh"
     for n in levels:
-        name = f"{kind}{'-dirty' if perturbation > 0 else ''}-n{n:03d}{suffix}"
+        name = f"{kind}{'-dirty' if perturbation > 0 else ''}-n{n:03d}.msh"
         path = out_dir / name
         mesh, version = generate_level(kind, n, perturbation=perturbation, seed=seed, path=path)
+        meshes.append(mesh)
         g = mesh.geometry
         volume = float(g.cell_volume.sum())
         counts: dict[str, int] = {}
@@ -424,4 +485,4 @@ def generate_family(
         )
     family = Family(kind, perturbation, seed, version, tuple(records))
     (out_dir / "manifest.json").write_text(json.dumps(family.manifest(), indent=2) + "\n")
-    return family
+    return family, meshes

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from cfd_vv.errors import VVError
 from cfd_vv.meshes.facemesh import FaceMesh, from_faces
 from cfd_vv.meshes.families import BOX_ZONES, KINDS, generate_family, generate_level
@@ -19,6 +18,7 @@ EXPECTED_KINDS = {
     "prism": {"prism"},
     "hybrid": {"hex", "prism", "pyramid", "tet"},
     "poly": {"polyhedron"},
+    "agglomerated": {"polyhedron"},
 }
 
 
@@ -44,8 +44,12 @@ def test_family_meshes_tile_the_unit_cube(kind: str, perturbation: float) -> Non
         np.testing.assert_allclose(area.sum(axis=0), _box_normal(z.name), atol=1e-13)
         centroid = g.face_centroid[z.start : z.start + z.count]
         axis = "xyz".index(z.name[0])
-        np.testing.assert_allclose(centroid[:, axis], 0.0 if z.name.endswith("min") else 1.0, atol=1e-14)
-    # Interior normals point from owner to neighbour.
+        np.testing.assert_allclose(
+            centroid[:, axis], 0.0 if z.name.endswith("min") else 1.0, atol=1e-14
+        )
+    # Interior normals point from owner to neighbour (centroids of non-convex agglomerates may not).
+    if kind == "agglomerated":
+        return
     d = g.cell_centroid[mesh.neighbour] - g.cell_centroid[mesh.owner[: mesh.n_interior]]
     assert np.all(np.einsum("ij,ij->i", d, g.face_area[: mesh.n_interior]) > 0.0)
 
@@ -60,12 +64,12 @@ def test_perturbation_moves_interior_nodes_only_tangentially_on_the_boundary() -
     assert np.max(moved) < 0.3 / 6 + 1e-12
 
 
-@pytest.mark.parametrize("kind", ["tet", "poly", "hybrid"])
+@pytest.mark.parametrize("kind", ["tet", "poly", "agglomerated"])
 def test_families_regenerate_bit_for_bit(kind: str, tmp_path: Path) -> None:
-    first = generate_family(kind, (4, 6), tmp_path / "a", perturbation=0.2, seed=11)
-    second = generate_family(kind, (4, 6), tmp_path / "b", perturbation=0.2, seed=11)
+    first, _ = generate_family(kind, (4, 6), tmp_path / "a", perturbation=0.2, seed=11)
+    second, _ = generate_family(kind, (4, 6), tmp_path / "b", perturbation=0.2, seed=11)
     assert first.levels == second.levels
-    other_seed = generate_family(kind, (4,), tmp_path / "c", perturbation=0.2, seed=12)
+    other_seed, _ = generate_family(kind, (4,), tmp_path / "c", perturbation=0.2, seed=12)
     assert other_seed.levels[0].file_sha256 != first.levels[0].file_sha256
     manifest = json.loads((tmp_path / "a" / "manifest.json").read_text())
     assert manifest["schema"] == "cfd-vv/mesh-family/1"
@@ -95,20 +99,27 @@ def test_gmsh_file_reads_back_through_gmsh(tmp_path: Path) -> None:
 def _read_fluent(path: Path) -> FaceMesh:
     """Independent reader for the Fluent subset we write: nodes, mixed faces, zone names."""
     text = path.read_text()
-    nodes = re.search(r"\(10 \(1 1 ([0-9a-f]+) 1 3\)\(\n(.*?)\n\)\)", text, re.S)
+    nodes = re.search(r"\(10 \(1 1 ([0-9a-f]+) 1 3\)\(\n(.*?)\n\)\)", text, re.DOTALL)
     assert nodes is not None
     points = np.array([[float(v) for v in ln.split()] for ln in nodes.group(2).splitlines()])
     assert points.shape[0] == int(nodes.group(1), 16)
     n_cells = int(re.search(r"\(12 \(0 1 ([0-9a-f]+) 0\)\)", text).group(1), 16)  # type: ignore[union-attr]
-    names = {int(i, 16): (kind, name) for i, kind, name in re.findall(r"\(45 \(([0-9a-f]+) (\S+) (\S+)\)\(\)\)", text)}
+    names = {
+        int(i, 16): (kind, name)
+        for i, kind, name in re.findall(r"\(45 \(([0-9a-f]+) (\S+) (\S+)\)\(\)\)", text)
+    }
     interior: list[list[int]] = [[], [], []]
     zones: dict[str, tuple[str, list[list[int]], list[int]]] = {}
-    for zid, body in re.findall(r"\(13 \(([0-9a-f]+) [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ 0\)\(\n(.*?)\n\)\)", text, re.S):
+    for zid, body in re.findall(
+        r"\(13 \(([0-9a-f]+) [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ 0\)\(\n(.*?)\n\)\)", text, re.DOTALL
+    ):
         kind, name = names[int(zid, 16)]
         for line in body.splitlines():
             v = [int(t, 16) for t in line.split()]
             assert v[0] == len(v) - 3
-            poly = [p - 1 for p in v[1:-2]][::-1]  # Fluent normal points to c0; ours away from owner.
+            poly = [p - 1 for p in v[1:-2]][
+                ::-1
+            ]  # Fluent normal points to c0; ours away from owner.
             c0, c1 = v[-2] - 1, v[-1] - 1
             if kind == "interior":
                 interior[0].append(poly)  # type: ignore[arg-type]
@@ -139,16 +150,22 @@ def test_fluent_polyhedral_file_reads_back_closed_with_zones(tmp_path: Path) -> 
     mesh, _ = generate_level("poly", 5, perturbation=0.2, seed=2, path=path)
     back = _read_fluent(path)
     back.check()
-    assert back.n_cells == mesh.n_cells and back.n_faces == mesh.n_faces
+    assert back.n_cells == mesh.n_cells
+    assert back.n_faces == mesh.n_faces
     assert back.geometry.cell_volume.sum() == pytest.approx(1.0, abs=1e-13)
-    assert {z.name: (z.bc_type, z.count) for z in back.zones} == {z.name: (z.bc_type, z.count) for z in mesh.zones}
+    assert {z.name: (z.bc_type, z.count) for z in back.zones} == {
+        z.name: (z.bc_type, z.count) for z in mesh.zones
+    }
     assert dict(next(iter(back.zones)).__dict__)["bc_type"] in {"wall", "pressure-far-field"}
     np.testing.assert_allclose(back.geometry.cell_volume, mesh.geometry.cell_volume, rtol=1e-13)
     # Every edge of every cell is used exactly twice, in opposite directions (core reader rule).
     for cell in range(back.n_cells):
         edges: dict[tuple[int, int], int] = {}
-        faces = np.flatnonzero((back.owner == cell) | np.r_[back.neighbour == cell, np.zeros(back.n_faces - back.n_interior, bool)])
-        for f in faces:
+        faces = np.flatnonzero(
+            (back.owner == cell)
+            | np.r_[back.neighbour == cell, np.zeros(back.n_faces - back.n_interior, bool)]
+        )
+        for f in faces.tolist():
             nodes = back.face(f) if back.owner[f] == cell else back.face(f)[::-1]
             for a, b in zip(nodes, np.roll(nodes, -1), strict=True):
                 edges[(int(a), int(b))] = edges.get((int(a), int(b)), 0) + 1

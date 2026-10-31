@@ -113,7 +113,7 @@ def _grad(f: sp.Expr) -> tuple[sp.Expr, sp.Expr, sp.Expr]:
 
 
 def trig_field(base: str, *terms: tuple[str, str, str, str]) -> sp.Expr:
-    """Roy et al. (2004), eq. 11 form: phi0 + sum_k a_k f_k(c_k pi x_k), f_k in {sin, cos}, extended to 3D.
+    """Form of Roy et al. (2004): phi0 + sum_k a_k f_k(c_k pi x_k), f_k in {sin, cos}, extended to 3D.
 
     Each term is (axis, function, amplitude, wavenumber factor), e.g. ("x", "sin", "0.15", "1").
     """

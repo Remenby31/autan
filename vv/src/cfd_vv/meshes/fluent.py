@@ -33,11 +33,15 @@ def write_fluent(mesh: FaceMesh, path: Path, cell_zone: str) -> None:
     lines.append(f"(12 (0 1 {mesh.n_cells:x} 0))")
     kinds = set(mesh.cell_kinds) or {"polyhedron"}
     if len(kinds) == 1:
-        lines.append(f"(12 ({cell_zone_id:x} 1 {mesh.n_cells:x} 1 {CELL_TYPE_CODES[kinds.pop()]:x}))")
+        lines.append(
+            f"(12 ({cell_zone_id:x} 1 {mesh.n_cells:x} 1 {CELL_TYPE_CODES[kinds.pop()]:x}))"
+        )
     else:
         lines.append(f"(12 ({cell_zone_id:x} 1 {mesh.n_cells:x} 1 0)(")
-        lines += [" ".join(f"{CELL_TYPE_CODES[k]:x}" for k in mesh.cell_kinds[i : i + 16])
-                  for i in range(0, mesh.n_cells, 16)]
+        lines += [
+            " ".join(f"{CELL_TYPE_CODES[k]:x}" for k in mesh.cell_kinds[i : i + 16])
+            for i in range(0, mesh.n_cells, 16)
+        ]
         lines.append("))")
 
     lines.append(f"(13 (0 1 {mesh.n_faces:x} 0))")
