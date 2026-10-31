@@ -1,4 +1,5 @@
-# The one ruff configuration for py/ and vv/. A [tool.ruff] table in a pyproject.toml would shadow it.
+# The one ruff configuration for py/ and vv/. Keep [tool.ruff] out of every pyproject.toml: in a
+# subdirectory it would override this file, and beside it it would be ignored.
 target-version = "py312"
 line-length = 100
 

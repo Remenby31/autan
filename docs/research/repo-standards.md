@@ -77,7 +77,7 @@ Decision: report through GitHub private vulnerability reporting, which we enable
 - Kokkos, deal.II, DOLFINx, PyTorch and pydantic ship a `CITATION.cff`. DOLFINx's release updates `version` and `date-released` in it ([RELEASE.md](https://github.com/FEniCS/dolfinx/blob/main/RELEASE.md)).
 - If a `.zenodo.json` exists, Zenodo ignores `CITATION.cff` ([Zenodo](https://help.zenodo.org/docs/github/describe-software/citation-file/)).
 
-Decision: a `CITATION.cff` validated by `cffconvert` in pre-commit, with no `version` until the first release and no `.zenodo.json`. Zenodo archiving is a lead decision at the first release.
+Decision: a `CITATION.cff` validated against the CFF 1.2.0 schema in pre-commit (the check-jsonschema hook `check-citation-file-format`; cffconvert 2.0.0 predates its own hook), with no `version` until the first release and no `.zenodo.json`. Zenodo archiving is a lead decision at the first release.
 
 ### Changelog
 
@@ -120,14 +120,14 @@ Decision: `.github/labels.yml` declares the lane labels, `numerics`, `performanc
 - clang-tidy needs a compilation database (`CMAKE_EXPORT_COMPILE_COMMANDS`, Ninja or Makefiles only), so it runs in CI after configure, not in pre-commit ([clang-tidy](https://clang.llvm.org/extra/clang-tidy/), [CMake](https://cmake.org/cmake/help/latest/variable/CMAKE_EXPORT_COMPILE_COMMANDS.html)).
 - CMake: DOLFINx checks CMake files with gersemi ([ccpp.yml](https://github.com/FEniCS/dolfinx/blob/main/.github/workflows/ccpp.yml)). cmake-format has had no commit since 2021 and is GPL-3.0; gersemi is maintained and MPL-2.0 ([gersemi](https://github.com/BlankSpruce/gersemi)).
 
-Decision: `.clang-format` based on LLVM, pinned to clang-format 23.1.3, with 2-space indentation and a 100-column limit to match the core code already written. CUDA and HIP qualifiers are declared as attribute macros. `.clang-tidy` enables `bugprone`, `clang-analyzer`, `concurrency`, `misc`, `modernize`, `performance`, `portability` and selected `readability` checks, with a reason next to each exclusion, and treats warnings as errors. gersemi formats CMake.
+Decision: `.clang-format` based on Google, pinned to clang-format 23.1.3, with a 100-column limit. That is the style the mesh core was already written in: on its first files, this configuration changed only lines longer than 100 columns. CUDA and HIP qualifiers are declared as attribute macros. `.clang-tidy` enables `bugprone`, `clang-analyzer`, `concurrency`, `misc`, `modernize`, `performance`, `portability` and selected `readability` checks, with a reason next to each exclusion, and treats warnings as errors. gersemi formats CMake.
 
 ### Python
 
 - Scientific Python guide: ruff with `extend-select` `ARG, B, C4, EM, EXE, FURB, G, ICN, ISC, LOG, NPY, PD, PERF, PGH, PL, PT, PTH, PYI, Q, RET, RSE, RUF, SIM, SLOT, T10, T20, TC, TRY, UP`; ignore `PLR09` and `PLR2004` ([style guide](https://learn.scientific-python.org/development/guides/style/)). Its repo-review rules require bugbear (RF101), a target version (RF002) and the hook id `ruff-check` (PC192).
 - DOLFINx bans imports of its nanobind module from user code through ruff `banned-api` ([pyproject.toml](https://github.com/FEniCS/dolfinx/blob/main/python/pyproject.toml)).
 
-Decision: one root `ruff.toml` for `py/` and `vv/`, with the guide's rule set minus `PD` (no pandas), Python 3.12, 100 columns. A `[tool.ruff]` section in a `pyproject.toml` would shadow it, so packages carry none. The banned import of the compiled module is added once that module exists.
+Decision: one root `ruff.toml` for `py/` and `vv/`, with the guide's rule set minus `PD` (no pandas), Python 3.12, 100 columns. Packages carry no `[tool.ruff]` table: one in `vv/pyproject.toml` would override the root file for `vv/`, and one in the root `pyproject.toml` would be ignored, since `ruff.toml` takes precedence in the same directory ([ruff configuration](https://docs.astral.sh/ruff/configuration/#config-file-discovery)). The banned import of the compiled module is added once that module exists.
 
 ### Text and repository hygiene
 
@@ -136,7 +136,7 @@ Decision: one root `ruff.toml` for `py/` and `vv/`, with the guide's rule set mi
 - JAX and ruff pin hooks by SHA with a `# frozen: vX` comment ([JAX](https://github.com/jax-ml/jax/blob/main/.pre-commit-config.yaml)); Dependabot's `pre-commit` ecosystem updates such pins ([Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)).
 - check-jsonschema validates workflows, Dependabot config and issue forms ([check-jsonschema](https://github.com/python-jsonschema/check-jsonschema)).
 
-Decision: pre-commit runs pre-commit-hooks, typos, ruff, clang-format, gersemi, check-jsonschema, cffconvert, actionlint and zizmor, all pinned by SHA. Secrets: GitHub secret scanning with push protection is already on, so we skip gitleaks.
+Decision: pre-commit runs pre-commit-hooks, typos, ruff, clang-format, gersemi, check-jsonschema (workflows, Dependabot, issue forms, citation file), actionlint and zizmor, all pinned by SHA. The hook environments resolve their own transitive dependencies; the `uv.lock` rule of `AGENTS.md` covers the project's packages, not these pinned linters. Secrets: GitHub secret scanning with push protection is already on, so we skip gitleaks.
 
 ## 6. CI and supply chain
 
@@ -155,7 +155,7 @@ Decision: `ci.yml` runs every pre-commit hook on each PR and push to `main`, wit
 - release-please: "We highly recommend that you use squash-merges". Manifest mode uses `release-please-config.json` and `.release-please-manifest.json`. `bump-minor-pre-major` makes a breaking change bump the minor below 1.0; `bump-patch-for-minor-pre-major` makes `feat` bump the patch. `extra-files` with an `x-release-please-version` marker updates other files ([release-please](https://github.com/googleapis/release-please), [customizing](https://github.com/googleapis/release-please/blob/main/docs/customizing.md)). The action needs `contents`, `issues` and `pull-requests: write`, and pull requests it opens with `GITHUB_TOKEN` trigger no workflow ([release-please-action](https://github.com/googleapis/release-please-action)).
 - Pitfall: a static version in `pyproject.toml` is copied into `uv.lock`, so a release PR that bumps only `pyproject.toml` breaks `uv sync --locked`. uv leaves dynamic versions out of the lock ([uv#10622](https://github.com/astral-sh/uv/pull/10622)). This is our inference from the uv change, not a documented release-please limitation.
 
-Decision: release-please in manifest mode, release type `simple`, both pre-major options on, with the version kept in one file, `version.txt`. CMake and the Python build read it, so the lock never holds a version. That needs one change each from the mesh core and SDK lanes. Its release PR gets no CI run under `GITHUB_TOKEN`; the lead reruns CI on it before merging, or we add a GitHub App token later.
+Decision: release-please in manifest mode, release type `simple`, both pre-major options on, first release `0.1.0` (`initial-version`; the SemVer FAQ suggests starting there, and without it release-please treats the manifest's `0.0.0` as "no release" and proposes `1.0.0`), with the version kept in one file, `version.txt`. CMake and the Python build read it, so the lock never holds a version. That needs one change each from the mesh core and SDK lanes. Its release PR gets no CI run under `GITHUB_TOKEN`; the lead reruns CI on it before merging, or we add a GitHub App token later.
 
 ## 8. Agent rules
 
@@ -172,7 +172,7 @@ Decision: `AGENTS.md` keeps every non-negotiable. It adds the hook gate (never `
 
 - **REUSE.** Spec 3.3 asks for SPDX headers on every file or a `REUSE.toml` ([spec](https://reuse.software/spec-3.3/)). It is not required by GitHub, Scorecard or the Best Practices badge, and a single-licence repository gains little. We keep the root `LICENSE` and put SPDX headers on vendored third-party files only.
 - **DCO sign-off.** See [CONTRIBUTING](#contributing).
-- **CodeQL.** Scorecard's SAST check wants CodeQL or SonarCloud. CodeQL for C++ needs a build, which `main` does not have yet. clang-tidy covers static analysis (Best Practices `static_analysis`) once the build exists; CodeQL can follow.
+- **CodeQL, for now.** Scorecard's SAST check wants CodeQL or SonarCloud. `main` has no C++ or Python source yet, so there is nothing to analyse. CodeQL for C/C++ can run without a build (`build-mode: none`, [CodeQL docs](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages)); we add it with clang-tidy in the follow-up CI change, once the core and SDK are on `main`.
 - **Fuzzing.** Scorecard credits C++ and Python only through OSS-Fuzz or ClusterFuzzLite ([checks.md](https://github.com/ossf/scorecard/blob/main/docs/checks.md#fuzzing)). The mesh readers are the natural target once they land.
 - **Markdown formatter, mypy and uv-lock hooks.** Markdown formatting would rewrite the French design documents. mypy and the lock check belong with the SDK's own CI job, added when its package is on `main`.
 - **OpenSSF Best Practices badge.** The files above meet the passing criteria we can meet today. Registration on bestpractices.dev needs the lead's GitHub login.
