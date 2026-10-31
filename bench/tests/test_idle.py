@@ -30,7 +30,11 @@ def test_idle_check_needs_a_measured_quiet_gpu(fake_nvidia_smi):
     fake_nvidia_smi("0", 0)
     assert require_idle(interval_s=0.0)["utilization_pct_max"] == 0.0
 
-    for utilization, apps, code in [("30", 0, Code.GPU_BUSY), ("0", 1, Code.GPU_BUSY), ("[N/A]", 0, Code.NVIDIA_SMI_FAILED)]:
+    for utilization, apps, code in [
+        ("30", 0, Code.GPU_BUSY),
+        ("0", 1, Code.GPU_BUSY),
+        ("[N/A]", 0, Code.NVIDIA_SMI_FAILED),
+    ]:
         fake_nvidia_smi(utilization, apps)
         with pytest.raises(BenchError) as err:
             require_idle(interval_s=0.0, timeout_s=0.0)
