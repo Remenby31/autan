@@ -12,16 +12,20 @@ REPO = "Remenby31/autan"
 def run_hook(
     tmp_path: Path, event: str, payload: dict, repository: str = REPO
 ) -> subprocess.CompletedProcess:
+    # The hook reads the allowed repository from a file beside it. Outside a runner it has no
+    # Runner.Worker ancestor to kill; that part is checked on a real runner.
+    hook = tmp_path / "job-started.sh"
+    hook.write_text(HOOK.read_text())
+    (tmp_path / "repository").write_text(REPO + "\n")
     path = tmp_path / "event.json"
     path.write_text(json.dumps(payload))
     env = {
         "PATH": os.environ["PATH"],
-        "AUTAN_RUNNER_REPOSITORY": REPO,
         "GITHUB_REPOSITORY": repository,
         "GITHUB_EVENT_NAME": event,
         "GITHUB_EVENT_PATH": str(path),
     }
-    return subprocess.run(["bash", str(HOOK)], check=False, env=env, capture_output=True, text=True)
+    return subprocess.run(["bash", str(hook)], check=False, env=env, capture_output=True, text=True)
 
 
 def pull_request(head: str) -> dict:

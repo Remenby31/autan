@@ -1,16 +1,35 @@
 #!/usr/bin/env bash
 # Runner job-started hook (ACTIONS_RUNNER_HOOK_JOB_STARTED). It runs on the runner before any
-# step and outside the workflow's control; a non-zero exit fails the job. It accepts only
-# jobs of AUTAN_RUNNER_REPOSITORY triggered by push, workflow_dispatch, schedule, or a
-# pull_request whose head branch lives in that same repository. Fork pull requests are refused.
+# step and outside the workflow's control. It accepts only jobs of the repository named in the
+# root-owned file `repository` next to this script (never from the environment, which a
+# workflow controls), triggered by push, workflow_dispatch, schedule, or a pull_request whose head branch lives in
+# that same repository. Fork pull requests are refused.
+#
+# A failing hook only fails its own step: the runner still evaluates the job's later steps,
+# so `if: always()` steps would run. Refusing therefore kills the Runner.Worker process that
+# runs this job, which ends the job before any of its steps.
 set -euo pipefail
+
+kill_worker() {
+  local pid=$$ comm
+  while [[ $pid -gt 1 ]]; do
+    comm=$(<"/proc/$pid/comm")
+    if [[ $comm == Runner.Worker ]]; then
+      kill -KILL "$pid"
+      return
+    fi
+    pid=$(awk '/^PPid:/ {print $2}' "/proc/$pid/status")
+  done
+}
 
 deny() {
   echo "::error title=autan-runner::job refused: $*" >&2
+  kill_worker
   exit 1
 }
 
-allowed=${AUTAN_RUNNER_REPOSITORY:?AUTAN_RUNNER_REPOSITORY is not set}
+allowed=$(<"$(dirname "${BASH_SOURCE[0]}")/repository")
+[[ $allowed =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || deny "no valid repository configured"
 [[ -r ${GITHUB_EVENT_PATH:-} ]] || deny "no event payload"
 repository=$(jq -r '.repository.full_name // empty' "$GITHUB_EVENT_PATH")
 [[ $repository == "$allowed" && ${GITHUB_REPOSITORY:-} == "$allowed" ]] ||

@@ -17,9 +17,10 @@ RUN test "$(dpkg --print-architecture)" = arm64 \
  && chown -R runner:runner /opt/actions-runner
 
 COPY --chmod=0555 job-started.sh entrypoint.sh /opt/autan-runner/
-RUN install -d -o runner -g runner /state /work
-ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/autan-runner/job-started.sh \
-    AUTAN_RUNNER_REPOSITORY=Remenby31/autan
+ARG REPOSITORY=Remenby31/autan
+RUN echo "${REPOSITORY}" > /opt/autan-runner/repository \
+ && install -d -o runner -g runner /state /work
+ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/autan-runner/job-started.sh
 USER runner
 WORKDIR /opt/actions-runner
 ENTRYPOINT ["/opt/autan-runner/entrypoint.sh"]
