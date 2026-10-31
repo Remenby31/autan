@@ -83,8 +83,8 @@ jobs:
           uv tool install clang-tidy==23.1.4
       - name: Configure
         run: cmake -S . -B build -G Ninja -DAUTAN_BUILD_TESTS=OFF
-      - name: Analyse the core and the readers
-        run: run-clang-tidy.py -p build -quiet 'core/src/.*|io/src/.*'
+      - name: Analyse the core, the readers and the mesh tools
+        run: run-clang-tidy.py -p build -quiet 'core/src/.*|io/src/.*|io/tools/.*'
 
   sdk:
     name: Python SDK
@@ -99,8 +99,17 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
-      - name: Install cgnscheck
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends cgns-convert
+      # Ubuntu 24.04 ships CGNS 3.4, which cannot read files written by CGNS 4; conda-forge has 4.5.
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          micromamba-version: 2.3.3-0
+          environment-name: cgns
+          create-args: -c conda-forge cgns=4.5.2
+          init-shell: none
+          cache-downloads: false
+          cache-environment: false
+      - name: Put cgnscheck on the PATH
+        run: echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check
       - name: Install from the lock file
@@ -108,4 +117,6 @@ jobs:
       - name: Type-check
         run: uv run --locked mypy
       - name: Test
-        run: uv run --locked pytest
+        run: |
+          command -v cgnscheck
+          uv run --locked pytest
