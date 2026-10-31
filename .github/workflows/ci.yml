@@ -116,7 +116,9 @@ jobs:
         run: uv sync --locked
       - name: Type-check
         run: uv run --locked mypy
-      - name: Test
+      - name: Test, failing on any skipped test
         run: |
+          set -o pipefail
           command -v cgnscheck
-          uv run --locked pytest
+          uv run --locked pytest -ra | tee pytest.log
+          if grep -q '^SKIPPED' pytest.log; then echo "::error::CI must run every test; see the SKIPPED lines above."; exit 1; fi
