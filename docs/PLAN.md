@@ -60,7 +60,7 @@ M0 → M1 → M2 → M3 → M5 → M6 / M7. M4 et M10 avancent en parallèle dè
 
 | Risque | Parade |
 |---|---|
-| Générateur + AD trop complexe | Spike M1 avec porte ; repli Enzyme ou adjoint écrit à la main pour les kernels clés |
+| Générateur + AD trop complexe | Spike M1 avec porte ; AD maison sur l'IR du générateur, replis Tapenade puis nombres duaux, Enzyme comme oracle de vérification (voir `research/kernel-generator.md`) |
 | FP32 insuffisant (CLmax) | Précision en paramètre de template dès M1, étude M5, repli FP64 par kernel |
 | AMG/solveurs lents | Harnais de matrices réelles dès M2 ; backends interchangeables |
 | Portage AMD fragile | Runner AMD en CI dès M1 |
