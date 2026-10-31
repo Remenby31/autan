@@ -1,6 +1,6 @@
 # Contract: results
 
-A run writes one directory. Its layout, the run metadata and the CGNS solution layout are the contract between the solver (and the fake backend), the results API (`cfd.Results`), the UI and V&V. Schema identifier: `cfd.results/1`.
+A run writes one directory. Its layout, the run metadata and the CGNS solution layout are the contract between the solver (and the fake backend), the results API (`autan.Results`), the UI and V&V. Schema identifier: `autan.results/1`.
 
 ## Run directory
 
@@ -13,7 +13,7 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
   solution.cgns    solution (CGNS/HDF5), written when the run ends
 ```
 
-The writer creates `<run_id>/` atomically and fails if it exists. `run.json`, `case.toml` and `mesh-info.json` exist from the start; `history.jsonl` from the first recorded iteration. `solution.cgns` is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
+The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml` and `mesh-info.json` into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed before `run.json` leaves `running`; readers do not use it while the run is `running`. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
 
 `case.toml` keeps `mesh` as the case wrote it, since it is part of the case hash. The mesh actually read is `run.json` `mesh.path`, an absolute path, identified by `mesh.sha256`.
 
@@ -21,7 +21,7 @@ The writer creates `<run_id>/` atomically and fails if it exists. `run.json`, `c
 
 ```json
 {
-  "schema": "cfd.results/1",
+  "schema": "autan.results/1",
   "run_id": "run-20261031T214012Z-7f3a9c21",
   "identity": "4be1…",
   "status": "converged",
@@ -44,7 +44,7 @@ The writer creates `<run_id>/` atomically and fails if it exists. `run.json`, `c
 |---|---|
 | `run_id` | Unique name of this execution and of its directory: `run-`, `started` as `YYYYMMDDThhmmssZ`, `-`, 8 random lowercase hex characters. |
 | `identity` | What the run computes: SHA-256 of `case.sha256`, `mesh.sha256`, `solver.commit`, `precision`, `solver.backend`, `devices.kind`, `devices.count`, joined by `\n`, UTF-8. |
-| `status` | `running` · `converged` (convergence criterion met) · `completed` (iteration or step budget reached) · `stopped` (stopped by user code or signal) · `diverged` · `failed`. |
+| `status` | `running` · `converged` (convergence criterion met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
@@ -55,7 +55,7 @@ The writer creates `<run_id>/` atomically and fails if it exists. `run.json`, `c
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
 | `time` | Physical time reached in seconds (unsteady), `null` (steady). |
-| `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}` for the time average of unsteady runs. |
+| `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}`: the interval actually averaged by an unsteady run with `average_from`, once at least one step past `average_from` is done. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
 Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays.
@@ -102,12 +102,12 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
     <cell zone>          ZoneSubRegion_t GridLocation CellCenter, PointList (NFACE ids), FamilyName
     FlowSolution         FlowSolution_t  GridLocation CellCenter, one R8 DataArray per field
     FlowSolutionMean     FlowSolution_t  same fields, time average (unsteady runs with average_from)
-    WallSolution         FlowSolution_t  GridLocation FaceCenter, PointList of every wall and slip face
+    WallSolution         ZoneSubRegion_t GridLocation FaceCenter, PointList of every wall and slip face, one R8 DataArray per field
 ```
 
 There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node.
 
-Node names. A zone keeps its name as node name when it has at most 32 characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, and, for cell zones, differs from the other children of `Zone` listed above. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
+Node names. A zone keeps its name as node name when it has 1 to 32 printable ASCII characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, is not itself of the form `boundary-NNNN` or `cell-zone-NNNN`, differs from the other children of `Base` listed above and, for cell zones, from the other children of `Zone`. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
 
 BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`.
 
@@ -122,8 +122,8 @@ BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` 
 | `TurbulentSANuTilde` | m²/s | SA and DDES on SA |
 | `TurbulentEnergyKinetic`, `TurbulentDissipationRate` | m²/s², 1/s | SST and DDES on SST (ω) |
 
-`WallSolution` fields, on wall and slip faces: `Pressure` (Pa, at the face) and `WallShearStressX`, `WallShearStressY`, `WallShearStressZ` (Pa, the tangential traction −τ·n the fluid exerts on the wall, n as in [History](#history); 0 on slip faces). Cp and Cf follow from these and q∞.
+`WallSolution` is a `ZoneSubRegion_t` because the CGNS library does not read a face-centred `FlowSolution_t` on unstructured zones; it is absent when the mesh has no wall or slip face. Its fields, on wall and slip faces: `Pressure` (Pa, at the face) and `WallShearStressX`, `WallShearStressY`, `WallShearStressZ` (Pa, the tangential traction −τ·n the fluid exerts on the wall, n as in [History](#history); 0 on slip faces). Cp and Cf follow from these and q∞.
 
 ## Results API
 
-`cfd.Results.open(path)` reads a run directory and checks it against this contract. `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name)` a cell-centred field as a NumPy array.
+`autan.Results.open(path)` reads a run directory and checks its metadata, case, MeshInfo and history against this contract (`E0701` otherwise); it reads `solution.cgns` only on the first `field`, `wall` or `cell_zone` call, which checks it the same way, so listing many runs stays cheap. `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name, mean=False)` a cell-centred field as a NumPy array, `results.wall(name)` a wall field with its face indices, `results.cell_zone(name)` the cell indices of a cell zone.

@@ -54,7 +54,12 @@ def _cmd_verify(args: argparse.Namespace) -> None:
     from autan_vv.verify import advection_diffusion_study  # noqa: PLC0415
 
     report = advection_diffusion_study(
-        args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
+        args.kind,
+        args.levels,
+        args.out,
+        perturbation=args.perturbation,
+        seed=args.seed,
+        precision=args.precision,
     )
     for norm, fit in report["fits"].items():
         _say(f"{norm}: p = {fit['order']:.3f}, finest pair {fit['pairwise_orders'][-1]:.3f}")
@@ -104,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated"))
     p.add_argument("--levels", type=_levels, default=(8, 16, 24, 32))
+    p.add_argument("--precision", choices=("fp64", "fp32"), default="fp64")
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)

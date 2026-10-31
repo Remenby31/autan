@@ -1,8 +1,8 @@
-#include "cfd/core/error.hpp"
+#include "autan/core/error.hpp"
 
 #include <cstdio>
 
-namespace cfd {
+namespace autan {
 
 std::string error_code_string(ErrorCode code) {
   char buffer[8];
@@ -13,4 +13,4 @@ std::string error_code_string(ErrorCode code) {
 Error::Error(ErrorCode code, std::string_view message)
     : std::runtime_error(error_code_string(code) + ": " + std::string(message)), code_(code) {}
 
-}  // namespace cfd
+}  // namespace autan

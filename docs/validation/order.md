@@ -6,7 +6,7 @@ Source: `vv/src/autan_vv/order.py`, `study.py`, `reference_fv.py`.
 
 - **Mesh size** h = (V/N)^(1/d) for N cells filling volume V in d dimensions.
 - **Observed order from errors** (exact solution known, e.g. MMS): least-squares fit of log e = log C + p log h over all levels, with the slope's standard error, its 95 % confidence interval (Student t, N − 2 degrees of freedom), R², and the order of each successive pair (`pairwise_orders`, coarse to fine, the last one being the finest pair).
-- **Observed order from a functional** (exact value unknown, e.g. a drag coefficient): three grids, Celik et al. (2008) eqs. 3a–3c solved by fixed-point iteration, which handles non-constant refinement ratios. Richardson extrapolation φ_ext = (r²¹ᵖ φ₁ − φ₂)/(r²¹ᵖ − 1). Oscillatory (`V0107`) or divergent (`V0108`) triplets are rejected: their order is meaningless.
+- **Observed order from a functional** (exact value unknown, e.g. a drag coefficient): three grids, Celik et al. (2008) eqs. 3a–3c written for φ = φ₀ + a hᵖ as (φ₃ − φ₂)/(φ₂ − φ₁) = r₂₁ᵖ (r₃₂ᵖ − 1)/(r₂₁ᵖ − 1) and solved by bisection in log form, valid for any refinement ratios. Richardson extrapolation φ_ext = φ₁ − (φ₂ − φ₁)/(r₂₁ᵖ − 1). Differences of opposite signs (oscillatory, `V0107`) or a ratio no positive order explains (`V0108`, `V0109`) are rejected: the order is then meaningless.
 - **GCI** (Roache 1994, 1998): GCI_fine = F_s |φ₂ − φ₁|/(r²¹ᵖ − 1), with F_s = 1.25 on three grids and 3 on two grids with an assumed order (`gci_two_grids`). Judge the asymptotic range by comparing the observed order with the formal order: the classic ratio GCI₃₂/(rᵖ GCI₂₁) is identically 1 when p is the observed order of the same triplet.
 
 The implementation reproduces Table 1 of Celik et al. (2008) (p = 1.53, φ_ext = 6.1685, GCI = 2.2 %) and recovers exact power laws to 10⁻¹².
@@ -22,9 +22,12 @@ The implementation reproduces Table 1 of Celik et al. (2008) (p = 1.53, φ_ext =
 - gradients by weighted least squares over face neighbours and boundary face centroids, weights 1/|d|²;
 - convection by the upwind cell value reconstructed with its gradient and integrated over each face's triangle fan, which is exact for linear fields even on warped faces;
 - diffusion by the face gradient ∇φ_f = ḡ + α (Δφ − ḡ·d) d/|d|², α = 4/3 inside (Nishikawa 2010) and α = 2 on boundary faces, where the cell-to-face quadratic needs it for a second-order face derivative. The correction along d rather than along the face normal keeps the coefficients bounded on non-convex agglomerated cells, where d·n can be negative;
-- Dirichlet data from the exact solution, the source at centroids, and GMRES preconditioned by the LU factors of the compact first-order operator.
+- Dirichlet data from the exact solution, the source at centroids, and GMRES preconditioned by the LU factors of the compact first-order operator, to 64 ε of the precision.
+- `precision="fp32"` keeps geometry and coefficients in FP64 (the solver's policy) and runs the operator, right-hand side, preconditioner and Krylov solve in FP32. A positive diffusivity is required: with every boundary value prescribed, pure advection is singular (`V0403`).
 
-Checks (`vv/tests/test_reference_fv.py`): a linear solution is reproduced to a few ulps on every kind, perturbed; the L2 order on the finest pair and the fitted order exceed 1.85 on every kind, clean and perturbed; `autan-vv verify` writes the report, plot and mesh manifest.
+`autan-vv verify` reports also record the mesh hashes, the SHA-256 of the manufactured solution's JSON export, the precision and the V&V commit.
+
+Checks (`vv/tests/test_reference_fv.py`): a linear solution is reproduced to a few ulps on every kind, perturbed; the L2 order on the finest pair and the fitted order exceed 1.85 on every kind, clean and perturbed, in FP64 and FP32; `autan-vv verify` writes a strict-JSON report, the plot and the mesh manifest. FP32 orders match FP64 to 0.01 on tet, hex, poly and hybrid families (n = 8, 16, 24), FP32 L2 errors within 0.2 % of FP64.
 
 ### Measured orders
 

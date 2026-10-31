@@ -138,12 +138,27 @@ class FaceMesh:
         )
 
     def check(self, rtol: float = 1e-12) -> None:
-        """Raise V0301 unless every cell is closed and has a positive volume.
+        """Raise V0301 unless the geometry is finite and every cell is closed with a positive volume.
 
         Sub-tetrahedra of the decomposition may be negative for strongly non-planar faces (median
         duals); `min_subvolume_ratio` reports that as a quality measure instead.
         """
+        if not np.all(np.isfinite(self.points)):
+            msg = "non-finite point coordinates"
+            raise VVError(msg, code="V0301")
         g = self.geometry
+        for name, arr in (
+            ("face area", g.face_area),
+            ("face centroid", g.face_centroid),
+            ("cell volume", g.cell_volume),
+            ("cell centroid", g.cell_centroid),
+        ):
+            if not np.all(np.isfinite(arr)):
+                msg = f"non-finite {name}"
+                raise VVError(msg, code="V0301")
+        if np.min(np.linalg.norm(g.face_area, axis=1)) <= 0.0:
+            msg = "a face has zero area"
+            raise VVError(msg, code="V0301")
         closure = np.zeros((self.n_cells, 3))
         np.add.at(closure, self.owner, g.face_area)
         np.add.at(closure, self.neighbour, -g.face_area[: self.n_interior])

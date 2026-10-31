@@ -20,7 +20,7 @@ compact first-order operator.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import scipy.sparse as sps
@@ -79,14 +79,71 @@ def _lsq_gradient(mesh: FaceMesh, phi_b: FloatArray) -> tuple[list[sps.csr_matri
     return mats, g0
 
 
-def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solution:
-    """Solve the advection-diffusion problem `ms` (from `autan_vv.mms.advection_diffusion`) on `mesh`."""
+PRECISIONS: dict[str, type[np.floating[Any]]] = {"fp64": np.float64, "fp32": np.float32}
+
+
+def _scaled_solve(
+    matrix: sps.csr_matrix,
+    low: sps.csr_matrix,
+    rhs: FloatArray,
+    real: type[np.floating[Any]],
+    tol: float,
+) -> tuple[FloatArray, int]:
+    """GMRES in `real` on the system with rows scaled to unit max-norm and the right-hand side to unit
+    max-norm, so that FP32 neither overflows nor underflows; returns the FP64 solution."""
+    row = 1.0 / abs(matrix).max(axis=1).toarray().ravel()
+    b = row * rhs
+    scale = float(np.max(np.abs(b)))
+    a_real = (sps.diags(row) @ matrix).astype(real)
+    lu = spla.splu((sps.diags(row) @ low).tocsc().astype(real))
+    precond = spla.LinearOperator(matrix.shape, matvec=lu.solve, dtype=real)
+    iterations = 0
+
+    def count(_: object) -> None:
+        nonlocal iterations
+        iterations += 1
+
+    x, info = spla.gmres(
+        a_real,
+        (b / scale).astype(real),
+        M=precond,
+        rtol=tol,
+        atol=0.0,
+        restart=200,
+        maxiter=50,
+        callback=count,
+        callback_type="pr_norm",
+    )
+    if info != 0:
+        msg = f"GMRES did not converge (info={info})"
+        raise VVError(msg, code="V0402")
+    return x.astype(np.float64) * scale, iterations
+
+
+def solve(
+    mesh: FaceMesh, ms: ManufacturedSolution, precision: str = "fp64", rtol: float | None = None
+) -> Solution:
+    """Solve the advection-diffusion problem `ms` (from `autan_vv.mms.advection_diffusion`) on `mesh`.
+
+    Geometry and coefficients are computed in FP64 (the solver's geometry policy); with
+    `precision="fp32"` the operator, right-hand side, preconditioner and Krylov solve are FP32.
+    `rtol` defaults to 64 machine epsilons of the precision. Requires a positive diffusivity: with
+    every boundary value prescribed, pure advection has a singular operator (V0403).
+    """
     if ms.equations != "scalar advection-diffusion":
         msg = f"the reference solver handles scalar advection-diffusion, not {ms.equations}"
         raise VVError(msg, code="V0401")
+    if precision not in PRECISIONS:
+        msg = f"precision must be one of {sorted(PRECISIONS)}, not {precision!r}"
+        raise VVError(msg, code="V0404")
+    real = PRECISIONS[precision]
+    tol = 64 * float(np.finfo(real).eps) if rtol is None else rtol
     p = ms.parameters
     a = np.array([p["ax"], p["ay"], p["az"]])
     nu = p["nu"]
+    if not nu > 0.0:
+        msg = f"diffusivity must be positive, not {nu}"
+        raise VVError(msg, code="V0403")
     g = mesh.geometry
     nc, ni, nf = mesh.n_cells, mesh.n_interior, mesh.n_faces
     own, nb = mesh.owner, mesh.neighbour
@@ -159,33 +216,19 @@ def solve(mesh: FaceMesh, ms: ManufacturedSolution, rtol: float = 1e-12) -> Solu
         (np.r_[vals, diag_b], (np.r_[rows, np.arange(nc)], np.r_[cols, np.arange(nc)])),
         shape=(nc, nc),
     )
-    lu = spla.splu(low)
-    precond = spla.LinearOperator((nc, nc), matvec=lu.solve)
-    iterations = 0
-
-    def count(_: object) -> None:
-        nonlocal iterations
-        iterations += 1
-
-    phi, info = spla.gmres(
-        matrix,
-        rhs,
-        M=precond,
-        rtol=rtol,
-        atol=0.0,
-        restart=200,
-        maxiter=50,
-        callback=count,
-        callback_type="pr_norm",
-    )
-    if info != 0:
-        msg = f"GMRES did not converge (info={info})"
-        raise VVError(msg, code="V0402")
-    residual = float(np.linalg.norm(matrix @ phi - rhs) / np.linalg.norm(rhs))
-    err = phi - exact(g.cell_centroid)["phi"]
+    rhs_norm = float(np.linalg.norm(rhs))
+    if rhs_norm == 0.0:
+        phi64, iterations, residual = np.zeros(nc), 0, 0.0
+    else:
+        phi64, iterations = _scaled_solve(matrix.tocsr(), low.tocsr(), rhs, real, tol)
+        residual = float(np.linalg.norm(matrix @ phi64 - rhs) / rhs_norm)
+        if not residual <= 1024 * float(np.finfo(real).eps):
+            msg = f"the {precision} solve stalled: FP64 relative residual {residual:.3g}"
+            raise VVError(msg, code="V0402")
+    err = phi64 - exact(g.cell_centroid)["phi"]
     vol = g.cell_volume
     return Solution(
-        phi=phi,
+        phi=phi64,
         error_l1=float(np.sum(vol * np.abs(err)) / vol.sum()),
         error_l2=float(np.sqrt(np.sum(vol * err**2) / vol.sum())),
         error_linf=float(np.max(np.abs(err))),

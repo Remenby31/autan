@@ -1,25 +1,25 @@
 # Contract: case schema
 
-A case is a typed document that says what to compute on which mesh. Python code builds it (`cfd.Case`), TOML and JSON store it, the UI and agents edit it, the solver consumes it. Schema identifier: `cfd.case/1`. The JSON Schema is generated from the SDK (`cfd schema case`) and is the machine-readable form of this page.
+A case is a typed document that says what to compute on which mesh. Python code builds it (`autan.Case`), TOML and JSON store it, the UI and agents edit it, the solver consumes it. Schema identifier: `autan.case/1`. The JSON Schema is generated from the SDK (`autan schema case`) and is the machine-readable form of this page.
 
 ## Example
 
 The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
 
 ```python
-import cfd
-from cfd.units import deg, m
+import autan
+from autan.units import deg, m
 
-case = cfd.Case("crm-hl", mesh="crm-hl.cgns")
-case.physics = cfd.Compressible(turbulence=cfd.SA(), precision="fp32+acc64")
+case = autan.Case("crm-hl", mesh="crm-hl.cgns")
+case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp32+acc64")
 case.freestream(mach=0.20, aoa=19.57 * deg, re=5.49e6, ref_length=7.0 * m)
 case.boundary("wing.*").wall()
 case.boundary("symmetry").symmetry()
-case.monitor(cfd.forces("wing.*", ref_area=191.84 * m**2), every=10)
+case.monitor(autan.forces("wing.*", ref_area=191.84 * m**2), every=10)
 ```
 
 ```toml
-schema = "cfd.case/1"
+schema = "autan.case/1"
 name = "crm-hl"
 mesh = "crm-hl.cgns"
 
@@ -72,7 +72,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 
 | Key | Type | Default |
 |---|---|---|
-| `schema` | `"cfd.case/1"` | required (`E0004` otherwise) |
+| `schema` | `"autan.case/1"` | required (`E0004` otherwise) |
 | `name` | non-empty string | required |
 | `mesh` | path, relative to the case file | required |
 | `physics` | [Physics](#physics) | required |
@@ -147,7 +147,7 @@ A steady run uses local time stepping and has converged when every residual of [
 
 With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
 
-Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `cfd.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
+Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 
@@ -172,11 +172,11 @@ A rule assigns a medium to every cell zone whose name matches `zones` (same glob
 | `medium.kind` | Keys |
 |---|---|
 | `"fluid"` | `material`: an [IdealGas](#materials) (compressible) or a [ConstantDensityFluid](#materials) (incompressible); `E0504` otherwise |
-| `"solid"` | `material`: a [Solid](#materials); compressible physics only (`E0506`), since `cfd.case/1` gives incompressible flow no energy equation |
+| `"solid"` | `material`: a [Solid](#materials); compressible physics only (`E0506`), since `autan.case/1` gives incompressible flow no energy equation |
 
 ### Materials
 
-Materials are stored in full, never by reference to a library entry, so the case hash covers every property. `cfd.gases` and `cfd.materials` provide presets with cited sources.
+Materials are stored in full, never by reference to a library entry, so the case hash covers every property. `autan.gases` and `autan.materials` provide presets with cited sources.
 
 | `kind` | Keys |
 |---|---|
@@ -201,11 +201,11 @@ The solver needs one condition per boundary zone of the mesh. The SDK resolves t
 3. Otherwise the zone's mesh type applies. Provenance `mesh`. `wall` becomes an adiabatic no-slip wall, or a slip wall with `inviscid` turbulence; `slip`, `symmetry` and `farfield` map one to one. `thermal-wall`, `inlet` and `outlet` need values that only the case can give (`E0413`).
 4. Otherwise the zone has no condition (`E0412`), unless it has no faces.
 
-Cell zones resolve the same way: rules (`E0501` no match, `E0502` ambiguous), then the mesh type (`fluid` takes the physics' default medium; `solid` needs a material, `E0503`), then, for a zone the mesh leaves untyped, a fluid with the physics' default medium (provenance `default`). Two fluid zones with different materials that share an interface would need species transport, which `cfd.case/1` does not provide (`E0505`).
+Cell zones resolve the same way: rules (`E0501` no match, `E0502` ambiguous), then the mesh type (`fluid` takes the physics' default medium; `solid` needs a material, `E0503`), then, for a zone the mesh leaves untyped, a fluid with the physics' default medium (provenance `default`). Two fluid zones with different materials that share an interface would need species transport, which `autan.case/1` does not provide (`E0505`).
 
 Monitor surfaces must match at least one boundary zone (`E0601`).
 
-`cfd plan` prints this resolution; `cfd plan --json` returns it.
+`autan plan` prints this resolution; `autan plan --json` returns it.
 
 ## Case hash
 
@@ -213,7 +213,7 @@ The case hash is the SHA-256 of the case document with every default filled in, 
 
 ## Diagnostics
 
-Every problem is reported as a diagnostic, in this JSON shape wherever diagnostics appear (`cfd plan --json`, `run.json`, the SDK's `CaseError`):
+Every problem is reported as a diagnostic, in this JSON shape wherever diagnostics appear (`autan plan --json`, `run.json`, the SDK's `CaseError`):
 
 ```json
 {"code": "E0412", "severity": "error", "message": "boundary zone 'empennage' has no condition",
@@ -231,4 +231,4 @@ Every problem is reported as a diagnostic, in this JSON shape wherever diagnosti
 | `fix`, `doc` | A suggested correction, and the code's documentation page. |
 | `data` | Machine-readable details. Mesh entities use `zone` (name), `cell` and `face` (0-based indices in the mesh's cell and face order, the order of `NFaceElements` and `NGonElements` in [results.md](results.md#solutioncgns)), `iteration`. |
 
-Codes are registered in `cfd.errors`; their reference page `docs/sdk/errors.md` is generated from it.
+Codes are registered in `autan.errors`; their reference page `docs/sdk/errors.md` is generated from it.

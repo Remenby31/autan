@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from typing import TYPE_CHECKING, Any
 
 import sympy as sp
-from sympy.parsing.sympy_parser import parse_expr
 from sympy.printing.c import C99CodePrinter
 from sympy.printing.cxx import CXX17CodePrinter
 
+from autan_vv.errors import VVError
 from autan_vv.mms.solutions import ManufacturedSolution, X
 
 if TYPE_CHECKING:
@@ -61,8 +62,14 @@ def _cse(exprs: list[sp.Expr]) -> tuple[list[tuple[sp.Symbol, sp.Expr]], list[sp
 class _CxxPrinter(CXX17CodePrinter):  # type: ignore[misc]
     """Prints literals as T(...) so one template body serves float and double without promotion to double."""
 
+    def __init__(self) -> None:
+        super().__init__({"math_macros": {}})
+
     def _print_Pi(self, _expr: sp.Expr) -> str:
         return "std::numbers::pi_v<T>"
+
+    def _print_Exp1(self, _expr: sp.Expr) -> str:
+        return "std::numbers::e_v<T>"
 
     def _print_Rational(self, expr: sp.Rational) -> str:
         return f"(T({expr.p}) / T({expr.q}))"
@@ -86,8 +93,14 @@ class _CxxPrinter(CXX17CodePrinter):  # type: ignore[misc]
 class _JsonPrinter(C99CodePrinter):  # type: ignore[misc]
     """C99 syntax with the constant pi spelt `pi` and rationals as exact decimal quotients."""
 
+    def __init__(self) -> None:
+        super().__init__({"math_macros": {}})
+
     def _print_Pi(self, _expr: sp.Expr) -> str:
         return "pi"
+
+    def _print_Exp1(self, _expr: sp.Expr) -> str:
+        return "exp(1)"
 
     def _print_Rational(self, expr: sp.Rational) -> str:
         return f"({expr.p}.0/{expr.q}.0)"
@@ -198,18 +211,67 @@ def _finite_or_none(v: float) -> float | None:
 
 def dump_json(ms: ManufacturedSolution) -> str:
     """Serialise `to_json` deterministically."""
-    return json.dumps(to_json(ms), indent=1, sort_keys=False) + "\n"
+    return json.dumps(to_json(ms), indent=1, allow_nan=False) + "\n"
+
+
+_FUNCTIONS: dict[str, Any] = {
+    "sin": sp.sin,
+    "cos": sp.cos,
+    "exp": sp.exp,
+    "log": sp.log,
+    "sqrt": sp.sqrt,
+    "pow": sp.Pow,
+}
+_BINARY: dict[type[ast.operator], Any] = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+}
+
+
+def _expression(text: str, names: dict[str, sp.Expr]) -> sp.Expr:
+    """Build a sympy expression from the restricted grammar of docs/validation/mms.md, never eval."""
+
+    def build(node: ast.AST) -> sp.Expr:
+        if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
+            return _BINARY[type(node.op)](build(node.left), build(node.right))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
+            inner = build(node.operand)
+            return -inner if isinstance(node.op, ast.USub) else inner
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            return (
+                sp.Rational(str(node.value))
+                if isinstance(node.value, float)
+                else sp.Integer(node.value)
+            )
+        if isinstance(node, ast.Name) and node.id in names:
+            return names[node.id]
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _FUNCTIONS
+            and not node.keywords
+        ):
+            return _FUNCTIONS[node.func.id](*(build(a) for a in node.args))
+        msg = f"forbidden syntax in an MMS expression: {ast.dump(node)[:80]}"
+        raise VVError(msg, code="V0202")
+
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError as exc:
+        msg = f"unparsable MMS expression: {text[:80]!r}"
+        raise VVError(msg, code="V0202") from exc
+    return build(tree.body)
 
 
 def parse_json_expressions(doc: Mapping[str, Any], group: str) -> dict[str, sp.Expr]:
-    """Rebuild the sympy expressions of one group from a JSON document (a reference consumer of the format)."""
-    local: dict[str, Any] = {
-        name: getattr(sp, name) for name in ("sin", "cos", "exp", "log", "sqrt")
-    }
-    local |= {"pow": sp.Pow, "pi": sp.pi} | {str(c): c for c in X}
+    """Rebuild the sympy expressions of one group from a JSON document (a reference reader).
+
+    Only the grammar of the format is accepted (V0202 otherwise); nothing in the document is
+    executed.
+    """
+    names: dict[str, sp.Expr] = {"pi": sp.pi} | {str(c): c for c in X}
     for name, text in doc[group]["subexpressions"]:
-        local[name] = parse_expr(text, local_dict=local, evaluate=False)
-    return {
-        name: parse_expr(text, local_dict=local, evaluate=False)
-        for name, text in doc[group]["outputs"].items()
-    }
+        names[name] = _expression(text, names)
+    return {name: _expression(text, names) for name, text in doc[group]["outputs"].items()}

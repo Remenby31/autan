@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -19,7 +18,7 @@ if TYPE_CHECKING:
 
 def mesh_size(n_cells: int, volume: float, dim: int) -> float:
     """Return the representative mesh size h = (V / N)^(1/d) of a mesh with N cells filling volume V."""
-    if n_cells <= 0 or volume <= 0.0 or dim not in (1, 2, 3):
+    if n_cells <= 0 or not math.isfinite(volume) or volume <= 0.0 or dim not in (1, 2, 3):
         msg = f"invalid mesh size inputs: n_cells={n_cells}, volume={volume}, dim={dim}"
         raise VVError(msg, code="V0101")
     return float((volume / n_cells) ** (1.0 / dim))
@@ -48,7 +47,8 @@ def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
     if h_arr.shape != e_arr.shape or h_arr.ndim != 1 or h_arr.size < 2:
         msg = "need at least two (h, error) pairs of equal length"
         raise VVError(msg, code="V0102")
-    if np.any(h_arr <= 0.0) or np.any(e_arr <= 0.0) or not np.all(np.isfinite(e_arr)):
+    finite = np.all(np.isfinite(h_arr)) and np.all(np.isfinite(e_arr))
+    if not finite or np.any(h_arr <= 0.0) or np.any(e_arr <= 0.0):
         msg = "mesh sizes and errors must be finite and strictly positive"
         raise VVError(msg, code="V0103")
     order_idx = np.argsort(h_arr)[::-1]
@@ -80,14 +80,6 @@ def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
     )
 
 
-class Convergence(StrEnum):
-    """Convergence condition of three solutions, from the ratio R = (f2 - f1) / (f3 - f2)."""
-
-    MONOTONIC = "monotonic"
-    OSCILLATORY = "oscillatory"
-    DIVERGENT = "divergent"
-
-
 @dataclass(frozen=True)
 class RichardsonResult:
     """Three-grid Richardson extrapolation and GCI following Celik et al. (2008), level 1 being the finest."""
@@ -104,19 +96,35 @@ GCI_SAFETY_THREE_GRIDS = 1.25
 GCI_SAFETY_TWO_GRIDS = 3.0
 
 
-def richardson(
-    h: Sequence[float], values: Sequence[float], *, max_iterations: int = 200
-) -> RichardsonResult:
+def _log_expm1(x: float) -> float:
+    """log(e^x - 1) for x > 0 without overflow."""
+    return x + math.log(-math.expm1(-x)) if x > 1.0 else math.log(math.expm1(x))
+
+
+def _log_ratio_model(p: float, ln21: float, ln32: float) -> float:
+    """log of (f3 - f2)/(f2 - f1) for f = f0 + a h^p: p ln r21 + log((r32^p - 1)/(r21^p - 1))."""
+    return p * ln21 + _log_expm1(p * ln32) - _log_expm1(p * ln21)
+
+
+def _require_finite(*values: float) -> None:
+    if not all(math.isfinite(v) for v in values):
+        msg = "mesh sizes, values and orders must be finite"
+        raise VVError(msg, code="V0103")
+
+
+def richardson(h: Sequence[float], values: Sequence[float]) -> RichardsonResult:
     """Extrapolate a functional from its values on three grids and bound its discretisation error.
 
-    Inputs are in any order; they are sorted so that level 1 is the finest. The observed order solves
-    Celik et al. (2008), eqs. 3a-3c, by fixed-point iteration, which handles non-constant refinement ratios.
-    GCI uses Roache's safety factor 1.25. Compare `order` with the formal order to judge whether the grids
-    are in the asymptotic range. An oscillatory or divergent triplet raises: its order is meaningless.
+    Inputs are in any order; level 1 is the finest. The observed order solves Celik et al. (2008),
+    eqs. 3a-3c, written for f = f0 + a h^p as (f3 - f2)/(f2 - f1) = r21^p (r32^p - 1)/(r21^p - 1),
+    by bisection in log form, which holds for any refinement ratios. GCI uses Roache's safety
+    factor 1.25. Differences of opposite signs (oscillatory, V0107) or a ratio no positive order
+    explains (V0108, V0109) raise: the order is then meaningless.
     """
     if len(h) != 3 or len(values) != 3:
         msg = "Richardson extrapolation needs exactly three grids"
         raise VVError(msg, code="V0105")
+    _require_finite(*h, *values)
     pairs = sorted(zip(h, values, strict=True), key=lambda hv: hv[0])
     (h1, f1), (h2, f2), (h3, f3) = pairs
     if not (0.0 < h1 < h2 < h3):
@@ -127,28 +135,32 @@ def richardson(
     if eps21 == 0.0 or eps32 == 0.0:
         msg = "two grids give identical values: the order is undefined"
         raise VVError(msg, code="V0106")
-    condition = convergence_condition((f3, f2, f1))
-    if condition is Convergence.OSCILLATORY:
+    if (eps21 > 0.0) != (eps32 > 0.0):
         msg = "oscillatory convergence: observed order undefined"
         raise VVError(msg, code="V0107")
-    if condition is Convergence.DIVERGENT:
-        msg = "divergent solutions: observed order undefined"
+    ln21, ln32 = math.log(r21), math.log(r32)
+    target = math.log(eps32 / eps21)
+    # The model ratio increases with p from ln r32 / ln r21 (p -> 0).
+    p_lo, p_hi = 1e-8, 64.0
+    if target <= _log_ratio_model(p_lo, ln21, ln32):
+        msg = "the solutions do not converge as h^p for any positive p"
         raise VVError(msg, code="V0108")
-    s = 1.0
-    p = abs(math.log(abs(eps32 / eps21))) / math.log(r21)
-    for _ in range(max_iterations):
-        q = math.log((r21**p - s) / (r32**p - s))
-        p_new = abs(math.log(abs(eps32 / eps21)) + q) / math.log(r21)
-        if abs(p_new - p) <= 1e-12 * max(1.0, abs(p)):
-            p = p_new
-            break
-        p = p_new
-    else:
-        msg = "observed order iteration did not converge"
+    if target >= _log_ratio_model(p_hi, ln21, ln32):
+        msg = "observed order above 64: the grids are not in a power-law range"
         raise VVError(msg, code="V0109")
-    extrapolated = (r21**p * f1 - f2) / (r21**p - 1.0)
-    gci21 = GCI_SAFETY_THREE_GRIDS * abs(eps21) / (r21**p - 1.0)
-    gci32 = GCI_SAFETY_THREE_GRIDS * abs(eps32) / (r32**p - 1.0)
+    for _ in range(200):
+        p = 0.5 * (p_lo + p_hi)
+        if _log_ratio_model(p, ln21, ln32) < target:
+            p_lo = p
+        else:
+            p_hi = p
+    p = 0.5 * (p_lo + p_hi)
+    # eps / (r^p - 1) evaluated as eps * exp(-log(expm1(p ln r))) so that large r^p cannot overflow.
+    scale21 = math.exp(-_log_expm1(p * ln21))
+    scale32 = math.exp(-_log_expm1(p * ln32))
+    extrapolated = f1 - eps21 * scale21
+    gci21 = GCI_SAFETY_THREE_GRIDS * abs(eps21) * scale21
+    gci32 = GCI_SAFETY_THREE_GRIDS * abs(eps32) * scale32
     return RichardsonResult(
         order=p,
         extrapolated=extrapolated,
@@ -164,19 +176,9 @@ def gci_two_grids(h: Sequence[float], values: Sequence[float], order: float) -> 
     if len(h) != 2 or len(values) != 2 or order <= 0.0:
         msg = "two-grid GCI needs two grids and a positive assumed order"
         raise VVError(msg, code="V0110")
+    _require_finite(*h, *values, order)
     (h1, f1), (h2, f2) = sorted(zip(h, values, strict=True), key=lambda hv: hv[0])
     if not 0.0 < h1 < h2:
         msg = "mesh sizes must be distinct and positive"
         raise VVError(msg, code="V0104")
     return float(GCI_SAFETY_TWO_GRIDS * abs(f2 - f1) / ((h2 / h1) ** order - 1.0))
-
-
-def convergence_condition(values_coarse_to_fine: Sequence[float]) -> Convergence:
-    """Classify three solutions ordered coarse to fine as monotonic, oscillatory or divergent."""
-    f3, f2, f1 = values_coarse_to_fine
-    ratio = (f2 - f1) / (f3 - f2)
-    if ratio < 0.0:
-        return Convergence.OSCILLATORY
-    if ratio >= 1.0:
-        return Convergence.DIVERGENT
-    return Convergence.MONOTONIC

@@ -1,6 +1,6 @@
 # Contract: mesh
 
-The in-memory mesh that readers produce and that kernels, the partitioner and the kernel generator consume. Headers: `core/include/cfd/core/{mesh,geometry,cellwise,error}.hpp`, library `cfd::core`. The JSON summary sent to the SDK is a separate contract: [mesh-info.md](mesh-info.md).
+The in-memory mesh that readers produce and that kernels, the partitioner and the kernel generator consume. Headers: `core/include/autan/core/{mesh,geometry,cellwise,error}.hpp`, library `autan::core`. The JSON summary sent to the SDK is a separate contract: [mesh-info.md](mesh-info.md).
 
 ## Model
 
@@ -14,7 +14,7 @@ A mesh is **face-based**: cells are arbitrary polyhedra known only through their
 
 ## Arrays
 
-All arrays are structure-of-arrays, indexed by the entity they describe, and exposed both as `std::span` accessors on `cfd::Mesh` and as raw pointers in `cfd::MeshView` (the same struct describes host or device copies).
+All arrays are structure-of-arrays, indexed by the entity they describe, and exposed both as `std::span` accessors on `autan::Mesh` and as raw pointers in `autan::MeshView` (the same struct describes host or device copies).
 
 | Array | Size | Content |
 |---|---|---|
@@ -31,7 +31,7 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 
 ## Invariants
 
-`cfd::assemble(MeshInput)` is the only way to build a `Mesh`; it establishes and checks these, and throws `cfd::Error` on the first violation:
+`autan::assemble(MeshInput)` is the only way to build a `Mesh`; it establishes and checks these, and throws `autan::Error` on the first violation:
 
 1. Faces `[0, n_interior_faces)` are interior, faces `[n_interior_faces, n_faces)` are boundary.
 2. Interior faces have `owner < neighbour` and are sorted by `(owner, neighbour)`. Two cells may share several faces.
@@ -41,7 +41,7 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 6. Every face touches an owned cell, so `owner[f] < n_owned_cells` for every face: a face loop over all faces visits each owned cell's faces, and its contributions to ghost cells (`neighbour[f] ≥ n_owned_cells`) are partial sums that a reverse halo exchange adds to the owning partition, as an adjoint (transposed) kernel needs.
 7. A face zone's `boundary` flag says whether it holds boundary or interior faces, and every face matches the role of its zone (a declared zone may be empty). Face-zone names are unique; cell-zone names are unique. Global ids are distinct and ≥ 0.
 8. Every point is referenced by a face (unreferenced points are removed).
-9. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit. `assemble(input, &map)` returns, in a `cfd::AssemblyMap`, the input face of each face, whether it was reversed, and the input point of each point.
+9. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit. `assemble(input, &map)` returns, in a `autan::AssemblyMap`, the input face of each face, whether it was reversed, and the input point of each point.
 
 ## Zones
 
@@ -56,13 +56,13 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 | `provenance.source_id` | Identifier in the source file, or −1 for a zone the reader synthesised. | Same. |
 | `provenance.detail` | Human-readable origin. | Same. |
 
-Synthesised zones: `interior` for interior faces with no zone in the source, `unassigned` for boundary faces with no zone in the source (so `cfd plan` reports the missing condition), `fluid` (kind `unspecified`) for cells with no zone in the source. A source zone with one of these names collides and is rejected with E0110.
+Synthesised zones: `interior` for interior faces with no zone in the source, `unassigned` for boundary faces with no zone in the source (so `autan plan` reports the missing condition), `fluid` (kind `unspecified`) for cells with no zone in the source. A source zone with one of these names collides and is rejected with E0110.
 
 `Mesh::source()` records the format (`gmsh`, `fluent`, `polymesh`, `cgns`, or `memory` for meshes built in code) and the path as given.
 
 ## Geometry
 
-`cfd::compute_geometry(mesh)` returns a `cfd::Geometry` (SoA, FP64; raw pointers via `cfd::view`):
+`autan::compute_geometry(mesh)` returns a `autan::Geometry` (SoA, FP64; raw pointers via `autan::view`):
 
 | Array | Size | Definition |
 |---|---|---|
@@ -76,15 +76,27 @@ Ghost cells get NaN volume and centroid: the partitioner fills them from the own
 
 On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Green–Gauss with face-centroid values is exact for linear fields. On warped faces a single (c_f, S_f) pair cannot integrate a linear field over the fan exactly; the error is of the order of the warp, as in other cell-centred codes. Kernels that need exactness there must use least-squares gradients or per-triangle quadrature.
 
-`cfd::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
+`autan::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
 
 ## Building a mesh
 
-Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `cfd::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary); ghost cells last with `n_ghost_cells`, and `cell_global_id` when partitioned. Readers of element-based formats (Gmsh, CGNS) fill a `cfd::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `cfd::to_face_based`, which merges coincident faces by node set. A zone that labels faces takes their role (interior or boundary); a zone that labels none keeps its declared role.
+Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `autan::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary); ghost cells last with `n_ghost_cells`, and `cell_global_id` when partitioned. Readers of element-based formats (Gmsh, CGNS) fill a `autan::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `autan::to_face_based`, which merges coincident faces by node set. A zone that labels faces takes their role (interior or boundary); a zone that labels none keeps its declared role.
+
+## Readers
+
+`autan::io::read_mesh(path)` (library `autan::io`, header `io/include/autan/io/read_mesh.hpp`) detects the format from the content and returns an assembled mesh; `read_gmsh`, `read_fluent` and `read_polymesh` skip the detection.
+
+| Format | Supported | Zones | Rejected (E0133 unless noted) |
+|---|---|---|---|
+| Gmsh MSH 4.1, ASCII and binary | Linear tetra, pyramid, prism, hexa; triangles and quadrilaterals label faces; sparse node tags; parametric nodes; unknown sections are skipped as the format prescribes. | Physical volumes → cell zones, physical surfaces → face zones (also when they have no element), named from `$PhysicalNames` wherever it appears, else the tag; type empty, kind `unspecified`. | MSH 2 and other versions, higher-order elements, `$PartitionedEntities`, `$Periodic`, `$GhostElements`, big-endian files; non-positive physical tags (E0132); an entity in two physical groups (E0135). |
+| Fluent mesh, ASCII and binary (2010/3010, 2012, 2013) | Sections 0, 1, 2, 10, 12, 13, 39, 45; 4, 37, 38, 40 are skipped. Mixed and polygonal faces, polyhedral cells (type 7). The face normal points toward c0. | Zone sections 39/45 give names and types (they take precedence over face-section codes); a zone without one is named `zone-<id>` and typed from its code; a declared zone without faces is kept. A zone's role is that of its faces. Declared element types must match the cell's face count (E0132). | 2D meshes, periodic shadow faces (18), hanging-node trees and interface parents (58, 59, 61–63), any other section. |
+| OpenFOAM polyMesh, ASCII and binary, 32/64-bit labels and scalars | The `polyMesh` directory or a case directory holding `constant/polyMesh`; comments anywhere; sized, unsized and uniform label lists; ASCII faces in nested form (`faceList` or `faceCompactList`), binary faces as `faceCompactList`. | Patches → boundary zones (type as written), `cellZones` → cell zones (type empty). `faceZones`, `pointZones` and `sets` are selections, not zones, and are not read. | Compressed files, binary `faceList`, processor patches; a cell in two cell zones (E0135). |
+
+The test meshes and how they are generated: [tests/data/mesh/README.md](../../tests/data/mesh/README.md).
 
 ## Errors
 
-Every failure throws `cfd::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers; the SDK registry carries their fix and doc page.
+Every failure throws `autan::Error`; callers branch on `code()`, never on the message. Codes E0101–E0199 belong to the mesh core and readers; the SDK registry carries their fix and doc page.
 
 | Code | Name | Raised when |
 |---|---|---|

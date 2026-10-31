@@ -1,19 +1,19 @@
 cmake_minimum_required(VERSION 3.28)
 
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" CFD_VERSION LIMIT_COUNT 1)
-project(cfd_solver VERSION ${CFD_VERSION} LANGUAGES CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" AUTAN_VERSION LIMIT_COUNT 1)
+project(autan VERSION ${AUTAN_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(CFD_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
-option(CFD_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(AUTAN_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(AUTAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
-add_library(cfd_compile_options INTERFACE)
+add_library(autan_compile_options INTERFACE)
 target_compile_options(
-  cfd_compile_options
+  autan_compile_options
   INTERFACE
     -Wall
     -Wextra
@@ -23,12 +23,13 @@ target_compile_options(
     # FMA contraction changes the last bits of geometry between compilers and
     # architectures; keep host results identical across the Mac and the Sparks.
     -ffp-contract=off
-    $<$<BOOL:${CFD_WARNINGS_AS_ERRORS}>:-Werror>
+    $<$<BOOL:${AUTAN_WARNINGS_AS_ERRORS}>:-Werror>
 )
 
 add_subdirectory(core)
+add_subdirectory(io)
 
-if(CFD_BUILD_TESTS)
+if(AUTAN_BUILD_TESTS)
   include(CTest)
   include(FetchContent)
   FetchContent_Declare(
@@ -40,4 +41,5 @@ if(CFD_BUILD_TESTS)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
   include(Catch)
   add_subdirectory(tests/core)
+  add_subdirectory(tests/io)
 endif()

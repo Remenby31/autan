@@ -1,9 +1,13 @@
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 from autan_vv.errors import VVError
 from autan_vv.order import fit_order, gci_two_grids, mesh_size, richardson
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def test_mesh_size_is_the_dth_root_of_mean_cell_volume() -> None:
@@ -61,6 +65,23 @@ def test_richardson_is_exact_for_a_power_law_with_non_constant_refinement() -> N
 
 
 @pytest.mark.parametrize(
+    ("h", "p"),
+    [
+        ((1.0, 3.0, 4.0), 2.0),
+        ((1.0, 1.5, 4.5), 2.0),
+        ((1.0, 1.5, 6.0), 2.0),
+        ((0.1, 0.2, 0.8), 0.5),
+    ],
+)
+def test_richardson_handles_strongly_non_constant_refinement(
+    h: tuple[float, ...], p: float
+) -> None:
+    res = richardson(h, [0.3 + 2.0 * hi**p for hi in h])
+    assert res.order == pytest.approx(p, rel=1e-10)
+    assert res.extrapolated == pytest.approx(0.3, abs=1e-10)
+
+
+@pytest.mark.parametrize(
     ("values", "code"), [([1.0, 1.1, 1.05], "V0107"), ([1.0, 1.1, 1.15], "V0108")]
 )
 def test_richardson_rejects_oscillatory_and_divergent_triplets(
@@ -75,3 +96,17 @@ def test_two_grid_gci_uses_safety_factor_three() -> None:
     gci = gci_two_grids([0.1, 0.2], [1.0, 1.03], order=2.0)
     assert gci == pytest.approx(3.0 * 0.03 / 3.0)
     assert math.isfinite(gci)
+
+
+def test_non_finite_inputs_are_rejected() -> None:
+    inf, nan = float("inf"), float("nan")
+    calls: list[Callable[[], object]] = [
+        lambda: fit_order([0.1, inf], [1.0, 2.0]),
+        lambda: richardson([0.1, 0.2, 0.4], [nan, nan, nan]),
+        lambda: gci_two_grids([1.0, inf], [1.0, 2.0], 2.0),
+        lambda: mesh_size(10, nan, 3),
+    ]
+    for call in calls:
+        with pytest.raises(VVError) as err:
+            call()
+        assert err.value.code in {"V0101", "V0103"}

@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 import sympy as sp
-from autan_vv.mms import CATALOG, dump_json, parse_json_expressions, to_cpp
+from autan_vv.errors import VVError
+from autan_vv.mms import CATALOG, advection_diffusion, dump_json, parse_json_expressions, to_cpp
 from autan_vv.mms.solutions import ManufacturedSolution, X
 
 GROUPS = ("fields", "gradients", "conserved", "sources", "auxiliary")
@@ -99,9 +100,18 @@ def _size(ms: ManufacturedSolution, group: str) -> int:
     return 3 * len(ms.fields) if group == "gradients" else len(getattr(ms, group))
 
 
-@pytest.mark.parametrize("name", sorted(CATALOG))
+def _custom() -> ManufacturedSolution:
+    # Constants that C printers like to turn into non-standard macros (M_SQRT2, M_E, M_LN2).
+    x, y, _ = X
+    return advection_diffusion(solution=sp.sqrt(2) * sp.sin(sp.pi * x) + sp.E * y + sp.log(2))
+
+
+SOLUTIONS = {**CATALOG, "constants": _custom}
+
+
+@pytest.mark.parametrize("name", sorted(SOLUTIONS))
 def test_cpp_header_matches_symbolic_values_in_fp64_and_fp32(name: str, tmp_path: Path) -> None:
-    ms = CATALOG[name]()
+    ms = SOLUTIONS[name]()
     pts = _points()
     expected = _expected(ms, pts)
     lib = _compile(ms, tmp_path)
@@ -118,9 +128,9 @@ def test_cpp_header_matches_symbolic_values_in_fp64_and_fp32(name: str, tmp_path
             )
 
 
-@pytest.mark.parametrize("name", sorted(CATALOG))
+@pytest.mark.parametrize("name", sorted(SOLUTIONS))
 def test_json_document_round_trips_through_a_parser(name: str) -> None:
-    ms = CATALOG[name]()
+    ms = SOLUTIONS[name]()
     doc = json.loads(dump_json(ms))
     assert doc["schema"] == "autan.mms/1"
     assert doc["parameters"] == dict(ms.parameters)
@@ -139,3 +149,23 @@ def test_json_document_round_trips_through_a_parser(name: str) -> None:
         )
         scale = np.max(np.abs(expected[group]), axis=0) + 1e-300
         assert np.max(np.abs(got - expected[group]) / scale) < 1e-12, group
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "__import__('os').getcwd()",
+        "x.real",
+        "[x]",
+        "lambda: 1",
+        "sin(x, y=1)",
+        "unknown(x)",
+        "x ** 2",
+        "1 +",
+    ],
+)
+def test_json_reader_rejects_anything_outside_the_grammar(text: str) -> None:
+    doc = {"g": {"subexpressions": [], "outputs": {"f": text}}}
+    with pytest.raises(VVError) as err:
+        parse_json_expressions(doc, "g")
+    assert err.value.code == "V0202"
