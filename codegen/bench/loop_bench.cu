@@ -1,0 +1,367 @@
+// Times the generated loops of the spike on one mesh and prints the raw JSON that autan-bench
+// reads (one entry per loop, strategy and policy; bytes_per_rep is the loop's analytic minimum).
+//
+//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N]
+//              [--warmup N] [--reps N] [--batch N]
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
+#include <numeric>
+#include <random>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "advection_cpu.hpp"
+#include "advection_gpu.cuh"
+#include "autan/io/read_mesh.hpp"
+#include "device.cuh"
+#include "gradients_cpu.hpp"
+#include "gradients_gpu.cuh"
+#include "revision.h"
+#include "spike.hpp"
+
+namespace {
+
+using autan::kernels::index_t;
+using autan::kernels::offset_t;
+using autan::spike::DeviceArray;
+using autan::spike::DeviceGeom;
+using autan::spike::DeviceMesh;
+using autan::spike::GeomCopy;
+using autan::spike::SpikeMesh;
+namespace gpu = autan::kernels::gpu;
+
+struct Options {
+  std::string mesh;
+  std::string policy = "fp32+acc64";
+  std::string order = "rcm";
+  int block = 256;
+  int warmup = 5;
+  int reps = 30;
+  int batch = 5;
+};
+
+[[noreturn]] void fail(const std::string& msg) {
+  std::fprintf(stderr, "error: %s\n", msg.c_str());
+  std::exit(2);
+}
+
+Options parse(int argc, char** argv) {
+  Options o;
+  if (argc < 2) fail("usage: loop_bench MESH [options]");
+  o.mesh = argv[1];
+  for (int i = 2; i + 1 < argc; i += 2) {
+    const std::string_view f(argv[i]);
+    const std::string v(argv[i + 1]);
+    if (f == "--policy") o.policy = v;
+    else if (f == "--order") o.order = v;
+    else if (f == "--block") o.block = std::stoi(v);
+    else if (f == "--warmup") o.warmup = std::stoi(v);
+    else if (f == "--reps") o.reps = std::stoi(v);
+    else if (f == "--batch") o.batch = std::stoi(v);
+    else fail("unknown flag " + std::string(f));
+  }
+  return o;
+}
+
+/// Reverse Cuthill-McKee order of the cell graph (George and Liu 1981, section 4.3): the cell
+/// renumbering applied before assembly so that neighbouring cells are close in memory.
+std::vector<index_t> rcm(const autan::Mesh& m) {
+  const auto nc = static_cast<std::size_t>(m.n_cells());
+  const auto off = m.cell_face_offsets();
+  const auto cf = m.cell_faces();
+  const auto own = m.owner();
+  const auto nei = m.neighbour();
+  auto degree = [&](std::size_t c) { return off[c + 1] - off[c]; };
+  std::vector<index_t> order;
+  order.reserve(nc);
+  std::vector<char> seen(nc, 0);
+  std::vector<std::size_t> by_degree(nc);
+  std::iota(by_degree.begin(), by_degree.end(), 0);
+  std::stable_sort(by_degree.begin(), by_degree.end(),
+                   [&](std::size_t a, std::size_t b) { return degree(a) < degree(b); });
+  std::vector<index_t> nb;
+  for (const std::size_t start : by_degree) {
+    if (seen[start]) continue;
+    std::deque<std::size_t> queue{start};
+    seen[start] = 1;
+    while (!queue.empty()) {
+      const std::size_t c = queue.front();
+      queue.pop_front();
+      order.push_back(static_cast<index_t>(c));
+      nb.clear();
+      for (auto k = off[c]; k < off[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(cf[static_cast<std::size_t>(k)]);
+        if (f >= nei.size()) continue;
+        const auto o = static_cast<std::size_t>(own[f]) == c ? nei[f] : own[f];
+        if (!seen[static_cast<std::size_t>(o)]) {
+          seen[static_cast<std::size_t>(o)] = 1;
+          nb.push_back(o);
+        }
+      }
+      std::stable_sort(nb.begin(), nb.end(), [&](index_t a, index_t b) {
+        return degree(static_cast<std::size_t>(a)) < degree(static_cast<std::size_t>(b));
+      });
+      for (const index_t o : nb) queue.push_back(static_cast<std::size_t>(o));
+    }
+  }
+  std::reverse(order.begin(), order.end());
+  return order;
+}
+
+autan::Mesh renumbered(const autan::Mesh& m, const std::vector<index_t>& order) {
+  std::vector<index_t> new_of(order.size());
+  for (std::size_t k = 0; k < order.size(); ++k) new_of[static_cast<std::size_t>(order[k])] = static_cast<index_t>(k);
+  autan::MeshInput in;
+  in.x.assign(m.x().begin(), m.x().end());
+  in.y.assign(m.y().begin(), m.y().end());
+  in.z.assign(m.z().begin(), m.z().end());
+  in.face_node_offsets.assign(m.face_node_offsets().begin(), m.face_node_offsets().end());
+  in.face_nodes.assign(m.face_nodes().begin(), m.face_nodes().end());
+  const auto nf = static_cast<std::size_t>(m.n_faces());
+  for (std::size_t f = 0; f < nf; ++f) {
+    in.face_cell0.push_back(new_of[static_cast<std::size_t>(m.owner()[f])]);
+    in.face_cell1.push_back(f < m.neighbour().size()
+                                ? new_of[static_cast<std::size_t>(m.neighbour()[f])]
+                                : autan::no_cell);
+  }
+  in.face_zone.assign(m.face_zone().begin(), m.face_zone().end());
+  in.cell_zone.resize(order.size());
+  for (std::size_t k = 0; k < order.size(); ++k) in.cell_zone[k] = m.cell_zone()[static_cast<std::size_t>(order[k])];
+  in.face_zones.assign(m.face_zones().begin(), m.face_zones().end());
+  in.cell_zones.assign(m.cell_zones().begin(), m.cell_zones().end());
+  in.source = m.source();
+  return autan::assemble(std::move(in));
+}
+
+struct Timed {
+  std::string name;
+  double bytes;
+  std::string strategy;
+  std::vector<double> seconds;
+};
+
+template <class Launch>
+std::vector<double> time_it(const Options& o, Launch launch) {
+  cudaEvent_t start, stop;
+  gpu::check(cudaEventCreate(&start), "event");
+  gpu::check(cudaEventCreate(&stop), "event");
+  std::vector<double> out;
+  for (int r = 0; r < o.warmup + o.reps; ++r) {
+    gpu::check(cudaEventRecord(start), "record");
+    for (int i = 0; i < o.batch; ++i) launch();
+    gpu::check(cudaEventRecord(stop), "record");
+    gpu::check(cudaEventSynchronize(stop), "sync");
+    float ms = 0.0f;
+    gpu::check(cudaEventElapsedTime(&ms, start, stop), "elapsed");
+    if (r >= o.warmup) out.push_back(ms * 1e-3 / o.batch);
+  }
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  return out;
+}
+
+double max_rel_diff(const std::vector<double>& a, const std::vector<double>& b) {
+  double num = 0.0, den = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    num = std::max(num, std::abs(a[i] - b[i]));
+    den = std::max(den, std::abs(b[i]));
+  }
+  return num / den;
+}
+
+template <class T>
+std::vector<double> as_double(const std::vector<T>& v) {
+  return std::vector<double>(v.begin(), v.end());
+}
+
+template <class P>
+void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& verified,
+         double& tolerance) {
+  using S = typename P::state;
+  using Gr = typename P::grad;
+  using R = typename P::residual;
+  using G = typename P::geom;
+  const auto& t = m.topo;
+  const auto nc = static_cast<std::size_t>(t.n_cells);
+  const auto nf = static_cast<std::size_t>(t.n_faces);
+  const double ni = t.n_interior_faces, nb = t.n_faces - t.n_interior_faces;
+  const double cells = t.n_cells, inc = static_cast<double>(t.n_incidences);
+  std::mt19937_64 rng(42);
+  std::normal_distribution<double> normal;
+  std::vector<S> q(nc), qb(nf);
+  std::vector<Gr> grad(3 * nc);
+  for (auto& v : q) v = S(normal(rng));
+  for (auto& v : qb) v = S(normal(rng));
+  for (auto& v : grad) v = Gr(normal(rng));
+
+  const auto colour_start = std::chrono::steady_clock::now();
+  DeviceMesh dm(m, o.block);
+  const double colouring_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - colour_start).count();
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(hg);
+  DeviceArray<S> dq(q), dqb(qb), dmin(nc), dmax(nc);
+  DeviceArray<Gr> dgrad(grad);
+  DeviceArray<R> dres(nc), dacc(3 * nc);
+  tolerance = std::is_same_v<typename P::compute, double> ? 1e-12 : 1e-4;
+
+  namespace av = autan::kernels::advection;
+  av::Data<P> a{};
+  a.topo = dm.topo;
+  a.q = dq.get();
+  a.grad = dgrad.get();
+  a.res = dres.get();
+  a.face_r_left = g.face_r_left.get();
+  a.face_r_right = g.face_r_right.get();
+  a.face_normal = g.face_normal.get();
+  a.face_area_magnitude = g.face_area_magnitude.get();
+  a.velocity[0] = typename P::param(1.0);
+  a.velocity[1] = typename P::param(0.7);
+  a.velocity[2] = typename P::param(0.4);
+
+  // Host reference of one residual evaluation.
+  av::Data<P> ah = a;
+  ah.topo = m.topo;
+  std::vector<R> hres(nc, R(0));
+  ah.q = q.data();
+  ah.grad = grad.data();
+  ah.res = hres.data();
+  ah.face_r_left = hg.face_r_left.data();
+  ah.face_r_right = hg.face_r_right.data();
+  ah.face_normal = hg.face_normal.data();
+  ah.face_area_magnitude = hg.face_area_magnitude.data();
+  av::cpu::residual(ah);
+
+  // Analytic minimum traffic: face geometry (r_left, r_right, n, |S|) and owner/neighbour once per
+  // interior face; q and grad read once, res read and written once per cell.
+  const double adv_bytes = ni * (10.0 * sizeof(G) + 2 * sizeof(index_t)) +
+                           cells * (sizeof(S) + 3.0 * sizeof(Gr) + 2.0 * sizeof(R));
+  for (auto s : {gpu::Strategy::atomic, gpu::Strategy::warp_aggregated, gpu::Strategy::coloured,
+                 gpu::Strategy::store_gather, gpu::Strategy::gather_recompute}) {
+    gpu::check(cudaMemset(dres.get(), 0, nc * sizeof(R)), "memset");
+    av::gpu_loops::residual(a, s, dm.schedule);
+    gpu::check(cudaDeviceSynchronize(), "advection");
+    if (max_rel_diff(as_double(dres.download()), as_double(hres)) > tolerance) verified = false;
+    std::string kernel = std::string("advection_") + gpu::name(s);
+    std::replace(kernel.begin(), kernel.end(), '-', '_');
+    out.push_back({kernel, adv_bytes, gpu::name(s),
+                   time_it(o, [&] { av::gpu_loops::residual(a, s, dm.schedule); })});
+  }
+
+  namespace gr = autan::kernels::gradients;
+  gr::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = dq.get();
+  d.q_b = dqb.get();
+  d.grad = dgrad.get();
+  d.qmin = dmin.get();
+  d.qmax = dmax.get();
+  d.gg_sum = dacc.get();
+  d.lsq_weight = g.lsq_weight.get();
+  d.cell_volume = g.cell_volume.get();
+  d.cell_centroid = g.cell_centroid.get();
+  d.face_centroid = g.face_centroid.get();
+  d.face_area = g.face_area.get();
+  d.face_moment = g.face_moment.get();
+  gr::Data<P> dh = d;
+  dh.topo = m.topo;
+  std::vector<Gr> hgrad(3 * nc);
+  std::vector<S> hmin(nc), hmax(nc);
+  dh.q = q.data();
+  dh.q_b = qb.data();
+  dh.grad = hgrad.data();
+  dh.qmin = hmin.data();
+  dh.qmax = hmax.data();
+  dh.lsq_weight = hg.lsq_weight.data();
+  gr::cpu::lsq_gradient_bounds(dh);
+  gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule);
+  gpu::check(cudaDeviceSynchronize(), "lsq");
+  if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+  // Analytic minimum: per incidence the face index and LSQ weight; per cell its CSR offset, q,
+  // and the gradient and two bounds written; owner/neighbour per interior face; q_b per boundary
+  // face.
+  const double lsq_bytes = inc * (sizeof(index_t) + 3.0 * sizeof(G)) +
+                           cells * (sizeof(offset_t) + 3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
+                           ni * 2 * sizeof(index_t) + nb * sizeof(S);
+  out.push_back({"lsq_gradient_bounds", lsq_bytes, "cell",
+                 time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule); })});
+  std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
+               colouring_seconds, dm.int_colours.offsets.size() - 1,
+               dm.bnd_colours.offsets.size() - 1);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const Options o = parse(argc, argv);
+  const auto t0 = std::chrono::steady_clock::now();
+  autan::Mesh mesh = autan::io::read_mesh(o.mesh);
+  const auto t1 = std::chrono::steady_clock::now();
+  double renumber_seconds = 0.0;
+  if (o.order == "rcm") {
+    mesh = renumbered(mesh, rcm(mesh));
+    renumber_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+  } else if (o.order != "input") {
+    fail("--order is input or rcm");
+  }
+  SpikeMesh m{std::move(mesh), {}, {}, {}};
+  m.geometry = autan::compute_geometry(m.mesh);
+  m.packed = autan::kernels::pack_geometry(m.mesh, m.geometry);
+  m.topo = autan::kernels::topology(m.mesh.view());
+  const double read_seconds = std::chrono::duration<double>(t1 - t0).count();
+
+  std::vector<Timed> timed;
+  bool verified = true;
+  double tolerance = 0.0;
+  autan::spike::with_policy(o.policy, [&](auto p) {
+    run<decltype(p)>(o, m, timed, verified, tolerance);
+  });
+
+  int device = 0;
+  cudaDeviceProp prop{};
+  gpu::check(cudaGetDevice(&device), "device");
+  gpu::check(cudaGetDeviceProperties(&prop, device), "properties");
+  int runtime = 0, driver = 0;
+  cudaRuntimeGetVersion(&runtime);
+  cudaDriverGetVersion(&driver);
+  char uuid[37];
+  const auto* u = reinterpret_cast<const unsigned char*>(prop.uuid.bytes);
+  std::snprintf(uuid, sizeof uuid,
+                "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", u[0], u[1],
+                u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14],
+                u[15]);
+  std::printf(
+      "{\"device\":{\"name\":\"%s\",\"uuid\":\"GPU-%s\",\"compute_capability\":\"%d.%d\","
+      "\"sm_count\":%d,\"l2_bytes\":%d,\"memory_bytes\":%zu},",
+      prop.name, uuid, prop.major, prop.minor, prop.multiProcessorCount, prop.l2CacheSize,
+      prop.totalGlobalMem);
+  std::printf("\"revision\":{\"commit\":\"%s\",\"dirty\":%s},", AUTAN_BENCH_COMMIT,
+              AUTAN_BENCH_DIRTY);
+  std::printf("\"backend\":\"cuda\",\"runtime_version\":%d,\"driver_version\":%d,", runtime,
+              driver);
+  std::printf(
+      "\"config\":{\"mesh\":\"%s\",\"policy\":\"%s\",\"order\":\"%s\",\"layout\":\"soa\","
+      "\"n_cells\":%d,\"n_faces\":%d,\"n_interior_faces\":%d,\"n_incidences\":%lld,"
+      "\"block\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,\"read_seconds\":%.3f,"
+      "\"renumber_seconds\":%.3f,\"tolerance\":%.1e},",
+      o.mesh.c_str(), o.policy.c_str(), o.order.c_str(), m.topo.n_cells, m.topo.n_faces,
+      m.topo.n_interior_faces, static_cast<long long>(m.topo.n_incidences), o.block, o.warmup,
+      o.reps, o.batch, read_seconds, renumber_seconds, tolerance);
+  std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
+  for (std::size_t k = 0; k < timed.size(); ++k) {
+    const auto& t = timed[k];
+    std::printf("%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":"
+                "\"%s\",\"policy\":\"%s\",\"order\":\"%s\"},\"seconds\":[",
+                k ? "," : "", t.name.c_str(), t.bytes, m.topo.n_cells, t.strategy.c_str(),
+                o.policy.c_str(), o.order.c_str());
+    for (std::size_t r = 0; r < t.seconds.size(); ++r) std::printf("%s%.9e", r ? "," : "", t.seconds[r]);
+    std::printf("]}");
+  }
+  std::printf("]}\n");
+  return verified ? 0 : 1;
+}

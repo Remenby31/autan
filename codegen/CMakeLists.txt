@@ -67,4 +67,26 @@ if(AUTAN_ENABLE_CUDA)
     autan_spike_gpu
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -Xptxas=-warn-spills>
   )
+
+  find_package(Git REQUIRED)
+  add_custom_target(
+    autan_codegen_revision
+    COMMAND
+      ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+      -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h -P
+      ${CMAKE_CURRENT_SOURCE_DIR}/bench/revision.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
+  )
+  add_executable(autan_loop_bench bench/loop_bench.cu spike/capi.cpp)
+  add_dependencies(autan_loop_bench autan_codegen_revision)
+  target_include_directories(
+    autan_loop_bench
+    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike
+  )
+  target_link_libraries(autan_loop_bench PRIVATE autan::kernels autan::io)
+  set_target_properties(autan_loop_bench PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+  target_compile_options(
+    autan_loop_bench
+    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo -Xptxas=-v>
+  )
 endif()
