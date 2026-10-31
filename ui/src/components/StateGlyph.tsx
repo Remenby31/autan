@@ -1,14 +1,13 @@
 import type { RunStatus } from "../api/contracts";
 
-// Glyphs of docs/design/ui-inspiration/README.md § Components. `completed` (budget reached without
-// meeting the criterion) uses the stalled glyph and `failed` the diverged one.
+// Glyphs of docs/design/ui-inspiration/README.md § Components, state glyph.
 const COLOR: Record<RunStatus, string> = {
   running: "var(--state-running)",
   converged: "var(--state-converged)",
-  completed: "var(--state-stalled)",
+  completed: "var(--state-completed)",
   stopped: "var(--state-stopped)",
   diverged: "var(--state-diverged)",
-  failed: "var(--state-diverged)",
+  failed: "var(--state-failed)",
 };
 
 /** 8 px run-state glyph; its accessible name is the state. */
@@ -32,7 +31,8 @@ export function StateGlyph({ status }: { status: RunStatus }) {
       )}
       {status === "completed" && <span className="absolute h-px w-1.5 bg-bg-0" />}
       {status === "stopped" && <span className="size-2 rounded-[1px] bg-current" />}
-      {(status === "diverged" || status === "failed") && (
+      {status === "failed" && <span className="font-semibold text-[10px] leading-none">×</span>}
+      {status === "diverged" && (
         <span className="grid size-2 place-items-center rounded-full border border-current font-semibold text-[6px] leading-none">
           !
         </span>
