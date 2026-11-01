@@ -591,6 +591,22 @@ def json_schema() -> dict[str, Any]:
         return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
 
     schema["allOf"] = [
+        {
+            "if": {"required": ["initial_state"]},
+            "then": {
+                "properties": {
+                    "physics": {
+                        "properties": {
+                            "kind": {"const": "compressible"},
+                            "turbulence": {
+                                "properties": {"model": {"enum": ["inviscid", "laminar"]}}
+                            },
+                        }
+                    },
+                    **zone_states({"not": {}})["properties"],
+                },
+            },
+        },
         {"if": physics("compressible"), "then": zone_states({"required": ["temperature"]})},
         {
             "if": physics("incompressible"),

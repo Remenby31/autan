@@ -198,8 +198,11 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         boundaries = _resolve_boundaries(case, spec, mesh, found)
     cell_zones = _resolve_cell_zones(case, spec, mesh, found)
     if spec.initial_state is not None:
-        fluid = sum(z.cells for z in cell_zones if (z.medium or {}).get("kind") != "solid")
-        _check_initial_state(case, spec.initial_state, mesh, fluid, found)
+        kinds = [(z.medium or {}).get("kind") for z in cell_zones]
+        fluid = sum(z.cells for z, k in zip(cell_zones, kinds, strict=True) if k != "solid")
+        # A zone left without a medium (E0503) leaves the fluid cells unknown.
+        count = fluid if None not in kinds else None
+        _check_initial_state(case, spec.initial_state, mesh, count, found)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
 
@@ -455,7 +458,7 @@ def _resolve_boundaries(
     return resolved
 
 
-def _read_regular(path: Path) -> bytes:
+def read_regular(path: Path) -> bytes:
     """The bytes of a regular file, read once; ``OSError`` for anything else."""
     # O_NONBLOCK: opening a FIFO must not wait for a writer before the check below.
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
@@ -466,7 +469,11 @@ def _read_regular(path: Path) -> bytes:
 
 
 def _check_initial_state(
-    case: Case, state: StateFile, mesh: MeshInfo, fluid_cells: int, found: list[Diagnostic]
+    case: Case,
+    state: StateFile,
+    mesh: MeshInfo,
+    fluid_cells: int | None,
+    found: list[Diagnostic],
 ) -> None:
     """The initial-state file of the case (docs/contracts/initial-state.md), hashed and parsed
     from the same bytes."""
@@ -477,7 +484,7 @@ def _check_initial_state(
         found.append(diagnostic(code, message, location=where, path=str(source)))
 
     try:
-        data = _read_regular(source)
+        data = read_regular(source)
     except OSError as error:
         problem("E0508", f"initial-state file {str(source)!r} cannot be read: {error}")
         return
@@ -492,7 +499,7 @@ def _check_initial_state(
         return
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
-    if document.cells != fluid_cells:
+    if fluid_cells is not None and document.cells != fluid_cells:
         problem(
             "E0510",
             f"the mesh has {fluid_cells} fluid cells; the file gives {document.cells}",
@@ -516,7 +523,7 @@ def _check_oracle(
         found.append(diagnostic(code, message, location=where, path=str(source)))
 
     try:
-        data = _read_regular(source)
+        data = read_regular(source)
     except OSError as error:
         problem("E0420", f"face-state file {str(source)!r} cannot be read: {error}")
         return
