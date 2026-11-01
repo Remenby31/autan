@@ -73,7 +73,8 @@ jobs:
         id: mesh-cache
         with:
           path: meshes/
-          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/**', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
+          # What `autan-vv meshes` runs (mesh-cache.yml fills main's cache, the one pull requests read).
+          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/meshes/**', 'vv/src/autan_vv/oracles/**', 'vv/src/autan_vv/cli.py', 'vv/src/autan_vv/errors.py', 'vv/src/autan_vv/__init__.py', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: steps.mesh-cache.outputs.cache-hit != 'true'
         with:
