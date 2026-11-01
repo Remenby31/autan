@@ -24,9 +24,9 @@ class Gpu {
   [[nodiscard]] void* stream() const noexcept { return stream_; }
   [[nodiscard]] const std::string& name() const noexcept { return name_; }
   /// The device memory in use now beyond what was free once the stream
-  /// existed, by cudaMemGetInfo: on a device the process shares (unified
-  /// memory) this counts every process's allocations. Also updates peak().
-  std::int64_t sample();
+  /// existed, by cudaMemGetInfo, and peak() with it. Telemetry: when CUDA
+  /// fails (a sticky error), the last sample, without throwing.
+  std::int64_t sample() noexcept;
   /// The greatest sample() so far: a lower bound of the true peak, which may
   /// fall between two samples.
   [[nodiscard]] std::int64_t peak() const noexcept { return peak_; }
@@ -35,7 +35,8 @@ class Gpu {
   int index_ = -1;
   void* stream_ = nullptr;
   std::string name_;
-  std::int64_t free_at_start_ = 0;
+  [[maybe_unused]] std::int64_t free_at_start_ = 0;
+  std::int64_t last_ = 0;
   std::int64_t peak_ = 0;
 };
 

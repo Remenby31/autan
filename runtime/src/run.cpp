@@ -1306,8 +1306,8 @@ class Run final : public Log {
       const auto stepping = std::chrono::steady_clock::now();
       const double logged = log_seconds_;
       StepReport report = physics_->step(it);
-      if (gpu_) (void)gpu_->sample();
       solve_seconds_ += seconds_since(stepping) - (log_seconds_ - logged);
+      if (gpu_) (void)gpu_->sample();  // outside the timed step
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +

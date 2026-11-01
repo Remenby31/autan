@@ -40,12 +40,12 @@ Gpu::Gpu(int local_rank) : index_(local_rank % visible_gpus()) {
   free_at_start_ = static_cast<std::int64_t>(free);
 }
 
-std::int64_t Gpu::sample() {
+std::int64_t Gpu::sample() noexcept {
   std::size_t free = 0, total = 0;
-  check(cudaMemGetInfo(&free, &total), "cudaMemGetInfo");
-  const std::int64_t used = free_at_start_ - static_cast<std::int64_t>(free);
-  if (used > peak_) peak_ = used;
-  return used;
+  if (cudaMemGetInfo(&free, &total) != cudaSuccess) return last_;
+  last_ = free_at_start_ - static_cast<std::int64_t>(free);
+  if (last_ > peak_) peak_ = last_;
+  return last_;
 }
 
 Gpu::~Gpu() {
@@ -60,7 +60,7 @@ Gpu::Gpu(int /*local_rank*/) { throw std::runtime_error("this build of autan-run
 
 Gpu::~Gpu() = default;
 
-std::int64_t Gpu::sample() { return 0; }
+std::int64_t Gpu::sample() noexcept { return 0; }
 
 #endif
 

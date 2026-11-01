@@ -1815,10 +1815,21 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   const auto wall = wall_solution(one.run / "solution.cgns");
   CHECK(wall.contains("Pressure"));
   CHECK(wall_solution(many / "solution.cgns") == wall);
-  // The memory event names every rank's peaks.
-  const Json memory = memory_event(many);
-  CHECK(memory["host_peak_bytes_by_rank"].size() == static_cast<std::size_t>(ranks));
-  for (const auto& bytes : memory["host_peak_bytes_by_rank"]) CHECK(bytes.get<std::int64_t>() > 0);
+  // The memory event names every rank's peak: the last rank alone holds
+  // 256 MiB, which its slot and the maximum show, not rank 0's.
+  {
+    constexpr std::int64_t held = std::int64_t{256} << 20;
+    const Json memory =
+        memory_event(run_on_ranks(doc, ranks,
+                                  {"AUTAN_TEST_HOLD_BYTES=" + std::to_string(held),
+                                   "AUTAN_TEST_HOLD_RANK=" + std::to_string(ranks - 1)}));
+    const auto& by_rank = memory["host_peak_bytes_by_rank"];
+    REQUIRE(by_rank.size() == static_cast<std::size_t>(ranks));
+    CHECK(by_rank.back().get<std::int64_t>() >= held);
+    CHECK(by_rank.front().get<std::int64_t>() < held);
+    CHECK(memory["host_peak_bytes"] == by_rank.back());
+    CHECK(memory["device_peak_bytes_by_rank"].size() == static_cast<std::size_t>(ranks));
+  }
   // Rank 0 logged the partition: every cell owned once.
   std::int64_t owned = 0;
   std::ifstream log_in(many / "log.jsonl");
