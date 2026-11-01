@@ -24,8 +24,8 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <sys/resource.h>
 #include <picosha2.h>
+#include <sys/resource.h>
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
