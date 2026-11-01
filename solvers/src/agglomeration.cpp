@@ -683,6 +683,25 @@ Level as_level(const Graph& g) {
 
 }  // namespace
 
+Lines smoother_lines(const Mesh& mesh, const Geometry& geometry,
+                     const AgglomerationOptions& options) {
+  if (mesh.n_owned_cells() != mesh.n_cells()) {
+    throw std::invalid_argument("lines of a mesh with ghost cells");
+  }
+  Graph g = fine_graph(mesh, geometry);
+  make_lines(g, options.line_ratio);
+  Lines lines;
+  for (std::size_t l = 0; l + 1 < g.line_offsets.size(); ++l) {
+    const auto b = static_cast<std::size_t>(g.line_offsets[l]);
+    const auto e = static_cast<std::size_t>(g.line_offsets[l + 1]);
+    if (e - b < 2) continue;
+    lines.cells.insert(lines.cells.end(), g.line_nodes.begin() + static_cast<std::ptrdiff_t>(b),
+                       g.line_nodes.begin() + static_cast<std::ptrdiff_t>(e));
+    lines.offsets.push_back(static_cast<offset_t>(lines.cells.size()));
+  }
+  return lines;
+}
+
 std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
                                const AgglomerationOptions& options) {
   if (mesh.n_owned_cells() != mesh.n_cells()) {
