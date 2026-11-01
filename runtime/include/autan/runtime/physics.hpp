@@ -86,6 +86,10 @@ struct PhysicsContext {
   /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
   /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
   const std::map<index_t, std::vector<double>>& boundary_states;
+  /// input.initial_state: Density, VelocityX/Y/Z and Pressure (SI) of the owned cells, paired
+  /// from the initial-state file (initial-state.md); NaN in solid cells, which keep their zone's
+  /// state. Null without one; the physics then starts from the zones' `initial`.
+  const std::vector<io::Field>* initial = nullptr;
   /// devices.kind = cuda: this rank's CUDA device, current on the calling thread, and its
   /// stream (a cudaStream_t) for the physics' work and ghost exchanges. -1 and null on the CPU.
   int device = -1;

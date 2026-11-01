@@ -12,7 +12,7 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
   history.jsonl    one line per recorded iteration, appended during the run
   log.jsonl        one line per event, appended during the run (see Log)
   manufactured.json  verification runs only: the manufactured solution, byte for byte
-  states/          one <sha256>.json per face-state file of an oracle-state condition, byte for byte
+  states/          one <sha256>.json per face-state file of an oracle-state condition and for the initial-state file, byte for byte
   solution.cgns    solution (CGNS/HDF5), written when the run ends
 ```
 

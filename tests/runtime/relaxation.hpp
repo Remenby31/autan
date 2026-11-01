@@ -118,6 +118,17 @@ class Relaxation final : public autan::runtime::Physics {
         f.values.push_back(v);
       }
     }
+    // An initial-state file sets the fluid cells' density, velocity and pressure.
+    if (context.initial != nullptr) {
+      for (const auto& from : *context.initial) {
+        for (auto& f : state_) {
+          if (f.name != from.name) continue;
+          for (std::size_t c = 0; c < f.values.size(); ++c) {
+            if (!std::isnan(from.values[c])) f.values[c] = from.values[c];
+          }
+        }
+      }
+    }
     if (options_.vary) {
       for (auto& f : state_) {
         for (std::size_t c = 0; c < f.values.size(); ++c) f.values[c] *= scale(c);

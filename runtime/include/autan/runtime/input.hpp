@@ -45,6 +45,12 @@ struct BoundaryStates {
   std::string sha256;  ///< its expected SHA-256
 };
 
+/// The initial-state file of a case (docs/contracts/initial-state.md).
+struct InitialStateFile {
+  std::string path;    ///< absolute path of the autan.initial-state/1 file
+  std::string sha256;  ///< its expected SHA-256
+};
+
 struct BoundaryInput {
   std::string zone;
   std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
@@ -134,6 +140,7 @@ struct SolverInput {
   /// Present for verification cases: every boundary is then "manufactured".
   std::optional<Verification> verification;
   std::optional<Start> start;
+  std::optional<InitialStateFile> initial_state;  ///< never with start
   std::vector<PeriodicInput> periodic;
 };
 
