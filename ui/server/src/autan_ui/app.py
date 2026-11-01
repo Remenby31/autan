@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import webbrowser
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -12,6 +13,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
 
+from autan_ui.confine import is_link, real_file
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
@@ -149,24 +151,34 @@ def create_app(
     ) -> Response:
         return Response(synthetic_wing(triangles), media_type="application/octet-stream")
 
-    if static is not None and (static / "index.html").is_file():
+    root = static.resolve() if static is not None else None
+    if static is not None and root is not None and real_file(static / "index.html", root):
         index = static / "index.html"
-        # Built once from the files on disk: a request selects an entry by name and never
-        # becomes a path, so `..`, absolute paths and links cannot reach outside the build.
-        assets = {
-            path.relative_to(static).as_posix(): path
-            for path in static.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        }
+        # The request only selects an entry by name: it never becomes a path. Each entry is
+        # checked again when served, since the build can change after start-up.
+        assets: dict[str, Path] = {}
+        for folder, subfolders, files in os.walk(static):
+            here = Path(folder)
+            subfolders[:] = [name for name in subfolders if not is_link(here / name)]
+            for name in files:
+                if real_file(here / name, root):
+                    assets[(here / name).relative_to(static).as_posix()] = here / name
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa(path: str) -> FileResponse:
             if path.startswith("api/"):
                 raise HTTPException(404)
-            return FileResponse(assets.get(path, index))
+            entry = assets.get(path)
+            if entry is not None and real_file(entry, root):
+                return FileResponse(entry)
+            if real_file(index, root):
+                return FileResponse(index)
+            raise HTTPException(404)
 
     else:
-        log.warning("no built web app in %s: serving the API only (run `bun run build`)", static)
+        log.warning(
+            "no built web app in %s (or its index.html is a link): serving the API only", static
+        )
 
     return app
 

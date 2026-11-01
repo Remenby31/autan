@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY
@@ -17,6 +18,7 @@ import uvicorn
 from autan_ui import create_app
 from autan_ui.registry import Registry, read_history
 from autan_ui.surface import synthetic_wing
+from fastapi import FastAPI
 
 PY = Path(__file__).parents[3] / "py"
 
@@ -41,13 +43,12 @@ def static(tmp_path: Path) -> Path:
     return app
 
 
-@pytest.fixture
-def server(runs: Path, static: Path) -> Iterator[str]:
+@contextmanager
+def serving(app: FastAPI) -> Iterator[str]:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    config = uvicorn.Config(create_app(runs, static=static), port=port, log_level="warning")
-    instance = uvicorn.Server(config)
+    instance = uvicorn.Server(uvicorn.Config(app, port=port, log_level="warning"))
     thread = threading.Thread(target=instance.run, daemon=True)
     thread.start()
     while not instance.started:
@@ -55,6 +56,12 @@ def server(runs: Path, static: Path) -> Iterator[str]:
     yield f"http://127.0.0.1:{port}"
     instance.should_exit = True
     thread.join()
+
+
+@pytest.fixture
+def server(runs: Path, static: Path) -> Iterator[str]:
+    with serving(create_app(runs, static=static)) as url:
+        yield url
 
 
 def sse_events(response: httpx.Response) -> Iterator[tuple[str, Any]]:
@@ -258,13 +265,38 @@ def test_static_files_never_leave_the_build(server: str, target: str) -> None:
     assert httpx.get(f"{server}/assets/app.js").text == "APP"
 
 
-def test_a_run_directory_linking_outside_the_runs_directory_is_refused(
-    runs: Path, server: str, tmp_path: Path
+def test_static_files_are_checked_when_served(server: str, static: Path, tmp_path: Path) -> None:
+    (static / "added.js").write_text("ADDED")
+    (static / "assets" / "app.js").unlink()
+    (static / "assets" / "app.js").symlink_to(tmp_path / "secret.txt")
+
+    assert httpx.get(f"{server}/added.js").text == "INDEX"
+    assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
+    (static / "assets" / "app.js").unlink()
+    assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
+
+
+def test_a_linked_index_disables_static_files(runs: Path, static: Path, tmp_path: Path) -> None:
+    (static / "index.html").unlink()
+    (static / "index.html").symlink_to(tmp_path / "secret.txt")
+    with serving(create_app(runs, static=static)) as url:
+        assert httpx.get(f"{url}/").status_code == 404
+        assert httpx.get(f"{url}/api/runs").status_code == 200
+
+
+@pytest.mark.parametrize("linked", ["directory", "run.json", "history.jsonl"])
+def test_a_run_reached_through_a_link_is_refused(
+    runs: Path, server: str, tmp_path: Path, linked: str
 ) -> None:
     source = next(runs.iterdir())
     outside = shutil.copytree(source, tmp_path / "elsewhere" / source.name)
-    shutil.rmtree(source)
-    source.symlink_to(outside, target_is_directory=True)
+    if linked == "directory":
+        shutil.rmtree(source)
+        source.symlink_to(outside, target_is_directory=True)
+    else:
+        (source / linked).unlink()
+        (source / linked).symlink_to(outside / linked)
 
     assert httpx.get(f"{server}/api/runs/{source.name}").status_code == 404
-    assert Registry(runs).scan().rejected == {source.name: "links outside the runs directory"}
+    assert httpx.get(f"{server}/api/runs/{source.name}/history/events").status_code == 404
+    assert Registry(runs).scan().rejected == {source.name: "is or contains a symbolic link"}

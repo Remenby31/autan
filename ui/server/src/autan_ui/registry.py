@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import threading
 import tomllib
@@ -9,6 +10,8 @@ from typing import Any
 
 import autan
 from autan.errors import CaseError
+
+from autan_ui.confine import NOFOLLOW, is_link, read_bytes, read_text
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +83,7 @@ class Registry:
                     if child.name.startswith(".") or not child.is_dir():
                         continue
                     if not _inside(self.root, child):
-                        snapshot.rejected[child.name] = "links outside the runs directory"
+                        snapshot.rejected[child.name] = "is or contains a symbolic link"
                         continue
                     names.add(child.name)
                     outcome = self._check(child)
@@ -119,15 +122,23 @@ class Registry:
     def details(self, directory: Path) -> dict[str, Any]:
         return {
             "run": read_run(directory),
-            "case": tomllib.loads((directory / "case.toml").read_text(encoding="utf-8")),
-            "mesh_info": json.loads((directory / "mesh-info.json").read_text(encoding="utf-8")),
+            "case": tomllib.loads(read_text(directory / "case.toml")),
+            "mesh_info": json.loads(read_text(directory / "mesh-info.json")),
         }
 
 
+RUN_FILES = (*CHECKED_FILES, "history.jsonl")
+
+
 def _inside(root: Path, directory: Path) -> bool:
-    """A real directory directly under `root`: a symbolic link, even to another run, is refused
-    so that every file the server reads lies under the runs directory."""
-    return directory.is_dir() and not directory.is_symlink() and directory.resolve().parent == root
+    """A real directory directly under `root` whose run files are not links: every file the
+    server reads for a run then lies under the runs directory."""
+    return (
+        directory.is_dir()
+        and not is_link(directory)
+        and directory.resolve().parent == root
+        and not any(is_link(directory / name) for name in RUN_FILES)
+    )
 
 
 def _stat(path: Path) -> tuple[int, int] | None:
@@ -141,7 +152,7 @@ def _stat(path: Path) -> tuple[int, int] | None:
 def read_run(directory: Path) -> dict[str, Any]:
     """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
     try:
-        document = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+        document = json.loads(read_text(directory / "run.json"))
         return autan.RunInfo.model_validate(document).document()
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"
@@ -153,7 +164,8 @@ def last_iteration(directory: Path) -> int | None:
     changes, so this is how far a running run has got. Reads backwards until it has the whole
     line, however long."""
     try:
-        with (directory / "history.jsonl").open("rb") as file:
+        descriptor = os.open(directory / "history.jsonl", os.O_RDONLY | NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as file:
             end = file.seek(0, 2)
             tail = b""
             while end > 0:
@@ -185,9 +197,7 @@ def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:
     path = directory / "history.jsonl"
     if not path.is_file():
         return HistoryChunk([], offset)
-    with path.open("rb") as file:
-        file.seek(offset)
-        data = file.read()
+    data = read_bytes(path, offset)
     end = data.rfind(b"\n") + 1
     if end < len(data) and not live:
         msg = "history.jsonl: the last line is not terminated"
