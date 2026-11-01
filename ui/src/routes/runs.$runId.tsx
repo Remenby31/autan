@@ -96,6 +96,16 @@ function RunView() {
   const forces = soleForces(history);
   const unsteady = (details.data?.case.time as { kind?: string } | undefined)?.kind === "unsteady";
   const caveat = run ? coefficientsCaveat(run.status, unsteady) : null;
+  // An ended run's coefficients are its final state (results.md#runjson monitors), which can
+  // come after the last recorded sample; a running one's are its last sample.
+  const ended = run && run.status !== "running" ? run.monitors : null;
+  const finalForces = ended
+    ? Object.values(ended).filter((m) => m.cl !== undefined && m.cd !== undefined)
+    : [];
+  const [cl, cd] =
+    finalForces.length === 1
+      ? [finalForces[0]?.cl, finalForces[0]?.cd]
+      : [forces?.cl.at(-1), forces?.cd.at(-1)];
 
   const crumbs = [
     { label: "Runs", to: "/" },
@@ -255,8 +265,8 @@ function RunView() {
                     targetOrders={targetOrders}
                     history={history}
                     cells={details.data?.mesh_info.counts.cells}
-                    cl={forces?.cl.at(-1)}
-                    cd={forces?.cd.at(-1)}
+                    cl={cl}
+                    cd={cd}
                     caveat={caveat}
                   />
                 ) : (
@@ -291,13 +301,13 @@ function RunView() {
                         caveat ? "text-fg-3" : "text-fg-2",
                       )}
                     >
-                      {forces?.cl.length
-                        ? `CL ${coefficient(forces.cl.at(-1) as number)} · CD ${coefficient(forces.cd.at(-1) as number)}${caveat ? ` · ${caveat}` : ""}`
+                      {cl !== undefined && cd !== undefined
+                        ? `CL ${coefficient(cl)} · CD ${coefficient(cd)}${caveat ? ` · ${caveat}` : ""}`
                         : "—"}
                     </span>
                   }
                 >
-                  <MonitorTable history={history} caveat={caveat} />
+                  <MonitorTable history={history} final={ended} caveat={caveat} />
                 </Collapse>
                 <Collapse
                   title="Outputs"
@@ -528,8 +538,8 @@ function Facts({
   );
 }
 
-/** What the run computed, in a line, as its stored case writes it: Mach, angles, Reynolds
- * number or pressure and temperature, model, precision, and the mesh's cells. */
+/** What the run computed, in a line, as its stored case writes it: Mach or velocity, angles,
+ * Reynolds number or pressure and temperature, model, precision, and the mesh's cells. */
 function Conditions({
   run,
   document,
@@ -546,6 +556,7 @@ function Conditions({
   const beta = angle(freestream.sideslip);
   const parts = [
     freestream.mach !== undefined && `M ${freestream.mach}`,
+    freestream.velocity !== undefined && `V ${freestream.velocity}`,
     alpha !== null && `α ${alpha}°`,
     beta !== null && beta !== 0 && `β ${beta}°`,
     typeof freestream.re === "number" && `Re ${freestream.re.toExponential(2)}`,

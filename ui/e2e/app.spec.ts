@@ -365,6 +365,32 @@ test("a run page states what it computed and how far its coefficients go", async
   await expect(page.getByTestId("forces")).toContainText("not converged");
   await expect(page.getByTestId("monitor-caveat")).toHaveText("not converged");
 
+  // An unsteady run of 40 steps sampling forces every 30: its final state is step 40's.
+  const dir = mkdtempSync(join(tmpdir(), "autan-unsteady-forces-"));
+  const name = `unsteady-forces-${Date.now()}`;
+  writeFileSync(
+    join(dir, "case.py"),
+    readFileSync("../py/examples/crm_hl.py", "utf8")
+      .replace('"crm-hl"', `"${name}"`)
+      .replace("every=10", "every=30") +
+      "case.time = autan.Unsteady(steps=40, dt=1e-3 * autan.units.s)\n",
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
+  ]);
+  const unsteady = (await runs(page)).find((r) => r.case.name === name) as Run;
+  try {
+    await page.goto(`/runs/${unsteady.run_id}`);
+    const last = unsteady.monitors?.forces;
+    await expect(page.getByTestId("forces")).toHaveText(
+      `CL ${four(last?.cl)}CD ${four(last?.cd)}last step of an unsteady run`,
+    );
+  } finally {
+    rmSync(join(RUNS, unsteady.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+
   // py/examples/heat_exchanger.py: a pressure and a temperature, no Reynolds number.
   const exchanger = all.find((r) => r.case.name === "heat-exchanger") as Run;
   await page.goto(`/runs/${exchanger.run_id}`);

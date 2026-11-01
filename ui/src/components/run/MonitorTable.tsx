@@ -14,9 +14,12 @@ const OTHERS = ["cs", "cmx", "cmy", "cmz"] as const;
  * are not the coefficients of a converged run. */
 export function MonitorTable({
   history,
+  final,
   caveat,
 }: {
   history: HistoryColumns;
+  /** An ended run's final monitors (run.json), which win over the last recorded sample. */
+  final: Record<string, Forces> | null;
   caveat: string | null;
 }) {
   const [all, setAll] = useState(false);
@@ -39,22 +42,25 @@ export function MonitorTable({
           </tr>
         </thead>
         <tbody className={cn(caveat && "text-fg-3")}>
-          {[...history.monitors].map(([name, forces]: [string, Forces]) => (
-            <tr key={name} className="border-line border-t">
-              <td className="h-10 font-mono">{name}</td>
-              {keys.map((k) => (
-                <td key={k} className="text-right font-mono tabular-nums">
-                  {forces[k] === undefined ? "—" : coefficient(forces[k])}
+          {[...history.monitors].map(([name, sample]: [string, Forces]) => {
+            const forces = final?.[name] ?? sample;
+            return (
+              <tr key={name} className="border-line border-t">
+                <td className="h-10 font-mono">{name}</td>
+                {keys.map((k) => (
+                  <td key={k} className="text-right font-mono tabular-nums">
+                    {forces[k] === undefined ? "—" : coefficient(forces[k])}
+                  </td>
+                ))}
+                <td className="pl-4">
+                  <Sparkline
+                    values={history.forces.get(name)?.cl.slice(-200) ?? []}
+                    label={`${name} CL trend`}
+                  />
                 </td>
-              ))}
-              <td className="pl-4">
-                <Sparkline
-                  values={history.forces.get(name)?.cl.slice(-200) ?? []}
-                  label={`${name} CL trend`}
-                />
-              </td>
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <div className="flex items-center gap-4 text-sm">
