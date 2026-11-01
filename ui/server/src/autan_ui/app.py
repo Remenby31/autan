@@ -99,6 +99,17 @@ class Follower:
         self.folder.close()
 
 
+def _offsets(last_event_id: str | None) -> dict[str, int]:
+    """The byte offsets of a reconnecting multi-run stream; anything malformed restarts at 0."""
+    try:
+        parsed = json.loads(last_event_id) if last_event_id else {}
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {k: v for k, v in parsed.items() if type(v) is int and v >= 0}
+
+
 def _mtime(folder: Folder) -> int | None:
     stat = folder.stat("run.json")
     return stat.st_mtime_ns if stat else None
@@ -210,19 +221,15 @@ def create_app(
         """Several runs over one connection (a browser opens at most six per host): the events
         of the single-run stream with `{run_id, ...}` payloads; the event id is the JSON map of
         byte offsets reached, for reconnection."""
-        try:
-            offsets = json.loads(last_event_id) if last_event_id else {}
-        except ValueError:
-            offsets = {}
+        offsets = _offsets(last_event_id)
         followers: dict[str, Follower] = {}
         try:
             for run_id in run_ids:
-                offset = offsets.get(run_id, 0) if isinstance(offsets, dict) else 0
-                followers[run_id] = Follower(registry.run_dir(run_id), int(offset))
+                followers[run_id] = Follower(registry.run_dir(run_id), offsets.get(run_id, 0))
         except (LookupError, ValueError, OSError) as error:
             for follower in followers.values():
                 follower.close()
-            yield ServerSentEvent(event="invalid", data={"run_id": None, "reason": str(error)})
+            yield ServerSentEvent(event="invalid", data={"run_id": None, "data": str(error)})
             return
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
@@ -230,6 +237,8 @@ def create_app(
         try:
             while True:
                 for run_id, follower in followers.items():
+                    if follower.done:
+                        continue
                     for event, data in follower.poll():
                         payload = {"run_id": run_id, "data": data}
                         if event == "history":

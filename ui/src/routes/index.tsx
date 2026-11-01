@@ -134,7 +134,7 @@ function Runs() {
         setPeek((open) => (open ? (links[next]?.dataset.run ?? open) : open));
       } else if (e.key === "x" && runId) {
         toggle(runId);
-      } else if (e.key === " " && runId) {
+      } else if (e.key === " " && runId && !target.closest("button, [role=checkbox]")) {
         e.preventDefault();
         setPeek((open) => (open === runId ? null : runId));
       } else if (e.key === "c") {
@@ -433,7 +433,11 @@ export function study(settings: (RunSettings | undefined)[]): string | null {
   for (const key of ["aoa", "sideslip", "mach", "re", "turbulence", "precision"] as const) {
     const raw = settings.map((s) => s?.[key]).filter((v) => v != null);
     const angle = key === "aoa" || key === "sideslip";
-    const numbers = raw.map((v) => (angle ? degrees(String(v)) : typeof v === "number" ? v : null));
+    const numbers = raw.map((v) => {
+      const n = angle ? degrees(String(v)) : typeof v === "number" ? v : null;
+      // Equal settings written in other units must not look like a sweep after conversion.
+      return n === null ? null : Math.round(n * 1e9) / 1e9;
+    });
     if (numbers.length && numbers.every((n) => n !== null)) {
       const distinct = [...new Set(numbers as number[])];
       if (distinct.length < 2) continue;

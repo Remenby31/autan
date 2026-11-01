@@ -406,7 +406,8 @@ def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
     (second / "run.json").write_text(json.dumps(run))
     second = second.rename(runs / run["run_id"])
     url = f"{server}/api/runs/history/events?run={first.name}&run={second.name}"
-    with httpx.stream("GET", url, timeout=10) as response:
+    resume = {"Last-Event-ID": json.dumps({first.name: 0, second.name: None})}
+    with httpx.stream("GET", url, headers=resume, timeout=10) as response:
         events = sse_events(response)
         seen = [next(events) for _ in range(4)]
     assert sorted((kind, data["run_id"]) for kind, data in seen) == sorted(

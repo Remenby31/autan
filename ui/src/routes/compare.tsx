@@ -51,7 +51,9 @@ function Compare() {
   const { runs: ids } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const registry = useQuery(runsQuery);
-  const live = useRunsHistory(ids);
+  // Only accepted runs are followed: one unavailable run must not stop the others' stream.
+  const followed = ids.filter((id) => registry.data?.runs.some((r) => r.run_id === id));
+  const live = useRunsHistory(followed);
   const details = useQueries({ queries: ids.map((id) => runQuery(id)) });
   const [all, setAll] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -115,6 +117,7 @@ function Compare() {
                 key={id}
                 id={id}
                 run={runs[k]}
+                unavailable={Boolean(registry.data) && !runs[k]}
                 role={String.fromCharCode(65 + k)}
                 color={seriesColor(k)}
                 onRemove={() => {
@@ -264,7 +267,13 @@ function Compare() {
                         ))}
                     </tbody>
                   </table>
-                  {!all && !diff.some((d) => d.differs) && (
+                  {details.some((d) => d.isError) && (
+                    <p className="m-0 px-4 py-3 text-danger text-sm">
+                      The case of {details.filter((d) => d.isError).length} run(s) could not be
+                      read.
+                    </p>
+                  )}
+                  {!all && details.every((d) => d.isSuccess) && !diff.some((d) => d.differs) && (
                     <p className="m-0 px-4 py-6 text-center text-fg-3">The cases are identical.</p>
                   )}
                 </div>
@@ -296,7 +305,9 @@ function polars(
     const cl = forces?.cl.at(-1);
     const cd = forces?.cd.at(-1);
     if (alpha === null || cl === undefined || cd === undefined) return;
-    if (forces?.iteration.at(-1) !== history.iteration.at(-1)) return;
+    // Converged values only: forces sampled at the run's final iteration, history caught up.
+    const last = history.iteration.at(-1);
+    if (last !== run.iterations || forces?.iteration.at(-1) !== last) return;
     const seen = byAlpha.get(alpha);
     if (!seen || seen.started < run.started)
       byAlpha.set(alpha, { alpha, cl, cd, started: run.started });
@@ -349,12 +360,14 @@ function RunChip({
   role,
   color,
   onRemove,
+  unavailable,
 }: {
   id: string;
   run: Run | undefined;
   role: string;
   color: string;
   onRemove: () => void;
+  unavailable: boolean;
 }) {
   return (
     <span className="inline-flex h-8 items-center gap-2 rounded-full border border-line bg-bg-0 pr-1 pl-3 text-sm">
@@ -366,7 +379,7 @@ function RunChip({
         className="flex items-center gap-2 hover:underline"
       >
         {run && <StateGlyph status={run.status} />}
-        <span className="font-medium">{run?.case.name ?? "…"}</span>
+        <span className="font-medium">{run?.case.name ?? (unavailable ? "unavailable" : "…")}</span>
         <span className="font-mono text-fg-3">{id.slice(-8)}</span>
       </Link>
       <button
