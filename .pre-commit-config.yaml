@@ -70,3 +70,17 @@ repos:
     rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
     hooks:
       - id: zizmor
+
+  - repo: local
+    hooks:
+      # Personal home directories must not reach the repository (they carry user names). Allowed:
+      # the Sparks' shared GPU lock and the CI runner's home. Exceptions are listed by file.
+      - id: no-personal-paths
+        name: no personal home directory paths
+        language: pygrep
+        entry: '/(Users|home)/(?!admin/autan-gpu\b|runner\b)[A-Za-z0-9._-]+/'
+        exclude: |
+          (?x)^(
+            # Owned by CFD - Noyau maillage, who removes the absolute mesh paths there.
+            tests/data/runtime/[^/]+\.solver-input\.json
+          )$

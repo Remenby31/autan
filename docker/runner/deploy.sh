@@ -48,7 +48,7 @@ runner_args=(
   -e HTTP_PROXY=http://autan-runner-proxy:3128 -e HTTPS_PROXY=http://autan-runner-proxy:3128
   -e http_proxy=http://autan-runner-proxy:3128 -e https_proxy=http://autan-runner-proxy:3128
   -e NO_PROXY=localhost,127.0.0.1 -e no_proxy=localhost,127.0.0.1
-  -e AUTAN_HOST="$name"
+  -e AUTAN_BENCH_HOST="$name"
   -v "$state":/state
   -v "$work":/work
   -v "$lock_dir":"$lock_dir":ro

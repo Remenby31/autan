@@ -117,7 +117,7 @@ def run(
             **({"os_version": raw["os_version"]} if "os_version" in raw else {}),
         },
         "conditions": {
-            "lock": str(lock),
+            "lock": provenance.path_label(lock),
             "lock_wait_s": waited,
             "idle_check": idle,
             "host_load": {
