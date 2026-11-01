@@ -175,6 +175,8 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   INFO(precision << (steady ? " steady" : " unsteady"));
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
+    // fp32+acc64 starts at its convergence floor (round-off only) and stops at iteration 1.
+    d["monitors"][0]["every"] = 1;
     if (steady) {
       d["time"]["max_iterations"] = 20;
     } else {
@@ -209,6 +211,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
     CHECK(info["convergence"].is_null());
     return;
   }
+  CHECK(info["status"] == "converged");
   const auto mesh = autan::io::read_mesh(mesh_path);
   const auto g = autan::compute_geometry(mesh);
   std::vector<double> surface(static_cast<std::size_t>(mesh.n_cells()), 0.0);
