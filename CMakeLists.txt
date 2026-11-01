@@ -40,6 +40,7 @@ target_compile_options(
 add_subdirectory(core)
 add_subdirectory(io)
 add_subdirectory(partition)
+add_subdirectory(codegen)
 
 if(AUTAN_BUILD_TESTS)
   include(CTest)

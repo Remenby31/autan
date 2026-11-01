@@ -379,6 +379,21 @@ class Forces(Spec):
 Monitor = Annotated[Forces, Field(discriminator="kind")]
 
 
+# --- verification -----------------------------------------------------------------------
+
+
+class Manufactured(Spec):
+    """A manufactured solution: an ``autan.mms/1`` file whose source term the solver adds
+    and whose exact fields give the data of every boundary zone."""
+
+    path: Name
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
+class Verification(Spec):
+    manufactured: Manufactured
+
+
 # --- case --------------------------------------------------------------------------------
 
 
@@ -394,6 +409,7 @@ class CaseSpec(Spec):
     boundaries: tuple[BoundaryRule, ...] = ()
     cell_zones: tuple[CellZoneRule, ...] = ()
     monitors: tuple[Monitor, ...] = ()
+    verification: Verification | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -460,6 +476,18 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
             for key in ("mach", "re", "pressure", "temperature")
             if getattr(fs, key) is not None
         )
+    if spec.verification is not None and spec.boundaries:
+        found.append(
+            (
+                "E0416",
+                "boundaries",
+                "a manufactured solution gives every boundary its data; remove the boundary rules",
+            )
+        )
+    if spec.verification is not None and isinstance(spec.time, Unsteady):
+        found.append(
+            ("E0417", "time", "manufactured solutions are steady: verification needs a steady time")
+        )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(
             ("E0305", "time", f"{physics.turbulence.model} needs case.time = autan.Unsteady(...)")
@@ -496,6 +524,13 @@ def json_schema() -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
 
     schema["allOf"] = [
+        {
+            "if": {
+                "required": ["verification"],
+                "properties": {"verification": {"type": "object"}},
+            },
+            "then": {"properties": {"boundaries": {"maxItems": 0}}},
+        },
         {
             "if": physics("compressible"),
             "then": freestream(
