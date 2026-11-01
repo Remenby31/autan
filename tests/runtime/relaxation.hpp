@@ -52,6 +52,7 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
   std::vector<double> scales{};  ///< residual_scales(); empty: none
+  bool coded_events = false;     ///< logs a coded warning (W0711) at every step
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -154,6 +155,12 @@ class Relaxation final : public autan::runtime::Physics {
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
     last_stepped_iteration_ = iteration;
+    if (options_.coded_events) {
+      context_.log.write("warning", "solver", "relaxation: coded event", "W0711",
+                         "{\"iteration\": " + std::to_string(iteration) +
+                             ", \"reason\": \"admissible\", \"cfl\": 1.0, "
+                             "\"residual_drop\": null}");
+    }
     if (options_.pause_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(options_.pause_ms));
     if (iteration == options_.throw_at &&

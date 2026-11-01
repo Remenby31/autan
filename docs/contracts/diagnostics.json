@@ -553,6 +553,12 @@
       "fix": "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0710"
     },
+    "W0711": {
+      "severity": "warning",
+      "title": "Implicit step rejected",
+      "fix": "A few rejections are part of the start of a run. Many of them slow the convergence: check the boundary conditions and the initial state.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0711"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",

@@ -740,6 +740,14 @@ An equation that was identically zero at iteration 1 (below 1e-12 times the larg
 
 Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
 
+## W0711
+
+**Implicit step rejected** (warning)
+
+A steady run's Newton-Krylov step was rejected (HANIM's controls, docs/design/euler.md): its linear solve failed (it left more than 0.9 of its residual) or met a singular block (`linear`), the update was not realisable (`admissible`), or it reduced the pseudo-time residual too little even after a line search (`nonlinear`). The state is kept and the CFL number divided by 10. Logged at each rejection; recorded once in run.json. `data` gives the iteration, the reason, the CFL number of the rejected step and the linear solve's residual drop (null for `admissible`).
+
+Fix: A few rejections are part of the start of a run. Many of them slow the convergence: check the boundary conditions and the initial state.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

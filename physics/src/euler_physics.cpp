@@ -11,6 +11,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -20,6 +21,7 @@
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/runtime/exact_sum.hpp"
+#include "autan/solvers/gcr.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -57,6 +59,23 @@ constexpr double linear_failure = 0.9;
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
 constexpr double min_step = 1e-6;
+// Newton-Krylov end phase (fp64): once every active residual is newton_drop below its largest
+// value in the order (ADflow's ANK-to-NK switch, Yildirim et al. 2019, J. Comput. Phys.
+// 397:108741, sec. 4), each step solves (V / dt + dR/dU) du = -R with dR/dU v by a finite
+// difference of the residual, preconditioned by one multigrid cycle on the approximate Jacobian.
+// The CFL number and the step follow HANIM (Wang, Diskin, Nielsen and Liu 2021, "Improvements in
+// Iterative Convergence of FUN3D Solutions", AIAA SciTech, sec. II.D): a step is rejected and the
+// CFL number divided by 10 when its linear solve fails, when it is not realisable, or when it
+// reduces the pseudo-time residual too little even after a quadratic line search; an accepted
+// full step doubles the CFL number, a line-searched one keeps it.
+constexpr double newton_drop = 1e-5;
+constexpr int newton_max_iterations = 40;
+constexpr double newton_cfl_increase = 2.0;  // HANIM's CFL_incr
+constexpr double newton_cfl_decrease = 0.1;  // HANIM's CFL_decr
+constexpr double newton_cfl_min = 1e-12;     // HANIM's bounds; the run diverged at the smallest
+constexpr double newton_cfl_max = 1e10;
+// A correction this small relative to the state is round-off (HANIM: 1e-12).
+constexpr double round_off_correction = 1e-12;
 constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
@@ -130,7 +149,7 @@ class EulerPhysics final : public runtime::Physics {
     apply_vortices();
   }
 
-  StepReport step(std::int64_t /*iteration*/) override {
+  StepReport step(std::int64_t iteration) override {
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception.
@@ -141,7 +160,7 @@ class EulerPhysics final : public runtime::Physics {
       return report;
     }
     if (ctx_.input.time.kind == "steady") {
-      steady_step(report);
+      steady_step(report, iteration);
     } else {
       unsteady_step(report);
     }
@@ -363,6 +382,14 @@ class EulerPhysics final : public runtime::Physics {
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
+    v.emplace_back("SolverCfl", cfl_);
+    for (std::size_t k = 0; k < 5; ++k) {
+      v.emplace_back("SolverPeakResidual" + std::to_string(k), peaks_.empty() ? -1.0 : peaks_[k]);
+    }
+    v.emplace_back("SolverExemptFloor", exempt_floor_);
+    for (std::size_t k = 0; k < 5; ++k) {
+      v.emplace_back("SolverExempt" + std::to_string(k), exempt_[k] ? 1.0 : 0.0);
+    }
     return v;
   }
 
@@ -377,6 +404,13 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+    cfl_ = v[10].second;
+    peaks_.clear();
+    if (v[11].second >= 0.0) {
+      for (std::size_t k = 0; k < 5; ++k) peaks_.push_back(v[11 + k].second);
+    }
+    exempt_floor_ = v[16].second;
+    for (std::size_t k = 0; k < 5; ++k) exempt_[k] = v[17 + k].second != 0.0;
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -591,7 +625,7 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
-  void steady_step(StepReport& report) {
+  void steady_step(StepReport& report, std::int64_t iteration) {
     euler_.state(u_, state_);
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
@@ -621,6 +655,32 @@ class EulerPhysics final : public runtime::Physics {
       second_order_ = true;
       euler_.set_second_order(true);
       first_norms_.clear();
+      peaks_.clear();
+    }
+    // The Newton-Krylov phase follows each residual relative to its largest value so far in the
+    // order. An equation identically zero at the start of the order (below 1e-12 of the largest,
+    // the span momentum of a one-cell-thick mesh) is left out while it stays at that floor, as
+    // the runtime's convergence rule does (case-schema.md#time).
+    if (peaks_.empty()) {
+      peaks_ = current;
+      exempt_floor_ = 1e-12 * *std::max_element(current.begin(), current.begin() + 5);
+      for (std::size_t k = 0; k < 5; ++k) exempt_[k] = current[k] < exempt_floor_;
+    }
+    double peak_drop = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      peaks_[k] = std::max(peaks_[k], current[k]);
+      if (exempt_[k] && current[k] > exempt_floor_) exempt_[k] = false;
+      if (!exempt_[k] && peaks_[k] > 0.0) peak_drop = std::max(peak_drop, current[k] / peaks_[k]);
+    }
+    const bool newton =
+        std::is_same_v<P, kernels::fp64> && second_order_ && peak_drop <= newton_drop;
+    if (newton != newton_) {
+      newton_ = newton;
+      if (newton) ctx_.log.write("info", "solver", "Newton-Krylov steps", {}, "{}");
+    }
+    if (newton) {
+      newton_step(report, iteration);
+      return;
     }
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
@@ -677,6 +737,164 @@ class EulerPhysics final : public runtime::Physics {
       return;
     }
     for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+  }
+
+  // One Newton-Krylov step with HANIM's controls (eqs. 16-22): f(w) = |V/dt w du + R(u + w du)|,
+  // f(0) = |R(u)|, g(1) the linear residual of the full step; norms over the active equations.
+  void newton_step(StepReport& report, std::int64_t iteration) {
+    std::vector<double> shift(n_);
+    for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
+    euler_.assemble(shift, *matrix_);
+    for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
+    std::fill(du_.begin(), du_.end(), 0.0);
+    solvers::KrylovReport linear;
+    try {
+      multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+      linear = newton_solve(shift);
+    } catch (const std::domain_error&) {
+      linear = {};  // a singular block: the solve failed
+    }
+    const nlohmann::json residual_drop =
+        std::isfinite(linear.residual_drop) ? nlohmann::json(linear.residual_drop) : nullptr;
+    // A rejected step: the state is kept, the CFL number divided by 10; at the smallest CFL
+    // number the run has diverged.
+    auto reject = [&](const char* reason, const char* message, nlohmann::json drop_data) {
+      ctx_.log.write("warning", "solver", message, "W0711",
+                     nlohmann::json{{"iteration", iteration},
+                                    {"reason", reason},
+                                    {"cfl", cfl_},
+                                    {"residual_drop", std::move(drop_data)}}
+                         .dump());
+      if (cfl_ <= newton_cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      cfl_ = std::max(newton_cfl_min, newton_cfl_decrease * cfl_);
+    };
+    if (!(linear.residual_drop <= linear_failure)) {
+      reject("linear", "implicit step rejected: its linear solve failed", residual_drop);
+      return;
+    }
+    if (!(linear.residual_drop <= linear_tolerance)) {
+      ctx_.log.write(
+          "info", "linear", "the implicit step's linear solve stopped above its tolerance", {},
+          nlohmann::json{{"cycles", linear.cycles}, {"residual_drop", residual_drop}}.dump());
+    }
+    if (!realisable(1.0)) {
+      reject("admissible", "implicit step rejected: not realisable", nullptr);
+      return;
+    }
+    const double target = 0.5 * (1.0 + std::max(linear_tolerance, linear.residual_drop));
+    const double f0 = active_norm(res_);
+    const double g1 = linear.residual_drop * f0;
+    const double f1 = pseudo_time_residual(shift, 1.0);
+    double omega = 1.0;
+    bool accepted = f1 <= target * f0;
+    const bool grow = accepted;
+    if (!accepted && active_norm(du_) <= round_off_correction * active_norm(u_)) {
+      accepted = true;  // a round-off correction: accepted, the CFL number kept
+    }
+    if (!accepted && f1 > g1) {
+      omega = -(g1 - f0) / (2.0 * (f1 - g1));  // HANIM eq. 22
+      if (omega > 0.0 && omega < 1.0 && realisable(omega) &&
+          pseudo_time_residual(shift, omega) <= target * f0) {
+        accepted = true;
+        ctx_.log.write("info", "solver", "line search", {},
+                       nlohmann::json{{"omega", omega}, {"cfl", cfl_}}.dump());
+      }
+    }
+    if (!accepted) {
+      reject("nonlinear", "implicit step rejected: too small a residual decrease", residual_drop);
+      return;
+    }
+    for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += omega * du_[i];
+    if (grow) cfl_ = std::min(newton_cfl_max, newton_cfl_increase * cfl_);
+  }
+
+  [[nodiscard]] double active_norm(std::span<const double> r) const {
+    double s = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (exempt_[k]) continue;
+      for (std::size_t c = 0; c < n_; ++c) s += r[k * n_ + c] * r[k * n_ + c];
+    }
+    return std::sqrt(s / static_cast<double>(n_));
+  }
+
+  double pseudo_time_residual(const std::vector<double>& shift, double omega) {
+    for (std::size_t i = 0; i < 5 * n_; ++i) newton_u_[i] = u_[i] + omega * du_[i];
+    euler_.state(newton_u_, newton_state_);
+    euler_.residual(newton_state_, newton_res_);
+    double s = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (exempt_[k]) continue;
+      for (std::size_t c = 0; c < n_; ++c) {
+        const std::size_t i = k * n_ + c;
+        const double v = shift[c] * omega * du_[i] + static_cast<double>(newton_res_[i]);
+        s += v * v;
+      }
+    }
+    return std::sqrt(s / static_cast<double>(n_));
+  }
+
+  // Whether u + w du keeps every cell's density and pressure above (1 - max_decrease) of their
+  // current values.
+  [[nodiscard]] bool realisable(double omega) const {
+    for (std::size_t c = 0; c < n_; ++c) {
+      if (!(u_[c] + omega * du_[c] >= (1.0 - max_decrease) * u_[c])) return false;
+      if (!(pressure(c, omega) >= (1.0 - max_decrease) * pressure(c, 0.0))) return false;
+    }
+    return true;
+  }
+
+  // GCR on (V / dt + dR/dU) du = -R from du = 0, dR/dU v = (R(u + eps v) - R(u)) / eps with
+  // eps = sqrt((1 + |u|) eps_mach) / |v| (Knoll and Keyes 2004, J. Comput. Phys. 193:357-397,
+  // eq. 14), preconditioned by one multigrid cycle on the assembled approximate Jacobian.
+  solvers::KrylovReport newton_solve(const std::vector<double>& shift) {
+    auto norm = [](std::span<const double> v) {
+      double s = 0.0;
+      for (const double x : v) s += x * x;
+      return std::sqrt(s);
+    };
+    const double unorm = norm(u_);
+    newton_u_.resize(5 * n_);
+    newton_state_.resize(5 * n_);
+    newton_res_.resize(5 * n_);
+    // The iteration runs on the equations the SER ratio follows: an equation identically zero
+    // (the span momentum of a one-cell-thick mesh) stays zero, where the round-off of the finite
+    // differences would wake it.
+    auto restrict_to_active = [&](std::span<double> w) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        if (exempt_[k]) std::fill_n(w.begin() + static_cast<std::ptrdiff_t>(k * n_), n_, 0.0);
+      }
+    };
+    newton_r_ = rhs_;
+    restrict_to_active(newton_r_);
+    newton_v_.resize(5 * n_);
+    auto apply = [&](std::span<const double> x, std::span<double> y) {
+      std::copy(x.begin(), x.end(), newton_v_.begin());
+      restrict_to_active(newton_v_);
+      const std::vector<double>& v = newton_v_;
+      const double vnorm = norm(v);
+      if (!(vnorm > 0.0)) {
+        std::fill(y.begin(), y.end(), 0.0);
+        return;
+      }
+      const double eps = std::sqrt((1.0 + unorm) * std::numeric_limits<double>::epsilon()) / vnorm;
+      for (std::size_t i = 0; i < 5 * n_; ++i) newton_u_[i] = u_[i] + eps * v[i];
+      euler_.state(newton_u_, newton_state_);
+      euler_.residual(newton_state_, newton_res_);
+      for (std::size_t k = 0; k < 5; ++k) {
+        for (std::size_t c = 0; c < n_; ++c) {
+          const std::size_t i = k * n_ + c;
+          y[i] = shift[c] * v[i] +
+                 (static_cast<double>(newton_res_[i]) - static_cast<double>(res_[i])) / eps;
+        }
+      }
+      restrict_to_active(y);
+    };
+    auto precondition = [&](std::span<const double> r, std::span<double> z) {
+      multigrid_->cycle(r, z);
+      restrict_to_active(z);
+    };
+    return newton_gcr_.solve(apply, precondition, newton_r_, du_, newton_max_iterations,
+                             linear_tolerance);
   }
 
   // The cell whose density or pressure the full step lowers the most, relatively.
@@ -839,6 +1057,13 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;
+  solvers::Gcr newton_gcr_;
+  std::vector<double> newton_u_, newton_r_, newton_v_, peaks_;
+  std::vector<State> newton_state_;
+  std::vector<Res> newton_res_;
+  std::array<bool, 5> exempt_{};
+  double exempt_floor_ = 0.0;
+  bool newton_ = false;       // logging only: the phase follows from the restart state
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;

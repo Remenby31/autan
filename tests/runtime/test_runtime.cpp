@@ -904,6 +904,29 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
   CHECK(lines.back()["data"]["status"] == "diverged");
 }
 
+TEST_CASE("A physics' coded event is logged every time and recorded once in run.json",
+          "[runtime]") {
+  // results.md, Log: run.json stays bounded when a physics repeats a coded event.
+  const Outcome o = run(input(), {.factor = 0.9, .coded_events = true});
+  std::vector<Json> coded;
+  std::ifstream in(o.run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json l = Json::parse(line);
+    if (l["code"] == "W0711") coded.push_back(l);
+  }
+  const Json info = Json::parse(read(o.run / "run.json"));
+  REQUIRE(coded.size() == static_cast<std::size_t>(info["iterations"].get<std::int64_t>()));
+  CHECK(coded.front()["level"] == "warning");
+  std::size_t recorded = 0;
+  for (const Json& d : info["diagnostics"]) {
+    if (d["code"] == "W0711") {
+      ++recorded;
+      CHECK(d["data"] == coded.front()["data"]);
+    }
+  }
+  CHECK(recorded == 1);
+}
+
 TEST_CASE("A continued run goes on bit for bit from the run it continues", "[runtime]") {
   // The state grows at each step, so that the history (forces) and the
   // solution depend on the state handed over; the uninterrupted run is the
