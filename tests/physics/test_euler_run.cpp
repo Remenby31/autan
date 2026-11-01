@@ -284,4 +284,6 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
   CHECK(diagnostic["code"] == "E0706");
   CHECK(diagnostic["data"]["zone"] == doc["cell_zones"].back()["zone"]);
+  CHECK(diagnostic["data"]["path"] ==
+        "cell_zones[" + std::to_string(doc["cell_zones"].size() - 1) + "].medium");
 }

@@ -110,12 +110,12 @@ using PhysicsFactory = std::function<std::unique_ptr<Physics>(const PhysicsConte
 /// before any directory exists.
 struct PhysicsRefusal {
   std::string message;
-  std::string path;              ///< document path of the offending key
-  std::string data_json = "{}";  ///< machine-readable details, a JSON object
+  std::string path;              ///< document path of the offending key; also `data.path`
+  std::string data_json = "{}";  ///< machine-readable details: the text of a JSON object
 };
 
 /// What a physics supports beyond its key (media, zones, conditions): nullopt when it can run
-/// the input.
+/// the input. A scope must not throw: it reports what it refuses as a PhysicsRefusal.
 using PhysicsScope = std::function<std::optional<PhysicsRefusal>(const SolverInput&)>;
 
 /// The physics a build of autan-run provides; the first matching key wins.

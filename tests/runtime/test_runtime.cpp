@@ -351,6 +351,35 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   }
 }
 
+TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
+  const bool refuse = GENERATE(true, false);
+  autan::runtime::PhysicsRegistry registry;
+  registry.add(
+      {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
+      [](const autan::runtime::PhysicsContext& context) {
+        return std::make_unique<autan_test::Relaxation>(context, autan_test::RelaxationOptions{});
+      },
+      [refuse](
+          const autan::runtime::SolverInput& in) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (!refuse) return std::nullopt;
+        return autan::runtime::PhysicsRefusal{
+            .message = "refused",
+            .path = "cell_zones[1].medium",
+            .data_json = Json{{"zone", in.cell_zones[1].zone}}.dump()};
+      });
+  const Json doc = input();
+  const Outcome o = run(doc, registry);
+  if (!refuse) {
+    CHECK(o.status == ExitStatus::finished);
+    return;
+  }
+  require_error(o, "E0706");
+  const Json d = Json::parse(o.err);
+  CHECK(d["location"]["path"] == "cell_zones[1].medium");
+  CHECK(d["data"] ==
+        Json{{"zone", doc["cell_zones"][1]["zone"]}, {"path", "cell_zones[1].medium"}});
+}
+
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
   const Json doc = input([](Json& d) { d["deterministic"] = true; });
   const Outcome a = run(doc);

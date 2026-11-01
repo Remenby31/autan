@@ -357,10 +357,12 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   if (entry != nullptr && entry->scope) {
     if (auto refusal = entry->scope(p.input)) {
+      auto data = nlohmann::json::parse(refusal->data_json);
+      data["path"] = refusal->path;
       throw InputError(Diagnostic{.code = "E0706",
                                   .message = std::move(refusal->message),
                                   .path = std::move(refusal->path),
-                                  .data_json = std::move(refusal->data_json)});
+                                  .data_json = data.dump()});
     }
   }
   if (p.factory == nullptr) {
