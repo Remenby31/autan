@@ -108,15 +108,18 @@ export function LogView({
     return Array.from({ length: n }, (_, b) => {
       const first = Math.floor((b * iterations.length) / n);
       const last = Math.max(first, Math.floor(((b + 1) * iterations.length) / n) - 1);
-      const from = iterations[first] ?? 0;
-      // The last bucket also takes lines logged after the last recorded iteration (a
-      // divergence is raised at an iteration that never reaches history.jsonl).
-      const to = b === n - 1 ? Number.POSITIVE_INFINITY : (iterations[last] ?? 0);
+      // Buckets are contiguous: each runs up to the iteration before the next one starts, so a
+      // line between two recorded iterations still lands in one. The first takes the lines
+      // before the first record, the last those after the last (a divergence is raised at an
+      // iteration that never reaches history.jsonl).
+      const from = b === 0 ? Number.NEGATIVE_INFINITY : (iterations[first] ?? 0);
+      const nextFirst = Math.floor(((b + 1) * iterations.length) / n);
+      const to = b === n - 1 ? Number.POSITIVE_INFINITY : (iterations[nextFirst] ?? 0) - 1;
       let level: Level = "info";
       for (const [iteration, l] of worst) {
         if (iteration >= from && iteration <= to && RANK[l] > RANK[level]) level = l;
       }
-      return { from, to, orders: history.orders[last] ?? 0, level };
+      return { from, to, last, orders: history.orders[last] ?? 0, level };
     });
   }, [history.version, log.version]);
   const peak = Math.max(1, ...buckets.map((b) => (Number.isFinite(b.orders) ? b.orders : 0)));
@@ -168,10 +171,10 @@ export function LogView({
         {buckets.map((b) => (
           <button
             type="button"
-            key={b.from}
+            key={b.last}
             tabIndex={-1}
             aria-hidden
-            title={`iterations ${b.from}–${Number.isFinite(b.to) ? b.to : "end"}`}
+            title={`iterations ${Number.isFinite(b.from) ? b.from : "start"}–${Number.isFinite(b.to) ? b.to : "end"}`}
             onClick={() => {
               const index = shown.findIndex(
                 (line) => line.iteration !== null && line.iteration >= b.from,

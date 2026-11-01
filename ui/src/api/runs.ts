@@ -240,7 +240,8 @@ export function useLiveRun(runId: string): LiveRun {
     source.addEventListener("log", (e) => {
       const lines = JSON.parse(e.data) as LogLine[];
       if (!lines.length) return;
-      log.lines.push(...lines);
+      // One by one: spreading a large first batch into push() exceeds the argument limit.
+      for (const line of lines) log.lines.push(line);
       const next = { lines: log.lines, version: log.version + lines.length };
       log.version = next.version;
       setState((s) => ({ ...s, log: next }));

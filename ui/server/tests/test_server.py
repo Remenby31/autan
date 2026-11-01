@@ -441,3 +441,36 @@ def test_removing_the_log_after_a_scan_rejects_the_run(runs: Path) -> None:
     assert source.name in registry.scan().runs
     (source / "log.jsonl").unlink()
     assert source.name in registry.scan().rejected
+
+
+def test_stream_cursors_count_only_what_was_sent(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    ids = []
+    with httpx.stream("GET", url, timeout=10) as response:
+        for line in response.iter_lines():
+            if line.startswith("id: "):
+                ids.append(json.loads(line.removeprefix("id: ")))
+            if len(ids) == 2:
+                break
+    history_size = (directory / "history.jsonl").stat().st_size
+    log_size = (directory / "log.jsonl").stat().st_size
+    assert ids == [
+        {"history.jsonl": history_size, "log.jsonl": 0},
+        {"history.jsonl": history_size, "log.jsonl": log_size},
+    ]
+
+
+def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    run = json.loads((directory / "run.json").read_text())
+    (directory / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        assert [next(events)[0] for _ in range(3)] == ["run", "history", "log"]
+        with (directory / "log.jsonl").open("a") as log:
+            log.write('{"time": "yesterday", "iteration": null, "level": "info"}\n')
+        kind, reason = next(e for e in events if e[0] != "history")
+    assert kind == "invalid"
+    assert reason.startswith("log.jsonl")

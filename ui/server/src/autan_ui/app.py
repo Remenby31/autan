@@ -14,10 +14,12 @@ from typing import Annotated, Any
 import autan
 import uvicorn
 from autan.errors import CaseError, doc_url
+from autan.results import LogLine, log_line_problems
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from pydantic import ValidationError
 from watchfiles import Change, awatch
 
 from autan_ui.confine import Folder, is_link
@@ -71,12 +73,16 @@ class Follower:
         self.directory = directory
         self.folder = Folder(directory)
         self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
+        self.read = dict(self.offsets)
         self.run: dict[str, Any] | None = None
         self.run_mtime: int | None = None
         self.sent = False
         self.done = False
 
     def poll(self) -> list[tuple[str, Any]]:
+        """New events, in order. A `history`/`log` event's data is `(records, file, offset)`;
+        the stream calls `delivered` once it has sent it, so that a reconnection resumes from
+        what the client received, not from what was read."""
         events: list[tuple[str, Any]] = []
         mtime = _mtime(self.folder)
         if self.run is None or mtime != self.run_mtime:
@@ -89,18 +95,21 @@ class Follower:
         live = self.run["status"] == "running"
         for name, event in STREAMED.items():
             try:
-                chunk = read_lines(self.folder, name, self.offsets[name], live=live)
+                chunk = read_lines(self.folder, name, self.read[name], live=live)
+                records = (
+                    [_log_line(line) for line in chunk.records] if event == "log" else chunk.records
+                )
             except (OSError, ValueError) as error:
                 self.done = True
                 return [*events, ("invalid", str(error))]
             if chunk.records or not self.sent:
-                self.offsets[name] = chunk.offset
-                records = chunk.records
-                if event == "log":
-                    records = [_with_doc(line) for line in records if isinstance(line, dict)]
-                events.append((event, records))
+                self.read[name] = chunk.offset
+                events.append((event, (records, name, chunk.offset)))
         self.sent = True
         return events
+
+    def delivered(self, name: str, offset: int) -> None:
+        self.offsets[name] = offset
 
     def close(self) -> None:
         self.folder.close()
@@ -109,9 +118,20 @@ class Follower:
 STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
 
 
-def _with_doc(line: dict[str, Any]) -> dict[str, Any]:
-    code = line.get("code")
-    return line | {"doc": doc_url(code) if isinstance(code, str) and code else None}
+def _log_line(record: object) -> dict[str, Any]:
+    """A log.jsonl record checked by the SDK's model and rules (results.md#log), with the
+    documentation page of its code; ValueError otherwise."""
+    try:
+        line = LogLine.model_validate(record)
+    except ValidationError as error:
+        msg = f"log.jsonl: {error.errors(include_url=False)[0]['msg']}"
+        raise ValueError(msg) from error
+    problems = log_line_problems(line)
+    if problems:
+        msg = f"log.jsonl: {problems[0]}"
+        raise ValueError(msg)
+    document = line.model_dump(mode="json")
+    return document | {"doc": doc_url(line.code) if line.code else None}
 
 
 def _offsets(last_event_id: str | None) -> dict[str, Any]:
@@ -262,11 +282,14 @@ def create_app(
                     if follower.done:
                         continue
                     for event, data in follower.poll():
-                        payload = {"run_id": run_id, "data": data}
                         if event in STREAMED.values():
+                            records, name, offset = data
+                            follower.delivered(name, offset)
                             ids = {k: f.offsets for k, f in followers.items()}
+                            payload = {"run_id": run_id, "data": records}
                             yield ServerSentEvent(event=event, data=payload, id=json.dumps(ids))
                         else:
+                            payload = {"run_id": run_id, "data": data}
                             yield ServerSentEvent(event=event, data=payload)
                 if all(f.done for f in followers.values()):
                     return
@@ -340,8 +363,10 @@ def create_app(
             while True:
                 for event, data in follower.poll():
                     if event in STREAMED.values():
+                        records, name, offset = data
+                        follower.delivered(name, offset)
                         cursor = json.dumps(follower.offsets)
-                        yield ServerSentEvent(event=event, data=data, id=cursor)
+                        yield ServerSentEvent(event=event, data=records, id=cursor)
                     else:
                         yield ServerSentEvent(event=event, data=data)
                 if follower.done or await anext(changes, None) is None:
