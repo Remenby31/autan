@@ -8,6 +8,7 @@ alpha = 4/3 inside and 2 on Dirichlet boundary faces. Boundary values are Dirich
 """
 
 from autan_codegen.dsl import (
+    STENCIL,
     Geom,
     Grad,
     Inc,
@@ -48,6 +49,17 @@ lsq_gradient = cell_reduce(
     qc=q.self_,
     qn=q.other(boundary=q_b),
     w=geometry.lsq_weight,
+    acc=Sum(grad),
+)
+
+# The same gradient over the cell stencil (vertex or face2 neighbours): the face-neighbour
+# stencil leaves the unlimited scheme linearly unstable on tetrahedra (Diskin and Thomas 2011).
+lsq_gradient_stencil = cell_reduce(
+    lsq_term,
+    over=STENCIL,
+    qc=q.self_,
+    qn=q.other(boundary=q_b),
+    w=geometry.stencil_lsq_weight,
     acc=Sum(grad),
 )
 

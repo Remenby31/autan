@@ -107,7 +107,12 @@ class Registry:
         return snapshot
 
     def _check(self, directory: Path) -> dict[str, Any] | str:
-        key = tuple(_stat(directory / name) for name in CHECKED_FILES)
+        # log.jsonl grows during a run like history.jsonl: only its presence can change the
+        # verdict, so its size and time do not trigger a new check.
+        key = (
+            *(_stat(directory / name) for name in CHECKED_FILES),
+            (directory / "log.jsonl").is_file(),
+        )
         cached = self._checked.get(directory.name)
         if cached and cached[0] == key:
             return cached[1]
@@ -119,9 +124,11 @@ class Registry:
                 results = autan.Results.open(directory)
                 outcome = results.run.document()
                 time = results.case.document()["time"]
+                case = results.case.document()
                 self._budgets[directory.name] = {
                     "target_orders": time.get("residual_orders"),
                     "max_iterations": time.get("max_iterations", time.get("steps")),
+                    "settings": _settings(case),
                 }
             except CaseError as error:
                 outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
@@ -149,7 +156,7 @@ class Registry:
             }
 
 
-RUN_FILES = (*CHECKED_FILES, "history.jsonl", "manufactured.json")
+RUN_FILES = (*CHECKED_FILES, "history.jsonl", "log.jsonl", "manufactured.json")
 
 
 def _inside(root: Path, directory: Path) -> bool:
@@ -161,6 +168,21 @@ def _inside(root: Path, directory: Path) -> bool:
         and directory.resolve().parent == root
         and not any(is_link(directory / name) for name in RUN_FILES)
     )
+
+
+def _settings(case: dict[str, Any]) -> dict[str, Any]:
+    """The settings a study usually sweeps, as the case writes them, for labels and polars."""
+    freestream = case.get("freestream", {})
+    physics = case.get("physics", {})
+    turbulence = physics.get("turbulence", {})
+    return {
+        "aoa": freestream.get("aoa"),
+        "sideslip": freestream.get("sideslip"),
+        "mach": freestream.get("mach"),
+        "re": freestream.get("re"),
+        "turbulence": turbulence.get("model") if isinstance(turbulence, dict) else None,
+        "precision": physics.get("precision"),
+    }
 
 
 def _stat(path: Path) -> tuple[int, int] | None:

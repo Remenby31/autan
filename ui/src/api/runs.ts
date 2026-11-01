@@ -1,6 +1,6 @@
 import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type { Diagnostic, Forces, HistoryRecord, Run, RunRegistry } from "./contracts";
+import type { Diagnostic, Forces, HistoryRecord, LogLine, Run, RunRegistry } from "./contracts";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -196,9 +196,16 @@ export function soleForces(history: HistoryColumns): ForceColumns | null {
   return history.forces.size === 1 ? ([...history.forces.values()][0] ?? null) : null;
 }
 
+/** log.jsonl lines, appended in place; `version` changes on every append. */
+export interface LogLines {
+  lines: LogLine[];
+  version: number;
+}
+
 export interface LiveRun {
   run: Run | null;
   history: HistoryColumns;
+  log: LogLines;
   connected: boolean;
   invalid: string | null;
 }
@@ -208,12 +215,14 @@ export function useLiveRun(runId: string): LiveRun {
   const [state, setState] = useState<LiveRun>(() => ({
     run: null,
     history: emptyColumns(),
+    log: { lines: [], version: 0 },
     connected: false,
     invalid: null,
   }));
   useEffect(() => {
     let history = emptyColumns();
-    setState({ run: null, history, connected: false, invalid: null });
+    const log: LogLines = { lines: [], version: 0 };
+    setState({ run: null, history, log, connected: false, invalid: null });
     const source = new EventSource(`/api/runs/${runId}/history/events`);
     source.onopen = () => setState((s) => ({ ...s, connected: true }));
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
@@ -228,6 +237,15 @@ export function useLiveRun(runId: string): LiveRun {
       const next = history;
       setState((s) => ({ ...s, history: next }));
     });
+    source.addEventListener("log", (e) => {
+      const lines = JSON.parse(e.data) as LogLine[];
+      if (!lines.length) return;
+      // One by one: spreading a large first batch into push() exceeds the argument limit.
+      for (const line of lines) log.lines.push(line);
+      const next = { lines: log.lines, version: log.version + lines.length };
+      log.version = next.version;
+      setState((s) => ({ ...s, log: next }));
+    });
     source.addEventListener("invalid", (e) => {
       const reason = JSON.parse(e.data) as string;
       source.close();
@@ -235,5 +253,50 @@ export function useLiveRun(runId: string): LiveRun {
     });
     return () => source.close();
   }, [runId]);
+  return state;
+}
+
+/** Live history of several runs at once over one connection, keyed by run id. */
+export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> {
+  const [state, setState] = useState<Map<string, LiveRun>>(() => new Map());
+  const key = runIds.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for the id list
+  useEffect(() => {
+    setState(new Map());
+    if (!runIds.length) return;
+    const histories = new Map(runIds.map((id) => [id, emptyColumns()]));
+    const set = (runId: string, change: (old: LiveRun) => LiveRun) =>
+      setState((s) => {
+        const next = new Map(s);
+        const old = s.get(runId) ?? {
+          run: null,
+          history: histories.get(runId) ?? emptyColumns(),
+          log: { lines: [], version: 0 },
+          connected: true,
+          invalid: null,
+        };
+        next.set(runId, change(old));
+        return next;
+      });
+    const query = runIds.map((id) => `run=${encodeURIComponent(id)}`).join("&");
+    const source = new EventSource(`/api/runs/history/events?${query}`);
+    source.addEventListener("run", (e) => {
+      const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: Run };
+      set(run_id, (old) => ({ ...old, run: data }));
+    });
+    source.addEventListener("history", (e) => {
+      const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: HistoryRecord[] };
+      const history = histories.get(run_id);
+      if (!history || !data.length) return;
+      const next = appendHistory(history, data);
+      histories.set(run_id, next);
+      set(run_id, (old) => ({ ...old, history: next }));
+    });
+    source.addEventListener("invalid", (e) => {
+      const { run_id, data } = JSON.parse(e.data) as { run_id: string | null; data?: string };
+      if (run_id) set(run_id, (old) => ({ ...old, invalid: data ?? "invalid" }));
+    });
+    return () => source.close();
+  }, [key]);
   return state;
 }

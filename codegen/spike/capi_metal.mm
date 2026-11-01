@@ -97,6 +97,7 @@ void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const do
   d.q = qs.get();
   d.q_b = qbs.get();
   d.lsq_weight = g.lsq_weight.get();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
   d.grad = gs.get();
   d.source = ss.get();
   d.cell_volume = g.cell_volume.get();
@@ -109,7 +110,11 @@ void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const do
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::metal_loops::lsq_gradient(ctx, d, dm.schedule);
+  if (m.topo.stencil != nullptr) {
+    ad::metal_loops::lsq_gradient_stencil(ctx, d, dm.schedule);
+  } else {
+    ad::metal_loops::lsq_gradient(ctx, d, dm.schedule);
+  }
   ad::metal_loops::init_residual(ctx, d, dm.schedule);
   ad::metal_loops::flux(ctx, d, strategy, dm.schedule);
   ad::metal_loops::boundary_flux(ctx, d, strategy, dm.schedule);
@@ -148,6 +153,7 @@ void gradients(const SpikeMesh& m, std::string_view method, Strategy strategy, i
   d.qmax = maxs.get();
   d.gg_sum = acc.get();
   d.lsq_weight = g.lsq_weight.get();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
   d.cell_volume = g.cell_volume.get();
   d.cell_centroid = g.cell_centroid.get();
   d.face_centroid = g.face_centroid.get();
@@ -259,6 +265,7 @@ void advdiff_adjoint(const SpikeMesh& m, Strategy strategy, int block, const dou
   d.q = qs.get();
   d.q_b = qbs.get();
   d.lsq_weight = g.lsq_weight.get();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
   d.grad = gs.get();
   d.source = ss.get();
   d.cell_volume = g.cell_volume.get();
@@ -275,11 +282,19 @@ void advdiff_adjoint(const SpikeMesh& m, Strategy strategy, int block, const dou
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::metal_loops::lsq_gradient(ctx, d, dm.schedule);
+  if (m.topo.stencil != nullptr) {
+    ad::metal_loops::lsq_gradient_stencil(ctx, d, dm.schedule);
+  } else {
+    ad::metal_loops::lsq_gradient(ctx, d, dm.schedule);
+  }
   ad::metal_loops::boundary_flux_adjoint(ctx, d, strategy, dm.schedule);
   ad::metal_loops::flux_adjoint(ctx, d, strategy, dm.schedule);
   ad::metal_loops::init_residual_adjoint(ctx, d, dm.schedule);
-  ad::metal_loops::lsq_gradient_adjoint(ctx, d, strategy, dm.schedule);
+  if (m.topo.stencil != nullptr) {
+    ad::metal_loops::lsq_gradient_stencil_adjoint(ctx, d, strategy, dm.schedule);
+  } else {
+    ad::metal_loops::lsq_gradient_adjoint(ctx, d, strategy, dm.schedule);
+  }
   synchronise();
   copy_out(q_adj.download(), out);
 }
@@ -312,6 +327,7 @@ void lsq_bounds_adjoint(const SpikeMesh& m, Strategy strategy, int block, const 
   d.qmin = lo.get();
   d.qmax = hi.get();
   d.lsq_weight = g.lsq_weight.get();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
   d.grad_adj = g_adj.get();
   d.qmin_adj = lo_adj.get();
   d.qmax_adj = hi_adj.get();

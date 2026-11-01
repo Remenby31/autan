@@ -1,6 +1,7 @@
 #pragma once
 
 // Metal copies of a spike mesh and its geometry, shared by the Metal driver and benchmark.
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -53,6 +54,9 @@ struct DeviceMesh {
   Array<index_t> int_faces, bnd_faces;
   Array<typename P::accum> scratch;
   Array<offset_t> twin;
+  Array<offset_t> stencil_offsets;
+  Array<index_t> stencil;
+  Array<offset_t> stencil_twin;
   Array<typename P::accum> incidence_scratch;
   autan::kernels::Topology topo;
   mtl::Schedule schedule;
@@ -68,8 +72,14 @@ struct DeviceMesh {
         bnd_faces(ctx, bnd_colours.faces),
         scratch(ctx, kScratchWidth * static_cast<std::size_t>(m.topo.n_faces)),
         twin(ctx, m.topo.incidence_twin, static_cast<std::size_t>(m.topo.n_incidences)),
-        incidence_scratch(ctx,
-                          kIncidenceScratchWidth * static_cast<std::size_t>(m.topo.n_incidences)),
+        stencil_offsets(
+            ctx, m.topo.stencil_offsets,
+            m.topo.stencil_offsets != nullptr ? static_cast<std::size_t>(m.topo.n_cells) + 1 : 0),
+        stencil(ctx, m.topo.stencil, static_cast<std::size_t>(m.topo.n_stencil)),
+        stencil_twin(ctx, m.topo.stencil_twin, static_cast<std::size_t>(m.topo.n_stencil)),
+        incidence_scratch(
+            ctx, kIncidenceScratchWidth *
+                     static_cast<std::size_t>(std::max(m.topo.n_incidences, m.topo.n_stencil))),
         topo(m.topo) {
     topo.owner = owner.get();
     topo.neighbour = neighbour.get();
@@ -83,6 +93,11 @@ struct DeviceMesh {
     schedule.incidence_scratch = incidence_scratch.get();
     schedule.incidence_scratch_width = kIncidenceScratchWidth;
     topo.incidence_twin = twin.get();
+    if (m.topo.stencil != nullptr) {
+      topo.stencil_offsets = stencil_offsets.get();
+      topo.stencil = stencil.get();
+      topo.stencil_twin = stencil_twin.get();
+    }
   }
 };
 
@@ -90,7 +105,7 @@ template <class P>
 struct DeviceGeom {
   using G = typename P::geom;
   Array<G> face_area, face_centroid, face_moment, face_normal, face_area_magnitude, face_r_left,
-      face_r_right, cell_centroid, cell_volume, lsq_weight;
+      face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
   DeviceGeom(mtl::Context& ctx, const GeomCopy<P>& g)
       : face_area(ctx, g.face_area),
         face_centroid(ctx, g.face_centroid),
@@ -101,7 +116,8 @@ struct DeviceGeom {
         face_r_right(ctx, g.face_r_right),
         cell_centroid(ctx, g.cell_centroid),
         cell_volume(ctx, g.cell_volume),
-        lsq_weight(ctx, g.lsq_weight) {}
+        lsq_weight(ctx, g.lsq_weight),
+        stencil_lsq_weight(ctx, g.stencil_lsq_weight) {}
 };
 
 /// Calls f with the Metal policy named `policy`; fp64 is refused (Metal has no FP64).

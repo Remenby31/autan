@@ -9,6 +9,7 @@ fields on warped faces. Exact for linear fields at the fixed point.
 """
 
 from autan_codegen.dsl import (
+    STENCIL,
     Geom,
     Grad,
     Inc,
@@ -59,6 +60,23 @@ lsq_gradient_bounds = cell_reduce(
     acc=[Sum(grad), Min(qmin), Max(qmax)],
     finalise=include_own_value,
     finalise_args={"qc": q},
+)
+
+
+@pointwise
+def lsq_term(qc: State, qn: State, w: Geom.Vec3) -> Grad.Vec3:
+    return w * (qn - qc)
+
+
+# Least squares over the cell stencil (vertex or face2 neighbours, Topology::stencil); the bounds
+# of a limiter stay on the face neighbours.
+lsq_gradient_stencil = cell_reduce(
+    lsq_term,
+    over=STENCIL,
+    qc=q.self_,
+    qn=q.other(boundary=q_b),
+    w=geometry.stencil_lsq_weight,
+    acc=Sum(grad),
 )
 
 

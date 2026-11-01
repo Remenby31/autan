@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
+from autan_codegen.derive import ReduceAdjoint
 from autan_codegen.emit_cpp import (
     Emitter,
     arg_name,
@@ -436,7 +437,9 @@ def _cell_launcher(e: Emitter, lm: LoopModel) -> None:
             '    throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
         )
         e.w("  }")
-        e.w("  if (d.topo.incidence_twin == nullptr) {")
+        assert isinstance(lm.radj, ReduceAdjoint)
+        twin = "stencil_twin" if lm.radj.primal.loop.over == dsl.STENCIL else "incidence_twin"
+        e.w(f"  if (d.topo.{twin} == nullptr) {{")
         e.w(
             '    throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
         )

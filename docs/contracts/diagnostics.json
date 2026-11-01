@@ -439,6 +439,24 @@
       "fix": "Use a build that includes it, or change the case or the devices.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0706"
     },
+    "E0707": {
+      "severity": "error",
+      "title": "Previous run cannot be resumed",
+      "fix": "Start from another run, or run the case from the freestream.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0707"
+    },
+    "E0708": {
+      "severity": "error",
+      "title": "Start does not match the case",
+      "fix": "Change the case, or use `warm` to start a different case from that state.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0708"
+    },
+    "E0709": {
+      "severity": "error",
+      "title": "Start solution differs",
+      "fix": "Prepare the input again from the run as it is now.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0709"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",

@@ -505,6 +505,29 @@ _CODES = [
         "Use a build that includes it, or change the case or the devices.",
     ),
     Code(
+        "E0707",
+        "Previous run cannot be resumed",
+        "A start needs a previous run that ended converged, completed or stopped after at least one "
+        "iteration and holds a solution that conforms to its run.json; diverged and failed runs, "
+        "and runs without a sound solution, cannot be resumed.",
+        "Start from another run, or run the case from the freestream.",
+    ),
+    Code(
+        "E0708",
+        "Start does not match the case",
+        "`continue` needs the previous run's case unchanged except its iteration or step "
+        "budget, and a budget above the iterations already done; `warm` needs the same physics "
+        "and transported variables. The message names the difference.",
+        "Change the case, or use `warm` to start a different case from that state.",
+    ),
+    Code(
+        "E0709",
+        "Start solution differs",
+        "The solution of the run to start from no longer has the SHA-256 the solver input "
+        "records: the run directory changed after the input was written.",
+        "Prepare the input again from the run as it is now.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
