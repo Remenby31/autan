@@ -26,6 +26,8 @@ ROLE_TYPE = {
     dsl.Role.JAC: "jac",
     dsl.Role.JAC_ACCUM: "accum",
 }
+# Roles a body never differentiates through: the arguments of a body computing in `accum`.
+INERT = dsl.PASSIVE_ROLES | {dsl.Role.GEOM, dsl.Role.PARAM}
 
 
 @dataclass
@@ -240,6 +242,14 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         fin_fn, fin_sig = parse(loop.finalise)
         n_acc = len(loop.outputs)
         _check_bindings(where, "cell", fin_sig, loop.finalise_bindings, skip=n_acc)
+    if fn.compute == "accum":
+        active = [n for n, t in zip(sig.names, sig.types, strict=True) if t.role not in INERT]
+        if loop.kind != "cell" or active:
+            raise CodegenError(
+                Code.INVALID_BINDING,
+                f"compute='accum' bodies run in cell loops on passive arguments, not {active}",
+                where,
+            )
     lm = LoopModel(name, loop, fn, sig, fin_fn, fin_sig)
     targets = [j.dataset for j in loop.jacobians]
     if len({id(t) for t in targets}) != len(targets):

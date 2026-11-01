@@ -16,6 +16,7 @@ from autan_codegen.dsl import (
     State,
     cells,
     dot,
+    inverse,
     outer,
     pointwise,
     rel,
@@ -151,6 +152,11 @@ def calls_python(x: State) -> State:
 
 
 @pointwise
+def inverse_of_a_rectangle(m: Grad.Mat53) -> Grad.Mat53:
+    return inverse(m)
+
+
+@pointwise
 def guarded_sqrt(x: State) -> State:
     return sqrt(x) if x > 0.0 else x
 
@@ -173,6 +179,7 @@ def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
         (one_sided, "E1005"),
         (rel_after_arithmetic, "E1007"),
         (calls_python, "E1001"),
+        (inverse_of_a_rectangle, "E1006"),
     ],
 )
 def test_unsupported_constructs_are_rejected_with_a_code_and_line(
@@ -199,6 +206,11 @@ def in_place(x: Residual) -> Residual:
     return 2.0 * x
 
 
+@pointwise(compute="accum")
+def state_in_accum(x: State) -> Residual:
+    return 2.0 * x
+
+
 def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.face_loop(flux, ql=q.left, out=dsl.Inc(r, left=1, right=-1)))
@@ -213,6 +225,10 @@ def test_loop_declarations_are_checked() -> None:
     assert info.value.code == "E1004"
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.cell_loop(in_place, x=r, out=dsl.Write(r)))
+    assert info.value.code == "E1003"
+    # A body computing in the accumulation type has no derivatives: passive arguments only.
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.cell_loop(state_in_accum, x=q, out=dsl.Write(r)))
     assert info.value.code == "E1003"
 
 

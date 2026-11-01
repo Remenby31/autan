@@ -320,7 +320,7 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     e.w("    return;")
     e.w("  }")
     if lm.kind == "cell":
-        e.w(f"  typename P::compute out[{n_out(lm)}];")
+        e.w(f"  typename P::{lm.fn.compute} out[{n_out(lm)}];")
         args = call_args(lm.sig, lm.loop.bindings, {"direct": "c"})
         e.w(f"  {lm.fn.name}<P>({', '.join([*args, 'out'])});")
         for s in jacobian_lines(lm, args, "c", "  "):

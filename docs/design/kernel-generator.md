@@ -38,7 +38,7 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 
 **Types.** A role (`State`, `Grad`, `Residual`, `Geom`, `Param`) and a shape: `State`, `State.Vec3`, `State.Vec5`, `Geom.Mat3`, `Grad.Mat53` (5 × 3, row i the gradient of component i). The precision policy maps roles to storage types ([Precision](#precision)).
 
-**Bodies** (`@pointwise`) use: arguments, locals, numeric module constants; `+ - * /`, `**` with an integer constant 0–8, `@` (matrix times vector or matrix); `< <= > >=`, `and`, `or`, `not`; `x if c else y` and `if`/`else` (a name assigned in one branch must be assigned in the other; `return` in both or neither); `for i in range(N)` with constant bounds; indexing with constants (`v[0]`, `m[i, j]`, `v.x`); `sqrt exp log sin cos abs min max dot cross norm outer transpose Vec3 Vec5`; `rel(a, b)`, the difference of two `Geom` arguments in their storage type (FP64 geometry stays FP64 until the difference); calls to other `@pointwise` bodies. Anything else is rejected with a code and the `.py` line. `abs(x)` is `x if x >= 0 else -x`; `min(a, b)` is `a if a <= b else b`, `max(a, b)` is `a if a >= b else b`.
+**Bodies** (`@pointwise`) use: arguments, locals, numeric module constants; `+ - * /`, `**` with an integer constant 0–8, `@` (matrix times vector or matrix); `< <= > >=`, `and`, `or`, `not`; `x if c else y` and `if`/`else` (a name assigned in one branch must be assigned in the other; `return` in both or neither); `for i in range(N)` with constant bounds; indexing with constants (`v[0]`, `m[i, j]`, `v.x`); `sqrt exp log sin cos abs min max dot cross norm outer transpose inverse Vec3 Vec5`; `rel(a, b)`, the difference of two `Geom` arguments in their storage type (FP64 geometry stays FP64 until the difference); calls to other `@pointwise` bodies. Anything else is rejected with a code and the `.py` line. `abs(x)` is `x if x >= 0 else -x`; `min(a, b)` is `a if a <= b else b`, `max(a, b)` is `a if a >= b else b`. `inverse(m)` of a square matrix is Gauss-Jordan elimination with partial pivoting in the operation order of the host `BlockMatrix` (`physics/src/block_matrix.cpp`), row swaps as selects; a zero or non-finite pivot makes every entry NaN.
 
 **Data.** `cells.field`, `faces.field`, `param`; built-in FP64 geometry `geometry.face_area` (area vector), `face_normal`, `face_area_magnitude`, `face_centroid`, `face_moment` (Σ over the face's fan triangles of (c_t − x_f) ⊗ S_t, zero on planar faces), `face_r_left`, `face_r_right`, `cell_centroid`, `cell_volume`, `lsq_weight` (per incidence). Geometry is computed by `autan::kernels::pack_geometry` from the core's `Geometry`.
 
@@ -90,6 +90,8 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 | `fp32_acc64` (`fp32+acc64`) | float | double | double | float | float |
 | `fp32` | float | float | float | float | float |
 
+A body declared `@pointwise(compute="accum")` computes in the accumulation type instead of `compute`: FP64 under `fp32+acc64`, for the inverse of the diagonal blocks (`kernels/blocks.py`). It runs in cell loops on passive arguments only, so it has no derivatives (E1003), and Metal, whose accumulation type has no division, refuses it (E1013).
+
 `complex_step` (host only) computes in `std::complex<double>` for complex-step tests.
 
 Built-in geometry that no body of the module reads through `rel()` (directly or as a `boundary=` source) reaches bodies only converted to `compute`, so `Data<P>` stores it in `P::geom_value`, a real type of the compute precision (`float` in `fp32+acc64`, `double` in `fp64` and for the complex step): the same values (rounded once, when filled instead of when loaded) in fewer bytes. Geometry `rel()` reads (in the spike kernels, the centroids) and `Geom` datasets a kernel writes keep `P::geom`.
@@ -110,7 +112,7 @@ Built-in geometry that no body of the module reads through `rel()` (directly or 
 | E1010 | `unknown_backend` | `--backends` names an unknown backend. |
 | E1011 | `unknown_policy` | `--policies` names an unknown policy. |
 | E1012 | `ad_unsupported` | A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True. |
-| E1013 | `policy_unsupported_by_backend` | A precision policy is requested on a backend that cannot run it (`fp64` on Metal). |
+| E1013 | `policy_unsupported_by_backend` | A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal). |
 | E1100 | `runtime_failure` | A generated loop or the spike driver fails without a more specific code. |
 | E1101 | `gpu_runtime_error` | A CUDA or HIP call or kernel launch fails. |
 | E1102 | `unknown_precision_policy` | A driver receives an unknown policy name. |
