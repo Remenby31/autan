@@ -761,15 +761,70 @@ def _solution_problems(
             found.append(f"FlowSolution {name} must hold {cells} finite values")
     if ("FlowSolutionMean" in zone.children) != (run.averaging is not None):
         found.append("FlowSolutionMean must exist exactly when run.json has averaging")
-    for bc in zone.child("ZoneBC").with_label("BC_t"):
+    periodic = {name for pair in mesh_info.periodic for name in pair.zones}
+    conditioned = any(z.faces > 0 and z.name not in periodic for z in mesh_info.boundary_zones)
+    zone_bc = zone.children.get("ZoneBC")
+    if conditioned and zone_bc is None:
+        found.append("ZoneBC is missing")
+    bc_faces: set[int] = set()
+    for bc in zone_bc.with_label("BC_t") if zone_bc is not None else []:
         if bc.text() not in SIDS_BC_TYPES:
             found.append(f"BC {bc.name} has BCType {bc.text()!r}, not a SIDS BCType_t value")
         if not _ids_in(bc.child("PointList").data, 1, faces):
             found.append(f"BC {bc.name} PointList must hold face ids")
+        bc_faces |= set(np.asarray(bc.child("PointList").data).ravel().tolist())
+    nodes_of = {zone_name: node for node, zone_name in names["boundary"].items()}
+    found += _periodic_problems(zone, mesh_info, nodes_of, faces, bc_faces)
     for region in zone.with_label("ZoneSubRegion_t"):
         low, high = (1, faces) if region.name == "WallSolution" else (faces + 1, faces + cells)
         if not _ids_in(region.child("PointList").data, low, high):
             found.append(f"ZoneSubRegion {region.name} PointList is out of range")
+    return found
+
+
+def _periodic_problems(
+    zone: cgns.Node, mesh_info: MeshInfo, nodes_of: dict[str, str], faces: int, bc_faces: set[int]
+) -> list[str]:
+    """The two reciprocal GridConnectivity_t of every periodic pair (results.md#solutioncgns)."""
+    connectivity = zone.children.get("ZoneGridConnectivity")
+    expected = {nodes_of[name] for pair in mesh_info.periodic for name in pair.zones}
+    present = set(connectivity.children) if connectivity is not None else set()
+    if present != expected:
+        return [f"ZoneGridConnectivity must hold exactly {sorted(expected)}"]
+    if connectivity is None:
+        return []
+    found = []
+    for pair in mesh_info.periodic:
+        a, b = pair.zones
+        vector = np.array(pair.transform.vector)
+        matches = {}
+        for side, shift in ((a, vector), (b, -vector)):
+            gc = connectivity.child(nodes_of[side])
+            what = f"GridConnectivity {gc.name}"
+            if (gc.label, gc.text()) != ("GridConnectivity_t", "Zone"):
+                found.append(f"{what} must be a GridConnectivity_t of Zone with itself")
+            if gc.child("GridConnectivityType").text() != "Abutting1to1":
+                found.append(f"{what} must be Abutting1to1")
+            if gc.child("GridLocation").text() != "FaceCenter":
+                found.append(f"{what} must be at FaceCenter")
+            points = np.asarray(gc.child("PointList").data).ravel()
+            donors = np.asarray(gc.child("PointListDonor").data).ravel()
+            if points.size != donors.size or len(set(points.tolist())) != points.size:
+                found.append(f"{what} must pair distinct faces one to one")
+            if not (_ids_in(points, 1, faces) and _ids_in(donors, 1, faces)):
+                found.append(f"{what} PointList and PointListDonor must hold face ids")
+            if bc_faces & set(points.tolist()):
+                found.append(f"{what} shares faces with ZoneBC")
+            exact = json.loads(gc.child("PeriodicTranslation").text())
+            single = gc.child("GridConnectivityProperty").child("Periodic").child("Translation")
+            r4 = np.asarray(single.data)
+            if exact != shift.tolist():
+                found.append(f"{what} PeriodicTranslation must be {shift.tolist()}")
+            elif r4.dtype != np.float32 or r4.tolist() != shift.astype(np.float32).tolist():
+                found.append(f"{what} Translation must be its PeriodicTranslation in R4")
+            matches[side] = set(zip(points.tolist(), donors.tolist(), strict=False))
+        if matches[b] != {(d, p) for p, d in matches[a]}:
+            found.append(f"the GridConnectivity of {a!r} and {b!r} are not reciprocal")
     return found
 
 

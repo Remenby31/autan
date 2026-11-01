@@ -114,14 +114,16 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
   RunMetadata            Descriptor_t    run.json without status, finished, iterations, diagnostics (JSON)
   ZoneNames              Descriptor_t    {"boundary": {<node name>: <zone name>}, "cell": {…}} (JSON)
   <family>               Family_t        one per boundary zone and per cell zone
-    FamilyBC             FamilyBC_t      boundary zones only: BCType of the resolved condition
+    FamilyBC             FamilyBC_t      boundary zones with a condition: BCType of that condition
   Zone                   Zone_t          Unstructured; [nodes, cells, 0]
     ZoneType                             Unstructured
     GridCoordinates                      CoordinateX, CoordinateY, CoordinateZ (R8)
     NGonElements         Elements_t      NGON_n, ElementRange [1, F], ElementStartOffset, ElementConnectivity (I8)
     NFaceElements        Elements_t      NFACE_n, ElementRange [F+1, F+C], ElementStartOffset, ElementConnectivity (I8, signed face ids)
-    ZoneBC               ZoneBC_t
+    ZoneBC               ZoneBC_t        absent when every boundary zone with faces is periodic
       <boundary zone>    BC_t            BCType, GridLocation FaceCenter, PointList (NGON ids), FamilyName
+    ZoneGridConnectivity ZoneGridConnectivity_t  with periodic pairs only
+      <periodic zone>    GridConnectivity_t  donor "Zone"; Abutting1to1, FaceCenter, PointList, PointListDonor (NGON ids), PeriodicTranslation
     <cell zone>          ZoneSubRegion_t GridLocation CellCenter, PointList (NFACE ids), FamilyName
     FlowSolution         FlowSolution_t  GridLocation CellCenter, one R8 DataArray per field
     FlowSolutionMean     FlowSolution_t  same fields, time average (unsteady runs with average_from)
@@ -129,11 +131,13 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
     WallSolution         ZoneSubRegion_t GridLocation FaceCenter, PointList of every wall and slip face, one R8 DataArray per field
 ```
 
-There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node. `FlowSolution` holds each cell's discrete unknown, located at the cell centroid: compare it with point values of a reference solution there.
+There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`, except the zones of a periodic pair (below). Interfaces between cell zones are interior faces and need no node. `FlowSolution` holds each cell's discrete unknown, located at the cell centroid: compare it with point values of a reference solution there.
 
 Node names. A zone keeps its name as node name when it has 1 to 32 printable ASCII characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, is not itself of the form `boundary-NNNN` or `cell-zone-NNNN`, differs from the other children of `Base` listed above and, for cell zones, from the other children of `Zone`. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
 
-BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`; `manufactured` (verification cases) → `UserDefined`. The layout of periodic pairs is reserved: no run of a mesh with periodic pairs is written yet (`E0706`). The node values are the SIDS strings (`BCTypeName` in the CGNS library), not the C enumerator names.
+BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`; `manufactured` (verification cases) → `UserDefined`. The node values are the SIDS strings (`BCTypeName` in the CGNS library), not the C enumerator names.
+
+Periodic pairs ([mesh-info.md](mesh-info.md), `periodic`). Each pair `[a, b]` is two reciprocal `GridConnectivity_t` of `Zone` with itself, named after the node of each side's zone; the zones of a pair have no `BC_t`, and their `Family_t` no `FamilyBC`. The side-a connection has, as `PointList`, the faces of zone a in mesh order and, as `PointListDonor`, the face of zone b each one maps to. The side-b connection holds the same correspondence the other way round, in any order. Its `GridConnectivityProperty/Periodic` (`Periodic_t`) has `RotationCenter` and `RotationAngle` zero and `Translation` in R4, as CGNS requires; the descriptor `PeriodicTranslation` holds the translation `[x, y, z]` exactly, as JSON doubles, and is the authority: `transform.vector` of the pair for side a, its opposite for side b, with `Translation` its rounding to R4. No face is both in a connection and in a `BC_t`.
 
 `FlowSolution` fields (SIDS names):
 

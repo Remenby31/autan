@@ -8,9 +8,11 @@ from typing import Any
 
 import autan
 import autan.solver_input
+import h5py
 import jsonschema
 import pydantic
 import pytest
+from autan import cgns
 from autan.cli import json_schema, main
 
 from tests.conftest import CRM_HL
@@ -143,11 +145,59 @@ def test_a_wildcard_that_spells_a_periodic_zone_is_still_a_wildcard(
     assert codes == ["E0410"]  # it matches no other zone; not E0424
 
 
-def test_no_backend_runs_periodic_pairs_yet(
+def test_periodic_pairs_are_written_as_reciprocal_connectivities(
     write_case: Callable[..., Path], mesh: Path, tmp_path: Path
 ) -> None:
     case = autan.load(write_case(CRM_HL))
+    result = case.run(
+        autan.MeshInfo.load(mesh), backend=autan.FakeBackend(iterations=2), runs=tmp_path
+    )
+    assert result.field("Density").size > 0  # reads and checks solution.cgns
+    zone = cgns.read(result.path / "solution.cgns").child("Base").child("Zone")
+    assert "fuselage" not in zone.child("ZoneBC").children
+    side_a = zone.child("ZoneGridConnectivity").child("fuselage")
+    side_b = zone.child("ZoneGridConnectivity").child("empennage")
+    assert json.loads(side_a.child("PeriodicTranslation").text()) == [0.0, 2.5, 0.0]
+    assert json.loads(side_b.child("PeriodicTranslation").text()) == [-0.0, -2.5, -0.0]
+    pairs = set(
+        zip(
+            side_a.child("PointList").data.ravel().tolist(),
+            side_a.child("PointListDonor").data.ravel().tolist(),
+            strict=True,
+        )
+    )
+    assert pairs
+    assert all(a != b for a, b in pairs)
+
+
+def _retype(text: Any, old: str, new: str) -> None:
+    text[list(text[...]).index(ord(old))] = ord(new)
+
+
+def _edit(path: Path, change: Callable[[Any], None]) -> None:
+    with h5py.File(path / "solution.cgns", "r+") as handle:
+        change(handle["Base/Zone/ZoneGridConnectivity"])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda g: g["empennage/PointListDonor/ data"].__setitem__(slice(0, 1), 1),
+        lambda g: g["fuselage/GridConnectivityProperty/Periodic/Translation/ data"].__setitem__(
+            1, 2.4
+        ),
+        lambda g: _retype(g["fuselage/PeriodicTranslation/ data"], "2", "3"),  # [0, 3.5, 0]
+        lambda g: g.__delitem__("empennage"),
+    ],
+)
+def test_the_reader_checks_the_periodic_layout(
+    change: Callable[[Any], None], write_case: Callable[..., Path], mesh: Path, tmp_path: Path
+) -> None:
+    case = autan.load(write_case(CRM_HL))
+    result = case.run(
+        autan.MeshInfo.load(mesh), backend=autan.FakeBackend(iterations=2), runs=tmp_path
+    )
+    _edit(result.path, change)
     with pytest.raises(autan.CaseError) as error:
-        case.run(autan.MeshInfo.load(mesh), backend=autan.FakeBackend(), runs=tmp_path)
-    assert error.value.codes == ["E0706"]
-    assert not list(tmp_path.glob("run-*"))
+        autan.Results.open(result.path).field("Density")
+    assert error.value.codes == ["E0701"]
