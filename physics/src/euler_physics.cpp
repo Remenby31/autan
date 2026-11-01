@@ -486,9 +486,10 @@ class EulerPhysics final : public runtime::Physics {
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
     penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
-    if (drop > 0.0) {
-      cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
-    }
+    // Every active residual at zero: the largest CFL number the cap allows, so that the choice
+    // depends on the restart state only.
+    const double ratio = drop > 0.0 ? penalty_ * cfl_start / drop : cfl_max;
+    cfl_ = std::clamp(std::min(ratio, cfl_cap_), cfl_min, cfl_max);
     cfl_cap_ = cfl_max;
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
