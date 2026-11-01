@@ -22,6 +22,18 @@ def test_baseline_promotes_a_clean_low_noise_out_of_cache_result(write_json, tmp
     assert float(capsys.readouterr().out) == 210.0
 
 
+def test_baseline_keeps_only_the_selected_benchmarks(write_json, tmp_path, capsys):
+    out = tmp_path / "tracked.json"
+    doc = make_result([bench("stream.copy", QUIET), bench("stream.triad", NOISY)])
+    path = str(write_json("doc.json", doc))
+    assert main(["baseline", path, "--out", str(out), "--select", "stream.co*"]) == 0
+    assert [b["name"] for b in json.loads(out.read_text())["benchmarks"]] == ["stream.copy"]
+    out.unlink()
+    assert main(["baseline", path, "--out", str(out), "--select", "stream.nothing*"]) == 2
+    assert "error[MISSING_BENCHMARK]" in capsys.readouterr().err
+    assert not out.exists()
+
+
 @pytest.mark.parametrize(
     ("doc", "code"),
     [

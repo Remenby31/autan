@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
 from autan_bench import gpu, result, runner
@@ -82,6 +83,15 @@ def _compare(args: argparse.Namespace) -> int:
 
 def _baseline(args: argparse.Namespace) -> int:
     doc = result.load(args.result)
+    if args.select:
+        unmatched = [
+            p for p in args.select if not any(fnmatch(b["name"], p) for b in doc["benchmarks"])
+        ]
+        if unmatched:
+            raise BenchError(Code.MISSING_BENCHMARK, f"no benchmark matches {', '.join(unmatched)}")
+        doc["benchmarks"] = [
+            b for b in doc["benchmarks"] if any(fnmatch(b["name"], p) for p in args.select)
+        ]
     if doc["provenance"]["solver"]["dirty"]:
         raise BenchError(
             Code.DIRTY_TREE, "a baseline must come from a binary built from a clean checkout"
@@ -108,7 +118,10 @@ def _baseline(args: argparse.Namespace) -> int:
             Code.CV_TOO_HIGH, f"coefficient of variation >= {args.max_cv:.0%}: {', '.join(noisy)}"
         )
     result.write(doc, args.out)
-    _say(f"wrote {args.out}: peak {result.peak_bandwidth(doc):.1f} GB/s")
+    tracked = ", ".join(b["name"] for b in doc["benchmarks"])
+    _say(f"wrote {args.out}: {tracked}")
+    if doc["suite"] == "stream":
+        _say(f"peak {result.peak_bandwidth(doc):.1f} GB/s")
     return 0
 
 
@@ -167,6 +180,12 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("result", type=Path)
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--max-cv", type=float, default=MAX_BASELINE_CV)
+    b.add_argument(
+        "--select",
+        action="append",
+        metavar="PATTERN",
+        help="keep only the benchmarks whose name matches this glob (repeatable): the tracked set",
+    )
     b.set_defaults(func=_baseline)
 
     k = sub.add_parser("peak", help="print the peak STREAM bandwidth (GB/s) of a baseline")

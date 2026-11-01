@@ -85,6 +85,11 @@
       "additionalProperties": false,
       "properties": {
         "lock": {"type": "string"},
+        "setup_seconds": {
+          "type": "object",
+          "description": "Untimed setup durations the binary reports (mesh read, renumbering, ...).",
+          "additionalProperties": {"type": "number", "minimum": 0}
+        },
         "lock_wait_s": {"type": "number", "minimum": 0},
         "idle_check": {
           "type": "object",

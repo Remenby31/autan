@@ -101,6 +101,7 @@ def run(
             "lock_wait_s": waited,
             "idle_check": idle,
             "during_run": during,
+            **({"setup_seconds": raw["setup_seconds"]} if "setup_seconds" in raw else {}),
         },
         "config": raw["config"],
         "benchmarks": [b for kernel in raw["kernels"] for b in _benchmarks(suite, kernel)],
