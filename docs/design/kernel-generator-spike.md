@@ -68,7 +68,7 @@ One pinned attempt, `codegen/spike/enzyme_gpu/attempt.sh`, in a throwaway `autan
 ## Open items
 
 - **AMD execution.** HIP compiles for `gfx942`; nothing has run on AMD hardware (decision pending with the lead).
-- **Deterministic mode, complete.** Cell-reduction adjoints need per-incidence storage and a transposed gather (§6); residual norms need a fixed-order device reduction.
+- **Deterministic mode, complete.** Done after the spike: cell-reduction adjoints in two passes over a transposed incidence list and fixed-order device norms ([kernel-generator.md](kernel-generator.md#generated-c)); the composed residual, its norm and its adjoint are bitwise reproducible in the three deterministic strategies.
 - **Strategies.** Hierarchical colouring (OP2) and shared-memory transposition are not emitted; the global colouring measured here is 4–5× slower than atomics, so the deterministic mode currently relies on store-gather and gather-recompute (57–86 % of peak).
 - **Measurements not taken.** Measured DRAM traffic (Nsight Compute) beside the useful bytes; AoS layout; FP64 atomic throughput on GB10 in isolation.
 - **CPU backend.** Serial only; the ARM NEON vectorised backend of M1 and the Metal backend of M1b (#21) build on the same IR.

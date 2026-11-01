@@ -460,7 +460,7 @@
     "E0804": {
       "severity": "error",
       "title": "No solver backend",
-      "fix": "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
+      "fix": "Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run installed, or `autan.FakeBackend()` for synthetic results.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0804"
     },
     "E0805": {
@@ -576,6 +576,18 @@
       "title": "Face scratch too narrow",
       "fix": "Regenerate the loop so its scratch holds every output component per face.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1104"
+    },
+    "E1105": {
+      "severity": "error",
+      "title": "Incidence scratch too narrow",
+      "fix": "Size the schedule's incidence scratch for the widest reduction adjoint of the module.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1105"
+    },
+    "E1106": {
+      "severity": "error",
+      "title": "Incidence twins missing",
+      "fix": "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1106"
     }
   }
 }

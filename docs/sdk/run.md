@@ -1,8 +1,20 @@
-# `autan run` and the fake backend
+# `autan run`
 
-`autan run CASE --mesh-info MESHINFO [--runs DIR] [--json]` plans the case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`). In Python: `case.run(mesh_info, backend=autan.FakeBackend(), runs="runs")`, which returns `autan.Results`.
+`autan run` plans a case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`).
 
-`autan run` drives only the `fake` backend (`autan.FakeBackend`); the solver runtime `autan-run` runs a [solver input](../contracts/solver-input.md) and has no physics yet (`E0706`). The fake backend writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
+```text
+autan run CASE --mesh-info MESHINFO [--backend fake|cpu|cuda|hip] [--device-count N] [--deterministic] [--runs DIR] [--json]
+```
+
+In Python: `case.run(mesh_info, backend=..., runs="runs")`, which returns `autan.Results`.
+
+## Solver backend
+
+`--backend cpu|cuda|hip` (Python: `autan.SolverBackend(devices=autan.Devices(kind="cuda", count=8))`) writes the case's [solver input](../contracts/solver-input.md) and runs the solver runtime `autan-run`, found through `$AUTAN_RUN` or the PATH (`E0804` if neither). The runtime's input errors come back as their own coded diagnostics; `autan-run` registers no physics yet, so a valid input ends with `E0706`.
+
+## Fake backend
+
+`--backend fake` (the default; Python: `autan.FakeBackend()`) writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
 
 | What | Fake backend |
 |---|---|
@@ -11,6 +23,6 @@
 | History | Residuals that reach `residual_orders` orders of decay at iteration 100, where a steady run converges (`completed` if `max_iterations` ends it first); forces approaching a thin-airfoil lift, projected as the contract defines. One line per iteration, flushed as written. The trajectory depends only on the case and the mesh, so runs with the same identity agree line for line. Unsteady runs without `dt` use 1 ms steps. |
 | Options | `--iterations N` stops the run after N iterations (or steps), status `stopped`; `--pace S` sleeps S seconds per iteration to imitate a live run; `--diverge-at N` stops at iteration N with status `diverged` and `D0107`. |
 
-SIGINT or SIGTERM stops the run: it is finalized as `stopped`, with its solution, and the command exits with 130. Exit status otherwise: 0, or 1 when the plan has errors or the run diverged.
+## Stopping a run and exit status
 
-To browse runs, `autan ui [--runs DIR] [--port N] [--no-open]` serves the web UI for the run directories under `DIR` (default `./runs`) on `127.0.0.1:8765`. It needs the `ui` extra (`uv add 'autan[ui]'`); without it the command exits with `E0805`.
+Ctrl-C or SIGTERM stops a run: it is finalized as `stopped`, with its solution (written by the SDK for the fake backend, by `autan-run` for the solver backend, to which the SDK passes the signal on), and the command exits with 130. Otherwise the exit status is 0, or 1 when the plan has errors or the run diverged or failed.

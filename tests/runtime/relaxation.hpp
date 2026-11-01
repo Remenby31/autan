@@ -74,6 +74,7 @@ class Relaxation final : public autan::runtime::Physics {
       }
     }
     mean_ = state_;
+    context_.log.write("info", "solver", "relaxation physics ready");
     for (auto& f : mean_) std::fill(f.values.begin(), f.values.end(), 0.0);
   }
 
