@@ -236,10 +236,12 @@ class EulerPhysics final : public runtime::Physics {
     }
     // The state the multigrid preconditioner was last built at, so that a continued run builds
     // the same one (runtime.md, restart).
-    if (multigrid_ && build_.steps > 0) {
+    if (host_multigrid()) {
+      // build_.steps 0: no valid build (none yet, or the last one failed), the next step builds.
+      const std::vector<double> none(build_.u.empty() ? 5 * n_ : 0, 0.0);
+      const std::vector<double>& u = build_.u.empty() ? none : build_.u;
       for (std::size_t k = 0; k < 5; ++k) {
-        out.push_back(
-            {.name = std::string("Precond") + conserved_names[k], .values = owned(build_.u, k)});
+        out.push_back({.name = std::string("Precond") + conserved_names[k], .values = owned(u, k)});
       }
       auto uniform = [&](const std::string& name, double value) {
         out.push_back({.name = name, .values = std::vector<double>(owned_, value)});
@@ -406,7 +408,7 @@ class EulerPhysics final : public runtime::Physics {
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
       }
-      if (multigrid_) {
+      if (host_multigrid()) {
         // A run continued between two builds rebuilds the preconditioner of the uninterrupted
         // run from the recorded state; a restart without that record cannot continue bit for bit.
         const bool recorded = std::ranges::any_of(
@@ -430,7 +432,7 @@ class EulerPhysics final : public runtime::Physics {
           build_.circulation.push_back(
               find(start.restart_fields, "PrecondCirculation" + std::to_string(i))->front());
         }
-        build_.pending = true;
+        build_.pending = build_.steps > 0;
       }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
@@ -727,6 +729,9 @@ class EulerPhysics final : public runtime::Physics {
                              cfl_ > preconditioner_cfl_factor * build_.cfl ||
                              preconditioner_cfl_factor * cfl_ < build_.cfl;
         if (rebuild) {
+          // A build that fails partway leaves no valid preconditioner: the next step builds
+          // again, in this run as in one continued from a checkpoint written meanwhile.
+          build_.steps = 0;
           multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
           build_.u = u_;
           build_.cfl = cfl_;
@@ -970,6 +975,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     return drop;
   }
+
+  // The steady implicit step on the host with the multigrid: the one that keeps a preconditioner.
+  [[nodiscard]] bool host_multigrid() const { return multigrid_.has_value() && ctx_.device < 0; }
 
   // A continued run: the preconditioner the uninterrupted run holds, built from the Jacobian at the
   // recorded state, CFL number, order and circulations, as that run assembled it.

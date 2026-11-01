@@ -730,21 +730,30 @@ TEST_CASE("multigrid iterations do not grow with refinement", "[multigrid]") {
 }
 
 TEST_CASE("a preconditioner built on one operator solves the system of the next", "[multigrid]") {
-  // Built on A1, then referencing A2, the same couplings with twice the pseudo-time shift (the CFL
-  // number halved, as between two implicit steps): the solve must reach the tolerance on A2.
+  // Built on A1, then referencing A2: twice the pseudo-time shift (the CFL number halved), the
+  // whole operator 5 % stronger, as between two implicit steps. The solve must reach the tolerance
+  // on A2, and its first iteration must still use A1's preconditioner (kept, not rebuilt).
   const auto mesh = layered_box(8, 1e-4, Fill::hexa);
   const auto g = autan::compute_geometry(mesh);
   const auto a1 = diffusion(mesh, g, 1e-3, 0.3, true, 7);
-  const auto a2 = diffusion(mesh, g, 2e-3, 0.3, true, 7);
-  Multigrid mg(mesh, g);
-  mg.set_operator(a1.diag, a1.upper, a1.lower);
-  mg.reference_operator(a2.diag, a2.upper, a2.lower);
+  auto a2 = diffusion(mesh, g, 2e-3, 0.3, true, 7);
+  for (auto* blocks : {&a2.diag, &a2.upper, &a2.lower}) {
+    for (double& v : *blocks) v *= 1.05;
+  }
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   std::vector<double> b(5 * n);
   for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::sin(0.37 * static_cast<double>(k));
+  Multigrid lagged(mesh, g), rebuilt(mesh, g);
+  lagged.set_operator(a1.diag, a1.upper, a1.lower);
+  lagged.reference_operator(a2.diag, a2.upper, a2.lower);
+  rebuilt.set_operator(a2.diag, a2.upper, a2.lower);
+  std::vector<double> once_lagged(5 * n, 0.0), once_rebuilt(5 * n, 0.0);
+  lagged.solve(b, once_lagged, 1, 0.0);
+  rebuilt.solve(b, once_rebuilt, 1, 0.0);
+  CHECK(once_lagged != once_rebuilt);
   std::vector<double> x(5 * n, 0.0);
   const double tolerance = 1e-8;
-  const auto report = mg.solve(b, x, 60, tolerance);
+  const auto report = lagged.solve(b, x, 60, tolerance);
   REQUIRE(report.residual_drop <= tolerance);
   const auto ax = apply(mesh, a2, x);
   double r = 0.0, rb = 0.0;
