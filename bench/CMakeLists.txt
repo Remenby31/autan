@@ -29,12 +29,14 @@ else()
   target_compile_options(stream PRIVATE -lineinfo)
 endif()
 
-find_package(Git REQUIRED)
+# The repository root: revision.cmake reads a git checkout only at its top level.
+find_package(Git QUIET)
+file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." autan_root)
 add_custom_target(
   autan_bench_revision
   COMMAND
-    ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-    -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision.h -P
+    ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${autan_root}
+    "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision.h -P
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/revision.cmake
   BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision.h
 )
