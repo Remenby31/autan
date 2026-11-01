@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -27,6 +28,8 @@ struct PackedGeometry {
   /// M = sum_k d_k d_k^T / |d_k|^2, d_k from the cell centroid to the neighbour centroid
   /// (interior face) or the face centroid (boundary face). Zero on ghost cells.
   std::vector<double> lsq_weight;
+  /// 3 x stencil size: LSQ weights over the cell stencil, when one is set (CellStencil).
+  std::vector<double> stencil_lsq_weight;
 };
 
 PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry);
@@ -37,6 +40,30 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry);
 /// For each incidence k (entry of the cell -> face CSR) of an interior face f, the incidence of f
 /// in the other cell's list; -1 for boundary faces.
 std::vector<offset_t> incidence_twins(const Mesh& mesh);
+
+/// Cell stencils for least-squares gradients wider than the face neighbours, which make the
+/// unlimited second-order scheme linearly stable on tetrahedra (Diskin and Thomas, AIAA J.
+/// 49(4), 2011): `vertex` holds the cells sharing a node with the cell and the boundary faces
+/// sharing a node with it; `face2` the face neighbours and their face neighbours, and the
+/// boundary faces of the cell and of its face neighbours.
+enum class StencilKind : std::uint8_t { vertex, face2 };
+
+/// A cell -> entries CSR (layout of Topology::stencil) with its twins and the LSQ weights over
+/// it (3 x size, structure of arrays, as PackedGeometry::lsq_weight). Entries of a cell are its
+/// stencil cells in increasing order, then its boundary faces in increasing order. Ghost cells get
+/// the stencil their known faces give, so every owned -> ghost entry has its twin (the adjoint's
+/// partial sums for the reverse halo exchange); LSQ weights are those of owned cells. A ghost
+/// layer as deep as the stencil is the partitioner's job.
+struct CellStencil {
+  std::vector<offset_t> offsets;
+  std::vector<index_t> entries;
+  std::vector<offset_t> twin;
+  std::vector<double> lsq_weight;
+  /// 3 x stencil size: LSQ weights over the cell stencil, when one is set (CellStencil).
+  std::vector<double> stencil_lsq_weight;
+};
+
+CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind);
 
 /// Copy of `v` converted to T (the storage type of a precision role).
 template <class T>

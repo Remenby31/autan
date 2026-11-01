@@ -30,6 +30,14 @@ struct Topology {
   /// Incidence of the same interior face in the other cell's list (-1 on boundary faces), for
   /// the deterministic adjoint of cell reductions; null when the caller does not provide it.
   const offset_t* incidence_twin = nullptr;
+  /// Cell stencil for reductions over=stencil (autan::kernels::cell_stencil): entries of cell c
+  /// are stencil[stencil_offsets[c] .. stencil_offsets[c + 1]), a cell index, or -(f + 1) for a
+  /// boundary face f; stencil_twin[k] is the entry of c in the stencil of cell stencil[k] (-1 for
+  /// a boundary face). Null when the module has no stencil reduction.
+  offset_t n_stencil = 0;
+  const offset_t* stencil_offsets = nullptr;
+  const index_t* stencil = nullptr;
+  const offset_t* stencil_twin = nullptr;
 };
 
 /// Precision policies (docs/research/kernel-generator.md section 7): storage type of each role,

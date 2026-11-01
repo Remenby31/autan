@@ -6,6 +6,9 @@ const KEYS = ["cl", "cd", "cs", "cmx", "cmy", "cmz"] as const;
 
 /** Last value of every forces monitor, with the CL trend. */
 export function MonitorTable({ history }: { history: HistoryColumns }) {
+  if (!history.monitors.size) {
+    return <p className="m-0 py-2 text-fg-3 text-sm">The case records no forces monitor.</p>;
+  }
   return (
     <table className="w-full border-collapse text-sm">
       <thead>

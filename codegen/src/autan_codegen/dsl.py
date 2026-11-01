@@ -77,6 +77,7 @@ class MeshSet(enum.Enum):
     CELLS = "cells"
     FACES = "faces"
     INCIDENCES = "incidences"
+    STENCIL = "stencil"  # entries of the cell -> cell stencil (Topology::stencil)
 
 
 @dataclass(eq=False)
@@ -156,6 +157,8 @@ class geometry:
     cell_centroid = Dataset("cell_centroid", MeshSet.CELLS, Geom.Vec3, geometry=True)
     cell_volume = Dataset("cell_volume", MeshSet.CELLS, Geom.scalar, geometry=True)
     lsq_weight = Dataset("lsq_weight", MeshSet.INCIDENCES, Geom.Vec3, geometry=True)
+    # The same least-squares weights over the entries of the cell stencil.
+    stencil_lsq_weight = Dataset("stencil_lsq_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
 
 
 # ---------------------------------------------------------------------------- bodies
@@ -244,6 +247,7 @@ class Loop:
     finalise: Body | None = None
     finalise_bindings: dict[str, Binding] = field(default_factory=dict)
     name: str = ""
+    over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
     frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
 
 
@@ -303,20 +307,34 @@ def cell_loop(body: Body, *, out: object, **args: object) -> Loop:
     return Loop("cell", body, _bindings(args), outs)
 
 
+INCIDENCES = "incidences"
+STENCIL = "stencil"
+
+
 def cell_reduce(
     body: Body,
     *,
     acc: object,
     finalise: Body | None = None,
     finalise_args: dict[str, object] | None = None,
+    over: str = INCIDENCES,
     **args: object,
 ) -> Loop:
-    """Reduce `body` over the faces of each owned cell into accumulators, then write them.
+    """Reduce `body` over the entries of each owned cell into accumulators, then write them.
 
+    `over=INCIDENCES` iterates the faces of the cell: `d.other(boundary=fb)` is the cell across
+    the face, or `fb` on a boundary face, and face data are those of that face. `over=STENCIL`
+    iterates the cell stencil (Topology::stencil, built by autan::kernels::cell_stencil): its
+    cells, then boundary faces; `d.other(boundary=fb)` is the stencil cell or `fb` of the face, and
+    per-entry data live on `MeshSet.STENCIL` (geometry.stencil_lsq_weight).
     The body's outputs feed `acc` in order (Sum, Min or Max, each naming its target cell dataset).
     With `finalise`, the accumulated values are passed to it as its first arguments, followed by
     `finalise_args`, and its outputs are written to the accumulators' datasets instead.
     """
+    if over not in (INCIDENCES, STENCIL):
+        raise CodegenError(
+            Code.INVALID_BINDING, f"cell_reduce over {over!r}: incidences or stencil"
+        )
     accs = _outs(acc)
     for a in accs:
         if not isinstance(a, Sum | Min | Max):
@@ -324,7 +342,13 @@ def cell_reduce(
                 Code.INVALID_LOOP_OUTPUT, "cell_reduce accumulators are Sum, Min or Max"
             )
     return Loop(
-        "reduce", body, _bindings(args), accs, finalise, _bindings(dict(finalise_args or {}))
+        "reduce",
+        body,
+        _bindings(args),
+        accs,
+        finalise,
+        _bindings(dict(finalise_args or {})),
+        over=over,
     )
 
 

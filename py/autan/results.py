@@ -103,6 +103,49 @@ def identity(case: str, mesh: str, solver: Solver, precision: str, devices: Devi
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
+class LogLine(_Strict):
+    """One line of ``log.jsonl`` (results.md#log)."""
+
+    time: Annotated[str, Field(pattern=r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")]
+    iteration: Annotated[int, Field(strict=True, ge=1)] | None
+    level: Literal["info", "warning", "error"]
+    source: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*$")]
+    message: str
+    code: str | None
+    data: dict[str, Any]
+
+
+def log_line_problems(entry: LogLine) -> list[str]:
+    """Rules of results.md#log beyond the shape: registered code, level from the code's
+    letter, no data without a code, the line's iteration equal to the data's."""
+    from autan.errors import REGISTRY  # noqa: PLC0415 -- errors imports nothing from here
+
+    found = []
+    try:
+        datetime.strptime(entry.time, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        found.append(f"time {entry.time!r} is not a valid UTC timestamp")
+    if entry.code is None:
+        return found
+    if entry.code not in REGISTRY:
+        return [*found, f"{entry.code!r} is not a registered code"]
+    if entry.level != _LEVEL[REGISTRY[entry.code].severity]:
+        found.append(f"{entry.code} is logged at level {_LEVEL[REGISTRY[entry.code].severity]}")
+    iteration = entry.data.get("iteration")
+    if isinstance(iteration, int) and entry.iteration != iteration:
+        found.append("iteration differs from the diagnostic's")
+    return found
+
+
+def now_ms() -> str:
+    moment = datetime.now(UTC)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+LogLevel = Literal["info", "warning", "error"]
+_LEVEL: dict[str, LogLevel] = {"error": "error", "divergence": "error", "warning": "warning"}
+
+
 class RunWriter:
     """Creates a run directory and keeps ``run.json`` and ``history.jsonl`` up to date.
 
@@ -118,7 +161,9 @@ class RunWriter:
         spec: CaseSpec,
         mesh_info: MeshInfo,
         manufactured: bytes | None = None,
+        source: str = "solver",
     ) -> None:
+        self.source = source
         runs.mkdir(parents=True, exist_ok=True)
         staging = runs / f".{info.run_id}.tmp"
         staging.mkdir()
@@ -128,6 +173,10 @@ class RunWriter:
         (staging / "mesh-info.json").write_text(json.dumps(mesh_info.document(), indent=2))
         if manufactured is not None:
             (staging / "manufactured.json").write_bytes(manufactured)
+        # The log is written before the metadata that refers to it (results.md#log).
+        self.log("info", f"run {info.run_id} started", source=self.source)
+        for found in info.diagnostics:
+            self.diagnose(found)
         self._write_info()
         final = runs / info.run_id
         if final.exists():
@@ -150,8 +199,56 @@ class RunWriter:
             history.write(json.dumps(record, allow_nan=False) + "\n")
             history.flush()
 
+    def log(
+        self,
+        level: LogLevel,
+        message: str,
+        *,
+        source: str,
+        iteration: int | None = None,
+        code: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Append one line to log.jsonl, written in one piece and flushed."""
+        line = LogLine(
+            time=now_ms(),
+            iteration=iteration,
+            level=level,
+            source=source,
+            message=message,
+            code=code,
+            data=data or {},
+        )
+        problems = log_line_problems(line)
+        if problems:
+            raise ValueError("; ".join(problems))
+        with (self.path / "log.jsonl").open("a") as log:
+            log.write(json.dumps(line.model_dump(mode="json"), allow_nan=False) + "\n")
+            log.flush()
+
+    def diagnose(self, found: Diagnostic) -> None:
+        """Log a diagnostic with its code and data, as run.json will carry it; its line's
+        iteration is the diagnostic's ``iteration`` datum, if any."""
+        iteration = found.data.get("iteration")
+        self.log(
+            _LEVEL[found.severity],
+            found.message,
+            source=self.source,
+            iteration=iteration if isinstance(iteration, int) else None,
+            code=found.code,
+            data=found.data,
+        )
+
     def finish(self, **changes: Any) -> None:
         self.info = self.info.model_copy(update={**changes, "finished": iso(utc_now())})
+        for found in self.info.diagnostics:
+            self.diagnose(found)
+        self.log(
+            "info",
+            f"run {self.info.status} after {self.info.iterations} iterations",
+            source=self.source,
+            iteration=self.info.iterations or None,
+        )
         self._write_info()
 
 
@@ -221,8 +318,15 @@ class Results:
     """A run directory read back and checked against ``autan.results/1``."""
 
     def __init__(
-        self, path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo, history: History
+        self,
+        path: Path,
+        run: RunInfo,
+        case: CaseSpec,
+        mesh_info: MeshInfo,
+        history: History,
+        log: tuple[LogLine, ...] = (),
     ) -> None:
+        self.log = log
         self.path, self.run, self.case, self.mesh_info, self.history = (
             path,
             run,
@@ -275,9 +379,21 @@ class Results:
         for problem in run_problems(path, run, case, mesh_info):
             broken(problem, "run.json")
         records = _read_history(path / "history.jsonl", run.status == "running", broken)
+        if not (path / "log.jsonl").is_file():
+            broken("log.jsonl is missing", "log.jsonl")
+        lines = _read_history(path / "log.jsonl", run.status == "running", broken)
+        for problem in log_problems(lines, run):
+            broken(problem, "log.jsonl")
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
-        results = cls(path, run, case, mesh_info, History(records))
+        results = cls(
+            path,
+            run,
+            case,
+            mesh_info,
+            History(records),
+            tuple(LogLine.model_validate(line) for line in lines),
+        )
         if run.status in SOLUTION_REQUIRED and not (path / "solution.cgns").exists():
             broken(f"a {run.status} run must have solution.cgns", "solution.cgns")
         return results
@@ -438,25 +554,54 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
 
 
 def _read_history(path: Path, live: bool, broken: Any) -> list[dict[str, Any]]:
-    """Parse history.jsonl; while the run is live, its last line may still be being written."""
+    """Parse a JSON Lines file of the run directory. Lines are framed on LF bytes; while the
+    run is live the unterminated tail may still be being written and is skipped."""
     if not path.exists():
         return []
-    text = path.read_text()
-    complete, _, partial = text.rpartition("\n")
+    data = path.read_bytes()
+    complete, _, partial = data.rpartition(b"\n")
     if partial and not live:
-        broken("the last line is not terminated", "history.jsonl")
+        broken("the last line is not terminated", path.name)
     records = []
-    for number, line in enumerate(
-        complete.splitlines() if complete or not partial else [], start=1
-    ):
+    for number, raw in enumerate(complete.split(b"\n") if complete else [], start=1):
         try:
-            record = json.loads(line)
+            record = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
         except ValueError as error:
-            broken(f"line {number}: {error}", "history.jsonl")
+            broken(f"line {number}: {error}", path.name)
         if not isinstance(record, dict):
-            broken(f"line {number}: not an object", "history.jsonl")
+            broken(f"line {number}: not an object", path.name)
         records.append(record)
     return records
+
+
+def _reject_constant(name: str) -> object:
+    message = f"{name} is not JSON"
+    raise ValueError(message)
+
+
+def log_problems(lines: list[dict[str, Any]], run: RunInfo) -> list[str]:
+    """Every line a LogLine (log_line_problems); the first one before any iteration; every
+    run.json diagnostic logged."""
+    found: list[str] = []
+    logged = set()
+    for number, line in enumerate(lines, start=1):
+        try:
+            entry = LogLine.model_validate(line)
+        except ValidationError as error:
+            found.append(f"line {number}: {error.errors(include_url=False)[0]['msg']}")
+            continue
+        found.extend(f"line {number}: {problem}" for problem in log_line_problems(entry))
+        logged.add((entry.code, json.dumps(entry.data, sort_keys=True)))
+    if not lines:
+        found.append("log.jsonl has no line; the run's start is logged first")
+    elif lines[0].get("iteration") is not None:
+        found.append("the first line logs the start of the run, before any iteration")
+    found.extend(
+        f"diagnostic {d.code} of run.json is not in log.jsonl"
+        for d in run.diagnostics
+        if (d.code, json.dumps(d.data, sort_keys=True)) not in logged
+    )
+    return found
 
 
 def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec) -> list[str]:

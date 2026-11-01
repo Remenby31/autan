@@ -136,6 +136,7 @@ def stride(d: dsl.Dataset) -> str:
         dsl.MeshSet.CELLS: "d.topo.n_cells",
         dsl.MeshSet.FACES: "d.topo.n_faces",
         dsl.MeshSet.INCIDENCES: "d.topo.n_incidences",
+        dsl.MeshSet.STENCIL: "d.topo.n_stencil",
     }[d.set]
 
 
@@ -145,8 +146,8 @@ def at(d: dsl.Dataset | dsl.Parameter, index: str, c: int, layout: str = "soa") 
     if d.type.size == 1:
         return f"d.{d.name}[{index}]"
     if layout == "aos":
-        return f"d.{d.name}[{d.type.size} * ({index}) + {c}]"
-    return f"d.{d.name}[{c} * {stride(d)} + ({index})]" if c else f"d.{d.name}[{index}]"
+        return f"d.{d.name}[offset_t({d.type.size}) * ({index}) + {c}]"
+    return f"d.{d.name}[offset_t({c}) * {stride(d)} + ({index})]" if c else f"d.{d.name}[{index}]"
 
 
 def emit_data_struct(e: Emitter, m: Module) -> None:
@@ -186,9 +187,7 @@ def call_args(
                     if b.boundary is not None
                     else f"{ctype(t.role)}(0)"
                 )
-                out.append(
-                    f"(f < d.topo.n_interior_faces ? {at(b.dataset, 'nb', c, layout)} : {bnd})"
-                )
+                out.append(f"(across ? {at(b.dataset, 'nb', c, layout)} : {bnd})")
             else:
                 via = b.via
                 if (

@@ -6,6 +6,7 @@ import shutil
 import socket
 import threading
 import time
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -167,7 +168,7 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
     directory = next(runs.iterdir())
     run_id = directory.name
     with httpx.stream("GET", f"{server}/api/runs/{run_id}/history/events", timeout=10) as response:
-        events = sse_events(response)
+        events = (e for e in sse_events(response) if e[0] != "log")
         assert next(events)[0] == "run"
         kind, records = next(events)
         assert kind == "history"
@@ -238,6 +239,9 @@ def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
     assert len(summary["trend"]) == 30
     assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert summary["settings"]["aoa"] == case["freestream"]["aoa"]
+    assert summary["settings"]["turbulence"] == case["physics"]["turbulence"]["model"]
 
     # Lines appended after the directory was checked are not re-validated by the registry.
     with (source / "history.jsonl").open("a") as history:
@@ -316,7 +320,7 @@ def test_a_linked_index_disables_static_files(runs: Path, static: Path, tmp_path
         assert httpx.get(f"{url}/api/runs").status_code == 200
 
 
-@pytest.mark.parametrize("linked", ["directory", "run.json", "history.jsonl"])
+@pytest.mark.parametrize("linked", ["directory", "run.json", "history.jsonl", "log.jsonl"])
 def test_a_run_reached_through_a_link_is_refused(
     runs: Path, server: str, tmp_path: Path, linked: str
 ) -> None:
@@ -392,3 +396,81 @@ def test_residual_drop_is_the_slowest_equation(
 ) -> None:
     orders = residual_orders(first, now)
     assert orders == (None if expected is None else pytest.approx(expected))
+
+
+def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
+    first = next(runs.iterdir())
+    second = shutil.copytree(first, runs / ".staging")
+    run = json.loads((second / "run.json").read_text())
+    run |= {"run_id": "run-20261031T235959Z-0123abcd", "started": "2026-10-31T23:59:59Z"}
+    (second / "run.json").write_text(json.dumps(run))
+    second = second.rename(runs / run["run_id"])
+    url = f"{server}/api/runs/history/events?run={first.name}&run={second.name}"
+    resume = {"Last-Event-ID": json.dumps({first.name: 0, second.name: None})}
+    with httpx.stream("GET", url, headers=resume, timeout=10) as response:
+        events = sse_events(response)
+        seen = [next(events) for _ in range(6)]
+    assert sorted((kind, data["run_id"]) for kind, data in seen) == sorted(
+        [(k, r) for k in ("run", "history", "log") for r in (first.name, second.name)]
+    )
+    assert (
+        httpx.get(f"{server}/api/runs/history/events?run=run-20261031T000000Z-deadbeef").status_code
+        == 404
+    )
+
+
+def test_the_log_streams_with_a_documentation_link_per_code(runs: Path, server: str) -> None:
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    diverged = case.run(mesh_info, backend=autan.FakeBackend(diverge_at=20), runs=runs).path
+    written = [json.loads(line) for line in (diverged / "log.jsonl").read_text().splitlines()]
+    url = f"{server}/api/runs/{diverged.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        _, lines = next(e for e in sse_events(response) if e[0] == "log")
+
+    assert [{k: v for k, v in line.items() if k != "doc"} for line in lines] == written
+    coded = [line for line in lines if line["code"]]
+    assert [line["code"] for line in coded if line["code"] == "D0107"] == ["D0107"]
+    assert all(line["doc"].endswith(line["code"].lower()) for line in coded)
+    assert all(line["doc"] is None for line in lines if not line["code"])
+
+
+def test_removing_the_log_after_a_scan_rejects_the_run(runs: Path) -> None:
+    source = next(runs.iterdir())
+    registry = Registry(runs)
+    assert source.name in registry.scan().runs
+    (source / "log.jsonl").unlink()
+    assert source.name in registry.scan().rejected
+
+
+def test_stream_cursors_count_only_what_was_sent(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    ids = []
+    with httpx.stream("GET", url, timeout=10) as response:
+        for line in response.iter_lines():
+            if line.startswith("id: "):
+                ids.append(json.loads(line.removeprefix("id: ")))
+            if len(ids) == 2:
+                break
+    history_size = (directory / "history.jsonl").stat().st_size
+    log_size = (directory / "log.jsonl").stat().st_size
+    assert ids == [
+        {"history.jsonl": history_size, "log.jsonl": 0},
+        {"history.jsonl": history_size, "log.jsonl": log_size},
+    ]
+
+
+def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    run = json.loads((directory / "run.json").read_text())
+    (directory / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        assert [next(events)[0] for _ in range(3)] == ["run", "history", "log"]
+        with (directory / "log.jsonl").open("a") as log:
+            log.write('{"time": "yesterday", "iteration": null, "level": "info"}\n')
+        kind, reason = next(e for e in events if e[0] != "history")
+    assert kind == "invalid"
+    assert reason.startswith("log.jsonl")
