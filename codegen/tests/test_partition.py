@@ -50,7 +50,9 @@ def test_face_loops_skip_halo_faces_of_a_two_layer_partition(
             assert abs(v - r1.get(g, 0.0)) <= 500 * eps(pol) * scale, g
 
 
-WHERE_DETERMINISTIC = ["host", *(pytest.param(x, marks=pytest.mark.gpu) for x in s.DETERMINISTIC)]
+# Gathers sum each cell in its incidence order; the coloured order depends on the numbering.
+GATHERS = ("store-gather", "gather-recompute")
+WHERE_DETERMINISTIC = ["host", *(pytest.param(x, marks=pytest.mark.gpu) for x in GATHERS)]
 
 
 @pytest.mark.parametrize("where", WHERE_DETERMINISTIC)
