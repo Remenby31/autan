@@ -76,7 +76,7 @@ def run(
         with gpu.Sampler() as sampler:
             raw = _run_binary(binary, args)
         during = sampler.summary()
-    if during["compute_apps_max"] > 1:
+    if (during["compute_apps_max"] or 0) > 1:
         raise BenchError(
             Code.GPU_CONTENDED,
             f"{during['compute_apps_max']} compute processes shared the GPU during the run",
@@ -95,6 +95,7 @@ def run(
             "runtime_version": raw["runtime_version"],
             "driver_version": raw["driver_version"],
             "gpu": raw["device"],
+            **({"os_version": raw["os_version"]} if "os_version" in raw else {}),
         },
         "conditions": {
             "lock": str(lock),

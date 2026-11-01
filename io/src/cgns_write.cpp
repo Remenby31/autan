@@ -22,8 +22,12 @@ namespace {
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
 CGNS_ENUMT(BCType_t) bc_type_from_name(const std::string& name) {
+  // results.md names types by their C enumerators; the SIDS strings drop
+  // the prefix of the two generic ones (BCTypeUserDefined is "UserDefined").
   for (int t = 0; t < NofValidBCTypes; ++t) {
-    if (name == BCTypeName[t]) return static_cast<CGNS_ENUMT(BCType_t)>(t);
+    if (name == BCTypeName[t] || name == std::string("BCType") + BCTypeName[t]) {
+      return static_cast<CGNS_ENUMT(BCType_t)>(t);
+    }
   }
   throw Error(ErrorCode::mesh_inconsistent_sizes, "unknown CGNS BCType '" + name + "'");
 }

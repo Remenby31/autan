@@ -28,6 +28,12 @@ def validate(doc: dict[str, Any]) -> None:
         raise BenchError(
             Code.SCHEMA_INVALID, f"{where}: {errors[0].message} ({len(errors)} error(s))"
         )
+    provenance = doc["provenance"]
+    if provenance["devices"]["kind"] != provenance["backend"]:
+        raise BenchError(
+            Code.SCHEMA_INVALID,
+            f"devices.kind {provenance['devices']['kind']!r} != backend {provenance['backend']!r}",
+        )
     names = [b["name"] for b in doc["benchmarks"]]
     if len(names) != len(set(names)):
         raise BenchError(Code.SCHEMA_INVALID, "benchmark names are not unique")

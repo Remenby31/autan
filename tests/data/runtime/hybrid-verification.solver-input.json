@@ -1,0 +1,173 @@
+{
+  "schema": "autan.solver-input/1",
+  "case": {
+    "name": "mms",
+    "sha256": "718cec256aab1b72a00b513e4193fa5319ebefdeb93053b136fe8e72d082407e",
+    "toml": "schema = \"autan.case/1\"\nname = \"mms\"\nmesh = \"/Users/baptistec/projects/cfd-solver-wt/core-runtime/tests/data/mesh/hybrid/polyMesh\"\nboundaries = []\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"compressible\"\nprecision = \"fp32+acc64\"\n\n[physics.turbulence]\nmodel = \"inviscid\"\n\n[physics.gas]\nkind = \"ideal-gas\"\nname = \"mms\"\nmolar_mass = \"0.028970253024390245 kg / mol\"\ngamma = 1.4\nprandtl = 0.72\n\n[physics.gas.viscosity]\nlaw = \"constant\"\nmu = \"0.001 Pa * s\"\n\n[freestream]\nmach = 0.3\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\ntemperature = \"300.0 K\"\npressure = \"101325.0 Pa\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\n\n[verification.manufactured]\npath = \"euler.mms.json\"\nsha256 = \"7555af6d04b90046c676c6f9c15e26507ff96f0cf763d877ba5f30c63788bf7e\"\n"
+  },
+  "mesh": {
+    "path": "@MESH@",
+    "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6"
+  },
+  "precision": "fp32+acc64",
+  "deterministic": false,
+  "devices": {
+    "kind": "cpu",
+    "count": 1
+  },
+  "physics": {
+    "kind": "compressible",
+    "turbulence": {
+      "model": "inviscid",
+      "base": null,
+      "wall_model": null,
+      "nu_tilde_ratio": null,
+      "intensity": null,
+      "viscosity_ratio": null
+    }
+  },
+  "freestream": {
+    "density": 1.1768292682926829,
+    "pressure": 101325.0,
+    "temperature": 300.0,
+    "velocity": [
+      104.15661284815285,
+      0.0,
+      0.0
+    ],
+    "speed": 104.15661284815285,
+    "viscosity": 0.001,
+    "mach": 0.3,
+    "re": null,
+    "ref_length": null,
+    "aoa": 0.0,
+    "sideslip": 0.0,
+    "nu_tilde": null,
+    "k": null,
+    "omega": null
+  },
+  "boundaries": [
+    {
+      "zone": "xmin",
+      "kind": "manufactured",
+      "temperature": null,
+      "total_pressure": null,
+      "total_temperature": null,
+      "velocity": null,
+      "static_pressure": null
+    },
+    {
+      "zone": "xmax",
+      "kind": "manufactured",
+      "temperature": null,
+      "total_pressure": null,
+      "total_temperature": null,
+      "velocity": null,
+      "static_pressure": null
+    },
+    {
+      "zone": "ymin",
+      "kind": "manufactured",
+      "temperature": null,
+      "total_pressure": null,
+      "total_temperature": null,
+      "velocity": null,
+      "static_pressure": null
+    },
+    {
+      "zone": "ymax",
+      "kind": "manufactured",
+      "temperature": null,
+      "total_pressure": null,
+      "total_temperature": null,
+      "velocity": null,
+      "static_pressure": null
+    },
+    {
+      "zone": "zmin",
+      "kind": "manufactured",
+      "temperature": null,
+      "total_pressure": null,
+      "total_temperature": null,
+      "velocity": null,
+      "static_pressure": null
+    },
+    {
+      "zone": "zmax",
+      "kind": "manufactured",
+      "temperature": null,
+      "total_pressure": null,
+      "total_temperature": null,
+      "velocity": null,
+      "static_pressure": null
+    }
+  ],
+  "cell_zones": [
+    {
+      "zone": "upper",
+      "medium": {
+        "kind": "ideal-gas",
+        "name": "mms",
+        "gas_constant": 287.0,
+        "gamma": 1.4,
+        "prandtl": 0.72,
+        "viscosity": {
+          "law": "constant",
+          "mu": 0.001
+        }
+      },
+      "initial": {
+        "kind": "fluid",
+        "density": 1.1768292682926829,
+        "pressure": 101325.0,
+        "temperature": 300.0,
+        "velocity": [
+          104.15661284815285,
+          0.0,
+          0.0
+        ],
+        "nu_tilde": null,
+        "k": null,
+        "omega": null
+      }
+    },
+    {
+      "zone": "lower",
+      "medium": {
+        "kind": "ideal-gas",
+        "name": "mms",
+        "gas_constant": 287.0,
+        "gamma": 1.4,
+        "prandtl": 0.72,
+        "viscosity": {
+          "law": "constant",
+          "mu": 0.001
+        }
+      },
+      "initial": {
+        "kind": "fluid",
+        "density": 1.1768292682926829,
+        "pressure": 101325.0,
+        "temperature": 300.0,
+        "velocity": [
+          104.15661284815285,
+          0.0,
+          0.0
+        ],
+        "nu_tilde": null,
+        "k": null,
+        "omega": null
+      }
+    }
+  ],
+  "time": {
+    "kind": "steady",
+    "max_iterations": 10000,
+    "residual_orders": 8.0
+  },
+  "monitors": [],
+  "verification": {
+    "path": "@MMS@",
+    "sha256": "7555af6d04b90046c676c6f9c15e26507ff96f0cf763d877ba5f30c63788bf7e"
+  }
+}

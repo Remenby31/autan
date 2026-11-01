@@ -102,7 +102,12 @@ def _baseline(args: argparse.Namespace) -> int:
         )
     if doc["suite"] == "stream":
         array_bytes = doc["config"]["elements"] * doc["config"]["element_bytes"]
-        l2 = doc["provenance"]["gpu"]["l2_bytes"]
+        l2 = doc["provenance"]["gpu"].get("l2_bytes")
+        if l2 is None:
+            raise BenchError(
+                Code.FOOTPRINT_TOO_SMALL,
+                "the result records no L2 size to check the footprint against",
+            )
         if array_bytes < MIN_ARRAY_OVER_L2 * l2:
             raise BenchError(
                 Code.FOOTPRINT_TOO_SMALL,
