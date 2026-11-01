@@ -78,6 +78,12 @@ class Euler {
   /// where their condition gives the state there, and in the cells whose interior stencil alone
   /// cannot determine a gradient.
   [[nodiscard]] std::vector<double> gradient_weights() const;
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+  /// Experiment builds only (CMake AUTAN_EXPERIMENT_EXACT_GRADIENT): after each gradient loop,
+  /// the cells with finite values in `grad` (15 x n_cells, layout of the gradient dataset) take
+  /// them instead of the least-squares gradient.
+  void set_gradient_override(std::vector<double> grad);
+#endif
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 

@@ -88,6 +88,9 @@ class EulerPhysics final : public runtime::Physics {
       second_order_ = true;
     }
     if (mms) set_source(*mms);
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+    if (mms) exact_gradient_near_boundaries(*mms);
+#endif
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
     u_.assign(5 * n_, 0.0);
@@ -392,6 +395,58 @@ class EulerPhysics final : public runtime::Physics {
     }
     euler_.set_boundary(kind, data);
   }
+
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+  // Experiment: the cells within three face rings of the boundary take the manufactured
+  // solution's primitive gradient (central differences of its fields) instead of the
+  // least-squares one, to measure what the one-sided fit there costs.
+  void exact_gradient_near_boundaries(const Manufactured& mms) {
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    std::vector<int> ring(n_, 0);
+    for (std::size_t f = ni; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+      ring[static_cast<std::size_t>(mesh.owner()[f])] = 1;
+    }
+    for (int depth = 2; depth <= 3; ++depth) {
+      std::vector<int> next = ring;
+      for (std::size_t f = 0; f < ni; ++f) {
+        const auto o = static_cast<std::size_t>(mesh.owner()[f]);
+        const auto n = static_cast<std::size_t>(mesh.neighbour()[f]);
+        if (ring[o] == depth - 1 && ring[n] == 0) next[n] = depth;
+        if (ring[n] == depth - 1 && ring[o] == 0) next[o] = depth;
+      }
+      ring = next;
+    }
+    static const std::array<std::string, 5> names = {"rho", "u", "v", "w", "p"};
+    std::vector<double> grad(15 * n_, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t j = 0; j < 3; ++j) {
+      std::vector<std::array<double, 3>> plus, minus;
+      std::vector<std::size_t> cells;
+      for (std::size_t c = 0; c < n_; ++c) {
+        if (ring[c] == 0) continue;
+        std::array<double, 3> x{g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]};
+        const double h = 1e-6 * std::max(1.0, std::abs(x[j]));
+        auto a = x, b = x;
+        a[j] += h;
+        b[j] -= h;
+        plus.push_back(a);
+        minus.push_back(b);
+        cells.push_back(c);
+      }
+      const auto fp = mms.evaluate("fields", names, plus);
+      const auto fm = mms.evaluate("fields", names, minus);
+      for (std::size_t k = 0; k < cells.size(); ++k) {
+        const double h = plus[k][j] - minus[k][j];
+        for (std::size_t i = 0; i < 5; ++i)
+          grad[(3 * i + j) * n_ + cells[k]] = (fp[i][k] - fm[i][k]) / h;
+      }
+    }
+    euler_.set_gradient_override(std::move(grad));
+    ctx_.log.write("warning", "solver",
+                   "experiment build: exact gradients within three rings of the boundary");
+  }
+#endif
 
   void set_source(const Manufactured& mms) {
     const auto& g = ctx_.geometry;

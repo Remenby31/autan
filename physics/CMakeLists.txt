@@ -106,3 +106,13 @@ if(AUTAN_ENABLE_CUDA)
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -lineinfo -Xptxas=-warn-spills>
   )
 endif()
+
+# Experiment builds only: exact gradients near boundaries for verification cases.
+option(
+  AUTAN_EXPERIMENT_EXACT_GRADIENT
+  "Experiment: exact gradients near boundaries (never for production)"
+  OFF
+)
+if(AUTAN_EXPERIMENT_EXACT_GRADIENT)
+  target_compile_definitions(autan_physics PUBLIC AUTAN_EXPERIMENT_EXACT_GRADIENT)
+endif()

@@ -40,6 +40,14 @@ struct Euler<P>::Impl {
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+  std::vector<double> gradient_override;
+  void apply_gradient_override() {
+    for (std::size_t i = 0; i < gradient_override.size(); ++i) {
+      if (std::isfinite(gradient_override[i])) grad[i] = Gr(gradient_override[i]);
+    }
+  }
+#endif
 
   template <class T, class Source>
   static void fill(std::vector<T>& to, const Source& from) {
@@ -295,6 +303,15 @@ void Euler<P>::set_second_order(bool on) {
   }
 }
 
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+template <class P>
+void Euler<P>::set_gradient_override(std::vector<double> grad) {
+  auto& m = *impl_;
+  if (grad.size() != m.grad.size()) throw std::invalid_argument("gradient override size");
+  m.gradient_override = std::move(grad);
+}
+#endif
+
 template <class P>
 void Euler<P>::set_source(std::span<const double> source) {
   auto& m = *impl_;
@@ -324,6 +341,9 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
     ek::cpu::gradients(m.d);
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+    m.apply_gradient_override();
+#endif
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
     }
@@ -352,6 +372,9 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
     ek::cpu::gradients(m.d);
+#ifdef AUTAN_EXPERIMENT_EXACT_GRADIENT
+    m.apply_gradient_override();
+#endif
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
     }
