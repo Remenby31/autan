@@ -188,5 +188,7 @@
       ]
     }
   ],
-  "verification": null
+  "verification": null,
+  "start": null,
+  "periodic": []
 }

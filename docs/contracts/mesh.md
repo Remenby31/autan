@@ -65,9 +65,9 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 `Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a periodic zone in no pair, a translation that is zero or not finite) and matches the faces (E0119):
 
 - each node of zone a, translated, coincides with exactly one node of zone b: closer than 1e-4 of the shortest edge of zone a's faces at that node, far below any spacing and far above single-precision coordinates;
-- each face of zone a, so mapped, has the node set of exactly one face of zone b, and the two zones have as many faces. Partners then point in opposite directions, both out of the domain.
+- each face of zone a, so mapped, has the node set of exactly one face of zone b, the two zones have as many faces, and partners run through their nodes in opposite directions (both point out of the domain).
 
-`renumber_cells` keeps the pairs. A partition carries none: `extract_partition` rejects a mesh with periodic pairs (E0140) until periodic faces become interior faces to image ghost cells there. Rotations are reserved.
+`renumber_cells` keeps the pairs. A partition carries none: `extract_partition` rejects a mesh with periodic pairs (E0140), and `write_solution` rejects one (E0133), until periodic faces become interior faces to image ghost cells in a partition and pairs are written to CGNS. Rotations are reserved.
 
 ## Geometry
 
@@ -137,7 +137,7 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
 | E0116 | `mesh_face_without_owned_cell` | A face touches only ghost cells. |
 | E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
-| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly ([Periodic pairs](#periodic-pairs)). |
+| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite. |
 | E0119 | `mesh_periodic_unmatched` | The faces of a periodic pair do not match one to one under its translation. |
 | E0120 | `geometry_degenerate_face` | A face has zero or non-finite area. |
 | E0121 | `geometry_non_positive_volume` | An owned cell has zero, negative or non-finite volume. |

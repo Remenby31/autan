@@ -156,5 +156,7 @@
     "residual_orders": 8.0
   },
   "monitors": [],
-  "verification": null
+  "verification": null,
+  "start": null,
+  "periodic": []
 }

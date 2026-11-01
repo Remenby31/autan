@@ -63,13 +63,6 @@ struct MeshSource {
   std::string path;
 };
 
-/// Face-based mesh as a reader or partitioner produces it: faces in any order,
-/// each oriented so that its right-hand-rule normal points away from
-/// `face_cell0` and into `face_cell1` (`no_cell` on the boundary). Every array
-/// is indexed by the entity it describes; `cell_zone` defines the number of
-/// cells. The last `n_ghost_cells` cells are halo copies of cells owned by
-/// another partition; `cell_global_id` is empty (identity) or gives the
-/// global index of every cell.
 /// Two boundary zones of kind `periodic` whose faces coincide under a
 /// translation: x_b = x_a + translation for every node of zone a's faces.
 struct PeriodicPair {
@@ -78,6 +71,13 @@ struct PeriodicPair {
   std::array<double, 3> translation{};
 };
 
+/// Face-based mesh as a reader or partitioner produces it: faces in any order,
+/// each oriented so that its right-hand-rule normal points away from
+/// `face_cell0` and into `face_cell1` (`no_cell` on the boundary). Every array
+/// is indexed by the entity it describes; `cell_zone` defines the number of
+/// cells. The last `n_ghost_cells` cells are halo copies of cells owned by
+/// another partition; `cell_global_id` is empty (identity) or gives the
+/// global index of every cell.
 struct MeshInput {
   std::vector<double> x, y, z;
   std::vector<offset_t> face_node_offsets;  ///< size n_faces + 1, starts at 0
