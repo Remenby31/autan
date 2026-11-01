@@ -1806,7 +1806,11 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
   // The hybrid mesh, and a copy whose points are divided by 0.0254 and
   // declared in inches (mesh.scale = 0.0254, exactly one inch in metres):
   // five explicit Euler steps of an inviscid flow at incidence give the same
-  // fields and forces to round-off, and the solution's coordinates in metres.
+  // fields and forces to round-off of the precision, and the solution's
+  // coordinates in metres. (The SDK's test_solver_backend runs one file in m
+  // and in in through the SDK: its coordinates are then bit for bit.)
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
   const fs::path inches = fresh_dir() / "polyMesh";
   fs::copy(mesh_path, inches);
   {
@@ -1825,8 +1829,8 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     }
     std::ofstream(inches / "points") << out.str();
   }
-  const auto euler = [](Json& d) {
-    d["precision"] = "fp64";
+  const auto euler = [&](Json& d) {
+    d["precision"] = precision;
     inviscid(d);
     for (auto& b : d["boundaries"]) {
       if (b["zone"] == "ymin") b["kind"] = "slip";
@@ -1840,6 +1844,12 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
   };
   const Json metres = input(euler);
   Json in_inches = metres;
+  {
+    std::string toml = in_inches["case"]["toml"];
+    const std::string unit = "mesh_unit = \"m\"";
+    REQUIRE(toml.find(unit) != std::string::npos);
+    in_inches["case"]["toml"] = toml.replace(toml.find(unit), unit.size(), "mesh_unit = \"in\"");
+  }
   in_inches["mesh"] = {
       {"path", inches.string()}, {"sha256", autan::io::mesh_hash(inches)}, {"scale", 0.0254}};
   autan::runtime::PhysicsRegistry registry;
@@ -1852,7 +1862,8 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
   CHECK(read(b.run / "mesh-info.json") ==
         autan::io::mesh_info_json(autan::io::read_mesh(inches), autan::io::mesh_hash(inches)));
 
-  constexpr double eps = 0x1p-52;
+  // The fields' precision; the coordinates are FP64 in either.
+  double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
   const auto close = [&](const std::vector<double>& x, const std::vector<double>& y) {
     REQUIRE(x.size() == y.size());
     double scale = 0.0, worst = 0.0;
@@ -1878,6 +1889,7 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
   close(values(fa, {"fx", "fy", "fz"}), values(fb, {"fx", "fy", "fz"}));
   close(values(fa, {"mx", "my", "mz"}), values(fb, {"mx", "my", "mz"}));
   close(values(fa, {"cd", "cs", "cl"}), values(fb, {"cd", "cs", "cl"}));
+  eps = 0x1p-52;
   for (const char* axis : {"CoordinateX", "CoordinateY", "CoordinateZ"}) {
     CAPTURE(axis);
     close(coordinates(a.run / "solution.cgns", axis), coordinates(b.run / "solution.cgns", axis));
