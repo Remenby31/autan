@@ -1,8 +1,10 @@
 #include "autan/physics/euler.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 
 #include "autan/kernels/geometry.hpp"
@@ -103,6 +105,8 @@ struct Euler<P>::Impl {
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
     const auto nst = stencil.entries.size();
     std::vector<double> w(3 * nst, 0.0);
+    constexpr double coordinate_eps =
+        std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
     for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
       const auto begin = static_cast<std::size_t>(stencil.offsets[c]);
       const auto end = static_cast<std::size_t>(stencil.offsets[c + 1]);
@@ -124,9 +128,15 @@ struct Euler<P>::Impl {
               x[j] = static_cast<double>(face_centroid[j * nf + f]);
             }
           }
+          // Offsets within 64 ulps of the coordinates are round-off, not geometry: across a
+          // one-cell-thick slab the centroids differ only by them, and an offset kept at 1e-17
+          // would let the fit invert round-off into a gradient across the layer.
           std::array<double, 4> dk{};
           for (std::size_t j = 0; j < 3; ++j) {
-            dk[j] = x[j] - static_cast<double>(cell_centroid[j * nc + c]);
+            const double xc = static_cast<double>(cell_centroid[j * nc + c]);
+            const double round_off = 64 * coordinate_eps * std::max(std::abs(x[j]), std::abs(xc));
+            dk[j] = x[j] - xc;
+            if (std::abs(dk[j]) <= round_off) dk[j] = 0.0;
           }
           dk[3] = used ? 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]) : 0.0;
           for (std::size_t u = 0; u < 3; ++u) {
@@ -136,11 +146,8 @@ struct Euler<P>::Impl {
         }
         const double det = a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) +
                            a[2] * (a[3] * a[7] - a[4] * a[6]);
-        // Rank test against the matrix's own size, not against its diagonal: on a one-cell-thick
-        // slab the offsets across the layer are round-off, and a diagonal-scaled test would accept
-        // that direction and turn the round-off into a gradient.
-        const double size = (a[0] + a[4] + a[8]) / 3.0;
-        if (!(std::abs(det) > 1e-10 * size * size * size)) return false;
+        const double scale = a[0] * a[4] * a[8];
+        if (!(std::abs(det) > 1e-10 * std::abs(scale))) return false;
         const std::array<double, 9> inv = {
             (a[4] * a[8] - a[5] * a[7]) / det, (a[2] * a[7] - a[1] * a[8]) / det,
             (a[1] * a[5] - a[2] * a[4]) / det, (a[5] * a[6] - a[3] * a[8]) / det,
