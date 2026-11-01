@@ -1,5 +1,3 @@
-"""``Case.to_python``: the canonical SDK code of a case, read back by ``autan.load``."""
-
 import ast
 import subprocess
 import sys
@@ -164,14 +162,23 @@ def test_canonical_code_survives_load_toml_and_json(
 def ruff_clean(source: str) -> bool:
     ruff = [sys.executable, "-m", "ruff"]
     imports = subprocess.run(
-        [*ruff, "check", "--select", "I", "--stdin-filename", "case.py"],
+        [*ruff, "check", "--select", "I,F401", "--stdin-filename", "case.py"],
         input=source,
         capture_output=True,
         text=True,
         check=False,
     )
     formatted = subprocess.run(
-        [*ruff, "format", "--line-length", "100", "-"],
+        # Without magic trailing commas, ruff lays the code out from scratch.
+        [
+            *ruff,
+            "format",
+            "--line-length",
+            "100",
+            "--config",
+            "format.skip-magic-trailing-comma = true",
+            "-",
+        ],
         input=source,
         capture_output=True,
         text=True,
@@ -216,6 +223,7 @@ EDGES: dict[str, Callable[[autan.Case], None]] = {
     ),
     "library-units": co2_viscosity_in_base_units,
     "long-zone": lambda case: case.boundary("w" * 80).wall(),
+    "empty-call-at-the-width": lambda case: case.boundary("w" * 77).wall(),
     "long-zone-arguments": lambda case: case.boundary("w" * 80).wall(temperature=Q(400, "K")),
     "long-zone-long-arguments": lambda case: case.cell_zone("w" * 80).fluid(
         autan.gases.AIR,
@@ -246,6 +254,7 @@ NAMES = {
     "carriage-return": "a\rb",
     "nul": "a\x00b",
     "wide": "n" + "\u754c" * 40,
+    "combining": "e\u0301" * 55,
 }
 
 
