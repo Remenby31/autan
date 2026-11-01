@@ -588,6 +588,30 @@ The solver build has no implementation for the requested combination of physics,
 
 Fix: Use a build that includes it, or change the case or the devices.
 
+## E0707
+
+**Previous run cannot be resumed** (error)
+
+A start needs a previous run that ended converged, completed or stopped after at least one iteration and holds a solution that conforms to its run.json; diverged and failed runs, and runs without a sound solution, cannot be resumed.
+
+Fix: Start from another run, or run the case from the freestream.
+
+## E0708
+
+**Start does not match the case** (error)
+
+`continue` needs the previous run's case unchanged except its iteration or step budget, and a budget above the iterations already done; `warm` needs the same physics and transported variables. The message names the difference.
+
+Fix: Change the case, or use `warm` to start a different case from that state.
+
+## E0709
+
+**Start solution differs** (error)
+
+The solution of the run to start from no longer has the SHA-256 the solver input records: the run directory changed after the input was written.
+
+Fix: Prepare the input again from the run as it is now.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
