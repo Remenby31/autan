@@ -37,11 +37,14 @@ string(
   "${shipped_input}"
 )
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hybrid.solver-input.json "${shipped_input}")
+# The same case on CUDA devices, which no physics of this autan-run registers.
+string(REPLACE "\"kind\": \"cpu\"" "\"kind\": \"cuda\"" cuda_input "${shipped_input}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hybrid-cuda.solver-input.json "${cuda_input}")
 add_test(
   NAME autan-run.no-physics
   COMMAND
     ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-run>
-    "-DARGS=--input;${CMAKE_CURRENT_BINARY_DIR}/hybrid.solver-input.json;--runs;${CMAKE_CURRENT_BINARY_DIR}/runs"
+    "-DARGS=--input;${CMAKE_CURRENT_BINARY_DIR}/hybrid-cuda.solver-input.json;--runs;${CMAKE_CURRENT_BINARY_DIR}/runs"
     -DEXPECT_CODE=2 "-DEXPECT=E0706" -P ${PROJECT_SOURCE_DIR}/tests/io/run_cli.cmake
 )
 add_test(
