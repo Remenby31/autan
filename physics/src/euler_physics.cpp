@@ -50,6 +50,8 @@ constexpr double cfl_max = 1e6;
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
 constexpr int linear_max_cycles = 10;
+// linear_solver = "gauss-seidel": symmetric sweeps over the global colours per implicit step.
+constexpr int gauss_seidel_sweeps = 4;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
 constexpr double linear_failure = 0.9;
@@ -99,13 +101,24 @@ class EulerPhysics final : public runtime::Physics {
     set_boundaries(mms ? &*mms : nullptr);
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
-      multigrid_.emplace(mesh, ctx.geometry);
-      nlohmann::json nodes = nlohmann::json::array();
-      for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
-      ctx.log.write("info", "linear", "agglomeration multigrid", {},
-                    nlohmann::json{{"nodes", nodes},
-                                   {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
-                        .dump());
+      if (in.time.linear_solver == "multigrid") {
+        multigrid_.emplace(mesh, ctx.geometry);
+        nlohmann::json nodes = nlohmann::json::array();
+        for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
+        ctx.log.write("info", "linear", "agglomeration multigrid", {},
+                      nlohmann::json{{"nodes", nodes},
+                                     {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
+                          .dump());
+      } else {
+        // The runtime's colouring by global id: the same sweeps on any number of ranks.
+        colours_.assign(static_cast<std::size_t>(ctx.n_colours), {});
+        for (std::size_t c = 0; c < owned_; ++c) {
+          colours_[static_cast<std::size_t>(ctx.cell_colours[c])].push_back(c);
+        }
+        ctx.log.write(
+            "info", "linear", "multicolour block Gauss-Seidel", {},
+            nlohmann::json{{"colours", ctx.n_colours}, {"sweeps", gauss_seidel_sweeps}}.dump());
+      }
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -636,8 +649,16 @@ class EulerPhysics final : public runtime::Physics {
     std::fill(du_.begin(), du_.end(), 0.0);
     solvers::Multigrid::Report linear;
     try {
-      multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-      linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      if (multigrid_) {
+        multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      } else {
+        matrix_->factor(owned_);
+        matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
+                              [this](std::span<double> x) { fill_ghosts(x); });
+        // A fixed number of sweeps: no residual is measured, only a singular block fails.
+        linear.residual_drop = 0.0;
+      }
     } catch (const std::domain_error&) {
       linear = {};  // a singular block: the solve failed
     }
@@ -656,7 +677,7 @@ class EulerPhysics final : public runtime::Physics {
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
       cfl_cap_ = 0.5 * cfl_;
       shortened_ = true;
-      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
       return;
     }
     const double alpha = admissible_step();
@@ -673,37 +694,54 @@ class EulerPhysics final : public runtime::Physics {
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
       // number the run has diverged.
-      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
       return;
     }
     for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
   }
 
   // The cell whose density or pressure the full step lowers the most, relatively.
-  [[nodiscard]] std::size_t worst_cell() const {
+  // Over every rank, the cell whose density or pressure the full step lowers the most, relatively
+  // (ties: the least global id); reported by the rank that owns it.
+  [[nodiscard]] std::optional<index_t> worst_cell() const {
+    const auto ids = ctx_.mesh.cell_global_id();
+    auto id = [&](std::size_t c) { return ids.empty() ? static_cast<std::int64_t>(c) : ids[c]; };
     std::size_t worst = 0;
     double lowest = std::numeric_limits<double>::infinity();
-    for (std::size_t c = 0; c < n_; ++c) {
+    for (std::size_t c = 0; c < owned_; ++c) {
       const double r = std::min((u_[c] + du_[c]) / u_[c], pressure(c, 1.0) / pressure(c, 0.0));
-      if (r < lowest) {
+      if (r < lowest || (r == lowest && id(c) < id(worst))) {
         lowest = r;
         worst = c;
       }
     }
-    return worst;
+    const auto global = ctx_.ranks.argmin(lowest, owned_ > 0 ? id(worst) : 0);
+    if (owned_ == 0 || global.second != id(worst)) return std::nullopt;
+    return static_cast<index_t>(worst);
   }
 
   // Largest fraction of du (at most 1) that keeps every cell's density and pressure above
   // (1 - max_decrease) of their current values.
+  // Each owned cell's own admissible fraction (its density bound, then halved until its
+  // pressure bound holds), and the least over every rank: independent of the cell order.
   [[nodiscard]] double admissible_step() const {
     double alpha = 1.0;
-    for (std::size_t c = 0; c < n_; ++c) {
+    for (std::size_t c = 0; c < owned_; ++c) {
+      double a = 1.0;
       const double rho = u_[c], drho = du_[c];
-      if (drho < 0.0) alpha = std::min(alpha, max_decrease * rho / -drho);
+      if (drho < 0.0) a = std::min(a, max_decrease * rho / -drho);
       const double p = pressure(c, 0.0);
-      while (alpha >= min_step && !(pressure(c, alpha) >= (1.0 - max_decrease) * p)) alpha *= 0.5;
+      while (a >= min_step && !(pressure(c, a) >= (1.0 - max_decrease) * p)) a *= 0.5;
+      alpha = std::min(alpha, a);
     }
-    return alpha;
+    return ctx_.ranks.min(alpha);
+  }
+
+  // Ghost cells take their owners' du (5 components).
+  void fill_ghosts(std::span<double> x) {
+    std::array<double*, 5> c{};
+    for (std::size_t k = 0; k < 5; ++k) c[k] = x.data() + k * n_;
+    ctx_.ghosts.forward(std::span<double* const>(c), MemorySpace::host, nullptr);
   }
 
   [[nodiscard]] double pressure(std::size_t c, double a) const {
@@ -837,8 +875,9 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  std::optional<BlockMatrix> matrix_;  // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;
+  std::optional<BlockMatrix> matrix_;              // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;    // linear_solver = "multigrid"
+  std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
@@ -870,13 +909,16 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and steady runs on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // The steady solver's block Gauss-Seidel is coloured in the order of one mesh's cells: on a
-  // partition, or with periodic image ghosts, it would be another algorithm.
-  if (ranks > 1 && in.time.kind == "steady") {
+  // The multigrid agglomerates one mesh's cells: on a partition, or with periodic image ghosts,
+  // it would be another algorithm. Gauss-Seidel sweeps colours by global id, the same anywhere.
+  if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" &&
+      (ranks > 1 || !in.periodic.empty())) {
     return runtime::PhysicsRefusal{
-        .message = "the steady Euler solver runs on one rank only, not " + std::to_string(ranks),
-        .path = "time.kind",
-        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+        .message =
+            "the steady multigrid runs on one rank without periodic pairs; set "
+            "linear_solver = \"gauss-seidel\" until the distributed multigrid lands",
+        .path = "time.linear_solver",
+        .data_json = nlohmann::json{{"ranks", ranks}, {"pairs", in.periodic.size()}}.dump()};
   }
   // Face states are paired with the global mesh's zone faces; a partition holds only its own,
   // and the physics has no global face numbering to find their rows.
@@ -888,12 +930,6 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}, {"ranks", ranks}}.dump()};
     }
-  }
-  if (!in.periodic.empty() && in.time.kind == "steady") {
-    return runtime::PhysicsRefusal{
-        .message = "the steady Euler solver does not run with periodic pairs yet",
-        .path = "periodic",
-        .data_json = nlohmann::json{{"pairs", in.periodic.size()}}.dump()};
   }
   const runtime::Medium* first = nullptr;
   for (std::size_t i = 0; i < in.cell_zones.size(); ++i) {
