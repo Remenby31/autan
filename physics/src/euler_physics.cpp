@@ -517,14 +517,18 @@ class EulerPhysics final : public runtime::Physics {
     report.time_step = dt;
   }
 
-  // The first cell whose state, as the kernels store it (P::state differences from the
-  // reference, so FP32 in fp32+acc64), has a non-finite or non-positive density or pressure;
-  // else the first cell whose residual is not finite.
+  // The first cell whose state, as the kernels read it (P::state differences from the
+  // reference, added in P::compute: FP32 in fp32+acc64), has a non-finite or non-positive
+  // density or pressure; else the first cell whose residual is not finite.
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
     for (std::size_t c = 0; c < n_; ++c) {
       std::array<double, 5> v{};
       for (std::size_t k = 0; k < 5; ++k) {
-        v[k] = static_cast<double>(State(u_[k * n_ + c] - reference_[k])) + reference_[k];
+        // As the primitives kernel adds them: the stored difference and the reference in the
+        // compute type (FP32 in fp32+acc64).
+        using C = typename P::compute;
+        v[k] = static_cast<double>(static_cast<C>(State(u_[k * n_ + c] - reference_[k])) +
+                                   static_cast<C>(reference_[k]));
       }
       const double rho = v[0];
       const double p =
