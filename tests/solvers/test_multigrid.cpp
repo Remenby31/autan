@@ -313,9 +313,12 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   }
   CHECK(first_layer == wall_cells);
   CHECK(lines >= wall_cells);
-  // The coarse levels agglomerate in the wall plane: the line length is kept.
+  // The coarse levels agglomerate in the wall plane while neighbouring lines remain (8 x 8 wall
+  // cells, groups of 4: two levels), keeping the line length; then lines coarsen along
+  // themselves down to a direct solve.
   REQUIRE(levels.size() >= 3);
-  for (std::size_t l = 1; l < levels.size(); ++l) {
+  CHECK(5 * levels.back().n_nodes <= 1000);
+  for (std::size_t l = 1; l < 3; ++l) {
     std::size_t longest = 0;
     for (std::size_t li = 0; li < levels[l].n_lines(); ++li) {
       longest = std::max(longest, static_cast<std::size_t>(levels[l].line_offsets[li + 1] -
@@ -354,6 +357,21 @@ TEST_CASE(
   CHECK(wall_lines == static_cast<std::size_t>(nx));
   REQUIRE(levels.size() >= 3);
   CHECK(5 * levels.back().n_nodes <= 1000);
+  check_hierarchy(mesh, levels);
+}
+
+TEST_CASE("a line with no neighbouring line coarsens along itself", "[multigrid]") {
+  // One column of cells of aspect ratio 4 and more: a single line, no line to group with.
+  const auto mesh = layered_box(1, 1e-5, Fill::hexa, false, 0.25);
+  const auto g = autan::compute_geometry(mesh);
+  autan::solvers::AgglomerationOptions options;
+  options.coarsest_nodes = 8;
+  const auto levels = autan::solvers::agglomerate(mesh, g, options);
+  REQUIRE(levels[0].n_lines() == 1);
+  REQUIRE(levels.size() >= 2);
+  // Two layers per coarse node, the coarse level still one line.
+  CHECK(levels[1].n_nodes == (levels[0].n_nodes + 1) / 2);
+  CHECK(levels[1].n_lines() == 1);
   check_hierarchy(mesh, levels);
 }
 
