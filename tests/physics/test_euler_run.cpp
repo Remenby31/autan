@@ -138,7 +138,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   CHECK(info["diagnostics"].empty());
   const auto& f = doc["freestream"];
   const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
-                                                       : std::numeric_limits<float>::epsilon();
+                                                      : std::numeric_limits<float>::epsilon();
   const double speed = f["speed"].get<double>();
   const double p = f["pressure"].get<double>();
   const double rho = f["density"].get<double>();

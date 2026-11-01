@@ -52,4 +52,3 @@ The faces of polyhedral duals are not planar. A one-point flux at the face centr
 ## Manufactured solution
 
 Steady `euler` solution of autan-vv (Roy et al. 2004 form), boundary faces at the exact state, cell sources at centroids; Newton-Krylov on the generated residual (`physics/mms/euler_mms.py`). The table is filled from the study of PR #99.
-
