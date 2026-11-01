@@ -12,7 +12,7 @@ import {
   Search,
   Sun,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
@@ -34,6 +34,7 @@ export function CommandPalette({
 }) {
   const navigate = useNavigate();
   const { data } = useQuery(runsQuery);
+  const offered = useMemo(() => (open ? studies(data) : []), [open, data]);
   const [value, setValue] = useState("");
 
   useEffect(() => {
@@ -115,12 +116,13 @@ export function CommandPalette({
               onSelect={() => close(() => navigate({ to: "/cases/new" }))}
             />
           </Command.Group>
-          {studies(data).length > 0 && (
+          {offered.length > 0 && (
             <Command.Group heading="Compare a study">
-              {studies(data).map((s) => (
+              {offered.map((s) => (
                 <Item
                   key={s.name}
-                  value={`compare ${s.name} ${s.label}`}
+                  // Unique by the study's newest run: two studies never share an entry.
+                  value={`compare ${s.name} ${s.label} ${s.ids[0]}`}
                   icon={<GitCompareArrows className="size-4" />}
                   title={`${s.name} · ${s.label}`}
                   onSelect={() =>

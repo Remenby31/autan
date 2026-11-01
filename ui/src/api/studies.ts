@@ -41,8 +41,11 @@ export function studies(
   limit = 8,
 ): { name: string; label: string; ids: string[] }[] {
   const byCase = new Map<string, Run[]>();
-  for (const run of registry?.runs ?? [])
-    byCase.set(run.case.name, [...(byCase.get(run.case.name) ?? []), run]);
+  for (const run of registry?.runs ?? []) {
+    const group = byCase.get(run.case.name);
+    if (group) group.push(run);
+    else byCase.set(run.case.name, [run]);
+  }
   return [...byCase].flatMap(([name, runs]) => {
     const label = study(runs.map((r) => registry?.summaries[r.run_id]?.settings));
     const ids = [...runs]

@@ -187,7 +187,11 @@ function Compare() {
               {available.map((s) => (
                 <Button
                   key={s.name}
-                  onClick={() => setRuns(s.ids)}
+                  onClick={() => {
+                    setRuns(s.ids);
+                    // The chosen button leaves with the empty state: focus goes to the heading.
+                    requestAnimationFrame(() => heading.current?.focus());
+                  }}
                   data-testid="study-choice"
                   className="justify-start"
                 >
