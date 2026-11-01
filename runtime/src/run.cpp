@@ -1643,14 +1643,18 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     // partition groups E0140), its directory created or its run.json written:
     // nothing records the failure but this diagnostic. On several ranks, the
     // others may wait in a collective call: every rank ends.
+    // Every rank may fail here at once: each line goes out in one write, so
+    // that the launcher's merged stderr keeps lines whole.
     const auto* coded = dynamic_cast<const Error*>(&e);
-    std::fprintf(err, "%s\n",
-                 Diagnostic{.code = coded != nullptr ? error_code_string(coded->code()) : "E0704",
-                            .message = e.what(),
-                            .path = "",
-                            .data_json = Json{{"rank", comm->rank()}}.dump()}
-                     .json()
-                     .c_str());
+    const std::string line =
+        Diagnostic{.code = coded != nullptr ? error_code_string(coded->code()) : "E0704",
+                   .message = e.what(),
+                   .path = "",
+                   .data_json = Json{{"rank", comm->rank()}}.dump()}
+            .json() +
+        "\n";
+    std::fwrite(line.data(), 1, line.size(), err);
+    std::fflush(err);
     if (comm->size() > 1) comm->abort(static_cast<int>(ExitStatus::failed));
     return ExitStatus::failed;
   }
