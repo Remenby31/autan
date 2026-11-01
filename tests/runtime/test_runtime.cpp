@@ -200,6 +200,36 @@ std::string file_sha256(const fs::path& file) {
   return hash;
 }
 
+// An autan.initial-state/1 document for the fluid cells of `mesh_file`
+// (every cell of the hybrid box), rows in reverse cell order: density
+// 1 + 1e-3 c, velocity (c, -c, 0.5), pressure 1e5 + c for cell c.
+Json initial_state_document(const fs::path& mesh_file) {
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_file);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  Json centroids = Json::array(), values = Json::array();
+  for (autan::index_t c = mesh.n_cells() - 1; c >= 0; --c) {
+    const auto i = static_cast<std::size_t>(c);
+    const auto x = static_cast<double>(c);
+    centroids.push_back({g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]});
+    values.push_back({1.0 + 1e-3 * x, x, -x, 0.5, 1e5 + x});
+  }
+  return Json{{"schema", "autan.initial-state/1"},
+              {"oracle", "test"},
+              {"mesh_sha256", autan::io::mesh_hash(mesh_file)},
+              {"variables", {"density", "velocity-x", "velocity-y", "velocity-z", "pressure"}},
+              {"cells", mesh.n_cells()},
+              {"centroids", centroids},
+              {"values", values}};
+}
+
+// `doc` written to a fresh file; the solver input's initial_state names it.
+Json with_initial_state(Json input_doc, const Json& doc) {
+  const fs::path file = fresh_dir() / "initial.json";
+  std::ofstream(file) << doc.dump();
+  input_doc["initial_state"] = {{"path", file.string()}, {"sha256", file_sha256(file)}};
+  return input_doc;
+}
+
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
 // steady `continue`, the residuals at iteration 1 of the chain's first run
@@ -908,6 +938,70 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   }
 }
 
+TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") {
+  // initial-state.md: rows paired with cells by centroid, whatever their
+  // order; the relaxation physics keeps its state (factor 0.5, no growth),
+  // so the solution is the file's values cell for cell.
+  const Json state = initial_state_document(mesh_path);
+  const Json doc = with_initial_state(input(), state);
+  const Outcome o = run(doc);
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto n = state["cells"].get<std::size_t>();
+  const std::array<std::pair<const char*, std::function<double(double)>>, 5> expected{{
+      {"Density", [](double c) { return 1.0 + 1e-3 * c; }},
+      {"VelocityX", [](double c) { return c; }},
+      {"VelocityY", [](double c) { return -c; }},
+      {"VelocityZ", [](double) { return 0.5; }},
+      {"Pressure", [](double c) { return 1e5 + c; }},
+  }};
+  for (const auto& [field, value] : expected) {
+    CAPTURE(field);
+    const auto got = solution_field(o.run / "solution.cgns", "FlowSolution", field);
+    REQUIRE(got.size() == n);
+    for (std::size_t c = 0; c < n; ++c) CHECK(got[c] == value(static_cast<double>(c)));
+  }
+  // Archived byte for byte under its hash.
+  const std::string sha = doc["initial_state"]["sha256"];
+  CHECK(read(o.run / "states" / (sha + ".json")) ==
+        read(doc["initial_state"]["path"].get<std::string>()));
+
+  SECTION("E0508: the file differs from its hash") {
+    Json bad = doc;
+    bad["initial_state"]["sha256"] = std::string(64, '0');
+    require_error(run(bad), "E0508");
+  }
+  SECTION("E0508: not an initial-state document") {
+    Json other = state;
+    other["variables"] = {"density", "velocity-x", "velocity-y", "velocity-z", "temperature"};
+    require_error(run(with_initial_state(input(), other)), "E0508");
+  }
+  SECTION("E0509: written for another mesh") {
+    Json other = state;
+    other["mesh_sha256"] = std::string(64, 'a');
+    require_error(run(with_initial_state(input(), other)), "E0509");
+  }
+  SECTION("E0510: a row short") {
+    Json other = state;
+    other["centroids"].erase(other["centroids"].size() - 1);
+    other["values"].erase(other["values"].size() - 1);
+    other["cells"] = n - 1;
+    require_error(run(with_initial_state(input(), other)), "E0510");
+  }
+  SECTION("E0511: a row far from every cell, or two rows on one cell") {
+    Json far = state;
+    far["centroids"][3][0] = far["centroids"][3][0].get<double>() + 1e-3;
+    require_error(run(with_initial_state(input(), far)), "E0511");
+    Json twice = state;
+    twice["centroids"][3] = twice["centroids"][4];
+    require_error(run(with_initial_state(input(), twice)), "E0511");
+  }
+  SECTION("E0705: initial_state with start") {
+    Json both = doc;
+    both["start"] = start_from(o.run, "warm");
+    require_error(run(both), "E0705");
+  }
+}
+
 TEST_CASE("A warm start takes the previous state and counts from 1", "[runtime]") {
   const Outcome a = run(input([](Json& d) { d["time"]["max_iterations"] = 5; }),
                         autan_test::RelaxationOptions{.growth = 0.25});
@@ -1429,6 +1523,21 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
     const auto expected = solution_field(one.run / "solution.cgns", "FlowSolution", field);
     CHECK(!expected.empty());
     CHECK(solution_field(many / "solution.cgns", "FlowSolution", field) == expected);
+  }
+  // An initial-state file, split among the ranks by their owned cells: the
+  // solution of one rank, cell for cell.
+  if (!periodic) {
+    const Json from_file = with_initial_state(doc, initial_state_document(mesh_path));
+    const Outcome one_file = run(from_file, options);
+    const fs::path many_file =
+        run_on_ranks(from_file, ranks,
+                     {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+    for (const char* field : {"Density", "VelocityY", "Pressure"}) {
+      CAPTURE(field);
+      CHECK(solution_field(many_file / "solution.cgns", "FlowSolution", field) ==
+            solution_field(one_file.run / "solution.cgns", "FlowSolution", field));
+    }
   }
   const auto wall = wall_solution(one.run / "solution.cgns");
   CHECK(wall.contains("Pressure"));
