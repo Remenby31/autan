@@ -21,15 +21,15 @@ namespace autan::spike {
 struct SpikeMesh {
   autan::Mesh mesh;
   autan::Geometry geometry;
-  autan::kernels::PackedGeometry packed;
-  std::vector<autan::kernels::offset_t> twins;
-  autan::kernels::CellStencil stencil;
+  autan::kernels::PackedGeometry packed{};
+  std::vector<autan::kernels::offset_t> twins{};
+  autan::kernels::CellStencil stencil{};
   autan::kernels::Topology topo{};
-  std::vector<std::int64_t> face_global_id;  ///< partitions: face of the global mesh
-  std::vector<std::uint8_t> face_reversed;   ///< partitions: LocalPartition::face_reversed
+  std::vector<std::int64_t> face_global_id{};  ///< partitions: face of the global mesh
+  std::vector<std::uint8_t> face_reversed{};   ///< partitions: LocalPartition::face_reversed
   /// Set by autan_spike_set_global_order: keys and the incidence order they give.
-  std::vector<std::int64_t> cell_key, face_key;
-  autan::kernels::GlobalOrder order;
+  std::vector<std::int64_t> cell_key{}, face_key{};
+  autan::kernels::GlobalOrder order{};
   bool global = false;
   [[nodiscard]] autan::kernels::GlobalKeys keys() const {
     return {cell_key, face_key, face_reversed, mesh.ghost_translation()};
