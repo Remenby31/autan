@@ -344,7 +344,7 @@ TEST_CASE("a run continued right after a shortened step reproduces the uninterru
   int shortened = 0;
   for (const auto& l : lines(whole.run / "log.jsonl")) {
     const auto e = Json::parse(l);
-    if (e["level"] == "warning" && e["source"] == "solver" && e["iteration"].is_number()) {
+    if (e["source"] == "solver" && e["data"].contains("alpha") && e["iteration"].is_number()) {
       shortened = e["iteration"].get<int>();
       break;
     }

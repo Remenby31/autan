@@ -716,6 +716,17 @@ class Run final : public Log {
   // errors, with their rank in `data`.
   void write(std::string_view level, std::string_view source, std::string_view message,
              std::string_view code, std::string_view data_json) override {
+    // A coded event goes to run.json the first time its code appears, every time to log.jsonl:
+    // run.json stays bounded when a physics repeats it (results.md).
+    if (!code.empty() && std::ranges::find(recorded_codes_, code) == recorded_codes_.end()) {
+      recorded_codes_.emplace_back(code);
+      info_["diagnostics"].push_back(Json::parse(
+          Diagnostic{.code = std::string(code),
+                     .message = std::string(message),
+                     .path = "",
+                     .data_json = data_json.empty() ? std::string("{}") : std::string(data_json)}
+              .json()));
+    }
     if (comm_.rank() == 0) {
       dir_->append_log(log_line(level, source, message, code, data_json));
     } else if (level != "info") {
@@ -746,6 +757,8 @@ class Run final : public Log {
                 {"data", Json::parse(data_json.empty() ? "{}" : data_json)}}
         .dump();
   }
+
+  std::vector<std::string> recorded_codes_;  // codes of physics events already in run.json
 
   // Returns the final status; every value is a string literal.
   std::string_view iterate(std::int64_t& done) {

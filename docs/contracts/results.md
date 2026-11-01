@@ -104,7 +104,7 @@ reported as `fx` `fy` `fz` (N) and `mx` `my` `mz` (N·m) in mesh axes. With `ref
 | `code` | A registered diagnostic code, as in [case-schema.md](case-schema.md#diagnostics), or `null`. |
 | `data` | Machine-readable details, `{}` when there are none: the diagnostic's data when `code` is set. |
 
-The first line logs the start of the run (`iteration` null), and the writer logs the end with the final status. A line with a `code` has the level of its letter (`E` and `D`: `error`, `W`: `warning`) and, when its `data` has an `iteration`, the same `iteration`. Every diagnostic of `run.json` also has a line with the same `code` and `data`, written before `run.json` refers to it. Times are wall-clock and need not increase: the order of the lines is the order of the events. The log is outside the bitwise guarantee of [run.json](#runjson).
+The first line logs the start of the run (`iteration` null), and the writer logs the end with the final status. A line with a `code` has the level of its letter (`E` and `D`: `error`, `W`: `warning`) and, when its `data` has an `iteration`, the same `iteration`. Every diagnostic of `run.json` also has a line with the same `code` and `data`, written before `run.json` refers to it. A coded event of the physics is logged each time it happens and recorded in `run.json` the first time its code appears (W0711 can repeat for hundreds of iterations). Times are wall-clock and need not increase: the order of the lines is the order of the events. The log is outside the bitwise guarantee of [run.json](#runjson).
 
 ## solution.cgns
 
