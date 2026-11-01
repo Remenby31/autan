@@ -10,7 +10,7 @@ R_c = Σ_f F(W_L, W_R)·S_f − s_c V_c over the faces of cell c, in conserved v
 |---|---|---|
 | Variables reconstructed | primitive W = (ρ, u, v, w, p) | |
 | Gradients | weighted least squares (1/d²) over the **face2 stencil**: face neighbours, their face neighbours, and the boundary faces of both | [Stencil](#gradient-stencil) |
-| Limiter | Venkatakrishnan, bounds over the face neighbours, ε_k² = (K/L)³ V q_k², K = 5, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
+| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 5, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
 | Face states | W_f = W_c + φ ∘ (∇W · (x_f − x_c)) | |
 | Warped faces | flux of the linear reconstruction through the fan triangles: Σ_j dF_j[W; ∇W · M_{:,j}], M = Σ_t (c_t − x_f) ⊗ S_t | [Warped faces](#warped-faces) |
 | Fluxes | Roe with Harten's fix on the acoustic waves only; HLLC with Einfeldt speeds; AUSM+-up with M_co the freestream Mach number | Roe (1981); Toro, Spruce, Speares (1994); Batten et al. (1997); Liou (2006) |
@@ -43,7 +43,7 @@ Spectrum of the dense Jacobian (finite differences) at the manufactured solution
 | face2 | 0 | +0.87 |
 | vertex (cells sharing a node) | 0 | +0.91 |
 
-Face neighbours stay stable on the hexahedral, prismatic, hybrid and polyhedral families (no eigenvalue with Re < 0 at n = 5–6). Cost on GB10 (tetrahedra n = 96, 3.9 M cells, `fp32`, measured by CFD - Générateur kernels): face neighbours 0.50 ns/cell (93 % of peak bandwidth), face2 1.82 ns/cell (58 %), vertex 20 ns/cell (25 %). face2 is the default: stable, second order, 11× cheaper than vertex. Both stencils give order 2 ([MMS](#manufactured-solution)).
+Face neighbours stay stable on the hexahedral, prismatic, hybrid and polyhedral families (no eigenvalue with Re < 0 at n = 5–6). Cost on GB10 (tetrahedra n = 96, 3.9 M cells, `fp32`, measured by CFD - Générateur kernels): face neighbours 0.50 ns/cell (93 % of peak bandwidth), face2 1.82 ns/cell (58 %), vertex 20 ns/cell (25 %). face2 is the default: stable, second order, 11× cheaper than vertex. Both stencils give order 2 ([MMS](#manufactured-solution)). The limiter's bounds use the same stencil: bounds over the four face neighbours of a tetrahedron are narrower than the values the face2 gradient extrapolates, so the limiter clips smooth solutions and the limited scheme falls to first order on tetrahedra (measured: finest-pair order 0.58–1.20).
 
 ## Warped faces
 
