@@ -105,7 +105,9 @@ export function LogView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: follow on every append while live
   useEffect(() => {
     if (!live || !count) return;
-    following.current = true;
+    const el = scroller.current;
+    // Armed only when the view will actually move, so that the next scroll event clears it.
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight >= ROW) following.current = true;
     virtualizer.scrollToIndex(count - 1, { align: "end" });
   }, [history.version, live, count]);
 
@@ -185,8 +187,9 @@ export function LogView({
         onScroll={(e) => {
           const el = e.currentTarget;
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < ROW;
-          if (following.current) following.current = atEnd ? false : following.current;
-          else if (!atEnd) setLive(false);
+          if (following.current) {
+            if (atEnd) following.current = false;
+          } else if (!atEnd) setLive(false);
         }}
       >
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

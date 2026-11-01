@@ -384,6 +384,7 @@ def test_a_manufactured_solution_run_plans_against_its_archive(
         ({"density": 1e-300, "energy": 1.0}, {"density": 1e-310, "energy": 1e-8}, 8.0),
         ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 0.0}, 8.0),
         ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 1.0}, None),
+        ({"density": 1.0, "energy": 1.0}, {"density": 0.0, "energy": 1e-8}, 8.0),
     ],
 )
 def test_residual_drop_is_the_slowest_equation(

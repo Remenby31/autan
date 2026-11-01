@@ -14,18 +14,20 @@ class _Trend:
     first: dict[str, float] | None = None
     iteration: int | None = None
     orders: list[float] = field(default_factory=list)
+    current: float | None = None
 
 
 def residual_orders(first: dict[str, float], residuals: dict[str, float]) -> float | None:
     """Orders of magnitude the slowest equation has dropped since iteration 1: the quantity
     the steady convergence criterion (`time.residual_orders`, case-schema.md) compares. None
     when an equation cannot be compared: a residual that is not a positive finite number, or
-    that grew from an exact zero at iteration 1."""
+    that grew from an exact zero at iteration 1. A residual that reached exactly zero does not
+    limit the drop."""
     drops = []
     for name, value in residuals.items():
         start = first.get(name)
-        if start == 0 and value == 0:
-            continue
+        if value == 0 and (start == 0 or _positive(start)):
+            continue  # Reached exactly zero: no limit on the drop.
         if not (_positive(start) and _positive(value)):
             return None
         drops.append(math.log10(start) - math.log10(value))  # type: ignore[arg-type]
@@ -69,6 +71,7 @@ class Summaries:
                 trend.first = residuals
             trend.iteration = iteration
             orders = residual_orders(trend.first, residuals)
+            trend.current = orders
             if orders is not None:
                 trend.orders.append(orders)
         trend.offset = chunk.offset
@@ -76,7 +79,7 @@ class Summaries:
             return None
         return {
             "iteration": trend.iteration,
-            "orders": round(trend.orders[-1], 3) if trend.orders else None,
+            "orders": None if trend.current is None else round(trend.current, 3),
             "trend": downsample(trend.orders),
         }
 

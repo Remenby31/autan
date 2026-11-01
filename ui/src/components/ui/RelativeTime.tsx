@@ -55,7 +55,11 @@ export function RelativeTime({ iso, card = true }: { iso: string; card?: boolean
   const local = date.toLocaleString("en-GB", { ...ABSOLUTE, timeZoneName: "short" });
   if (!card) {
     return (
-      <time dateTime={iso} title={`${utc} UTC`} className="whitespace-nowrap tabular-nums">
+      <time
+        dateTime={iso}
+        title={`${utc} UTC · ${local}`}
+        className="whitespace-nowrap tabular-nums"
+      >
         {relativeText}
       </time>
     );

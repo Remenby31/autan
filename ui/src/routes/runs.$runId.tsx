@@ -55,10 +55,11 @@ function RunView() {
     refetchInterval: run?.status === "running" ? 5000 : false,
   });
   const client = useQueryClient();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch once per status change
+  // Refetch whenever the details lag the live status (a run that ended while they loaded).
+  const stale = Boolean(run && details.data && details.data.run.status !== run.status);
   useEffect(() => {
-    void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
-  }, [run?.status]);
+    if (stale) void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
+  }, [stale, client, runId]);
   const plan = useQuery(planQuery(runId));
   const toast = useToast();
   const now = useSyncExternalStore(second.subscribe, second.now);

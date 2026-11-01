@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -7,7 +8,7 @@ import tomllib
 import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
 import autan
@@ -165,27 +166,28 @@ def create_app(
             manufactured = (
                 folder.read("manufactured.json") if folder.stat("manufactured.json") else None
             )
-        # The stored case is planned from a scratch copy: its files came through the pinned
-        # folder, and a verification case finds its archived manufactured solution under the
-        # name the case declares, as when it was run.
+        # The stored case is planned from a scratch copy built from the pinned folder, so the
+        # SDK reads no file of the run directory, nor any file the case names: the mesh path is
+        # cut to its name (plan reads only the MeshInfo) and a verification case points at the
+        # archived manufactured solution.
+        try:
+            document = tomllib.loads(case_toml.decode())
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+            raise HTTPException(422, f"case.toml: {error}") from error
+        document["mesh"] = PurePosixPath(str(document.get("mesh", ""))).name or "mesh"
+        verification = document.get("verification")
+        if isinstance(verification, dict) and isinstance(verification.get("manufactured"), dict):
+            verification["manufactured"]["path"] = "manufactured.json"
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
-            (root / "case.toml").write_bytes(case_toml)
-            (root / "mesh-info.json").write_bytes(mesh_info)
+            (root / "case.json").write_text(json.dumps(document))
+            (root / "mesh.meshinfo").write_bytes(mesh_info)
+            if manufactured is not None:
+                (root / "manufactured.json").write_bytes(manufactured)
             try:
-                declared = tomllib.loads(case_toml.decode())["verification"]["manufactured"]["path"]
-            except (KeyError, TypeError, tomllib.TOMLDecodeError, UnicodeDecodeError):
-                declared = None
-            if manufactured is not None and isinstance(declared, str):
-                target = (root / declared).resolve()
-                if target.is_relative_to(root.resolve()):
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(manufactured)
-            try:
-                case = autan.load(root / "case.toml")
-                plan = case.plan(
-                    autan.MeshInfo.load(root / "mesh-info.json"), gpus=run["devices"]["count"]
-                )
+                case = autan.load(root / "case.json")
+                info = autan.MeshInfo.load(root / "mesh.meshinfo")
+                plan = case.plan(info, gpus=run["devices"]["count"])
             except CaseError as error:
                 detail = [d.model_dump(mode="json") for d in error.diagnostics]
                 raise HTTPException(422, detail) from error

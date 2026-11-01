@@ -50,4 +50,10 @@ test("the residual drop is the slowest equation's, undefined once a zero residua
       { density: 1e-8, energy: 1 },
     ]),
   ).toBeNaN();
+  expect(
+    drop([
+      { density: 1, energy: 1 },
+      { density: 0, energy: 1e-8 },
+    ]),
+  ).toBeCloseTo(8);
 });

@@ -171,13 +171,13 @@ export function appendHistory(columns: HistoryColumns, records: HistoryRecord[])
       const series = column(columns.residuals, name, () => []);
       series.push(value);
       const first = series[0] ?? 0;
-      if (first === 0 && value === 0) continue;
+      if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
       else comparable = false;
     }
-    // Same rule as the server's residual_orders: a residual grown from an exact zero, or not
-    // positive, leaves the drop undefined.
+    // Same rule as the server's residual_orders: a residual at exactly zero does not limit the
+    // drop; one grown from an exact zero, or not positive, leaves it undefined.
     columns.orders.push(comparable && Number.isFinite(slowest) ? slowest : Number.NaN);
     for (const [name, forces] of Object.entries(record.monitors ?? {})) {
       columns.monitors.set(name, forces);
