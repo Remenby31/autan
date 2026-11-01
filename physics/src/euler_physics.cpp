@@ -20,6 +20,8 @@
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/runtime/exact_sum.hpp"
+#include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/line_smoother.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -50,7 +52,8 @@ constexpr double cfl_max = 1e6;
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
 constexpr int linear_max_cycles = 10;
-// linear_solver = "gauss-seidel": symmetric sweeps over the global colours per implicit step.
+// linear_solver = "gauss-seidel" or "lines": symmetric sweeps over the global colours per implicit
+// step.
 constexpr int gauss_seidel_sweeps = 4;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
@@ -109,6 +112,18 @@ class EulerPhysics final : public runtime::Physics {
                       nlohmann::json{{"nodes", nodes},
                                      {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
                           .dump());
+      } else if (in.time.linear_solver == "lines") {
+        // The multigrid's fine lines, kept whole by the partition, swept over the runtime's
+        // colouring of the lines by global id: the same sweeps on any number of ranks.
+        // A mesh without lines has no groups: every cell is its own, coloured as cell_colours.
+        const bool grouped = !ctx.cell_group_colours.empty();
+        lines_.emplace(mesh, ctx.group_offsets, ctx.group_cells,
+                       grouped ? ctx.cell_group_colours : ctx.cell_colours,
+                       grouped ? ctx.n_group_colours : ctx.n_colours);
+        ctx.log.write(
+            "info", "linear", "line-implicit block Gauss-Seidel", {},
+            nlohmann::json{{"colours", lines_->n_colours()}, {"sweeps", gauss_seidel_sweeps}}
+                .dump());
       } else {
         // The runtime's colouring by global id: the same sweeps on any number of ranks.
         colours_.assign(static_cast<std::size_t>(ctx.n_colours), {});
@@ -652,6 +667,11 @@ class EulerPhysics final : public runtime::Physics {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
         linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      } else if (lines_) {
+        lines_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        lines_->sweep(rhs_, du_, gauss_seidel_sweeps,
+                      [this](std::span<double> x) { fill_ghosts(x); });
+        linear.residual_drop = 0.0;  // a fixed number of sweeps, as Gauss-Seidel
       } else {
         matrix_->factor(owned_);
         matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
@@ -877,6 +897,7 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;              // steady runs only
   std::optional<solvers::Multigrid> multigrid_;    // linear_solver = "multigrid"
+  std::optional<solvers::LineSmoother> lines_;     // linear_solver = "lines"
   std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
@@ -916,7 +937,7 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
     return runtime::PhysicsRefusal{
         .message =
             "the steady multigrid runs on one rank without periodic pairs; set "
-            "linear_solver = \"gauss-seidel\" until the distributed multigrid lands",
+            "linear_solver = \"lines\" or \"gauss-seidel\" until the distributed multigrid lands",
         .path = "time.linear_solver",
         .data_json = nlohmann::json{{"ranks", ranks}, {"pairs", in.periodic.size()}}.dump()};
   }
@@ -992,11 +1013,21 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 
 }  // namespace
 
+// linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
+// partition keeps whole.
+runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
+                                 const Geometry& geometry) {
+  if (in.time.kind != "steady" || in.time.linear_solver != "lines") return {};
+  auto lines = solvers::smoother_lines(mesh, geometry);
+  if (lines.cells.empty()) return {};
+  return {std::move(lines.offsets), std::move(lines.cells)};
+}
+
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope,
-               /*several_ranks=*/true);
+               /*several_ranks=*/true, euler_groups);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
-               euler_scope, /*several_ranks=*/true);
+               euler_scope, /*several_ranks=*/true, euler_groups);
 }
 
 }  // namespace autan::physics

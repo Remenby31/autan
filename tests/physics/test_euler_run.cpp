@@ -253,7 +253,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  const char* linear = GENERATE("multigrid", "gauss-seidel");
+  const char* linear = GENERATE("multigrid", "gauss-seidel", "lines");
   INFO(precision << " " << linear);
   const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
     d["precision"] = precision;
@@ -710,22 +710,25 @@ TEST_CASE("a steady multigrid case on several ranks is refused before any direct
   CHECK(diagnostic["location"]["path"] == "time.linear_solver");
 }
 
-TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank solution",
+TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the one-rank solution",
           "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. The face sums
   // still follow local order (#199), so the bits differ: converged 10 orders, the fields agree
   // within 1e-9 of their magnitude (the largest speed for velocity components), and a fixed rank
   // count repeats bit for bit. Two zones at different states on the hybrid mesh, farfield around.
+  // "lines" sweeps the multigrid's fine lines, kept whole by the partition, over the runtime's
+  // colouring of the lines: the same algorithm on any number of ranks.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
+  const char* linear = GENERATE("gauss-seidel", "lines");
+  CAPTURE(ranks, linear);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp64");
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
     auto& init = d["cell_zones"].back()["initial"];
     init["density"] = 1.2 * init["density"].get<double>();
     init["pressure"] = 1.3 * init["pressure"].get<double>();
-    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["linear_solver"] = linear;
     d["time"]["max_iterations"] = 2000;
     d["time"]["residual_orders"] = 10.0;
   });
