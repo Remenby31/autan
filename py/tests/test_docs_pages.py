@@ -10,11 +10,13 @@ import pytest
 
 from tests.conftest import ROOT
 
+# build.md installs a toolchain and compiles the C++ core; its commands are run on a Spark (docker/spark.sh).
+BUILT_ELSEWHERE = {"build.md"}
 PAGES = sorted(
     page
     for folder in ("getting-started", "guides")
     for page in (ROOT / "docs" / folder).glob("*.md")
-    if not page.name.endswith(".fr.md")
+    if not page.name.endswith(".fr.md") and page.name not in BUILT_ELSEWHERE
 )
 BLOCK = re.compile(r"^```(sh|python|text)\n(.*?)^```", re.MULTILINE | re.DOTALL)
 CODE = re.compile(r"\b[EWD]\d{4}\b")
