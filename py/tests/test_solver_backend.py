@@ -20,7 +20,7 @@ import pytest
 from autan import cgns
 from autan.cli import main
 
-from tests.conftest import ROOT
+from tests.conftest import ROOT, identity_of
 
 MESH = ROOT / "tests" / "data" / "mesh" / "hybrid" / "polyMesh"
 
@@ -89,16 +89,7 @@ def test_a_real_run_reads_back_through_the_results_contract(
     assert run.solver.backend == "cpu"
     assert run.case.sha256 == case.spec.hash()
     assert run.mesh.sha256 == mesh.source.sha256
-    parts = [
-        run.case.sha256,
-        run.mesh.sha256,
-        run.solver.commit,
-        run.precision,
-        run.solver.backend,
-        run.devices.kind,
-        str(run.devices.count),
-    ]
-    assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    assert run.identity == identity_of(run.document())
     assert result.history.iterations[-1] == run.iterations
     assert result.field("Density").size == mesh.counts.cells
 
