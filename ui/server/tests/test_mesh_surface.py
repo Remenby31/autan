@@ -115,6 +115,13 @@ def _mutated(change: str) -> bytes:
         header["zones"][0] = None
     elif change == "zone type":
         header["zones"][0]["type"] = "inlet"
+    elif change == "collinear face":
+        # Three nodes of one face on a line, off the origin by 2**-18 steps: exactly no area.
+        positions = arrays["positions"].reshape(-1, 3)
+        for t, node in zip((0, 1, 3), (13, 14, 8), strict=True):
+            positions[node] = (0, 0.1 + t * 2**-18, 0.3 + t * 2**-18)
+    elif change == "overflowing positions":
+        arrays["positions"] *= 1e200
     elif change == "infinite position":
         arrays["positions"][0] = np.inf
     elif change == "repeated node":
@@ -150,6 +157,8 @@ def _mutated(change: str) -> bytes:
         "null zone",
         "zone type",
         "infinite position",
+        "overflowing positions",
+        "collinear face",
         "repeated node",
         "reversed face",
         "retraced node",

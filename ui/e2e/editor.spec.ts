@@ -452,6 +452,11 @@ test("dragging the view orbits it and picks nothing", async ({ page }) => {
   await page.mouse.down();
   await page.mouse.move(x + 35, y + 20, { steps: 5 });
   await page.mouse.up();
+  // Out and back: released where it was pressed, still a drag.
+  await page.mouse.down();
+  await page.mouse.move(x + 35, y + 20, { steps: 5 });
+  await page.mouse.move(x, y, { steps: 5 });
+  await page.mouse.up();
 
   await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
   await clickCentre(page);

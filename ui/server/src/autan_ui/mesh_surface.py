@@ -56,7 +56,8 @@ def mesh_surface(data: bytes, mesh_info: dict[str, Any]) -> bytes:
     if not np.isfinite(positions).all():
         msg = "a node position is not finite"
         raise _broken(msg)
-    _check_polygons(offsets, nodes, positions)
+    with np.errstate(over="ignore", invalid="ignore"):  # Overflow is checked, not warned.
+        _check_polygons(offsets, nodes, positions)
     origin = (positions.min(axis=0) + positions.max(axis=0)) / 2 if len(positions) else np.zeros(3)
     return encode(
         [
@@ -121,8 +122,10 @@ def _check_polygons(
         msg = "the boundary is not closed with a consistent orientation"
         raise _broken(msg)
     points = positions.astype(np.float64)
-    centre = (points.min(axis=0) + points.max(axis=0)) / 2
-    a, b = points[nodes] - centre, points[following] - centre
+    # Each face's normal from its own first node, so that the area of a small face far from the
+    # origin does not drown in cancellation; compared with the face's longest edge.
+    corner = points[nodes[offsets[:-1]]][face]
+    a, b = points[nodes] - corner, points[following] - corner
     normal = (
         np.stack(
             [np.bincount(face, np.cross(a, b)[:, k], minlength=len(count)) for k in range(3)],
@@ -131,16 +134,26 @@ def _check_polygons(
         / 2
     )
     area = np.linalg.norm(normal, axis=1)
-    # Measured against the face's own longest edge, so that a thin mesh's small faces count.
     edge = np.maximum.reduceat(np.linalg.norm(b - a, axis=1), offsets[:-1])
+    if not (np.isfinite(area).all() and np.isfinite(edge).all()):
+        msg = "a face's geometry overflows double precision"
+        raise _broken(msg)
     if np.any(area <= 1e3 * np.finfo(np.float64).eps * edge**2):
         msg = "a face has no area"
         raise _broken(msg)
+    centre = (points.min(axis=0) + points.max(axis=0)) / 2
     centroid = (
-        np.stack([np.bincount(face, a[:, k], minlength=len(count)) for k in range(3)], axis=1)
+        np.stack(
+            [
+                np.bincount(face, points[nodes][:, k] - centre[k], minlength=len(count))
+                for k in range(3)
+            ],
+            axis=1,
+        )
         / count[:, None]
     )
-    if np.einsum("ij,ij->", centroid, normal) <= 0:
+    volume = np.einsum("ij,ij->", centroid, normal)
+    if not np.isfinite(volume) or volume <= 0:
         msg = "the boundary is not oriented outward: the volume it encloses is not positive"
         raise _broken(msg)
 

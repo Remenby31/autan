@@ -50,3 +50,10 @@ test.each([
   const names = ["ymin", "-min", "!min", "bmin", "dmin", "]min", "^min", "amin"];
   expect(names.filter((n) => globMatches(pattern, n))).toEqual(matched);
 });
+
+test("ranges are over code points, and runs of stars stay linear", () => {
+  expect(globMatches("[😀-🙏]*", "😀wall")).toBe(true);
+  expect(globMatches("[!😀-🙏]*", "😀wall")).toBe(false);
+  expect(globMatches("************z", "farfield-downstream-outlet")).toBe(false);
+  expect(globMatches("*a*a*a*a*a*a*a*a*b", "a".repeat(200))).toBe(false);
+});

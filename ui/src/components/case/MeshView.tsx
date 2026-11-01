@@ -3,11 +3,11 @@ import { fetchSurface, type Surface } from "../../api/surface";
 import { SurfaceViewer } from "../../viewer/SurfaceViewer";
 import { useResolvedTheme } from "../shell/theme";
 
-/** The boundary of a mesh in 3D, one zone per boundary zone; a click picks the zone under the
- * cursor. `selected` is a zone name, highlighted when the mesh has it. */
 // Pointer travel, in CSS pixels, beyond which a press is a drag (an orbit), not a click.
 const DRAG_PX = 4;
 
+/** The boundary of a mesh in 3D, one zone per boundary zone; a click picks the zone under the
+ * cursor. `selected` is a zone name, highlighted when the mesh has it. */
 export function MeshView({
   mesh,
   selected,
@@ -21,7 +21,12 @@ export function MeshView({
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const viewer = useRef<SurfaceViewer | null>(null);
-  const press = useRef<{ x: number; y: number } | null>(null);
+  const press = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
+  // A pick reads the GPU asynchronously: it reaches the editor as it is then, and only if no
+  // later pick or mesh came first.
+  const picks = useRef(0);
+  const latest = useRef(onPick);
+  latest.current = onPick;
   const [surface, setSurface] = useState<Surface | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,6 +65,7 @@ export function MeshView({
   useEffect(() => {
     if (!ready) return;
     const abort = new AbortController();
+    picks.current++;
     viewer.current?.clear();
     setSurface(null);
     setError(null);
@@ -96,16 +102,22 @@ export function MeshView({
         data-ready={surface ? "true" : undefined}
         aria-label={`Boundary of ${mesh}; click a zone to set its condition`}
         onPointerDown={(e) => {
-          press.current = { x: e.clientX, y: e.clientY };
+          press.current = { x: e.clientX, y: e.clientY, dragged: false };
+        }}
+        onPointerMove={(e) => {
+          const from = press.current;
+          if (from && Math.hypot(e.clientX - from.x, e.clientY - from.y) > DRAG_PX)
+            from.dragged = true;
         }}
         onClick={async (e) => {
-          // A drag orbits the view: only a click that stays put picks.
-          const from = press.current;
-          if (from && Math.hypot(e.clientX - from.x, e.clientY - from.y) > DRAG_PX) return;
+          // A drag orbits the view, wherever it ends: only a press that stays put picks.
+          if (press.current?.dragged) return;
+          const mine = ++picks.current;
           const rect = e.currentTarget.getBoundingClientRect();
           const index = await viewer.current?.pick(e.clientX - rect.left, e.clientY - rect.top);
+          if (mine !== picks.current) return;
           const zone = index == null ? undefined : surface?.zones[index]?.name;
-          if (zone) onPick(zone);
+          if (zone) latest.current(zone);
         }}
       />
       {error && (
