@@ -2,8 +2,10 @@ import contextlib
 import fcntl
 import logging
 import os
+import re
 import statistics
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -16,7 +18,12 @@ from autan_bench.errors import BenchError, Code
 _log = logging.getLogger(__name__)
 
 # One lock per Spark, outside sticky /tmp so that every uid can open it (docs/infra/bench.md).
-DEFAULT_LOCK = Path("/home/admin/autan-gpu/gpu.lock")
+# A Mac has a single user: the lock sits in the home directory.
+DEFAULT_LOCK = (
+    Path.home() / ".autan-gpu.lock"
+    if sys.platform == "darwin"
+    else Path("/home/admin/autan-gpu/gpu.lock")
+)
 IDLE_UTILIZATION_PCT = 5.0
 BUSY_UTILIZATION_PCT = 50.0
 
@@ -55,10 +62,41 @@ class GpuSample:
     power_w: float | None
     temperature_c: float | None
     event_reasons: int | None
-    compute_apps: int
+    # None where the platform does not list GPU processes (macOS): contention is then unchecked.
+    compute_apps: int | None
 
 
 def sample(gpu_index: int = 0) -> GpuSample:
+    """One telemetry sample: nvidia-smi on Linux, the IOAccelerator registry on macOS."""
+    return _sample_ioreg() if sys.platform == "darwin" else _sample_nvidia(gpu_index)
+
+
+def _sample_ioreg() -> GpuSample:
+    try:
+        out = subprocess.run(
+            ["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BenchError(Code.TELEMETRY_FAILED, f"ioreg: {exc}") from exc
+    found = re.search(r'"Device Utilization %"=(\d+)', out)
+    if found is None:
+        raise BenchError(Code.TELEMETRY_FAILED, "ioreg reports no GPU device utilization")
+    return GpuSample(
+        utilization_pct=float(found.group(1)),
+        sm_mhz=None,
+        sm_max_mhz=None,
+        power_w=None,
+        temperature_c=None,
+        event_reasons=None,
+        compute_apps=None,
+    )
+
+
+def _sample_nvidia(gpu_index: int) -> GpuSample:
     rows = _nvidia_smi(
         f"--id={gpu_index}", f"--query-gpu={','.join(_GPU_FIELDS)}", "--format=csv,noheader,nounits"
     )
@@ -119,7 +157,8 @@ def require_idle(
             )
         seen.append(current)
         recent = seen[-window:]
-        apps = max(s.compute_apps for s in recent)
+        listed = [s.compute_apps for s in recent if s.compute_apps is not None]
+        apps = max(listed) if listed else None
         util = max(s.utilization_pct or 0.0 for s in recent)
         if len(recent) == window and not apps and util <= IDLE_UTILIZATION_PCT:
             return {"samples": window, "compute_apps_max": apps, "utilization_pct_max": util}
@@ -183,6 +222,7 @@ class Sampler:
         def values(name: str) -> list[float]:
             return [v for s in busy if (v := getattr(s, name)) is not None]
 
+        listed = [s.compute_apps for s in self.samples if s.compute_apps is not None]
         reasons = 0
         for s in busy:
             reasons |= s.event_reasons or 0
@@ -194,5 +234,5 @@ class Sampler:
             "power_w": _spread(values("power_w")),
             "temperature_c": _spread(values("temperature_c")),
             "clocks_event_reasons": f"0x{reasons:016x}",
-            "compute_apps_max": max(s.compute_apps for s in self.samples),
+            "compute_apps_max": max(listed) if listed else None,
         }

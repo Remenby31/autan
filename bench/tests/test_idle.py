@@ -1,5 +1,6 @@
 import os
 import stat
+import sys
 
 import pytest
 from autan_bench.errors import BenchError, Code
@@ -8,6 +9,7 @@ from autan_bench.gpu import require_idle
 
 @pytest.fixture
 def fake_nvidia_smi(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
     """Puts on PATH an nvidia-smi that reports the given utilization and compute processes."""
 
     def install(utilization: str, apps: int) -> None:
@@ -39,3 +41,18 @@ def test_idle_check_needs_a_measured_quiet_gpu(fake_nvidia_smi):
         with pytest.raises(BenchError) as err:
             require_idle(interval_s=0.0, timeout_s=0.0)
         assert err.value.code == code
+
+
+def test_idle_check_on_macos_uses_the_device_utilization(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    script = tmp_path / "ioreg"
+    for utilization, ok in (("3", True), ("40", False)):
+        script.write_text(f"#!/bin/sh\necho '\"Device Utilization %\"={utilization}'\n")
+        script.chmod(0o755)
+        if ok:
+            assert require_idle(interval_s=0.0)["compute_apps_max"] is None
+        else:
+            with pytest.raises(BenchError) as err:
+                require_idle(interval_s=0.0, timeout_s=0.0)
+            assert err.value.code == Code.GPU_BUSY
