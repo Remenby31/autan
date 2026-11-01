@@ -760,6 +760,24 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   }
   INFO("histories differ by " << worst);
   CHECK(worst <= 1e-6);
+  // A continuation carries the exemption: from 20 steps, without `start.woken` it repeats the
+  // uninterrupted run; with the z-momentum woken, that equation's round-off sets the CFL again.
+  auto half = doc(1e-20);
+  half["time"]["max_iterations"] = 20;
+  const auto first = run(half);
+  REQUIRE(first.status == ExitStatus::finished);
+  auto rest = doc(1e-20);
+  rest["start"] = continue_from(first.run);
+  REQUIRE(rest["start"]["woken"] == Json::array());
+  const auto plain = run(rest);
+  INFO(plain.err);
+  REQUIRE(plain.status == ExitStatus::finished);
+  CHECK(read(first.run / "history.jsonl") + read(plain.run / "history.jsonl") ==
+        read(b.run / "history.jsonl"));
+  rest["start"]["woken"] = {"momentum-z"};
+  const auto woken = run(rest);
+  REQUIRE(woken.status == ExitStatus::finished);
+  CHECK(read(woken.run / "history.jsonl") != read(plain.run / "history.jsonl"));
   CHECK(noisy);  // the injected noise did reach the z-momentum residual
 }
 
