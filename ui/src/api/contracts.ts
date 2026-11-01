@@ -78,4 +78,15 @@ export interface RunSummary {
   /** The case's `time.residual_orders` (steady) and iteration or step budget. */
   target_orders: number | null;
   max_iterations: number | null;
+  /** The settings studies usually sweep, as the case writes them ("19.57 deg"). */
+  settings?: RunSettings;
+}
+
+export interface RunSettings {
+  aoa: string | null;
+  sideslip: string | null;
+  mach: number | null;
+  re: number | null;
+  turbulence: string | null;
+  precision: string | null;
 }
