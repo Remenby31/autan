@@ -77,6 +77,7 @@ function Viewer() {
     // A new run starts from nothing: the previous surface's fields must not reach this viewer.
     setSurface(null);
     setSelected(null);
+    setError(null);
     const surfaceRequest = fetchSurface(
       run ? `/api/runs/${run}/surface` : `/api/surfaces/synthetic?triangles=${triangles}`,
       abort.signal,

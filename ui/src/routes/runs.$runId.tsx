@@ -57,8 +57,15 @@ function RunView() {
     refetchInterval: run?.status === "running" ? 5000 : false,
   });
   const client = useQueryClient();
-  // Refetch whenever the details lag the live status (a run that ended while they loaded).
+  // Refetch once the run has ended, or whenever the details lag its status: the registry
+  // stream updates the cached run.json but not the outputs (solution.cgns comes at the end).
+  const status = run?.status;
   const stale = Boolean(run && details.data && details.data.run.status !== run.status);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch on each status change
+  useEffect(() => {
+    if (status && status !== "running")
+      void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
+  }, [status]);
   useEffect(() => {
     if (stale) void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
   }, [stale, client, runId]);
