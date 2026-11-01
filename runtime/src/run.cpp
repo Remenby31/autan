@@ -768,6 +768,12 @@ class Run final : public Log {
         Json record =
             forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
                           in.monitors[m], in.freestream);
+        for (const auto& [key, value] : record.items()) {
+          if (!std::isfinite(value.get<double>())) {
+            throw std::runtime_error("monitor '" + in.monitors[m].name + "': " + key +
+                                     " is not finite on the final state");
+          }
+        }
         record["iteration"] = done;
         monitors[in.monitors[m].name] = std::move(record);
       }

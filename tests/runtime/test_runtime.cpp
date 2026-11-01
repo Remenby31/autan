@@ -326,6 +326,20 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
   }
+  SECTION("failed on final loads that overflow: E0704, no monitors") {
+    // A pressure excess on ymin about a centre 1e308 m away: moments beyond
+    // the double range.
+    const Outcome o = run(input([](Json& d) {
+                            d["monitors"][0]["every"] = 1000;
+                            d["monitors"][0]["moment_center"] = {1e308, 1e308, 1e308};
+                          }),
+                          {.factor = 0.5, .pressure_offset = 1000.0});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+  }
   SECTION("failed writing the solution: E0704, no monitors") {
     const Outcome o = run(input(), {.factor = 0.5, .throw_in_fields = true});
     CHECK(o.status == ExitStatus::failed);
