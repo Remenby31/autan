@@ -760,7 +760,8 @@ TEST_CASE("on a device, a verification case converges to the host's discrete sol
     volume += g.cell_volume[c];
   }
   const autan::physics::Manufactured mms(read(mms_path));
-  const auto exact = mms.evaluate("fields", {"rho", "u", "v", "w", "p"}, points);
+  const std::array<std::string, 5> variables = {"rho", "u", "v", "w", "p"};
+  const auto exact = mms.evaluate("fields", variables, points);
   auto l2 = [&](const std::vector<double>& a, const std::vector<double>& b) {
     double s = 0.0;
     for (std::size_t c = 0; c < n; ++c) s += g.cell_volume[c] * std::pow(a[c] - b[c], 2);
