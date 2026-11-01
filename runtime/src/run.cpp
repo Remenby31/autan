@@ -1014,6 +1014,9 @@ class Run final : public Log {
       try {
         record_final_monitors(done);
       } catch (const PhysicsFailure& e) {
+        // A throw on one rank leaves the others inside the collective sum of
+        // loads(): abort them all, as for write_solution below.
+        if (comm_.size() > 1) return fail(e.what(), done);
         record_failure(e.what());
         status = "failed";
       }
