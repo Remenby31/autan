@@ -98,7 +98,7 @@ def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, la
     h = ctypes.c_void_p()
     parts = np.ascontiguousarray(parts, dtype=np.int32)
     rc = lib().autan_spike_mesh_partition(
-        m.handle, _p(parts), ctypes.c_int32(n_parts), ctypes.c_int32(rank), ctypes.c_int32(layers),
+        m.handle, _p(parts), ctypes.c_int64(len(parts)), ctypes.c_int32(n_parts), ctypes.c_int32(rank), ctypes.c_int32(layers),
         ctypes.byref(h), err, ctypes.c_size_t(len(err)),
     )  # fmt: skip
     _check(rc, err)
