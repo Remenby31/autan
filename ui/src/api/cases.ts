@@ -11,6 +11,23 @@ export interface MeshSummary {
   cell_zones: { name: string; cells: number }[];
 }
 
+/** A material of the SDK's libraries (`GET /api/materials`): `autan.<library>.<name>`. */
+export interface Material {
+  library: "gases" | "materials";
+  name: string;
+  document: { kind: "ideal-gas" | "solid"; name: string } & Record<string, unknown>;
+}
+
+export const materialsQuery = queryOptions({
+  queryKey: ["materials"],
+  queryFn: async (): Promise<Material[]> => {
+    const response = await fetch("/api/materials");
+    if (!response.ok) throw new Error(`/api/materials: HTTP ${response.status}`);
+    return response.json();
+  },
+  staleTime: Number.POSITIVE_INFINITY,
+});
+
 export const meshesQuery = queryOptions({
   queryKey: ["meshes"],
   queryFn: async (): Promise<MeshSummary[]> => {
@@ -76,6 +93,13 @@ export interface BoundaryForm {
   values: Record<string, string>;
 }
 
+export interface CellZoneForm {
+  zones: string;
+  kind: "fluid" | "solid";
+  /** A library material's name, e.g. CO2 or COPPER. */
+  material: string;
+}
+
 export interface MonitorForm {
   surfaces: string;
   ref_area: string;
@@ -87,12 +111,13 @@ export interface CaseForm {
   name: string;
   mesh: string;
   meshFile: string;
-  physics: { kind: "compressible"; turbulence: string; precision: string };
+  physics: { kind: "compressible"; turbulence: string; precision: string; gas: string };
   freestream: Record<
     "mach" | "aoa" | "sideslip" | "re" | "ref_length" | "pressure" | "temperature",
     string
   >;
   time: { max_iterations: string; residual_orders: string };
+  cellZones: CellZoneForm[];
   boundaries: BoundaryForm[];
   monitors: MonitorForm[];
 }
@@ -101,7 +126,7 @@ export const EMPTY_CASE: CaseForm = {
   name: "",
   mesh: "",
   meshFile: "",
-  physics: { kind: "compressible", turbulence: "", precision: "" },
+  physics: { kind: "compressible", turbulence: "", precision: "", gas: "" },
   freestream: {
     mach: "",
     aoa: "",
@@ -112,6 +137,7 @@ export const EMPTY_CASE: CaseForm = {
     temperature: "",
   },
   time: { max_iterations: "", residual_orders: "" },
+  cellZones: [],
   boundaries: [],
   monitors: [],
 };
@@ -135,8 +161,10 @@ function sparse(entries: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(entries).filter(([, v]) => v !== undefined));
 }
 
-/** The case document the form describes: only what was set, the SDK fills its defaults. */
-export function caseDocument(form: CaseForm): CaseDocument {
+/** The case document the form describes: only what was set, the SDK fills its defaults. A
+ * material is the library document `materials` lists under its name. */
+export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDocument {
+  const material = (name: string) => materials.find((m) => m.name === name)?.document;
   const fs = form.freestream;
   const time = sparse({
     max_iterations: number(form.time.max_iterations),
@@ -150,6 +178,7 @@ export function caseDocument(form: CaseForm): CaseDocument {
       kind: form.physics.kind,
       turbulence: text(form.physics.turbulence) && { model: form.physics.turbulence },
       precision: text(form.physics.precision),
+      gas: text(form.physics.gas) && material(form.physics.gas),
     }),
     freestream: sparse({
       mach: number(fs.mach),
@@ -161,6 +190,12 @@ export function caseDocument(form: CaseForm): CaseDocument {
       temperature: quantity(fs.temperature),
     }),
     time: Object.keys(time).length ? { kind: "steady", ...time } : undefined,
+    cell_zones: form.cellZones.length
+      ? form.cellZones.map((zone) => ({
+          zones: zone.zones,
+          medium: sparse({ kind: zone.kind, material: material(zone.material) }),
+        }))
+      : undefined,
     boundaries: form.boundaries.length
       ? form.boundaries.map((rule) => ({
           zones: rule.zones,

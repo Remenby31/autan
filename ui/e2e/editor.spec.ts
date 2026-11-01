@@ -11,6 +11,7 @@ function withoutDocstring(source: string): string {
   return lines.slice(end + 2).join("");
 }
 const CRM_HL = withoutDocstring(readFileSync("../py/examples/crm_hl.py", "utf8"));
+const HEAT_EXCHANGER = withoutDocstring(readFileSync("../py/examples/heat_exchanger.py", "utf8"));
 
 async function rule(page: Page, k: number, zones: string, kind: string) {
   await page.getByRole("button", { name: "Add rule" }).click();
@@ -201,4 +202,45 @@ test("an inviscid case walls a picked wall with slip", async ({ page }) => {
   const rule = page.getByRole("group", { name: "Boundary rule 1" });
   await expect(rule.getByLabel("Zones")).toHaveValue("ymin");
   await expect(rule.getByLabel("Condition")).toHaveValue("slip");
+});
+
+async function cellZone(page: Page, k: number, zones: string, kind: string, material: string) {
+  await page.getByRole("button", { name: "Add zone" }).click();
+  const fieldset = page.getByRole("group", { name: `Cell zone ${k}` });
+  await fieldset.getByLabel("Zones").fill(zones);
+  await fieldset.getByLabel("Medium").selectOption(kind);
+  await fieldset.getByLabel("Material").selectOption(material);
+}
+
+async function quantity(page: Page, group: string, label: string, value: string, unit: string) {
+  const fieldset = page.getByRole("group", { name: group });
+  await fieldset.getByLabel(`${label} unit`).selectOption(unit);
+  await fieldset.getByLabel(label, { exact: true }).fill(value);
+}
+
+test("the heat exchanger built in the editor writes py/examples/heat_exchanger.py", async ({
+  page,
+}) => {
+  await page.goto("/cases/new");
+  await page.getByLabel("Name").fill("heat-exchanger");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("heat-exchanger");
+  await page.getByLabel("Turbulence").selectOption("sst");
+  await page.getByLabel("Mach").fill("0.1");
+  await page.getByLabel("Temperature", { exact: true }).fill("300.0");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325.0");
+  await cellZone(page, 1, "co2", "fluid", "CO2");
+  await cellZone(page, 2, "plate", "solid", "COPPER");
+  for (const [k, zone, temperature] of [
+    [1, "air-inlet", "400.0"],
+    [2, "co2-inlet", "280.0"],
+  ] as const) {
+    await rule(page, k, zone, "inlet");
+    await quantity(page, `Boundary rule ${k}`, "Total pressure", "103.0", "kPa");
+    await quantity(page, `Boundary rule ${k}`, "Total temperature", temperature, "K");
+  }
+  await rule(page, 3, "*-outlet", "outlet");
+  await quantity(page, "Boundary rule 3", "Static pressure", "101325.0", "Pa");
+
+  await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(HEAT_EXCHANGER);
+  await expect(page.getByTestId("plan")).toContainText("ready");
 });
