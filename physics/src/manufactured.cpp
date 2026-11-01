@@ -218,7 +218,8 @@ Manufactured::Manufactured(const std::string& json_text) {
       }
       const auto declared = pair[0].get<std::string>();
       if (slots.contains(declared) || declared == "pi") {
-        throw std::invalid_argument("subexpression '" + declared + "' is declared twice or reserved");
+        throw std::invalid_argument("subexpression '" + declared +
+                                    "' is declared twice or reserved");
       }
       Parser parser(pair[1].get<std::string>(), slots, group->nodes);
       group->subexpressions.push_back(parser.parse());

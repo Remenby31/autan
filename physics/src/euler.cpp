@@ -292,7 +292,7 @@ void Euler<P>::state(std::span<const double> u, std::span<State> s) const {
 }
 
 template <class P>
-void Euler<P>::residual(std::span<const State> u, std::span<Res> res, bool frozen_limiter) {
+void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   auto& m = *impl_;
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
