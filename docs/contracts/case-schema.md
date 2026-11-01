@@ -4,15 +4,15 @@ A case is a typed document that says what to compute on which mesh. Python code 
 
 ## Example
 
-The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
+The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The Python is in the canonical form `case.to_python()` writes, which `autan.load` reads back into the same case: only values that differ from their default, quantities in the unit the case carries, library materials by name, numbers in their shortest round-trip form. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
 
 ```python
 import autan
 from autan.units import deg, m
 
 case = autan.Case("crm-hl", mesh="crm-hl.cgns")
-case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp32+acc64")
-case.freestream(mach=0.20, aoa=19.57 * deg, re=5.49e6, ref_length=7.0 * m)
+case.physics = autan.Compressible(turbulence=autan.SA())
+case.freestream(mach=0.2, aoa=19.57 * deg, re=5490000.0, ref_length=7.0 * m)
 case.boundary("wing.*").wall()
 case.boundary("symmetry").symmetry()
 case.monitor(autan.forces("wing.*", ref_area=191.84 * m**2), every=10)

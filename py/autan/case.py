@@ -305,6 +305,17 @@ class Case:
         case._document_file = file
         return case
 
+    def to_python(self) -> str:
+        """The case as SDK code in canonical form: ``autan.load`` on a file holding it gives
+        the same case. The form is fixed: ``import autan`` and the units it uses, then
+        ``autan.Case``, physics, freestream, time, initial state, verification, cell zones and
+        boundaries in the case's order, and monitors; only values that differ from their
+        default; quantities in the unit the case carries; library materials by name; numbers
+        in their shortest round-trip form. It is ``ruff format``-clean and has no docstring."""
+        from autan.render import to_python  # noqa: PLC0415 -- autan.render imports the autan package
+
+        return to_python(self.spec)
+
     def to_toml(self) -> str:
         return tomli_w.dumps(self.spec.document())
 
