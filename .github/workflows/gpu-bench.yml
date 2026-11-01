@@ -122,7 +122,8 @@ jobs:
       - name: Install the harness
         run: uv sync --project bench --locked
       - name: Give this job priority on the GPU lock
-        run: bench/ci/priority.sh start 90
+        # As long as the job may last: a bisection on main keeps the GPU first through its probes.
+        run: bench/ci/priority.sh start ${{ github.event_name == 'pull_request' && 90 || 240 }}
       - name: Harness tests on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
