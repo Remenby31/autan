@@ -14,6 +14,9 @@ on:
     # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+  # Nightly on main: the generator's slow GPU tests, too long for every push (docs/infra/runners.md).
+  schedule:
+    - cron: "17 2 * * *"
 
 permissions: {}
 
@@ -77,11 +80,11 @@ jobs:
           ../bench/lock/autan-gpu-lock -m "gpu-tests: codegen pytest --backend gpu, not slow" -t 600 --
           uv run --locked pytest --backend gpu -m "not slow" -q
       # The 25 slow ones (second-order MMS on the device, ~55 s each, 22 min in all on the Spark)
-      # in 4 shards of about 6 minutes, each its own hold of the lock: on main, and on pull
-      # requests that change the generator or the kernels.
+      # in 4 shards of about 6 minutes, each its own hold of the lock: nightly and on demand on
+      # main, and on pull requests that change the generator or the kernels.
       - name: Generator's slow tests on the GPU (4 shards under the GPU lock)
         if: >-
-          github.event_name != 'pull_request' ||
+          github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
           contains(steps.scope.outputs.paths, 'codegen/') || contains(steps.scope.outputs.paths, 'kernels/')
         working-directory: codegen
         env:
@@ -97,3 +100,27 @@ jobs:
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop
+
+  report-nightly:
+    needs: tests
+    # A nightly failure on main becomes an issue naming the commits since the last green night.
+    if: always() && github.event_name == 'schedule' && needs.tests.result == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          good=$(gh api "repos/$GH_REPO/actions/workflows/gpu-tests.yml/runs?event=schedule&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // empty')
+          range=${good:+$good..$GITHUB_SHA}
+          gh label create gpu-tests-nightly --force --color B60205 --description "The nightly GPU test run failed"
+          gh issue create --label gpu-tests-nightly \
+            --title "gpu-tests nightly failed on ${GITHUB_SHA:0:10}" \
+            --body "The nightly gpu-tests run on main failed: $RUN_URL. Commits since the last green night: ${range:-unknown (no green night yet)}; compare with https://github.com/$GH_REPO/compare/${range/../...}."
