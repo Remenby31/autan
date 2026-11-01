@@ -1,4 +1,10 @@
-add_executable(autan_physics_tests test_euler.cpp test_implicit.cpp test_manufactured.cpp)
+add_executable(
+  autan_physics_tests
+  test_euler.cpp
+  test_implicit.cpp
+  test_manufactured.cpp
+  test_navier_stokes.cpp
+)
 target_link_libraries(
   autan_physics_tests
   PRIVATE autan::physics autan::io Catch2::Catch2WithMain autan_compile_options

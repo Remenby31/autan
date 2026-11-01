@@ -476,6 +476,13 @@ void Euler<P>::spectral_radius(std::span<State> lambda) {
 }
 
 template <class P>
+typename Euler<P>::Arrays Euler<P>::arrays() noexcept {
+  auto& m = *impl_;
+  return {m.prim.data(), m.grad.data(), m.prim_b.data(), m.bc_kind.data(),
+          m.bc.data(),   m.dwdu.data(), m.topo,          m.stencil_lsq_weight.data()};
+}
+
+template <class P>
 void Euler<P>::boundary_pressure(std::span<double> p, std::span<double> force) const {
   // The face state of the boundary flux (reconstruct in kernels/euler.py, with its fallback to
   // the cell value) and, for the force, the pressure correction of warped faces (wall_warp).
