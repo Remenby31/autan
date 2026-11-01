@@ -581,8 +581,8 @@ _CODES = [
     Code(
         "E1012",
         "Differentiation not supported",
-        "A loop with several output datasets is differentiated.",
-        "Differentiate loops with a single output dataset.",
+        "A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.",
+        "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
     ),
     Code(
         "E1100",
