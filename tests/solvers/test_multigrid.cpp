@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <random>
 #include <set>
 #include <utility>
@@ -163,6 +164,49 @@ Mesh staggered_slab(int n) {
             std::array<index_t, 4>{v(i, 0, 0), v(i, 1, 0), v(i + 1, 1, 0), v(i + 1, 0, 0)}, 0);
       }
     }
+  }
+  return autan::assemble(autan::to_face_based(std::move(m)));
+}
+
+// One column of cells of aspect ratio 4 and more along z, as layered_box(1, 1e-5, Fill::hexa,
+// false, 0.25), with a short line on its side: four cells thin in x against the middle cell.
+Mesh column_with_branch() {
+  autan::CellwiseMesh m;
+  autan::CellZone zone;
+  zone.name = "a";
+  zone.kind = autan::CellKind::fluid;
+  m.cell_zones.push_back(zone);
+  std::vector<double> z{0.0};
+  for (double d = 1e-5; z.size() < 400; d = std::min(0.25, 1.2 * d)) {
+    z.push_back(z.back() + d);
+    if (d == 0.25 && z.back() >= 0.5) break;
+  }
+  const int nz = static_cast<int>(z.size()) - 1;
+  const int mid = nz / 2;
+  std::map<std::array<double, 3>, index_t> nodes;  // shared vertices
+  auto node = [&](double x, double y, double zz) {
+    const auto [it, added] = nodes.try_emplace({x, y, zz}, static_cast<index_t>(m.x.size()));
+    if (added) {
+      m.x.push_back(x);
+      m.y.push_back(y);
+      m.z.push_back(zz);
+    }
+    return it->second;
+  };
+  auto hexa = [&](double x0, double x1, double z0, double z1) {
+    m.add_cell(
+        autan::CellShape::hexa,
+        std::array<index_t, 8>{node(x0, 0, z0), node(x1, 0, z0), node(x1, 1, z0), node(x0, 1, z0),
+                               node(x0, 0, z1), node(x1, 0, z1), node(x1, 1, z1), node(x0, 1, z1)},
+        0);
+  };
+  for (int k = 0; k < nz; ++k) {
+    hexa(0.0, 1.0, z[static_cast<std::size_t>(k)], z[static_cast<std::size_t>(k) + 1]);
+  }
+  const double h = 0.01 * (z[static_cast<std::size_t>(mid) + 1] - z[static_cast<std::size_t>(mid)]);
+  for (int i = 0; i < 4; ++i) {
+    hexa(1.0 + i * h, 1.0 + (i + 1) * h, z[static_cast<std::size_t>(mid)],
+         z[static_cast<std::size_t>(mid) + 1]);
   }
   return autan::assemble(autan::to_face_based(std::move(m)));
 }
@@ -423,6 +467,13 @@ TEST_CASE("a line with no neighbouring line coarsens along itself", "[multigrid]
   CHECK(levels[1].n_nodes == (levels[0].n_nodes + 1) / 2);
   CHECK(levels[1].n_lines() == 1);
   check_hierarchy(mesh, levels);
+  // A short line touching its middle joins it there; its other layers still pair along it.
+  const auto branched = column_with_branch();
+  const auto gb = autan::compute_geometry(branched);
+  const auto with_branch = autan::solvers::agglomerate(branched, gb, options);
+  REQUIRE(with_branch.size() >= 2);
+  CHECK(2 * with_branch[1].n_nodes <= with_branch[0].n_nodes + 4);
+  check_hierarchy(branched, with_branch);
 }
 
 TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigrid]") {
@@ -460,6 +511,40 @@ TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigr
   CHECK(2 * levels[1].n_nodes <= levels[0].n_nodes);
   CHECK(levels.back().n_nodes <= options.coarsest_nodes);
   check_hierarchy(slab, levels);
+  // On the fine level, the wall-plane grouping holds: nearly every node of a long line shares
+  // its agglomerate with a node of another line, and the nodes of long lines left alone are at
+  // most the ends of runs (two per line).
+  const Level& fine = levels[0];
+  std::vector<std::size_t> line_of(fine.n_nodes), size_of(fine.n_nodes);
+  std::size_t long_lines = 0;
+  for (std::size_t l = 0; l < fine.n_lines(); ++l) {
+    const auto b = static_cast<std::size_t>(fine.line_offsets[l]);
+    const auto e = static_cast<std::size_t>(fine.line_offsets[l + 1]);
+    if (e - b >= options.min_line) ++long_lines;
+    for (std::size_t k = b; k < e; ++k) {
+      line_of[static_cast<std::size_t>(fine.line_nodes[k])] = l;
+      size_of[static_cast<std::size_t>(fine.line_nodes[k])] = e - b;
+    }
+  }
+  std::vector<std::vector<std::size_t>> aggregates(levels[1].n_nodes);
+  for (std::size_t c = 0; c < fine.n_nodes; ++c) {
+    aggregates[static_cast<std::size_t>(fine.coarse_node[c])].push_back(c);
+  }
+  std::size_t in_long = 0, grouped = 0, alone = 0;
+  for (const auto& a : aggregates) {
+    if (a.size() == 1 && size_of[a[0]] >= options.min_line) ++alone;
+    for (const std::size_t x : a) {
+      if (size_of[x] < options.min_line) continue;
+      ++in_long;
+      if (std::any_of(a.begin(), a.end(), [&](std::size_t y) {
+            return line_of[y] != line_of[x] && size_of[y] >= options.min_line;
+          })) {
+        ++grouped;
+      }
+    }
+  }
+  CHECK(10 * grouped >= 9 * in_long);
+  CHECK(alone <= 2 * long_lines);
 }
 
 TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigrid]") {

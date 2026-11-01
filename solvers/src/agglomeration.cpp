@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -339,7 +340,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
     while (group.size() < opt.max_lines) {
       struct Candidate {
         std::size_t line, touched = 0;
-        std::vector<std::pair<std::pair<int, std::ptrdiff_t>, std::size_t>> votes;
+        std::map<std::pair<int, std::ptrdiff_t>, std::size_t> votes;  // (reversed, shift)
       };
       std::vector<Candidate> candidates;
       for (const Member& member : group) {
@@ -362,13 +363,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
             const auto kk = static_cast<std::ptrdiff_t>(k);
             for (const auto& key : {std::pair<int, std::ptrdiff_t>{0, p - kk},
                                     std::pair<int, std::ptrdiff_t>{1, last - p - kk}}) {
-              auto v = std::find_if(it->votes.begin(), it->votes.end(),
-                                    [&](const auto& x) { return x.first == key; });
-              if (v == it->votes.end()) {
-                it->votes.emplace_back(key, 1);
-              } else {
-                ++v->second;
-              }
+              ++it->votes[key];
             }
             if (std::find(seen.begin(), seen.end(), l) == seen.end()) {
               seen.push_back(l);
@@ -411,25 +406,49 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       pair_along(run);
       continue;
     }
-    std::vector<std::size_t> coarse_line;
+    // Each of the seed's layers with the member nodes adjacent to it; a layer no member joined
+    // pairs with the next such layer along the seed line, so that a group touching the seed at a
+    // few layers still coarsens it.
+    constexpr std::size_t pending = none - 1;
+    std::vector<std::vector<std::size_t>> layers(line_size(s));
     std::vector<std::size_t> joined(group.size(), 0);
     for (std::size_t k = 0; k < line_size(s); ++k) {
       const std::size_t seed = line_node(s, k);
-      const std::size_t c = members.size();
-      members.push_back({static_cast<index_t>(seed)});
-      agg[seed] = c;
+      layers[k].push_back(seed);
+      agg[seed] = pending;
       for (std::size_t i = 1; i < group.size(); ++i) {
         const std::size_t m = layer_node(group[i], k);
         if (m == none || agg[m] != none) continue;
         bool adjacent = false;
-        g.for_edges(m, [&](std::size_t, std::size_t o) { adjacent = adjacent || agg[o] == c; });
+        g.for_edges(m, [&](std::size_t, std::size_t o) {
+          adjacent =
+              adjacent || std::find(layers[k].begin(), layers[k].end(), o) != layers[k].end();
+        });
         if (adjacent && compatible(g, seed, m)) {
-          members[c].push_back(static_cast<index_t>(m));
-          agg[m] = c;
+          layers[k].push_back(m);
+          agg[m] = pending;
           ++joined[i];
         }
       }
+    }
+    std::vector<std::size_t> coarse_line;
+    bool open = false;  // the last coarse node holds one unjoined seed layer
+    for (std::size_t k = 0; k < line_size(s); ++k) {
+      const std::size_t seed = layers[k][0];
+      if (layers[k].size() == 1 && open && compatible(g, layers[k - 1][0], seed)) {
+        members[coarse_line.back()].push_back(static_cast<index_t>(seed));
+        agg[seed] = coarse_line.back();
+        open = false;
+        continue;
+      }
+      const std::size_t c = members.size();
+      members.emplace_back();
+      for (const std::size_t m : layers[k]) {
+        members[c].push_back(static_cast<index_t>(m));
+        agg[m] = c;
+      }
       coarse_line.push_back(c);
+      open = layers[k].size() == 1;
     }
     clines.push_back(std::move(coarse_line));
     // A line that joined at some layer coarsens the rest of its nodes along itself, in runs that
