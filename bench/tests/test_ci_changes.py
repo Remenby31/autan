@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -83,15 +84,25 @@ def test_a_push_is_judged_against_the_last_measured_commit(repo):
     assert decide(repo, "push", before=measured) == {"bench": "false", "harness": "false"}
 
 
-def fake_gh(tmp_path: Path, runs: str, jobs: dict[str, str], fail: bool = False) -> dict[str, str]:
-    """gh is the external boundary: canned answers to the two API calls of last-measured.sh."""
+def fake_gh(tmp_path: Path, runs: list[dict], jobs: dict[int, str], fail: bool = False) -> dict:
+    """gh is the external boundary: it answers with API-shaped JSON and applies the caller's
+    --jq filter with jq, as `gh api --jq` does."""
+    data = tmp_path / "api"
+    data.mkdir()
+    (data / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
+    for run_id, conclusion in jobs.items():
+        body = {"jobs": [{"name": "changes", "conclusion": "success"},
+                         {"name": "bench", "conclusion": conclusion}]}  # fmt: skip
+        (data / f"jobs-{run_id}.json").write_text(json.dumps(body))
     gh = tmp_path / "bin" / "gh"
     gh.parent.mkdir()
-    cases = "".join(f'  *runs/{rid}/jobs*) echo "{out}" ;;\n' for rid, out in jobs.items())
     gh.write_text(
         "#!/bin/sh\n"
         + ("exit 1\n" if fail else "")
-        + f'case "$2" in\n  *workflows/gpu-bench.yml/runs*) printf "{runs}" ;;\n{cases}esac\n'
+        + '[ "$1" = api ] && [ "$3" = --jq ] || { echo "unexpected: $*" >&2; exit 2; }\n'
+        + f'case "$2" in\n  *workflows/gpu-bench.yml/runs*) f={data}/runs.json ;;\n'
+        + f"  */runs/*/jobs) id=${{2%/jobs}}; f={data}/jobs-${{id##*/}}.json ;;\nesac\n"
+        + 'jq -r "$4" "$f"\n'
     )
     gh.chmod(0o755)
     return {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r"}
@@ -102,15 +113,20 @@ def last_measured(env: dict[str, str]) -> str:
     return out.stdout.strip()
 
 
+def run(run_id: int, sha: str, event: str = "push", branch: str = "main") -> dict:
+    return {"id": run_id, "head_sha": sha * 40, "event": event, "head_branch": branch}
+
+
 def test_the_last_measured_commit_is_the_newest_run_whose_bench_job_passed(tmp_path):
-    # Newest first: a run whose bench was skipped (documentation), then a measured one.
-    runs = "3 " + "c" * 40 + "\\n2 " + "b" * 40 + "\\n1 " + "a" * 40 + "\\n"
-    env = fake_gh(tmp_path, runs, {"3": "skipped", "2": "success", "1": "success"})
+    # Newest first: a docs-only push (bench skipped), a pull request from main (it measures a
+    # merge tree, not its head), then a measured push.
+    runs = [run(4, "d"), run(3, "c", event="pull_request"), run(2, "b"), run(1, "a")]
+    env = fake_gh(tmp_path, runs, {4: "skipped", 3: "success", 2: "success", 1: "success"})
     assert last_measured(env) == "b" * 40
 
 
 def test_without_an_answer_from_the_api_the_push_is_measured(tmp_path):
-    assert last_measured(fake_gh(tmp_path, "", {}, fail=True)) == ""
+    assert last_measured(fake_gh(tmp_path, [], {}, fail=True)) == ""
 
 
 def test_without_a_readable_base_everything_runs(repo):
