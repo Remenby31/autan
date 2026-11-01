@@ -279,3 +279,66 @@ def test_start_counts_are_strict(
         jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     with pytest.raises(ValueError, match="iterations"):
         autan.solver_input.SolverInput.model_validate(document)
+
+
+def _zero_momentum_y(result: autan.Results, wake_at: int | None) -> None:
+    """Make momentum-y identically zero at iteration 1, rising above its floor at ``wake_at``."""
+    path = result.path / "history.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    for line in lines:
+        woke = wake_at is not None and line["iteration"] == wake_at
+        line["residuals"]["momentum-y"] = 1.0 if woke else 0.0
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+
+@pytest.mark.parametrize(("wake_at", "woken"), [(None, []), (10, ["momentum-y"])])
+def test_a_continuation_carries_the_woken_equations(
+    wake_at: int | None,
+    woken: list[str],
+    case: autan.Case,
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+) -> None:
+    first = case.run(crm_mesh, backend=autan.FakeBackend(iterations=20), runs=tmp_path)
+    _zero_momentum_y(first, wake_at)
+    second = case.run(
+        crm_mesh,
+        backend=autan.FakeBackend(iterations=10),
+        runs=tmp_path,
+        start=autan.Results.open(first.path),
+    )
+    assert second.run.start is not None
+    assert second.run.start.woken == woken
+    _zero_momentum_y(second, None)  # it stays below its floor in the second part
+    third = case.run(
+        crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=autan.Results.open(second.path)
+    )
+    assert third.run.start is not None
+    assert third.run.start.woken == woken  # carried along the chain
+    warm = case.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=first, mode="warm")
+    assert warm.run.start is not None
+    assert warm.run.start.woken is None
+
+
+@pytest.mark.parametrize("woken", [None, ["bogus"], ["momentum-y", "density"]])
+def test_woken_must_name_reference_equations_in_order(
+    woken: list[str] | None,
+    case: autan.Case,
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    write_case: Callable[..., Path],
+) -> None:
+    stopped = case.run(crm_mesh, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
+    argv = [
+        "prepare",
+        str(write_case(CRM_HL)),
+        "--mesh-info",
+        str(FIXTURES / "crm-hl.meshinfo.json"),
+    ]
+    assert main([*argv, "--start", str(stopped.path)]) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert document["start"]["woken"] == []
+    document["start"]["woken"] = woken
+    with pytest.raises(ValueError, match="woken"):
+        autan.solver_input.SolverInput.model_validate(document)

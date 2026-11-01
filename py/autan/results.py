@@ -73,6 +73,7 @@ class StartInfo(_Strict):
     time: float | None
     solution_sha256: Hex
     residual_reference: dict[str, float] | None
+    woken: list[str] | None
 
 
 class RunInfo(_Strict):
