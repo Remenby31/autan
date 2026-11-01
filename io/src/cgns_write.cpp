@@ -2,10 +2,13 @@
 // CGNS mid-level library (CGNS SIDS 4.x, HDF5 files).
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <cgnslib.h>
@@ -45,8 +48,9 @@ ZoneNodeNames zone_node_names(const std::vector<std::string>& boundary,
   static const std::vector<std::string> base_children{"Zone", "ZoneNames", "RunMetadata",
                                                       "DataClass", "DimensionalUnits"};
   static const std::vector<std::string> zone_children{
-      "ZoneType",     "GridCoordinates",  "NGonElements", "NFaceElements", "ZoneBC",
-      "FlowSolution", "FlowSolutionMean", "WallSolution", "RestartState"};
+      "ZoneType",     "GridCoordinates",      "NGonElements", "NFaceElements",
+      "ZoneBC",       "ZoneGridConnectivity", "FlowSolution", "FlowSolutionMean",
+      "WallSolution", "RestartState"};
   static const std::regex generated("(boundary|cell-zone)-[0-9]{4}");
   std::vector<std::string> all(boundary);
   all.insert(all.end(), cell.begin(), cell.end());
@@ -79,9 +83,6 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
   if (mesh.n_owned_cells() != mesh.n_cells()) {
     throw Error(ErrorCode::mesh_inconsistent_sizes,
                 "solution.cgns describes an unpartitioned mesh");
-  }
-  if (!mesh.periodic_pairs().empty()) {
-    throw Error(ErrorCode::io_unsupported, "solution.cgns does not record periodic pairs yet");
   }
   const MeshInfoZones zones = meshinfo_zones(mesh);
   const auto n_cells = at(mesh.n_cells());
@@ -194,6 +195,8 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
     const index_t first = boundary_offsets[z];
     const index_t last = boundary_offsets[z + 1];
     if (first == last) continue;
+    // A periodic zone is a connectivity (below), not a boundary condition.
+    if (mesh.face_zones()[z].kind == BcKind::periodic) continue;
     if (solution.boundary_bc_types[i].empty()) {
       throw Error(ErrorCode::mesh_inconsistent_sizes,
                   "boundary zone '" + boundary_names[i] + "' has faces but no BCType");
@@ -210,6 +213,51 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
                "write BC location", nodes.boundary[i]);
     cgns_check(cg_goto(fn, base, "Zone_t", zone, "ZoneBC_t", 1, "BC_t", bc, "end"), "go to BC");
     cgns_check(cg_famname_write(nodes.boundary[i].c_str()), "write BC family", nodes.boundary[i]);
+  }
+
+  // Each periodic pair as two reciprocal 1-to-1 connections of the zone with
+  // itself (SIDS GridConnectivity_t, FaceCenter, PointList / PointListDonor),
+  // named after each side's zone. Periodic_t holds the translation in R4, as
+  // CGNS requires; the descriptor PeriodicTranslation keeps it to the bit.
+  std::map<index_t, std::size_t> boundary_slot;
+  for (std::size_t i = 0; i < zones.boundary.size(); ++i) boundary_slot[zones.boundary[i]] = i;
+  for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+    const auto& pair = mesh.periodic_pairs()[p];
+    const auto partners = mesh.periodic_partners(p);
+    std::vector<cgsize_t> a, b;
+    for (std::size_t k = 0; k < partners.size(); ++k) {
+      a.push_back(boundary_offsets[at(pair.zone_a)] + static_cast<index_t>(k) + 1);
+      b.push_back(partners[k] + 1);
+    }
+    const auto& t = pair.translation;
+    const std::array<std::array<double, 3>, 2> shift{t, std::array<double, 3>{-t[0], -t[1], -t[2]}};
+    const std::array<index_t, 2> side{pair.zone_a, pair.zone_b};
+    for (std::size_t s = 0; s < 2; ++s) {
+      const std::string& name = nodes.boundary[boundary_slot.at(side[s])];
+      const auto& points = s == 0 ? a : b;
+      const auto& donor = s == 0 ? b : a;
+      int conn = 0;
+      cgns_check(cg_conn_write(fn, base, zone, name.c_str(), CGNS_ENUMV(FaceCenter),
+                               CGNS_ENUMV(Abutting1to1), CGNS_ENUMV(PointList),
+                               static_cast<cgsize_t>(points.size()), points.data(), "Zone",
+                               CGNS_ENUMV(Unstructured), CGNS_ENUMV(PointListDonor),
+                               CGNS_ENUMV(LongInteger), static_cast<cgsize_t>(donor.size()),
+                               donor.data(), &conn),
+                 "write periodic connectivity", name);
+      const std::array<float, 3> zero{};
+      const std::array<float, 3> single{static_cast<float>(shift[s][0]),
+                                        static_cast<float>(shift[s][1]),
+                                        static_cast<float>(shift[s][2])};
+      cgns_check(
+          cg_conn_periodic_write(fn, base, zone, conn, zero.data(), zero.data(), single.data()),
+          "write periodic property", name);
+      cgns_check(cg_goto(fn, base, "Zone_t", zone, "ZoneGridConnectivity_t", 1,
+                         "GridConnectivity_t", conn, "end"),
+                 "go to connectivity", name);
+      cgns_check(
+          cg_descriptor_write("PeriodicTranslation", nlohmann::json(shift[s]).dump().c_str()),
+          "write PeriodicTranslation", name);
+    }
   }
 
   for (std::size_t i = 0; i < zones.cell.size(); ++i) {

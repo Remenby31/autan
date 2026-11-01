@@ -204,19 +204,94 @@ TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {
   }
 }
 
-TEST_CASE("The writer rejects a periodic mesh until CGNS records its pairs", "[cgns]") {
+TEST_CASE("Periodic pairs round-trip through solution.cgns", "[cgns][periodic]") {
+  // periodic-box, written by Gmsh: xmin -> xmax by (1, 0, 0), ymin -> ymax by
+  // (0, 1, 0). The pairs are written as reciprocal SIDS GridConnectivity_t
+  // with Periodic_t, which cgnscheck accepts, and read back as they were.
+  const autan::Mesh mesh =
+      autan::io::read_mesh(data_dir / "periodic-box" / "periodic-box.ascii.msh");
+  REQUIRE(mesh.periodic_pairs().size() == 2);
+  autan::io::Solution solution;
+  solution.run_metadata = "{}";
+  for (const index_t z : autan::io::meshinfo_zones(mesh).boundary) {
+    solution.boundary_bc_types.emplace_back(
+        mesh.face_zones()[at(z)].kind == autan::BcKind::periodic ? "" : "BCSymmetryPlane");
+  }
+  autan::io::Field density{.name = "Density", .values = {}};
+  density.values.assign(static_cast<std::size_t>(mesh.n_cells()), 1.0);
+  solution.fields.push_back(density);
+  const fs::path file = temp_dir() / "periodic-box-solution.cgns";
+  fs::create_directories(temp_dir());
+  autan::io::write_solution(file, mesh, solution);
+
+  const std::string command = std::string(AUTAN_CGNSCHECK) + " " + file.string() + " > " +
+                              (file.string() + ".check") + " 2>&1";
+  CHECK(std::system(command.c_str()) == 0);
+  std::ifstream report(file.string() + ".check");
+  const std::string text((std::istreambuf_iterator<char>(report)),
+                         std::istreambuf_iterator<char>());
+  CHECK(text.find("ERROR") == std::string::npos);
+
+  const autan::Mesh back = autan::io::read_mesh(file);
+  require_same_mesh(mesh, back);
+  REQUIRE(back.periodic_pairs().size() == mesh.periodic_pairs().size());
+  for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+    const auto& a = mesh.periodic_pairs()[p];
+    const auto& b = back.periodic_pairs()[p];
+    CHECK(back.face_zones()[at(b.zone_a)].name == mesh.face_zones()[at(a.zone_a)].name);
+    CHECK(back.face_zones()[at(b.zone_b)].name == mesh.face_zones()[at(a.zone_b)].name);
+    CHECK(b.translation == a.translation);
+    CHECK(back.face_zones()[at(b.zone_a)].kind == autan::BcKind::periodic);
+  }
+}
+
+TEST_CASE("A periodic translation keeps its double precision through solution.cgns",
+          "[cgns][periodic]") {
+  // A box 0.1 wide in x, periodic by (0.1, 0, 0): 0.1 has no float value, so
+  // the R4 translation of Periodic_t alone could not give it back.
   autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  for (double& x : cells.x) x *= 0.1;
   cells.face_zones[0].kind = autan::BcKind::periodic;
   cells.face_zones[1].kind = autan::BcKind::periodic;
-  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {0.1, 0.0, 0.0}});
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
-  try {
-    autan::io::write_solution(temp_dir() / "periodic.cgns", mesh, solution_for(mesh));
-    FAIL("expected E0133");
-  } catch (const autan::Error& e) {
-    CHECK(e.code() == autan::ErrorCode::io_unsupported);
+  autan::io::Solution solution;
+  solution.run_metadata = "{}";
+  for (const index_t z : autan::io::meshinfo_zones(mesh).boundary) {
+    solution.boundary_bc_types.emplace_back(
+        mesh.face_zones()[at(z)].kind == autan::BcKind::periodic ? "" : "BCSymmetryPlane");
   }
-  CHECK(!fs::exists(temp_dir() / "periodic.cgns"));
+  const fs::path file = temp_dir() / "thin-periodic.cgns";
+  fs::create_directories(temp_dir());
+  autan::io::write_solution(file, mesh, solution);
+  const autan::Mesh back = autan::io::read_mesh(file);
+  REQUIRE(back.periodic_pairs().size() == 1);
+  CHECK(back.periodic_pairs()[0].translation == std::array<double, 3>{0.1, 0.0, 0.0});
+}
+
+TEST_CASE("A connectivity CGNS cannot express as a periodic pair is a coded error",
+          "[cgns][periodic]") {
+  using autan::ErrorCode;
+  // A one-sided periodic connection: written by hand on a tetrahedron.
+  require_error(
+      ErrorCode::io_malformed, cgns_file("one-sided.cgns", [](int fn, int base) {
+        unstructured_tet(fn, base, "Zone");
+        // Its four faces as elements 2-5, so that the connection
+        // refers to faces that exist.
+        const std::array<cgsize_t, 12> faces{1, 3, 2, 1, 2, 4, 2, 3, 4, 1, 4, 3};
+        int section = 0;
+        REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, 5, 0, faces.data(),
+                                 &section) == CG_OK);
+        const cgsize_t face = 2, donor = 3;
+        int conn = 0;
+        REQUIRE(cg_conn_write(fn, base, 1, "side", CGNS_ENUMV(FaceCenter), CGNS_ENUMV(Abutting1to1),
+                              CGNS_ENUMV(PointList), 1, &face, "Zone", CGNS_ENUMV(Unstructured),
+                              CGNS_ENUMV(PointListDonor), CGNS_ENUMV(LongInteger), 1, &donor,
+                              &conn) == CG_OK);
+        const std::array<float, 3> t{1.0F, 0.0F, 0.0F}, zero{};
+        REQUIRE(cg_conn_periodic_write(fn, base, 1, conn, zero.data(), zero.data(), t.data()) ==
+                CG_OK);
+      }));
 }
 
 namespace {
