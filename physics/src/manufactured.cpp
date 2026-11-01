@@ -210,12 +210,24 @@ Manufactured::Manufactured(const std::string& json_text) {
     const auto& g = doc.at(name);
     auto group = std::make_unique<Group>();
     std::map<std::string, int> slots = {{"x", 0}, {"y", 1}, {"z", 2}};
-    for (const auto& pair : g.at("subexpressions")) {
-      Parser parser(pair.at(1).get<std::string>(), slots, group->nodes);
+    const auto& subexpressions = g.at("subexpressions");
+    if (!subexpressions.is_array()) throw std::invalid_argument("subexpressions must be an array");
+    for (const auto& pair : subexpressions) {
+      if (!pair.is_array() || pair.size() != 2 || !pair[0].is_string() || !pair[1].is_string()) {
+        throw std::invalid_argument("a subexpression is a [name, expression] pair of strings");
+      }
+      const auto name = pair[0].get<std::string>();
+      if (slots.contains(name) || name == "pi") {
+        throw std::invalid_argument("subexpression '" + name + "' is declared twice or reserved");
+      }
+      Parser parser(pair[1].get<std::string>(), slots, group->nodes);
       group->subexpressions.push_back(parser.parse());
-      slots[pair.at(0).get<std::string>()] = static_cast<int>(slots.size());
+      slots[name] = 3 + static_cast<int>(group->subexpressions.size()) - 1;
     }
-    for (const auto& [k, v] : g.at("outputs").items()) {
+    const auto& outputs = g.at("outputs");
+    if (!outputs.is_object()) throw std::invalid_argument("outputs must be an object");
+    for (const auto& [k, v] : outputs.items()) {
+      if (!v.is_string()) throw std::invalid_argument("output '" + k + "' is not a string");
       Parser parser(v.get<std::string>(), slots, group->nodes);
       group->outputs[k] = parser.parse();
     }

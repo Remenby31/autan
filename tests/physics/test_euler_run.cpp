@@ -96,17 +96,29 @@ Json continue_from(const fs::path& previous) {
               {"solution_sha256", hash},          {"residual_reference", reference}};
 }
 
-std::vector<double> field(const fs::path& run, const char* name) {
+// Field `name` of the cell-centred FlowSolution_t `solution` of a run's solution.cgns.
+std::vector<double> field(const fs::path& run, const char* name,
+                          const char* solution = "FlowSolution") {
   int fn = 0;
   REQUIRE(cg_open((run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
   char zone_name[33];
   cgsize_t size[3];
   REQUIRE(cg_zone_read(fn, 1, 1, zone_name, size) == CG_OK);
-  std::vector<double> values(static_cast<std::size_t>(size[1]));
-  const cgsize_t first = 1;
-  REQUIRE(cg_field_read(fn, 1, 1, 1, name, CGNS_ENUMV(RealDouble), &first, &size[1],
-                        values.data()) == CG_OK);
+  int count = 0;
+  REQUIRE(cg_nsols(fn, 1, 1, &count) == CG_OK);
+  std::vector<double> values;
+  for (int s = 1; s <= count; ++s) {
+    char sol_name[33];
+    CGNS_ENUMT(GridLocation_t) location{};
+    REQUIRE(cg_sol_info(fn, 1, 1, s, sol_name, &location) == CG_OK);
+    if (std::string(sol_name) != solution) continue;
+    values.resize(static_cast<std::size_t>(size[1]));
+    const cgsize_t first = 1;
+    REQUIRE(cg_field_read(fn, 1, 1, s, name, CGNS_ENUMV(RealDouble), &first, &size[1],
+                          values.data()) == CG_OK);
+  }
   cg_close(fn);
+  REQUIRE(!values.empty());
   return values;
 }
 
@@ -196,6 +208,10 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
       } else {
         d["verification"] = nullptr;
         for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+        // Two cell zones at different states: a nonuniform, evolving flow.
+        auto& init = d["cell_zones"].back()["initial"];
+        init["density"] = 1.2 * init["density"].get<double>();
+        init["pressure"] = 1.3 * init["pressure"].get<double>();
         d["time"] = {{"kind", "unsteady"},
                      {"steps", budget},
                      {"dt", nullptr},
@@ -223,7 +239,18 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
   const auto more = lines(second.run / "history.jsonl");
   chain.insert(chain.end(), more.begin(), more.end());
   CHECK(chain == lines(whole.run / "history.jsonl"));
-  for (const char* name : {"Density", "VelocityX", "Pressure"}) {
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
     CHECK(field(second.run, name) == field(whole.run, name));
+    if (!steady) {
+      CHECK(field(second.run, name, "FlowSolutionMean") ==
+            field(whole.run, name, "FlowSolutionMean"));
+    }
+  }
+  for (const char* name : {"Density", "MomentumX", "EnergyStagnationDensity"}) {
+    CHECK(field(second.run, name, "RestartState") == field(whole.run, name, "RestartState"));
+  }
+  if (!steady) {
+    CHECK(field(second.run, "AverageWeight", "RestartState") ==
+          field(whole.run, "AverageWeight", "RestartState"));
   }
 }

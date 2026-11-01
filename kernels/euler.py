@@ -745,10 +745,12 @@ lam = cells.field("lam", State)
 
 @pointwise
 def wave_speed(wc: State.Vec5, wn: State.Vec5, n: Geom.Vec3, area: Geom, g: Param) -> State:
-    # Convective spectral radius of a face, (|v . n| + c) A at the arithmetic mean state
-    # (Blazek 2015, chapter 6): its sum over the faces of a cell bounds the local time step.
-    w = 0.5 * (wc + wn)
-    return (abs(dot(velocity(w), n)) + sqrt(g * w[4] / w[0])) * area
+    # Convective spectral radius of a face, (|v . n| + c) A, the larger of the two sides' so that
+    # opposing flows do not cancel (Blazek 2015, chapter 6): its sum over a cell's faces bounds
+    # the local time step.
+    lc = abs(dot(velocity(wc), n)) + sqrt(g * wc[4] / wc[0])
+    ln = abs(dot(velocity(wn), n)) + sqrt(g * wn[4] / wn[0])
+    return max(lc, ln) * area
 
 
 spectral_radius = cell_reduce(
