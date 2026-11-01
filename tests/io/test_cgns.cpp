@@ -287,6 +287,21 @@ TEST_CASE("Periodic pairs round-trip through solution.cgns", "[cgns][periodic]")
   }
 }
 
+TEST_CASE("The writer refuses a BCType on a periodic zone", "[cgns][periodic]") {
+  const autan::Mesh mesh =
+      autan::io::read_mesh(data_dir / "periodic-box" / "periodic-box.ascii.msh");
+  autan::io::Solution solution;
+  solution.run_metadata = "{}";
+  solution.boundary_bc_types.assign(autan::io::meshinfo_zones(mesh).boundary.size(),
+                                    "BCSymmetryPlane");
+  try {
+    autan::io::write_solution(temp_dir() / "periodic-bctype.cgns", mesh, solution);
+    FAIL("expected E0101");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
+  }
+}
+
 TEST_CASE("A periodic translation keeps its double precision through solution.cgns",
           "[cgns][periodic]") {
   // A box 0.1 wide in x, periodic by (0.1, 0, 0): 0.1 has no float value, so
@@ -319,7 +334,8 @@ namespace {
 // `reverse`: the reciprocal lists its pairs in the other order; `cross`:
 // both connections pair face 3 with 6 and 4 with 5; `rotate`: a non-zero
 // RotationAngle.
-fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool rotate) {
+fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool rotate,
+                       const std::string& descriptor = "", bool duplicate = false) {
   return cgns_file(name, [=](int fn, int base) {
     cgsize_t size[3] = {12, 2, 0};
     int zone = 0, coord = 0, section = 0;
@@ -359,10 +375,13 @@ fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool r
     }
     REQUIRE(cg_section_write(fn, base, zone, "Sides", CGNS_ENUMV(QUAD_4), 3, 6, 0, quads.data(),
                              &section) == CG_OK);
-    const std::array<cgsize_t, 2> left{3, 4};
-    const std::array<cgsize_t, 2> right =
-        cross ? std::array<cgsize_t, 2>{6, 5} : std::array<cgsize_t, 2>{5, 6};
-    std::array<cgsize_t, 2> back_points = right, back_donor = left;
+    std::vector<cgsize_t> left{3, 4};
+    std::vector<cgsize_t> right = cross ? std::vector<cgsize_t>{6, 5} : std::vector<cgsize_t>{5, 6};
+    if (duplicate) {
+      left.push_back(3);
+      right.push_back(5);
+    }
+    std::vector<cgsize_t> back_points = right, back_donor = left;
     if (reverse) {
       std::ranges::reverse(back_points);
       std::ranges::reverse(back_donor);
@@ -374,11 +393,17 @@ fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool r
           std::tuple{"right", back_points, back_donor, minus}}) {
       int conn = 0;
       REQUIRE(cg_conn_write(fn, base, zone, name_, CGNS_ENUMV(FaceCenter), CGNS_ENUMV(Abutting1to1),
-                            CGNS_ENUMV(PointList), 2, points.data(), "Zone",
-                            CGNS_ENUMV(Unstructured), CGNS_ENUMV(PointListDonor),
-                            CGNS_ENUMV(LongInteger), 2, donor.data(), &conn) == CG_OK);
+                            CGNS_ENUMV(PointList), static_cast<cgsize_t>(points.size()),
+                            points.data(), "Zone", CGNS_ENUMV(Unstructured),
+                            CGNS_ENUMV(PointListDonor), CGNS_ENUMV(LongInteger),
+                            static_cast<cgsize_t>(donor.size()), donor.data(), &conn) == CG_OK);
       REQUIRE(cg_conn_periodic_write(fn, base, zone, conn, zero.data(), angle.data(), t.data()) ==
               CG_OK);
+      if (!descriptor.empty()) {
+        REQUIRE(cg_goto(fn, base, "Zone_t", zone, "ZoneGridConnectivity_t", 1, "GridConnectivity_t",
+                        conn, "end") == CG_OK);
+        REQUIRE(cg_descriptor_write("PeriodicTranslation", descriptor.c_str()) == CG_OK);
+      }
     }
   });
 }
@@ -404,6 +429,11 @@ TEST_CASE("A connectivity CGNS cannot express as a periodic pair is a coded erro
   // face 3 does not translate onto face 6.
   require_error(ErrorCode::io_malformed, periodic_slab("crossed.cgns", false, true, false));
   require_error(ErrorCode::io_unsupported, periodic_slab("rotated.cgns", false, false, true));
+  // A descriptor that is not three numbers, and a face listed twice.
+  require_error(ErrorCode::io_malformed,
+                periodic_slab("four.cgns", false, false, false, "[1.0, 0.0, 0.0, 123]"));
+  require_error(ErrorCode::io_malformed,
+                periodic_slab("twice.cgns", false, false, false, "", true));
   // A one-sided periodic connection.
   require_error(
       ErrorCode::io_malformed, cgns_file("one-sided.cgns", [](int fn, int base) {

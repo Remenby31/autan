@@ -95,6 +95,14 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
     }
   };
   check_size(solution.boundary_bc_types.size(), zones.boundary.size(), "boundary_bc_types");
+  for (std::size_t i = 0; i < zones.boundary.size(); ++i) {
+    if (mesh.face_zones()[at(zones.boundary[i])].kind == BcKind::periodic &&
+        !solution.boundary_bc_types[i].empty()) {
+      throw Error(
+          ErrorCode::mesh_inconsistent_sizes,
+          "periodic zone '" + mesh.face_zones()[at(zones.boundary[i])].name + "' takes no BCType");
+    }
+  }
   for (const auto& f : solution.fields) check_size(f.values.size(), n_cells, "field " + f.name);
   for (const auto& f : solution.restart_fields) {
     check_size(f.values.size(), n_cells, "restart field " + f.name);

@@ -610,6 +610,12 @@ class Reader {
                 .translation = {}};
       ok(cg_conn_read(fn_, 1, 1, i, side.faces.data(), CGNS_ENUMV(LongInteger), side.donor.data()),
          "read connectivity", name);
+      for (const auto* list : {&side.faces, &side.donor}) {
+        std::vector<cgsize_t> sorted = *list;
+        std::ranges::sort(sorted);
+        if (std::ranges::adjacent_find(sorted) != sorted.end())
+          malformed(path_, std::string("connectivity '") + name + "' lists a face twice");
+      }
       if (dimension_of(side.faces, name) != 2 || dimension_of(side.donor, name) != 2) {
         malformed(path_,
                   std::string("connectivity '") + name + "' joins elements that are not faces");
@@ -654,12 +660,14 @@ class Reader {
         cg_free(text);
         if (std::string_view(descriptor) != "PeriodicTranslation") continue;
         std::array<double, 3> exact{};
-        try {
-          exact = nlohmann::json::parse(content).get<std::array<double, 3>>();
-        } catch (const nlohmann::json::exception&) {
+        const nlohmann::json value = nlohmann::json::parse(content, nullptr, false);
+        if (!value.is_array() || value.size() != 3 ||
+            !std::ranges::all_of(
+                value, [](const nlohmann::json& v) { return v.is_number() && !v.is_boolean(); })) {
           malformed(path_,
                     std::string("PeriodicTranslation of '") + name + "' is not three numbers");
         }
+        for (std::size_t k = 0; k < 3; ++k) exact[k] = value[k].get<double>();
         for (std::size_t k = 0; k < 3; ++k) {
           if (!std::isfinite(exact[k]) ||
               static_cast<double>(static_cast<float>(exact[k])) != side.translation[k]) {
