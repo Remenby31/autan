@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { RUNS } from "../playwright.config";
@@ -125,6 +132,8 @@ test("viewer renders on WebGPU and picks the zone under the cursor", async ({ pa
   // CPU-only CI sets AUTAN_UI_E2E_BACKEND=webgl2; GPU runners keep the WebGPU default.
   const backend = process.env.AUTAN_UI_E2E_BACKEND ?? "webgpu";
   await expect(page.getByTestId("viewer-status")).toHaveAttribute("data-backend", backend);
+  // The backend is known before the surface arrives: pick once its zones are listed.
+  await expect(page.getByTestId("zones")).toBeVisible();
   const box = await page.getByTestId("viewport").boundingBox();
   if (!box) throw new Error("no viewport");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
@@ -169,6 +178,49 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await group.getByRole("button", { name: "Compare" }).click();
   await expect(page.getByTestId("polar")).toBeVisible();
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
+});
+
+test("Analysis without a run lists the runs it can show, never a stand-in surface", async ({
+  page,
+}) => {
+  // results.md: an ended run's solution.cgns is its result, read here from the run directories.
+  const solved = (await runs(page)).filter(
+    (r) => r.status !== "running" && existsSync(join(RUNS, r.run_id, "solution.cgns")),
+  );
+  const converged = solved.find((r) => r.status === "converged") as Run;
+  await page.goto("/");
+  await page.getByRole("link", { name: "Analysis" }).click();
+
+  const picker = page.getByTestId("run-picker");
+  await expect(picker.getByRole("link")).toHaveCount(solved.length);
+  await expect(page.getByTestId("viewport")).toHaveCount(0);
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByText("Synthetic surface · viewer benchmark")).toBeVisible();
+  await page.goBack();
+  await picker
+    .getByRole("link")
+    .filter({ hasText: converged.run_id.slice(-8) })
+    .click();
+
+  await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
+  const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
+  await expect(crumbs).toContainText(converged.case.name);
+  await expect(crumbs).toContainText(converged.run_id.slice(-8));
+  await expect(page.getByTestId("zones")).toBeVisible();
+});
+
+test("Analysis says when the runs cannot be listed, and retries", async ({ page }) => {
+  let fail = true;
+  await page.route("**/api/runs", (route) =>
+    fail ? route.fulfill({ status: 503 }) : route.continue(),
+  );
+  await page.route("**/api/runs/events", (route) => route.abort());
+  await page.goto("/viewer");
+
+  await expect(page.getByText("The runs could not be listed")).toBeVisible({ timeout: 15_000 });
+  fail = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("run-picker").getByRole("link").first()).toBeVisible();
 });
 
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
@@ -282,6 +334,15 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       ].join("\n"),
     )
     .digest("hex");
+  // A run of the solver carries the timing it measured (results.md#runjson).
+  const cells = JSON.parse(readFileSync(join(RUNS, source.run_id, "mesh-info.json"), "utf8")).counts
+    .cells;
+  const timing = {
+    wall_seconds: 12.5,
+    solve_seconds: 10,
+    iterations: source.iterations,
+    ns_per_cell_iteration: (10 * 1e9) / (cells * source.iterations),
+  };
   const staging = join(RUNS, `.staging-${suffix}`);
   cpSync(join(RUNS, source.run_id), staging, { recursive: true });
   const run = {
@@ -291,6 +352,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     identity,
     solver,
     devices,
+    timing,
     deterministic: !source.deterministic,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
