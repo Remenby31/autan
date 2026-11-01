@@ -137,7 +137,6 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   using S = typename P::state;
   using Gr = typename P::grad;
   using R = typename P::residual;
-  using G = typename P::geom;
   const auto& t = m.topo;
   const auto nc = static_cast<std::size_t>(t.n_cells);
   const auto nf = static_cast<std::size_t>(t.n_faces);
@@ -168,10 +167,10 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   a.q = dq.get();
   a.grad = dgrad.get();
   a.res = dres.get();
-  a.face_r_left = g.face_r_left.get();
-  a.face_r_right = g.face_r_right.get();
-  a.face_normal = g.face_normal.get();
-  a.face_area_magnitude = g.face_area_magnitude.get();
+  autan::spike::bind(a.face_r_left, g.face_r_left);
+  autan::spike::bind(a.face_r_right, g.face_r_right);
+  autan::spike::bind(a.face_normal, g.face_normal);
+  autan::spike::bind(a.face_area_magnitude, g.face_area_magnitude);
   a.velocity[0] = typename P::param(1.0);
   a.velocity[1] = typename P::param(0.7);
   a.velocity[2] = typename P::param(0.4);
@@ -186,10 +185,10 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   ah.q = q.data();
   ah.grad = grad.data();
   ah.res = hres.data();
-  ah.face_r_left = hh.face_r_left.data();
-  ah.face_r_right = hh.face_r_right.data();
-  ah.face_normal = hh.face_normal.data();
-  ah.face_area_magnitude = hh.face_area_magnitude.data();
+  autan::spike::bind(ah.face_r_left, hh.face_r_left);
+  autan::spike::bind(ah.face_r_right, hh.face_r_right);
+  autan::spike::bind(ah.face_normal, hh.face_normal);
+  autan::spike::bind(ah.face_area_magnitude, hh.face_area_magnitude);
   ah.velocity[0] = typename H::param(1.0);
   ah.velocity[1] = typename H::param(0.7);
   ah.velocity[2] = typename H::param(0.4);
@@ -197,7 +196,7 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
 
   // Analytic minimum traffic: face geometry (r_left, r_right, n, |S|) and owner/neighbour once per
   // interior face; q and grad read once, res read and written once per cell.
-  const double adv_bytes = ni * (10.0 * sizeof(G) + 2 * sizeof(index_t)) +
+  const double adv_bytes = ni * (10.0 * sizeof(*a.face_normal) + 2 * sizeof(index_t)) +
                            cells * (sizeof(S) + 3.0 * sizeof(Gr) + 2.0 * sizeof(R));
   for (auto s : strategies<P>({Strategy::atomic, Strategy::warp_aggregated, Strategy::coloured,
                                Strategy::store_gather, Strategy::gather_recompute})) {
@@ -221,12 +220,12 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   d.qmin = dmin.get();
   d.qmax = dmax.get();
   d.gg_sum = dacc.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.cell_volume = g.cell_volume.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.cell_volume, g.cell_volume);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   gr::Data<H> dh{};
   dh.topo = m.topo;
   std::vector<Gr> hgrad(3 * nc);
@@ -236,7 +235,7 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   dh.grad = hgrad.data();
   dh.qmin = hmin.data();
   dh.qmax = hmax.data();
-  dh.lsq_weight = hh.lsq_weight.data();
+  autan::spike::bind(dh.lsq_weight, hh.lsq_weight);
   gr::cpu::lsq_gradient_bounds(dh);
   gr::metal_loops::lsq_gradient_bounds(ctx, d, dm.schedule);
   ctx.synchronise();
@@ -244,7 +243,7 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   // Analytic minimum: per incidence the face index and LSQ weight; per cell its CSR offset, q,
   // and the gradient and two bounds written; owner/neighbour per interior face; q_b per boundary
   // face.
-  const double lsq_bytes = inc * (sizeof(index_t) + 3.0 * sizeof(G)) +
+  const double lsq_bytes = inc * (sizeof(index_t) + 3.0 * sizeof(*d.lsq_weight)) +
                            cells * (sizeof(offset_t) + 3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
                            ni * 2 * sizeof(index_t) + nb * sizeof(S);
   out.push_back(
@@ -273,14 +272,14 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   rd.topo = dm.topo;
   rd.u_cons = du.get();
   rd.res = dr.get();
-  rd.face_normal = g.face_normal.get();
-  rd.face_area_magnitude = g.face_area_magnitude.get();
+  autan::spike::bind(rd.face_normal, g.face_normal);
+  autan::spike::bind(rd.face_area_magnitude, g.face_area_magnitude);
   rd.u_cons_tan = du_tan.get();
   rd.res_tan = dr_tan.get();
   rd.res_adj = dr_adj.get();
   rd.u_cons_adj = du_adj.get();
-  const double roe_bytes =
-      ni * (4.0 * sizeof(G) + 2 * sizeof(index_t)) + cells * (5.0 * sizeof(S) + 10.0 * sizeof(R));
+  const double roe_bytes = ni * (4.0 * sizeof(*rd.face_normal) + 2 * sizeof(index_t)) +
+                           cells * (5.0 * sizeof(S) + 10.0 * sizeof(R));
   for (auto s : strategies<P>({Strategy::atomic, Strategy::warp_aggregated, Strategy::store_gather,
                                Strategy::gather_recompute})) {
     std::string tag = autan::kernels::name(s);

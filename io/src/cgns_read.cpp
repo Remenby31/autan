@@ -3,8 +3,11 @@
 // standard elements. See docs/contracts/mesh.md, "Readers".
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -179,6 +182,7 @@ class Reader {
     read_coordinates();
     read_sections();
     read_bcs();
+    read_connectivity();
     read_subregions();
     restore_zone_names();
     return has_nface_ ? face_based() : element_based();
@@ -521,15 +525,204 @@ class Reader {
     }
   }
 
-  void add_face_zone(const std::string& zone, const std::string& bc_type,
-                     const std::vector<cgsize_t>& ids, int bc, const char* bc_name) {
+ public:
+  // After assembly: the core matched the faces geometrically, and the pairs
+  // the file declares must be the ones it found, face for face (compared by
+  // their node sets), not replaced by them.
+  void check_declared_pairs(const Mesh& mesh, const AssemblyMap& map) const {
+    const auto key = [](std::vector<index_t> nodes) {
+      std::ranges::sort(nodes);
+      return nodes;
+    };
+    const auto mesh_face = [&](index_t f) {
+      std::vector<index_t> nodes;
+      for (const index_t p : mesh.face_nodes(f)) nodes.push_back(map.point_source[at(p)]);
+      return key(std::move(nodes));
+    };
+    std::map<std::vector<index_t>, std::vector<index_t>> partner;
+    const auto off = mesh.boundary_zone_offsets();
+    for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+      const auto partners = mesh.periodic_partners(p);
+      for (std::size_t k = 0; k < partners.size(); ++k) {
+        partner[mesh_face(off[at(mesh.periodic_pairs()[p].zone_a)] + static_cast<index_t>(k))] =
+            mesh_face(partners[k]);
+      }
+    }
+    const auto element_face = [&](cgsize_t id) {
+      std::vector<index_t> nodes;
+      for (const cgsize_t q : element(id)->connectivity) nodes.push_back(node(q));
+      return key(std::move(nodes));
+    };
+    for (const auto& [faces, donor] : declared_) {
+      for (std::size_t k = 0; k < faces.size(); ++k) {
+        const auto it = partner.find(element_face(faces[k]));
+        if (it == partner.end() || it->second != element_face(donor[k])) {
+          malformed(path_, "a periodic connectivity pairs face " + std::to_string(faces[k]) +
+                               " with a face it does not translate onto");
+        }
+      }
+    }
+  }
+
+ private:
+  // Periodic pairs: 1-to-1 connections of the zone with itself carrying a
+  // Periodic_t translation (SIDS GridConnectivity_t), as two reciprocal
+  // connections, each naming the zone of its own faces. The first of a
+  // reciprocal pair is zone a. The core matches the faces again.
+  void read_connectivity() {
+    int n = 0;
+    ok(cg_nconns(fn_, 1, 1, &n), "count connectivities");
+    struct Side {
+      std::string name;
+      std::vector<cgsize_t> faces, donor;
+      std::array<double, 3> translation;
+    };
+    std::vector<Side> sides;
+    char zone_name[33];
+    cgsize_t size[3];
+    ok(cg_zone_read(fn_, 1, 1, zone_name, size), "read zone");
+    for (int i = 1; i <= n; ++i) {
+      char name[33], donor_name[33];
+      CGNS_ENUMT(GridLocation_t) location{};
+      CGNS_ENUMT(GridConnectivityType_t) type{};
+      CGNS_ENUMT(PointSetType_t) set{}, donor_set{};
+      CGNS_ENUMT(ZoneType_t) donor_zone{};
+      CGNS_ENUMT(DataType_t) donor_type{};
+      cgsize_t points = 0, donor_points = 0;
+      ok(cg_conn_info(fn_, 1, 1, i, name, &location, &type, &set, &points, donor_name, &donor_zone,
+                      &donor_set, &donor_type, &donor_points),
+         "read connectivity");
+      if (type != CGNS_ENUMV(Abutting1to1) || location != CGNS_ENUMV(FaceCenter) ||
+          set != CGNS_ENUMV(PointList) || donor_set != CGNS_ENUMV(PointListDonor) ||
+          std::string_view(donor_name) != zone_name || points != donor_points) {
+        unsupported(path_, std::string("connectivity '") + name +
+                               "' other than a face-to-face connection of the zone with itself");
+      }
+      std::size_t elements = 0;
+      for (const auto& section : sections_) elements += section.elements.size();
+      if (points < 1 || std::cmp_greater(points, elements)) {
+        malformed(path_, std::string("connectivity '") + name + "' lists " +
+                             std::to_string(points) + " faces");
+      }
+      Side side{.name = name,
+                .faces = std::vector<cgsize_t>(at(points)),
+                .donor = std::vector<cgsize_t>(at(points)),
+                .translation = {}};
+      ok(cg_conn_read(fn_, 1, 1, i, side.faces.data(), CGNS_ENUMV(LongInteger), side.donor.data()),
+         "read connectivity", name);
+      for (const auto* list : {&side.faces, &side.donor}) {
+        std::vector<cgsize_t> sorted = *list;
+        std::ranges::sort(sorted);
+        if (std::ranges::adjacent_find(sorted) != sorted.end())
+          malformed(path_, std::string("connectivity '") + name + "' lists a face twice");
+      }
+      if (dimension_of(side.faces, name) != 2 || dimension_of(side.donor, name) != 2) {
+        malformed(path_,
+                  std::string("connectivity '") + name + "' joins elements that are not faces");
+      }
+      if (cg_goto(fn_, 1, "Zone_t", 1, "ZoneGridConnectivity_t", 1, "GridConnectivity_t", i,
+                  "GridConnectivityProperty_t", 1, "Periodic_t", 1, "end") != CG_OK) {
+        unsupported(path_, std::string("connectivity '") + name + "' that is not periodic");
+      }
+      int arrays = 0;
+      ok(cg_narrays(&arrays), "count Periodic arrays", name);
+      bool translated = false;
+      for (int a = 1; a <= arrays; ++a) {
+        char array[33];
+        CGNS_ENUMT(DataType_t) data_type{};
+        int dims = 0;
+        cgsize_t extent[12];
+        ok(cg_array_info(a, array, &data_type, &dims, extent), "read Periodic array", name);
+        if (dims != 1 || extent[0] != 3)
+          malformed(path_, std::string("Periodic of '") + name + "' is not 3D");
+        std::array<double, 3> v{};
+        ok(cg_array_read_as(a, CGNS_ENUMV(RealDouble), v.data()), "read Periodic array", name);
+        if (std::string_view(array) == "Translation") {
+          side.translation = v;
+          translated = true;
+        } else if (std::string_view(array) == "RotationAngle" && v != std::array<double, 3>{}) {
+          unsupported(path_, std::string("rotational periodicity in '") + name + "'");
+        }
+      }
+      if (!translated)
+        malformed(path_, std::string("Periodic of '") + name + "' has no Translation");
+      // Files of results.md keep the translation to the bit in a descriptor;
+      // it must round to the R4 one.
+      ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneGridConnectivity_t", 1, "GridConnectivity_t", i, "end"),
+         "go to connectivity", name);
+      int descriptors = 0;
+      ok(cg_ndescriptors(&descriptors), "count descriptors", name);
+      for (int d = 1; d <= descriptors; ++d) {
+        char descriptor[33];
+        char* text = nullptr;
+        ok(cg_descriptor_read(d, descriptor, &text), "read descriptor", name);
+        const std::string content = text != nullptr ? text : "";
+        cg_free(text);
+        if (std::string_view(descriptor) != "PeriodicTranslation") continue;
+        std::array<double, 3> exact{};
+        const nlohmann::json value = nlohmann::json::parse(content, nullptr, false);
+        if (!value.is_array() || value.size() != 3 ||
+            !std::ranges::all_of(
+                value, [](const nlohmann::json& v) { return v.is_number() && !v.is_boolean(); })) {
+          malformed(path_,
+                    std::string("PeriodicTranslation of '") + name + "' is not three numbers");
+        }
+        for (std::size_t k = 0; k < 3; ++k) exact[k] = value[k].get<double>();
+        for (std::size_t k = 0; k < 3; ++k) {
+          if (!std::isfinite(exact[k]) ||
+              static_cast<double>(static_cast<float>(exact[k])) != side.translation[k]) {
+            malformed(path_, std::string("PeriodicTranslation of '") + name +
+                                 "' contradicts its Periodic_t translation");
+          }
+        }
+        side.translation = exact;
+      }
+      sides.push_back(std::move(side));
+    }
+    // Reciprocal connections declare the same face pairs, in any order.
+    const auto pairs_of = [](const Side& side, bool mirrored) {
+      std::vector<std::pair<cgsize_t, cgsize_t>> pairs;
+      pairs.reserve(side.faces.size());
+      for (std::size_t k = 0; k < side.faces.size(); ++k) {
+        pairs.emplace_back(mirrored ? side.donor[k] : side.faces[k],
+                           mirrored ? side.faces[k] : side.donor[k]);
+      }
+      std::ranges::sort(pairs);
+      return pairs;
+    };
+    std::vector<char> used(sides.size(), 0);
+    for (std::size_t i = 0; i < sides.size(); ++i) {
+      if (used[i] != 0) continue;
+      const auto& s = sides[i];
+      const auto declared = pairs_of(s, false);
+      const std::array<double, 3> back{-s.translation[0], -s.translation[1], -s.translation[2]};
+      std::size_t j = i + 1;
+      while (j < sides.size() && (used[j] != 0 || sides[j].translation != back ||
+                                  pairs_of(sides[j], true) != declared)) {
+        ++j;
+      }
+      if (j == sides.size()) {
+        malformed(path_, "periodic connectivity '" + s.name + "' has no reciprocal connection");
+      }
+      used[i] = used[j] = 1;
+      declared_.emplace_back(s.faces, s.donor);
+      const index_t a = add_face_zone(s.name, "", s.faces, -1, s.name.c_str(), BcKind::periodic);
+      const index_t b = add_face_zone(sides[j].name, "", sides[j].faces, -1, sides[j].name.c_str(),
+                                      BcKind::periodic);
+      periodic_.push_back({.zone_a = a, .zone_b = b, .translation = s.translation});
+    }
+  }
+
+  index_t add_face_zone(const std::string& zone, const std::string& bc_type,
+                        const std::vector<cgsize_t>& ids, int bc, const char* bc_name,
+                        std::optional<BcKind> kind = std::nullopt) {
     auto [it, inserted] =
         face_zone_index_.try_emplace(zone, static_cast<index_t>(face_zones_.size()));
     if (inserted) {
       face_zones_.push_back(FaceZone{
           .name = zone,
           .bc_type = bc_type,
-          .kind = bc_kind(bc_type),
+          .kind = kind.value_or(bc_kind(bc_type)),
           .boundary = true,
           .provenance =
               Provenance{.source_id = bc, .detail = std::string("CGNS BC_t '") + bc_name + "'"}});
@@ -545,6 +738,7 @@ class Reader {
         throw Error(ErrorCode::io_ambiguous_zone, path_ + ": a face belongs to two BCs");
       }
     }
+    return it->second;
   }
 
   void add_cell_zone(const std::string& zone, const std::vector<cgsize_t>& ids,
@@ -682,6 +876,7 @@ class Reader {
     }
     in.cell_zone = cell_zones_of(cells);
     in.cell_zones = cell_zones_;
+    in.periodic = periodic_;
     in.x = x_;
     in.y = y_;
     in.z = z_;
@@ -717,6 +912,7 @@ class Reader {
     }
     mesh.face_zones = face_zones_;
     mesh.cell_zones = cell_zones_;
+    mesh.periodic = periodic_;
     mesh.source = MeshSource{.format = "cgns", .path = path_};
     return to_face_based(std::move(mesh));
   }
@@ -736,6 +932,8 @@ class Reader {
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;
+  std::vector<PeriodicPair> periodic_;
+  std::vector<std::pair<std::vector<cgsize_t>, std::vector<cgsize_t>>> declared_;  // zone a -> b
   std::map<cgsize_t, index_t> face_label_;
   std::vector<CellZone> cell_zones_;
   std::map<std::string, index_t> cell_zone_index_;
@@ -749,7 +947,10 @@ Mesh read_cgns(const fs::path& file) {
   if (!fs::exists(file, ec))
     throw Error(ErrorCode::io_cannot_open, "'" + file.string() + "' does not exist");
   Reader reader(file);
-  return assemble(reader.read());
+  AssemblyMap map;
+  Mesh mesh = assemble(reader.read(), &map);
+  reader.check_declared_pairs(mesh, map);
+  return mesh;
 }
 
 }  // namespace autan::io

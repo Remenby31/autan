@@ -162,13 +162,23 @@ class Buffers {
   std::vector<mtl::Buffer> keep_;
 };
 
+/// Points `member` at a device copy of `v` in the member's stored type (geometry no body reads
+/// through rel() is stored in the compute type: kernel-generator.md, Precision).
+template <class T, class V>
+void put(Buffers& buf, const T*& member, const std::vector<V>& v) {
+  member = buf.put<T>(v);
+}
+template <class T, class V>
+void put(Buffers& buf, T*& member, const std::vector<V>& v) {
+  member = buf.put<T>(v);
+}
+
 /// The sequence of Euler<P>::residual on the Metal loops, in Metal policy M.
 template <class M>
 std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Scheme& s,
                                    const Boundaries& b, const std::vector<double>& weights,
                                    const std::vector<double>& u, Strategy strategy) {
   using S = typename M::state;
-  using G = typename M::geom;
   using R = typename M::residual;
   const auto packed = autan::kernels::pack_geometry(c.mesh, c.geometry);
   const auto stencil =
@@ -195,7 +205,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   sched.block = 128;
   sched.interior = {buf.put<index_t>(interior.faces), interior.offsets};
   sched.boundary = {buf.put<index_t>(boundary.faces), boundary.offsets};
-  sched.face_scratch = buf.zeros<typename M::accum>(5 * nf);
+  sched.face_scratch = buf.zeros<typename M::compute>(5 * nf);
   sched.face_scratch_width = 5;
 
   std::vector<double> kind(nf, 0.0), bc(5 * nf, 0.0);
@@ -212,7 +222,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   }
   d.u = buf.put<S>(stored);
   d.prim = buf.zeros<S>(5 * nc);
-  d.bc_kind = buf.put<G>(kind);
+  put(buf, d.bc_kind, kind);
   d.bc = buf.put<S>(bc);
   d.prim_b = buf.zeros<S>(5 * nf);
   d.grad = buf.zeros<typename M::grad>(15 * nc);
@@ -221,13 +231,13 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   d.phi = buf.put<S>(std::vector<double>(5 * nc, s.second_order && !s.limiter ? 1.0 : 0.0));
   d.source = buf.zeros<S>(5 * nc);
   d.res = buf.zeros<R>(5 * nc);
-  d.face_normal = buf.put<G>(packed.face_normal);
-  d.face_area_magnitude = buf.put<G>(packed.face_area_magnitude);
-  d.face_centroid = buf.put<G>(packed.face_centroid);
-  d.face_moment = buf.put<G>(packed.face_moment);
-  d.cell_centroid = buf.put<G>(packed.cell_centroid);
-  d.cell_volume = buf.put<G>(packed.cell_volume);
-  d.stencil_lsq_weight = buf.put<G>(weights);
+  put(buf, d.face_normal, packed.face_normal);
+  put(buf, d.face_area_magnitude, packed.face_area_magnitude);
+  put(buf, d.face_centroid, packed.face_centroid);
+  put(buf, d.face_moment, packed.face_moment);
+  put(buf, d.cell_centroid, packed.cell_centroid);
+  put(buf, d.cell_volume, packed.cell_volume);
+  put(buf, d.stencil_lsq_weight, weights);
   d.gamma[0] = typename M::param(air.gamma);
   d.gas_constant[0] = typename M::param(air.gas_constant);
   d.mach_ref[0] = typename M::param(s.mach_ref);
