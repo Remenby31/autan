@@ -57,6 +57,7 @@ class Mesh:
     cell_centroid: F64
     cell_volume: F64
     lsq_weight: F64
+    incidence_side: F64  # (n_incidences,)
 
     def __del__(self) -> None:
         if self.handle:
@@ -127,6 +128,7 @@ def _wrap(h: ctypes.c_void_p) -> Mesh:
         "cell_centroid": np.zeros(3 * nc),
         "cell_volume": np.zeros(nc),
         "lsq_weight": np.zeros(3 * nk),
+        "incidence_side": np.zeros(nk),
     }
     lib().autan_spike_mesh_arrays(h, *(_p(v) for v in a.values()))
     soa = {k: a[k].reshape(3, n).T.copy() for k, n in
@@ -134,7 +136,7 @@ def _wrap(h: ctypes.c_void_p) -> Mesh:
     moment = a["face_moment"].reshape(9, nf).T.reshape(nf, 3, 3).copy()
     return Mesh(h, nc, no, nf, ni, nk, a["owner"], a["neighbour"], a["cell_face_offsets"], a["cell_faces"],
                 soa["face_area"], soa["face_centroid"], moment, soa["cell_centroid"], a["cell_volume"],
-                soa["lsq_weight"])  # fmt: skip
+                soa["lsq_weight"], a["incidence_side"])  # fmt: skip
 
 
 def soa(v: F64) -> F64:

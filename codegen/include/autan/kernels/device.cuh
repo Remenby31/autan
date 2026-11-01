@@ -226,6 +226,7 @@ class DeviceMesh {
     AUTAN_BIND_GEOMETRY(cell_centroid)
     AUTAN_BIND_GEOMETRY(cell_volume)
     AUTAN_BIND_GEOMETRY(lsq_weight)
+    AUTAN_BIND_GEOMETRY(incidence_side)
     AUTAN_BIND_GEOMETRY(stencil_lsq_weight)
 #undef AUTAN_BIND_GEOMETRY
   }
