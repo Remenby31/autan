@@ -778,7 +778,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
       data["path"] = refusal->path;
-      throw InputError(Diagnostic{.code = "E0706",
+      throw InputError(Diagnostic{.code = refusal->code,
                                   .message = std::move(refusal->message),
                                   .path = std::move(refusal->path),
                                   .data_json = data.dump()});

@@ -48,7 +48,8 @@ struct RelaxationOptions {
   /// Checks PhysicsContext's face keys against the mesh file: each local face's global face has
   /// the local face's cells (by global id), swapped when it is marked reversed.
   bool check_keys = false;
-  int expect_ranks = 0;  ///< its scope refuses a run on another number of ranks; 0: any
+  std::string refuse_code{};  ///< its scope refuses every input with this code; empty: none
+  int expect_ranks = 0;       ///< its scope refuses a run on another number of ranks; 0: any
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -344,14 +345,28 @@ class Relaxation final : public autan::runtime::Physics {
           throw std::runtime_error("relaxation: a boundary face's key does not match");
         continue;
       }
-      // A face to a periodic image crosses a boundary face pair of the mesh: its
-      // key is the pair's representing face, whose owner is one of the two cells.
-      if (g >= static_cast<std::size_t>(global.n_interior_faces())) continue;
+      // A face to a periodic image has a pair's face of zone a for key: its
+      // neighbour is the owner of the matched face of zone b.
       const auto neighbour = ids[static_cast<std::size_t>(mesh.neighbour()[i])];
       const auto global_owner =
           global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])];
-      const auto global_neighbour =
-          global.cell_global_id()[static_cast<std::size_t>(global.neighbour()[g])];
+      std::int64_t global_neighbour = -1;
+      if (g < static_cast<std::size_t>(global.n_interior_faces())) {
+        global_neighbour = global.cell_global_id()[static_cast<std::size_t>(global.neighbour()[g])];
+      } else {
+        const auto offsets = global.boundary_zone_offsets();
+        for (std::size_t p = 0; p < global.periodic_pairs().size(); ++p) {
+          const auto first = static_cast<std::size_t>(
+              offsets[static_cast<std::size_t>(global.periodic_pairs()[p].zone_a)]);
+          const auto partners = global.periodic_partners(p);
+          if (g >= first && g < first + partners.size()) {
+            global_neighbour = global.cell_global_id()[static_cast<std::size_t>(
+                global.owner()[static_cast<std::size_t>(partners[g - first])])];
+          }
+        }
+        if (global_neighbour < 0)
+          throw std::runtime_error("relaxation: a periodic face's key is no zone-a face");
+      }
       if ((reversed ? neighbour : owner) != global_owner ||
           (reversed ? owner : neighbour) != global_neighbour)
         throw std::runtime_error("relaxation: an interior face's key does not match");
@@ -380,6 +395,12 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
       },
       [options](const autan::runtime::SolverInput& /*input*/,
                 int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (options.refuse_code.empty() == false) {
+          return autan::runtime::PhysicsRefusal{.message = "refused with its own code",
+                                                .path = "physics",
+                                                .data_json = "{}",
+                                                .code = options.refuse_code};
+        }
         if (options.expect_ranks == 0 || ranks == options.expect_ranks) return std::nullopt;
         return autan::runtime::PhysicsRefusal{
             .message = "refused on " + std::to_string(ranks) + " ranks",

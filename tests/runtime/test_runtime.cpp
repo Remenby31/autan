@@ -650,6 +650,16 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
 }
 #endif
 
+TEST_CASE("A scope's refusal carries its own code", "[runtime]") {
+  // E0706 unless the physics says more (E1109 for a reproducibility it cannot honour): any
+  // registered code goes through, here E0705.
+  autan_test::RelaxationOptions refusing;
+  refusing.refuse_code = "E0705";
+  const Outcome o = run(input(), refusing);
+  require_error(o, "E0705");
+  CHECK(Json::parse(o.err)["data"]["path"] == "physics");
+}
+
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
   autan::runtime::PhysicsRegistry registry;
@@ -1574,12 +1584,16 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   keyed["reproducibility"] = "ranks";
   autan_test::RelaxationOptions checking = options;
   checking.check_keys = true;
-  REQUIRE(run(keyed, checking).status == ExitStatus::finished);
+  const Outcome one_keyed = run(keyed, checking);
+  REQUIRE(one_keyed.status == ExitStatus::finished);
   const fs::path many_keyed =
       run_on_ranks(keyed, ranks,
                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
                     "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
   CHECK(Json::parse(read(many_keyed / "run.json"))["status"] == "completed");
+  CHECK(lines_of(many_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
+  CHECK(solution_field(many_keyed / "solution.cgns", "FlowSolution", "Pressure") ==
+        solution_field(one_keyed.run / "solution.cgns", "FlowSolution", "Pressure"));
   const auto has_event = [](const fs::path& run_dir) {
     std::ifstream in(run_dir / "log.jsonl");
     for (std::string line; std::getline(in, line);) {
@@ -1712,9 +1726,11 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   // rank: the start state is split among the ranks and the mean and restart
   // fields gathered back.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
-  const auto steps = [](std::int64_t n) {
-    return [n](Json& d) {
+  const std::string mode = GENERATE("run", "ranks");
+  CAPTURE(ranks, mode);
+  const auto steps = [mode](std::int64_t n) {
+    return [n, mode](Json& d) {
+      d["reproducibility"] = mode;
       d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       d["time"]["steps"] = n;

@@ -156,6 +156,9 @@ struct PhysicsRefusal {
   std::string message;
   std::string path;              ///< document path of the offending key; also `data.path`
   std::string data_json = "{}";  ///< machine-readable details: the text of a JSON object
+  /// The registry code reported: E0706 (no implementation for the input) unless another code
+  /// says more, as E1109 for a reproducibility the physics cannot honour.
+  std::string code = "E0706";
 };
 
 /// What a physics supports beyond its key (media, zones, conditions, the number of ranks the
