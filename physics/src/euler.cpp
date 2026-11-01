@@ -19,8 +19,8 @@ struct Euler<P>::Impl {
 
   Scheme scheme;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, cell_centroid, cell_volume,
-      lsq_weight;
+  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
+      cell_volume, lsq_weight;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<Gr> grad, zero_grad;
@@ -32,6 +32,7 @@ struct Euler<P>::Impl {
     face_normal = kernels::converted<G>(packed.face_normal);
     face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
     face_centroid = kernels::converted<G>(packed.face_centroid);
+    face_moment = kernels::converted<G>(packed.face_moment);
     cell_centroid = kernels::converted<G>(packed.cell_centroid);
     cell_volume = kernels::converted<G>(packed.cell_volume);
     lsq_weight = kernels::converted<G>(packed.lsq_weight);
@@ -63,6 +64,7 @@ struct Euler<P>::Impl {
     d.face_normal = face_normal.data();
     d.face_area_magnitude = face_area_magnitude.data();
     d.face_centroid = face_centroid.data();
+    d.face_moment = face_moment.data();
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
     d.lsq_weight = lsq_weight.data();

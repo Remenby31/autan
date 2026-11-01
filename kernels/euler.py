@@ -43,6 +43,7 @@ from autan_codegen.dsl import (
     pointwise,
     rel,
     sqrt,
+    transpose,
 )
 
 # Boundary condition codes of the face dataset `bc_kind`.
@@ -492,6 +493,57 @@ def reconstruct(w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3) ->
     return w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
 
 
+@pointwise
+def times(a: State.Vec5, b: State.Vec5) -> State.Vec5:
+    return Vec5(a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3], a[4] * b[4])
+
+
+@pointwise
+def flux_increment(w: State.Vec5, dw: State.Vec5, e: Geom.Vec3, g: Param) -> State.Vec5:
+    # Linearisation of the physical flux through direction e, in primitive variables.
+    v = velocity(w)
+    dv = velocity(dw)
+    ve = dot(v, e)
+    dve = dot(dv, e)
+    rh = g / (g - 1.0) * w[4] + 0.5 * w[0] * dot(v, v)
+    drh = g / (g - 1.0) * dw[4] + 0.5 * dw[0] * dot(v, v) + w[0] * dot(v, dv)
+    dm = dw[0] * ve + w[0] * dve
+    mom = dm * v + (w[0] * ve) * dv + dw[4] * e
+    return Vec5(dm, mom[0], mom[1], mom[2], drh * ve + rh * dve)
+
+
+@pointwise
+def warp(
+    w: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    m: Geom.Mat3,
+    g: Param,
+) -> State.Vec5:
+    # Flux of the linear reconstruction through the fan triangles t of a warped face beyond its
+    # centroid value: sum_j dF_j[W; grad W . M[:, j]], M = sum_t (c_t - x_f) (x) S_t, zero on a
+    # planar face; gradients averaged over both sides.
+    m0 = Vec3(m[0, 0], m[1, 0], m[2, 0])
+    m1 = Vec3(m[0, 1], m[1, 1], m[2, 1])
+    m2 = Vec3(m[0, 2], m[1, 2], m[2, 2])
+    d0 = 0.5 * (times(pl, gl @ m0) + times(pr, gr @ m0))
+    d1 = 0.5 * (times(pl, gl @ m1) + times(pr, gr @ m1))
+    d2 = 0.5 * (times(pl, gl @ m2) + times(pr, gr @ m2))
+    return (
+        flux_increment(w, d0, Vec3(1.0, 0.0, 0.0), g)
+        + flux_increment(w, d1, Vec3(0.0, 1.0, 0.0), g)
+        + flux_increment(w, d2, Vec3(0.0, 0.0, 1.0), g)
+    )
+
+
+@pointwise
+def wall_warp(gl: Grad.Mat53, pl: State.Vec5, m: Geom.Mat3) -> State.Vec5:
+    dp = pl[4] * (transpose(m) @ Vec3(gl[4, 0], gl[4, 1], gl[4, 2]))
+    return Vec5(0.0, dp[0], dp[1], dp[2], 0.0)
+
+
 # One face loop and one boundary loop per numerical flux; the solver calls the pair it uses.
 
 
@@ -508,11 +560,12 @@ def roe_face(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
 ) -> Residual.Vec5:
     fl = reconstruct(wl, gl, pl, rel(xf, xl))
     fr = reconstruct(wr, gr, pr, rel(xf, xr))
-    return area * roe(fl, fr, n, g)
+    return area * roe(fl, fr, n, g) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g)
 
 
 @pointwise
@@ -528,11 +581,12 @@ def hllc_face(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
 ) -> Residual.Vec5:
     fl = reconstruct(wl, gl, pl, rel(xf, xl))
     fr = reconstruct(wr, gr, pr, rel(xf, xr))
-    return area * hllc(fl, fr, n, g)
+    return area * hllc(fl, fr, n, g) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g)
 
 
 @pointwise
@@ -548,12 +602,13 @@ def ausm_face(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     minf: Param,
 ) -> Residual.Vec5:
     fl = reconstruct(wl, gl, pl, rel(xf, xl))
     fr = reconstruct(wr, gr, pr, rel(xf, xr))
-    return area * ausm_up(fl, fr, n, g, minf)
+    return area * ausm_up(fl, fr, n, g, minf) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g)
 
 
 FACE_ARGS = {
@@ -568,6 +623,7 @@ FACE_ARGS = {
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
+    "m": geometry.face_moment,
     "g": gamma,
 }
 
@@ -592,14 +648,17 @@ def roe_boundary(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     rgas: Param,
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl))
     wb = boundary_value(wf, kind, data, n, g, rgas)
-    return area * (
-        wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else roe(wf, wb, n, g)
-    )
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * roe(wf, wb, n, g) + warp(wf, gl, pl, gl, pl, m, g)
+    return f
 
 
 @pointwise
@@ -613,14 +672,17 @@ def hllc_boundary(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     rgas: Param,
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl))
     wb = boundary_value(wf, kind, data, n, g, rgas)
-    return area * (
-        wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else hllc(wf, wb, n, g)
-    )
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * hllc(wf, wb, n, g) + warp(wf, gl, pl, gl, pl, m, g)
+    return f
 
 
 @pointwise
@@ -634,17 +696,18 @@ def ausm_boundary(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     rgas: Param,
     minf: Param,
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl))
     wb = boundary_value(wf, kind, data, n, g, rgas)
-    return area * (
-        wall_flux(wf, n)
-        if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
-        else ausm_up(wf, wb, n, g, minf)
-    )
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * ausm_up(wf, wb, n, g, minf) + warp(wf, gl, pl, gl, pl, m, g)
+    return f
 
 
 BOUNDARY_ARGS = {
@@ -657,6 +720,7 @@ BOUNDARY_ARGS = {
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
+    "m": geometry.face_moment,
     "g": gamma,
     "rgas": gas_constant,
 }
