@@ -35,14 +35,20 @@ def prepare(
     max_iterations: int = 20000,
     stop_margin: float = config.STOP_MARGIN,
     scheme: str = "roe",
+    published: Path | None = None,
 ) -> list[Path]:
     """Write OUT/meshes/<level>.su2 and OUT/<condition>/n<NC>/{case.cfg, level.json}; returns the
-    case directories. V0805 if `family` is not a naca0012 family."""
+    case directories. With `published`, a configuration SU2 publishes is run as it is
+    (`config.adopt`) and the scheme is recorded as `published:<its SHA-256>`. V0805 if `family` is
+    not a naca0012 family."""
     manifest = json.loads((family / "manifest.json").read_text())
     if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("kind") != "naca0012":
         msg = f"{family} is not a naca0012 mesh family ({MANIFEST_SCHEMA})"
         raise VVError(msg, code="V0805")
     (out / "meshes").mkdir(parents=True, exist_ok=True)
+    source_text = published.read_bytes().decode() if published is not None else None
+    if published is not None:
+        scheme = "published:" + hashlib.sha256(published.read_bytes()).hexdigest()
     dirs = []
     for level in manifest["levels"]:
         source = family / level["file"]
@@ -52,16 +58,27 @@ def prepare(
         venkat = config.venkat_coefficient(slab)
         for condition in conditions:
             case = cases.case(condition, source.name)
-            text = config.config(
-                case,
-                record,
-                venkat,
-                span=slab.y1 - slab.y0,
-                max_iterations=max_iterations,
-                residual_orders=cases.RESIDUAL_ORDERS,
-                stop_margin=stop_margin,
-                scheme=scheme,
-            )
+            if source_text is not None:
+                text = config.adopt(
+                    source_text,
+                    case,
+                    record,
+                    span=slab.y1 - slab.y0,
+                    max_iterations=max_iterations,
+                    residual_orders=cases.RESIDUAL_ORDERS,
+                    stop_margin=stop_margin,
+                )
+            else:
+                text = config.config(
+                    case,
+                    record,
+                    venkat,
+                    span=slab.y1 - slab.y0,
+                    max_iterations=max_iterations,
+                    residual_orders=cases.RESIDUAL_ORDERS,
+                    stop_margin=stop_margin,
+                    scheme=scheme,
+                )
             text = text.replace(
                 f"MESH_FILENAME= {record.file}", f"MESH_FILENAME= ../../meshes/{record.file}"
             )
