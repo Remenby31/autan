@@ -50,8 +50,10 @@ enum class StencilKind : std::uint8_t { vertex, face2 };
 
 /// A cell -> entries CSR (layout of Topology::stencil) with its twins and the LSQ weights over
 /// it (3 x size, structure of arrays, as PackedGeometry::lsq_weight). Entries of a cell are its
-/// stencil cells in increasing order, then its boundary faces in increasing order. Owned cells
-/// only; ghost cells get empty lists (a wider halo is the partitioner's job).
+/// stencil cells in increasing order, then its boundary faces in increasing order. Ghost cells get
+/// the stencil their known faces give, so every owned -> ghost entry has its twin (the adjoint's
+/// partial sums for the reverse halo exchange); LSQ weights are those of owned cells. A ghost
+/// layer as deep as the stencil is the partitioner's job.
 struct CellStencil {
   std::vector<offset_t> offsets;
   std::vector<index_t> entries;

@@ -206,3 +206,27 @@ def test_stencil_gradient_residual_and_adjoint_equal_host(stencil: str, strategy
         runs.add((dev.tobytes(), dbar.tobytes()))
     if strategy in s.DETERMINISTIC:
         assert len(runs) == 1
+
+
+@pytest.mark.parametrize("stencil", ["vertex", "face2"])
+@pytest.mark.parametrize("strategy", s.STRATEGIES)
+def test_stencil_adjoint_sends_ghost_cells_their_partial_sums(stencil: str, strategy: str) -> None:
+    # Owned cells next to the ghost layer send adjoint contributions to ghost cells through the
+    # stencil; every strategy must deliver them (the host scatters them directly).
+    full = s.mesh(meshes.build("hex", 6))
+    fa, n_ghost = meshes.with_ghost_layer(meshes.build("hex", 6), 6)
+    m = s.mesh(fa, n_ghost)
+    s.fill_ghost_geometry(m, full.cell_centroid, full.cell_volume)
+    s.set_stencil(m, stencil)
+    rng = np.random.default_rng(17)
+    q, q_b, src = (
+        rng.standard_normal(m.n_cells),
+        rng.standard_normal(m.n_faces),
+        rng.standard_normal(m.n_cells),
+    )
+    ybar = rng.standard_normal(m.n_cells)
+    host = s.advdiff_derivative(m, "fp64", "adjoint", q, q_b, src, mms.VELOCITY, mms.NU, ybar)
+    dev = s.gpu_advdiff_adjoint(m, "fp64", strategy, 64, q, q_b, src, mms.VELOCITY, mms.NU, ybar)
+    ghosts = slice(m.n_cells - n_ghost, m.n_cells)
+    assert np.abs(host[ghosts]).max() > 0.0
+    assert np.abs(dev - host).max() <= 500 * eps("fp64") * np.abs(host).max()

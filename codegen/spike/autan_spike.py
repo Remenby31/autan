@@ -433,6 +433,18 @@ def set_stencil(m: Mesh, kind: str | None) -> int:
     return size.value
 
 
+def fill_ghost_geometry(m: Mesh, centroid: F64, volume: F64) -> None:
+    """Give ghost cells the centroid (n, 3) and volume (n,) a partitioner would copy over."""
+    err = ctypes.create_string_buffer(512)
+    cs, vs = soa(centroid), np.ascontiguousarray(volume, dtype=np.float64)
+    _check(
+        lib().autan_spike_fill_ghost_geometry(
+            m.handle, _p(cs), _p(vs), err, ctypes.c_size_t(len(err))
+        ),
+        err,
+    )
+
+
 def stencil_arrays(m: Mesh, size: int) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int32]]:
     """Offsets and entries of the mesh's cell stencil (cell index, or -(f + 1) for face f)."""
     offsets = np.zeros(m.n_cells + 1, np.int64)
