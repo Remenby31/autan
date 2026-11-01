@@ -1,9 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
-import { type HistoryColumns, planQuery, runQuery, soleForces, useLiveRun } from "../api/runs";
+import {
+  type HistoryColumns,
+  planQuery,
+  runQuery,
+  runsQuery,
+  soleForces,
+  useLiveRun,
+} from "../api/runs";
 import { ResidualChart } from "../components/ResidualChart";
 import { formatBytes, formatCount, remainingMs } from "../components/run/format";
 import { LogView } from "../components/run/LogView";
@@ -341,6 +348,8 @@ function Facts({
   cl: number | undefined;
   cd: number | undefined;
 }) {
+  const registry = useQuery(runsQuery);
+  const known = new Set(registry.data?.runs.map((r) => r.run_id));
   const started = new Date(run.started).getTime();
   const end = run.finished ? new Date(run.finished).getTime() : now;
   const left =
@@ -413,6 +422,27 @@ function Facts({
           ),
         },
         { label: "Started", value: <RelativeTime iso={run.started} /> },
+        ...(run.start
+          ? [
+              {
+                label: run.start.mode === "continue" ? "Continues" : "Warm start from",
+                // A predecessor read from another runs directory has no page here.
+                value: known.has(run.start.run_id) ? (
+                  <Link
+                    to="/runs/$runId"
+                    params={{ runId: run.start.run_id }}
+                    className="font-mono text-accent hover:underline"
+                  >
+                    {run.start.run_id.slice(-8)}
+                  </Link>
+                ) : (
+                  <Tooltip content={`${run.start.run_id}, not in this runs directory`}>
+                    <span className="font-mono text-fg-3">{run.start.run_id.slice(-8)}</span>
+                  </Tooltip>
+                ),
+              },
+            ]
+          : []),
         {
           label: run.status === "running" ? "Elapsed · left" : "Duration",
           value: (

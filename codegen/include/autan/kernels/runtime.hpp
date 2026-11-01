@@ -22,6 +22,11 @@ struct Topology {
   index_t n_owned_cells;
   index_t n_faces;
   index_t n_interior_faces;
+  /// Faces that touch an owned cell (mesh contract, invariant 6): interior [0,
+  /// n_owned_interior_faces), boundary [n_interior_faces, n_owned_faces). Face loops that
+  /// increment cell data run over these only.
+  index_t n_owned_interior_faces;
+  index_t n_owned_faces;
   offset_t n_incidences;
   const index_t* owner;
   const index_t* neighbour;

@@ -55,10 +55,11 @@ PartitionQuality partition_quality(const Mesh& mesh, std::span<const std::int32_
                                    std::int32_t n_parts,
                                    std::span<const std::int32_t> cell_weights = {});
 
-/// What one rank exchanges with the others. Ghost cells are ordered by owning
-/// rank, then by index in the global mesh, so the ghosts received from neighbours[i] are the
-/// contiguous local cells n_owned_cells + [recv_offsets[i], recv_offsets[i+1]).
-/// send_cells[send_offsets[i] .. send_offsets[i+1]) are the owned cells whose
+/// What one rank exchanges with the others, its own rank included when it
+/// holds periodic images of its cells. Ghost cells are ordered by owning
+/// rank, then by index in the global mesh, then by periodic shift, so the ghosts received from
+/// neighbours[i] are the contiguous local cells n_owned_cells + [recv_offsets[i],
+/// recv_offsets[i+1]). send_cells[send_offsets[i] .. send_offsets[i+1]) are the owned cells whose
 /// copies are those ghosts on neighbours[i], in the same order.
 struct HaloPattern {
   std::int32_t rank = 0;
@@ -89,14 +90,19 @@ struct LocalPartition {
   HaloPattern halo;
 };
 
-/// Builds the part `rank` of `parts` with one layer of ghost cells: owned
-/// cells in the order of `global`, then ghosts ordered as HaloPattern states;
-/// every cell keeps the cell_global_id it has in `global`.
+/// Builds the part `rank` of `parts` with `layers` (1 or 2) layers of ghost
+/// cells: owned cells in the order of `global`, then ghosts ordered as
+/// HaloPattern states; every cell keeps the cell_global_id it has in
+/// `global`. With two layers the first ghost layer carries all its faces,
+/// so the face-of-face stencil of every owned cell is local. A periodic face
+/// becomes an interior face to an image ghost: the cell across it, shifted
+/// by the pair's translation (Mesh::ghost_translation), even on one part.
 /// `global_geometry` must be compute_geometry(global). Throws E0141 if
-/// `global` has ghosts and E0140 if `parts`, `n_parts` or `rank` are out of
-/// range or `rank` owns no cell.
+/// `global` has ghosts and E0140 if `parts`, `n_parts`, `rank` or `layers`
+/// are out of range, `rank` owns no cell, or the periodic translations of
+/// `global` span more than three directions or are not linearly independent.
 LocalPartition extract_partition(const Mesh& global, const Geometry& global_geometry,
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
-                                 std::int32_t rank);
+                                 std::int32_t rank, int layers = 2);
 
 }  // namespace autan

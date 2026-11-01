@@ -7,15 +7,16 @@ The kernel generator turns pointwise kernels written in a restricted Python subs
 1. `autan_codegen.model.load` imports a kernel module and collects every loop bound to a module-level name.
 2. `autan_codegen.frontend` parses each body with `ast` into a scalar SSA IR (`autan_codegen.ir`): vectors and matrices are scalarised, `for i in range(N)` is unrolled, `if` becomes `select`, calls to other bodies are inlined. Value numbering and dead-code elimination follow.
 3. `autan_codegen.derive` adds, for every loop, `<loop>_tangent` and `<loop>_adjoint`, built by `autan_codegen.ad` on the IR.
-4. Emitters write, per module `m`: `m.hpp` (the `Data<P>` struct and every body), `m_cpu.hpp` (serial loops), `m_gpu.cuh` (CUDA/HIP kernels and launchers, one text for both) and `m_gpu.cu` (explicit instantiations for the build's policies).
+4. Emitters write, per module `m`: `m.hpp` (the `Data<P>` struct and every body), `m_cpu.hpp` (serial loops), `m_gpu.cuh` (CUDA/HIP kernels and launchers, one text for both), `m_gpu.cu` (explicit instantiations for the build's policies), and `m_metal.hpp` (Metal Shading Language source and host launchers, [metal-backend.md](metal-backend.md)).
 
-The build runs the generator as a CMake custom command (`codegen/CMakeLists.txt`); it needs Python ≥ 3.12 and nothing outside the standard library. By hand: `PYTHONPATH=codegen/src python3 -m autan_codegen kernels/roe.py --out DIR --backends cpu,gpu [--policies fp64,fp32+acc64,fp32] [--no-line]`.
+The build runs the generator as a CMake custom command (`codegen/CMakeLists.txt`); it needs Python ≥ 3.12 and nothing outside the standard library. By hand: `PYTHONPATH=codegen/src python3 -m autan_codegen kernels/roe.py --out DIR --backends cpu,gpu,metal [--policies fp64,fp32+acc64,fp32] [--no-line]`.
 
 | CMake option | Effect |
 |---|---|
 | default | CPU loops, `autan_kernels`, spike library `autan_spike` |
 | `AUTAN_ENABLE_CUDA` (root) | GPU loops, `autan_kernels_gpu` (every loop × policy), `autan_spike_gpu`, `autan_loop_bench`, `autan_option_b` |
 | `AUTAN_ENABLE_HIP` | the same generated GPU loops compiled with HIP into `autan_kernels_gpu`; exclusive with CUDA |
+| `AUTAN_ENABLE_METAL` (macOS) | Metal loops, runtime `autan_metal`, driver `autan_spike_metal`, benchmarks `autan_metal_stream` and `autan_metal_loop_bench` |
 
 ## DSL
 
@@ -43,8 +44,8 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 
 | Declaration | Iterates | Bindings | Outputs |
 |---|---|---|---|
-| `face_loop` | interior faces | `d.left`, `d.right` (cells), `d` (faces), params | `Inc(d, left=s_L, right=s_R)` |
-| `boundary_loop` | boundary faces | `d.left`, `d` (faces), params | `Inc(d, left=s_L)`, or `Write(d)` of face datasets: no derivatives (face data are passive); reading active data needs `frozen=True` (E1012 otherwise), listed in the module's `frozen_loops` |
+| `face_loop` | interior faces that touch an owned cell (`[0, n_owned_interior_faces)`: halo faces between two ghosts are skipped, mesh contract invariant 6) | `d.left`, `d.right` (cells), `d` (faces), params | `Inc(d, left=s_L, right=s_R)` |
+| `boundary_loop` | boundary faces of owned cells for `Inc`, all boundary faces for `Write` (states on the boundary faces of ghosts feed the stencils of owned cells) | `d.left`, `d` (faces), params | `Inc(d, left=s_L)`, or `Write(d)` of face datasets: no derivatives (face data are passive); reading active data needs `frozen=True` (E1012 otherwise), listed in the module's `frozen_loops` |
 | `cell_loop` | owned cells | `d` (cells), params | `Write(d)` |
 | `cell_reduce` | owned cells, then their faces in CSR order | `d.self_`, `d.other(boundary=f)`, incidence data (`geometry.lsq_weight`), face data of the incidence's face (`d` on faces), params | `Sum(d)`, `Min(d)`, `Max(d)`, optional `finalise` body |
 | `cell_reduce(over=STENCIL)` | owned cells, then their stencil: cells, then boundary faces | `d.self_`, `d.other(boundary=f)` (stencil cell, or `f` of a boundary face), stencil data (`geometry.stencil_lsq_weight`), params | same |
@@ -99,6 +100,7 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 | E1010 | `unknown_backend` | `--backends` names an unknown backend. |
 | E1011 | `unknown_policy` | `--policies` names an unknown policy. |
 | E1012 | `ad_unsupported` | A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True. |
+| E1013 | `policy_unsupported_by_backend` | A precision policy is requested on a backend that cannot run it (`fp64` on Metal). |
 | E1100 | `runtime_failure` | A generated loop or the spike driver fails without a more specific code. |
 | E1101 | `gpu_runtime_error` | A CUDA or HIP call or kernel launch fails. |
 | E1102 | `unknown_precision_policy` | A driver receives an unknown policy name. |
@@ -106,6 +108,8 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 | E1104 | `face_scratch_too_narrow` | Store-gather scratch has fewer components per face than the loop's outputs. |
 | E1105 | `incidence_scratch_too_narrow` | The deterministic adjoint of a cell reduction has fewer scratch components per incidence than the values it sends to neighbours. |
 | E1106 | `incidence_twins_missing` | The deterministic adjoint of a cell reduction runs on a topology without incidence twins. |
+| E1107 | `metal_runtime_error` | A Metal call, library compilation or command buffer fails. |
+| E1108 | `strategy_unavailable` | A face-loop strategy needs atomics the backend lacks for the policy's accumulation type. |
 
 ## Spike (research §8)
 

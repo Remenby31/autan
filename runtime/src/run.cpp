@@ -128,6 +128,27 @@ struct Prepared {
                               .data_json = data.is_null() ? "{}" : data.dump()});
 }
 
+// solver-input.md, `periodic`: the pairs of MeshInfo, which must be the
+// mesh's; no physics exchanges across them yet.
+void check_periodic(const Prepared& p) {
+  const auto pairs = p.mesh.periodic_pairs();
+  bool same = pairs.size() == p.input.periodic.size();
+  for (std::size_t i = 0; same && i < pairs.size(); ++i) {
+    const auto& in = p.input.periodic[i];
+    same = in.zones[0] == p.mesh.face_zones()[at(pairs[i].zone_a)].name &&
+           in.zones[1] == p.mesh.face_zones()[at(pairs[i].zone_b)].name &&
+           in.translation == pairs[i].translation;
+  }
+  if (!same) invalid("periodic", "differs from the periodic pairs of the mesh");
+  if (!pairs.empty()) {
+    throw InputError(
+        Diagnostic{.code = "E0706",
+                   .message = "this build of autan-run does not implement periodic boundaries",
+                   .path = "periodic",
+                   .data_json = nlohmann::json{{"pairs", pairs.size()}}.dump()});
+  }
+}
+
 // A private copy of a file and the SHA-256 of the bytes copied: what is
 // hashed is what is read, whatever happens to the original meanwhile.
 class SnapshotFile {
@@ -267,6 +288,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
         .data_json =
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
+  check_periodic(p);
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.

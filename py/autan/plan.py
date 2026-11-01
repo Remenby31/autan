@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from autan.case import Case
-    from autan.meshinfo import MeshInfo
+    from autan.meshinfo import BoundaryZone, MeshInfo
 
 MMS_SCHEMA = "autan.mms/1"
 Provenance = Literal["code", "mesh", "default", "verification"]
@@ -303,10 +303,30 @@ def _mismatches(document: dict[str, Any], spec: CaseSpec) -> list[str]:
     return found
 
 
+def _partners(mesh: MeshInfo) -> dict[str, str]:
+    """Each zone of a periodic pair, with the other zone of its pair."""
+    return {a: b for pair in mesh.periodic for a, b in (pair.zones, pair.zones[::-1])}
+
+
+def _periodic(zone: BoundaryZone, partner: str) -> BoundaryResolution:
+    return BoundaryResolution(
+        zone=zone.name,
+        faces=zone.faces,
+        mesh_type=zone.type,
+        condition={"kind": "periodic", "partner": partner},
+        provenance="mesh",
+        rule=None,
+    )
+
+
 def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
-    """Every boundary zone takes the exact data of the manufactured solution."""
+    """Every boundary zone but the periodic ones takes the exact data of the manufactured
+    solution."""
+    partners = _partners(mesh)
     return [
-        BoundaryResolution(
+        _periodic(zone, partners[zone.name])
+        if zone.name in partners
+        else BoundaryResolution(
             zone=zone.name,
             faces=zone.faces,
             mesh_type=zone.type,
@@ -321,10 +341,22 @@ def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
 def _resolve_boundaries(
     case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]
 ) -> list[BoundaryResolution]:
-    names = [zone.name for zone in mesh.boundary_zones]
+    partners = _partners(mesh)
+    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
     owner: dict[str, int] = {}
     for index, rule in enumerate(spec.boundaries):
         where = case.locate(f"boundaries[{index}]")
+        if rule.zones in partners and not any(c in rule.zones for c in "*?["):
+            found.append(
+                diagnostic(
+                    "E0424",
+                    f"boundary zone {rule.zones!r} is periodic with {partners[rule.zones]!r} "
+                    "in the mesh; it takes no condition",
+                    location=where,
+                    zone=rule.zones,
+                )
+            )
+            continue
         matched = _matches(rule.zones, names)
         if not matched:
             found.append(
@@ -356,6 +388,9 @@ def _resolve_boundaries(
     inviscid = isinstance(spec.physics.turbulence, Inviscid)
     resolved = []
     for zone in mesh.boundary_zones:
+        if zone.name in partners:
+            resolved.append(_periodic(zone, partners[zone.name]))
+            continue
         rule_index = owner.get(zone.name)
         condition: Any = None
         provenance: Provenance | None = None

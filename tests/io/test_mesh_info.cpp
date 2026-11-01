@@ -12,6 +12,7 @@
 #include "autan/core/cellwise.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "fixtures.hpp"
 
 namespace {
 
@@ -83,6 +84,7 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
   REQUIRE(doc["interfaces"].size() == 1);
   CHECK(doc["interfaces"][0]["zones"] == nlohmann::json::array({"lower", "upper"}));
   CHECK(doc["interfaces"][0]["faces"] == 24);
+  CHECK(doc["periodic"] == nlohmann::json::array());
   CHECK(doc["quality"]["max_faces_per_cell"] == 6);
   int cells = 0;
   for (const auto& zone : doc["cell_zones"]) cells += zone["cells"].get<int>();
@@ -148,4 +150,24 @@ TEST_CASE("MeshInfo omits cell zones without cells", "[mesh-info]") {
       autan::io::mesh_info_json(autan::io::read_mesh(dir), autan::io::mesh_hash(dir)));
   REQUIRE(doc["cell_zones"].size() == 1);
   CHECK(doc["cell_zones"][0]["name"] == "fluid");
+}
+
+TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh-info]") {
+  // The unit box cut in 3^3 hexahedra, periodic along x: 9 faces a side.
+  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::hexa);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0')));
+  REQUIRE(doc["periodic"].size() == 1);
+  CHECK(doc["periodic"][0] ==
+        nlohmann::json{{"zones", {"xmin", "xmax"}},
+                       {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}},
+                       {"faces", 9}});
+  for (const auto& zone : doc["boundary_zones"]) {
+    CAPTURE(zone.dump());
+    const bool periodic = zone["name"] == "xmin" || zone["name"] == "xmax";
+    CHECK((zone["type"] == "periodic") == periodic);
+  }
 }

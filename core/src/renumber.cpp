@@ -184,8 +184,14 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
     in.cell_global_id[i] = ids[at(new_to_old[i])];
   }
   in.n_ghost_cells = mesh.n_cells() - mesh.n_owned_cells();
+  const auto n_owned = at(mesh.n_owned_cells());
+  in.ghost_translation.resize(n_cells - n_owned);
+  for (std::size_t i = n_owned; i < n_cells; ++i) {
+    in.ghost_translation[i - n_owned] = mesh.ghost_translation()[at(new_to_old[i]) - n_owned];
+  }
   in.face_zones.assign(mesh.face_zones().begin(), mesh.face_zones().end());
   in.cell_zones.assign(mesh.cell_zones().begin(), mesh.cell_zones().end());
+  in.periodic.assign(mesh.periodic_pairs().begin(), mesh.periodic_pairs().end());
   in.source = mesh.source();
   return assemble(std::move(in));
 }

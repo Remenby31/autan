@@ -1,3 +1,4 @@
+import random
 import statistics
 
 
@@ -21,3 +22,18 @@ def summarize(samples: list[float]) -> dict[str, float | int]:
         "min": min(samples),
         "max": max(samples),
     }
+
+
+def median_ci(
+    samples: list[float], level: float = 0.95, resamples: int = 2000, seed: int = 0
+) -> tuple[float, float]:
+    """Percentile bootstrap confidence interval of the median (Efron & Tibshirani 1993, ch. 13).
+
+    The generator is seeded, so the same samples always give the same interval.
+    """
+    rng = random.Random(seed)
+    medians = sorted(
+        statistics.median(rng.choices(samples, k=len(samples))) for _ in range(resamples)
+    )
+    tail = (1.0 - level) / 2.0
+    return medians[int(tail * resamples)], medians[int((1.0 - tail) * resamples) - 1]

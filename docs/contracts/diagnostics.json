@@ -121,17 +121,23 @@
       "fix": "Assign each face to one zone in the meshing tool.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0115"
     },
-    "E0116": {
-      "severity": "error",
-      "title": "Face without an owned cell",
-      "fix": "Regenerate the partition; every face needs an owned cell.",
-      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0116"
-    },
     "E0117": {
       "severity": "error",
       "title": "Duplicate or negative global cell id",
       "fix": "Regenerate the partition; global cell ids must be unique and non-negative.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0117"
+    },
+    "E0118": {
+      "severity": "error",
+      "title": "Invalid periodic pair",
+      "fix": "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0118"
+    },
+    "E0119": {
+      "severity": "error",
+      "title": "Periodic faces do not match",
+      "fix": "Regenerate the mesh with conforming periodic faces, and check the translation.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0119"
     },
     "E0120": {
       "severity": "error",
@@ -379,6 +385,12 @@
       "fix": "Export the face states for every zone the condition applies to.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0423"
     },
+    "E0424": {
+      "severity": "error",
+      "title": "Condition on a periodic zone",
+      "fix": "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0424"
+    },
     "E0501": {
       "severity": "error",
       "title": "Cell zone rule matches no zone",
@@ -595,6 +607,12 @@
       "fix": "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1012"
     },
+    "E1013": {
+      "severity": "error",
+      "title": "Policy not available on the backend",
+      "fix": "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1013"
+    },
     "E1100": {
       "severity": "error",
       "title": "Generated loop failed",
@@ -636,6 +654,18 @@
       "title": "Incidence twins missing",
       "fix": "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1106"
+    },
+    "E1107": {
+      "severity": "error",
+      "title": "Metal runtime error",
+      "fix": "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1107"
+    },
+    "E1108": {
+      "severity": "error",
+      "title": "Strategy not available",
+      "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
     }
   }
 }

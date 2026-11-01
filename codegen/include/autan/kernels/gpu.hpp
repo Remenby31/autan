@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "autan/kernels/runtime.hpp"
+#include "autan/kernels/strategy.hpp"
 
 #if defined(__HIPCC__)
 // Warp-synchronous shuffles and ballots with 64-bit masks, on floating-point types too (HIP
@@ -81,42 +82,10 @@ __device__ inline int segment_id(bool head) {
 #endif
 }
 
-/// Face loop race strategies (docs/research/kernel-generator.md section 6).
-enum class Strategy : std::uint8_t {
-  atomic,            ///< one thread per face, atomic increments
-  warp_aggregated,   ///< owner-sorted faces: one atomic per owner segment of a warp
-  coloured,          ///< one launch per face colour, plain increments
-  store_gather,      ///< face fluxes stored, then summed per cell in incidence order
-  gather_recompute,  ///< each cell evaluates the fluxes of its own faces
-};
-
-inline const char* name(Strategy s) {
-  switch (s) {
-    case Strategy::atomic:
-      return "atomic";
-    case Strategy::warp_aggregated:
-      return "warp-aggregated";
-    case Strategy::coloured:
-      return "coloured";
-    case Strategy::store_gather:
-      return "store-gather";
-    case Strategy::gather_recompute:
-      return "gather-recompute";
-  }
-  return "?";
-}
-
-/// True for strategies whose sums run in an order fixed by the mesh numbering.
-inline bool deterministic(Strategy s) {
-  return s == Strategy::coloured || s == Strategy::store_gather || s == Strategy::gather_recompute;
-}
-
-/// Faces of one range grouped in colours: no two faces of a colour touch the same cell.
-/// `faces` is a device array; `offsets` (host) delimits each colour in it.
-struct Colouring {
-  const index_t* faces = nullptr;
-  std::vector<index_t> offsets;
-};
+using ::autan::kernels::Colouring;
+using ::autan::kernels::deterministic;
+using ::autan::kernels::name;
+using ::autan::kernels::Strategy;
 
 /// Everything a strategy needs besides the data: launch shape, colourings and scratch.
 struct Schedule {

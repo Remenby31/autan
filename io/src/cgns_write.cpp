@@ -80,6 +80,9 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
     throw Error(ErrorCode::mesh_inconsistent_sizes,
                 "solution.cgns describes an unpartitioned mesh");
   }
+  if (!mesh.periodic_pairs().empty()) {
+    throw Error(ErrorCode::io_unsupported, "solution.cgns does not record periodic pairs yet");
+  }
   const MeshInfoZones zones = meshinfo_zones(mesh);
   const auto n_cells = at(mesh.n_cells());
   const auto n_faces = at(mesh.n_faces());

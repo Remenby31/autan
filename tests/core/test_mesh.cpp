@@ -13,6 +13,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/core/renumber.hpp"
 #include "fixtures.hpp"
 
 using autan::index_t;
@@ -294,14 +295,17 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     cw.add_labelled_face(std::array<index_t, 4>{1, 4, 13, 10}, 0);  // x = 0.5, interior
     require_error(ErrorCode::mesh_face_zone_role, [&] { (void)autan::to_face_based(cw); });
   }
-  SECTION("E0116 face between two ghost cells") {
-    auto in = two_cubes();
-    in.n_ghost_cells = 1;
-    require_error(ErrorCode::mesh_face_without_owned_cell, [&] { (void)autan::assemble(in); });
-  }
   SECTION("E0117 duplicate global id") {
     auto in = two_cubes();
     in.cell_global_id = {7, 7};
+    require_error(ErrorCode::mesh_duplicate_global_id, [&] { (void)autan::assemble(in); });
+    // A translation that is not a number is rejected before any comparison.
+    in.n_ghost_cells = 1;
+    in.ghost_translation = {{std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0}};
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(in); });
+    // A ghost with the same id and the same (zero) translation is the same cell.
+    in.n_ghost_cells = 1;
+    in.ghost_translation = {{0.0, 0.0, 0.0}};
     require_error(ErrorCode::mesh_duplicate_global_id, [&] { (void)autan::assemble(in); });
   }
   SECTION("E0112 empty mesh") {
@@ -446,4 +450,33 @@ TEST_CASE("A zone that labels no face keeps its declared role", "[mesh]") {
   CHECK(zone.name == "spare-outlet");
   CHECK(zone.boundary);
   CHECK(mesh.boundary_zone_offsets()[7] == mesh.boundary_zone_offsets()[6]);
+}
+
+TEST_CASE("Faces of owned cells come first, then the halo faces of ghost cells", "[mesh]") {
+  // two_cubes with cube 1 a ghost that carries all its faces: one interior
+  // face, five boundary faces per cube.
+  auto in = two_cubes();
+  in.n_ghost_cells = 1;
+  // An image of cube 0 one unit further along x: same id, other place.
+  in.cell_global_id = {7, 7};
+  in.ghost_translation = {{1.0, 0.0, 0.0}};
+  const autan::Mesh mesh = autan::assemble(in);
+  CHECK(mesh.n_interior_faces() == 1);
+  CHECK(mesh.n_owned_interior_faces() == 1);
+  CHECK(mesh.n_owned_faces() == 1 + 5);
+  CHECK(mesh.n_faces() == 1 + 5 + 5);
+  CHECK(mesh.boundary_zone_offsets()[0] == 1);
+  CHECK(mesh.boundary_zone_offsets()[1] == 6);  // zone "walls", owned half
+  CHECK(mesh.halo_boundary_zone_offsets()[0] == 6);
+  CHECK(mesh.halo_boundary_zone_offsets()[1] == 11);
+  for (index_t f = mesh.n_interior_faces(); f < mesh.n_faces(); ++f) {
+    CHECK((mesh.owner()[static_cast<std::size_t>(f)] == 1) == (f >= mesh.n_owned_faces()));
+  }
+  REQUIRE(mesh.ghost_translation().size() == 1);
+  CHECK(mesh.ghost_translation()[0] == std::array<double, 3>{1.0, 0.0, 0.0});
+  CHECK(mesh.view().n_owned_faces == 6);
+  CHECK(mesh.view().halo_boundary_zone_offsets[1] == 11);
+  // Renumbering keeps each ghost's translation with it.
+  const autan::Mesh same = autan::renumber_cells(mesh, std::array<index_t, 2>{0, 1});
+  CHECK(same.ghost_translation()[0] == std::array<double, 3>{1.0, 0.0, 0.0});
 }
