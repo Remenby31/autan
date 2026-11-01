@@ -23,7 +23,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
 from watchfiles import Change, awatch
 
-from autan_ui.cases import Meshes, render
+from autan_ui.cases import Meshes, materials, render
 from autan_ui.confine import Folder, is_link
 from autan_ui.history import read_lines
 from autan_ui.registry import (
@@ -232,7 +232,8 @@ def create_app(
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
         """`runs` snapshot first, then `run` (upsert), `removed` (run id), `rejected` (the
-        whole list) and `summaries` (iteration and residual drop of each run) as they change.
+        whole list), `summaries` (iteration and residual drop of each run) and `solutions` (the
+        runs whose solution.cgns is a result) as they change.
         Every wake-up rescans, timeouts included, so a change made before the watcher starts is
         still reported."""
         previous = await asyncio.to_thread(registry.scan)
@@ -249,6 +250,8 @@ def create_app(
                     yield ServerSentEvent(event="removed", data=run_id)
                 if current.summaries != previous.summaries:
                     yield ServerSentEvent(event="summaries", data=current.summaries)
+                if current.solutions != previous.solutions:
+                    yield ServerSentEvent(event="solutions", data=current.solutions)
                 if current.rejected != previous.rejected:
                     yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
                 previous = current
@@ -440,6 +443,24 @@ def create_app(
     def list_meshes() -> list[dict[str, Any]]:
         """The MeshInfo files a case can be planned against."""
         return meshes.summaries()
+
+    @app.get("/api/materials")
+    def list_materials() -> list[dict[str, Any]]:
+        """The SDK's library gases and solids, by the name a case writes them."""
+        return materials()
+
+    @app.get("/api/meshes/{name}/surface")
+    def mesh_surface_message(name: str) -> Response:
+        """The boundary zones of a listed mesh as an `autan-ui.surface/1` message, from the
+        `autan.surface/1` file next to its MeshInfo. 404 without one; 422 when it breaks the
+        contract or is not of that mesh."""
+        try:
+            message = meshes.surface(name)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return Response(message, media_type="application/octet-stream")
 
     @app.post("/api/cases/render")
     def render_case(

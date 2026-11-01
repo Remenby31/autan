@@ -52,6 +52,7 @@ def test_a_case_renders_as_the_sdk_reads_it(client: TestClient, tmp_path: Path) 
     expected = autan.load(alone / "case.json").plan(mesh_info).document()
     assert rendered["ok"] is True
     assert rendered["python"] == case.to_python()
+    assert rendered["document"] == json.loads(case.to_json())
     assert rendered["toml"] == case.to_toml()
     assert _without_files(rendered["plan"]) == _without_files(expected)
 
@@ -116,3 +117,45 @@ def test_a_mesh_not_listed_is_404(client: TestClient) -> None:
     for mesh in ("../crm-hl", "notes.txt", "missing"):
         response = client.post("/api/cases/render", json={"case": document, "mesh": mesh})
         assert response.status_code == 404
+
+
+def test_the_materials_are_the_sdks_libraries(client: TestClient) -> None:
+    listed = {(m["library"], m["name"]): m["document"] for m in client.get("/api/materials").json()}
+
+    assert listed[("gases", "CO2")] == autan.gases.CO2.model_dump(mode="json")
+    assert listed[("materials", "COPPER")] == autan.materials.COPPER.model_dump(mode="json")
+    assert {name for library, name in listed if library == "gases"} >= {"AIR", "CO2"}
+
+
+def test_a_case_with_library_materials_writes_them_by_name(client: TestClient) -> None:
+    listed = {m["name"]: m["document"] for m in client.get("/api/materials").json()}
+    example = autan.load(PY / "examples" / "heat_exchanger.py")
+    document = {
+        "schema": "autan.case/1",
+        "name": "heat-exchanger",
+        "mesh": "heat-exchanger.msh",
+        "physics": {"kind": "compressible", "turbulence": {"model": "sst"}},
+        "freestream": {"mach": 0.1, "temperature": "300.0 K", "pressure": "101325.0 Pa"},
+        "cell_zones": [
+            {"zones": "co2", "medium": {"kind": "fluid", "material": listed["CO2"]}},
+            {"zones": "plate", "medium": {"kind": "solid", "material": listed["COPPER"]}},
+        ],
+        "boundaries": [
+            {
+                "zones": zone,
+                "condition": {
+                    "kind": "inlet",
+                    "total_pressure": "103.0 kPa",
+                    "total_temperature": temperature,
+                },
+            }
+            for zone, temperature in (("air-inlet", "400.0 K"), ("co2-inlet", "280.0 K"))
+        ]
+        + [
+            {"zones": "*-outlet", "condition": {"kind": "outlet", "static_pressure": "101325.0 Pa"}}
+        ],
+    }
+
+    rendered = client.post("/api/cases/render", json={"case": document}).json()
+
+    assert rendered["python"] == example.to_python()
