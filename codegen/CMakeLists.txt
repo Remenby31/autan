@@ -1,7 +1,14 @@
 # Kernel generator: runs autan_codegen on kernels/*.py at build time and builds the generated loops.
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 
-set(AUTAN_KERNEL_MODULES advection advection_diffusion blocks gradients roe)
+set(
+  AUTAN_KERNEL_MODULES
+  advection
+  advection_diffusion
+  blocks
+  gradients
+  roe
+)
 # AUTAN_ENABLE_CUDA (root) adds the GPU loops, the GPU spike driver and the loop benchmark.
 # AUTAN_ENABLE_HIP compiles the same generated GPU loops with HIP (no AMD device: compile only).
 option(AUTAN_ENABLE_HIP "Compile the generated GPU loops with HIP" OFF)

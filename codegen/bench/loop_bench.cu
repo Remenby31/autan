@@ -20,11 +20,11 @@
 
 #include "advection_cpu.hpp"
 #include "advection_gpu.cuh"
-#include "blocks_cpu.hpp"
-#include "blocks_gpu.cuh"
 #include "autan/core/renumber.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "blocks_cpu.hpp"
+#include "blocks_gpu.cuh"
 #include "device.cuh"
 #include "gradients_cpu.hpp"
 #include "gradients_gpu.cuh"
