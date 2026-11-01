@@ -5,16 +5,20 @@ import { type ReactNode, useDeferredValue, useEffect, useRef, useState } from "r
 import {
   type BoundaryForm,
   type CaseForm,
+  type CellZoneForm,
   CONDITIONS,
   type ConditionKind,
   caseDocument,
   EMPTY_CASE,
+  materialsQuery,
   meshesQuery,
   renderQuery,
   UNITS,
 } from "../api/cases";
 import type { Diagnostic } from "../api/contracts";
+import { globEscape, globMatches } from "../api/glob";
 import type { Plan } from "../api/runs";
+import { MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -22,7 +26,12 @@ import { Field, NumberInput, QuantityInput, SelectInput, TextInput } from "../co
 import { Note } from "../components/ui/Note";
 import { TabList, TabPanel, TabsRoot } from "../components/ui/Tabs";
 
-export const Route = createFileRoute("/cases/new")({ component: CaseEditor });
+export const Route = createFileRoute("/cases/new")({
+  // `webgl`: draw the mesh with WebGL2, as on CPU-only machines without WebGPU.
+  validateSearch: (raw: Record<string, unknown>): { webgl?: boolean } =>
+    raw.webgl === true || raw.webgl === "1" ? { webgl: true } : {},
+  component: CaseEditor,
+});
 
 const TURBULENCE = [
   { value: "inviscid", label: "Inviscid" },
@@ -48,6 +57,10 @@ const LABEL: Record<string, string> = {
 /** A case built field by field against a mesh, read back by the SDK as it is typed. */
 function CaseEditor() {
   const meshes = useQuery(meshesQuery);
+  const materials = useQuery(materialsQuery);
+  const library = materials.data ?? [];
+  const gases = library.filter((m) => m.document.kind === "ideal-gas");
+  const solids = library.filter((m) => m.document.kind === "solid");
   const [form, setForm] = useState<CaseForm>(EMPTY_CASE);
   const deferred = useDeferredValue(form);
   const [settled, setSettled] = useState(form);
@@ -55,9 +68,48 @@ function CaseEditor() {
     const timer = setTimeout(() => setSettled(deferred), 250);
     return () => clearTimeout(timer);
   }, [deferred]);
-  const rendered = useQuery(renderQuery(caseDocument(settled), settled.mesh || null));
+  const rendered = useQuery(renderQuery(caseDocument(settled, library), settled.mesh || null));
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
+  const { webgl = false } = Route.useSearch();
+  const [picked, setPicked] = useState<string | null>(null);
+
+  // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
+  // it, its condition suggested by the type the mesh file gives the zone. A periodic zone takes
+  // no condition (case-schema.md#boundaries): nothing is added.
+  const [focusRule, setFocusRule] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const pick = (zone: string) => {
+    setPicked(zone);
+    setNotice(null);
+    const type = mesh?.boundary_zones.find((z) => z.name === zone)?.type ?? "";
+    if (type === "periodic") {
+      setNotice(
+        `${zone} is periodic: it takes no condition, the solver pairs it with its partner.`,
+      );
+      return;
+    }
+    const index = form.boundaries.findIndex((r) => globMatches(r.zones, zone));
+    if (index >= 0) {
+      setFocusRule(index);
+      return;
+    }
+    const typed: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
+    // A no-slip wall needs viscous flow (E0414): an inviscid case walls it with slip.
+    const kind = typed === "wall" && form.physics.turbulence === "inviscid" ? "slip" : typed;
+    set("boundaries", [...form.boundaries, { zones: globEscape(zone), kind, values: {} }]);
+    setFocusRule(form.boundaries.length);
+  };
+  // Focused once React has committed the rule's fieldset.
+  useEffect(() => {
+    if (focusRule === null) return;
+    document
+      .querySelector<HTMLInputElement>(
+        `fieldset[aria-label="Boundary rule ${focusRule + 1}"] input`,
+      )
+      ?.focus();
+    setFocusRule(null);
+  }, [focusRule]);
 
   const set = <K extends keyof CaseForm>(key: K, value: CaseForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -66,6 +118,12 @@ function CaseEditor() {
     field: keyof CaseForm[K],
     value: string,
   ) => setForm((f) => ({ ...f, [key]: { ...f[key], [field]: value } }));
+  const cellZones = mesh?.cell_zones.map((z) => z.name) ?? [];
+  const setCellZone = (k: number, zone: CellZoneForm) =>
+    set(
+      "cellZones",
+      form.cellZones.map((z, i) => (i === k ? zone : z)),
+    );
   const setRule = (k: number, rule: BoundaryForm) =>
     set(
       "boundaries",
@@ -81,6 +139,19 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
+          {materials.isError && (
+            <Note
+              tone="error"
+              title="The material libraries could not be listed"
+              action={
+                <Button size="sm" onClick={() => materials.refetch()}>
+                  Retry
+                </Button>
+              }
+            >
+              Gases and solids come from the SDK: {materials.error.message}
+            </Note>
+          )}
           {meshes.isError && (
             <Note tone="error" title="The meshes could not be listed">
               {meshes.error.message}
@@ -124,6 +195,81 @@ function CaseEditor() {
                 placeholder="Default (fp32 + fp64 accumulation)"
               />
             </Field>
+            <Field label="Gas">
+              <SelectInput
+                value={form.physics.gas}
+                onChange={(v) => setIn("physics", "gas", v)}
+                options={gases.map((m) => ({ value: m.name, label: m.document.name }))}
+                placeholder="Default (air)"
+              />
+            </Field>
+          </Section>
+
+          <Section
+            title="Cell zones"
+            action={
+              <Button
+                size="sm"
+                icon={<Plus className="size-4" />}
+                onClick={() =>
+                  set("cellZones", [...form.cellZones, { zones: "", kind: "fluid", material: "" }])
+                }
+              >
+                Add zone
+              </Button>
+            }
+          >
+            {form.cellZones.map((zone, k) => (
+              <fieldset
+                // biome-ignore lint/suspicious/noArrayIndexKey: rules have no identity but their place
+                key={k}
+                aria-label={`Cell zone ${k + 1}`}
+                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
+              >
+                <Field label="Zones">
+                  <TextInput
+                    value={zone.zones}
+                    onChange={(v) => setCellZone(k, { ...zone, zones: v })}
+                    placeholder="plate"
+                    mono
+                    options={{ id: `cells-${k}`, values: cellZones }}
+                  />
+                </Field>
+                <Field label="Medium">
+                  <SelectInput
+                    value={zone.kind}
+                    onChange={(v) => v && setCellZone(k, { ...zone, kind: v, material: "" })}
+                    options={[
+                      { value: "fluid", label: "fluid" },
+                      { value: "solid", label: "solid" },
+                    ]}
+                  />
+                </Field>
+                <Field label="Material">
+                  <SelectInput
+                    value={zone.material}
+                    onChange={(v) => setCellZone(k, { ...zone, material: v })}
+                    options={(zone.kind === "fluid" ? gases : solids).map((m) => ({
+                      value: m.name,
+                      label: m.document.name,
+                    }))}
+                    placeholder="Choose…"
+                  />
+                </Field>
+                <Button
+                  square
+                  variant="tertiary"
+                  aria-label={`Remove cell zone ${k + 1}`}
+                  icon={<Trash2 className="size-4" />}
+                  onClick={() =>
+                    set(
+                      "cellZones",
+                      form.cellZones.filter((_, i) => i !== k),
+                    )
+                  }
+                />
+              </fieldset>
+            ))}
           </Section>
 
           <Section title="Freestream">
@@ -328,6 +474,12 @@ function CaseEditor() {
         </form>
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
+          {form.mesh && <MeshView mesh={form.mesh} selected={picked} onPick={pick} webgl={webgl} />}
+          {notice && (
+            <Note tone="info" title="Periodic zone">
+              {notice}
+            </Note>
+          )}
           {rendered.isError && (
             <Note tone="error" title="The SDK could not be reached">
               The code below is from an earlier version of the case: {rendered.error.message}
