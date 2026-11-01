@@ -39,7 +39,15 @@ export const meshesQuery = queryOptions({
 
 /** The SDK's reading of a case document (`POST /api/cases/render`). */
 export type Rendered =
-  | { ok: true; python: string; toml: string; plan: Plan | null; diagnostics: [] }
+  | {
+      ok: true;
+      python: string;
+      toml: string;
+      /** The SDK's document of the case, every default filled in. */
+      document: CaseDocument;
+      plan: Plan | null;
+      diagnostics: [];
+    }
   | { ok: false; diagnostics: Diagnostic[] };
 
 export const renderQuery = (document: CaseDocument, mesh: string | null) =>
@@ -244,7 +252,7 @@ export function formFromDocument(document: CaseDocument, materials: Material[]):
   const freestream = record(document.freestream);
   const time = record(document.time);
   const libraryName = (value: unknown) =>
-    materials.find((m) => JSON.stringify(m.document) === JSON.stringify(value))?.name ?? "";
+    materials.find((m) => sameValue(m.document, value))?.name ?? "";
   const kinds = Object.keys(CONDITIONS);
   return {
     name: str(document.name),
@@ -295,4 +303,51 @@ export function formFromDocument(document: CaseDocument, materials: Material[]):
         every: str(m.every),
       })),
   };
+}
+
+/** Whether two JSON values are equal, whatever the order of their keys. */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, k) => sameValue(v, b[k]))
+    );
+  }
+  if (a !== null && b !== null && typeof a === "object" && typeof b === "object") {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    return (
+      ka.length === kb.length &&
+      ka.every((k) =>
+        sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+      )
+    );
+  }
+  return a === b;
+}
+
+/** Where two SDK documents of a case differ, path by path (`physics.gas.gamma`,
+ * `boundaries[2].condition.kind`), with the value in each. */
+export function differences(
+  a: unknown,
+  b: unknown,
+  path = "",
+): { path: string; before: unknown; after: unknown }[] {
+  const object = (v: unknown) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const out = [];
+    for (let k = 0; k < Math.max(a.length, b.length); k++)
+      out.push(...differences(a[k], b[k], `${path}[${k}]`));
+    return out;
+  }
+  if (object(a) && object(b)) {
+    const ra = a as Record<string, unknown>;
+    const rb = b as Record<string, unknown>;
+    return [...new Set([...Object.keys(ra), ...Object.keys(rb)])]
+      .sort()
+      .flatMap((k) => differences(ra[k], rb[k], path ? `${path}.${k}` : k));
+  }
+  return sameValue(a, b) ? [] : [{ path, before: a, after: b }];
 }

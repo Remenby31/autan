@@ -102,6 +102,7 @@ def render(document: dict[str, Any], mesh_info: autan.MeshInfo | None) -> dict[s
     return {
         "ok": True,
         "python": case.to_python(),
+        "document": json.loads(case.to_json()),
         "toml": case.to_toml(),
         "plan": plan,
         "diagnostics": [],

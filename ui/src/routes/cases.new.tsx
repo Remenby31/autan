@@ -10,6 +10,7 @@ import {
   CONDITIONS,
   type ConditionKind,
   caseDocument,
+  differences,
   EMPTY_CASE,
   formFromDocument,
   materialsQuery,
@@ -90,13 +91,23 @@ function CaseEditor() {
     ),
     enabled: imported !== null,
   });
-  const dropped =
-    original.data?.ok && reread.data?.ok
-      ? (() => {
-          const kept = new Set(reread.data.toml.split("\n"));
-          return original.data.toml.split("\n").filter((line) => line.trim() && !kept.has(line));
-        })()
-      : [];
+  // Settled only when both readings are in: a pending or failed comparison says so.
+  const comparison: Comparison =
+    imported === null
+      ? { state: "none" }
+      : original.isError || reread.isError
+        ? { state: "failed", message: String(original.error ?? reread.error) }
+        : !original.data || !reread.data
+          ? { state: "checking" }
+          : !original.data.ok
+            ? { state: "failed", message: "the SDK refuses the run's own case" }
+            : !reread.data.ok
+              ? { state: "unrepresentable", diagnostics: reread.data.diagnostics }
+              : {
+                  state: "compared",
+                  dropped: differences(original.data.document, reread.data.document),
+                };
+  const importing = from !== undefined && imported === null;
   const deferred = useDeferredValue(form);
   const [settled, setSettled] = useState(form);
   useEffect(() => {
@@ -173,372 +184,373 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
-          {source.data && (
-            <Note
-              tone={dropped.length ? "warning" : "info"}
-              title={`A copy of ${source.data.run.run_id}`}
-            >
-              {dropped.length ? (
-                <>
-                  The editor cannot show these settings of the run's case yet; this copy leaves them
-                  out:
-                  <pre className="m-0 mt-2 font-mono text-sm" data-testid="dropped">
-                    {dropped.join("\n")}
-                  </pre>
-                </>
-              ) : (
-                "Every setting of the run's case is in the form."
-              )}
-            </Note>
-          )}
-          {materials.isError && (
-            <Note
-              tone="error"
-              title="The material libraries could not be listed"
+          <fieldset disabled={importing} className="m-0 flex flex-col gap-8 border-0 p-0">
+            {source.isError && (
+              <Note
+                tone="error"
+                title={`The run ${from} could not be read`}
+                action={
+                  <Button size="sm" onClick={() => source.refetch()}>
+                    Retry
+                  </Button>
+                }
+              >
+                {source.error.message}
+              </Note>
+            )}
+            {source.data && <ImportNote run={source.data.run.run_id} comparison={comparison} />}
+            {materials.isError && (
+              <Note
+                tone="error"
+                title="The material libraries could not be listed"
+                action={
+                  <Button size="sm" onClick={() => materials.refetch()}>
+                    Retry
+                  </Button>
+                }
+              >
+                Gases and solids come from the SDK: {materials.error.message}
+              </Note>
+            )}
+            {meshes.isError && (
+              <Note tone="error" title="The meshes could not be listed">
+                {meshes.error.message}
+              </Note>
+            )}
+            <Section title="Case">
+              <Field label="Name">
+                <TextInput value={form.name} onChange={(v) => set("name", v)} mono />
+              </Field>
+              <Field label="Mesh" hint={mesh && `${mesh.counts.cells.toLocaleString("en")} cells`}>
+                <SelectInput
+                  value={form.mesh}
+                  onChange={(name) => {
+                    const chosen = meshes.data?.find((m) => m.name === name);
+                    setForm((f) => ({
+                      ...f,
+                      mesh: name,
+                      meshFile: chosen ? (chosen.source.path.split("/").pop() ?? "") : "",
+                    }));
+                  }}
+                  options={(meshes.data ?? []).map((m) => ({ value: m.name, label: m.name }))}
+                  placeholder="Choose a MeshInfo…"
+                />
+              </Field>
+            </Section>
+
+            <Section title="Physics">
+              <Field label="Turbulence">
+                <SelectInput
+                  value={form.physics.turbulence as (typeof TURBULENCE)[number]["value"] | ""}
+                  onChange={(v) => setIn("physics", "turbulence", v)}
+                  options={TURBULENCE}
+                  placeholder="Choose…"
+                />
+              </Field>
+              <Field label="Precision">
+                <SelectInput
+                  value={form.physics.precision as (typeof PRECISION)[number]["value"] | ""}
+                  onChange={(v) => setIn("physics", "precision", v)}
+                  options={PRECISION}
+                  placeholder="Default (fp32 + fp64 accumulation)"
+                />
+              </Field>
+              <Field label="Gas">
+                <SelectInput
+                  value={form.physics.gas}
+                  onChange={(v) => setIn("physics", "gas", v)}
+                  options={gases.map((m) => ({ value: m.name, label: m.document.name }))}
+                  placeholder="Default (air)"
+                />
+              </Field>
+            </Section>
+
+            <Section
+              title="Cell zones"
               action={
-                <Button size="sm" onClick={() => materials.refetch()}>
-                  Retry
+                <Button
+                  size="sm"
+                  icon={<Plus className="size-4" />}
+                  onClick={() =>
+                    set("cellZones", [
+                      ...form.cellZones,
+                      { zones: "", kind: "fluid", material: "" },
+                    ])
+                  }
+                >
+                  Add zone
                 </Button>
               }
             >
-              Gases and solids come from the SDK: {materials.error.message}
-            </Note>
-          )}
-          {meshes.isError && (
-            <Note tone="error" title="The meshes could not be listed">
-              {meshes.error.message}
-            </Note>
-          )}
-          <Section title="Case">
-            <Field label="Name">
-              <TextInput value={form.name} onChange={(v) => set("name", v)} mono />
-            </Field>
-            <Field label="Mesh" hint={mesh && `${mesh.counts.cells.toLocaleString("en")} cells`}>
-              <SelectInput
-                value={form.mesh}
-                onChange={(name) => {
-                  const chosen = meshes.data?.find((m) => m.name === name);
-                  setForm((f) => ({
-                    ...f,
-                    mesh: name,
-                    meshFile: chosen ? (chosen.source.path.split("/").pop() ?? "") : "",
-                  }));
-                }}
-                options={(meshes.data ?? []).map((m) => ({ value: m.name, label: m.name }))}
-                placeholder="Choose a MeshInfo…"
-              />
-            </Field>
-          </Section>
-
-          <Section title="Physics">
-            <Field label="Turbulence">
-              <SelectInput
-                value={form.physics.turbulence as (typeof TURBULENCE)[number]["value"] | ""}
-                onChange={(v) => setIn("physics", "turbulence", v)}
-                options={TURBULENCE}
-                placeholder="Choose…"
-              />
-            </Field>
-            <Field label="Precision">
-              <SelectInput
-                value={form.physics.precision as (typeof PRECISION)[number]["value"] | ""}
-                onChange={(v) => setIn("physics", "precision", v)}
-                options={PRECISION}
-                placeholder="Default (fp32 + fp64 accumulation)"
-              />
-            </Field>
-            <Field label="Gas">
-              <SelectInput
-                value={form.physics.gas}
-                onChange={(v) => setIn("physics", "gas", v)}
-                options={gases.map((m) => ({ value: m.name, label: m.document.name }))}
-                placeholder="Default (air)"
-              />
-            </Field>
-          </Section>
-
-          <Section
-            title="Cell zones"
-            action={
-              <Button
-                size="sm"
-                icon={<Plus className="size-4" />}
-                onClick={() =>
-                  set("cellZones", [...form.cellZones, { zones: "", kind: "fluid", material: "" }])
-                }
-              >
-                Add zone
-              </Button>
-            }
-          >
-            {form.cellZones.map((zone, k) => (
-              <fieldset
-                // biome-ignore lint/suspicious/noArrayIndexKey: rules have no identity but their place
-                key={k}
-                aria-label={`Cell zone ${k + 1}`}
-                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
-              >
-                <Field label="Zones">
-                  <TextInput
-                    value={zone.zones}
-                    onChange={(v) => setCellZone(k, { ...zone, zones: v })}
-                    placeholder="plate"
-                    mono
-                    options={{ id: `cells-${k}`, values: cellZones }}
-                  />
-                </Field>
-                <Field label="Medium">
-                  <SelectInput
-                    value={zone.kind}
-                    onChange={(v) => v && setCellZone(k, { ...zone, kind: v, material: "" })}
-                    options={[
-                      { value: "fluid", label: "fluid" },
-                      { value: "solid", label: "solid" },
-                    ]}
-                  />
-                </Field>
-                <Field label="Material">
-                  <SelectInput
-                    value={zone.material}
-                    onChange={(v) => setCellZone(k, { ...zone, material: v })}
-                    options={(zone.kind === "fluid" ? gases : solids).map((m) => ({
-                      value: m.name,
-                      label: m.document.name,
-                    }))}
-                    placeholder="Choose…"
-                  />
-                </Field>
-                <Button
-                  square
-                  variant="tertiary"
-                  aria-label={`Remove cell zone ${k + 1}`}
-                  icon={<Trash2 className="size-4" />}
-                  onClick={() =>
-                    set(
-                      "cellZones",
-                      form.cellZones.filter((_, i) => i !== k),
-                    )
-                  }
-                />
-              </fieldset>
-            ))}
-          </Section>
-
-          <Section title="Freestream">
-            <Field label="Mach">
-              <NumberInput
-                value={form.freestream.mach}
-                onChange={(v) => setIn("freestream", "mach", v)}
-              />
-            </Field>
-            <Field label="Angle of attack">
-              <QuantityInput
-                value={form.freestream.aoa}
-                onChange={(v) => setIn("freestream", "aoa", v)}
-                units={UNITS.angle}
-              />
-            </Field>
-            <Field label="Reynolds number" hint="per reference length">
-              <NumberInput
-                value={form.freestream.re}
-                onChange={(v) => setIn("freestream", "re", v)}
-              />
-            </Field>
-            <Field label="Reference length">
-              <QuantityInput
-                value={form.freestream.ref_length}
-                onChange={(v) => setIn("freestream", "ref_length", v)}
-                units={UNITS.length}
-              />
-            </Field>
-            <Field label="Pressure" hint="optional">
-              <QuantityInput
-                value={form.freestream.pressure}
-                onChange={(v) => setIn("freestream", "pressure", v)}
-                units={UNITS.pressure}
-              />
-            </Field>
-            <Field label="Temperature" hint="default 288.15 K">
-              <QuantityInput
-                value={form.freestream.temperature}
-                onChange={(v) => setIn("freestream", "temperature", v)}
-                units={UNITS.temperature}
-              />
-            </Field>
-          </Section>
-
-          <Section title="Time">
-            <Field label="Maximum iterations" hint="default 10 000">
-              <NumberInput
-                value={form.time.max_iterations}
-                onChange={(v) => setIn("time", "max_iterations", v)}
-              />
-            </Field>
-            <Field label="Residual drop (orders)" hint="default 8">
-              <NumberInput
-                value={form.time.residual_orders}
-                onChange={(v) => setIn("time", "residual_orders", v)}
-              />
-            </Field>
-          </Section>
-
-          <Section
-            title="Boundaries"
-            action={
-              <Button
-                size="sm"
-                icon={<Plus className="size-4" />}
-                onClick={() =>
-                  set("boundaries", [...form.boundaries, { zones: "", kind: "wall", values: {} }])
-                }
-              >
-                Add rule
-              </Button>
-            }
-          >
-            {form.boundaries.map((rule, k) => (
-              <fieldset
-                // biome-ignore lint/suspicious/noArrayIndexKey: rules have no identity but their place
-                key={k}
-                aria-label={`Boundary rule ${k + 1}`}
-                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
-              >
-                <Field label="Zones">
-                  <TextInput
-                    value={rule.zones}
-                    onChange={(v) => setRule(k, { ...rule, zones: v })}
-                    placeholder="wing.*"
-                    mono
-                    options={{ id: `zones-${k}`, values: zones }}
-                  />
-                </Field>
-                <Field label="Condition">
-                  <SelectInput
-                    value={rule.kind}
-                    onChange={(v) => v && setRule(k, { ...rule, kind: v, values: {} })}
-                    options={KINDS}
-                  />
-                </Field>
-                <Button
-                  square
-                  variant="tertiary"
-                  aria-label={`Remove boundary rule ${k + 1}`}
-                  icon={<Trash2 className="size-4" />}
-                  onClick={() =>
-                    set(
-                      "boundaries",
-                      form.boundaries.filter((_, i) => i !== k),
-                    )
-                  }
-                />
-                {CONDITIONS[rule.kind].map(({ key, dimension, optional }) => (
-                  <Field
-                    key={key}
-                    label={LABEL[key] ?? key}
-                    hint={optional ? "optional" : undefined}
-                  >
-                    <QuantityInput
-                      value={rule.values[key] ?? ""}
-                      onChange={(v) =>
-                        setRule(k, { ...rule, values: { ...rule.values, [key]: v } })
-                      }
-                      units={UNITS[dimension]}
+              {form.cellZones.map((zone, k) => (
+                <fieldset
+                  // biome-ignore lint/suspicious/noArrayIndexKey: rules have no identity but their place
+                  key={k}
+                  aria-label={`Cell zone ${k + 1}`}
+                  className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
+                >
+                  <Field label="Zones">
+                    <TextInput
+                      value={zone.zones}
+                      onChange={(v) => setCellZone(k, { ...zone, zones: v })}
+                      placeholder="plate"
+                      mono
+                      options={{ id: `cells-${k}`, values: cellZones }}
                     />
                   </Field>
-                ))}
-              </fieldset>
-            ))}
-          </Section>
+                  <Field label="Medium">
+                    <SelectInput
+                      value={zone.kind}
+                      onChange={(v) => v && setCellZone(k, { ...zone, kind: v, material: "" })}
+                      options={[
+                        { value: "fluid", label: "fluid" },
+                        { value: "solid", label: "solid" },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Material">
+                    <SelectInput
+                      value={zone.material}
+                      onChange={(v) => setCellZone(k, { ...zone, material: v })}
+                      options={(zone.kind === "fluid" ? gases : solids).map((m) => ({
+                        value: m.name,
+                        label: m.document.name,
+                      }))}
+                      placeholder="Choose…"
+                    />
+                  </Field>
+                  <Button
+                    square
+                    variant="tertiary"
+                    aria-label={`Remove cell zone ${k + 1}`}
+                    icon={<Trash2 className="size-4" />}
+                    onClick={() =>
+                      set(
+                        "cellZones",
+                        form.cellZones.filter((_, i) => i !== k),
+                      )
+                    }
+                  />
+                </fieldset>
+              ))}
+            </Section>
 
-          <Section
-            title="Monitors"
-            action={
-              <Button
-                size="sm"
-                icon={<Plus className="size-4" />}
-                onClick={() =>
-                  set("monitors", [
-                    ...form.monitors,
-                    { name: "", surfaces: "", ref_area: "", every: "" },
-                  ])
-                }
-              >
-                Add forces
-              </Button>
-            }
-          >
-            {form.monitors.map((monitor, k) => (
-              <fieldset
-                // biome-ignore lint/suspicious/noArrayIndexKey: monitors have no identity but their place
-                key={k}
-                aria-label={`Forces monitor ${k + 1}`}
-                className="col-span-2 m-0 grid grid-cols-[8rem_minmax(0,1fr)_minmax(0,1fr)_6rem_auto] items-end gap-3 border-0 p-0"
-              >
-                <Field label="Name">
-                  <TextInput
-                    value={monitor.name}
-                    onChange={(v) =>
-                      set(
-                        "monitors",
-                        form.monitors.map((m, i) => (i === k ? { ...m, name: v } : m)),
-                      )
-                    }
-                    placeholder={k === 0 ? "forces" : `forces-${k + 1}`}
-                    mono
-                  />
-                </Field>
-                <Field label="Surfaces">
-                  <TextInput
-                    value={monitor.surfaces}
-                    onChange={(v) =>
-                      set(
-                        "monitors",
-                        form.monitors.map((m, i) => (i === k ? { ...m, surfaces: v } : m)),
-                      )
-                    }
-                    placeholder="wing.*"
-                    mono
-                    options={{ id: `surfaces-${k}`, values: zones }}
-                  />
-                </Field>
-                <Field label="Reference area">
-                  <QuantityInput
-                    value={monitor.ref_area}
-                    onChange={(v) =>
-                      set(
-                        "monitors",
-                        form.monitors.map((m, i) => (i === k ? { ...m, ref_area: v } : m)),
-                      )
-                    }
-                    units={UNITS.area}
-                  />
-                </Field>
-                <Field label="Every" hint="iterations">
-                  <NumberInput
-                    value={monitor.every}
-                    onChange={(v) =>
-                      set(
-                        "monitors",
-                        form.monitors.map((m, i) => (i === k ? { ...m, every: v } : m)),
-                      )
-                    }
-                  />
-                </Field>
-                <Button
-                  square
-                  variant="tertiary"
-                  aria-label={`Remove forces monitor ${k + 1}`}
-                  icon={<Trash2 className="size-4" />}
-                  onClick={() =>
-                    set(
-                      "monitors",
-                      form.monitors.filter((_, i) => i !== k),
-                    )
-                  }
+            <Section title="Freestream">
+              <Field label="Mach">
+                <NumberInput
+                  value={form.freestream.mach}
+                  onChange={(v) => setIn("freestream", "mach", v)}
                 />
-              </fieldset>
-            ))}
-          </Section>
+              </Field>
+              <Field label="Angle of attack">
+                <QuantityInput
+                  value={form.freestream.aoa}
+                  onChange={(v) => setIn("freestream", "aoa", v)}
+                  units={UNITS.angle}
+                />
+              </Field>
+              <Field label="Reynolds number" hint="per reference length">
+                <NumberInput
+                  value={form.freestream.re}
+                  onChange={(v) => setIn("freestream", "re", v)}
+                />
+              </Field>
+              <Field label="Reference length">
+                <QuantityInput
+                  value={form.freestream.ref_length}
+                  onChange={(v) => setIn("freestream", "ref_length", v)}
+                  units={UNITS.length}
+                />
+              </Field>
+              <Field label="Pressure" hint="optional">
+                <QuantityInput
+                  value={form.freestream.pressure}
+                  onChange={(v) => setIn("freestream", "pressure", v)}
+                  units={UNITS.pressure}
+                />
+              </Field>
+              <Field label="Temperature" hint="default 288.15 K">
+                <QuantityInput
+                  value={form.freestream.temperature}
+                  onChange={(v) => setIn("freestream", "temperature", v)}
+                  units={UNITS.temperature}
+                />
+              </Field>
+            </Section>
+
+            <Section title="Time">
+              <Field label="Maximum iterations" hint="default 10 000">
+                <NumberInput
+                  value={form.time.max_iterations}
+                  onChange={(v) => setIn("time", "max_iterations", v)}
+                />
+              </Field>
+              <Field label="Residual drop (orders)" hint="default 8">
+                <NumberInput
+                  value={form.time.residual_orders}
+                  onChange={(v) => setIn("time", "residual_orders", v)}
+                />
+              </Field>
+            </Section>
+
+            <Section
+              title="Boundaries"
+              action={
+                <Button
+                  size="sm"
+                  icon={<Plus className="size-4" />}
+                  onClick={() =>
+                    set("boundaries", [...form.boundaries, { zones: "", kind: "wall", values: {} }])
+                  }
+                >
+                  Add rule
+                </Button>
+              }
+            >
+              {form.boundaries.map((rule, k) => (
+                <fieldset
+                  // biome-ignore lint/suspicious/noArrayIndexKey: rules have no identity but their place
+                  key={k}
+                  aria-label={`Boundary rule ${k + 1}`}
+                  className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
+                >
+                  <Field label="Zones">
+                    <TextInput
+                      value={rule.zones}
+                      onChange={(v) => setRule(k, { ...rule, zones: v })}
+                      placeholder="wing.*"
+                      mono
+                      options={{ id: `zones-${k}`, values: zones }}
+                    />
+                  </Field>
+                  <Field label="Condition">
+                    <SelectInput
+                      value={rule.kind}
+                      onChange={(v) => v && setRule(k, { ...rule, kind: v, values: {} })}
+                      options={KINDS}
+                    />
+                  </Field>
+                  <Button
+                    square
+                    variant="tertiary"
+                    aria-label={`Remove boundary rule ${k + 1}`}
+                    icon={<Trash2 className="size-4" />}
+                    onClick={() =>
+                      set(
+                        "boundaries",
+                        form.boundaries.filter((_, i) => i !== k),
+                      )
+                    }
+                  />
+                  {CONDITIONS[rule.kind].map(({ key, dimension, optional }) => (
+                    <Field
+                      key={key}
+                      label={LABEL[key] ?? key}
+                      hint={optional ? "optional" : undefined}
+                    >
+                      <QuantityInput
+                        value={rule.values[key] ?? ""}
+                        onChange={(v) =>
+                          setRule(k, { ...rule, values: { ...rule.values, [key]: v } })
+                        }
+                        units={UNITS[dimension]}
+                      />
+                    </Field>
+                  ))}
+                </fieldset>
+              ))}
+            </Section>
+
+            <Section
+              title="Monitors"
+              action={
+                <Button
+                  size="sm"
+                  icon={<Plus className="size-4" />}
+                  onClick={() =>
+                    set("monitors", [
+                      ...form.monitors,
+                      { name: "", surfaces: "", ref_area: "", every: "" },
+                    ])
+                  }
+                >
+                  Add forces
+                </Button>
+              }
+            >
+              {form.monitors.map((monitor, k) => (
+                <fieldset
+                  // biome-ignore lint/suspicious/noArrayIndexKey: monitors have no identity but their place
+                  key={k}
+                  aria-label={`Forces monitor ${k + 1}`}
+                  className="col-span-2 m-0 grid grid-cols-[8rem_minmax(0,1fr)_minmax(0,1fr)_6rem_auto] items-end gap-3 border-0 p-0"
+                >
+                  <Field label="Name">
+                    <TextInput
+                      value={monitor.name}
+                      onChange={(v) =>
+                        set(
+                          "monitors",
+                          form.monitors.map((m, i) => (i === k ? { ...m, name: v } : m)),
+                        )
+                      }
+                      placeholder={k === 0 ? "forces" : `forces-${k + 1}`}
+                      mono
+                    />
+                  </Field>
+                  <Field label="Surfaces">
+                    <TextInput
+                      value={monitor.surfaces}
+                      onChange={(v) =>
+                        set(
+                          "monitors",
+                          form.monitors.map((m, i) => (i === k ? { ...m, surfaces: v } : m)),
+                        )
+                      }
+                      placeholder="wing.*"
+                      mono
+                      options={{ id: `surfaces-${k}`, values: zones }}
+                    />
+                  </Field>
+                  <Field label="Reference area">
+                    <QuantityInput
+                      value={monitor.ref_area}
+                      onChange={(v) =>
+                        set(
+                          "monitors",
+                          form.monitors.map((m, i) => (i === k ? { ...m, ref_area: v } : m)),
+                        )
+                      }
+                      units={UNITS.area}
+                    />
+                  </Field>
+                  <Field label="Every" hint="iterations">
+                    <NumberInput
+                      value={monitor.every}
+                      onChange={(v) =>
+                        set(
+                          "monitors",
+                          form.monitors.map((m, i) => (i === k ? { ...m, every: v } : m)),
+                        )
+                      }
+                    />
+                  </Field>
+                  <Button
+                    square
+                    variant="tertiary"
+                    aria-label={`Remove forces monitor ${k + 1}`}
+                    icon={<Trash2 className="size-4" />}
+                    onClick={() =>
+                      set(
+                        "monitors",
+                        form.monitors.filter((_, i) => i !== k),
+                      )
+                    }
+                  />
+                </fieldset>
+              ))}
+            </Section>
+          </fieldset>
         </form>
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
@@ -592,6 +604,56 @@ function CaseEditor() {
 // Lines never wrap: the code's own line breaks are part of what it shows. A line longer than the
 // panel scrolls, and a fade on the right edge says so until its end is in view (overlay
 // scrollbars stay hidden until a reader scrolls).
+type Comparison =
+  | { state: "none" }
+  | { state: "checking" }
+  | { state: "failed"; message: string }
+  | { state: "unrepresentable"; diagnostics: Diagnostic[] }
+  | { state: "compared"; dropped: ReturnType<typeof differences> };
+
+const show = (value: unknown) => (value === undefined ? "absent" : JSON.stringify(value));
+
+function ImportNote({ run, comparison }: { run: string; comparison: Comparison }) {
+  const title = `A copy of ${run}`;
+  if (comparison.state === "none" || comparison.state === "checking")
+    return (
+      <Note tone="info" title={title}>
+        Comparing the copy with the run's case…
+      </Note>
+    );
+  if (comparison.state === "failed")
+    return (
+      <Note tone="error" title={title}>
+        The copy could not be compared with the run's case: {comparison.message}
+      </Note>
+    );
+  if (comparison.state === "unrepresentable")
+    return (
+      <Note tone="warning" title={title}>
+        The form cannot say this case yet; read into it, the case is refused:
+        <Diagnostics items={comparison.diagnostics} testId="unrepresentable" />
+      </Note>
+    );
+  if (comparison.dropped.length === 0)
+    return (
+      <Note tone="info" title={title}>
+        Every setting of the run's case is in the form.
+      </Note>
+    );
+  return (
+    <Note tone="warning" title={title}>
+      The form cannot show these settings of the run's case yet; this copy changes them:
+      <ul className="m-0 mt-2 p-0 font-mono text-sm" data-testid="dropped">
+        {comparison.dropped.map((d) => (
+          <li key={d.path} className="list-none">
+            {d.path}: {show(d.before)} → {show(d.after)}
+          </li>
+        ))}
+      </ul>
+    </Note>
+  );
+}
+
 function Code({ text, testId }: { text: string; testId: string }) {
   const ref = useRef<HTMLPreElement>(null);
   const [more, setMore] = useState(false);
