@@ -146,14 +146,14 @@ def at(d: dsl.Dataset | dsl.Parameter, index: str, c: int, layout: str = "soa") 
         return f"d.{d.name}[{c}]"
     if d.type.size == 1:
         return f"d.{d.name}[{index}]"
-    if layout == "aos" or d.layout == "aos":
+    if layout == "aos":
         return f"d.{d.name}[offset_t({d.type.size}) * ({index}) + {c}]"
     return f"d.{d.name}[offset_t({c}) * {stride(d)} + ({index})]" if c else f"d.{d.name}[{index}]"
 
 
 def at_dynamic(d: dsl.Dataset, index: str, comp: str, layout: str = "soa") -> str:
     """`at` with a component index computed at run time."""
-    if layout == "aos" or d.layout == "aos":
+    if layout == "aos":
         return f"d.{d.name}[offset_t({d.type.size}) * ({index}) + {comp}]"
     return f"d.{d.name}[offset_t{comp} * {stride(d)} + ({index})]"
 

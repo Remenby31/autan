@@ -411,7 +411,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   std::vector<J> hjac(50 * nf, J(0));
   for (std::size_t k = 0; k < 50; ++k) {
     for (std::size_t f = 0; f < static_cast<std::size_t>(ni); ++f)
-      hjac[50 * f + k] = J(normal(rng));
+      hjac[k * nf + f] = J(normal(rng));
   }
   std::vector<R> hx(5 * nc), hy(5 * nc);
   for (auto& v : hx) v = R(normal(rng));

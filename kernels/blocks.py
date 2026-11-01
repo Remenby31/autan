@@ -26,7 +26,7 @@ from autan_codegen.dsl import (
 
 diag = cells.field("diag", JacAccum.Mat5)
 diag_inv = cells.field("diag_inv", JacAccum.Mat5)
-face_jac = faces.field("face_jac", Jac.shape(2, 5, 5), layout="aos")
+face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
 x = cells.field("x", Residual.Vec5)
 y = cells.field("y", Residual.Vec5)
 
