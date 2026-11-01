@@ -104,7 +104,7 @@ struct Euler<P>::Impl {
   // value is the adjacent cell's, which sits at the cell centroid and not at the face, and would
   // make the gradient inconsistent next to slip walls and extrapolating boundaries. A cell whose
   // remaining entries do not determine a gradient keeps every boundary face.
-  void gradient_weights(std::span<const BoundaryKind> kind) {
+  void compute_gradient_weights(std::span<const BoundaryKind> kind) {
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
@@ -250,7 +250,13 @@ void Euler<P>::set_boundary(std::span<const BoundaryKind> kind, std::span<const 
       m.bc[c * nf + ni + b] = State(data[c * nb + b]);
     }
   }
-  m.gradient_weights(kind);
+  m.compute_gradient_weights(kind);
+}
+
+template <class P>
+std::vector<double> Euler<P>::gradient_weights() const {
+  const auto& w = impl_->stencil_lsq_weight;
+  return {w.begin(), w.end()};
 }
 
 template <class P>

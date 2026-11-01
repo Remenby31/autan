@@ -3,6 +3,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import tempfile
 import tomllib
 import webbrowser
@@ -32,6 +33,8 @@ from autan_ui.registry import (
 )
 from autan_ui.surface import synthetic_wing
 from autan_ui.wall import wall_surface
+
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 log = logging.getLogger(__name__)
 
@@ -318,14 +321,30 @@ def create_app(
             manufactured = (
                 folder.read("manufactured.json") if folder.stat("manufactured.json") else None
             )
-        # The stored case is planned from a scratch copy built from the pinned folder, so the
-        # SDK reads no file of the run directory, nor any file the case names: the mesh path is
-        # cut to its name (plan reads only the MeshInfo) and a verification case points at the
-        # archived manufactured solution.
-        try:
-            document = tomllib.loads(case_toml.decode())
-        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
-            raise HTTPException(422, f"case.toml: {error}") from error
+            # The stored case is planned from a scratch copy built from the pinned folder, so
+            # the SDK reads no file of the run directory, nor any file the case names: the mesh
+            # path is cut to its name (plan reads only the MeshInfo), a verification case points
+            # at the archived manufactured solution and an oracle-state rule at its archived
+            # face states (results.md, `states/<sha256>.json`).
+            try:
+                document = tomllib.loads(case_toml.decode())
+            except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+                raise HTTPException(422, f"case.toml: {error}") from error
+            states: dict[str, bytes] = {}
+            for rule in document.get("boundaries", []):
+                condition = rule.get("condition") if isinstance(rule, dict) else None
+                if not isinstance(condition, dict) or condition.get("kind") != "oracle-state":
+                    continue
+                sha256 = condition.get("sha256")
+                valid = isinstance(sha256, str) and SHA256.fullmatch(sha256) is not None
+                # Repointed first, whatever follows: the source the case names is never read.
+                condition["path"] = f"{sha256}.json" if valid else "states.json"
+                if not valid or sha256 in states:
+                    continue  # An invalid case, or staged already: plan reports the former.
+                try:
+                    states[sha256] = folder.read(f"states/{sha256}.json")
+                except OSError:
+                    continue  # Missing or not a regular file: plan reports it cannot read it.
         document["mesh"] = PurePosixPath(str(document.get("mesh", ""))).name or "mesh"
         verification = document.get("verification")
         if isinstance(verification, dict) and isinstance(verification.get("manufactured"), dict):
@@ -336,6 +355,8 @@ def create_app(
             (root / "mesh.meshinfo").write_bytes(mesh_info)
             if manufactured is not None:
                 (root / "manufactured.json").write_bytes(manufactured)
+            for sha256, data in states.items():
+                (root / f"{sha256}.json").write_bytes(data)
             try:
                 case = autan.load(root / "case.json")
                 info = autan.MeshInfo.load(root / "mesh.meshinfo")
