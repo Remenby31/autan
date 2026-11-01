@@ -93,7 +93,6 @@ function Compare() {
   );
 
   const diff = useMemo(() => {
-    // The case's settings, then what the run itself chose: where and with which solver it ran.
     const flat = details.map((d) =>
       d.data
         ? new Map([

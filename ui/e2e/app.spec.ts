@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
@@ -168,9 +169,6 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await group.getByRole("button", { name: "Compare" }).click();
   await expect(page.getByTestId("polar")).toBeVisible();
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
-  await page.getByRole("button", { name: "Show all" }).click();
-  await expect(page.getByTestId("settings-diff")).toContainText("run.devices");
-  await expect(page.getByTestId("settings-diff")).toContainText("1 CPU");
 });
 
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
@@ -259,4 +257,60 @@ test("floors written while a run page is open recompute its residual drop", asyn
   );
 
   await expect(orders).toHaveText(target.toFixed(2));
+});
+
+test("Compare lists where each run ran when that differs", async ({ page }) => {
+  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const started = new Date(Date.now() - 10_800_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const suffix = Math.floor(Math.random() * 2 ** 32)
+    .toString(16)
+    .padStart(8, "0");
+  const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
+  const solver = { ...source.solver, backend: "cuda" as const, commit: "f".repeat(40) };
+  const devices = { kind: "cuda" as const, count: 4 };
+  // results.md#runjson: identity over what the run computes, start fields absent.
+  const identity = createHash("sha256")
+    .update(
+      [
+        source.case.sha256,
+        source.mesh.sha256,
+        solver.commit,
+        source.precision,
+        solver.backend,
+        devices.kind,
+        devices.count,
+      ].join("\n"),
+    )
+    .digest("hex");
+  const staging = join(RUNS, `.staging-${suffix}`);
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  const run = {
+    ...source,
+    run_id: runId,
+    started,
+    identity,
+    solver,
+    devices,
+    deterministic: !source.deterministic,
+  };
+  writeFileSync(join(staging, "run.json"), JSON.stringify(run));
+  renameSync(staging, join(RUNS, runId));
+  await expect.poll(async () => (await runs(page)).some((r) => r.run_id === runId)).toBe(true);
+
+  await page.goto(`/compare?runs=${encodeURIComponent(JSON.stringify([source.run_id, runId]))}`);
+
+  const diff = page.getByTestId("settings-diff");
+  for (const [key, a, b] of [
+    ["run.devices", "1 CPU", "4 CUDA GPUs"],
+    ["run.backend", source.solver.backend, "cuda"],
+    ["run.solver", source.solver.commit, solver.commit],
+    ["run.deterministic", String(source.deterministic), String(!source.deterministic)],
+  ]) {
+    await expect(diff.getByRole("row", { name: new RegExp(`^${key} `) })).toContainText(
+      a as string,
+    );
+    await expect(diff.getByRole("row", { name: new RegExp(`^${key} `) })).toContainText(
+      b as string,
+    );
+  }
 });
