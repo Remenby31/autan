@@ -39,7 +39,9 @@ jobs:
       - name: Tests (CPU and GPU)
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
       - name: Image smoke test on the GPU
-        run: REQUIRE_GPU=1 flock /tmp/cfd-gpu.lock docker/dev/smoke/run.sh build/smoke
+        # flock(1) opens its file with O_CREAT, which fs.protected_regular refuses on a lock file
+        # owned by another user in /tmp; a redirection opens it read-only without O_CREAT.
+        run: '{ flock 9 && REQUIRE_GPU=1 docker/dev/smoke/run.sh build/smoke; } 9</tmp/cfd-gpu.lock'
       - name: STREAM bandwidth
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline
