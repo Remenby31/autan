@@ -328,6 +328,11 @@ class _Builder:
     def call(self, fname: str, args: list[Val]) -> Val:
         g = self.globals.get(fname, getattr(builtins, fname, None))
         if isinstance(g, dsl.Body):
+            if g.compute != self.fn.compute:
+                raise self.err(
+                    Code.TYPE_MISMATCH,
+                    f"{fname} computes in {g.compute!r}, its caller in {self.fn.compute!r}",
+                )
             return inline(g, args, self)
         if fname not in INTRINSICS or not (
             g is dsl._intrinsic or g is getattr(builtins, fname, None)
@@ -348,10 +353,7 @@ class _Builder:
             return Real(self.emit(fname, self.real(x)))
         if fname == "abs":
             (x,) = args
-            # abs(x) = x if x >= 0 else -x: slope +1 at 0 (selected-branch convention).
-            xv = self.real(x)
-            zero = self.emit("const", attr=0.0)
-            return Real(self.emit("select", self.emit("ge", xv, zero), xv, self.emit("neg", xv)))
+            return self._abs(self.real(x))
         if fname in ("min", "max"):
             if len(args) != 2:
                 raise self.err(Code.TYPE_MISMATCH, f"{fname} takes two arguments")
@@ -419,6 +421,11 @@ class _Builder:
             return self.rel(a, b)
         raise self.err(Code.UNSUPPORTED_CONSTRUCT, f"{fname} is not usable here")
 
+    def _abs(self, x: int) -> Real:
+        # abs(x) = x if x >= 0 else -x: slope +1 at 0 (selected-branch convention).
+        zero = self.emit("const", attr=0.0)
+        return Real(self.emit("select", self.emit("ge", x, zero), x, self.emit("neg", x)))
+
     def inverse(self, a: Arr) -> Arr:
         # Gauss-Jordan on [A | I] with partial pivoting, in the operation order of invert5
         # (physics/src/block_matrix.cpp); row swaps become selects. A zero or non-finite pivot
@@ -431,7 +438,7 @@ class _Builder:
         zero = self.emit("const", attr=0.0)
         nan = self.emit("div", zero, zero)
         for k in range(n):
-            mag = [self.call("abs", [m[i][k]]) for i in range(n)]
+            mag = [self._abs(self.real(m[i][k])) for i in range(n)]
             best, picks = mag[k], []
             for i in range(k + 1, n):
                 c = self.emit("gt", self.real(mag[i]), self.real(best))

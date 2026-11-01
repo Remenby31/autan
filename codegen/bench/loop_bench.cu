@@ -20,6 +20,8 @@
 
 #include "advection_cpu.hpp"
 #include "advection_gpu.cuh"
+#include "blocks_cpu.hpp"
+#include "blocks_gpu.cuh"
 #include "autan/core/renumber.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -374,6 +376,35 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     out.push_back({"roe_adjoint_" + tag, roe_bytes, gpu::name(s),
                    time_it(o, [&] { rf::gpu_loops::flux_adjoint(rd, s, dm.schedule); })});
   }
+
+  // Diagonal block inverses (kernels/blocks.py), in the accumulation type: diagonally dominant
+  // random blocks, row-permuted so that pivoting swaps rows.
+  using A = typename P::accum;
+  std::vector<A> hdiag(25 * nc), hinv(25 * nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    const std::size_t shift = c % 5;
+    for (std::size_t i = 0; i < 5; ++i) {
+      for (std::size_t j = 0; j < 5; ++j) {
+        const double v = normal(rng) + ((i + shift) % 5 == j ? 6.0 : 0.0);
+        hdiag[(5 * i + j) * nc + c] = A(v);
+      }
+    }
+  }
+  namespace bk = autan::kernels::blocks;
+  bk::Data<P> hb{};
+  hb.topo = t;
+  hb.diag = hdiag.data();
+  hb.diag_inv = hinv.data();
+  bk::cpu::invert_diagonal(hb);
+  DeviceArray<A> ddiag(hdiag), dinv(25 * nc);
+  bk::Data<P> db{};
+  db.topo = t;
+  db.diag = ddiag.get();
+  db.diag_inv = dinv.get();
+  bk::gpu_loops::invert_diagonal(db, dm.schedule);
+  if (max_rel_diff(as_double(dinv.download()), as_double(hinv)) > tolerance) verified = false;
+  out.push_back({"block_inverse", cells * 50.0 * sizeof(A), "cell",
+                 time_it(o, [&] { bk::gpu_loops::invert_diagonal(db, dm.schedule); })});
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.schedule.interior.offsets.size() - 1,
                dm.schedule.boundary.offsets.size() - 1);
