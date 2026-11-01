@@ -40,6 +40,38 @@ struct Euler<P>::Impl {
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
+  GhostFill* ghosts = nullptr;
+
+  // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
+  template <class T>
+  void fill_ghosts(std::vector<T>& v, std::size_t n) const {
+    if (ghosts == nullptr) return;
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    std::array<T*, 16> components{};
+    for (std::size_t k = 0; k < n; ++k) components[k] = v.data() + k * nc;
+    ghosts->forward(std::span<T* const>(components.data(), n));
+  }
+
+  // The loops before the faces: primitives, boundary states, gradients and limiter of the owned
+  // cells, each filled into the ghosts before a later loop reads it there.
+  void cell_loops(bool jacobian) {
+    if (jacobian) {
+      ek::cpu::primitives_jacobian(d);
+    } else {
+      ek::cpu::primitives(d);
+    }
+    fill_ghosts(prim, 5);
+    ek::cpu::boundary_states(d);
+    if (scheme.second_order) {
+      ek::cpu::gradients(d);
+      fill_ghosts(grad, 15);
+      if (scheme.limiter) {
+        ek::cpu::limiter(d);
+        fill_ghosts(phi, 5);
+      }
+    }
+    ek::cpu::sources(d);
+  }
 
   template <class T, class Source>
   static void fill(std::vector<T>& to, const Source& from) {
@@ -320,15 +352,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   auto& m = *impl_;
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
-  ek::cpu::primitives(m.d);
-  ek::cpu::boundary_states(m.d);
-  if (m.scheme.second_order) {
-    ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
-      ek::cpu::limiter(m.d);
-    }
-  }
-  ek::cpu::sources(m.d);
+  m.cell_loops(false);
   m.faces();
 }
 
@@ -348,15 +372,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
   }
   m.d.u = const_cast<State*>(s.data());
   m.d.res = res.data();
-  ek::cpu::primitives_jacobian(m.d);
-  ek::cpu::boundary_states(m.d);
-  if (m.scheme.second_order) {
-    ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
-      ek::cpu::limiter(m.d);
-    }
-  }
-  ek::cpu::sources(m.d);
+  m.cell_loops(true);
   m.faces_jacobian();
 }
 
@@ -446,6 +462,11 @@ const kernels::CellStencil& Euler<P>::stencil() const {
 template <class P>
 const Scheme& Euler<P>::scheme() const {
   return impl_->scheme;
+}
+
+template <class P>
+void Euler<P>::set_ghosts(GhostFill* ghosts) noexcept {
+  impl_->ghosts = ghosts;
 }
 
 template <class P>

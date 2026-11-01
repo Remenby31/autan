@@ -169,9 +169,11 @@ class CudaStepper final : public DeviceStepper<P> {
 
  public:
   CudaStepper(const Mesh& mesh, const Geometry& geometry, const Euler<P>& host, double gamma,
-              bool second_order, runtime::Ranks& ranks, void* stream)
+              bool second_order, runtime::Ranks& ranks, runtime::GhostExchange& ghosts,
+              void* stream)
       : stream_(static_cast<cudaStream_t>(stream)),
         ranks_(ranks),
+        ghosts_(ghosts),
         scheme_(host.scheme()),
         second_order_(second_order),
         n_(static_cast<std::size_t>(mesh.n_cells())),
@@ -305,11 +307,18 @@ class CudaStepper final : public DeviceStepper<P> {
     store_state<<<blocks(n_), block, 0, stream_>>>(index(n_), u, ref_, state_.get());
     check(cudaGetLastError(), "store_state");
     const auto& sched = mesh_.schedule();
+    // As Euler<P>::Impl::cell_loops: each loop's output into the ghosts before a later loop
+    // reads it there.
     ek::gpu_loops::primitives(d_, sched);
+    fill_ghosts(prim_.get(), 5);
     ek::gpu_loops::boundary_states(d_, sched);
     if (second_order_) {
       ek::gpu_loops::gradients(d_, sched);
-      if (scheme_.limiter) ek::gpu_loops::limiter(d_, sched);
+      fill_ghosts(grad_.get(), 15);
+      if (scheme_.limiter) {
+        ek::gpu_loops::limiter(d_, sched);
+        fill_ghosts(phi_.get(), 5);
+      }
     }
     ek::gpu_loops::sources(d_, sched);
     constexpr auto deterministic = gpu::Strategy::store_gather;
@@ -327,6 +336,13 @@ class CudaStepper final : public DeviceStepper<P> {
         ek::gpu_loops::ausm_boundaries(d_, deterministic, sched);
         break;
     }
+  }
+
+  template <class T>
+  void fill_ghosts(T* v, std::size_t components) {
+    std::array<T*, 16> c{};
+    for (std::size_t k = 0; k < components; ++k) c[k] = v + k * n_;
+    ghosts_.forward(std::span<T* const>(c.data(), components), MemorySpace::cuda, stream_);
   }
 
   // RMS of each residual over the owned cells of every rank, from exact sums.
@@ -357,6 +373,7 @@ class CudaStepper final : public DeviceStepper<P> {
 
   cudaStream_t stream_;
   runtime::Ranks& ranks_;
+  runtime::GhostExchange& ghosts_;
   Scheme scheme_;
   bool second_order_;
   std::size_t n_, owned_, nf_;
@@ -385,15 +402,17 @@ template <class P>
 std::unique_ptr<DeviceStepper<P>> make_device_stepper(const Mesh& mesh, const Geometry& geometry,
                                                       const Euler<P>& host, double gamma,
                                                       bool second_order, runtime::Ranks& ranks,
+                                                      runtime::GhostExchange& ghosts,
                                                       void* stream) {
-  return std::make_unique<CudaStepper<P>>(mesh, geometry, host, gamma, second_order, ranks, stream);
+  return std::make_unique<CudaStepper<P>>(mesh, geometry, host, gamma, second_order, ranks,
+                                          ghosts, stream);
 }
 
 template std::unique_ptr<DeviceStepper<kernels::fp64>> make_device_stepper(
     const Mesh&, const Geometry&, const Euler<kernels::fp64>&, double, bool, runtime::Ranks&,
-    void*);
+    runtime::GhostExchange&, void*);
 template std::unique_ptr<DeviceStepper<kernels::fp32_acc64>> make_device_stepper(
     const Mesh&, const Geometry&, const Euler<kernels::fp32_acc64>&, double, bool, runtime::Ranks&,
-    void*);
+    runtime::GhostExchange&, void*);
 
 }  // namespace autan::physics
