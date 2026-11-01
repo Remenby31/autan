@@ -41,3 +41,6 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 | Linear velocity and temperature, every cell type, `fp64` and `fp32+acc64`, with and without a no-slip wall (isothermal and adiabatic) | viscous residual = −V (0, 0, 0, 0, τ : ∇u) to round-off | `tests/physics/test_navier_stokes.cpp` |
 | Quadratic velocity vanishing on a wall, every cell type, both precisions | wall shear stress μ ∂u_t/∂y at each face to round-off | same |
 | MMS `navier_stokes` through `autan-run` and `autan-vv verify`, gate `ns-mms-order` | Roy et al. (2004) form, μ = 10, Pr = 0.72 | `physics/mms/study.sh` |
+| MMS `rans_sa`, gate `rans-sa-mms-order` | Eça et al. (2007), Oliver et al. (2012) principles, wall y = 0 | same |
+
+Levels, fixed before the measurement: `autan-vv meshes` tet 12, 16, 24, 32; poly 12, 16, 24, 32; hybrid 16, 24, 32, 48 (the levels of `euler-mms-order`); hex 24, 32, 48, 64. The `rans_sa` fields have a boundary layer of thickness 0.15 at y = 0, under three cells on the coarse levels of the cube families: `rans_sa` runs on the Cartesian family (n, 4n, n), n = 12, 16, 24, 32 (`autan_vv.meshes.families.cartesian`, written with `write_fluent`), at least 6 cells across the layer; its aspect ratio is the same on every level, so h = (V/N)^(1/3) measures the refinement.
