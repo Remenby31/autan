@@ -16,6 +16,10 @@ PAGES = sorted(
     for page in (ROOT / "docs" / folder).glob("*.md")
     if not page.name.endswith(".fr.md")
 )
+# Provisioning: the test environment is already synchronised (`uv sync` would rebuild the package under
+# test), and CI builds the C++ tools before the SDK tests.
+PROVISIONING = ("uv sync", "micromamba", "cmake")
+BUILT = (ROOT / "build" / "runtime" / "autan-run", ROOT / "build" / "io" / "autan-mesh-info")
 BLOCK = re.compile(r"^```(sh|python|text)\n(.*?)^```", re.MULTILINE | re.DOTALL)
 CODE = re.compile(r"\b[EWD]\d{4}\b")
 
@@ -23,13 +27,17 @@ CODE = re.compile(r"\b[EWD]\d{4}\b")
 @pytest.mark.parametrize("page", PAGES, ids=[page.stem for page in PAGES])
 def test_page_commands_succeed_with_the_codes_shown(page: Path, tmp_path: Path) -> None:
     blocks = BLOCK.findall(page.read_text())
-    # The test environment is already synchronised; `uv sync` would rebuild the package under test.
     runnable = [
         i
         for i, (language, code) in enumerate(blocks)
-        if language != "text" and not code.startswith("uv sync")
+        if language != "text" and not code.startswith(PROVISIONING)
     ]
     assert runnable, f"{page.name} has no sh or python block"
+    if any("build/" in blocks[i][1] for i in runnable) and not all(
+        path.is_file() for path in BUILT
+    ):
+        pytest.skip("autan-run and autan-mesh-info not built (cmake --build build)")
+    before = set(ROOT.iterdir())
     env = {**os.environ, "TMPDIR": str(tmp_path), "UV_LOCKED": "1"}
     for i in runnable:
         language, code = blocks[i]
@@ -45,3 +53,4 @@ def test_page_commands_succeed_with_the_codes_shown(page: Path, tmp_path: Path) 
         if i + 1 < len(blocks) and blocks[i + 1][0] == "text":
             shown = set(CODE.findall(blocks[i + 1][1]))
             assert shown <= set(CODE.findall(done.stdout + done.stderr)), f"{page.name}: {code}"
+    assert set(ROOT.iterdir()) == before, f"{page.name} writes into the repository root"
