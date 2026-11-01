@@ -224,7 +224,8 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
           sparse({
             kind: "forces",
             // Names are unique in a case; the first keeps the SDK's default, "forces".
-            name: text(m.name) ?? (k === 0 ? undefined : `forces-${k + 1}`),
+            // A name given is kept verbatim: " loads " and "loads" are two monitors.
+            name: m.name.trim() !== "" ? m.name : k === 0 ? undefined : `forces-${k + 1}`,
             surfaces: m.surfaces,
             ref_area: quantity(m.ref_area),
             every: number(m.every),

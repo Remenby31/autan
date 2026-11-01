@@ -36,8 +36,14 @@ export const Route = createFileRoute("/cases/new")({
     ...(raw.webgl === true || raw.webgl === "1" ? { webgl: true } : {}),
     ...(typeof raw.run === "string" && raw.run ? { run: raw.run } : {}),
   }),
-  component: CaseEditor,
+  component: CaseEditorRoute,
 });
+
+// A new editor for each source: a copy's values never outlive the run they came from.
+function CaseEditorRoute() {
+  const { run } = Route.useSearch();
+  return <CaseEditor key={run ?? "new"} />;
+}
 
 const TURBULENCE = [
   { value: "inviscid", label: "Inviscid" },
@@ -184,39 +190,39 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
+          {source.isError && (
+            <Note
+              tone="error"
+              title={`The run ${from} could not be read`}
+              action={
+                <Button size="sm" onClick={() => source.refetch()}>
+                  Retry
+                </Button>
+              }
+            >
+              {source.error.message}
+            </Note>
+          )}
+          {source.data && <ImportNote run={source.data.run.run_id} comparison={comparison} />}
+          {materials.isError && (
+            <Note
+              tone="error"
+              title="The material libraries could not be listed"
+              action={
+                <Button size="sm" onClick={() => materials.refetch()}>
+                  Retry
+                </Button>
+              }
+            >
+              Gases and solids come from the SDK: {materials.error.message}
+            </Note>
+          )}
+          {meshes.isError && (
+            <Note tone="error" title="The meshes could not be listed">
+              {meshes.error.message}
+            </Note>
+          )}
           <fieldset disabled={importing} className="m-0 flex flex-col gap-8 border-0 p-0">
-            {source.isError && (
-              <Note
-                tone="error"
-                title={`The run ${from} could not be read`}
-                action={
-                  <Button size="sm" onClick={() => source.refetch()}>
-                    Retry
-                  </Button>
-                }
-              >
-                {source.error.message}
-              </Note>
-            )}
-            {source.data && <ImportNote run={source.data.run.run_id} comparison={comparison} />}
-            {materials.isError && (
-              <Note
-                tone="error"
-                title="The material libraries could not be listed"
-                action={
-                  <Button size="sm" onClick={() => materials.refetch()}>
-                    Retry
-                  </Button>
-                }
-              >
-                Gases and solids come from the SDK: {materials.error.message}
-              </Note>
-            )}
-            {meshes.isError && (
-              <Note tone="error" title="The meshes could not be listed">
-                {meshes.error.message}
-              </Note>
-            )}
             <Section title="Case">
               <Field label="Name">
                 <TextInput value={form.name} onChange={(v) => set("name", v)} mono />

@@ -329,6 +329,7 @@ test("a copy of a case the form cannot say lists what it changes", async ({ page
     await expect(page.getByTestId("dropped")).toContainText('time.kind: "unsteady" → "steady"');
   } finally {
     rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
