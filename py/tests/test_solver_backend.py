@@ -263,3 +263,27 @@ def test_a_relative_executable_is_the_one_in_the_working_directory(
     monkeypatch.setenv("AUTAN_RUN", f"./{RELAXATION.name}")
     result = case.run(mesh, backend=autan.SolverBackend(), runs=tmp_path / "runs")
     assert result.run.status in ("converged", "completed")
+
+
+def test_continue_through_the_runtime_matches_the_uninterrupted_run(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    _, mesh = hybrid
+
+    def case(budget: int) -> autan.Case:
+        path = tmp_path / f"budget-{budget}.py"
+        path.write_text(CASE + f"case.time = autan.Steady(max_iterations={budget})\n")
+        return autan.load(path)
+
+    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    whole = case(10000).run(mesh, backend=backend, runs=tmp_path / "whole")
+    first = case(10).run(mesh, backend=backend, runs=tmp_path / "parts")
+    assert (first.run.status, first.run.iterations) == ("completed", 10)
+    rest = case(10000).run(mesh, backend=backend, runs=tmp_path / "parts", start=first)
+
+    def lines(result: autan.Results) -> list[str]:
+        return (result.path / "history.jsonl").read_text().splitlines()
+
+    assert lines(first) + lines(rest) == lines(whole)
+    assert (rest.run.status, rest.run.iterations) == (whole.run.status, whole.run.iterations)
+    assert rest.field("Density").tobytes() == whole.field("Density").tobytes()

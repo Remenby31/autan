@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,8 @@ from typing import Any
 from autan_bench import gpu, provenance, result
 from autan_bench.errors import BenchError, Code
 from autan_bench.stats import summarize
+
+_log = logging.getLogger(__name__)
 
 
 def _run_binary(binary: Path, args: list[str]) -> dict[str, Any]:
@@ -64,6 +67,7 @@ def run(
     suite: str,
     precision: str,
     lock: Path = gpu.DEFAULT_LOCK,
+    max_load_per_cpu: float | None = None,
 ) -> dict[str, Any]:
     """Run a benchmark binary under the GPU lock and return a validated result document.
 
@@ -73,9 +77,24 @@ def run(
     """
     with gpu.gpu_lock(lock) as waited:
         idle = gpu.require_idle()
+        before = gpu.host_load()
+        per_cpu = before["load_1m"] / before["cpus"]
+        if max_load_per_cpu is not None and per_cpu > max_load_per_cpu:
+            raise BenchError(
+                Code.HOST_BUSY,
+                f"host load {before['load_1m']:.1f} on {before['cpus']} CPUs exceeds "
+                f"{max_load_per_cpu} per CPU",
+            )
+        if per_cpu > gpu.LOAD_WARN_PER_CPU:
+            _log.warning(
+                "host load %.1f on %d CPUs: other processes share the memory bandwidth",
+                before["load_1m"],
+                before["cpus"],
+            )
         with gpu.Sampler() as sampler:
             raw = _run_binary(binary, args)
         during = sampler.summary()
+        after = gpu.host_load()
     if (during["compute_apps_max"] or 0) > 1:
         raise BenchError(
             Code.GPU_CONTENDED,
@@ -101,6 +120,11 @@ def run(
             "lock": str(lock),
             "lock_wait_s": waited,
             "idle_check": idle,
+            "host_load": {
+                "cpus": before["cpus"],
+                "before_1m": before["load_1m"],
+                "after_1m": after["load_1m"],
+            },
             "during_run": during,
         },
         "config": raw["config"],

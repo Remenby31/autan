@@ -48,18 +48,31 @@ class Log {
                      std::string_view code = {}, std::string_view data_json = "{}") = 0;
 };
 
+/// The state of the previous run a run starts from (input.start), read from
+/// its solution.cgns.
+struct StartState {
+  std::vector<io::Field> fields;  ///< FlowSolution: field_names(input), in order
+  /// `continue` only (empty for `warm`): FlowSolutionMean when that run
+  /// averaged, and its RestartState.
+  std::vector<io::Field> mean_fields;
+  std::vector<io::Field> restart_fields;
+};
+
+/// Valid until the run ends; a physics may keep a copy.
 struct PhysicsContext {
   const Mesh& mesh;
   const Geometry& geometry;
   const SolverInput& input;
   Log& log;
+  const StartState* start;  ///< null unless input.start
 };
 
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
 /// arrays (host or device), its kernels and their schedule. Constructed from
 /// a PhysicsContext that outlives it; the state starts at the cell zones'
-/// `initial` values.
+/// `initial` values, or at `context.start` when the run starts from another
+/// (docs/contracts/runtime.md).
 class Physics {
  public:
   virtual ~Physics() = default;
@@ -71,6 +84,9 @@ class Physics {
   /// Cell-centred fields with the SIDS names of results.md (field_names()),
   /// current state or time average.
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
+  /// Cell-centred state beyond fields(false) that a `continue` needs to go
+  /// on bit for bit (earlier time levels, averaging sums); empty when none.
+  [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;
   /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending).
   [[nodiscard]] virtual std::vector<io::Field> wall_fields(
       std::span<const index_t> wall_faces) const = 0;
