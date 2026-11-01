@@ -1,4 +1,4 @@
-"""The revision benchmark binaries record (codegen/bench/revision.cmake), outside a git checkout."""
+"""The revision benchmark binaries record (codegen/bench/revision.cmake)."""
 
 from __future__ import annotations
 
@@ -7,28 +7,52 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+GIT = shutil.which("git") or ""
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
-def revision(tmp: Path, source: Path, commit: str = "") -> str:
-    out = tmp / "revision.h"
-    subprocess.run(
-        ["cmake", f"-DGIT={shutil.which('git') or ''}", f"-DSOURCE_DIR={source}",
-         f"-DAUTAN_COMMIT={commit}", f"-DOUTPUT_FILE={out}", "-P",
+def revision(tmp: Path, source: Path, commit: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["cmake", f"-DGIT={GIT}", f"-DSOURCE_DIR={source}", f"-DAUTAN_COMMIT={commit}",
+         f"-DOUTPUT_FILE={tmp / 'revision.h'}", "-P",
          str(ROOT / "codegen" / "bench" / "revision.cmake")],
-        check=True, capture_output=True,
+        capture_output=True, text=True, check=False,
     )  # fmt: skip
-    return out.read_text()
 
 
-def test_an_export_without_git_builds_with_the_given_commit_or_unknown(tmp_path: Path) -> None:
+def recorded(tmp: Path, source: Path, commit: str = "") -> tuple[str, str]:
+    assert revision(tmp, source, commit).returncode == 0
+    text = (tmp / "revision.h").read_text()
+    c = text.split('AUTAN_BENCH_COMMIT "')[1].split('"')[0]
+    return c, text.split('AUTAN_BENCH_DIRTY "')[1].split('"')[0]
+
+
+def git(repo: Path, *args: str) -> str:
+    cmd = [GIT, "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_revision_of_a_checkout_an_export_and_an_export_inside_another_repository(
+    tmp_path: Path,
+) -> None:
     # A source export (sdist, git archive) has no .git: the build goes on, recording AUTAN_COMMIT
-    # when given, else "unknown" marked dirty.
-    export = tmp_path / "export"
-    export.mkdir()
-    unknown = revision(tmp_path, export)
-    assert '#define AUTAN_BENCH_COMMIT "unknown"' in unknown
-    assert '#define AUTAN_BENCH_DIRTY "true"' in unknown
-    commit = "0123456789abcdef0123456789abcdef01234567"
-    given = revision(tmp_path, export, commit)
-    assert f'#define AUTAN_BENCH_COMMIT "{commit}"' in given
-    assert '#define AUTAN_BENCH_DIRTY "false"' in given
+    # when given, else "unknown" marked dirty; even unpacked inside another repository.
+    outer = tmp_path / "outer"
+    export = outer / "autan"
+    export.mkdir(parents=True)
+    git(outer, "init", "-q")
+    git(outer, "commit", "-q", "--allow-empty", "-m", "outer")
+    assert recorded(tmp_path, export) == ("unknown", "true")
+    assert recorded(tmp_path, export, COMMIT) == (COMMIT, "false")
+    # A checkout records its own HEAD, dirty when tracked files changed, whatever AUTAN_COMMIT.
+    (export / "f").write_text("a")
+    git(export, "init", "-q")
+    git(export, "add", "f")
+    git(export, "commit", "-q", "-m", "c")
+    head = git(export, "rev-parse", "HEAD")
+    assert recorded(tmp_path, export, COMMIT) == (head, "false")
+    (export / "f").write_text("b")
+    assert recorded(tmp_path, export, COMMIT) == (head, "true")
+    # AUTAN_COMMIT follows the runtime's rule: 40 lowercase hexadecimal characters.
+    for bad in ("deadbeef", 'x" "', COMMIT.upper()):
+        assert revision(tmp_path, outer / "missing", bad).returncode != 0
