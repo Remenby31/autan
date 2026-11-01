@@ -1423,6 +1423,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#ifdef AUTAN_HAVE_CUDA
+  // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
+  // physics checks at every step that the exchange fills its ghosts in
+  // device memory, through a CUDA-aware MPI; the history stays that of one rank.
+  Json on_gpu = doc;
+  on_gpu["devices"]["kind"] = "cuda";
+  const fs::path gpu = run_on_ranks(on_gpu, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                     "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+  CHECK(lines_of(gpu / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#endif
   const Json a = Json::parse(read(one.run / "run.json"));
   const Json b = Json::parse(read(many / "run.json"));
   for (const char* key : {"status", "iterations", "time", "diagnostics"}) {
