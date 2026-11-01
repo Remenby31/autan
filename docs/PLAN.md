@@ -33,7 +33,7 @@ autan/
   ui/         application web (à partir de M10)
 ```
 
-Build : CMake + scikit-build-core + nanobind. CI : GitHub Actions + runners GPU auto-hébergés (RTX PRO 6000, DGX Spark) ; AMD via cloud.
+Build : CMake + scikit-build-core + nanobind. CI : GitHub Actions + runners GPU auto-hébergés (RTX PRO 6000, DGX Spark) ; AMD : compilation HIP seulement, exécution reportée (voir M1).
 
 ## Jalons
 
@@ -42,7 +42,7 @@ Durées indicatives pour 2–3 ingénieurs à plein temps assistés d'agents. Ch
 | # | Jalon | Contenu | Porte (critère de sortie) | Mois |
 |---|---|---|---|---|
 | M0 | Fondations | Repo, build, CI GPU ; structure de maillage par faces ; lecteurs Gmsh, Fluent .msh (zones typées), CGNS ; partition + halos ; rapport qualité | Lecture des 4 types de cellules + polyèdres à 100+ faces ; zones et types BC conservés ; 50 M cellules partitionnées | 0–1,5 |
-| M1 | Spike générateur + perf | DSL kernels → CUDA/HIP/CPU (CPU vectorisé ARM NEON, testé sur Mac) ; gradients LSQ et Green-Gauss ; advection-diffusion scalaire ; atomiques vs coloration ; prototype adjoint d'un kernel | MMS ordre 2 sur tét/hex/poly/hybride en FP32 et FP64 ; ≥ 70 % du pic BW sur gradient et flux ; test produit scalaire de l'adjoint OK | 1–3 |
+| M1 | Spike générateur + perf | DSL kernels → CUDA/HIP/CPU (CPU vectorisé ARM NEON, testé sur Mac) ; gradients LSQ et Green-Gauss ; advection-diffusion scalaire ; atomiques vs coloration ; prototype adjoint d'un kernel | MMS ordre 2 sur tét/hex/poly/hybride en FP32 et FP64 ; ≥ 70 % du pic BW sur gradient et flux ; test produit scalaire de l'adjoint OK ; mesure sur AMD (MI300X) reportée faute de matériel (décision du lead, 2026-11-01) : HIP reste compilé en CI (`gpu-hip`, compilation seule), aucune performance AMD annoncée avant d'avoir été mesurée | 1–3 |
 | M1b | Backend Metal (Apple Silicon) | Émetteur Metal Shading Language depuis l'IR du générateur ; accumulations FP64 émulées en double-float ; stratégie de boucle sur les faces mesurée (pas d'atomiques 64 bits) ; runner macOS Apple Silicon en CI | Mêmes portes que M1 sur Metal : MMS ordre 2 sur les 4 types de maillage en `fp32` et `fp32+acc64` ; ≥ 70 % du pic de bande passante mesuré sur la machine | 3–4 (parallèle à M2) |
 | M2 | Euler compressible | Roe/HLLC/AUSM+-up, BC caractéristiques ; explicite puis implicite (Jacobien BSR 5×5 fusionné, GS bloc multicolore, JFNK) | MMS Euler, Ringleb, NACA0012 et ONERA M6 non visqueux ; convergence de 10 ordres | 2,5–5 |
 | M3 | Navier-Stokes + SA | Flux visqueux avec corrections de non-orthogonalité ; SA-neg ; distance à la paroi GPU ; agglomération MG + line-implicit | TMR plaque plane, bosse, NACA0012 dans la tolérance ; convergence sur maillages dégradés | 4,5–8 |
@@ -68,7 +68,7 @@ M0 → M1 → M2 → M3 → M5 → M6 / M7. M4 et M10 avancent en parallèle dè
 | Générateur + AD trop complexe | Spike M1 avec porte ; AD maison sur l'IR du générateur, replis Tapenade puis nombres duaux, Enzyme comme oracle de vérification (voir `research/kernel-generator.md`) |
 | FP32 insuffisant (CLmax) | Précision en paramètre de template dès M1, étude M5, repli FP64 par kernel |
 | AMG/solveurs lents | Harnais de matrices réelles dès M2 ; backends interchangeables |
-| Portage AMD fragile | Runner AMD en CI dès M1 |
+| Portage AMD fragile | HIP compilé en CI dès M1 (`gpu-hip`) ; exécution sur AMD reportée faute de matériel (décision du lead, 2026-11-01) |
 | Accès matériel de prod | Cloud B200/MI300X pour M5 ; dev sur RTX PRO 6000 et DGX Spark |
 | Données de validation | Grilles et données TMR, DPW et HLPW publiques |
 
