@@ -50,8 +50,8 @@ This project sets out to:
 | Milestone | Content | State |
 |---|---|---|
 | M0 Foundations | Face-based polyhedral mesh, Gmsh, Fluent and CGNS readers, partitioning, CI, benchmark harness, V&V framework | Done |
-| M1 Generator spike | Kernel DSL to CUDA, HIP and CPU; gradients; scalar advection-diffusion; adjoint of one kernel | Done, except execution on AMD hardware, hierarchical (OP2) colouring and the ARM NEON CPU backend |
-| M1b Metal backend | The generator's loops on Apple GPUs | Done, except the bandwidth gate of the least-squares gradient on hexahedra in `fp32+acc64` |
+| M1 Generator spike | Kernel DSL to CUDA, HIP and CPU; gradients; scalar advection-diffusion; adjoint of one kernel | Done, except execution on AMD hardware, hierarchical (OP2) colouring, shared-memory transposition and the ARM NEON CPU backend ([open items](docs/design/kernel-generator-spike.md#open-items)) |
+| M1b Metal backend | The generator's loops on Apple GPUs | Done, except the bandwidth gate of the least-squares gradient on hexahedra in `fp32+acc64` ([open items](docs/design/metal-backend.md#open-items)) |
 | M2 Compressible Euler | Roe, HLLC and AUSM+-up fluxes; explicit then implicit solver | In progress: explicit solver on the CPU; implicit solver and verification gates in review |
 | M3 Navier-Stokes + SA | Viscous fluxes, Spalart-Allmaras, agglomeration multigrid | Planned |
 | M4 SDK + CLI v0 | Typed case schema with units, `autan plan`, `run`, `logs`, `diff`, coded errors | In progress: schema, `plan`, `run`, `prepare` and coded errors exist |

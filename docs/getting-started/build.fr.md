@@ -1,12 +1,12 @@
 ---
-source_hash: "f24d0661ad85"
+source_hash: "c61b411a9ae4"
 ---
 
 # Compiler Autan depuis les sources
 
 Compilez le runtime du solveur `autan-run` et l'outil de maillage `autan-mesh-info` depuis un clone du dépôt, puis lancez un cas compressible non visqueux sur CPU. Il n'existe pas encore de paquet binaire.
 
-> Le solveur calcule des écoulements compressibles non visqueux sur CPU, en `fp64` et `fp32+acc64`. Toute autre physique, précision ou périphérique se termine par `E0706`.
+> Le solveur calcule des écoulements compressibles non visqueux sur CPU, en `fp64` et `fp32+acc64`. Toute autre combinaison de physique, modèle de turbulence, précision et périphérique acceptée par le schéma de cas se termine par `E0706`.
 
 ## Prérequis
 

@@ -2,7 +2,7 @@
 
 Build the solver runtime `autan-run` and the mesh tool `autan-mesh-info` from a clone of the repository, then run an inviscid compressible case on the CPU. There is no binary package yet.
 
-> The solver runs inviscid compressible flow on the CPU, in `fp64` and `fp32+acc64`. Any other physics, precision or device ends with `E0706`.
+> The solver runs inviscid compressible flow on the CPU, in `fp64` and `fp32+acc64`. Another combination of physics, turbulence model, precision and device that the case schema accepts ends with `E0706`.
 
 ## Prerequisites
 
