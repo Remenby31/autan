@@ -220,6 +220,34 @@ _CODES = [
         "Assign each entity to one zone in the meshing tool.",
     ),
     Code(
+        "E0136",
+        "Zone groups file unreadable",
+        "The mesh's `<mesh>.zones.json` is not JSON, or not an `autan.zone-groups/1` document "
+        "(missing or unknown key, wrong type).",
+        "Fix the file against docs/contracts/mesh-info.md, or remove it.",
+    ),
+    Code(
+        "E0137",
+        "Zone groups file describes another mesh",
+        "The `mesh_sha256` of the mesh's `<mesh>.zones.json` differs from the mesh hash, or the "
+        "file the runtime reads differs from the solver input's `mesh.groups_sha256`.",
+        "Regenerate the groups for this mesh, then the MeshInfo and the solver input.",
+    ),
+    Code(
+        "E0138",
+        "Bad zone group",
+        "A group of the mesh's `<mesh>.zones.json` names a boundary zone the mesh does not "
+        "have (names are exact, spaces included), lists a zone twice, is empty, or has a name "
+        "outside `[A-Za-z0-9_.-]` or starting with `-`.",
+        "Correct the group against the zone names of the mesh's MeshInfo.",
+    ),
+    Code(
+        "E0139",
+        "Zone group defined twice",
+        "Two groups of the mesh's `<mesh>.zones.json` have the same name.",
+        "Give each group one entry.",
+    ),
+    Code(
         "E0140",
         "Invalid partition request",
         "A part count, rank, part index or cell weight is out of range, or an array has the wrong size.",

@@ -27,7 +27,7 @@ Every table rejects unknown keys; every key is present, `null` where it does not
 |---|---|
 | `schema` | `"autan.solver-input/1"` |
 | `case` | `name`; `sha256` the case hash; `toml` the exact text to write as `case.toml` |
-| `mesh` | `path` absolute path of the mesh file or polyMesh directory; `sha256` expected mesh hash ([mesh-info.md](mesh-info.md)), checked by the runtime; `scale` metres per mesh unit (the case's `mesh_unit`, to 15 significant digits: `0.0254` for `in`), > 0. The runtime multiplies every node coordinate and periodic translation by `scale` once, after reading the mesh and checking `periodic` against it, before any geometry: everything else is SI |
+| `mesh` | `path` absolute path of the mesh file or polyMesh directory; `sha256` expected mesh hash ([mesh-info.md](mesh-info.md)), checked by the runtime; `groups_sha256` the MeshInfo's `groups_source.sha256` (null without zone groups), which the runtime records in `run.json`; `scale` metres per mesh unit (the case's `mesh_unit`, to 15 significant digits: `0.0254` for `in`), > 0. The runtime multiplies every node coordinate and periodic translation by `scale` once, after reading the mesh and checking `periodic` against it, before any geometry: everything else is SI |
 | `precision` | `"fp32+acc64"` or `"fp64"` |
 | `deterministic` | Bitwise-deterministic mode requested |
 | `devices` | `kind` (`cpu`, `cuda`, `hip`) and `count` |

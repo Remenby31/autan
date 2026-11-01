@@ -252,6 +252,38 @@ An entity belongs to several zones in the source (Gmsh entity in two physical gr
 
 Fix: Assign each entity to one zone in the meshing tool.
 
+## E0136
+
+**Zone groups file unreadable** (error)
+
+The mesh's `<mesh>.zones.json` is not JSON, or not an `autan.zone-groups/1` document (missing or unknown key, wrong type).
+
+Fix: Fix the file against docs/contracts/mesh-info.md, or remove it.
+
+## E0137
+
+**Zone groups file describes another mesh** (error)
+
+The `mesh_sha256` of the mesh's `<mesh>.zones.json` differs from the mesh hash, or the file the runtime reads differs from the solver input's `mesh.groups_sha256`.
+
+Fix: Regenerate the groups for this mesh, then the MeshInfo and the solver input.
+
+## E0138
+
+**Bad zone group** (error)
+
+A group of the mesh's `<mesh>.zones.json` names a boundary zone the mesh does not have (names are exact, spaces included), lists a zone twice, is empty, or has a name outside `[A-Za-z0-9_.-]` or starting with `-`.
+
+Fix: Correct the group against the zone names of the mesh's MeshInfo.
+
+## E0139
+
+**Zone group defined twice** (error)
+
+Two groups of the mesh's `<mesh>.zones.json` have the same name.
+
+Fix: Give each group one entry.
+
 ## E0140
 
 **Invalid partition request** (error)

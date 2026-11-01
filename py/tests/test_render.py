@@ -224,6 +224,13 @@ EDGES: dict[str, Callable[[autan.Case], None]] = {
     "library-units": co2_viscosity_in_base_units,
     "long-zone": lambda case: case.boundary("w" * 80).wall(),
     "empty-call-at-the-width": lambda case: case.boundary("w" * 77).wall(),
+    "group-selectors": lambda case: (
+        case.boundary(group="WING").wall(),
+        case.boundary("farfield").farfield(
+            point_vortex=autan.PointVortex(group="wing.*", center=(Q(0, "m"),) * 3)
+        ),
+        case.monitor(autan.forces(group="wing.*", name="wing"), every=2),
+    ),
     "long-zone-arguments": lambda case: case.boundary("w" * 80).wall(temperature=Q(400, "K")),
     "long-zone-long-arguments": lambda case: case.cell_zone("w" * 80).fluid(
         autan.gases.AIR,

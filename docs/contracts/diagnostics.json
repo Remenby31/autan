@@ -187,6 +187,30 @@
       "fix": "Assign each entity to one zone in the meshing tool.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0135"
     },
+    "E0136": {
+      "severity": "error",
+      "title": "Zone groups file unreadable",
+      "fix": "Fix the file against docs/contracts/mesh-info.md, or remove it.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0136"
+    },
+    "E0137": {
+      "severity": "error",
+      "title": "Zone groups file describes another mesh",
+      "fix": "Regenerate the groups for this mesh, then the MeshInfo and the solver input.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0137"
+    },
+    "E0138": {
+      "severity": "error",
+      "title": "Bad zone group",
+      "fix": "Correct the group against the zone names of the mesh's MeshInfo.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0138"
+    },
+    "E0139": {
+      "severity": "error",
+      "title": "Zone group defined twice",
+      "fix": "Give each group one entry.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0139"
+    },
     "E0140": {
       "severity": "error",
       "title": "Invalid partition request",
