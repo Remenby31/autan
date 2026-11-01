@@ -399,10 +399,10 @@ SolverInput parse_solver_input(const std::string& text) {
   } catch (const Json::exception& e) {
     invalid("", std::string("not JSON: ") + e.what());
   }
-  const Object root(
-      doc, "",
-      {"schema", "case", "mesh", "verification", "start", "periodic", "precision", "deterministic",
-       "devices", "physics", "freestream", "boundaries", "cell_zones", "time", "monitors"});
+  const Object root(doc, "",
+                    {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
+                     "precision", "deterministic", "devices", "physics", "freestream", "boundaries",
+                     "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -525,6 +525,26 @@ SolverInput parse_solver_input(const std::string& text) {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");
   }
   if (!root.is_null("start")) in.start = parse_start(root.get("start"), in);
+  if (!root.is_null("initial_state")) {
+    if (in.start)
+      invalid("initial_state", "a run starts from start or from initial_state, not both");
+    // The file carries no turbulence variables (initial-state.md).
+    if (in.physics_kind != "compressible" ||
+        (in.turbulence.model != "inviscid" && in.turbulence.model != "laminar")) {
+      invalid("initial_state", "needs compressible inviscid or laminar flow");
+    }
+    const Object s(root.get("initial_state"), "initial_state", {"path", "sha256"});
+    InitialStateFile file;
+    file.path = s.string("path");
+    if (file.path.find('\0') != std::string::npos) {
+      invalid("initial_state.path", "contains a NUL character");
+    }
+    if (!std::filesystem::path(file.path).is_absolute()) {
+      invalid("initial_state.path", "must be an absolute path");
+    }
+    file.sha256 = sha256(s, "sha256");
+    in.initial_state = std::move(file);
+  }
   const Json& periodic = *array_at(root, "periodic");
   for (std::size_t i = 0; i < periodic.size(); ++i) {
     const Object o(periodic[i], indexed("periodic", i), {"zones", "transform"});

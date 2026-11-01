@@ -596,6 +596,46 @@ A compressible fluid zone starts from an absolute pressure > 0, a temperature an
 
 Fix: Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.
 
+## E0508
+
+**Initial-state file missing or invalid** (error)
+
+The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs from the case's, or it is not a valid `autan.initial-state/1` document: its variables, a row of 3 finite coordinates and 5 finite values per cell, density and pressure > 0 (docs/contracts/initial-state.md).
+
+Fix: Write the initial state with `autan.initial_state.write` for this mesh, and give its path and the SHA-256 it returns.
+
+## E0509
+
+**Initial state written for another mesh** (error)
+
+The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.
+
+Fix: Write the initial state for the mesh the case uses.
+
+## E0510
+
+**Initial state does not cover the fluid cells** (error)
+
+The file gives another number of rows than the mesh has fluid cells.
+
+Fix: Write one row per fluid cell of the mesh, at its centroid.
+
+## E0511
+
+**Initial states do not match the cells** (error)
+
+The solver could not pair every fluid cell with exactly one row of the file by centroid, within 1e-9 times the largest extent of the mesh's bounding box, or two cells lie within that tolerance of each other; `data` names the cells.
+
+Fix: Write the initial state from the cell centroids of the mesh the case uses.
+
+## E0512
+
+**Initial-state file not available for this case** (error)
+
+An initial-state file needs compressible inviscid or laminar physics (it carries no turbulence variable), replaces the fluid zones' `initial` states, and cannot be combined with a start from a previous run, which gives the initial state itself.
+
+Fix: Remove the zones' `initial`, the start, or the file; or use a compressible inviscid or laminar case.
+
 ## E0601
 
 **Monitor surfaces match no boundary zone** (error)

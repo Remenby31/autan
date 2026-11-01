@@ -36,6 +36,7 @@ from autan.schema import (
     Solid,
     SolidZone,
     State,
+    StateFile,
     Steady,
     Symmetry,
     Unsteady,
@@ -77,6 +78,7 @@ class Case:
         self._cell_zones: list[CellZoneRule] = []
         self._monitors: list[Forces] = []
         self._verification: Verification | None = None
+        self._initial_state: StateFile | None = None
         self._locations: dict[str, Location] = {}
         self._document_file: str | None = None
         if _collectors:
@@ -114,6 +116,26 @@ class Case:
             )
         self._physics = physics
         self._locations["physics"] = _caller_location()
+
+    @property
+    def initial_state(self) -> StateFile | None:
+        return self._initial_state
+
+    @initial_state.setter
+    def initial_state(self, state: StateFile) -> None:
+        """Start every fluid cell from a file: ``autan.StateFile(path=..., sha256=...)``."""
+        if not isinstance(state, StateFile):
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0003",
+                        f"initial_state must be autan.StateFile, got {type(state).__name__}",
+                        location=_caller_location(),
+                    )
+                ]
+            )
+        self._initial_state = state
+        self._locations["initial_state"] = _caller_location()
 
     @property
     def verification(self) -> Verification | None:
@@ -246,6 +268,7 @@ class Case:
                 cell_zones=tuple(self._cell_zones),
                 monitors=tuple(self._monitors),
                 verification=self._verification,
+                initial_state=self._initial_state,
             )
         except CaseError as error:
             raise CaseError(
@@ -277,6 +300,7 @@ class Case:
         case._cell_zones = list(spec.cell_zones)
         case._monitors = list(spec.monitors)
         case._verification = spec.verification
+        case._initial_state = spec.initial_state
         case._locations = {}
         case._document_file = file
         return case

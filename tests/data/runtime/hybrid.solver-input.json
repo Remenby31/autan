@@ -200,5 +200,6 @@
   ],
   "verification": null,
   "start": null,
+  "initial_state": null,
   "periodic": []
 }

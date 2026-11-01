@@ -179,6 +179,7 @@
   },
   "monitors": [],
   "start": null,
+  "initial_state": null,
   "periodic": [],
   "verification": {
     "path": "@MMS@",
