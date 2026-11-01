@@ -73,4 +73,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["py/tests"]
 pythonpath = ["py"]
-addopts = ["--strict-markers", "-ra"]
+addopts = ["--strict-markers", "-ra", "-m", "not mpi"]
+markers = ["mpi: needs an MPI build of the runtime and a launcher; run with `-m mpi`"]

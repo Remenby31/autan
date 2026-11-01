@@ -410,6 +410,7 @@ needs_mpi = pytest.mark.skipif(
 )
 
 
+@pytest.mark.mpi
 @needs_mpi
 def test_two_ranks_run_and_stop_through_the_launcher(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
