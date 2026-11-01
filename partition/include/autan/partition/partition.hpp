@@ -43,6 +43,28 @@ std::vector<std::int32_t> cell_cost_weights(const Mesh& mesh);
 std::vector<std::int32_t> partition_cells(const Mesh& mesh, std::int32_t n_parts,
                                           const PartitionOptions& options = {});
 
+/// Greedy distance-1 colouring of a graph: nodes visited in increasing
+/// `global_id` (distinct), each taking the least colour that none of its
+/// already coloured neighbours has. `offsets` (n + 1) and `neighbours` give
+/// each node's neighbours (CSR, symmetric). The colours depend on the graph
+/// and the ids only, not on the order of the nodes, so every rank of a run
+/// and every cell order compute the same ones. Throws E0140 for sizes that
+/// do not match or a neighbour out of range.
+std::vector<std::int32_t> colour_greedy(std::span<const offset_t> offsets,
+                                        std::span<const index_t> neighbours,
+                                        std::span<const std::int64_t> global_id);
+
+/// colour_greedy on the cells of an unpartitioned mesh: neighbours across
+/// interior faces and across periodic pairs, ids cell_global_id. Two cells
+/// that a smoother updates from each other's values never share a colour.
+/// With groups (CSR, as PartitionOptions::group_offsets and group_cells), each
+/// group is one node, its id the least cell_global_id of its cells, and every
+/// cell takes its group's colour: a line smoother's colouring of its lines.
+/// Throws E0141 if the mesh has ghosts, E0140 for invalid groups.
+std::vector<std::int32_t> colour_cells(const Mesh& global,
+                                       std::span<const offset_t> group_offsets = {},
+                                       std::span<const index_t> group_cells = {});
+
 /// Quality of a partition, as each part would hold it with one ghost layer.
 struct PartitionQuality {
   std::int64_t cut_faces = 0;              ///< interior faces whose cells lie in two parts

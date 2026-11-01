@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "autan/runtime/physics.hpp"
@@ -44,7 +46,11 @@ struct RelaxationOptions {
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
   bool one_rank = false;  ///< registered as running on one rank only
-  int expect_ranks = 0;   ///< its scope refuses a run on another number of ranks; 0: any
+  /// Symmetric sweeps per step of a smoother in the global colours (PhysicsContext::cell_colours):
+  /// each cell of a colour takes the mean of itself and its face neighbours, summed in increasing
+  /// global id, then the ghosts are exchanged; the residuals scale by 1 + 1e-3 of the field's RMS.
+  int colour_sweeps = 0;
+  int expect_ranks = 0;  ///< its scope refuses a run on another number of ranks; 0: any
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -53,8 +59,11 @@ struct RelaxationOptions {
   std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
-  /// `groups`, so each group spans the mesh. On several ranks, the physics throws unless the
-  /// runtime asked for them and every group it holds a cell of is wholly owned. 0: none.
+  /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
+  /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
+  /// PhysicsContext gives it exactly those, in that order, each of one colour. With
+  /// colour_sweeps, the sweeps run over the group colours, each group in its order: a line
+  /// smoother. 0: none; -1: a malformed group, cell 0 twice.
   int groups = 0;
 
   static RelaxationOptions from_environment() {
@@ -72,6 +81,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROWTH", o.growth);
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
+    read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
@@ -170,8 +180,9 @@ class Relaxation final : public autan::runtime::Physics {
     // Equation e decays from e + 1, so that equations are told apart.
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
     const auto equations = autan::runtime::residual_names(context_.input).size();
+    const double smoothed = options_.colour_sweeps > 0 ? 1.0 + 1e-3 * sweep() : 1.0;
     for (std::size_t e = 0; e < equations; ++e)
-      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_);
+      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_ * smoothed);
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
@@ -247,6 +258,15 @@ class Relaxation final : public autan::runtime::Physics {
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
     if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");
+    if (!mean && !smooth_.empty()) {
+      // The swept field, for the tests to compare cell by cell.
+      auto out = state_;
+      for (auto& f : out) {
+        if (f.name == "TurbulentSANuTilde")
+          f.values.assign(smooth_.begin(), smooth_.begin() + context_.mesh.n_owned_cells());
+      }
+      return out;
+    }
     if (!mean) return state_;
     auto out = mean_;
     for (auto& f : out) {
@@ -325,6 +345,86 @@ class Relaxation final : public autan::runtime::Physics {
     return 0.0;
   }
 
+  // colour_sweeps symmetric sweeps over the colours, the ghosts exchanged
+  // after each colour; the RMS of the field over every rank's cells, exactly.
+  double sweep() {
+    const auto& mesh = context_.mesh;
+    const auto n = static_cast<std::size_t>(mesh.n_cells());
+    if (smooth_.empty()) {
+      smooth_.assign(n, 0.0);
+      for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c)
+        smooth_[c] = static_cast<double>(mesh.cell_global_id()[c] % 7);
+      exchange();
+    }
+    const auto ids = mesh.cell_global_id();
+    const bool lines = options_.groups > 0;
+    const auto& colours = lines ? context_.cell_group_colours : context_.cell_colours;
+    const std::int32_t n_colours = lines ? context_.n_group_colours : context_.n_colours;
+    const auto& offsets = context_.group_offsets;
+    std::vector<char> in_group(static_cast<std::size_t>(mesh.n_owned_cells()), 0);
+    for (const autan::index_t c : context_.group_cells) in_group[static_cast<std::size_t>(c)] = 1;
+    const auto colour_sweep = [&](std::int32_t k) {
+      // Each group of colour k in its order, then the other cells of colour k.
+      std::vector<autan::index_t> cells;
+      for (std::size_t g = 0; lines && g + 1 < offsets.size(); ++g) {
+        if (colours[static_cast<std::size_t>(
+                context_.group_cells[static_cast<std::size_t>(offsets[g])])] != k)
+          continue;
+        for (auto i = offsets[g]; i < offsets[g + 1]; ++i)
+          cells.push_back(context_.group_cells[static_cast<std::size_t>(i)]);
+      }
+      for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+        if (in_group[static_cast<std::size_t>(c)] == 0 && colours[static_cast<std::size_t>(c)] == k)
+          cells.push_back(c);
+      }
+      for (const autan::index_t c : cells) {
+        std::vector<std::pair<std::int64_t, double>> around{
+            {ids[static_cast<std::size_t>(c)], smooth_[static_cast<std::size_t>(c)]}};
+        for (const autan::index_t f : mesh.cell_faces(c)) {
+          if (f >= mesh.n_interior_faces()) continue;
+          const auto i = static_cast<std::size_t>(f);
+          const autan::index_t o = mesh.owner()[i] == c ? mesh.neighbour()[i] : mesh.owner()[i];
+          around.emplace_back(ids[static_cast<std::size_t>(o)],
+                              smooth_[static_cast<std::size_t>(o)]);
+        }
+        std::ranges::sort(around);
+        double sum = 0.0;
+        for (const auto& [id, value] : around) sum += value;
+        smooth_[static_cast<std::size_t>(c)] = sum / static_cast<double>(around.size());
+      }
+      exchange();
+    };
+    for (int s = 0; s < options_.colour_sweeps; ++s) {
+      for (std::int32_t k = 0; k < n_colours; ++k) colour_sweep(k);
+      for (std::int32_t k = n_colours - 1; k >= 0; --k) colour_sweep(k);
+    }
+    std::array<autan::runtime::ExactSum, 2> sums;
+    for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c) {
+      sums[0].add(smooth_[c] * smooth_[c]);
+      sums[1].add(1.0);
+    }
+    context_.ranks.sum(sums);
+    // The least value over the mesh and the least id holding it (values are
+    // repeated, so ties decide): its id enters the result too.
+    double least = std::numeric_limits<double>::infinity();
+    std::int64_t at_least = std::numeric_limits<std::int64_t>::max();
+    for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c) {
+      if (smooth_[c] < least || (smooth_[c] == least && ids[c] < at_least)) {
+        least = smooth_[c];
+        at_least = ids[c];
+      }
+    }
+    const auto [value, id] = context_.ranks.argmin(least, at_least);
+    return std::sqrt(sums[0].value() / sums[1].value()) + 1e-6 * value +
+           1e-9 * static_cast<double>(id);
+  }
+
+  void exchange() {
+    double* const component = smooth_.data();
+    context_.ghosts.forward(std::span<double* const>(&component, 1), autan::MemorySpace::host,
+                            nullptr);
+  }
+
   [[nodiscard]] double scale(std::size_t cell) const {
     return 1.0 + 1e-6 * static_cast<double>(context_.mesh.cell_global_id()[cell]);
   }
@@ -332,17 +432,58 @@ class Relaxation final : public autan::runtime::Physics {
   autan::runtime::PhysicsContext context_;
   RelaxationOptions options_;
   double rms_ = 1.0;
+  std::vector<double> smooth_;  // the field colour_sweeps smooths
   std::int64_t last_stepped_iteration_ = 0;
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
 };
 
+// The groups the runtime gives the physics (RelaxationOptions::groups): each
+// group it holds a cell of wholly owned and given, in decreasing global id,
+// groups by increasing least id, one colour per group.
+inline void check_groups(const autan::runtime::PhysicsContext& context, int n,
+                         const std::vector<std::int64_t>& sizes) {
+  const auto fail = [](const std::string& why) { throw std::runtime_error("groups: " + why); };
+  if (sizes.empty()) fail("the runtime did not ask for them");
+  const auto& mesh = context.mesh;
+  const auto ids = mesh.cell_global_id();
+  const auto at = [](auto i) { return static_cast<std::size_t>(i); };
+  std::int64_t grouped = 0;
+  for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c)
+    grouped += ids[at(c)] % (2 * n) < n ? 1 : 0;
+  const auto& offsets = context.group_offsets;
+  if (offsets.empty() || offsets.back() != grouped || at(grouped) != context.group_cells.size())
+    fail("not every owned grouped cell is given once");
+  std::int64_t last_least = -1;
+  for (std::size_t g = 0; g + 1 < offsets.size(); ++g) {
+    const auto first = context.group_cells[at(offsets[g])];
+    const auto k = ids[at(first)] % (2 * n);
+    if (offsets[g + 1] - offsets[g] != sizes[at(k)]) fail("a group is split or merged");
+    for (auto i = offsets[g]; i < offsets[g + 1]; ++i) {
+      const auto c = context.group_cells[at(i)];
+      if (c < 0 || c >= mesh.n_owned_cells() || ids[at(c)] % (2 * n) != k) fail("a wrong cell");
+      if (i > offsets[g] && ids[at(c)] >= ids[at(context.group_cells[at(i - 1)])])
+        fail("not in the physics' order");
+      if (context.cell_group_colours[at(c)] != context.cell_group_colours[at(first)])
+        fail("two colours in one group");
+    }
+    const auto least = ids[at(context.group_cells[at(offsets[g + 1] - 1)])];
+    if (least <= last_least) fail("groups not by increasing least id");
+    last_least = least;
+  }
+}
+
 inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions options) {
   autan::runtime::PhysicsRegistry registry;
   // Cells per group, recorded when the runtime asks for the groups.
   auto group_sizes = std::make_shared<std::vector<std::int64_t>>();
   autan::runtime::PartitionGroups groups;
+  if (options.groups == -1) {
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
+      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}};
+    };
+  }
   if (options.groups > 0) {
     groups = [n = options.groups, group_sizes](const autan::runtime::SolverInput& /*input*/,
                                                const autan::Mesh& mesh,
@@ -352,7 +493,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
       group_sizes->assign(static_cast<std::size_t>(n), 0);
       for (int k = 0; k < n; ++k) {
         for (autan::index_t c = k; c < mesh.n_cells(); c += 2 * n) {
-          g.cells.push_back(c);
+          g.cells.insert(g.cells.begin() + g.offsets.back(), c);
           ++(*group_sizes)[static_cast<std::size_t>(k)];
         }
         g.offsets.push_back(static_cast<autan::offset_t>(g.cells.size()));
@@ -363,20 +504,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   registry.add(
       {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
       [options, group_sizes](const autan::runtime::PhysicsContext& context) {
-        if (options.groups > 0 && context.ranks.size() > 1) {
-          if (group_sizes->empty()) throw std::runtime_error("the partition had no groups");
-          std::vector<std::int64_t> held(group_sizes->size(), 0);
-          const auto& mesh = context.mesh;
-          for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
-            const auto id = mesh.cell_global_id()[static_cast<std::size_t>(c)];
-            if (id % (2 * options.groups) < options.groups)
-              ++held[static_cast<std::size_t>(id % (2 * options.groups))];
-          }
-          for (std::size_t k = 0; k < held.size(); ++k) {
-            if (held[k] != 0 && held[k] != (*group_sizes)[k])
-              throw std::runtime_error("group " + std::to_string(k) + " is split");
-          }
-        }
+        if (options.groups > 0) check_groups(context, options.groups, *group_sizes);
         return std::make_unique<Relaxation>(context, options);
       },
       [options](const autan::runtime::SolverInput& /*input*/,

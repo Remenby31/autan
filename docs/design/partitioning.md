@@ -52,6 +52,10 @@ With `MemorySpace::cuda`, packing and unpacking run as CUDA kernels and device b
 
 **Determinism.** No exchange uses atomics. Reverse sums each owned cell's contributions in FP64 in ascending neighbour rank, then rounds once, so a run repeats bit for bit. A gather kernel that reads ghosts after a forward exchange and sums each cell's faces in ascending `face_global_id` gives the same bits on any number of ranks, since geometry and ghost values are identical to the global ones. A reverse sum groups contributions by rank, so its result across different rank counts agrees to round-off, not bit for bit.
 
+## Colouring
+
+`colour_greedy(offsets, neighbours, global_id)` colours a graph (CSR) greedily, visiting its nodes in increasing global id: each takes the least colour none of its already coloured neighbours has. The colours depend on the graph and the ids only, not on the order of the nodes, so every rank of a run, and a renumbered mesh (RCM), compute the same ones. `colour_cells(mesh)` applies it to the cells of an unpartitioned mesh, neighbours across interior faces and across periodic pairs, ids `cell_global_id`: two cells a smoother updates from each other never share a colour. A multicolour smoother that sweeps these colours and exchanges ghosts after each colour therefore does on N ranks what it does on one (#259). A line smoother passes its lines as groups: `colour_cells(mesh, group_offsets, group_cells)` makes each group one node, its id the least `cell_global_id` of its cells, and gives every cell its group's colour.
+
 ## Groups and graph levels
 
 `PartitionOptions::group_offsets` and `group_cells` name groups of cells that must share a part, a smoother's lines for instance. `partition_cells` contracts each group into one node of the graph its method partitions, weighing the sum of its cells, then gives every cell its group's part.
