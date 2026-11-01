@@ -1,0 +1,4693 @@
+{
+ "schema": "autan.zone-map/1",
+ "grid": {
+  "url": "https://hlpw5.s3.amazonaws.com/hlpw5_grids/config_buildup/2.R.01/h5c23_rans_c01.cgns.gz",
+  "sha256": "654cae1609909411728204dc04f772666193ce312d86d6174da6cd39b324a63c",
+  "member_sha256": "046a87e110279f849ca1364783412bf677d04509c43dcb523ff3a7142bed8ce1"
+ },
+ "source": {
+  "url": "https://hlpw5.s3.amazonaws.com/hlpw5_grids/config_buildup/2.R.01/H5C23_RANS_C01.tar.gz",
+  "sha256": "894fd31dc1cde901e4d171885e16161d1b9fa50bf3ac03b5aa8b255e04fe4f78",
+  "member": "H5C23_RANS_C01/h5c23_rans_c01.fun3d.mapbc",
+  "member_sha256": "cb35ecfd0b65a392d60a0439b40888940d026e0d6a9d4addb44f7049e5bda316"
+ },
+ "zone_names": "CGNS boundary zones TRI_bdy N and QUAD_bdy N are patch N of the mapbc (N right-aligned in 4 characters after the space)",
+ "patches": [
+  {
+   "patch": 1,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 2,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 3,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 4,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 5,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 6,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 7,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "VERT",
+   "component": "empennage"
+  },
+  {
+   "patch": 8,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 9,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 10,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 11,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 12,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 13,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 14,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 15,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 16,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 17,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 18,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 19,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 20,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 21,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 22,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 23,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "HORZ",
+   "component": "empennage"
+  },
+  {
+   "patch": 24,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 25,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 26,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WBF",
+   "component": "fuselage"
+  },
+  {
+   "patch": 27,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 28,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 29,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 30,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 31,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 32,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 33,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 34,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 35,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 36,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 37,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 38,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 39,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 40,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 41,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 42,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 43,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 44,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 45,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 46,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WBF",
+   "component": "fuselage"
+  },
+  {
+   "patch": 47,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FUSE",
+   "component": "fuselage"
+  },
+  {
+   "patch": 48,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 49,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 50,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 51,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 52,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 53,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 54,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 55,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 56,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 57,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 58,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 59,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 60,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 61,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_TIP",
+   "component": "wing.main"
+  },
+  {
+   "patch": 62,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 63,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 64,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 65,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 66,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 67,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 68,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 69,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING_UPPER",
+   "component": "wing.main"
+  },
+  {
+   "patch": 70,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 71,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 72,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 73,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 74,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 75,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 76,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 77,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 78,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 79,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "WING",
+   "component": "wing.main"
+  },
+  {
+   "patch": 80,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 81,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 82,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 83,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP_UPPER",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 84,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 85,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 86,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 87,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 88,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 89,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 90,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP_UPPER",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 91,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 92,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 93,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 94,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 95,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 96,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 97,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 98,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "OBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 99,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 100,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "OBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 101,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "OBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 102,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "OBFLAP_UPPER",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 103,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "OBFLAP_UPPER",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 104,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "IBFLAP",
+   "component": "wing.flap"
+  },
+  {
+   "patch": 105,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 106,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 107,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 108,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 109,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 110,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 111,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 112,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 113,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 114,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 115,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 116,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 117,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 118,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 119,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 120,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 121,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 122,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 123,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 124,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 125,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 126,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 127,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 128,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 129,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 130,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 131,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 132,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 133,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 134,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 135,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 136,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 137,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 138,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 139,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 140,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 141,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 142,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 143,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 144,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 145,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 146,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 147,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 148,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 149,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 150,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 151,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 152,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 153,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 154,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 155,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 156,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 157,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 158,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 159,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 160,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 161,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 162,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 163,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 164,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 165,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 166,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 167,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 168,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 169,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 170,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 171,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 172,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 173,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 174,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 175,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 176,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 177,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 178,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 179,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 180,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 181,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 182,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 183,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 184,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 185,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 186,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 187,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 188,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 189,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 190,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 191,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 192,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 193,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 194,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 195,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 196,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 197,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 198,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 199,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 200,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 201,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 202,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 203,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 204,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 205,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 206,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 207,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 208,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 209,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 210,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 211,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 212,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 213,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 214,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 215,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 216,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 217,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 218,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 219,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 220,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 221,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 222,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 223,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 224,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 225,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 226,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 227,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 228,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 229,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 230,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 231,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 232,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 233,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 234,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 235,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 236,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 237,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 238,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 239,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 240,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 241,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 242,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 243,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 244,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 245,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 246,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 247,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 248,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 249,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 250,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 251,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 252,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 253,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 254,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 255,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 256,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 257,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 258,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 259,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 260,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 261,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 262,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 263,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 264,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 265,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 266,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 267,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 268,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 269,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 270,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 271,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 272,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 273,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 274,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 275,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 276,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 277,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 278,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 279,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 280,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 281,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 282,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 283,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 284,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 285,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 286,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 287,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 288,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 289,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 290,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 291,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 292,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 293,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 294,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 295,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 296,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 297,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 298,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 299,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "FSF",
+   "component": "wing.flap-fairings"
+  },
+  {
+   "patch": 300,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 301,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 302,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 303,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 304,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 305,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 306,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_TE",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 307,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 308,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_TE",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 309,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 310,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 311,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 312,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 313,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 314,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_UPPER",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 315,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_TE",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 316,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 317,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT",
+   "component": "wing.slat"
+  },
+  {
+   "patch": 318,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 319,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 320,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 321,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 322,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 323,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 324,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 325,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 326,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 327,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 328,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 329,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 330,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 331,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 332,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 333,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 334,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 335,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 336,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 337,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 338,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 339,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 340,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 341,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 342,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 343,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 344,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 345,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 346,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 347,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 348,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 349,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 350,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 351,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 352,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 353,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 354,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 355,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 356,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 357,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 358,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 359,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 360,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 361,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 362,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 363,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 364,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 365,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 366,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 367,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 368,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 369,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 370,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 371,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 372,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 373,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 374,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 375,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 376,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 377,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 378,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 379,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 380,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 381,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 382,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 383,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 384,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 385,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 386,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 387,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 388,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 389,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 390,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 391,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 392,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 393,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 394,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 395,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 396,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 397,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 398,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 399,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 400,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 401,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 402,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 403,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 404,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 405,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 406,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 407,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 408,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 409,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 410,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 411,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 412,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 413,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 414,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 415,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 416,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 417,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 418,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 419,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 420,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 421,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 422,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 423,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 424,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 425,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 426,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 427,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 428,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 429,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 430,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 431,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 432,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 433,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 434,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 435,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 436,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 437,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 438,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 439,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 440,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 441,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 442,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 443,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 444,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 445,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 446,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 447,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 448,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 449,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 450,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 451,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 452,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 453,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 454,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 455,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 456,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 457,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 458,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 459,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 460,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 461,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 462,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 463,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 464,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 465,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 466,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 467,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 468,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 469,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 470,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 471,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 472,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 473,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 474,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 475,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 476,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 477,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 478,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 479,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 480,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 481,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 482,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 483,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 484,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 485,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 486,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 487,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 488,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 489,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 490,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 491,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 492,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 493,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 494,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 495,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 496,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 497,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 498,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 499,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 500,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 501,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 502,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 503,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 504,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 505,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 506,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 507,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 508,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 509,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 510,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 511,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 512,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 513,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 514,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 515,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 516,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 517,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 518,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 519,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 520,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 521,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 522,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 523,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 524,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 525,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 526,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 527,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 528,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 529,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 530,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 531,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 532,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 533,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 534,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 535,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 536,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 537,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 538,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 539,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 540,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 541,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 542,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 543,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 544,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 545,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 546,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 547,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 548,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 549,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 550,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 551,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 552,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 553,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 554,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 555,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 556,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 557,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 558,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 559,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 560,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 561,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 562,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 563,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 564,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 565,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 566,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 567,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 568,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 569,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 570,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 571,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 572,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 573,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 574,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 575,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 576,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 577,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 578,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 579,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 580,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 581,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 582,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 583,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 584,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 585,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 586,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 587,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 588,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 589,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 590,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 591,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 592,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 593,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 594,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 595,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 596,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 597,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 598,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 599,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 600,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 601,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 602,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 603,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 604,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 605,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 606,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 607,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 608,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 609,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 610,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 611,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 612,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 613,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 614,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 615,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 616,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 617,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 618,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 619,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 620,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 621,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 622,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 623,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 624,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 625,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 626,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 627,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 628,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 629,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 630,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 631,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 632,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 633,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 634,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 635,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 636,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 637,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 638,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 639,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 640,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 641,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 642,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 643,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 644,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 645,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 646,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 647,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 648,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 649,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 650,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 651,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 652,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 653,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 654,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 655,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 656,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 657,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 658,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 659,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 660,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 661,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 662,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 663,
+   "bc": 4000,
+   "kind": "wall",
+   "family": "SLAT_BKT",
+   "component": "wing.slat-brackets"
+  },
+  {
+   "patch": 664,
+   "bc": 5050,
+   "kind": "farfield",
+   "family": "Box",
+   "component": "farfield"
+  },
+  {
+   "patch": 665,
+   "bc": 5050,
+   "kind": "farfield",
+   "family": "Box",
+   "component": "farfield"
+  },
+  {
+   "patch": 666,
+   "bc": 5050,
+   "kind": "farfield",
+   "family": "Box",
+   "component": "farfield"
+  },
+  {
+   "patch": 667,
+   "bc": 5050,
+   "kind": "farfield",
+   "family": "Box",
+   "component": "farfield"
+  },
+  {
+   "patch": 668,
+   "bc": 6662,
+   "kind": "symmetry",
+   "family": "POS",
+   "component": "symmetry"
+  }
+ ]
+}
