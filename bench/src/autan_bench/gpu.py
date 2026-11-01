@@ -245,3 +245,13 @@ class Sampler:
             "clocks_event_reasons": None if reasons is None else f"0x{reasons:016x}",
             "compute_apps_max": max(listed) if listed else None,
         }
+
+
+# On unified memory (GB10, Apple silicon) CPU work by other processes takes DRAM bandwidth from
+# the GPU, and GPU telemetry does not show it: the host load is recorded with every run.
+LOAD_WARN_PER_CPU = 1.0
+
+
+def host_load() -> dict[str, float | int]:
+    """1-minute load average of the host (global, also inside a container) and its CPU count."""
+    return {"load_1m": os.getloadavg()[0], "cpus": os.cpu_count() or 1}
