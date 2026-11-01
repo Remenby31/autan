@@ -119,7 +119,7 @@ function Compare() {
     <>
       <TopBar crumbs={[{ label: "Runs", to: "/" }, { label: "Compare" }]} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
+        <div className="flex flex-col gap-6 px-8 py-6">
           <h1
             ref={heading}
             tabIndex={-1}
@@ -307,7 +307,7 @@ function Compare() {
                 </p>
               )}
 
-              <section className="overflow-hidden rounded-lg border border-line bg-bg-0">
+              <section className="overflow-hidden border-line border-y">
                 <header className="flex items-center gap-3 border-line border-b px-4 py-3">
                   <span className="font-medium">Settings</span>
                   <span className="text-fg-3 text-sm">
@@ -396,10 +396,7 @@ function ChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <section
-      className="flex h-72 flex-col gap-2 rounded-lg border border-line bg-bg-0 p-4"
-      data-testid={testId}
-    >
+    <section className="flex h-72 flex-col gap-2 border-line border-t pt-4" data-testid={testId}>
       <header className="flex items-baseline gap-2">
         <span className="font-medium">{title}</span>
         <span className="text-fg-3 text-sm">{unit}</span>

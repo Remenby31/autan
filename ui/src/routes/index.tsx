@@ -170,7 +170,7 @@ function Runs() {
     <SelectionContext.Provider value={{ selected, toggle, peek }}>
       <TopBar crumbs={[{ label: "Runs" }]} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto flex max-w-[1200px] flex-col gap-5 px-6 py-8">
+        <div className="flex flex-col gap-5 px-8 py-6">
           <h1 className="m-0 font-semibold text-2xl tracking-tight">Runs</h1>
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput
@@ -290,7 +290,7 @@ function Runs() {
           )}
 
           {data?.rejected.length ? (
-            <div className="rounded-lg border border-line bg-bg-0" data-testid="rejected">
+            <div className="border-line border-y" data-testid="rejected">
               <Collapse
                 title={
                   <span className="flex items-center gap-2">
@@ -337,7 +337,7 @@ function Runs() {
 
 function TableFrame({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-bg-0">
+    <div className="overflow-x-auto border-line border-y">
       <div className="min-w-[980px]">
         {header}
         <ul aria-label="Runs" data-testid="runs" className="m-0 list-none p-0">

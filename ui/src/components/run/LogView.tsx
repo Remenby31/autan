@@ -133,7 +133,7 @@ export function LogView({
     });
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-line bg-bg-0">
+    <div className="flex flex-col overflow-hidden border-line border-y">
       <div className="flex flex-wrap items-center gap-2 border-line border-b px-4 py-3">
         <div className="w-72">
           <SearchInput

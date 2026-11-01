@@ -95,7 +95,7 @@ There is no study entity in `autan.results/1` yet: Home groups runs by case name
 
 ### Component library
 
-`ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition.
+`ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition. Every screen uses the window's full width; sections are separated by thin rules, not framed in cards.
 
 | Geist pattern | Component | Used on |
 |---|---|---|

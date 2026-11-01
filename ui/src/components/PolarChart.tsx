@@ -1,8 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import type { PolarPoint, PolarSeries } from "../api/polars";
 import { coefficient } from "../api/units";
 
-const W = 480;
-const H = 240;
 const PAD = { left: 56, right: 12, top: 10, bottom: 36 };
 /** Line styles telling series apart; points keep their run's colour. */
 export const DASHES = ["", "6 3", "1.5 3", "8 3 1.5 3"];
@@ -65,79 +64,93 @@ export function PolarChart({
   color: (p: PolarPoint) => string;
   testId: string;
 }) {
+  // Drawn at the size of its box, so that text keeps its size whatever the chart's width.
+  const box = useRef<HTMLDivElement>(null);
+  const [{ W, H }, setSize] = useState({ W: 480, H: 240 });
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const resize = new ResizeObserver(() =>
+      setSize({ W: Math.max(240, el.clientWidth), H: Math.max(160, el.clientHeight) }),
+    );
+    resize.observe(el);
+    return () => resize.disconnect();
+  }, []);
   const points = series.flatMap((s) => s.points);
   const [x0, x1] = extent(points.map(x));
   const [y0, y1] = extent(points.map(y));
   const sx = (v: number) => PAD.left + ((v - x0) / (x1 - x0)) * (W - PAD.left - PAD.right);
   const sy = (v: number) => H - PAD.bottom - ((v - y0) / (y1 - y0)) * (H - PAD.top - PAD.bottom);
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      className="h-full w-full overflow-visible font-mono text-[11px]"
-      role="img"
-      aria-label={`${yLabel} against ${xLabel}`}
-      data-testid={testId}
-    >
-      {ticks(x0, x1).map((t) => (
-        <g key={`x${t.value}`} className="text-fg-3">
-          <line
-            x1={sx(t.value)}
-            x2={sx(t.value)}
-            y1={PAD.top}
-            y2={H - PAD.bottom}
-            stroke="var(--line)"
-          />
-          <text x={sx(t.value)} y={H - PAD.bottom + 14} textAnchor="middle" fill="currentColor">
-            {t.text}
-          </text>
-        </g>
-      ))}
-      {ticks(y0, y1).map((t) => (
-        <g key={`y${t.value}`} className="text-fg-3">
-          <line
-            x1={PAD.left}
-            x2={W - PAD.right}
-            y1={sy(t.value)}
-            y2={sy(t.value)}
-            stroke="var(--line)"
-          />
-          <text x={PAD.left - 6} y={sy(t.value) + 4} textAnchor="end" fill="currentColor">
-            {t.text}
-          </text>
-        </g>
-      ))}
-      <text
-        x={(PAD.left + W - PAD.right) / 2}
-        y={H - 4}
-        textAnchor="middle"
-        className="fill-fg-2 font-sans"
+    <div ref={box} className="h-full w-full">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="h-full w-full overflow-visible font-mono text-[11px]"
+        role="img"
+        aria-label={`${yLabel} against ${xLabel}`}
+        data-testid={testId}
       >
-        {xLabel}
-      </text>
-      {series.map((s, k) => (
-        <polyline
-          key={s.key}
-          points={s.points.map((p) => `${sx(x(p))},${sy(y(p))}`).join(" ")}
-          fill="none"
-          stroke="var(--fg-3)"
-          strokeWidth={1.5}
-          strokeDasharray={DASHES[k % DASHES.length]}
-        />
-      ))}
-      {points.map((p) => (
-        <circle
-          key={p.id}
-          data-run={p.id}
-          cx={sx(x(p))}
-          cy={sy(y(p))}
-          r={4}
-          fill={color(p)}
-          stroke="var(--bg-0)"
-          strokeWidth={1}
+        {ticks(x0, x1).map((t) => (
+          <g key={`x${t.value}`} className="text-fg-3">
+            <line
+              x1={sx(t.value)}
+              x2={sx(t.value)}
+              y1={PAD.top}
+              y2={H - PAD.bottom}
+              stroke="var(--line)"
+            />
+            <text x={sx(t.value)} y={H - PAD.bottom + 14} textAnchor="middle" fill="currentColor">
+              {t.text}
+            </text>
+          </g>
+        ))}
+        {ticks(y0, y1).map((t) => (
+          <g key={`y${t.value}`} className="text-fg-3">
+            <line
+              x1={PAD.left}
+              x2={W - PAD.right}
+              y1={sy(t.value)}
+              y2={sy(t.value)}
+              stroke="var(--line)"
+            />
+            <text x={PAD.left - 6} y={sy(t.value) + 4} textAnchor="end" fill="currentColor">
+              {t.text}
+            </text>
+          </g>
+        ))}
+        <text
+          x={(PAD.left + W - PAD.right) / 2}
+          y={H - 4}
+          textAnchor="middle"
+          className="fill-fg-2 font-sans"
         >
-          <title>{`${p.role} · α ${exact.format(p.alpha)}° · CL ${coefficient(p.cl)} · CD ${coefficient(p.cd)}`}</title>
-        </circle>
-      ))}
-    </svg>
+          {xLabel}
+        </text>
+        {series.map((s, k) => (
+          <polyline
+            key={s.key}
+            points={s.points.map((p) => `${sx(x(p))},${sy(y(p))}`).join(" ")}
+            fill="none"
+            stroke="var(--fg-3)"
+            strokeWidth={1.5}
+            strokeDasharray={DASHES[k % DASHES.length]}
+          />
+        ))}
+        {points.map((p) => (
+          <circle
+            key={p.id}
+            data-run={p.id}
+            cx={sx(x(p))}
+            cy={sy(y(p))}
+            r={4}
+            fill={color(p)}
+            stroke="var(--bg-0)"
+            strokeWidth={1}
+          >
+            <title>{`${p.role} · α ${exact.format(p.alpha)}° · CL ${coefficient(p.cl)} · CD ${coefficient(p.cd)}`}</title>
+          </circle>
+        ))}
+      </svg>
+    </div>
   );
 }
