@@ -9,6 +9,7 @@
 #include <map>
 #include <random>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -199,13 +200,30 @@ std::string file_sha256(const fs::path& file) {
 
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
-// steady `continue`, the residuals at iteration 1 of the chain's first run.
+// steady `continue`, the residuals at iteration 1 of the chain's first run
+// and the equations exempt from them that went above their floor in the
+// chain (case-schema.md#time).
 Json start_from(const fs::path& previous, const std::string& mode) {
   const Json info = Json::parse(read(previous / "run.json"));
   Json reference = nullptr;
+  Json woken = nullptr;
   if (mode == "continue" && info["time"].is_null()) {
     const bool chained = !info["start"].is_null() && info["start"]["mode"] == "continue";
     reference = chained ? info["start"]["residual_reference"] : history(previous)[0]["residuals"];
+    double largest = 0.0;
+    for (const auto& [name, f] : reference.items()) largest = std::max(largest, f.get<double>());
+    const double floor = 1e-12 * largest;
+    std::set<std::string> names;
+    if (chained) {
+      for (const auto& n : info["start"]["woken"]) names.insert(n.get<std::string>());
+    }
+    for (const auto& line : history(previous)) {
+      for (const auto& [name, f] : reference.items()) {
+        if (f.get<double>() < floor && line["residuals"][name].get<double>() > floor)
+          names.insert(name);
+      }
+    }
+    woken = Json(std::vector<std::string>(names.begin(), names.end()));
   }
   return Json{{"run", previous.string()},
               {"run_id", info["run_id"]},
@@ -214,7 +232,8 @@ Json start_from(const fs::path& previous, const std::string& mode) {
               {"iterations", info["iterations"]},
               {"time", info["time"]},
               {"solution_sha256", file_sha256(previous / "solution.cgns")},
-              {"residual_reference", reference}};
+              {"residual_reference", reference},
+              {"woken", woken}};
 }
 
 std::vector<std::string> lines_of(const fs::path& file) {
@@ -799,6 +818,7 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) {
                     d["start"]["mode"] = "warm";
                     d["start"]["residual_reference"] = nullptr;
+                    d["start"]["woken"] = nullptr;
                     d["physics"]["turbulence"]["model"] = "laminar";
                     d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
                     for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
@@ -856,6 +876,10 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["time"]["max_iterations"] = 4; }), "E0705");
     require_error(from([](Json& d) { d["start"]["run"] = "relative/run"; }), "E0705");
     require_error(from([](Json& d) { d["start"]["residual_reference"].erase("energy"); }), "E0705");
+    require_error(from([](Json& d) { d["start"]["woken"] = nullptr; }), "E0705");
+    require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"vorticity"}); }), "E0705");
+    require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"energy", "density"}); }),
+                  "E0705");
   }
 }
 
@@ -895,6 +919,112 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
                                      d["boundaries"].push_back(b);
                                    })),
                 "E0705");
+}
+
+TEST_CASE("An equation at round-off from iteration 1 does not hold back convergence", "[runtime]") {
+  // Residuals (e + 1) 0.5^(k-1) drop 8 orders at k = 28; momentum-x stays at
+  // 1e-15, below the floor 1e-12 x 6 (case-schema.md#time), so it is exempt.
+  autan_test::RelaxationOptions quiet;
+  quiet.silent_equation = 1;
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), quiet);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"] == 28);
+
+  // From iteration 10 it is 1e-3, above the floor: W0710 once, and the run
+  // cannot converge on it any more.
+  autan_test::RelaxationOptions waking = quiet;
+  waking.wake_at = 10;
+  const Outcome w = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(w.status == ExitStatus::finished);
+  CHECK(Json::parse(read(w.run / "run.json"))["status"] == "completed");
+  const Json info_w = Json::parse(read(w.run / "run.json"));
+  REQUIRE(info_w["diagnostics"].size() == 1);
+  CHECK(info_w["diagnostics"][0]["code"] == "W0710");
+  std::vector<Json> warnings;
+  std::ifstream in(w.run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["code"] == "W0710") warnings.push_back(event);
+  }
+  REQUIRE(warnings.size() == 1);
+  CHECK(warnings[0]["level"] == "warning");
+  CHECK(warnings[0]["iteration"] == 10);
+  CHECK(warnings[0]["data"]["equation"] == "momentum-x");
+  CHECK(warnings[0]["data"]["iteration"] == 10);
+  CHECK(warnings[0]["data"]["residual"] == 1e-3);
+  CHECK(warnings[0]["data"]["floor"] == 1e-12 * 6.0);
+}
+
+TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
+  // momentum-x leaves its floor at iterations 10-14, then falls back: it is
+  // no longer exempt, so the run cannot converge (budget 40). A run
+  // continued from iteration 20 must do the same, through start.woken.
+  autan_test::RelaxationOptions options;
+  options.silent_equation = 1;
+  options.wake_at = 10;
+  options.sleep_at = 15;
+  const auto doc = [](std::int64_t n) {
+    return input([n](Json& d) {
+      d["deterministic"] = true;
+      d["time"]["max_iterations"] = n;
+    });
+  };
+  const Outcome whole = run(doc(40), options);
+  const Outcome a = run(doc(20), options);
+  Json next = doc(40);
+  next["start"] = start_from(a.run, "continue");
+  CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
+  const Outcome b = run(next, options);
+  REQUIRE(b.status == ExitStatus::finished);
+  const Json info = Json::parse(read(b.run / "run.json"));
+  CHECK(info["status"] == "completed");
+  CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
+  // The equation woke in the first run: no new W0710 in the continuation.
+  CHECK(info["diagnostics"].empty());
+  auto chain = lines_of(a.run / "history.jsonl");
+  const auto rest = lines_of(b.run / "history.jsonl");
+  chain.insert(chain.end(), rest.begin(), rest.end());
+  CHECK(chain == lines_of(whole.run / "history.jsonl"));
+}
+
+TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
+  // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
+  // 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1), reached at k = 12 for every
+  // equation, before the 8-order drop at k = 28 (case-schema.md#time).
+  const std::string precision = GENERATE("fp32+acc64", "fp64");
+  CAPTURE(precision);
+  autan_test::RelaxationOptions scaled;
+  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
+  const Outcome o = run(input([&](Json& d) { d["precision"] = precision; }), scaled);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  if (precision == "fp64") {
+    CHECK(info["iterations"] == 28);
+    CHECK(info["convergence"].is_null());
+    return;
+  }
+  CHECK(info["iterations"] == 12);
+  const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
+                                           "momentum-z", "energy",     "nu-tilde"};
+  REQUIRE(info["convergence"]["floor"].size() == equations.size());
+  for (std::size_t e = 0; e < equations.size(); ++e) {
+    CHECK(info["convergence"]["floor"][equations[e]] ==
+          std::ldexp(0.5, -23) * 1e4 * static_cast<double>(e + 1));
+  }
+
+  // A physics without scales has no floor; one with the wrong count fails.
+  const Outcome plain = run(input());
+  CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
+  autan_test::RelaxationOptions short_scales;
+  short_scales.scales = {1.0};
+  const Outcome bad = run(input(), short_scales);
+  CHECK(bad.status == ExitStatus::failed);
+  const Json failed = Json::parse(read(bad.run / "run.json"));
+  CHECK(failed["status"] == "failed");
+  CHECK(failed["diagnostics"][0]["code"] == "E0704");
 }
 
 #ifdef AUTAN_MPIEXEC

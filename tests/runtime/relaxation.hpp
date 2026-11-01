@@ -36,6 +36,13 @@ struct RelaxationOptions {
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
   bool one_rank = false;  ///< registered as running on one rank only
+  /// An equation the flow does not excite: its residual stays at round-off
+  /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
+  /// (excluded; 0: never), where it is 1e-3.
+  std::int64_t silent_equation = -1;
+  std::int64_t wake_at = 0;
+  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
+  std::vector<double> scales{};  ///< residual_scales(); empty: none
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -135,6 +142,11 @@ class Relaxation final : public autan::runtime::Physics {
     const auto equations = autan::runtime::residual_names(context_.input).size();
     for (std::size_t e = 0; e < equations; ++e)
       report.residuals.push_back(static_cast<double>(e + 1) * r * rms_);
+    if (options_.silent_equation >= 0) {
+      const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
+                         (options_.sleep_at == 0 || iteration < options_.sleep_at);
+      report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
+    }
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
     }
@@ -179,6 +191,8 @@ class Relaxation final : public autan::runtime::Physics {
       }
     }
   }
+
+  [[nodiscard]] std::vector<double> residual_scales() const override { return options_.scales; }
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
     if (!mean) return state_;

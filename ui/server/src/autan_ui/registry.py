@@ -98,6 +98,9 @@ class Registry:
                                     folder,
                                     live=live,
                                     reference=start.get("residual_reference"),
+                                    woken=start.get("woken"),
+                                    floors=(outcome.get("convergence") or {}).get("floor"),
+                                    target=self._budgets.get(child.name, {}).get("target_orders"),
                                 )
                         except (OSError, ValueError, ArithmeticError) as error:
                             log.warning("no summary for %s: %s", child, error)
