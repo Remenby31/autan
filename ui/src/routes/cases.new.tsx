@@ -449,7 +449,14 @@ function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
           {uncovered.map((b) => b.zone).join(" · ")}
         </p>
       )}
-      <Diagnostics items={plan.diagnostics} testId="plan-diagnostics" />
+      <p className="m-0 text-fg-3 text-sm">
+        Planned against the MeshInfo; the mesh file itself is read when the case runs.
+      </p>
+      <Diagnostics
+        // The editor plans without the mesh file by design: W0205 says so of every case.
+        items={plan.diagnostics.filter((d) => !(d.code === "W0205" && d.location?.path === "mesh"))}
+        testId="plan-diagnostics"
+      />
     </section>
   );
 }

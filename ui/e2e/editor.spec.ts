@@ -54,6 +54,7 @@ test("the CRM-HL case built in the editor writes py/examples/crm_hl.py", async (
   // Byte for byte: toHaveText would collapse whitespace.
   await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(CRM_HL);
   await expect(page.getByTestId("plan")).toContainText("ready");
+  await expect(page.getByTestId("plan-diagnostics")).toBeEmpty();
 });
 
 test("a value the SDK refuses shows its code at its field", async ({ page }) => {
