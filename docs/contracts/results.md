@@ -38,6 +38,8 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "iterations": 3000,
   "time": null,
   "averaging": null,
+  "start": null,
+  "convergence": null,
   "diagnostics": []
 }
 ```
@@ -59,6 +61,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `time` | Physical time reached in seconds (unsteady), `null` (steady). |
 | `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}`: the interval actually averaged by an unsteady run with `average_from`, once at least one step past `average_from` is done; a continued run averages from the original `average_from`. |
 | `start` | `null`, or where the run started from: `{run_id, identity, mode, iterations, time, solution_sha256, residual_reference, woken}` of the previous run ([solver-input.md](solver-input.md)); `residual_reference` is the residuals at iteration 1 of the original run of a steady `continue` chain, keyed by the equation names of [History](#history) with the values of that history line, `null` otherwise; `woken`, given exactly with `residual_reference`, lists in sorted order the identically zero equations of that reference that rose above their floor anywhere in the chain ([case-schema.md](case-schema.md#time)), so that a continuation judges convergence as the uninterrupted run would. The key is always present. A `continue` run carries on the previous count: its first history line is `start.iterations + 1` and `iterations` is the total; a `warm` run counts from 1. |
+| `convergence` | `{"floor": {<equation>: value}}`, the round-off floor of every equation of [History](#history) (> 0, in its units) of a steady `fp32+acc64` run whose physics gives flux scales ([case-schema.md](case-schema.md#time)); `null` otherwise. The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
 Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times).

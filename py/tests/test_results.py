@@ -689,3 +689,34 @@ def test_the_writer_refuses_lines_the_reader_would_reject(crm_run: autan.Results
         writer.log("error", "x", source="solver", code="E9999")
     with pytest.raises(ValueError, match="level"):
         writer.log("info", "x", source="solver", code="D0107")
+
+
+def _set_convergence(path: Path, value: object) -> None:
+    document = json.loads((path / "run.json").read_text())
+    if value == "absent":
+        del document["convergence"]
+    else:
+        document["convergence"] = value
+    (path / "run.json").write_text(json.dumps(document))
+
+
+def test_convergence_floors_belong_to_a_steady_fp32_run(
+    crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
+) -> None:
+    names = autan.results.residual_names(crm_run.case)
+    floors = {"floor": dict.fromkeys(names, 1e-6)}
+    _set_convergence(crm_run.path, floors)
+    assert autan.Results.open(crm_run.path).run.convergence is not None
+    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
+        _set_convergence(crm_run.path, value)
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+
+    fp64 = autan.load(write_case(CRM_HL.replace('"fp32+acc64"', '"fp64"'), name="fp64.py"))
+    result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
+    assert result.run.convergence is None
+    _set_convergence(result.path, floors)
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(result.path)
+    assert error.value.codes == ["E0701"]
