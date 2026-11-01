@@ -27,6 +27,15 @@ Agreed with the core mesh readers (#1):
 - Fluent ASCII for polyhedra: sections 0, 2, 10 (nodes), 12 (cells, element type 7), 13 (faces, mixed type 0, each line starting with its node count), 45 (zone names); indices in hexadecimal, 1-based. The right-hand-rule normal of a face points toward c0; boundary faces have c1 = 0. Cell zone `fluid`; face zones `interior` (type 2), `ymin` as `wall` (type 3, the RANS-SA wall), the five others as `pressure-far-field` (type 9). Every MMS boundary is Dirichlet from the exact solution whatever its type.
 - Coordinates are rounded to the 16 significant digits Gmsh writes, so file and memory agree bit for bit.
 
+## NACA 0012 O-meshes
+
+`autan-vv meshes naca0012 --levels 32,64,128,256,512 --out DIR` (source `vv/src/autan_vv/meshes/naca0012.py`) writes the grids of Vassberg and Jameson (2010) for the M2 NACA 0012 gates, `naca0012-nNNNN.msh` with NC × NC hexahedra in one layer.
+
+- **Airfoil.** NACA 0012 equation extended to its root x_TE = 1.00893041137, so the trailing edge is sharp (included angle 16.1501°); the paper prints x_TE rounded to 1.0089304115. Reference chord 1.
+- **Grid.** Karman–Trefftz map with singular points at the trailing edge and half the leading-edge radius inside the leading edge; surface nodes on the analytic airfoil at equal angles about the midpoint of the mapped chord, field nodes on circles of radius R₁ e^(2πj/NC) blended from the near circle (the paper's eqs. 9–14; eq. 14 is printed with r_i,1 (R_NC+1 − R_1), which ends on no circle and does not give back eq. 13 for a circle, so we use r_i,1 (R_NC+1 − R_j), which does both). Cells have aspect ratio 1 (median 1 + O(1/NC), at most 2.06 next to the trailing edge) and the far field lies 148–149 chords away. The trailing-edge cells have a 172° corner, the mapping's singularity, as in the paper.
+- **Family.** R₁ comes from the paper's finest grid (NC = 4096), so level NC is the 4096² grid with lines removed: levels are nested bit for bit, refinement ratio exactly 2. The lower half mirrors the upper one exactly.
+- **Slab.** The airfoil lies in the x–z plane (lift along +z, as case-schema.md orients α), extruded over y ∈ [0, 1]. Zones `airfoil`, `farfield`, `back` (y = 0), `front` (y = 1). The manifest's `h` is the in-plane size √(area / cells).
+
 ## Manifest and reproducibility
 
 Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, perturbation, seed, Gmsh version, and per level the file name, `file_sha256`, `mesh_sha256` (topology and coordinates, format-independent), counts per cell type, total volume, h = (V/N)^(1/3) and `min_subvolume_ratio`. The same seed, Gmsh version and platform give byte-identical files; a different seed gives different files (`test_families_regenerate_bit_for_bit`).
@@ -46,3 +55,4 @@ Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, ne
 - T. J. Barth, Aspects of unstructured grids and finite-volume solvers for the Euler and Navier-Stokes equations, VKI Lecture Series 1994-05, 1994 (median dual).
 - C. Geuzaine and J.-F. Remacle, Gmsh: a 3-D finite element mesh generator with built-in pre- and post-processing facilities, *Int. J. Numer. Meth. Eng.* 79(11):1309–1331, 2009. doi:10.1002/nme.2579
 - H. W. Kuhn, Some combinatorial lemmas in topology, *IBM J. Res. Dev.* 4(5):518–524, 1960 (cube triangulation).
+- J. C. Vassberg and A. Jameson, In pursuit of grid convergence for two-dimensional Euler solutions, *J. Aircraft* 47(4):1152–1166, 2010. doi:10.2514/1.46737
