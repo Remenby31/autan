@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import autan
+import autan.gases
+import autan.materials
 from autan.errors import CaseError, Location
 from autan.schema import CaseSpec
 
@@ -125,3 +127,20 @@ def _repointed(value: Any) -> Any:
     if isinstance(value, list):
         return [_repointed(v) for v in value]
     return value
+
+
+def materials() -> list[dict[str, Any]]:
+    """The SDK's library materials (`autan.gases`, `autan.materials`): the name a case writes
+    them by (`autan.gases.CO2`) and the document a case holds for them."""
+    out = []
+    for module in (autan.gases, autan.materials):
+        for name, value in vars(module).items():
+            if isinstance(value, autan.IdealGas | autan.Solid):
+                out.append(
+                    {
+                        "library": module.__name__.removeprefix("autan."),
+                        "name": name,
+                        "document": value.model_dump(mode="json"),
+                    }
+                )
+    return out
