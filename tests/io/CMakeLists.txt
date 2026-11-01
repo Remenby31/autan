@@ -38,7 +38,12 @@ add_cli_test(json 0 "\"max_faces_per_cell\": 105" --json ${mesh_dir}/hanging/pol
 add_cli_test(text 0 "cells +27\n" ${mesh_dir}/hex/hex.binary.msh)
 add_cli_test(coded-error 1 "E0130" ${mesh_dir}/missing.msh)
 add_cli_test(usage 2 "usage: autan-mesh-info" --unknown)
-add_cli_test(surface 0 "^$" --surface ${CMAKE_CURRENT_BINARY_DIR}/hex.surface ${mesh_dir}/hex/polyMesh)
+add_test(
+  NAME autan-mesh-info.surface
+  COMMAND
+    ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-mesh-info> -DMESH=${mesh_dir}/hex/polyMesh
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/hex.surface -P ${CMAKE_CURRENT_SOURCE_DIR}/surface_cli.cmake
+)
 add_cli_test(surface-and-json 2 "usage: autan-mesh-info" --json --surface out.bin ${mesh_dir}/hex/polyMesh)
 add_cli_test(
   surface-unwritable

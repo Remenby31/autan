@@ -241,6 +241,8 @@ std::string surface_bytes(const Mesh& mesh, const std::string& sha256) {
   if (mesh.n_owned_cells() != mesh.n_cells()) {
     throw Error(ErrorCode::mesh_inconsistent_sizes, "a surface describes an unpartitioned mesh");
   }
+  // Outward normals need positive cells: the geometry checks them (E0120, E0121).
+  (void)compute_geometry(mesh);
   const MeshInfoZones zones = meshinfo_zones(mesh);
   const auto offsets = mesh.boundary_zone_offsets();
   std::vector<std::int64_t> node_of(at(mesh.n_points()), -1);
@@ -306,6 +308,9 @@ std::string surface_bytes(const Mesh& mesh, const std::string& sha256) {
                     {"buffers", layout}};
   std::string text = header.dump();
   text.append(aligned(4 + text.size()) - 4 - text.size(), ' ');
+  if (text.size() > u32_max) {
+    throw Error(ErrorCode::mesh_too_large, "the surface header exceeds 2^32 - 1 bytes");
+  }
   std::string out(4 + text.size() + offset, '\0');
   const auto length = static_cast<std::uint32_t>(text.size());
   std::memcpy(out.data(), &length, 4);

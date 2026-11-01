@@ -122,7 +122,7 @@ The test meshes and how they are generated: [tests/data/mesh/README.md](../../te
 
 ## Boundary surface
 
-`autan::io::surface_bytes(mesh, hash)`, which `autan-mesh-info --surface OUT MESH` writes to `OUT`, gives the mesh's boundary faces as an `autan.surface/1` file, for a viewer to draw them and pick zones. A boundary whose node count or total of face nodes (`face_offsets[F]`) exceeds 2³² − 1 is `E0113`.
+`autan::io::surface_bytes(mesh, hash)`, which `autan-mesh-info --surface OUT MESH` writes to `OUT`, gives the mesh's boundary faces as an `autan.surface/1` file, for a viewer to draw them and pick zones. It checks the geometry first (`E0120`, `E0121`), since an inverted cell would turn normals inward. A boundary whose node count, total of face nodes (`face_offsets[F]`) or padded header length exceeds 2³² − 1 is `E0113`.
 
 **Layout.** Little-endian: a `u32` byte length `n`, then `n` bytes of UTF-8 JSON (the header), padded with spaces so that `4 + n` is a multiple of 8, then the buffers. Buffer offsets count from byte `4 + n`, the end of the padded header; each is a multiple of 8.
 
@@ -145,7 +145,7 @@ The test meshes and how they are generated: [tests/data/mesh/README.md](../../te
 | `face_offsets` | `u32` | F + 1 | `face_offsets[0] = 0`; face f's nodes are `face_nodes[face_offsets[f] .. face_offsets[f + 1])`. |
 | `face_nodes` | `u32` | `face_offsets[F]` | Node indices into `positions`. |
 
-Faces are the mesh's boundary faces, zone by zone, each zone's in mesh order. Each face is the polygon the mesh stores, not triangulated, its nodes in the mesh's order: by the right-hand rule its normal points out of the domain. Periodic zones are included; interior zones are not. For a closed domain, the surface is closed: every edge is shared by exactly two faces, and the area vectors sum to zero up to round-off.
+Faces are the mesh's boundary faces, zone by zone, each zone's in mesh order. Each face is the polygon the mesh stores, not triangulated, its nodes in the mesh's order: by the right-hand rule its normal points out of the domain. Periodic zones are included; interior zones are not. The surface is closed and consistently oriented: each edge is traversed as often in one direction as in the other (once each way where the boundary is a manifold, more where it touches itself along an edge), and the area vectors sum to zero up to round-off.
 
 ## Errors
 

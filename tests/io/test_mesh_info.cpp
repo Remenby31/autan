@@ -7,6 +7,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/cellwise.hpp"
+#include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -203,13 +205,18 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     REQUIRE(bytes.size() >= 4);
     std::memcpy(&n, bytes.data(), 4);
     REQUIRE((4 + n) % 8 == 0);
-    const auto header = nlohmann::json::parse(bytes.substr(4, n));
+    const std::string text = bytes.substr(4, n);
+    const auto end = text.find_last_of('}');
+    REQUIRE(end != std::string::npos);
+    CHECK(text.find_first_not_of(' ', end + 1) == std::string::npos);  // spaces only
+    const auto header = nlohmann::json::parse(text);
     CHECK(header["schema"] == "autan.surface/1");
     CHECK(header["source"]["sha256"] == hash);
     const auto buffer = [&](const char* name, auto element) {
       using T = decltype(element);
       for (const auto& b : header["buffers"]) {
         if (b["name"] != name) continue;
+        CHECK(b["dtype"] == (std::is_same_v<T, double> ? "f64" : "u32"));
         const auto offset = b["offset"].get<std::size_t>();
         const auto length = b["length"].get<std::size_t>();
         CHECK(offset % 8 == 0);
@@ -229,6 +236,13 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     REQUIRE(offsets.size() == n_faces + 1);
     CHECK(offsets.front() == 0);
     REQUIRE(offsets.back() == nodes.size());
+    // Nodes numbered in order of first use.
+    std::uint32_t next = 0;
+    for (const auto node : nodes) {
+      REQUIRE(node <= next);
+      if (node == next) ++next;
+    }
+    CHECK(next == header["nodes"]);
 
     // Zones: MeshInfo's boundary zones, their faces in a row.
     const auto info = nlohmann::json::parse(autan::io::mesh_info_json(mesh, hash));
@@ -244,6 +258,27 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
       first += zones[k]["faces"].get<std::size_t>();
     }
     CHECK(first == n_faces);
+    // Each side of the box (zones xmin ... zmax) holds faces on its plane only.
+    std::array<double, 3> low{}, high{};
+    for (int d = 0; d < 3; ++d) {
+      low[d] = high[d] = positions[static_cast<std::size_t>(d)];
+      for (std::size_t i = static_cast<std::size_t>(d); i < positions.size(); i += 3) {
+        low[d] = std::min(low[d], positions[i]);
+        high[d] = std::max(high[d], positions[i]);
+      }
+    }
+    for (const auto& zone : zones) {
+      const std::string name = zone["name"];
+      if (name.size() != 4 || name[0] < 'x' || name[0] > 'z') continue;
+      const auto d = static_cast<std::size_t>(name[0] - 'x');
+      const double plane = name.substr(1) == "min" ? low[d] : high[d];
+      const auto from = zone["first_face"].get<std::size_t>();
+      for (std::size_t f = from; f < from + zone["faces"].get<std::size_t>(); ++f) {
+        for (auto i = offsets[f]; i < offsets[f + 1]; ++i)
+          CHECK(std::abs(positions[3 * std::size_t{nodes[i]} + d] - plane) <=
+                1e-12 * (high[d] - low[d]));
+      }
+    }
 
     // Closed: every edge in exactly two faces, once each way. Outward: the
     // area vectors (Newell) sum to zero, and the divergence theorem gives the
@@ -273,7 +308,7 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
       area += std::hypot(s[0], s[1], s[2]);
     }
     for (const auto& [edge, count] : edges) {
-      CHECK(count == 1);
+      CHECK(count == 1);  // these boundaries are manifolds
       CHECK(edges.contains({edge.second, edge.first}));
     }
     constexpr double eps = 0x1p-52;
@@ -282,5 +317,23 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     double cells = 0.0;
     for (const double v : g.cell_volume) cells += v;
     CHECK(std::abs(volume - cells) <= 1e-12 * cells);
+  }
+  // Outward normals need positive cells: an inverted tetrahedron is refused.
+  autan::CellwiseMesh inverted;
+  for (const auto& p :
+       std::array<std::array<double, 3>, 4>{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}) {
+    inverted.x.push_back(p[0]);
+    inverted.y.push_back(p[1]);
+    inverted.z.push_back(p[2]);
+  }
+  inverted.add_cell(autan::CellShape::tetra, std::array<autan::index_t, 4>{0, 2, 1, 3}, 0);
+  inverted.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(inverted));
+  try {
+    (void)autan::io::surface_bytes(mesh, std::string(64, '0'));
+    FAIL("expected E0121");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::geometry_non_positive_volume);
   }
 }

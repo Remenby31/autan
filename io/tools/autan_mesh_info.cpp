@@ -99,7 +99,8 @@ int main(int argc, char* const* argv) {
       const std::string bytes = autan::io::surface_bytes(mesh, hash);
       std::ofstream out(surface, std::ios::binary);
       out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-      if (!out) {
+      out.close();
+      if (out.fail()) {
         throw autan::Error(autan::ErrorCode::io_cannot_open,
                            "cannot write '" + std::string(surface) + "'");
       }
