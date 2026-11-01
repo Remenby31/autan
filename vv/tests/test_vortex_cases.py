@@ -43,3 +43,18 @@ def test_every_level_solves_one_case_from_its_own_initial_state(tmp_path: Path) 
             dump.pop(key)
         documents.append(dump)
     assert documents[0] == documents[1]
+
+
+def test_a_mesh_file_other_than_its_manifest_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The initial state is computed on the regenerated level: a file the manifest does not record
+    # would be paired with centroids that are not its own.
+    main(["meshes", "vortex-hex", "--levels", "8", "--out", str(tmp_path / "mesh")])
+    main(["meshes", "vortex-hex", "--levels", "16", "--out", str(tmp_path / "other")])
+    (tmp_path / "mesh" / "vortex-hex-n008.msh").write_bytes(
+        (tmp_path / "other" / "vortex-hex-n016.msh").read_bytes()
+    )
+    family, out = str(tmp_path / "mesh"), str(tmp_path / "c")
+    assert main(["vortex-cases", "--family", family, "--out", out]) == 2
+    assert "V0805" in capsys.readouterr().err

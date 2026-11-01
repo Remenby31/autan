@@ -230,11 +230,11 @@ def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(
         meshes = _family(tmp_path, source, (8, 16, 32, 64))
     levels = itertools.count()
 
-    def own_state(case: autan.Case) -> None:
-        k = next(levels)
+    def own_state(case: autan.Case, start: float = 0.0) -> None:
+        k = next(levels) % len(meshes)
         mesh, path, _ = meshes[k]
-        state = tmp_path / f"level-{k}.initial.json"
-        digest = write_initial_state(get_oracle("isentropic-vortex"), mesh, path, state)
+        state = tmp_path / f"level-{k}-{start}.initial.json"
+        digest = write_initial_state(get_oracle("isentropic-vortex"), mesh, path, state, start)
         case.initial_state = autan.StateFile(path=str(state), sha256=digest)
 
     runs = _runs(
@@ -244,6 +244,19 @@ def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(
     rhow = next(c for c in verdict["checks"] if c.get("field") == "rhow")
     assert rhow["identically_zero"]
     assert verdict["pass"], verdict["checks"]
+    # Runs that start from the vortex at another time do not measure the order of the scheme.
+    late = _runs(
+        tmp_path / "late",
+        meshes,
+        "isentropic-vortex",
+        2.0,
+        amplitude=0.005,
+        time=40.0,
+        edit=lambda case: own_state(case, 1.0),
+    )
+    with pytest.raises(VVError) as err:
+        verify(late, "isentropic-vortex", "vortex-order")
+    assert err.value.code == "V0727"
     early = _runs(tmp_path / "early", meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=4.0)
     verdict = verify(early, "isentropic-vortex", "vortex-order")["verdict"]
     assert not verdict["pass"]

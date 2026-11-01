@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -89,26 +90,30 @@ def _cmd_vortex_cases(args: argparse.Namespace) -> None:
         )
         raise VVError(msg, code="V0805")
     args.out.mkdir(parents=True, exist_ok=True)
+    out = args.out.resolve()
     oracle = isentropic_vortex()
     for level in manifest["levels"]:
         mesh_file = (args.family / level["file"]).resolve()
         # The initial state needs the mesh's centroids: the level regenerated from its seed, checked
-        # against the manifest.
+        # against the manifest, and the file the case names checked against it too.
+        if hashlib.sha256(mesh_file.read_bytes()).hexdigest() != level["file_sha256"]:
+            msg = f"{level['file']} is not the file its manifest records"
+            raise VVError(msg, code="V0805")
         mesh, _ = generate_level(kind, level["n"], seed=manifest["seed"])
         if mesh.sha256() != level["mesh_sha256"]:
             msg = f"{level['file']} does not regenerate from its manifest"
             raise VVError(msg, code="V0805")
         stem = Path(level["file"]).stem
-        state = args.out / f"{stem}.initial.json"
+        state = out / f"{stem}.initial.json"
         digest = write_initial_state(oracle, mesh, mesh_file, state)
         case = vortex.case(
-            os.path.relpath(mesh_file, args.out),
+            os.path.relpath(mesh_file, out),
             level["n"],
             autan.StateFile(path=state.name, sha256=digest),
             finest=max(lv["n"] for lv in manifest["levels"]),
             precision=args.precision,
         )
-        path = args.out / f"{stem}.toml"
+        path = out / f"{stem}.toml"
         path.write_text(case.to_toml())
         _say(str(path))
 
