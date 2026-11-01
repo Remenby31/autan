@@ -53,20 +53,20 @@ int guarded(char* err, std::size_t len, F&& body) {
 }
 
 /// One geometry array in both types a dataset may be stored in: the policy's Geom type, and its
-/// compute type (Geom datasets no body reads through rel(); kernel-generator.md, Precision).
+/// geom_value type (Geom datasets no body reads through rel(); kernel-generator.md, Precision).
 template <class P>
 struct GeomArray {
   std::vector<typename P::geom> geom;
-  std::vector<typename P::compute> compute;
+  std::vector<typename P::geom_value> value;
   explicit GeomArray(const std::vector<double>& v)
       : geom(autan::kernels::converted<typename P::geom>(v)),
-        compute(autan::kernels::converted<typename P::compute>(v)) {}
+        value(autan::kernels::converted<typename P::geom_value>(v)) {}
   template <class T>
   [[nodiscard]] const T* as() const {
     if constexpr (std::is_same_v<T, typename P::geom>) {
       return geom.data();
     } else {
-      return compute.data();
+      return value.data();
     }
   }
 };

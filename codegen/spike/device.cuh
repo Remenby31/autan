@@ -105,14 +105,14 @@ struct DeviceMesh {
 template <class P>
 struct DeviceGeomArray {
   DeviceArray<typename P::geom> geom;
-  DeviceArray<typename P::compute> compute;
-  explicit DeviceGeomArray(const GeomArray<P>& a) : geom(a.geom), compute(a.compute) {}
+  DeviceArray<typename P::geom_value> value;
+  explicit DeviceGeomArray(const GeomArray<P>& a) : geom(a.geom), value(a.value) {}
   template <class T>
   [[nodiscard]] const T* as() const {
     if constexpr (std::is_same_v<T, typename P::geom>) {
       return geom.get();
     } else {
-      return compute.get();
+      return value.get();
     }
   }
 };

@@ -19,6 +19,6 @@ def test_geometry_read_by_rel_keeps_the_geom_type_and_the_rest_is_stored_for_com
     # The interior and Dirichlet fluxes take rel(x_f, x_c) of the centroids, in FP64.
     assert stored["cell_centroid"] == "geom"
     assert stored["face_centroid"] == "geom"
-    # Everything else reaches bodies converted to the compute type.
+    # Everything else reaches bodies converted to the compute type: stored in its precision.
     for name in ("face_area", "face_moment", "cell_volume", "lsq_weight"):
-        assert stored[name] == "compute", name
+        assert stored[name] == "geom_value", name

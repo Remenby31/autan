@@ -67,7 +67,7 @@ def emit_function(
 ) -> None:
     """Emit `fn` as `template <class P> AUTAN_HD inline void name(args..., C* out)`."""
     params = [
-        f"[[maybe_unused]] const {'auto' if t.role is dsl.Role.GEOM else ctype(t.role)} {arg_name(k, c)}"
+        f"[[maybe_unused]] const {ctype(t.role)} {arg_name(k, c)}"
         for k, t in enumerate(sig_types)
         for c in range(t.size)
     ]
@@ -171,10 +171,10 @@ def rel_datasets(m: Module) -> set[int]:
 
 def storage_type(d: dsl.Dataset, rel_read: set[int]) -> str:
     """Storage of a dataset in Data<P>: its role's type, except Geom datasets no body reads
-    through rel(), which only ever reach a body converted to P::compute and are stored so: same
-    values (one rounding, at fill instead of load), fewer bytes in mixed policies."""
+    through rel(): those only reach bodies converted to P::compute and are stored in
+    P::geom_value (the compute type's precision, as a real type): same values, fewer bytes."""
     if d.type.role is dsl.Role.GEOM and id(d) not in rel_read:
-        return "typename P::compute"
+        return "typename P::geom_value"
     return ctype(d.type.role)
 
 
