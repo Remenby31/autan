@@ -48,7 +48,8 @@ void check_declaration(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
         invalid(which + ": zone '" + zones[at(z)].name +
                 "' is not a boundary zone of kind periodic");
       }
-      ++uses[at(z)];
+      if (++uses[at(z)] > 1)
+        invalid("zone '" + zones[at(z)].name + "' is in several periodic pairs");
     }
     if (pair.zone_a == pair.zone_b)
       invalid(which + " pairs zone '" + zones[at(pair.zone_a)].name + "' with itself");
@@ -59,7 +60,6 @@ void check_declaration(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
     }
   }
   for (std::size_t z = 0; z < zones.size(); ++z) {
-    if (uses[z] > 1) invalid("zone '" + zones[z].name + "' is in several periodic pairs");
     // A partition turns periodic faces into interior faces to image ghosts:
     // only a boundary zone needs its pair.
     if (uses[z] == 0 && zones[z].kind == BcKind::periodic && zones[z].boundary) {
@@ -163,7 +163,10 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
       int count = 0;
       for (int octave = own - 1; octave <= own + 1; ++octave) {
         const double size = bin_size(octave);
-        const auto reach = static_cast<std::int64_t>(std::ceil(tolerance / size));
+        if (!(size > 0.0) || !std::isfinite(size)) continue;
+        // tolerance < 2 size for normal sizes (1 or 2 bins); subnormal
+        // rounding may need a few more. Clamped before the conversion.
+        const auto reach = static_cast<std::int64_t>(std::min(std::ceil(tolerance / size), 8.0));
         std::array<std::int64_t, 3> c{};
         bool inside = true;
         for (std::size_t d = 0; d < 3; ++d) inside = inside && bin(q[d], origin[d], size, c[d]);

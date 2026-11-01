@@ -92,7 +92,13 @@ class Registry:
                         try:
                             with Folder(child) as folder:
                                 live = outcome["status"] == "running"
-                                summary = self._summaries.update(child.name, folder, live=live)
+                                start = outcome.get("start") or {}
+                                summary = self._summaries.update(
+                                    child.name,
+                                    folder,
+                                    live=live,
+                                    reference=start.get("residual_reference"),
+                                )
                         except (OSError, ValueError, ArithmeticError) as error:
                             log.warning("no summary for %s: %s", child, error)
                             summary = None
