@@ -41,7 +41,7 @@ struct NavierStokes<P>::Impl {
   // node with it or with one of those) and their boundary faces; empty for the other cells.
   std::vector<offset_t> fit_offsets;
   std::vector<index_t> fit_entries;
-  std::array<std::vector<typename P::grad>, 7> fit;
+  std::array<std::vector<typename P::grad>, 7> fits;
   const Geometry& geo;  // FP64 geometry of the boundary fit
   std::vector<typename P::jac> visc_jac, visc_bnd_jac;
   nk::Data<P> d{};
@@ -272,7 +272,7 @@ struct NavierStokes<P>::Impl {
     ut.assign(5 * nc, State(0));
     ut_b.assign(5 * nf, State(0));
     quad.assign(nc, {});
-    for (auto& v : fit) v.assign(15 * nc, typename P::grad(0));
+    for (auto& v : fits) v.assign(15 * nc, typename P::grad(0));
     visc_jac.assign(50 * nf, typename P::jac(0));
     visc_bnd_jac.assign(25 * nf, typename P::jac(0));
 
@@ -287,13 +287,13 @@ struct NavierStokes<P>::Impl {
     d.ut = ut.data();
     d.ut_b = ut_b.data();
     d.quad = quad.data();
-    d.fit0 = fit[0].data();
-    d.fit1 = fit[1].data();
-    d.fit2 = fit[2].data();
-    d.fit3 = fit[3].data();
-    d.fit4 = fit[4].data();
-    d.fit5 = fit[5].data();
-    d.fit6 = fit[6].data();
+    d.fit0 = fits[0].data();
+    d.fit1 = fits[1].data();
+    d.fit2 = fits[2].data();
+    d.fit3 = fits[3].data();
+    d.fit4 = fits[4].data();
+    d.fit5 = fits[5].data();
+    d.fit6 = fits[6].data();
     d.visc_jac = visc_jac.data();
     d.visc_bnd_jac = visc_bnd_jac.data();
     d.face_normal = face_normal.data();
