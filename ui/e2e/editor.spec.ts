@@ -1,5 +1,9 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { RUNS } from "../playwright.config";
 
 // py/examples/crm_hl.py without its module docstring and the blank line after it, as the
 // SDK's own gate compares it with Case.to_python (py/tests/test_render.py).
@@ -277,4 +281,48 @@ test("material libraries that fail to load say so and can be retried", async ({ 
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByText("The material libraries could not be listed")).toHaveCount(0);
   await expect(page.getByLabel("Gas").locator("option", { hasText: "co2" })).toHaveCount(1);
+});
+
+test("a copy of every sample run's case writes that case's SDK code", async ({ page }) => {
+  const listed: { run_id: string; status: string }[] = (
+    await (await page.request.get("/api/runs")).json()
+  ).runs;
+  expect(listed.length).toBeGreaterThan(0);
+  for (const { run_id } of listed) {
+    // The oracle: the SDK's code of the case the run stored, rendered by the server.
+    const stored = (await (await page.request.get(`/api/runs/${run_id}`)).json()).case;
+    const sdk = await (
+      await page.request.post("/api/cases/render", { data: { case: stored } })
+    ).json();
+    expect(sdk.ok, run_id).toBe(true);
+
+    await page.goto(`/runs/${run_id}`);
+    await page.getByRole("button", { name: "Edit a copy" }).click();
+    await expect(page).toHaveURL(new RegExp(`/cases/new\\?run=${run_id}`));
+    await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(sdk.python);
+    await expect(page.getByText("Every setting of the run's case is in the form.")).toBeVisible();
+  }
+});
+
+test("a copy of a case the form cannot say lists what it leaves out", async ({ page }) => {
+  // A real run of a case with an unsteady time, which the editor does not offer yet.
+  const dir = mkdtempSync(join(tmpdir(), "autan-unsteady-"));
+  writeFileSync(
+    join(dir, "case.py"),
+    readFileSync("../py/examples/crm_hl.py", "utf8") +
+      "case.time = autan.Unsteady(steps=3, dt=1e-3 * autan.units.s)\n",
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
+  ]);
+  const listed: { run_id: string; started: string }[] = (
+    await (await page.request.get("/api/runs")).json()
+  ).runs;
+  const unsteady = [...listed].sort((a, b) => b.started.localeCompare(a.started))[0];
+  if (!unsteady) throw new Error("no run");
+
+  await page.goto(`/cases/new?run=${unsteady.run_id}`);
+
+  await expect(page.getByTestId("dropped")).toContainText('kind = "unsteady"');
 });

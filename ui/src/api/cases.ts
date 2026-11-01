@@ -101,6 +101,8 @@ export interface CellZoneForm {
 }
 
 export interface MonitorForm {
+  /** Empty: "forces" for the first monitor, "forces-<k>" for the k-th. */
+  name: string;
   surfaces: string;
   ref_area: string;
   every: string;
@@ -214,7 +216,7 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
           sparse({
             kind: "forces",
             // Names are unique in a case; the first keeps the SDK's default, "forces".
-            name: k === 0 ? undefined : `forces-${k + 1}`,
+            name: text(m.name) ?? (k === 0 ? undefined : `forces-${k + 1}`),
             surfaces: m.surfaces,
             ref_area: quantity(m.ref_area),
             every: number(m.every),
@@ -222,4 +224,75 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
         )
       : undefined,
   });
+}
+
+const str = (value: unknown) =>
+  value === undefined || value === null ? "" : typeof value === "string" ? value : String(value);
+const record = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+const list = (value: unknown): Record<string, unknown>[] =>
+  Array.isArray(value) ? value.map(record) : [];
+
+/** The form a case document reads as, as far as the form can say it; what it cannot (an
+ * unsteady time, a condition or material outside the editor's choices) is found by comparing
+ * the SDK's reading of both documents, not here. A material is named when it equals a
+ * library one. */
+export function formFromDocument(document: CaseDocument, materials: Material[]): CaseForm {
+  const physics = record(document.physics);
+  const freestream = record(document.freestream);
+  const time = record(document.time);
+  const libraryName = (value: unknown) =>
+    materials.find((m) => JSON.stringify(m.document) === JSON.stringify(value))?.name ?? "";
+  const kinds = Object.keys(CONDITIONS);
+  return {
+    name: str(document.name),
+    mesh: "",
+    meshFile: str(document.mesh),
+    physics: {
+      kind: "compressible",
+      turbulence: str(record(physics.turbulence).model),
+      precision: str(physics.precision),
+      gas: physics.gas === undefined ? "" : libraryName(physics.gas),
+    },
+    freestream: {
+      mach: str(freestream.mach),
+      aoa: str(freestream.aoa),
+      sideslip: str(freestream.sideslip),
+      re: str(freestream.re),
+      ref_length: str(freestream.ref_length),
+      pressure: str(freestream.pressure),
+      temperature: str(freestream.temperature),
+    },
+    time: {
+      max_iterations: str(time.max_iterations),
+      residual_orders: str(time.residual_orders),
+    },
+    cellZones: list(document.cell_zones).map((zone) => {
+      const medium = record(zone.medium);
+      return {
+        zones: str(zone.zones),
+        kind: medium.kind === "solid" ? "solid" : "fluid",
+        material: libraryName(medium.material),
+      };
+    }),
+    boundaries: list(document.boundaries).map((rule) => {
+      const condition = record(rule.condition);
+      const kind = (kinds.includes(str(condition.kind)) ? condition.kind : "wall") as ConditionKind;
+      return {
+        zones: str(rule.zones),
+        kind,
+        values: Object.fromEntries(CONDITIONS[kind].map(({ key }) => [key, str(condition[key])])),
+      };
+    }),
+    monitors: list(document.monitors)
+      .filter((m) => m.kind === "forces")
+      .map((m) => ({
+        name: str(m.name),
+        surfaces: str(m.surfaces),
+        ref_area: str(m.ref_area),
+        every: str(m.every),
+      })),
+  };
 }

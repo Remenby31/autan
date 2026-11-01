@@ -4,12 +4,14 @@ import { Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   type BoundaryForm,
+  type CaseDocument,
   type CaseForm,
   type CellZoneForm,
   CONDITIONS,
   type ConditionKind,
   caseDocument,
   EMPTY_CASE,
+  formFromDocument,
   materialsQuery,
   meshesQuery,
   renderQuery,
@@ -17,7 +19,7 @@ import {
 } from "../api/cases";
 import type { Diagnostic } from "../api/contracts";
 import { globEscape, globMatches } from "../api/glob";
-import type { Plan } from "../api/runs";
+import { type Plan, runQuery } from "../api/runs";
 import { MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
@@ -27,9 +29,12 @@ import { Note } from "../components/ui/Note";
 import { TabList, TabPanel, TabsRoot } from "../components/ui/Tabs";
 
 export const Route = createFileRoute("/cases/new")({
-  // `webgl`: draw the mesh with WebGL2, as on CPU-only machines without WebGPU.
-  validateSearch: (raw: Record<string, unknown>): { webgl?: boolean } =>
-    raw.webgl === true || raw.webgl === "1" ? { webgl: true } : {},
+  // `webgl`: draw the mesh with WebGL2, as on CPU-only machines without WebGPU. `run`: start
+  // from a copy of that run's case.
+  validateSearch: (raw: Record<string, unknown>): { webgl?: boolean; run?: string } => ({
+    ...(raw.webgl === true || raw.webgl === "1" ? { webgl: true } : {}),
+    ...(typeof raw.run === "string" && raw.run ? { run: raw.run } : {}),
+  }),
   component: CaseEditor,
 });
 
@@ -56,12 +61,42 @@ const LABEL: Record<string, string> = {
 
 /** A case built field by field against a mesh, read back by the SDK as it is typed. */
 function CaseEditor() {
+  const { webgl = false, run: from } = Route.useSearch();
   const meshes = useQuery(meshesQuery);
   const materials = useQuery(materialsQuery);
   const library = materials.data ?? [];
   const gases = library.filter((m) => m.document.kind === "ideal-gas");
   const solids = library.filter((m) => m.document.kind === "solid");
   const [form, setForm] = useState<CaseForm>(EMPTY_CASE);
+  // A copy of a run's case: read once the library materials are known, its mesh chosen among
+  // the listed MeshInfos by the run's mesh hash.
+  const source = useQuery({ ...runQuery(from ?? ""), enabled: from !== undefined });
+  const [imported, setImported] = useState<CaseDocument | null>(null);
+  useEffect(() => {
+    if (!source.data || !materials.isSuccess || !meshes.isSuccess || imported) return;
+    const copy = formFromDocument(source.data.case, materials.data);
+    const sha = source.data.mesh_info.source.sha256;
+    const listed = meshes.data.find((m) => m.source.sha256 === sha);
+    setForm({ ...copy, mesh: listed?.name ?? "" });
+    setImported(source.data.case);
+  }, [source.data, materials, meshes, imported]);
+  // What the copy cannot carry: the SDK's case.toml of the run's case against that of the form
+  // it was read into; a line only in the first is a setting editing here would drop.
+  const original = useQuery({ ...renderQuery(imported ?? {}, null), enabled: imported !== null });
+  const reread = useQuery({
+    ...renderQuery(
+      imported ? caseDocument(formFromDocument(imported, library), library) : {},
+      null,
+    ),
+    enabled: imported !== null,
+  });
+  const dropped =
+    original.data?.ok && reread.data?.ok
+      ? (() => {
+          const kept = new Set(reread.data.toml.split("\n"));
+          return original.data.toml.split("\n").filter((line) => line.trim() && !kept.has(line));
+        })()
+      : [];
   const deferred = useDeferredValue(form);
   const [settled, setSettled] = useState(form);
   useEffect(() => {
@@ -71,7 +106,6 @@ function CaseEditor() {
   const rendered = useQuery(renderQuery(caseDocument(settled, library), settled.mesh || null));
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
-  const { webgl = false } = Route.useSearch();
   const [picked, setPicked] = useState<string | null>(null);
 
   // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
@@ -139,6 +173,24 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
+          {source.data && (
+            <Note
+              tone={dropped.length ? "warning" : "info"}
+              title={`A copy of ${source.data.run.run_id}`}
+            >
+              {dropped.length ? (
+                <>
+                  The editor cannot show these settings of the run's case yet; this copy leaves them
+                  out:
+                  <pre className="m-0 mt-2 font-mono text-sm" data-testid="dropped">
+                    {dropped.join("\n")}
+                  </pre>
+                </>
+              ) : (
+                "Every setting of the run's case is in the form."
+              )}
+            </Note>
+          )}
           {materials.isError && (
             <Note
               tone="error"
@@ -405,7 +457,10 @@ function CaseEditor() {
                 size="sm"
                 icon={<Plus className="size-4" />}
                 onClick={() =>
-                  set("monitors", [...form.monitors, { surfaces: "", ref_area: "", every: "" }])
+                  set("monitors", [
+                    ...form.monitors,
+                    { name: "", surfaces: "", ref_area: "", every: "" },
+                  ])
                 }
               >
                 Add forces
@@ -417,8 +472,21 @@ function CaseEditor() {
                 // biome-ignore lint/suspicious/noArrayIndexKey: monitors have no identity but their place
                 key={k}
                 aria-label={`Forces monitor ${k + 1}`}
-                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_auto] items-end gap-3 border-0 p-0"
+                className="col-span-2 m-0 grid grid-cols-[8rem_minmax(0,1fr)_minmax(0,1fr)_6rem_auto] items-end gap-3 border-0 p-0"
               >
+                <Field label="Name">
+                  <TextInput
+                    value={monitor.name}
+                    onChange={(v) =>
+                      set(
+                        "monitors",
+                        form.monitors.map((m, i) => (i === k ? { ...m, name: v } : m)),
+                      )
+                    }
+                    placeholder={k === 0 ? "forces" : `forces-${k + 1}`}
+                    mono
+                  />
+                </Field>
                 <Field label="Surfaces">
                   <TextInput
                     value={monitor.surfaces}
