@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <random>
 #include <span>
 #include <string>
@@ -21,6 +22,7 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan/physics/point_vortex.hpp"
 
 namespace {
 
@@ -564,5 +566,45 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
     INFO("cell " << i);
     // The y planes carry p A each way: their round-off bounds the y-momentum residual.
     CHECK(std::abs(static_cast<double>(r[2 * nc + i])) <= 64 * eps<P>() * 1.2 * p0 * surface[i]);
+  }
+}
+
+TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Glauert vortex",
+          "[euler]") {
+  // Velocity: the gradient of the compressible vortex potential phi = -Gamma/(2 pi)
+  // atan2(beta eta, xi), (xi, eta) the freestream and lift directions of the x-z plane
+  // (Thomas and Salas 1986), by central differences on a circle of radius R; total enthalpy and
+  // entropy: those of the freestream.
+  const double gamma = 1.4, aoa = 0.3, circulation = 2.5, radius = 7.0;
+  const double mach = GENERATE(1e-3, 0.5, 0.8);
+  CAPTURE(mach);
+  const double rho = 1.2, p = 1.0e5, c = std::sqrt(gamma * p / rho), speed = mach * c;
+  const std::array<double, 5> w{rho, speed * std::cos(aoa), 0.0, speed * std::sin(aoa), p};
+  const double beta = std::sqrt(1.0 - mach * mach);
+  auto phi = [&](double x, double z) {
+    const double xi = std::cos(aoa) * x + std::sin(aoa) * z;
+    const double eta = -std::sin(aoa) * x + std::cos(aoa) * z;
+    return -circulation / (2.0 * std::numbers::pi) * std::atan2(beta * eta, xi);
+  };
+  const double scale = circulation / (2.0 * std::numbers::pi * radius * beta);
+  for (int k = 0; k < 16; ++k) {
+    // Off the branch cut of atan2 (eta = 0, xi < 0).
+    const double theta = aoa + 2.0 * std::numbers::pi * (k + 0.3) / 16.0;
+    const double x = radius * std::cos(theta), z = radius * std::sin(theta);
+    CAPTURE(theta);
+    const double h = 1e-5 * radius;
+    const double du = (phi(x + h, z) - phi(x - h, z)) / (2.0 * h);
+    const double dw = (phi(x, z + h) - phi(x, z - h)) / (2.0 * h);
+    const auto b = autan::physics::point_vortex_state(w, gamma, aoa, circulation, x, z);
+    CHECK(std::abs(b[1] - w[1] - du) <= 1e-8 * scale);
+    CHECK(b[2] == 0.0);
+    CHECK(std::abs(b[3] - w[3] - dw) <= 1e-8 * scale);
+    const double eps = std::numeric_limits<double>::epsilon();
+    auto enthalpy = [&](const std::array<double, 5>& s) {
+      return gamma / (gamma - 1.0) * s[4] / s[0] + 0.5 * (s[1] * s[1] + s[2] * s[2] + s[3] * s[3]);
+    };
+    CHECK(std::abs(enthalpy(b) - enthalpy(w)) <= 64 * eps * enthalpy(w));
+    CHECK(std::abs(b[4] / std::pow(b[0], gamma) - p / std::pow(rho, gamma)) <=
+          64 * eps * p / std::pow(rho, gamma));
   }
 }
