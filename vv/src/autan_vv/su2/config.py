@@ -26,7 +26,7 @@ AUTAN_VENKAT_K = 10.0
 # where the shocks of the NACA 0012 conditions stand.
 MATCH_CENTRE = (0.5, 0.0)
 MATCH_RADIUS = 1.0
-STOP_MARGIN = 0.5
+STOP_MARGIN = 2.0
 
 # SU2's published controls for the inviscid NACA 0012 (inv_NACA0012_Roe.cfg, SU2 v8.6.0).
 SOLVER_CONTROLS = {
@@ -88,9 +88,9 @@ def config(
     forces monitor (V0903). In 2D, Autan's (x, z) is SU2's (x, y), the symmetry zones are not in the
     mesh and SU2's coefficients are per unit span, so its reference area is Autan's divided by the
     slab's `span`. SU2 measures a residual's drop from its largest value so far (REL_RMS_*), the
-    protocol from its first: SU2 stops `stop_margin` orders beyond `residual_orders`, to cover the
-    rise of the first iterations, and the iteration that meets the protocol's criterion is read from
-    the history. Too large a margin puts the stop under SU2's FP64 round-off floor.
+    protocol from its first: `run.sh` stops SU2 when the protocol's criterion is met, SU2's own
+    rule is a backstop `stop_margin` orders beyond, and the criterion's iteration is read from the
+    history.
     """
     spec = case.spec
     physics = spec.physics

@@ -19,9 +19,26 @@ mesh=$(sed -n 's/^MESH_FILENAME= //p' "$dir/case.cfg")
 case_sha=$(sha256sum "$dir/case.cfg" | cut -d' ' -f1)
 mesh_sha=$(sha256sum "$dir/$mesh" | cut -d' ' -f1)
 rm -f "$dir/history.csv" "$dir/provenance.json"
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e OMP_NUM_THREADS="$threads" --cpus "$threads" \
-  -v "$root:/work" -w "/work/$case" "$image" \
-  nice -n 10 SU2_CFD -t "$threads" case.cfg >"$dir/log.txt" 2>&1 || status=$?
+name="autan-su2-$$"
+docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e OMP_NUM_THREADS="$threads" --cpus "$threads" -v "$root:/work" -w "/work/$case" "$image" \
+  nice -n 10 SU2_CFD -t "$threads" case.cfg >"$dir/log.txt" 2>&1 &
+run=$!
+# SU2 measures a residual's drop from its largest value, the protocol from its first: stop SU2
+# (SIGTERM: it ends the iteration and writes its output) once every rms[...] of history.csv is
+# ORDERS below its first value, so that it does not run on at its round-off floor.
+while kill -0 "$run" 2>/dev/null; do
+  if [ -f "$dir/history.csv" ] && awk -F, -v orders="${ORDERS:-10}" '
+      NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /"rms\[/) col[i] = 1; next }
+      NR == 2 { for (i in col) first[i] = $i + 0; next }
+      { ok = 1; for (i in col) if ($i + 0 > first[i] - orders) ok = 0; if (ok) found = 1 }
+      END { exit !found }' "$dir/history.csv"; then
+    docker kill --signal TERM "$name" >/dev/null 2>&1 || true
+    break
+  fi
+  sleep 5
+done
+wait "$run" || status=$?
 end=$(date +%s.%N)
 
 cat >"$dir/provenance.json" <<JSON

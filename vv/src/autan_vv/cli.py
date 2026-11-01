@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
     p.add_argument("--max-iterations", type=int, default=20000)
-    p.add_argument("--stop-margin", type=float, default=0.5, help="prepare: orders SU2 runs on")
+    p.add_argument("--stop-margin", type=float, default=2.0, help="prepare: orders SU2 runs on")
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
 
