@@ -23,6 +23,8 @@ from autan_codegen.emit_cpp import (
     body_lines,
     call_args,
     ctype,
+    rel_datasets,
+    storage_type,
     unique_bodies,
 )
 from autan_codegen.emit_cpu import (
@@ -70,9 +72,10 @@ def _msl_data_struct(e: Emitter, m: Module) -> None:
     e.w("template <class P>")
     e.w("struct Data {")
     e.w("  Topology topo;")
+    rel_read = rel_datasets(m)
     for d in m.datasets:
         const = "const " if d.geometry else ""
-        e.w(f"  device {const}{ctype(d.type.role)}* {d.name};")
+        e.w(f"  device {const}{storage_type(d, rel_read)}* {d.name};")
     for p in m.params:
         e.w(f"  {ctype(p.type.role)} {p.name}[{p.type.size}];")
     e.w("};")
