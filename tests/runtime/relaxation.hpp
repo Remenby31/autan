@@ -135,7 +135,7 @@ class Relaxation final : public autan::runtime::Physics {
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
-    iteration_ = iteration;
+    last_stepped_iteration_ = iteration;
     if (options_.pause_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(options_.pause_ms));
     if (iteration == options_.throw_at &&
@@ -268,7 +268,7 @@ class Relaxation final : public autan::runtime::Physics {
       loads.force[k] = sums[k].value();
       loads.moment[k] = sums[3 + k].value();
     }
-    if (options_.nan_loads_from > 0 && iteration_ >= options_.nan_loads_from)
+    if (options_.nan_loads_from > 0 && last_stepped_iteration_ >= options_.nan_loads_from)
       loads.force[1] = std::numeric_limits<double>::quiet_NaN();
     return loads;
   }
@@ -288,7 +288,7 @@ class Relaxation final : public autan::runtime::Physics {
   autan::runtime::PhysicsContext context_;
   RelaxationOptions options_;
   double rms_ = 1.0;
-  std::int64_t iteration_ = 0;  // the last iteration stepped
+  std::int64_t last_stepped_iteration_ = 0;
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
