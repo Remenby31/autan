@@ -409,11 +409,19 @@
             "after_1m"
           ],
           "additionalProperties": false,
-          "description": "Host 1-minute load average before and after the run: on unified memory, other processes' CPU work takes bandwidth from the GPU.",
+          "description": "Host runnable threads (median over 2 s, the observer excluded; what --max-load gates) and 1-minute load average before and after the run: on unified memory, other processes' CPU work takes bandwidth from the GPU. Runs before the runnable count was recorded lack it.",
           "properties": {
             "cpus": {
               "type": "integer",
               "minimum": 1
+            },
+            "before_runnable": {
+              "type": "number",
+              "minimum": 0
+            },
+            "after_runnable": {
+              "type": "number",
+              "minimum": 0
             },
             "before_1m": {
               "type": "number",

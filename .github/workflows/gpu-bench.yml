@@ -65,15 +65,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The mesh is a pure function of the generator, its locked dependencies and its arguments:
+      # cached under their hash, it is generated again only when one of them changes.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: mesh-cache
+        with:
+          path: meshes/
+          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/**', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
         with:
           version: "0.13.6"
           enable-cache: false
       - name: Install the libraries the Gmsh wheel loads
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
         run: >-
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
           libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
       - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
         run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -106,6 +116,8 @@ jobs:
         run: cmake -S bench -B build/bench && cmake --build build/bench
       - name: Install the harness
         run: uv sync --project bench --locked
+      - name: Give this job priority on the GPU lock
+        run: bench/ci/priority.sh start 90
       - name: Harness tests on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
@@ -142,6 +154,9 @@ jobs:
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
+      - name: Release the GPU lock priority
+        if: always()
+        run: bench/ci/priority.sh stop
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
