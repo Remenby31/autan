@@ -31,7 +31,7 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | Sod shock tube, gate `sod-order` | density L1 order between 0.6 and 1.1 | Banks, Aslam and Rider 2008 (between 2/3 and 1 for a contact); *ours*: 0.6 and 1.1 allow ±0.1 of fitting noise |
 | NACA 0012 inviscid, M 0.8, α 0°, gate `naca0012-m080-a000-cd` | continuum CD within 1 count of 0.008342 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
 | NACA 0012 inviscid, M 0.8, α 1.25°, gates `naca0012-m080-a125-cl`, `naca0012-m080-a125-cd` | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 | idem, point-vortex farfield runs |
-| NACA 0012 inviscid, M 0.5, α 1.25°, gate `naca0012-m050-a125-cd` | CD decreases monotonically; extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
+| NACA 0012 inviscid, M 0.5, α 1.25°, gate `naca0012-m050-a125-cd` | \|CD\| decreases monotonically (the paper's CD tends to zero from below on its fine grids); extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
 | ONERA M6 inviscid (run 2308 conditions) | residual drop ≥ 10 orders; shock x/c within ±0.03 of experiment at η = 0.20–0.65 (report) | PLAN M2; Schmitt and Charpin 1979 (`onera-m6` case) |
 
 ## M3 — Navier-Stokes and Spalart-Allmaras

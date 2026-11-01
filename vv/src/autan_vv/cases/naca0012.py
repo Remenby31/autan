@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 STUDY_SCHEMA = "autan.vv-force-study/1"
 COEFFICIENTS = ("cl", "cd", "cmy")
 COUNT = 1e-4  # one drag count
+# acceptance.md: continuum estimates from the three finest of at least four levels, on runs
+# converged by at least this many orders.
+MIN_LEVELS = 4
+RESIDUAL_ORDERS = 10.0
 
 
 @dataclass(frozen=True)
@@ -49,8 +53,8 @@ class ForceGate:
     """A force gate of acceptance.md on the continuum estimate of `coefficient`.
 
     `within`: |estimate - target| <= tolerance. `band`: the estimate lies in [lower, upper] widened
-    by its own GCI. `vanishing`: the coefficient decreases strictly from every level to the next
-    finer one and |estimate| <= tolerance.
+    by its own GCI. `vanishing`: the magnitude of the coefficient decreases strictly from every level
+    to the next finer one and |estimate| <= tolerance.
     """
 
     id: str
@@ -124,6 +128,10 @@ class LevelForces:
     cmy: float
     status: str
     backend: str
+    commit: str
+    precision: str
+    case_sha256: str
+    mesh_sha256: str
 
 
 def read_run(path: Path) -> tuple[LevelForces, dict[str, Any]]:
@@ -143,6 +151,10 @@ def read_run(path: Path) -> tuple[LevelForces, dict[str, Any]]:
         cmy=float(forces.cmy[-1]),
         status=run.status,
         backend=run.solver.backend,
+        commit=run.solver.commit,
+        precision=run.precision,
+        case_sha256=run.case.sha256,
+        mesh_sha256=run.mesh.sha256,
     )
     document = spec.model_dump(mode="json", by_alias=True)
     family = {
@@ -153,7 +165,24 @@ def read_run(path: Path) -> tuple[LevelForces, dict[str, Any]]:
         "mach": spec.freestream.mach,
         "alpha_deg": float(si(spec.freestream.aoa, "rad")) * 180.0 / math.pi,
     }
+    _check_case(path, document, family)
     return level, family
+
+
+def _check_case(path: Path, document: dict[str, Any], family: dict[str, Any]) -> None:
+    """The run's case must be `case` of its condition (V0801) up to its mesh, precision and
+    iteration budget, and converge at least RESIDUAL_ORDERS orders."""
+    condition = _condition_of(family)
+    expected = case(condition, document["mesh"], precision=family["precision"])
+    reference = expected.spec.model_dump(mode="json", by_alias=True)
+    time = document["time"]
+    if time.get("residual_orders", 0.0) < RESIDUAL_ORDERS:
+        msg = f"run {path} stops at {time.get('residual_orders')} orders of residual drop"
+        raise VVError(msg, code="V0801")
+    strip = {"time": None}
+    if {**document, **strip} != {**reference, **strip} or time["kind"] != "steady":
+        msg = f"run {path} is not the NACA 0012 case {condition} (physics, boundaries or monitor)"
+        raise VVError(msg, code="V0801")
 
 
 def _condition_of(family: dict[str, Any]) -> str:
@@ -216,8 +245,8 @@ def check(
     else:
         verdict["bounds"] = (-gate.tolerance, gate.tolerance)
         series = [getattr(lv, gate.coefficient) for lv in sorted(levels, key=lambda lv: -lv.h)]
-        if not all(b < a for a, b in itertools.pairwise(series)):
-            return {**verdict, "pass": False, "reason": "not decreasing from level to level"}
+        if not all(abs(b) < abs(a) for a, b in itertools.pairwise(series)):
+            return {**verdict, "pass": False, "reason": "magnitude not decreasing level to level"}
     lower, upper = verdict["bounds"]
     return {**verdict, "pass": lower <= value <= upper}
 
@@ -225,12 +254,13 @@ def check(
 def study(runs: Sequence[Path]) -> dict[str, Any]:
     """Continuum CL, CD, CM of a NACA 0012 family and the verdicts of its condition's gates.
 
-    The runs must be one refinement family (V0802: the same case apart from name and mesh, solver
-    commit, backend and precision, distinct meshes), at least three, all `converged` (V0803). The
-    verdicts are evidence only when no run comes from the fake backend.
+    Each run must be the case of its condition, converging 10 orders (V0801); the runs must be one
+    refinement family (V0802: the same case apart from its mesh, solver commit, backend and
+    precision, distinct meshes), at least four levels, all `converged` (V0803). The verdicts are
+    evidence only when no run comes from the fake backend.
     """
-    if len(runs) < 3:
-        msg = f"a continuum estimate needs at least three levels, got {len(runs)}"
+    if len(runs) < MIN_LEVELS:
+        msg = f"a continuum estimate needs at least {MIN_LEVELS} levels, got {len(runs)}"
         raise VVError(msg, code="V0803")
     read = [read_run(p) for p in runs]
     levels = [lv for lv, _ in read]

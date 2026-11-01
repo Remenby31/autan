@@ -139,7 +139,9 @@ def plane_grid(nc: int) -> tuple[ComplexArray, KarmanTrefftz]:
     r_surface = np.abs(kt.to_circle(z_surface) - centre)
     radii = r1 * np.exp(2.0 * math.pi * np.arange(nc + 1) / nc)  # eq. 13
     r_far = radii[-1]
-    # eq. 14: the near circle at j = 0 blends into the circle of radius R_{NC+1} at j = NC.
+    # eq. 14, with r_i1 (R_far - R_j) where the paper prints r_i1 (R_far - R_1): as printed, the
+    # far field would be r_i1 + R_far, not a circle, and a perfect circle would not give back the
+    # radii of eq. 13. This form blends the near circle (j = 0) into the circle R_far (j = NC).
     r = (r_surface[:, None] * (r_far - radii[None, :]) + r_far * (radii[None, :] - r1)) / (
         r_far - r1
     )
