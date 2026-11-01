@@ -958,6 +958,12 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   second["start"] = start_from(m.run, "continue");
   const Outcome b = run(second, options);
   REQUIRE(b.status == ExitStatus::finished);
+  // In another cell order than the run it continues, whose bits it would
+  // change from the restart on, a continuation is refused.
+  REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
+  const Outcome other_order = run(second, options);
+  unsetenv("AUTAN_CELL_ORDER");
+  require_error(other_order, "E0708");
 
   const auto all = lines_of(whole.run / "history.jsonl");
   auto chain = lines_of(a.run / "history.jsonl");

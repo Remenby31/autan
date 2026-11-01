@@ -132,6 +132,7 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
+  std::string cell_order;           // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   std::optional<StartState> start;  // input.start, read and checked
   Json start_averaging;             // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
@@ -274,6 +275,13 @@ void load_start(Prepared& p) {
   }
   StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
   if (start.mode == "continue") {
+    // A continuation goes on in the order the run computed in (results.md,
+    // cell_order): another order would change its bits from the restart on.
+    const std::string order = text(metadata, "cell_order");
+    if (order != p.cell_order) {
+      start_mismatch("E0708", "the previous run computed in cell order '" + order + "'",
+                     "start.run", {{"expected", p.cell_order}, {"found", order}});
+    }
     if (!metadata.contains("averaging") || !is_averaging(metadata["averaging"]))
       unusable("RunMetadata has no valid averaging");
     p.start_averaging = metadata["averaging"];
@@ -642,6 +650,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .face_zone = {},
              .monitor_zones = {},
              .factory = nullptr,
+             .cell_order = {},
              .start = std::nullopt,
              .start_averaging = {},
              .boundary_states = {},
@@ -665,6 +674,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
   check_periodic(p);
+  const char* order = std::getenv("AUTAN_CELL_ORDER");
+  p.cell_order = order == nullptr ? "rcm" : order;
+  if (p.cell_order != "rcm" && p.cell_order != "input") {
+    throw std::runtime_error("AUTAN_CELL_ORDER is '" + p.cell_order + "', not rcm or input");
+  }
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
@@ -1090,14 +1104,9 @@ class Run final : public Log {
     AssemblyMap map;                  // the mesh face of each face of `mesh`, flips
   };
   std::optional<Ordered> make_ordered() {
-    // Rank 0's environment decides for every rank: ranks partitioning
-    // differently numbered meshes would exchange unrelated cells.
-    const char* order = std::getenv("AUTAN_CELL_ORDER");
-    const std::string name = comm_.broadcast(order == nullptr ? "rcm" : order);
-    if (name == "input") return std::nullopt;
-    if (name != "rcm") {
-      throw std::runtime_error("AUTAN_CELL_ORDER is '" + std::string(name) + "', not input or rcm");
-    }
+    // Rank 0's order decides for every rank: ranks partitioning differently
+    // numbered meshes would exchange unrelated cells.
+    if (comm_.broadcast(p_.cell_order) == "input") return std::nullopt;
     const auto start = std::chrono::steady_clock::now();
     AssemblyMap map;
     std::vector<index_t> new_to_old = rcm_order(p_.mesh);
