@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Performance history of main from gpu-bench's result artifacts.
 
-    bench/history/history.py ARTIFACTS_DIR --baselines DIR --out DIR
+    bench/history/history.py ARTIFACTS_DIR --order FILE --baselines DIR --out DIR
 
-ARTIFACTS_DIR holds one directory per measured commit, as `gh run download` writes the
+ARTIFACTS_DIR holds one directory per gpu-bench run, as `gh run download` writes the
 `gpu-bench-<sha>` artifacts (bench/history/fetch.sh does it in CI): autan-bench result files,
-and `bisect/summary.json` when that run bisected a regression. Writes `history.json` (one record
-per commit, oldest first), `history.csv` (one row per commit and benchmark) and `history.html`
-(one chart per tracked benchmark, commit by commit, culprits of bisected regressions marked).
-Tracked benchmarks are those of the baselines; every benchmark is kept in the data. "% of
-peak" divides a bandwidth by the GB10 peak, the highest STREAM median of `gb10.json`.
+and, when that run bisected a regression, `bisect/summary.json` and one directory of results per
+probed commit. FILE lists the commits of main oldest first (`git rev-list --first-parent
+--reverse`); it orders the history, since measurement times do not (reruns, clocks). Writes
+`history.json` (one record per commit, the latest measurement of it), `history.csv` (one row per
+commit and benchmark) and `history.html` (one chart per tracked benchmark, culprits of bisected
+regressions marked). Measurements of commits absent from FILE are left out and counted on stderr.
+Tracked benchmarks are those of the baselines; every benchmark is kept in the data. "% of peak"
+divides a bandwidth by the GB10 peak, the highest STREAM median of `gb10.json`.
 """
 
 from __future__ import annotations
@@ -64,24 +67,44 @@ def record(docs: list[dict], peak: float) -> dict | None:
     }
 
 
-def build(artifacts: Path, baselines: Path) -> dict:
+def measurement_dirs(artifacts: Path) -> list[Path]:
+    runs = [p for p in artifacts.iterdir() if p.is_dir()]
+    return sorted(runs + [p for run in runs for p in run.glob("bisect/*") if p.is_dir()])
+
+
+def build(artifacts: Path, order: list[str], baselines: Path) -> dict:
     gb10 = json.loads((baselines / "gb10.json").read_text())
     peak = max(b["stats"]["median"] for b in gb10["benchmarks"])
     tracked = []
     for path in sorted(baselines.glob("*.json")):
         tracked += [b["name"] for b in json.loads(path.read_text())["benchmarks"]]
-    records = []
-    for commit_dir in sorted(p for p in artifacts.iterdir() if p.is_dir()):
+    position = {sha: i for i, sha in enumerate(order)}
+    latest: dict[str, dict] = {}
+    unordered = 0
+    for commit_dir in measurement_dirs(artifacts):
         docs = load_results(commit_dir)
         rec = record(docs, peak) if docs else None
-        if rec:
-            records.append(rec)
-    records.sort(key=lambda r: r["measured"])
+        if not rec:
+            continue
+        if rec["commit"] not in position:
+            unordered += 1
+        elif rec["commit"] not in latest or rec["measured"] > latest[rec["commit"]]["measured"]:
+            latest[rec["commit"]] = rec
+    if unordered:
+        sys.stderr.write(f"{unordered} measurements of commits outside --order left out\n")
+    records = sorted(latest.values(), key=lambda r: position[r["commit"]])
     blamed = culprits(artifacts)
     for rec in records:
         if rec["commit"] in blamed:
             rec["regression"] = blamed[rec["commit"]]
     return {"peak_GBps": peak, "tracked": tracked, "records": records}
+
+
+def cell(value: object) -> object:
+    """A string from an artifact, kept from being evaluated as a spreadsheet formula."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def write_csv(history: dict, path: Path) -> None:
@@ -91,9 +114,10 @@ def write_csv(history: dict, path: Path) -> None:
                       "percent_of_peak", "tracked", "culprit"])  # fmt: skip
         for rec in history["records"]:
             for name, b in sorted(rec["benchmarks"].items()):
-                out.writerow([rec["measured"], rec["commit"], rec["host"], name, b["unit"],
-                              b["median"], b["cv"], b.get("percent_of_peak", ""),
-                              name in history["tracked"], "regression" in rec])  # fmt: skip
+                row = [rec["measured"], rec["commit"], rec["host"], name, b["unit"], b["median"],
+                       b["cv"], b.get("percent_of_peak", ""), name in history["tracked"],
+                       "regression" in rec]  # fmt: skip
+                out.writerow([cell(v) for v in row])
 
 
 INK, MUTED, GRID, SERIES, CRITICAL = "#1f1f1e", "#6b6a63", "#e6e5e0", "#2a78d6", "#d03b3b"
@@ -169,10 +193,11 @@ GB10 peak: {history["peak_GBps"]:.2f} GB/s.</p>{charts}
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("artifacts", type=Path)
+    parser.add_argument("--order", type=Path, required=True)
     parser.add_argument("--baselines", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
-    history = build(args.artifacts, args.baselines)
+    history = build(args.artifacts, args.order.read_text().split(), args.baselines)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "history.json").write_text(json.dumps(history, indent=1) + "\n")
     write_csv(history, args.out / "history.csv")

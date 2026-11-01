@@ -7,9 +7,10 @@ set -euo pipefail
 out=$1
 max=${2:-300}
 mkdir -p "$out"
-gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/gpu-bench.yml/runs?branch=main&per_page=100" \
-  --jq '.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch") and .status == "completed") | .id' |
-  head -n "$max" | while read -r id; do
+# Listed in full before cutting: `head` on the live pipe would kill gh with SIGPIPE.
+runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/gpu-bench.yml/runs?branch=main&per_page=100" \
+  --jq '.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch") and .status == "completed") | .id')
+for id in $(head -n "$max" <<<"$runs"); do
   name=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
     --jq '.artifacts[] | select(.name | startswith("gpu-bench-")) | select(.expired | not) | .name' | head -1)
   [[ -n $name ]] || continue

@@ -92,7 +92,7 @@ When a run on `main` confirms a regression of the tracked loops (`bench/ci/gate.
 
 ### Performance history of main
 
-After every run that measures `main` (passed, or failed and bisected), the `history` job rebuilds the history from each measured run's artifact still kept by GitHub (`bench/history/fetch.sh`) and uploads `perf-history`: `history.json` (one record per commit: medians, CV, % of the GB10 peak, host, image), `history.csv` (one row per commit and benchmark) and `history.html` (one chart per tracked benchmark; red points are commits a bisection blamed). `bench/history/history.py ARTIFACTS --baselines bench/baselines --out DIR` builds the same files from downloaded artifacts. The charts show at least ±5 % around the data, so run-to-run noise does not read as a trend.
+After every run that measures `main` and uploads results (passed, or failed and bisected), the `history` job rebuilds the history from each measured run's artifact still kept by GitHub (`bench/history/fetch.sh`), bisection probes included, and uploads `perf-history`: `history.json` (one record per commit, its latest measurement: medians, CV, % of the GB10 peak, host, image), `history.csv` (one row per commit and benchmark) and `history.html` (one chart per tracked benchmark; red points are commits a bisection blamed). Commits follow main's first-parent order, not measurement time. `bench/history/history.py ARTIFACTS --order FILE --baselines bench/baselines --out DIR`, with FILE from `git rev-list --first-parent --reverse origin/main`, builds the same files from downloaded artifacts. The charts show at least ±5 % around the data, so run-to-run noise does not read as a trend.
 
 ### Tracked generated loops
 
