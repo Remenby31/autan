@@ -29,6 +29,7 @@ from autan.schema import (
     Incompressible,
     Inlet,
     Inviscid,
+    OracleState,
     Slip,
     SolidZone,
     Symmetry,
@@ -343,6 +344,9 @@ def _resolve_boundaries(
             else:
                 owner[name] = index
         _check_condition(case, spec, index, found)
+        if isinstance(rule.condition, OracleState):
+            zones = {z.name: z.faces for z in mesh.boundary_zones if z.name in matched}
+            _check_oracle(case, rule.condition, mesh, zones, index, found)
 
     inviscid = isinstance(spec.physics.turbulence, Inviscid)
     resolved = []
@@ -407,6 +411,56 @@ def _resolve_boundaries(
     return resolved
 
 
+FACE_STATES_SCHEMA = "autan.face-states/1"
+ORACLE_VARIABLES = ["density", "velocity-x", "velocity-y", "velocity-z", "pressure"]
+
+
+def _check_oracle(
+    case: Case,
+    oracle: OracleState,
+    mesh: MeshInfo,
+    zones: dict[str, int],
+    index: int,
+    found: list[Diagnostic],
+) -> None:
+    """The face-state file of an oracle_state rule (docs/contracts/face-states.md)."""
+    source = case.resolve(oracle.path)
+    where = case.locate(f"boundaries[{index}].condition")
+
+    def problem(code: str, message: str) -> None:
+        found.append(diagnostic(code, message, location=where, path=str(source)))
+
+    if not source.is_file():
+        problem("E0420", f"face-state file {str(source)!r} not found")
+        return
+    if mesh_sha256(source) != oracle.sha256:
+        problem("E0420", f"the SHA-256 of {str(source)!r} differs from the case's sha256")
+        return
+    document = _document(source)
+    if document is None or document.get("schema") != FACE_STATES_SCHEMA:
+        problem("E0420", f"{str(source)!r} is not an {FACE_STATES_SCHEMA} document")
+        return
+    if document.get("variables") != ORACLE_VARIABLES:
+        problem("E0420", f"the file's variables must be {ORACLE_VARIABLES}")
+    if document.get("mesh_sha256") != mesh.source.sha256:
+        problem("E0422", "the face states were exported for another mesh")
+    listed = document.get("zones")
+    exported: dict[str, Any] = listed if isinstance(listed, dict) else {}
+    for zone, faces in zones.items():
+        given = exported.get(zone)
+        entry: dict[str, Any] = given if isinstance(given, dict) else {}
+        count = entry.get("faces")
+        rows = [entry.get(key) for key in ("centroids", "values")] if count is not None else []
+        if count is not None and any(not isinstance(r, list) or len(r) != count for r in rows):
+            problem("E0423", f"zone {zone!r}: centroids and values need one row per face")
+        if count != faces:
+            problem(
+                "E0423",
+                f"zone {zone!r} has {faces} faces; the file gives "
+                f"{'none' if count is None else count}",
+            )
+
+
 def _check_condition(case: Case, spec: CaseSpec, index: int, found: list[Diagnostic]) -> None:
     condition = spec.boundaries[index].condition
     physics = spec.physics
@@ -415,6 +469,8 @@ def _check_condition(case: Case, spec: CaseSpec, index: int, found: list[Diagnos
         problem = "inlet (total conditions) needs compressible physics; use velocity_inlet"
     elif isinstance(condition, VelocityInlet) and isinstance(physics, Compressible):
         problem = "velocity_inlet needs incompressible physics; use inlet"
+    elif isinstance(condition, OracleState) and isinstance(physics, Incompressible):
+        problem = "oracle_state imposes compressible states; it needs compressible physics"
     elif isinstance(condition, Wall) and isinstance(physics.turbulence, Inviscid):
         problem = "a no-slip wall needs viscous flow; use slip() with inviscid physics"
     if problem:

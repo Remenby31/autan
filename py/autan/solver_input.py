@@ -64,6 +64,7 @@ BOUNDARY_VALUES: dict[str, frozenset[str]] = {
     "velocity-inlet": frozenset({"velocity"}),
     "outlet": frozenset({"static_pressure"}),
     "manufactured": frozenset(),
+    "oracle-state": frozenset({"states"}),
 }
 BOUNDARY_KEYS = (
     "temperature",
@@ -71,6 +72,7 @@ BOUNDARY_KEYS = (
     "total_temperature",
     "velocity",
     "static_pressure",
+    "states",
 )
 # Turbulence parameters each (model, base) requires; every other parameter is null.
 TURBULENCE_VALUES: dict[tuple[str, str | None], frozenset[str]] = {
@@ -189,16 +191,30 @@ class FreestreamInput(_Strict):
     omega: Positive | None
 
 
+class StatesRef(_Strict):
+    path: AbsolutePath
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 class BoundaryInput(_Strict):
     zone: str
     kind: Literal[
-        "wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet", "outlet", "manufactured"
+        "wall",
+        "slip",
+        "symmetry",
+        "farfield",
+        "inlet",
+        "velocity-inlet",
+        "outlet",
+        "manufactured",
+        "oracle-state",
     ]
     temperature: Positive | None
     total_pressure: Positive | None
     total_temperature: Positive | None
     velocity: Positive | None
     static_pressure: Positive | None
+    states: StatesRef | None
 
     @model_validator(mode="after")
     def _values_match_kind(self) -> Self:
@@ -541,6 +557,11 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
                 total_temperature=_si(condition, "total_temperature", "K"),
                 velocity=_si(condition, "velocity", "m / s"),
                 static_pressure=_si(condition, "static_pressure", "Pa"),
+                states=(
+                    StatesRef(path=str(case.resolve(condition["path"])), sha256=condition["sha256"])
+                    if condition["kind"] == "oracle-state"
+                    else None
+                ),
             )
         )
     freestream, turbulence = freestream_state(spec), turbulence_input(spec)

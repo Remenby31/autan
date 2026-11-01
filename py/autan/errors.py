@@ -410,6 +410,34 @@ _CODES = [
         "Set `case.time = autan.Steady(...)` in the verification case.",
     ),
     Code(
+        "E0420",
+        "Face-state file missing or invalid",
+        "The file of an `oracle_state` condition is missing, its SHA-256 differs from the "
+        "case's, it is not an `autan.face-states/1` document, or its variables are not "
+        "density, velocity-x, velocity-y, velocity-z, pressure (docs/contracts/face-states.md).",
+        "Export the face states with autan-vv for this mesh and give their path and sha256.",
+    ),
+    Code(
+        "E0421",
+        "Face states do not match the boundary faces",
+        "The solver could not pair every boundary face of the zone with one face state by "
+        "centroid, within 1e-9 times the largest extent of the zone's bounding box.",
+        "Export the face states from the mesh the case uses.",
+    ),
+    Code(
+        "E0422",
+        "Face states exported for another mesh",
+        "The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.",
+        "Export the face states for the mesh the case uses.",
+    ),
+    Code(
+        "E0423",
+        "Face states do not cover the zone",
+        "A boundary zone that takes the `oracle_state` condition is missing from the file, or "
+        "the file gives another number of faces than the mesh has in that zone.",
+        "Export the face states for every zone the condition applies to.",
+    ),
+    Code(
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",

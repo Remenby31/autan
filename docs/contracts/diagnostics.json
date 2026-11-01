@@ -355,6 +355,30 @@
       "fix": "Set `case.time = autan.Steady(...)` in the verification case.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0417"
     },
+    "E0420": {
+      "severity": "error",
+      "title": "Face-state file missing or invalid",
+      "fix": "Export the face states with autan-vv for this mesh and give their path and sha256.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0420"
+    },
+    "E0421": {
+      "severity": "error",
+      "title": "Face states do not match the boundary faces",
+      "fix": "Export the face states from the mesh the case uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0421"
+    },
+    "E0422": {
+      "severity": "error",
+      "title": "Face states exported for another mesh",
+      "fix": "Export the face states for the mesh the case uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0422"
+    },
+    "E0423": {
+      "severity": "error",
+      "title": "Face states do not cover the zone",
+      "fix": "Export the face states for every zone the condition applies to.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0423"
+    },
     "E0501": {
       "severity": "error",
       "title": "Cell zone rule matches no zone",

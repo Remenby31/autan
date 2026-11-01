@@ -334,8 +334,17 @@ class Outlet(Spec):
     static_pressure: Pressure
 
 
+class OracleState(Spec):
+    """The state of every boundary face from an ``autan.face-states/1`` file exported for
+    this mesh (docs/contracts/face-states.md), fixed by its SHA-256."""
+
+    kind: Literal["oracle-state"] = "oracle-state"
+    path: Name
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 Condition = Annotated[
-    Wall | Slip | Symmetry | Farfield | Inlet | VelocityInlet | Outlet,
+    Wall | Slip | Symmetry | Farfield | Inlet | VelocityInlet | Outlet | OracleState,
     Field(discriminator="kind"),
 ]
 

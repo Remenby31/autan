@@ -73,6 +73,7 @@ BC_TYPES = {
     "velocity-inlet": "BCInflowSubsonic",
     "outlet": "BCOutflowSubsonic",
     "manufactured": "UserDefined",
+    "oracle-state": "BCDirichlet",
 }
 BASE_CHILDREN = frozenset({"Zone", "ZoneNames", "RunMetadata", "DataClass", "DimensionalUnits"})
 ZONE_CHILDREN = frozenset(
@@ -253,7 +254,12 @@ class FakeBackend:
             if spec.verification is not None
             else None
         )
-        writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake")
+        states = {
+            rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()
+            for rule in spec.boundaries
+            if rule.condition.kind == "oracle-state"
+        }
+        writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake", states=states)
         for warning in result.diagnostics:
             writer.diagnose(warning)
         history = _History(spec, freestream_state(spec))
