@@ -38,6 +38,8 @@ SU2 measures its relative residual from the largest value so far, not the first,
 
 **Timing (phase 2).** On spark-5359 with the host quiet (load < 2, GPU idle), one take of `/home/admin/autan-gpu/gpu.lock` per measurement (≤ 10 min, 2 min between takes), alternating Autan and SU2, three repetitions, median reported. The same cores: SU2 with n OpenMP threads against Autan's CPU backend with n threads, n = 1 and n = the count Autan's CPU backend uses, pinned with `taskset`; Autan's GPU backend against SU2 at its fastest n. Iterations are counted up to and including the one whose residual meets the criterion, so a run given that budget ends on it. Time to solution is the wall time of a run given that budget (found by an untimed run), from process start to exit, mesh reading included, writing only the final solution. Reported per level: iterations, wall time, time per iteration per control volume.
 
+**Published GPU reference (phase 2).** SU2 publishes no GPU timing (only a 2024 GSoC prototype), so Autan's GPU backend is also measured against FUN3D on the public DPW4 CRM grid (3 675 916 vertices, RANS-SA): 7 min to machine zero on one A100 (Nastac et al. 2023). Autan runs the same grid to the same residual drop and the same CD as that paper's Table 3, and reports wall time, iterations and throughput normalised by bandwidth: bytes of peak bandwidth per control volume and iteration. FUN3D counts vertices and Autan cells, which on this grid differ in number and in neighbours per control volume; the comparison is by time to the same solution, the normalised throughput is reported alongside.
+
 **Accuracy.** CL, CD, CM per level at the criterion, and their continuum estimates from the three finest of at least four converged levels with `autan_vv.cases.naca0012.continuum` (the paper's eqs. 20–24), against the gates of [acceptance.md](acceptance.md#m2--compressible-euler).
 
 ## Mesh conversion
@@ -70,4 +72,5 @@ K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). In freestre
 
 - T. D. Economon, F. Palacios, S. R. Copeland, T. W. Lukaczyk and J. J. Alonso, SU2: an open-source suite for multiphysics simulation and design, *AIAA J.* 54(3):828–846, 2016. doi:10.2514/1.J053813
 - J. C. Vassberg and A. Jameson, In pursuit of grid convergence for two-dimensional Euler solutions, *J. Aircraft* 47(4):1152–1166, 2010. doi:10.2514/1.46737
+- G. Nastac, A. Walden, L. Wang, E. Nielsen, Y. Liu, M. Opgenorth, J. Orender and M. Zubair, A multi-architecture approach for implicit CFD on unstructured grids, AIAA 2023-1226. doi:10.2514/6.2023-1226
 - V. Venkatakrishnan, Convergence to steady state solutions of the Euler equations on unstructured grids with limiters, *J. Comput. Phys.* 118:120–130, 1995. doi:10.1006/jcph.1995.1084
