@@ -1,9 +1,11 @@
 // The approximate Jacobian of the Euler residual and its block Gauss-Seidel solver.
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <random>
+#include <span>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -13,6 +15,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
 
@@ -133,6 +136,95 @@ TEST_CASE("the assembled Jacobian of the first-order residual matches its centra
     diff32 = std::max(diff32, std::abs(av32[i] - av[i]));
   }
   CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * norm);
+}
+
+TEST_CASE("the assembled Jacobian matches its central differences across periodic image ghosts",
+          "[implicit]") {
+  // The periodic box as one part: each periodic face is an interior face to an image ghost
+  // (partitioning.md), whose values the exchange copies from its owned original. A v must equal
+  // dR/dU v on every owned row, the rows next to images included, so the blocks coupling a cell
+  // to a ghost take the ghost's dW/dU.
+  using P = autan::kernels::fp64;
+  const auto global = autan::io::read_mesh(mesh_dir / "periodic-box" / "periodic-box.ascii.msh");
+  const auto global_geometry = autan::compute_geometry(global);
+  const std::vector<std::int32_t> parts(static_cast<std::size_t>(global.n_cells()), 0);
+  auto part = autan::extract_partition(global, global_geometry, parts, 1, 0);
+  autan::fill_ghost_geometry(part);
+  const auto& mesh = part.mesh;
+  const auto& geometry = part.geometry;
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto owned = static_cast<std::size_t>(mesh.n_owned_cells());
+  REQUIRE(owned < nc);
+  struct Images final : autan::physics::GhostFill {
+    const autan::LocalPartition& part;
+    explicit Images(const autan::LocalPartition& p) : part(p) {}
+    void forward(std::span<float* const> c) override {
+      autan::forward_self(part.halo, part.mesh.n_owned_cells(), c);
+    }
+    void forward(std::span<double* const> c) override {
+      autan::forward_self(part.halo, part.mesh.n_owned_cells(), c);
+    }
+  } images(part);
+  auto fill = [&](std::vector<double>& x) {
+    std::array<double*, 5> c{};
+    for (std::size_t k = 0; k < 5; ++k) c[k] = x.data() + k * nc;
+    images.forward(std::span<double* const>(c));
+  };
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const double a = std::sqrt(1.4 * 1e5 / 1.2);
+  const std::array<double, 5> w = {1.2, 0.6 * a, 0.2 * a, -0.1 * a, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  autan::physics::Scheme s;
+  s.second_order = false;
+  s.mach_ref = 1.0;
+  s.reference = conserved(1.1, {10.0, 5.0, 0.0}, 0.95e5);
+  Euler<P> e(mesh, geometry, {1.4, 287.0}, s);
+  e.set_ghosts(&images);
+  e.set_boundary(kind, data);
+  // Periodic fields on the owned cells, copied into their images.
+  std::vector<double> u(5 * nc), v(5 * nc);
+  const auto uc = conserved(w[0], {w[1], w[2], w[3]}, w[4]);
+  constexpr double two_pi = 6.283185307179586;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < owned; ++c) {
+      const double x = geometry.cell_centroid_x[c], y = geometry.cell_centroid_y[c];
+      u[k * nc + c] = uc[k] * (1.0 + 0.1 * std::sin(two_pi * x + static_cast<double>(k)) *
+                                         std::cos(two_pi * y));
+      v[k * nc + c] = uc[k] * std::cos(two_pi * (x + y) + static_cast<double>(k));
+    }
+  }
+  fill(u);
+  fill(v);
+  std::vector<double> state(5 * nc), res(5 * nc), av(5 * nc), rp(5 * nc), rm(5 * nc);
+  e.state(u, state);
+  e.residual_and_jacobian(state, res);
+  BlockMatrix m(mesh);
+  e.assemble(std::vector<double>(nc, 0.0), m);
+  m.multiply(v, av);
+  const double h = 1e-6;
+  std::vector<double> up(u), um(u);
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    up[i] += h * v[i];
+    um[i] -= h * v[i];
+  }
+  e.state(up, state);
+  e.residual(state, rp);
+  e.state(um, state);
+  e.residual(state, rm);
+  double diff = 0.0, norm = 0.0;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < owned; ++c) {
+      const auto i = k * nc + c;
+      REQUIRE(std::isfinite(av[i]));
+      diff = std::max(diff, std::abs((rp[i] - rm[i]) / (2.0 * h) - av[i]));
+      norm = std::max(norm, std::abs(av[i]));
+    }
+  }
+  CHECK(diff <= 1e-6 * norm);
 }
 
 TEST_CASE("multicolour block Gauss-Seidel solves a block diagonally dominant system",
