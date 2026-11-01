@@ -576,7 +576,10 @@ fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
   posix_spawn_file_actions_init(&actions);
   posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
                                    0644);
-  std::ofstream(dir / "solver-input.json") << doc.dump();
+  // solver-input.md, `devices`: one rank per device, so the input counts the ranks.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(dir / "solver-input.json") << with_count.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),
