@@ -17,6 +17,7 @@ the watcher itself exits. See docs/infra/bench.md.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import signal
 import subprocess
@@ -73,10 +74,19 @@ def docker(*args: str, check: bool = True) -> str:
 
 
 def cgroup_of(name: str) -> Path:
-    cid = docker("inspect", "-f", "{{.Id}}", name)
-    for base in (f"/sys/fs/cgroup/system.slice/docker-{cid}.scope", f"/sys/fs/cgroup/docker/{cid}"):
-        if Path(base, "cgroup.threads").exists():
-            return Path(base)
+    """The container's cgroup v2 directory, read from its main process."""
+    for _ in range(50):
+        state, pid = docker("inspect", "-f", "{{.State.Status}} {{.State.Pid}}", name).split()
+        if state != "running":
+            sys.exit(f"autan-campaign: container {name} is {state} right after start")
+        try:
+            relative = Path(f"/proc/{pid}/cgroup").read_text().strip().removeprefix("0::")
+        except FileNotFoundError:
+            relative = ""
+        cgroup = Path("/sys/fs/cgroup") / relative.lstrip("/")
+        if relative and (cgroup / "cgroup.threads").exists():
+            return cgroup
+        time.sleep(0.1)
     sys.exit(f"autan-campaign: no cgroup v2 directory for container {name}")
 
 
@@ -101,24 +111,27 @@ def watch(name: str) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    (STATE / f"{name}.pid").write_text(f"{os.getpid()}\n")
+    ended = False
     try:
         while not stopping and lock_in_use(LOCK, Path("/proc/locks").read_text()):
             time.sleep(POLL_S)
         if stopping:
+            log(name, "stopped before it started")
             return 0
         docker("start", container)
         cgroup = cgroup_of(container)
-    except BaseException:
-        docker("rm", "-f", container, check=False)
-        raise
-    frozen = False
-    log(name, "started")
-    # No docker call in the steady state: the CLI would load the CPU every poll, measurements
-    # included. The cgroup directory disappears with the container.
-    samples: list[int] = []
-    busy_since: float | None = None
-    try:
-        while not stopping and cgroup.exists():
+        log(name, "started")
+        frozen = False
+        # No docker call in the steady state: the CLI would load the CPU at every poll,
+        # measurements included. The cgroup directory disappears with the container.
+        samples: list[int] = []
+        busy_since: float | None = None
+        while not stopping:
+            if not cgroup.exists():
+                ended = True
+                log(name, "campaign ended; `docker logs` keeps its output")
+                return 0
             wanted = lock_in_use(LOCK, Path("/proc/locks").read_text())
             if wanted != frozen:
                 docker("pause" if wanted else "unpause", container)
@@ -136,17 +149,17 @@ def watch(name: str) -> int:
                 elif busy_since is None:
                     busy_since = now
                 elif now - busy_since >= LOAD_GRACE_S:
-                    log(name, f"{load} runnable threads outside the campaign for a minute: stop")
+                    log(name, f"{load} runnable threads outside the campaign for a minute")
                     return 1
             time.sleep(POLL_S)
-        log(name, "watcher stopped" if stopping else "container gone")
+        log(name, "stopped")
         return 0
     finally:
         # A campaign never outlives its watcher: unwatched, it would run through measurements.
-        # One that ended by itself stays for `docker logs`.
-        if cgroup.exists():
+        if not ended:
             docker("rm", "-f", container, check=False)
             log(name, "container removed")
+        (STATE / f"{name}.pid").unlink(missing_ok=True)
 
 
 def start(args: argparse.Namespace) -> int:
@@ -185,6 +198,14 @@ def status(_: argparse.Namespace) -> int:
 
 
 def stop_campaign(args: argparse.Namespace) -> int:
+    pid_file = STATE / f"{args.name}.pid"
+    if pid_file.exists():
+        pid = int(pid_file.read_text())
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(100):
+                os.kill(pid, 0)
+                time.sleep(0.1)
     docker("rm", "-f", PREFIX + args.name, check=False)
     _say(f"removed {PREFIX + args.name}")
     return 0
