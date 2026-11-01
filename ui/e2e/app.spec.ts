@@ -156,3 +156,29 @@ test("a converged run opens its wall surface in Analysis and switches fields", a
   await expect(page.getByTestId("legend")).toHaveText("Cf");
   await expect(page).toHaveURL(/field=Cf/);
 });
+
+test("a residual at exactly zero leaves a gap on the log chart", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const started = "2020-01-01T00:00:00Z";
+  const runId = "run-20200101T000000Z-0000dead";
+  const directory = join(RUNS, runId);
+  const staging = join(RUNS, ".staging-zero");
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  writeFileSync(join(staging, "run.json"), JSON.stringify({ ...source, run_id: runId, started }));
+  // A one-cell-thick slab: the spanwise momentum residual starts at exactly zero.
+  const history = join(staging, "history.jsonl");
+  const lines = readFileSync(history, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  for (const [k, line] of lines.entries()) line.residuals["momentum-y"] = k === 0 ? 0 : 1e-33;
+  writeFileSync(history, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+  renameSync(staging, directory);
+
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByTestId("residual-chart").locator("canvas")).toBeVisible();
+  await expect(page.getByTestId("iteration")).toHaveText(String(lines.at(-1).iteration));
+  expect(errors).toEqual([]);
+});

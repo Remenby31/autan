@@ -6,9 +6,25 @@ const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const series = (k: number) => css(`--series-${(k % 8) + 1}`);
 
-// Ticks, labels and grid lines on decades only: a log axis is unreadable with every minor.
-const decades = (_: uPlot, splits: number[]) =>
-  splits.map((v) => (Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9 ? v : null));
+// An equation satisfied identically (the spanwise momentum of a one-cell-thick slab) leaves
+// round-off residuals near 1e-33 or exactly zero: a log axis shows neither, and uPlot's decade
+// splits overflow over such a span. The axis keeps DECADES below its top; zero is a gap.
+const DECADES = 20;
+const positive = (values: number[]) => values.map((v) => (v > 0 ? v : null));
+const range = (_: uPlot, min: number | null, max: number | null): uPlot.Range.MinMax =>
+  min == null || max == null
+    ? [min, max]
+    : uPlot.rangeLog(Math.max(min, max * 10 ** -DECADES), max, 10, true);
+
+// Ticks, labels and grid lines on decades only, and on every n-th decade past LABELS of them:
+// a log axis is unreadable with every minor, or with twenty stacked labels.
+const LABELS = 8;
+const decades = (_: uPlot, splits: number[]) => {
+  const exponent = (v: number) => Math.log10(v);
+  const whole = splits.filter((v) => Math.abs(exponent(v) - Math.round(exponent(v))) < 1e-9);
+  const step = Math.ceil(whole.length / LABELS);
+  return splits.map((v) => (whole.includes(v) && Math.round(exponent(v)) % step === 0 ? v : null));
+};
 
 /** Residuals on a log axis; redraws in place as the history grows. */
 export function ResidualChart({ history }: { history: HistoryColumns }) {
@@ -25,7 +41,7 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
       {
         width: el.clientWidth,
         height: el.clientHeight,
-        scales: { x: { time: false }, y: { distr: 3 } },
+        scales: { x: { time: false }, y: { distr: 3, range } },
         axes: [
           { stroke: css("--fg-3"), grid: { stroke: css("--line") } },
           {
@@ -68,7 +84,7 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
   useEffect(() => {
     plot.current?.setData([
       history.iteration,
-      ...names.map((name) => history.residuals.get(name) ?? []),
+      ...names.map((name) => positive(history.residuals.get(name) ?? [])),
     ]);
   }, [history.version, key]);
 
