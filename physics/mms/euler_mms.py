@@ -233,7 +233,10 @@ def solve(
     data = np.array([wb[k] for k in PRIMITIVE])
     ep = Euler(m, policy, flux, limiter, mach, stencil)
     e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach, stencil)
-    for e in {id(ep): ep, id(e64): e64}.values():
+    # The preconditioner is the first-order Roe Jacobian whatever the flux: its ILU stays stable
+    # where HLLC's switches between wave branches make pivots vanish.
+    pre = Euler(m, "fp64", "roe", limiter, mach, stencil)
+    for e in {id(ep): ep, id(e64): e64, id(pre): pre}.values():
         e.set_boundary(kind, data)
         e.set_source(src)
     scale = np.sqrt(np.mean(u * u, axis=1))[:, None]
@@ -249,7 +252,7 @@ def solve(
     r0 = float(np.linalg.norm(to_x(r)))
     best, it_gmres, newton = r0, 0, 0
     # The preconditioner is built once, at the exact solution the iteration starts from.
-    jac = first_order_jacobian(e64, m, u, colours)
+    jac = first_order_jacobian(pre, m, u, colours)
     d = np.repeat(scale[:, 0][None, :], m.n_cells, axis=0).ravel()
     js = sp.diags(1.0 / d) @ jac @ sp.diags(d)
     ilu = spla.spilu(js.tocsc(), drop_tol=1e-4, fill_factor=8)
