@@ -27,6 +27,7 @@ from autan.schema import (
     IdealGas,
     Incompressible,
     Inlet,
+    Manufactured,
     Outlet,
     Slip,
     Solid,
@@ -35,6 +36,7 @@ from autan.schema import (
     Symmetry,
     Unsteady,
     VelocityInlet,
+    Verification,
     Wall,
     _caller_location,
 )
@@ -69,6 +71,7 @@ class Case:
         self._boundaries: list[BoundaryRule] = []
         self._cell_zones: list[CellZoneRule] = []
         self._monitors: list[Forces] = []
+        self._verification: Verification | None = None
         self._locations: dict[str, Location] = {}
         self._document_file: str | None = None
         if _collectors:
@@ -85,9 +88,7 @@ class Case:
     @property
     def mesh_path(self) -> Path:
         """Absolute path of the mesh: ``mesh`` relative to the case file's directory."""
-        source = self._document_file or self._origin.file
-        base = Path(source).parent if source and Path(source).is_file() else Path.cwd()
-        return (base / self._mesh).resolve()
+        return self.resolve(self._mesh)
 
     @property
     def physics(self) -> Compressible | Incompressible | None:
@@ -108,6 +109,33 @@ class Case:
             )
         self._physics = physics
         self._locations["physics"] = _caller_location()
+
+    @property
+    def verification(self) -> Verification | None:
+        return self._verification
+
+    @verification.setter
+    def verification(self, manufactured: Manufactured) -> None:
+        """Verify against a manufactured solution: ``autan.Manufactured(path=..., sha256=...)``."""
+        if not isinstance(manufactured, Manufactured):
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0003",
+                        f"verification must be autan.Manufactured, got "
+                        f"{type(manufactured).__name__}",
+                        location=_caller_location(),
+                    )
+                ]
+            )
+        self._verification = Verification(manufactured=manufactured)
+        self._locations["verification"] = _caller_location()
+
+    def resolve(self, relative: str) -> Path:
+        """Absolute path of a file the case names, relative to the case file's directory."""
+        source = self._document_file or self._origin.file
+        base = Path(source).parent if source and Path(source).is_file() else Path.cwd()
+        return (base / relative).resolve()
 
     @property
     def time(self) -> Steady | Unsteady:
@@ -212,6 +240,7 @@ class Case:
                 boundaries=tuple(self._boundaries),
                 cell_zones=tuple(self._cell_zones),
                 monitors=tuple(self._monitors),
+                verification=self._verification,
             )
         except CaseError as error:
             raise CaseError(
@@ -242,6 +271,7 @@ class Case:
         case._boundaries = list(spec.boundaries)
         case._cell_zones = list(spec.cell_zones)
         case._monitors = list(spec.monitors)
+        case._verification = spec.verification
         case._locations = {}
         case._document_file = file
         return case

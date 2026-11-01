@@ -47,6 +47,7 @@ if(AUTAN_ENABLE_CGNS)
 else()
   message(STATUS "AUTAN_ENABLE_CGNS is OFF: autan-run is not built")
 endif()
+add_subdirectory(codegen)
 
 if(AUTAN_BUILD_TESTS)
   include(CTest)

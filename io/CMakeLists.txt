@@ -24,21 +24,18 @@ add_library(
 add_library(autan::io ALIAS autan_io)
 
 if(AUTAN_ENABLE_CGNS)
-  # autan_cgns: the CGNS library with what it links against. The package's
-  # own CMake target carries HDF5 (needed by a static libcgns); an
-  # installation without one is used through its header and library.
+  # autan_cgns: the CGNS library with what it links against. A shared
+  # libcgns carries its HDF5 dependency itself; a static one needs HDF5 on
+  # the link line, which the package's CMake targets provide.
   add_library(autan_cgns INTERFACE)
-  # CGNS's exported targets name HDF5's targets without finding them.
-  find_package(HDF5 NAMES hdf5 CONFIG QUIET)
-  find_package(CGNS CONFIG QUIET)
-  if(TARGET CGNS::cgns_shared AND TARGET hdf5-shared)
-    target_link_libraries(autan_cgns INTERFACE CGNS::cgns_shared)
-  elseif(TARGET CGNS::cgns_static AND TARGET hdf5-static)
+  find_path(CGNS_INCLUDE_DIR cgnslib.h REQUIRED)
+  find_library(CGNS_LIBRARY cgns REQUIRED)
+  target_include_directories(autan_cgns SYSTEM INTERFACE ${CGNS_INCLUDE_DIR})
+  if(CGNS_LIBRARY MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
+    find_package(HDF5 NAMES hdf5 CONFIG REQUIRED)
+    find_package(CGNS CONFIG REQUIRED)
     target_link_libraries(autan_cgns INTERFACE CGNS::cgns_static)
   else()
-    find_path(CGNS_INCLUDE_DIR cgnslib.h REQUIRED)
-    find_library(CGNS_LIBRARY cgns REQUIRED)
-    target_include_directories(autan_cgns SYSTEM INTERFACE ${CGNS_INCLUDE_DIR})
     target_link_libraries(autan_cgns INTERFACE ${CGNS_LIBRARY})
   endif()
   target_sources(autan_io PRIVATE src/cgns_read.cpp src/cgns_write.cpp)
