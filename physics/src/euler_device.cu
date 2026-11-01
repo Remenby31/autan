@@ -246,7 +246,7 @@ class CudaStepper final : public DeviceStepper<P> {
       local_time_step<<<blocks(n_), block, 0, stream_>>>(index(n_), cfl, volume_.get(), lam_.get(),
                                                          dt_.get());
       check(cudaGetLastError(), "local_time_step");
-      h = gpu::min(index(n_), dt_.get(), stream_);
+      h = ranks_.min(gpu::min(index(owned_), dt_.get(), stream_));
       if (local) local_dt = dt_.get();
     }
     // Shu and Osher (1988), J. Comput. Phys. 77:439-471, eq. 2.18.

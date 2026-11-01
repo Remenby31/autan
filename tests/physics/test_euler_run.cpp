@@ -834,6 +834,45 @@ TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[
   }
 }
 
+TEST_CASE("on a device, periodic pairs are refused before any directory exists", "[euler][gpu]") {
+  // The device step exchanges no ghost cells yet: E0706 at `periodic`, before any directory.
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    on_device(d);
+    d["mesh"]["path"] = fs::absolute(box).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+    d["periodic"] =
+        Json::array({Json{{"zones", {"xmin", "xmax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}},
+                     Json{{"zones", {"ymin", "ymax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    Json kept = Json::array();
+    for (const auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") {
+        Json wall = b;
+        wall["zone"] = "zmin";
+        kept.push_back(wall);
+      }
+      if (b["zone"] == "zmax") kept.push_back(b);
+    }
+    d["boundaries"] = kept;
+    d["monitors"][0]["zones"] = {"zmin"};
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+    d["time"] = {
+        {"kind", "unsteady"}, {"steps", 2}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", nullptr}};
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["location"]["path"] == "periodic");
+}
+
 TEST_CASE("on a device, a diverged run names the cell whose stored state is not physical",
           "[euler][gpu]") {
   // As on the host: zone `lower` at 1e-9 times the freestream density rounds to zero density in

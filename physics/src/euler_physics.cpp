@@ -808,14 +808,21 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
-// On a device, besides euler_scope: one rank (the device step exchanges no ghost cells yet).
+// On a device, besides euler_scope: one rank and no periodic pairs (the device step exchanges
+// no ghost cells yet).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
   if (ranks > 1) {
     return runtime::PhysicsRefusal{
         .message = "the Euler physics runs on one device only, not " + std::to_string(ranks),
-        .path = "devices.count",
+        .path = "devices.kind",
         .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  if (!in.periodic.empty()) {
+    return runtime::PhysicsRefusal{
+        .message = "the Euler physics on a device does not exchange periodic ghost cells yet",
+        .path = "periodic",
+        .data_json = nlohmann::json{{"pairs", in.periodic.size()}}.dump()};
   }
   return euler_scope(in, ranks);
 }
