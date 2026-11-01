@@ -30,8 +30,8 @@ export const Route = createFileRoute("/viewer")({
     if (typeof raw.field === "string" && raw.field) search.field = raw.field;
     const triangles = Number(raw.triangles);
     if (Number.isFinite(triangles) && triangles > 0) search.triangles = triangles;
-    if (raw.webgl === true || raw.webgl === "1") search.webgl = true;
-    if (raw.bench === true || raw.bench === "1") search.bench = true;
+    if (raw.webgl === true || raw.webgl === 1 || raw.webgl === "1") search.webgl = true;
+    if (raw.bench === true || raw.bench === 1 || raw.bench === "1") search.bench = true;
     return search;
   },
   component: Analysis,

@@ -194,6 +194,9 @@ test("Analysis without a run lists the runs it can show, never a stand-in surfac
   const picker = page.getByTestId("run-picker");
   await expect(picker.getByRole("link")).toHaveCount(solved.length);
   await expect(page.getByTestId("viewport")).toHaveCount(0);
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByText("Synthetic surface · viewer benchmark")).toBeVisible();
+  await page.goBack();
   await picker
     .getByRole("link")
     .filter({ hasText: converged.run_id.slice(-8) })
