@@ -1,7 +1,9 @@
 // Times the generated loops of the spike on one mesh and prints the raw JSON that autan-bench
 // reads (one entry per loop, strategy and policy; bytes_per_rep is the loop's analytic minimum).
 //
-//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N]
+//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N] [--gate 1]
+//   --gate 1: after the host setup, print `autan-bench: ready` on stderr and wait for a line on
+//   stdin before any CUDA call (autan-bench run --ready takes the GPU lock only then).
 //              [--warmup N] [--reps N] [--batch N]
 #include <algorithm>
 #include <chrono>
@@ -9,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <random>
 #include <string>
@@ -42,6 +45,7 @@ struct Options {
   std::string policy = "fp32+acc64";
   std::string order = "rcm";
   int block = 256;
+  bool gate = false;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -50,6 +54,21 @@ struct Options {
 [[noreturn]] void fail(const std::string& msg) {
   std::fprintf(stderr, "error: %s\n", msg.c_str());
   std::exit(2);
+}
+
+/// With --gate 1 (autan-bench run --ready): the host setup is done, so announce it on stderr and
+/// wait for autan-bench to take the GPU lock and say go on stdin. No CUDA call comes before this,
+/// so the waiting process holds no device context.
+void wait_for_go(bool gate) {
+  if (!gate) {
+    return;
+  }
+  std::fprintf(stderr, "autan-bench: ready\n");
+  std::fflush(stderr);
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    fail("--gate: stdin closed before go");
+  }
 }
 
 Options parse(int argc, char** argv) {
@@ -63,6 +82,8 @@ Options parse(int argc, char** argv) {
       o.policy = v;
     else if (f == "--order")
       o.order = v;
+    else if (f == "--gate")
+      o.gate = std::stoi(v) != 0;
     else if (f == "--block")
       o.block = std::stoi(v);
     else if (f == "--warmup")
@@ -140,6 +161,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   for (auto& v : qb) v = S(normal(rng));
   for (auto& v : grad) v = Gr(normal(rng));
 
+  wait_for_go(o.gate);
   const auto colour_start = std::chrono::steady_clock::now();
   DeviceMesh dm(m, o.block);
   const double colouring_seconds =
