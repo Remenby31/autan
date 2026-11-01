@@ -56,7 +56,7 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 
 `Inc` targets have role `Residual` (accumulation type). `Min`/`Max` ties keep the first incidence.
 
-**Jacobian blocks.** Face, boundary and cell loops may add `Jacobian(d, wrt=("ul", "ur"))` to `out`: per face (or cell), the derivative of the body's outputs with respect to the named arguments, the others held fixed, written to `d` of role `Jac` and shape `(n_out, n_in)` for one argument or `(len(wrt), n_out, n_in)` for several, row-major — the blocks an implicit solver assembles. `ad.jacobian` derives it by forward mode, one direction per input component in a single function sharing the body's primal, structural zeros folded. Written once per face (by the owner in gather-recompute), so every strategy gives the same blocks; the loop's tangent and adjoint ignore it. `Jac` storage is the place to move to 16-bit formats with a per-block scale later (research §7).
+**Jacobian blocks.** Face, boundary and cell loops may add `Jacobian(d, wrt=("ul", "ur"))` to `out`: per face (or cell), the derivative of the body's outputs with respect to the named arguments, the others held fixed, written to `d` of role `Jac` and shape `(n_out, n_in)` for one argument or `(len(wrt), n_out, n_in)` for several, row-major — the blocks an implicit solver assembles. `ad.jacobian` derives it by forward mode, one direction per input component in a single function sharing the body's primal, structural zeros folded. Written once per face (by the owner in gather-recompute), so every strategy gives the same blocks; the loop's tangent and adjoint ignore it. `Jac` storage is the place to move to 16-bit formats with a per-block scale later (research §7). Block datasets (`Jac`, and `JacAccum` for blocks kept in the accumulation precision: diagonal blocks and their inverses, FP64 under `fp32+acc64` while off-diagonal blocks stay `Jac`) are also read by loops, as the passive data of a linear operator.
 
 ## Generated C++
 
@@ -80,11 +80,11 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 
 `autan::kernels::gpu::sum_of_squares` (`norms.cuh`) computes Σ x² in FP64 on the device in chunks of 4096 values and a fixed tree, so the result depends on the data and its length only, never on the launch shape.
 
-**Derivatives.** Active data are cell datasets; geometry, parameters and face datasets (boundary values) are passive. `<loop>_tangent` reads `<d>_tan` of each active input and increments or writes `<d>_tan` of the output. `<loop>_adjoint` transposes access modes (research §4.1): an `Inc` output's adjoint reads `<out>_adj` through the same map with the declared signs; each active gather increments `<d>_adj`; a `Write` output's adjoint is read, then zeroed; a reduction's adjoint recomputes the accumulators and the incidence each `Min`/`Max` selected, then sends adjoints to the incidences. Adjoint datasets have role `Residual`. The adjoint of a residual is the reverse sequence of loop adjoints (example: `advdiff_derivative` in `codegen/spike/capi.cpp`). Branches are linearised on the selected side.
+**Derivatives.** Active data are cell datasets; geometry, parameters, face datasets (boundary values) and block datasets (`Jac`, `JacAccum`) are passive. `<loop>_tangent` reads `<d>_tan` of each active input and increments or writes `<d>_tan` of the output. `<loop>_adjoint` transposes access modes (research §4.1): an `Inc` output's adjoint reads `<out>_adj` through the same map with the declared signs; each active gather increments `<d>_adj`; a `Write` output's adjoint is read, then zeroed; a reduction's adjoint recomputes the accumulators and the incidence each `Min`/`Max` selected, then sends adjoints to the incidences. Adjoint datasets have role `Residual`. The adjoint of a residual is the reverse sequence of loop adjoints (example: `advdiff_derivative` in `codegen/spike/capi.cpp`). Branches are linearised on the selected side.
 
 ## Precision
 
-| Policy | state, grad | residual, accum | geom, param | compute | jac |
+| Policy | state, grad | residual, accum, jac_accum | geom, param | compute | jac |
 |---|---|---|---|---|---|
 | `fp64` | double | double | double | double | double |
 | `fp32_acc64` (`fp32+acc64`) | float | double | double | float | float |
