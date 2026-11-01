@@ -1,7 +1,8 @@
 // Time per cell of the device SSP-RK3 step (DeviceStepper::step: three residuals, the stages, the
 // norms and the D0107 check) and of the host residual, on a mesh given on the command line.
-// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS [LOCK]; prints one JSON object. With LOCK,
-// only the timed device steps hold that file's lock (docs/infra/bench.md).
+// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [LOCK]; prints one JSON object.
+// `rcm` renumbers the cells (autan::rcm_order) first; with LOCK, only the timed device steps hold
+// that file's lock (docs/infra/bench.md).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <unistd.h>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
@@ -109,13 +111,14 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 4) {
-    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS [LOCK]\n");
+  if (argc < 5) {
+    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [LOCK]\n");
     return 2;
   }
-  const auto mesh = autan::io::read_mesh(argv[1]);
+  auto mesh = autan::io::read_mesh(argv[1]);
+  if (std::string(argv[4]) == "rcm") mesh = autan::renumber_cells(mesh, autan::rcm_order(mesh));
   const int steps = std::atoi(argv[3]);
-  const char* lock = argc > 4 ? argv[4] : nullptr;
+  const char* lock = argc > 5 ? argv[5] : nullptr;
   const std::string p = argv[2];
   if (p == "fp64") return bench<autan::kernels::fp64>(mesh, argv[2], steps, lock);
   if (p == "fp32+acc64") return bench<autan::kernels::fp32_acc64>(mesh, argv[2], steps, lock);
