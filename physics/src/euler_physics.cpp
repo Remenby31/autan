@@ -19,6 +19,7 @@
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/solvers/multigrid.hpp"
+#include "euler_device.hpp"
 
 namespace autan::physics {
 
@@ -56,6 +57,8 @@ constexpr double linear_failure = 0.9;
 constexpr double max_decrease = 0.5;
 constexpr double min_step = 1e-6;
 constexpr double venkatakrishnan_k = 10.0;
+// Steady cases on a device: SSP-RK3 in pseudo-time with local time steps CFL V / lambda.
+constexpr double device_steady_cfl = 0.8;
 
 Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
@@ -121,9 +124,25 @@ class EulerPhysics final : public runtime::Physics {
     du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
+    if (ctx.device >= 0) {
+#ifdef AUTAN_PHYSICS_CUDA
+      device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, true, ctx.ranks,
+                                       ctx.stream);
+      device_->upload(u_);
+      if (in.time.kind == "steady") {
+        ctx.log.write("warning", "solver",
+                      "steady case on the device: explicit SSP-RK3 with local time steps, not "
+                      "the implicit solver",
+                      {}, nlohmann::json{{"cfl", device_steady_cfl}}.dump());
+      }
+#else
+      throw std::logic_error("the Euler physics was built without CUDA");
+#endif
+    }
   }
 
   StepReport step(std::int64_t /*iteration*/) override {
+    if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception.
@@ -143,6 +162,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void accumulate_average(double weight) override {
+    sync();
     const auto f = primitive_fields();
     for (std::size_t k = 0; k < 6; ++k) {
       for (std::size_t c = 0; c < n_; ++c) mean_[k * n_ + c] += weight * f[k][c];
@@ -152,6 +172,7 @@ class EulerPhysics final : public runtime::Physics {
 
   // The conserved variables bit for bit, then the averaging sums and their weight.
   [[nodiscard]] std::vector<io::Field> restart_fields() const override {
+    sync();
     std::vector<io::Field> out;
     for (std::size_t k = 0; k < 5; ++k) {
       out.push_back(
@@ -203,6 +224,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
+    sync();
     std::vector<io::Field> out;
     const auto f = primitive_fields();
     for (std::size_t k = 0; k < 6; ++k) {
@@ -663,10 +685,47 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void face_pressure(std::span<double> p, std::span<double> force) const {
+    sync();
     auto& self = const_cast<EulerPhysics&>(*this);
     self.residual_of(u_);
     euler_.boundary_pressure(p, force);
   }
+
+  // One step on the device; the host state is out of date until sync().
+  StepReport device_step() {
+    StepReport report;
+    if (!device_checked_) {
+      // As the host's step: a stored state the kernels cannot evaluate diverges at once.
+      device_checked_ = true;
+      const auto e = device_->evaluate();
+      if (e.invalid) {
+        report.residuals = e.residuals;
+        report.diverged_cell = e.invalid;
+        return report;
+      }
+    }
+    const auto& t = ctx_.input.time;
+    const bool steady = t.kind == "steady";
+    const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
+                          : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
+    host_stale_ = true;
+    report.residuals = r.residuals;
+    if (!steady) report.time_step = r.time_step;
+    report.diverged_cell = r.invalid;
+    return report;
+  }
+
+  // The device state into the host's, before anything reads it.
+  void sync() const {
+    if (!device_ || !host_stale_) return;
+    auto& self = const_cast<EulerPhysics&>(*this);
+    device_->download(self.u_);
+    self.host_stale_ = false;
+  }
+
+  std::unique_ptr<DeviceStepper<P>> device_;  // devices.kind = cuda
+  bool host_stale_ = false;
+  bool device_checked_ = false;
 
   PhysicsContext ctx_;
   Gas gas_;
@@ -746,12 +805,30 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
+// On a device, besides euler_scope: one rank (the device step exchanges no ghost cells yet).
+std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
+                                                          int ranks) {
+  if (ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message = "the Euler physics runs on one device only, not " + std::to_string(ranks),
+        .path = "devices.count",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  return euler_scope(in, ranks);
+}
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
                euler_scope);
+#ifdef AUTAN_PHYSICS_CUDA
+  registry.add({"compressible", "inviscid", "fp64", "cuda"}, factory<kernels::fp64>(),
+               euler_device_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
+               factory<kernels::fp32_acc64>(), euler_device_scope);
+#endif
 }
 
 }  // namespace autan::physics

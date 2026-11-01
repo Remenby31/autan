@@ -89,6 +89,23 @@ if(AUTAN_ENABLE_CGNS)
     PUBLIC autan::runtime
     PRIVATE autan::physics autan::solvers autan_compile_options nlohmann_json::nlohmann_json
   )
+  if(AUTAN_ENABLE_CUDA)
+    # The device step (euler_device.cu) and the generated GPU loops it launches.
+    target_sources(
+      autan_physics_runtime
+      PRIVATE src/euler_device.cu ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
+    )
+    target_include_directories(autan_physics_runtime PRIVATE ${AUTAN_PHYSICS_GENERATED})
+    target_compile_definitions(autan_physics_runtime PRIVATE AUTAN_PHYSICS_CUDA)
+    set_target_properties(
+      autan_physics_runtime
+      PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+    )
+    target_compile_options(
+      autan_physics_runtime
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    )
+  endif()
 endif()
 
 # The full residual on the GPU, timed by autan-bench (docs/infra/bench.md).

@@ -434,6 +434,21 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
 }
 
 template <class P>
+const kernels::euler::Data<P>& Euler<P>::data() const {
+  return impl_->d;
+}
+
+template <class P>
+const kernels::CellStencil& Euler<P>::stencil() const {
+  return impl_->stencil;
+}
+
+template <class P>
+const Scheme& Euler<P>::scheme() const {
+  return impl_->scheme;
+}
+
+template <class P>
 void Euler<P>::spectral_radius(std::span<State> lambda) {
   auto& m = *impl_;
   m.d.lam = lambda.data();
