@@ -123,7 +123,16 @@ jobs:
           n=$(ctest --test-dir build -N -L mpi | sed -n 's/^Total Tests: //p')
           echo "$n multi-rank tests (CTest label mpi)"
           [ "$n" -ge 6 ] || { echo "::error::expected at least 6 tests labelled mpi, found $n"; exit 1; }
-          ctest --test-dir build -L mpi --output-on-failure --no-tests=error
+          # A test normally ends within 25 s: past 120 s the watchdog dumps every rank's stacks
+          # and fails it (#304), instead of a hang holding the runner until CTest's timeout.
+          bench/ci/ctest-watchdog.sh 120 "$RUNNER_TEMP/mpi-hang-stacks" -- \
+            ctest --test-dir build -L mpi --output-on-failure --no-tests=error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: mpi-hang-stacks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mpi-hang-stacks/
+          if-no-files-found: ignore
 
   bench-harness:
     # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
