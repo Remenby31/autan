@@ -20,8 +20,9 @@ on:
 
 permissions: {}
 
+# Per ref: a dispatch on another branch must not replace main's pending fill.
 concurrency:
-  group: mesh-cache
+  group: mesh-cache-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
