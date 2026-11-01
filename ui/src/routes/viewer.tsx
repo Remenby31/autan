@@ -6,7 +6,9 @@ import { runsQuery } from "../api/runs";
 import { fetchSurface, type Surface } from "../api/surface";
 import { TopBar } from "../components/shell/TopBar";
 import { useResolvedTheme } from "../components/shell/theme";
+import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
+import { Note } from "../components/ui/Note";
 import { RelativeTime } from "../components/ui/RelativeTime";
 import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
@@ -44,14 +46,22 @@ function Analysis() {
 
 function RunPicker() {
   const registry = useQuery(runsQuery);
+  const solutions = new Set(registry.data?.solutions);
   const solved = (registry.data?.runs ?? [])
-    .filter((r) => registry.data?.summaries[r.run_id]?.solution)
+    .filter((r) => solutions.has(r.run_id))
     .sort((a, b) => b.started.localeCompare(a.started));
   return (
     <>
       <TopBar crumbs={[{ label: "Analysis" }]} />
       <div className="flex min-h-0 flex-1 flex-col items-center overflow-auto px-8 py-10">
-        {registry.isSuccess && solved.length === 0 ? (
+        {registry.isError && !registry.data ? (
+          <Note tone="error" title="The runs could not be listed">
+            {registry.error.message}{" "}
+            <Button size="sm" onClick={() => void registry.refetch()}>
+              Retry
+            </Button>
+          </Note>
+        ) : registry.isSuccess && solved.length === 0 ? (
           <EmptyState
             icon={<Box className="size-5" />}
             title="No solution to analyse yet"
@@ -76,7 +86,7 @@ function RunPicker() {
                     <span className="min-w-0 flex-1 truncate">{r.case.name}</span>
                     <span className="font-mono text-fg-3 text-sm">{r.run_id.slice(-8)}</span>
                     <span className="w-28 text-right text-fg-3 text-sm">
-                      <RelativeTime iso={r.started} />
+                      <RelativeTime iso={r.started} card={false} />
                     </span>
                   </Link>
                 </li>

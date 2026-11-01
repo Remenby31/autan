@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { RUNS } from "../playwright.config";
-import type { Run, RunRegistry } from "../src/api/contracts";
+import type { Run } from "../src/api/contracts";
 
 async function runs(page: Page): Promise<Run[]> {
   return (await (await page.request.get("/api/runs")).json()).runs;
@@ -176,8 +183,10 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
 test("Analysis without a run lists the runs it can show, never a stand-in surface", async ({
   page,
 }) => {
-  const registry: RunRegistry = await (await page.request.get("/api/runs")).json();
-  const solved = registry.runs.filter((r) => registry.summaries[r.run_id]?.solution);
+  // results.md: an ended run's solution.cgns is its result, read here from the run directories.
+  const solved = (await runs(page)).filter(
+    (r) => r.status !== "running" && existsSync(join(RUNS, r.run_id, "solution.cgns")),
+  );
   const converged = solved.find((r) => r.status === "converged") as Run;
   await page.goto("/");
   await page.getByRole("link", { name: "Analysis" }).click();
@@ -185,13 +194,30 @@ test("Analysis without a run lists the runs it can show, never a stand-in surfac
   const picker = page.getByTestId("run-picker");
   await expect(picker.getByRole("link")).toHaveCount(solved.length);
   await expect(page.getByTestId("viewport")).toHaveCount(0);
-  await picker.getByRole("link").filter({ hasText: converged.run_id.slice(-8) }).click();
+  await picker
+    .getByRole("link")
+    .filter({ hasText: converged.run_id.slice(-8) })
+    .click();
 
   await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   await expect(crumbs).toContainText(converged.case.name);
   await expect(crumbs).toContainText(converged.run_id.slice(-8));
   await expect(page.getByTestId("zones")).toBeVisible();
+});
+
+test("Analysis says when the runs cannot be listed, and retries", async ({ page }) => {
+  let fail = true;
+  await page.route("**/api/runs", (route) =>
+    fail ? route.fulfill({ status: 503 }) : route.continue(),
+  );
+  await page.route("**/api/runs/events", (route) => route.abort());
+  await page.goto("/viewer");
+
+  await expect(page.getByText("The runs could not be listed")).toBeVisible({ timeout: 15_000 });
+  fail = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("run-picker").getByRole("link").first()).toBeVisible();
 });
 
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {

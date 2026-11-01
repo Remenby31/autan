@@ -85,6 +85,8 @@ export interface RunRegistry {
   rejected: { dir: string; reason: string }[];
   /** Per run id: last recorded iteration and residual drop, from history.jsonl. */
   summaries: Record<string, RunSummary>;
+  /** Runs that have ended and written solution.cgns, which Analysis shows. */
+  solutions: string[];
 }
 
 export interface RunSummary {
@@ -98,8 +100,6 @@ export interface RunSummary {
   max_iterations: number | null;
   /** The settings studies usually sweep, as the case writes them ("19.57 deg"). */
   settings?: RunSettings;
-  /** The run has ended and written solution.cgns, which Analysis shows. */
-  solution: boolean;
 }
 
 export interface RunSettings {

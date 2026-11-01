@@ -105,17 +105,21 @@ def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
     assert snapshot.rejected[foreign.name].startswith("E0701")
 
 
-def test_a_run_summary_says_whether_its_solution_is_a_result(runs: Path) -> None:
-    # results.md: an ended run's solution.cgns is its result; a running one's is not yet.
-    source = next(runs.iterdir())
-    assert (source / "solution.cgns").is_file()
-    assert Registry(runs).scan().summaries[source.name]["solution"] is True
+def test_the_registry_lists_the_runs_whose_solution_is_a_result(runs: Path) -> None:
+    # results.md: an ended run's solution.cgns is its result, history or not; a running run's
+    # is not yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+    source = next(p for p in runs.iterdir() if p != early)
+    assert (early / "solution.cgns").is_file()
+    assert sorted(Registry(runs).scan().solutions) == sorted([source.name, early.name])
 
     run = json.loads((source / "run.json").read_text())
     (source / "run.json").write_text(
         json.dumps(run | {"status": "running", "finished": None, "monitors": None})
     )
-    assert Registry(runs).scan().summaries[source.name]["solution"] is False
+    assert Registry(runs).scan().solutions == [early.name]
 
 
 def test_registry_rechecks_a_run_when_any_contract_file_changes(runs: Path) -> None:
@@ -171,10 +175,12 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
         copy = staging.rename(runs / run["run_id"])
         kind, data = next(events)
         assert (kind, data["run_id"]) == ("run", copy.name)
+        assert next(events) == ("solutions", sorted([source.name, copy.name]))
 
         (copy / "run.json").write_text("{")
-        assert [next(events), next(events)] == [
+        assert [next(events), next(events), next(events)] == [
             ("removed", copy.name),
+            ("solutions", [source.name]),
             ("rejected", [{"dir": copy.name, "reason": ANY}]),
         ]
 

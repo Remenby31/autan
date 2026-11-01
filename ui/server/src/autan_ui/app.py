@@ -232,7 +232,8 @@ def create_app(
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
         """`runs` snapshot first, then `run` (upsert), `removed` (run id), `rejected` (the
-        whole list) and `summaries` (iteration and residual drop of each run) as they change.
+        whole list), `summaries` (iteration and residual drop of each run) and `solutions` (the
+        runs whose solution.cgns is a result) as they change.
         Every wake-up rescans, timeouts included, so a change made before the watcher starts is
         still reported."""
         previous = await asyncio.to_thread(registry.scan)
@@ -249,6 +250,8 @@ def create_app(
                     yield ServerSentEvent(event="removed", data=run_id)
                 if current.summaries != previous.summaries:
                     yield ServerSentEvent(event="summaries", data=current.summaries)
+                if current.solutions != previous.solutions:
+                    yield ServerSentEvent(event="solutions", data=current.solutions)
                 if current.rejected != previous.rejected:
                     yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
                 previous = current
