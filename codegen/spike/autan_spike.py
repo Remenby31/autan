@@ -387,3 +387,20 @@ def gpu_advdiff_adjoint(
     )  # fmt: skip
     _check(rc, err)
     return out
+
+
+def face_weighted(
+    m: Mesh, policy: str, mode: str, q: F64, q_b: F64, seed: F64 | None = None
+) -> F64:
+    """Test kernel codegen/tests/kernels/face_weighted.py: value, tangent or adjoint."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_cells)
+    sd = np.zeros(m.n_cells) if seed is None else np.ascontiguousarray(seed, dtype=np.float64)
+    q, q_b = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b))
+    code = {"value": 0, "tangent": 1, "adjoint": 2}[mode]
+    rc = lib().autan_spike_face_weighted(
+        m.handle, policy.encode(), ctypes.c_int(code), _p(q), _p(q_b), _p(sd), _p(out), err,
+        ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out

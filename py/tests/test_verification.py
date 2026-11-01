@@ -15,6 +15,7 @@ import autan
 import autan.solver_input
 import jsonschema
 import pytest
+from autan import cgns
 from autan.cli import json_schema, main
 from pydantic import ValidationError
 
@@ -196,6 +197,16 @@ def test_runs_archive_the_solution(
     result = autan.load(verified(write_case)).run(
         crm_mesh, backend=autan.FakeBackend(iterations=2), runs=tmp_path / "runs"
     )
+    bc_types = {
+        bc.text()
+        for bc in cgns.read(result.path / "solution.cgns")
+        .child("Base")
+        .child("Zone")
+        .child("ZoneBC")
+        .with_label("BC_t")
+    }
+    assert bc_types == {"UserDefined"}  # the SIDS string, not the C enumerator name
+    assert result.field("Density").size > 0  # the reader accepts the solution
     archived = result.path / "manufactured.json"
     assert archived.read_bytes() == (FIXTURES / "euler.mms.json").read_bytes()
     archived.write_text("{}")

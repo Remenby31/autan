@@ -190,7 +190,15 @@ def call_args(
                     f"(f < d.topo.n_interior_faces ? {at(b.dataset, 'nb', c, layout)} : {bnd})"
                 )
             else:
-                out.append(at(b.dataset, index_of[b.via], c, layout))
+                via = b.via
+                if (
+                    via == "direct"
+                    and isinstance(b.dataset, dsl.Dataset)
+                    and b.dataset.set is dsl.MeshSet.FACES
+                    and "face" in index_of
+                ):
+                    via = "face"
+                out.append(at(b.dataset, index_of[via], c, layout))
     return out
 
 
@@ -223,5 +231,13 @@ def emit_common_header(m: Module, line_directives: bool = True) -> str:
         emit_function(e, fn, sig.types, len(fn.outputs))
     for fn, types in m.extra_bodies:
         emit_function(e, fn, types, len(fn.outputs))
+    frozen = [lm.name for lm in m.loops if lm.loop.frozen]
+    e.w("/// Loops whose outputs are treated as passive although they depend on active data: the")
+    e.w("/// derivatives of a residual that uses them are approximate (frozen boundary states).")
+    e.w(
+        f"inline constexpr const char* frozen_loops[] = {{{', '.join(f'{n!r}'.replace(chr(39), chr(34)) for n in frozen) or 'nullptr'}}};"
+    )
+    e.w(f"inline constexpr int n_frozen_loops = {len(frozen)};")
+    e.w()
     e.w(f"}}  // namespace autan::kernels::{m.name}")
     return e.text()

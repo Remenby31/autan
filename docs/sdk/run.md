@@ -2,7 +2,7 @@
 
 `autan run CASE --mesh-info MESHINFO [--runs DIR] [--json]` plans the case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`). In Python: `case.run(mesh_info, backend=autan.FakeBackend(), runs="runs")`, which returns `autan.Results`.
 
-Until the C++ core is built, the only backend is `fake` (`autan.FakeBackend`). It writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
+`autan run` drives only the `fake` backend (`autan.FakeBackend`); the solver runtime `autan-run` runs a [solver input](../contracts/solver-input.md) and has no physics yet (`E0706`). The fake backend writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
 
 | What | Fake backend |
 |---|---|
