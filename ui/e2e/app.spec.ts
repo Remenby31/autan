@@ -219,7 +219,7 @@ test("polars keep each Mach number apart and every run, and say which runs are m
       ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
     ]);
   };
-  cases.forEach(([mach, aoa], k) => write(k, mach, aoa));
+  for (const [k, [mach, aoa]] of cases.entries()) write(k, mach, aoa);
   try {
     write(4, "0.8", "2.5", ["--diverge-at", "40"]);
   } catch {
@@ -240,6 +240,16 @@ test("polars keep each Mach number apart and every run, and say which runs are m
     await expect(page.getByTestId("polar-missing")).toHaveText(
       "Not on the polars: E diverged, not converged",
     );
+    // Each point is its run's final coefficients as run.json records them.
+    const recorded = await runs(page);
+    const rows = page.getByTestId("polar-table").locator("tbody tr");
+    await expect(rows).toHaveCount(4);
+    for (const [k, id] of ids.slice(0, 4).entries()) {
+      const forces = recorded.find((r) => r.run_id === id)?.monitors?.forces;
+      const row = rows.filter({ hasText: new RegExp(`^${String.fromCharCode(65 + k)}`) });
+      await expect(row.locator("td").nth(2)).toHaveText(String(forces?.cl));
+      await expect(row.locator("td").nth(3)).toHaveText(String(forces?.cd));
+    }
   } finally {
     for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });

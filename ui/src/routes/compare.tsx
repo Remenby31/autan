@@ -4,10 +4,10 @@ import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
-import { polars } from "../api/polars";
+import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
-import { PolarChart } from "../components/PolarChart";
+import { DASHES, PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -31,23 +31,6 @@ const resolvedColor = (k: number) =>
   getComputedStyle(document.documentElement)
     .getPropertyValue(`--series-${(k % 8) + 1}`)
     .trim();
-
-/** Every leaf of a case document under its dotted path; arrays of tables by index. */
-export function flatten(value: unknown, prefix = ""): Map<string, string> {
-  const out = new Map<string, string>();
-  if (value !== null && typeof value === "object") {
-    for (const [key, child] of Object.entries(value)) {
-      const path = prefix ? (Array.isArray(value) ? `${prefix}[${key}]` : `${prefix}.${key}`) : key;
-      for (const [k, v] of flatten(child, path)) out.set(k, v);
-    }
-  } else {
-    out.set(
-      prefix,
-      value === undefined ? "—" : typeof value === "string" ? value : JSON.stringify(value),
-    );
-  }
-  return out;
-}
 
 function Compare() {
   const { runs: ids } = Route.useSearch();
@@ -95,15 +78,13 @@ function Compare() {
           id,
           role: String.fromCharCode(65 + k),
           run: runs[k],
-          settings: registry.data?.summaries[id]?.settings,
+          case: details[k]?.data?.case,
         })),
       ),
-    [ids, runs, registry.data],
+    [ids, runs, details],
   );
-  const plotted = polar.series.reduce((n, s) => n + s.points.length, 0);
-  const polarColors = polar.series.map((_, k) =>
-    polar.series.length === 1 ? "var(--fg)" : seriesColor(k),
-  );
+  const plotted = polar.series.flatMap((s) => s.points.map((p) => ({ ...p, series: s.label })));
+  const runColor = (p: { role: string }) => seriesColor(p.role.charCodeAt(0) - 65);
 
   const diff = useMemo(() => {
     const flat = details.map((d) =>
@@ -221,7 +202,7 @@ function Compare() {
                 </ChartCard>
               </div>
 
-              {plotted >= 2 && (
+              {plotted.length > 0 && (
                 <div className="flex flex-col gap-3" data-testid="polar">
                   <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
                     {polar.fixed && (
@@ -236,10 +217,17 @@ function Compare() {
                           className="inline-flex items-center gap-2"
                           data-testid="polar-series"
                         >
-                          <i
-                            className="inline-block h-0.5 w-4 rounded"
-                            style={{ background: polarColors[k] }}
-                          />
+                          <svg width="20" height="6" aria-hidden className="flex-none">
+                            <line
+                              x1="0"
+                              x2="20"
+                              y1="3"
+                              y2="3"
+                              stroke="var(--fg-3)"
+                              strokeWidth="1.5"
+                              strokeDasharray={DASHES[k % DASHES.length]}
+                            />
+                          </svg>
                           {s.label}
                           <span className="font-mono text-fg-3">
                             {s.points.map((p) => p.role).join(" ")}
@@ -254,7 +242,8 @@ function Compare() {
                         x={(p) => p.alpha}
                         y={(p) => p.cl}
                         xLabel="α (deg)"
-                        colors={polarColors}
+                        yLabel="CL"
+                        color={runColor}
                         testId="lift-polar"
                       />
                     </ChartCard>
@@ -264,11 +253,44 @@ function Compare() {
                         x={(p) => p.cl}
                         y={(p) => p.cd}
                         xLabel="CL"
-                        colors={polarColors}
+                        yLabel="CD"
+                        color={runColor}
                         testId="drag-polar"
                       />
                     </ChartCard>
                   </div>
+                  <table className="w-full border-collapse text-sm" data-testid="polar-table">
+                    <thead>
+                      <tr className="text-left text-fg-3">
+                        <th className="h-8 px-2 font-normal">Run</th>
+                        <th className="px-2 text-right font-normal">α (deg)</th>
+                        <th className="px-2 text-right font-normal">CL</th>
+                        <th className="px-2 text-right font-normal">CD</th>
+                        {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {plotted.map((p) => (
+                        <tr key={p.id} className="border-line border-t font-mono">
+                          <td className="h-8 px-2">
+                            <span className="inline-flex items-center gap-2">
+                              <i
+                                className="inline-block size-2 rounded-full"
+                                style={{ background: runColor(p) }}
+                              />
+                              {p.role}
+                            </span>
+                          </td>
+                          <td className="px-2 text-right">{p.alpha}</td>
+                          <td className="px-2 text-right">{p.cl}</td>
+                          <td className="px-2 text-right">{p.cd}</td>
+                          {polar.series.length > 1 && (
+                            <td className="px-2 font-sans text-fg-2">{p.series}</td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
               {polar.unplotted.length > 0 && (

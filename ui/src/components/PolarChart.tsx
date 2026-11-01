@@ -1,44 +1,58 @@
 import type { PolarPoint, PolarSeries } from "../api/polars";
 
-const number = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 4 });
 const W = 480;
 const H = 240;
-const PAD = { left: 52, right: 12, top: 10, bottom: 36 };
+const PAD = { left: 56, right: 12, top: 10, bottom: 36 };
+/** Line styles telling series apart; points keep their run's colour. */
+export const DASHES = ["", "6 3", "1.5 3", "8 3 1.5 3"];
 
-// About five round steps covering [low, high] (1, 2 or 5 times a power of ten).
-function ticks(low: number, high: number): number[] {
-  const span = high - low || Math.abs(high) || 1;
-  const raw = span / 5;
-  const power = 10 ** Math.floor(Math.log10(raw));
-  const step = ([1, 2, 5, 10].find((m) => m * power >= raw) ?? 10) * power;
-  const out = [];
-  for (let v = Math.ceil(low / step) * step; v <= high + step * 1e-9; v += step)
-    out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
-  return out;
-}
-
+// The shown range: the values with a margin, or a small band around a single value.
 function extent(values: number[]): [number, number] {
   const low = Math.min(...values);
   const high = Math.max(...values);
-  const pad = (high - low || Math.abs(high) || 1) * 0.08;
-  return [low - pad, high + pad];
+  const scale = Math.max(Math.abs(low), Math.abs(high));
+  const span = high - low;
+  if (span <= scale * 1e-9 || span === 0) {
+    const pad = scale * 0.05 || 1;
+    return [low - pad, high + pad];
+  }
+  return [low - span * 0.08, high + span * 0.08];
 }
 
-/** A polar: every run a marked point, a line through each series' points in angle order,
- * coloured per series; a point's title names its run. */
+// About five round steps (1, 2 or 5 times a power of ten) over [low, high], each written with
+// the decimals its step needs, so that neighbouring ticks never read the same.
+function ticks(low: number, high: number): { value: number; text: string }[] {
+  const raw = (high - low) / 5;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = ([1, 2, 5, 10].find((m) => m * power >= raw) ?? 10) * power;
+  const decimals = Math.min(15, Math.max(0, -Math.floor(Math.log10(step))));
+  const first = Math.ceil(low / step);
+  const count = Math.min(20, Math.floor(high / step) - first + 1);
+  return Array.from({ length: Math.max(0, count) }, (_, k) => {
+    const value = (first + k) * step;
+    return { value, text: (Math.abs(value) < step / 2 ? 0 : value).toFixed(decimals) };
+  });
+}
+
+const exact = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 6 });
+
+/** A polar: every run a point in its run's colour, a line through each series' points in angle
+ * order, one line style per series; a point's title names its run and values. */
 export function PolarChart({
   series,
   x,
   y,
   xLabel,
-  colors,
+  yLabel,
+  color,
   testId,
 }: {
   series: PolarSeries[];
   x: (p: PolarPoint) => number;
   y: (p: PolarPoint) => number;
   xLabel: string;
-  colors: string[];
+  yLabel: string;
+  color: (p: PolarPoint) => string;
   testId: string;
 }) {
   const points = series.flatMap((s) => s.points);
@@ -51,22 +65,34 @@ export function PolarChart({
       viewBox={`0 0 ${W} ${H}`}
       className="h-full w-full overflow-visible font-mono text-[11px]"
       role="img"
-      aria-label={`${xLabel} polar`}
+      aria-label={`${yLabel} against ${xLabel}`}
       data-testid={testId}
     >
       {ticks(x0, x1).map((t) => (
-        <g key={`x${t}`} className="text-fg-3">
-          <line x1={sx(t)} x2={sx(t)} y1={PAD.top} y2={H - PAD.bottom} stroke="var(--line)" />
-          <text x={sx(t)} y={H - PAD.bottom + 14} textAnchor="middle" fill="currentColor">
-            {number.format(t)}
+        <g key={`x${t.value}`} className="text-fg-3">
+          <line
+            x1={sx(t.value)}
+            x2={sx(t.value)}
+            y1={PAD.top}
+            y2={H - PAD.bottom}
+            stroke="var(--line)"
+          />
+          <text x={sx(t.value)} y={H - PAD.bottom + 14} textAnchor="middle" fill="currentColor">
+            {t.text}
           </text>
         </g>
       ))}
       {ticks(y0, y1).map((t) => (
-        <g key={`y${t}`} className="text-fg-3">
-          <line x1={PAD.left} x2={W - PAD.right} y1={sy(t)} y2={sy(t)} stroke="var(--line)" />
-          <text x={PAD.left - 6} y={sy(t) + 4} textAnchor="end" fill="currentColor">
-            {number.format(t)}
+        <g key={`y${t.value}`} className="text-fg-3">
+          <line
+            x1={PAD.left}
+            x2={W - PAD.right}
+            y1={sy(t.value)}
+            y2={sy(t.value)}
+            stroke="var(--line)"
+          />
+          <text x={PAD.left - 6} y={sy(t.value) + 4} textAnchor="end" fill="currentColor">
+            {t.text}
           </text>
         </g>
       ))}
@@ -79,26 +105,28 @@ export function PolarChart({
         {xLabel}
       </text>
       {series.map((s, k) => (
-        <g key={s.key} style={{ color: colors[k] }}>
-          <polyline
-            points={s.points.map((p) => `${sx(x(p))},${sy(y(p))}`).join(" ")}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.75}
-          />
-          {s.points.map((p) => (
-            <circle
-              key={p.id}
-              data-run={p.id}
-              cx={sx(x(p))}
-              cy={sy(y(p))}
-              r={3.5}
-              fill="currentColor"
-            >
-              <title>{`${p.role} · α ${number.format(p.alpha)}° · CL ${number.format(p.cl)} · CD ${number.format(p.cd)}`}</title>
-            </circle>
-          ))}
-        </g>
+        <polyline
+          key={s.key}
+          points={s.points.map((p) => `${sx(x(p))},${sy(y(p))}`).join(" ")}
+          fill="none"
+          stroke="var(--fg-3)"
+          strokeWidth={1.5}
+          strokeDasharray={DASHES[k % DASHES.length]}
+        />
+      ))}
+      {points.map((p) => (
+        <circle
+          key={p.id}
+          data-run={p.id}
+          cx={sx(x(p))}
+          cy={sy(y(p))}
+          r={4}
+          fill={color(p)}
+          stroke="var(--bg-0)"
+          strokeWidth={1}
+        >
+          <title>{`${p.role} · α ${exact.format(p.alpha)}° · CL ${exact.format(p.cl)} · CD ${exact.format(p.cd)}`}</title>
+        </circle>
       ))}
     </svg>
   );
