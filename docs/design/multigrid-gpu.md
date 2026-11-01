@@ -26,7 +26,7 @@ No published CFD code runs agglomeration multigrid for a block-implicit compress
 | Inverse diagonals, line factors | `diag_inv` (J3), `lower`, `gain` per line link | the same, FP64 |
 | Vectors | `Residual.Vec5`: FP64 under `fp64` and `fp32+acc64` | FP64 |
 
-Coarse levels are FP64 under every supported policy, as [PLAN.md](../PLAN.md) decides for coarse levels and as the host does. They hold about a seventh of the fine level's nodes, so FP64 costs little, and the generated loops run on them through their `fp64` instantiation. Under `fp32` the device multigrid refuses to start with a coded error (its vectors would be FP32 and no host reference exists); that study belongs to M5.
+Coarse levels are FP64 under every supported policy, as [PLAN.md](../PLAN.md) decides for coarse levels and as the host does. They hold about a seventh of the fine level's nodes, so FP64 costs little, and the generated loops run on them through their `fp64` instantiation. Under `fp32` the device multigrid refuses to start with a coded error, never silently: its vectors would be FP32 and no host reference exists. FP32 vectors are part of the M5 precision study.
 
 The device operator is E2's sliced block CSR: per cell, its diagonal block and one block per incidence, column `Topology::incidence_cell`. Boundary incidences carry a zero block and are skipped by every list below. The host operator's `upper` and `lower` of edge e are the `off` blocks at the owner's and the neighbour's incidence of e.
 
@@ -62,6 +62,8 @@ Within a colour, lines share no edge, so the two launches of a colour are indepe
 The host factors the coarsest level densely (LU with partial pivoting) when it has at most 1000 unknowns, and sweeps it 10 times otherwise. The device does the same, with one change of form for the dense case: after the Galerkin product, the coarsest blocks (at most 1000 × 1000 FP64, 8 MB, usually 320 × 320) are copied to the host, factored by the host's LU, and inverted column by column with its triangular solves; the device then applies x = A⁻¹ b, one warp per row, a fixed butterfly per row.
 
 Why not triangular solves on the device: they run m sequential steps in one block, about m synchronisations per solve, and the K-cycle visits the coarsest level up to 2^(L−1) times per cycle. A dense product is one launch of at most 8 MB of reads. Why not Grace: a host solve per visit costs a device-to-host round trip each time and cannot sit inside a captured graph. The cost is one host transfer and an O(m³) factorisation per Jacobian, as on the host today.
+
+The inverse is kept only where its error bound is tight. Rule, declared before measuring: κ∞(A_c) of the coarsest level is measured and reported on the most stretched cases (flat plate 137 × 97, NACA 0012 256²); on a case where 4 m u κ∞ exceeds 10⁻⁶, the coarsest level is solved by triangular solves on the device in the host's order instead, and the cost is reported.
 
 ## Cycle and reductions
 
