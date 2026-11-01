@@ -187,5 +187,8 @@ if(AUTAN_ENABLE_METAL)
     PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike bench
   )
   target_compile_options(autan_metal_loop_bench PRIVATE -fobjc-arc)
-  target_link_libraries(autan_metal_loop_bench PRIVATE autan::kernels autan::io autan::partition autan_metal)
+  target_link_libraries(
+    autan_metal_loop_bench
+    PRIVATE autan::kernels autan::io autan::partition autan_metal
+  )
 endif()
