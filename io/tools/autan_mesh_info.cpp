@@ -1,9 +1,11 @@
 // autan-mesh-info: reads a mesh and prints its counts, zones and quality, or
-// with --json the MeshInfo document of docs/contracts/mesh-info.md.
+// with --json the MeshInfo document of docs/contracts/mesh-info.md, or with
+// --surface OUT writes its boundary surface (docs/contracts/mesh.md).
 
 #include <algorithm>
 #include <cstdio>
 #include <exception>
+#include <fstream>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -17,12 +19,14 @@
 namespace {
 
 constexpr const char* usage =
-    "usage: autan-mesh-info [--json] MESH\n"
+    "usage: autan-mesh-info [--json | --surface OUT] MESH\n"
     "\n"
-    "Reads MESH (Gmsh .msh 4.1, Fluent .msh, or an OpenFOAM polyMesh or case\n"
-    "directory) and prints its counts, zones and quality. With --json, prints\n"
-    "the MeshInfo document (schema autan.mesh-info/1) instead. Exits 1 with a\n"
-    "coded error (E01xx) if the mesh cannot be read, 2 on a usage error.\n";
+    "Reads MESH (Gmsh .msh 4.1, Fluent .msh, CGNS, or an OpenFOAM polyMesh or\n"
+    "case directory) and prints its counts, zones and quality. With --json,\n"
+    "prints the MeshInfo document (schema autan.mesh-info/1) instead. With\n"
+    "--surface OUT, writes its boundary faces by zone to OUT (schema\n"
+    "autan.surface/1) and prints nothing. Exits 1 with a coded error (E01xx)\n"
+    "if the mesh cannot be read, 2 on a usage error.\n";
 
 double max_of(const std::vector<double>& v) {
   return v.empty() ? 0.0 : *std::ranges::max_element(v);
@@ -66,11 +70,14 @@ void print_text(const autan::Mesh& mesh, const std::string& hash) {
 
 int main(int argc, char* const* argv) {
   bool json = false;
+  const char* surface = nullptr;
   const char* path = nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
-    if (arg == "--json") {
+    if (arg == "--json" && surface == nullptr) {
       json = true;
+    } else if (arg == "--surface" && !json && surface == nullptr && i + 1 < argc) {
+      surface = argv[++i];
     } else if (arg == "-h" || arg == "--help") {
       std::fputs(usage, stdout);
       return 0;
@@ -88,7 +95,16 @@ int main(int argc, char* const* argv) {
   try {
     const autan::Mesh mesh = autan::io::read_mesh(path);
     const std::string hash = autan::io::mesh_hash(path);
-    if (json) {
+    if (surface != nullptr) {
+      const std::string bytes = autan::io::surface_bytes(mesh, hash);
+      std::ofstream out(surface, std::ios::binary);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      out.close();
+      if (out.fail()) {
+        throw autan::Error(autan::ErrorCode::io_cannot_open,
+                           "cannot write '" + std::string(surface) + "'");
+      }
+    } else if (json) {
       std::printf("%s\n", autan::io::mesh_info_json(mesh, hash).c_str());
     } else {
       print_text(mesh, hash);
