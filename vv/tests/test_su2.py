@@ -93,6 +93,10 @@ def test_converted_mesh_is_the_slab_autan_reads(tmp_path: Path) -> None:
         assert node == order[0]
         return points[order, :2]
 
+    # Boundary edges run with the domain on their left, as in their counterclockwise quadrangle.
+    directed = {(int(q[k]), int(q[(k + 1) % 4])) for q in elements[:, 1:5] for k in range(4)}
+    for marker in markers.values():
+        assert all((int(a), int(b)) in directed for _, a, b in marker)
     airfoil, far = ring(markers["airfoil"]), ring(markers["farfield"])
     assert len(airfoil) == len(far) == nc
     np.testing.assert_allclose(np.abs(airfoil[:, 1]), _naca_y(airfoil[:, 0]), rtol=0, atol=4 * EPS)
