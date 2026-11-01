@@ -150,7 +150,7 @@ export function ResidualChart({
           history.exempt.has(name) ? (
             <Tooltip
               key={name}
-              content="Identically zero since iteration 1: exempt from convergence while it stays below 1e-12 of the largest initial residual"
+              content="Identically zero: exempt while below 1e-12 × the largest initial residual"
             >
               <span className="flex items-center gap-1.5 opacity-50" data-exempt>
                 <Swatch k={k} />
