@@ -828,45 +828,55 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     assert error.value.codes == ["E0701"]
 
 
-def _set_timing(path: Path, change: Callable[[dict[str, Any]], object]) -> None:
-    document = json.loads((path / "run.json").read_text())
-    change(document)
-    (path / "run.json").write_text(json.dumps(document))
-
-
-def test_run_json_timing_is_consistent_with_its_run(crm_run: autan.Results) -> None:
-    assert crm_run.run.timing is None  # the fake backend measures nothing
-    cells = crm_run.mesh_info.counts.cells
-    iterations = crm_run.run.iterations
-    good = {
+def test_a_fake_run_measures_no_timing(crm_run: autan.Results) -> None:
+    assert crm_run.run.timing is None
+    cells, iterations = crm_run.mesh_info.counts.cells, crm_run.run.iterations
+    fabricated = {
         "wall_seconds": 12.0,
         "solve_seconds": 10.0,
         "iterations": iterations,
         "ns_per_cell_iteration": 10.0 * 1e9 / (cells * iterations),
     }
-    _set_timing(crm_run.path, lambda d: d.update(timing=good))
-    assert autan.Results.open(crm_run.path).run.timing is not None
-    for bad in (
-        good | {"ns_per_cell_iteration": good["ns_per_cell_iteration"] * 1.01},
-        good | {"iterations": iterations - 1},
-        good | {"solve_seconds": 13.0},
-    ):
-        document = json.loads((crm_run.path / "run.json").read_text())
-        document["timing"] = bad
-        (crm_run.path / "run.json").write_text(json.dumps(document))
+    document = json.loads((crm_run.path / "run.json").read_text())
+    assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info) == []
+    for change in ({"timing": fabricated}, {"timing": "absent"}):
+        broken = dict(document) | change
+        if broken["timing"] == "absent":
+            del broken["timing"]
+        assert autan.results.check_run_json(broken, crm_run.case, crm_run.mesh_info)
+        (crm_run.path / "run.json").write_text(json.dumps(broken))
         with pytest.raises(autan.CaseError) as error:
             autan.Results.open(crm_run.path)
         assert error.value.codes == ["E0701"]
-    _set_timing(
-        crm_run.path,
-        lambda d: d.update(status="running", finished=None, monitors=None, timing=good),
-    )
+        if "timing" not in broken:
+            with pytest.raises(jsonschema.ValidationError):
+                jsonschema.Draft202012Validator(json_schema("results")).validate(broken)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda d: d.update(convergence={"floor": {}}),
+        lambda d: d.update(convergence={"floor": {"bogus": 1e-6}}),
+        lambda d: d.update(monitors=None),
+        lambda d: d["monitors"]["forces"].update(iteration=d["iterations"] - 1),
+        lambda d: d.update(
+            timing={
+                "wall_seconds": 1.0,
+                "solve_seconds": 1.0,
+                "iterations": 1,
+                "ns_per_cell_iteration": 1.0,
+            }
+        ),
+    ],
+)
+def test_check_run_json_refuses_what_results_open_refuses(
+    damage: Callable[[dict[str, Any]], object], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    damage(document)
+    assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info)
+    (crm_run.path / "run.json").write_text(json.dumps(document))
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(crm_run.path)
     assert error.value.codes == ["E0701"]
-    _set_timing(crm_run.path, lambda d: d.pop("timing"))
-    with pytest.raises(autan.CaseError):
-        autan.Results.open(crm_run.path)
-    document = json.loads((crm_run.path / "run.json").read_text())
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.Draft202012Validator(json_schema("results")).validate(document)
