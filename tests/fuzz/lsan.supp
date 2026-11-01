@@ -1,6 +1,6 @@
 # LeakSanitizer suppressions for the fuzz harnesses (LSAN_OPTIONS=suppressions=<this file>).
 # A rule hides every leak with that function anywhere in its allocation stack: one rule per
-# library function found leaking, never a public entry point such as cg_open, under which a
+# library function found leaking, never a broad entry point such as cg_open, under which a
 # missing cg_close of ours would also hide. Remove a rule once a fixed library is in use.
 # CGNS 4.5.2 returns CG_ERROR without freeing what it allocated on the way: the node ids of
 # cgi_get_nodes, and data read by cgi_read_node, in
