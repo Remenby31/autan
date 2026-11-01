@@ -121,3 +121,26 @@ test("a line longer than the code panel says so and scrolls to its end", async (
   expect(end).toEqual({ inside: true, atEnd: true });
   await expect(page.getByTestId("case-py-more")).toHaveCount(0);
 });
+
+test("a zone clicked in 3D gets a boundary rule, its condition from the mesh", async ({ page }) => {
+  const webgl = process.env.AUTAN_UI_E2E_BACKEND === "webgl2" ? "?webgl=1" : "";
+  await page.goto(`/cases/new${webgl}`);
+  await page.getByLabel("Mesh").selectOption("polyMesh");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+
+  const box = await view.boundingBox();
+  if (!box) throw new Error("the mesh view has no box");
+  await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
+
+  // polyMesh.meshinfo.json: ymin is a wall, zmax a symmetry plane, the others untyped.
+  const types: Record<string, string> = { ymin: "wall", zmax: "symmetry" };
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  const zone = await rule.getByLabel("Zones").inputValue();
+  expect(["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"]).toContain(zone);
+  await expect(rule.getByLabel("Condition")).toHaveValue(types[zone] ?? "wall");
+  await expect(rule.getByLabel("Zones")).toBeFocused();
+
+  await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+});

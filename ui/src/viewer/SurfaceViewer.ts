@@ -91,6 +91,16 @@ export class SurfaceViewer {
     geometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
     this.surface = surface;
     this.geometry = geometry;
+    if (surface.fields.length === 0) {
+      // A bare mesh: every node at the middle of the colormap, a neutral tone the selection
+      // highlight stands out from.
+      geometry.setAttribute(
+        "value",
+        new THREE.BufferAttribute(new Float32Array(surface.positions.length / 3), 1),
+      );
+      this.range.min.value = -1;
+      this.range.span.value = 2;
+    }
     this.setField(fieldName);
     geometry.computeBoundingSphere();
 
