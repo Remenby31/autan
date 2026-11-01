@@ -90,7 +90,11 @@ def _cmd_forces(args: argparse.Namespace) -> None:
             _say(
                 f"{name}: continuum {est['estimate']:.9f}, p = {est['order']:.3f}, GCI {est['gci']:.3g}"
             )
-    note = "" if report["evidence"] else " (not evidence: fake backend)"
+    note = (
+        ""
+        if report["evidence"]
+        else f" (not evidence: {'; '.join(report['not_evidence_because'])})"
+    )
     for verdict in report["verdicts"]:
         _say(f"gate {verdict['gate']}: {'PASS' if verdict['pass'] else 'FAIL'}{note}")
     if not report["pass"]:

@@ -4,8 +4,11 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <map>
 #include <memory>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,11 +33,20 @@ constexpr std::array<const char*, 6> field_names = {"Density",   "VelocityX", "V
 constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", "MomentumY",
                                                         "MomentumZ", "EnergyStagnationDensity"};
 
-// Three-stage scheme for steady second-order upwind discretisations, stage coefficients and
-// CFL number for upwind schemes of Blazek (2015), chapter 6.
-constexpr std::array<double, 3> steady_stages{0.1481, 0.4, 1.0};
-constexpr double steady_cfl = 1.5;
-constexpr double venkatakrishnan_k = 5.0;
+// Steady runs: pseudo-transient continuation, (V / dt + dR/dU) du = -R with the approximate
+// Jacobian, local dt = CFL V / lambda, the CFL number following the residual (switched evolution
+// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246).
+constexpr double cfl_start = 10.0;
+constexpr double cfl_min = 1.0;
+constexpr double first_order_drop = 1e-3;
+constexpr int first_order_max_steps = 200;
+constexpr double cfl_max = 1e6;
+constexpr int gauss_seidel_sweeps = 4;
+// No update may lower density or pressure by more than this fraction in one step; a step
+// shortened below min_step is rejected.
+constexpr double max_decrease = 0.5;
+constexpr double min_step = 1e-6;
+constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
@@ -69,6 +81,12 @@ class EulerPhysics final : public runtime::Physics {
     std::optional<Manufactured> mms;
     if (in.verification) mms.emplace(in.verification->text);
     set_boundaries(mms ? &*mms : nullptr);
+    if (in.time.kind == "steady") {
+      matrix_.emplace(mesh);
+      euler_.set_second_order(false);
+    } else {
+      second_order_ = true;
+    }
     if (mms) set_source(*mms);
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
@@ -82,6 +100,8 @@ class EulerPhysics final : public runtime::Physics {
     res_.assign(5 * n_, Res(0));
     lambda_.assign(n_, State(0));
     stage_.assign(5 * n_, 0.0);
+    rhs_.assign(5 * n_, 0.0);
+    du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
   }
@@ -122,6 +142,12 @@ class EulerPhysics final : public runtime::Physics {
                            mean_.begin() + static_cast<std::ptrdiff_t>((k + 1) * n_))});
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(n_, mean_weight_)});
+    }
+    // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
+    if (ctx_.input.time.kind == "steady") {
+      for (const auto& [name, value] : solver_state()) {
+        out.push_back({.name = name, .values = std::vector<double>(n_, value)});
+      }
     }
     return out;
   }
@@ -193,11 +219,18 @@ class EulerPhysics final : public runtime::Physics {
     const double speed = std::max(f.speed, c);
     Scheme s;
     s.flux = Flux::roe;
-    s.limiter = true;
+    // A manufactured solution is smooth by construction: verification measures the design
+    // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
+    s.limiter = !in.verification.has_value();
     s.venkat_k = venkatakrishnan_k;
     s.length = f.ref_length.value_or(1.0);
     s.scale = {f.density, speed, speed, speed, f.pressure};
     s.mach_ref = f.speed / c;
+    const double gamma = *in.cell_zones.front().medium.gamma;
+    const double q2 = f.velocity[0] * f.velocity[0] + f.velocity[1] * f.velocity[1] +
+                      f.velocity[2] * f.velocity[2];
+    s.reference = {f.density, f.density * f.velocity[0], f.density * f.velocity[1],
+                   f.density * f.velocity[2], f.pressure / (gamma - 1.0) + 0.5 * f.density * q2};
     return s;
   }
 
@@ -218,6 +251,11 @@ class EulerPhysics final : public runtime::Physics {
       for (const auto& f : start.restart_fields) {
         if (f.name == "AverageWeight") mean_weight_ = f.values.front();
       }
+      if (ctx_.input.time.kind == "steady") {
+        auto state = solver_state();
+        for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
+        set_solver_state(state);
+      }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -232,6 +270,31 @@ class EulerPhysics final : public runtime::Physics {
     const auto& vz = *find(start.fields, "VelocityZ");
     const auto& p = *find(start.fields, "Pressure");
     for (std::size_t c = 0; c < n_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
+  }
+
+  [[nodiscard]] std::vector<std::pair<std::string, double>> solver_state() const {
+    std::vector<std::pair<std::string, double>> v = {
+        {"SolverPenalty", penalty_},
+        {"SolverShortened", shortened_ ? 1.0 : 0.0},
+        {"SolverSecondOrder", second_order_ ? 1.0 : 0.0},
+        {"SolverFirstOrderSteps", static_cast<double>(first_order_steps_)}};
+    for (std::size_t k = 0; k < 5; ++k) {
+      v.emplace_back("SolverReferenceResidual" + std::to_string(k),
+                     first_norms_.empty() ? -1.0 : first_norms_[k]);
+    }
+    return v;
+  }
+
+  void set_solver_state(const std::vector<std::pair<std::string, double>>& v) {
+    penalty_ = v[0].second;
+    shortened_ = v[1].second != 0.0;
+    second_order_ = v[2].second != 0.0;
+    euler_.set_second_order(second_order_);
+    first_order_steps_ = static_cast<int>(v[3].second);
+    first_norms_.clear();
+    if (v[4].second >= 0.0) {
+      for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
+    }
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -312,7 +375,7 @@ class EulerPhysics final : public runtime::Physics {
 
   // R(u) of the FP64 solution, through the policy's state type.
   void residual_of(const std::vector<double>& u) {
-    for (std::size_t i = 0; i < u.size(); ++i) state_[i] = State(u[i]);
+    euler_.state(u, state_);
     euler_.residual(state_, res_);
   }
 
@@ -329,24 +392,88 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void steady_step(StepReport& report) {
-    // u_k = u_0 - alpha_k CFL / lambda R(u_{k-1}), the time step local to each cell; the update
-    // accumulates in FP64 (precision fp32+acc64).
-    stage_ = u_;
-    for (std::size_t s = 0; s < steady_stages.size(); ++s) {
-      residual_of(stage_);
-      if (s == 0) {
-        record_norms(report);
-        euler_.spectral_radius(lambda_);
-      }
-      for (std::size_t k = 0; k < 5; ++k) {
-        for (std::size_t c = 0; c < n_; ++c) {
-          const auto i = k * n_ + c;
-          stage_[i] = u_[i] - steady_stages[s] * steady_cfl / static_cast<double>(lambda_[c]) *
-                                  static_cast<double>(res_[i]);
-        }
+    euler_.state(u_, state_);
+    if (!second_order_) {
+      // The history reports the second-order residual from the first step on, so that the
+      // runtime never judges convergence on the first-order one.
+      euler_.set_second_order(true);
+      euler_.residual(state_, res_);
+      record_norms(report);
+      euler_.set_second_order(false);
+    }
+    euler_.residual_and_jacobian(state_, res_);
+    std::vector<double> norms = report.residuals;
+    record_norms(report);
+    if (!norms.empty()) std::swap(norms, report.residuals);
+    euler_.spectral_radius(lambda_);
+    // Largest relative residual over the equations, of the order being solved.
+    const std::vector<double>& current = norms.empty() ? report.residuals : norms;
+    double drop = 0.0;
+    if (first_norms_.empty()) first_norms_ = current;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
+    }
+    // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
+    // solution; second order from the step after the first-order residual has dropped.
+    if (!second_order_ &&
+        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      first_norms_.clear();
+    }
+    // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
+    // after each step the admissibility check shortened and recovering by half otherwise.
+    penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+    if (drop > 0.0) cfl_ = std::clamp(penalty_ * cfl_start / drop, cfl_min, cfl_max);
+    std::vector<double> shift(n_);
+    for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
+    euler_.assemble(shift, *matrix_);
+    matrix_->factor();
+    for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
+    std::fill(du_.begin(), du_.end(), 0.0);
+    matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
+    const double alpha = admissible_step();
+    shortened_ = alpha < 1.0;
+    if (alpha < min_step) {
+      // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
+      // number the run has diverged.
+      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return;
+    }
+    for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+  }
+
+  // The cell whose density or pressure the full step lowers the most, relatively.
+  [[nodiscard]] std::size_t worst_cell() const {
+    std::size_t worst = 0;
+    double lowest = std::numeric_limits<double>::infinity();
+    for (std::size_t c = 0; c < n_; ++c) {
+      const double r = std::min((u_[c] + du_[c]) / u_[c], pressure(c, 1.0) / pressure(c, 0.0));
+      if (r < lowest) {
+        lowest = r;
+        worst = c;
       }
     }
-    u_ = stage_;
+    return worst;
+  }
+
+  // Largest fraction of du (at most 1) that keeps every cell's density and pressure above
+  // (1 - max_decrease) of their current values.
+  [[nodiscard]] double admissible_step() const {
+    double alpha = 1.0;
+    for (std::size_t c = 0; c < n_; ++c) {
+      const double rho = u_[c], drho = du_[c];
+      if (drho < 0.0) alpha = std::min(alpha, max_decrease * rho / -drho);
+      const double p = pressure(c, 0.0);
+      while (alpha >= min_step && !(pressure(c, alpha) >= (1.0 - max_decrease) * p)) alpha *= 0.5;
+    }
+    return alpha;
+  }
+
+  [[nodiscard]] double pressure(std::size_t c, double a) const {
+    double v[5];
+    for (std::size_t k = 0; k < 5; ++k) v[k] = u_[k * n_ + c] + a * du_[k * n_ + c];
+    return (gas_.gamma - 1.0) * (v[4] - 0.5 * (v[1] * v[1] + v[2] * v[2] + v[3] * v[3]) / v[0]);
   }
 
   void unsteady_step(StepReport& report) {
@@ -424,7 +551,13 @@ class EulerPhysics final : public runtime::Physics {
   Gas gas_;
   std::size_t n_;
   Euler<P> euler_;
-  std::vector<double> u_, stage_, mean_;
+  std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
+  std::optional<BlockMatrix> matrix_;  // steady runs only
+  double cfl_ = cfl_start;
+  double penalty_ = 1.0;
+  bool second_order_ = false;
+  int first_order_steps_ = 0;
+  bool shortened_ = false;
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
   std::vector<Res> res_;

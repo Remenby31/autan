@@ -257,7 +257,7 @@ def study(runs: Sequence[Path]) -> dict[str, Any]:
     Each run must be the case of its condition, converging 10 orders (V0801); the runs must be one
     refinement family (V0802: the same case apart from its mesh, solver commit, backend and
     precision, distinct meshes), at least four levels, all `converged` (V0803). The verdicts are
-    evidence only when no run comes from the fake backend.
+    evidence only in fp64 and when no run comes from the fake backend.
     """
     if len(runs) < MIN_LEVELS:
         msg = f"a continuum estimate needs at least {MIN_LEVELS} levels, got {len(runs)}"
@@ -278,7 +278,12 @@ def study(runs: Sequence[Path]) -> dict[str, Any]:
     condition = _condition_of(reference)
     estimates = continuum(levels)
     verdicts = [check(g, levels, estimates) for g in GATES.values() if g.condition == condition]
-    fake = any(lv.backend == "fake" for lv in levels)
+    reasons = []
+    if any(lv.backend == "fake" for lv in levels):
+        reasons.append("fake backend")
+    if reference["precision"] != "fp64":
+        # acceptance.md: the NACA 0012 gates are measured in fp64.
+        reasons.append(f"precision {reference['precision']}, the gates are measured in fp64")
     return {
         "schema": STUDY_SCHEMA,
         "case": "naca0012",
@@ -287,5 +292,6 @@ def study(runs: Sequence[Path]) -> dict[str, Any]:
         "continuum": estimates,
         "verdicts": verdicts,
         "pass": all(v["pass"] for v in verdicts),
-        "evidence": not fake,
+        "evidence": not reasons,
+        "not_evidence_because": reasons,
     }

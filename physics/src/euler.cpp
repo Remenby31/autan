@@ -37,6 +37,7 @@ struct Euler<P>::Impl {
   kernels::CellStencil stencil;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
+  std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
 
@@ -101,6 +102,11 @@ struct Euler<P>::Impl {
       throw std::invalid_argument("AUSM+-up needs a positive cut-off Mach number");
     }
     d.mach_ref[0] = typename P::param(scheme.mach_ref);
+    const auto& r = scheme.reference;
+    if (!(r[0] > 0.0)) throw std::invalid_argument("reference density must be positive");
+    for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(r[c]);
+    d.p_ref[0] = typename P::param((gas.gamma - 1.0) *
+                                   (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     // Venkatakrishnan (1995), eq. 5, threshold eps^2 = (K h)^3 made dimensional:
     // eps_k^2 = (K / L)^3 V q_k^2.
     const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
@@ -201,6 +207,23 @@ struct Euler<P>::Impl {
     }
   }
 
+  void faces_jacobian() {
+    switch (scheme.flux) {
+      case Flux::roe:
+        ek::cpu::roe_faces_jacobian(d);
+        ek::cpu::roe_boundaries_jacobian(d);
+        break;
+      case Flux::hllc:
+        ek::cpu::hllc_faces_jacobian(d);
+        ek::cpu::hllc_boundaries_jacobian(d);
+        break;
+      case Flux::ausm_up:
+        ek::cpu::ausm_faces_jacobian(d);
+        ek::cpu::ausm_boundaries_jacobian(d);
+        break;
+    }
+  }
+
   void faces_tangent() {
     switch (scheme.flux) {
       case Flux::roe:
@@ -261,6 +284,18 @@ std::vector<double> Euler<P>::gradient_weights() const {
 }
 
 template <class P>
+void Euler<P>::set_second_order(bool on) {
+  auto& m = *impl_;
+  m.scheme.second_order = on;
+  if (!on) {
+    std::fill(m.grad.begin(), m.grad.end(), typename P::grad(0));
+    std::fill(m.phi.begin(), m.phi.end(), State(0));
+  } else if (!m.scheme.limiter) {
+    std::fill(m.phi.begin(), m.phi.end(), State(1));
+  }
+}
+
+template <class P>
 void Euler<P>::set_source(std::span<const double> source) {
   auto& m = *impl_;
   if (source.size() != m.source.size()) {
@@ -268,6 +303,15 @@ void Euler<P>::set_source(std::span<const double> source) {
   }
   for (std::size_t i = 0; i < source.size(); ++i) {
     m.source[i] = State(source[i]);
+  }
+}
+
+template <class P>
+void Euler<P>::state(std::span<const double> u, std::span<State> s) const {
+  const auto n = static_cast<std::size_t>(n_cells());
+  const auto& r = impl_->scheme.reference;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < n; ++c) s[k * n + c] = State(u[k * n + c] - r[k]);
   }
 }
 
@@ -286,6 +330,83 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   }
   ek::cpu::sources(m.d);
   m.faces();
+}
+
+template <class P>
+void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
+  auto& m = *impl_;
+  if (m.dwdu.empty()) {
+    // Allocated on first use: residual-only users (explicit, unsteady) carry no Jacobian.
+    const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+    const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+    m.face_jac.assign(50 * nf, typename P::jac(0));
+    m.bnd_jac.assign(25 * nf, typename P::jac(0));
+    m.dwdu.assign(25 * nc, typename P::jac(0));
+    m.d.face_jac = m.face_jac.data();
+    m.d.bnd_jac = m.bnd_jac.data();
+    m.d.dwdu = m.dwdu.data();
+  }
+  m.d.u = const_cast<State*>(s.data());
+  m.d.res = res.data();
+  ek::cpu::primitives_jacobian(m.d);
+  ek::cpu::boundary_states(m.d);
+  if (m.scheme.second_order) {
+    ek::cpu::gradients(m.d);
+    if (m.scheme.limiter) {
+      ek::cpu::limiter(m.d);
+    }
+  }
+  ek::cpu::sources(m.d);
+  m.faces_jacobian();
+}
+
+template <class P>
+void Euler<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
+  const auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  // Block k of a structure-of-arrays Jac dataset over n entities: entry (i, j) of entity e at
+  // (k * 25 + i * 5 + j) * n + e.
+  auto block = [](const std::vector<typename P::jac>& v, std::size_t n, std::size_t e,
+                  std::size_t k) {
+    std::array<double, 25> b{};
+    for (std::size_t q = 0; q < 25; ++q) b[q] = static_cast<double>(v[(25 * k + q) * n + e]);
+    return b;
+  };
+  // out += sign * J D.
+  auto add_product = [](double* out, const std::array<double, 25>& j,
+                        const std::array<double, 25>& dm, double sign) {
+    for (std::size_t r = 0; r < 5; ++r) {
+      for (std::size_t c = 0; c < 5; ++c) {
+        double t = 0.0;
+        for (std::size_t k = 0; k < 5; ++k) t += j[5 * r + k] * dm[5 * k + c];
+        out[5 * r + c] += sign * t;
+      }
+    }
+  };
+  a.zero();
+  for (std::size_t c = 0; c < nc; ++c) {
+    double* dg = a.diagonal(c);
+    for (std::size_t i = 0; i < 5; ++i) dg[6 * i] += shift[c];
+  }
+  for (std::size_t f = 0; f < ni; ++f) {
+    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+    const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
+    const auto jl = block(m.face_jac, nf, f, 0);
+    const auto jr = block(m.face_jac, nf, f, 1);
+    const auto dl = block(m.dwdu, nc, o, 0);
+    const auto dr = block(m.dwdu, nc, n, 0);
+    // R_o += F, R_n -= F.
+    add_product(a.diagonal(o), jl, dl, 1.0);
+    add_product(a.upper(f), jr, dr, 1.0);
+    add_product(a.lower(f), jl, dl, -1.0);
+    add_product(a.diagonal(n), jr, dr, -1.0);
+  }
+  for (std::size_t f = ni; f < nf; ++f) {
+    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+    add_product(a.diagonal(o), block(m.bnd_jac, nf, f, 0), block(m.dwdu, nc, o, 0), 1.0);
+  }
 }
 
 template <class P>
@@ -342,7 +463,8 @@ void Euler<P>::boundary_pressure(std::span<double> p, std::span<double> force) c
       dp += g(4, j, c) * r;
     }
     const double rho_c = static_cast<double>(m.prim[c]);
-    const double p_c = static_cast<double>(m.prim[4 * nc + c]);
+    // prim[4] is the gauge pressure p - p_ref.
+    const double p_c = static_cast<double>(m.d.p_ref[0]) + static_cast<double>(m.prim[4 * nc + c]);
     const double rho_f = rho_c + static_cast<double>(m.phi[c]) * drho;
     double p_f = p_c + static_cast<double>(m.phi[4 * nc + c]) * dp;
     if (!(rho_f > 0.0 && p_f > 0.0)) p_f = p_c;
