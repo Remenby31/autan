@@ -79,10 +79,10 @@ struct NavierStokes<P>::Impl {
     // Their face neighbours too: their face2 least-squares stencil reaches those boundary faces
     // on one side only, which leaves the faces between them first order.
     for (std::size_t f = 0; f < ni; ++f) {
-      const auto o = static_cast<std::size_t>(topo.owner[f]);
-      const auto q = static_cast<std::size_t>(topo.neighbour[f]);
-      if (fitted[o] == 1 && fitted[q] == 0) fitted[q] = 2;
-      if (fitted[q] == 1 && fitted[o] == 0) fitted[o] = 2;
+      const auto own = static_cast<std::size_t>(topo.owner[f]);
+      const auto nbr = static_cast<std::size_t>(topo.neighbour[f]);
+      if (fitted[own] == 1 && fitted[nbr] == 0) fitted[nbr] = 2;
+      if (fitted[nbr] == 1 && fitted[own] == 0) fitted[own] = 2;
     }
     auto ring = [&](std::size_t c) {
       return std::span<const index_t>(
