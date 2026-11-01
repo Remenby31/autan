@@ -473,9 +473,19 @@ test("a new case asks for what it lacks before showing errors", async ({ page })
   await expect(page.getByTestId("diagnostics")).toContainText("freestream.mach");
   await page.getByLabel("Mach").fill("0.3");
 
-  // One of Reynolds number and pressure (E0306): choosing one hides and clears the other.
+  // A Reynolds number needs its reference length (E0306): still to set, not an error.
   await page.getByLabel("Reynolds number", { exact: true }).fill("1000000");
+  await expect(page.getByTestId("still-to-set")).toHaveText("Still to set: Reference length");
+  await expect(page.getByTestId("diagnostics").getByRole("alert")).toHaveCount(0);
+  await page.getByLabel("Reference length", { exact: true }).fill("1");
+  // Inviscid with a Reynolds number already given: the choice stays, to give a pressure.
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await expect(page.getByLabel("Given by")).toBeVisible();
+  await page.getByLabel("Turbulence").selectOption("sa");
+  // One of Reynolds number and pressure (E0306): choosing one clears the other; the reference
+  // length stays, the moments need it.
   await page.getByLabel("Given by").selectOption("pressure");
+  await expect(page.getByLabel("Reference length", { exact: true })).toHaveValue("1");
   await expect(page.getByLabel("Reynolds number", { exact: true })).toHaveCount(0);
   await page.getByLabel("Pressure", { exact: true }).fill("101325");
   await expect(page.getByTestId("case-py")).toContainText("pressure=101325");
