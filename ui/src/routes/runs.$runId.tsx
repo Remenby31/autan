@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
@@ -413,6 +413,22 @@ function Facts({
           ),
         },
         { label: "Started", value: <RelativeTime iso={run.started} /> },
+        ...(run.start
+          ? [
+              {
+                label: run.start.mode === "continue" ? "Continues" : "Warm start from",
+                value: (
+                  <Link
+                    to="/runs/$runId"
+                    params={{ runId: run.start.run_id }}
+                    className="font-mono text-accent hover:underline"
+                  >
+                    {run.start.run_id.slice(-8)}
+                  </Link>
+                ),
+              },
+            ]
+          : []),
         {
           label: run.status === "running" ? "Elapsed · left" : "Duration",
           value: (
