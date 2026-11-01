@@ -408,40 +408,29 @@ boundary_states = boundary_loop(
 
 
 @pointwise
-def lsq_term(wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3) -> Grad.Mat53:
-    return outer(wn - wc, w)
+def lsq_term(
+    wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
+    return outer(wn - wc, w), wn, wn
+
+
+@pointwise
+def include_own_value(
+    gsum: Residual.Mat53, lo: Residual.Vec5, hi: Residual.Vec5, wc: State.Vec5
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
+    return gsum, min(lo, wc), max(hi, wc)
 
 
 # Least squares over the cell stencil (vertex or face2 neighbours, Topology::stencil): over face
 # neighbours alone the second-order scheme is linearly unstable on tetrahedra (docs/design/
-# euler.md). The limiter's bounds are taken over the same stencil.
+# euler.md). The same pass gathers the limiter's bounds over that stencil.
 gradients = cell_reduce(
     lsq_term,
     over=STENCIL,
     wc=prim.self_,
     wn=prim.other(boundary=prim_b),
     w=geometry.stencil_lsq_weight,
-    acc=Sum(grad),
-)
-
-
-@pointwise
-def neighbour_bounds(wn: State.Vec5) -> tuple[State.Vec5, State.Vec5]:
-    return wn, wn
-
-
-@pointwise
-def include_own_value(
-    lo: Residual.Vec5, hi: Residual.Vec5, wc: State.Vec5
-) -> tuple[State.Vec5, State.Vec5]:
-    return min(lo, wc), max(hi, wc)
-
-
-bounds = cell_reduce(
-    neighbour_bounds,
-    over=STENCIL,
-    wn=prim.other(boundary=prim_b),
-    acc=[Min(wmin), Max(wmax)],
+    acc=[Sum(grad), Min(wmin), Max(wmax)],
     finalise=include_own_value,
     finalise_args={"wc": prim},
 )

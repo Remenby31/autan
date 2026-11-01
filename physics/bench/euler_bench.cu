@@ -1,8 +1,8 @@
 // Times the full Euler residual (kernels/euler.py: primitives, boundary states, face2 LSQ
-// gradients, limiter bounds and limiter, sources, face and boundary fluxes) on one mesh and prints
-// the raw JSON autan-bench reads. bytes_per_rep is the sum over the loops of each loop's analytic
-// minimum (every array it touches read or written once); the result is checked against the host
-// residual (autan::physics::Euler) before timing.
+// gradients with the limiter's bounds, limiter, sources, face and boundary fluxes) on one mesh and
+// prints the raw JSON autan-bench reads. bytes_per_rep is the sum over the loops of each loop's
+// analytic minimum (every array it touches read or written once); the result is checked against the
+// host residual (autan::physics::Euler) before timing.
 //
 //   euler_bench MESH [--policy fp64|fp32+acc64] [--flux roe|hllc|ausm-up] [--block N]
 //                    [--warmup N] [--reps N] [--batch N]
@@ -199,7 +199,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   auto conv = [](const std::vector<double>& h) {
     return DeviceArray<G>(std::vector<G>(h.begin(), h.end()));
   };
-  DeviceArray<G> face_normal = conv(packed.face_normal), face_area = conv(packed.face_area_magnitude),
+  DeviceArray<G> face_normal = conv(packed.face_normal),
+                 face_area = conv(packed.face_area_magnitude),
                  face_centroid = conv(packed.face_centroid), face_moment = conv(packed.face_moment),
                  cell_centroid = conv(packed.cell_centroid), cell_volume = conv(packed.cell_volume),
                  st_weight = conv(stencil.lsq_weight);
@@ -256,7 +257,6 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   sched.face_scratch = scratch.get();
   sched.face_scratch_width = scratch_width;
 
-
   // Analytic minimum of each loop: every array it touches read or written once.
   const double cs = static_cast<double>(nc), fs = static_cast<double>(nf),
                is = static_cast<double>(ni), bs = static_cast<double>(nb),
@@ -273,9 +273,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
       {"primitives", cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::primitives(d, sched); }},
       {"boundary_states", bs * (sI + 5 * sS + sK + 5 * sS + 3 * sG + 5 * sS),
        [&](gpu::Strategy) { ek::gpu_loops::boundary_states(d, sched); }},
-      {"gradients", gather + st * 3 * sG + cs * 15 * sGr,
+      {"gradients", gather + st * 3 * sG + cs * (15 * sGr + 10 * sS),
        [&](gpu::Strategy) { ek::gpu_loops::gradients(d, sched); }},
-      {"bounds", gather + cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::bounds(d, sched); }},
       {"limiter",
        cs * (5 * sS + 15 * sGr + 10 * sS + sG + 3 * sG + 5 * sS + sO) +
            static_cast<double>(topo.n_incidences) * sI + fs * 3 * sG,
@@ -330,11 +329,11 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     out.verified = out.verified && diff <= out.tolerance;
     std::string tag = gpu::name(s);
     std::replace(tag.begin(), tag.end(), '-', '_');
-    out.timed.push_back({"residual_" + o.flux + "_" + tag, gpu::name(s), bytes,
-                         time_it(o, [&] { residual(s); })});
+    out.timed.push_back(
+        {"residual_" + o.flux + "_" + tag, gpu::name(s), bytes, time_it(o, [&] { residual(s); })});
     for (const auto& l : loops) {
-      const bool by_strategy = std::string_view(l.name) == "faces" ||
-                               std::string_view(l.name) == "boundaries";
+      const bool by_strategy =
+          std::string_view(l.name) == "faces" || std::string_view(l.name) == "boundaries";
       if (!by_strategy && s != gpu::Strategy::atomic) continue;
       out.timed.push_back({std::string(l.name) + (by_strategy ? "_" + o.flux + "_" + tag : ""),
                            gpu::name(s), l.bytes, time_it(o, [&] { l.launch(s); })});
@@ -400,8 +399,8 @@ int main(int argc, char** argv) {
     std::printf(
         "%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":\"%s\","
         "\"policy\":\"%s\",\"flux\":\"%s\"},\"seconds\":[",
-        k ? "," : "", t.name.c_str(), t.bytes, mesh.n_cells(), t.strategy.c_str(),
-        o.policy.c_str(), o.flux.c_str());
+        k ? "," : "", t.name.c_str(), t.bytes, mesh.n_cells(), t.strategy.c_str(), o.policy.c_str(),
+        o.flux.c_str());
     for (std::size_t i = 0; i < t.seconds.size(); ++i)
       std::printf("%s%.9e", i ? "," : "", t.seconds[i]);
     std::printf("]}");
