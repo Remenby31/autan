@@ -391,6 +391,12 @@
       "fix": "Use `autan.Compressible(...)`, or remove the solid zone from the mesh.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0506"
     },
+    "E0507": {
+      "severity": "error",
+      "title": "Initial state does not match the physics",
+      "fix": "Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0507"
+    },
     "E0601": {
       "severity": "error",
       "title": "Monitor surfaces match no boundary zone",
@@ -438,6 +444,24 @@
       "title": "Physics not in this solver build",
       "fix": "Use a build that includes it, or change the case or the devices.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0706"
+    },
+    "E0707": {
+      "severity": "error",
+      "title": "Previous run cannot be resumed",
+      "fix": "Start from another run, or run the case from the freestream.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0707"
+    },
+    "E0708": {
+      "severity": "error",
+      "title": "Start does not match the case",
+      "fix": "Change the case, or use `warm` to start a different case from that state.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0708"
+    },
+    "E0709": {
+      "severity": "error",
+      "title": "Start solution differs",
+      "fix": "Prepare the input again from the run as it is now.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0709"
     },
     "W0801": {
       "severity": "warning",
@@ -547,6 +571,12 @@
       "fix": "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1012"
     },
+    "E1013": {
+      "severity": "error",
+      "title": "Policy not available on the backend",
+      "fix": "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1013"
+    },
     "E1100": {
       "severity": "error",
       "title": "Generated loop failed",
@@ -588,6 +618,18 @@
       "title": "Incidence twins missing",
       "fix": "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1106"
+    },
+    "E1107": {
+      "severity": "error",
+      "title": "Metal runtime error",
+      "fix": "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1107"
+    },
+    "E1108": {
+      "severity": "error",
+      "title": "Strategy not available",
+      "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
     }
   }
 }

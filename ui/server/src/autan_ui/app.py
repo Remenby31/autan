@@ -13,15 +13,17 @@ from typing import Annotated, Any
 
 import autan
 import uvicorn
-from autan.errors import CaseError
+from autan.errors import CaseError, doc_url
+from autan.results import LogLine, log_line_problems
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from pydantic import ValidationError
 from watchfiles import Change, awatch
 
 from autan_ui.confine import Folder, is_link
-from autan_ui.history import read_history
+from autan_ui.history import read_lines
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
@@ -29,6 +31,7 @@ from autan_ui.registry import (
     read_run,
 )
 from autan_ui.surface import synthetic_wing
+from autan_ui.wall import wall_surface
 
 log = logging.getLogger(__name__)
 
@@ -62,20 +65,25 @@ MAX_FOLLOWED = 8
 
 
 class Follower:
-    """One run read for a stream: run.json when it changes and history.jsonl from a byte offset,
-    through a folder pinned at the start so that replacing the directory cannot redirect reads.
-    `done` once the history breaks the contract (an `invalid` event was produced)."""
+    """One run read for a stream: run.json when it changes, history.jsonl and log.jsonl from
+    byte offsets, through a folder pinned at the start so that replacing the directory cannot
+    redirect reads. `done` once a file breaks the contract (an `invalid` event was produced).
+    Log lines carry the documentation page of their code as `doc`."""
 
-    def __init__(self, directory: Path, offset: int) -> None:
+    def __init__(self, directory: Path, offsets: dict[str, int]) -> None:
         self.directory = directory
         self.folder = Folder(directory)
-        self.offset = offset
+        self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
+        self.read = dict(self.offsets)
         self.run: dict[str, Any] | None = None
         self.run_mtime: int | None = None
-        self.sent_history = False
+        self.sent = False
         self.done = False
 
     def poll(self) -> list[tuple[str, Any]]:
+        """New events, in order. A `history`/`log` event's data is `(records, file, offset)`;
+        the stream calls `delivered` once it has sent it, so that a reconnection resumes from
+        what the client received, not from what was read."""
         events: list[tuple[str, Any]] = []
         mtime = _mtime(self.folder)
         if self.run is None or mtime != self.run_mtime:
@@ -85,29 +93,62 @@ class Follower:
                 self.done = True
                 return [("invalid", str(error))]
             events.append(("run", self.run))
-        try:
-            chunk = read_history(self.folder, self.offset, live=self.run["status"] == "running")
-        except (OSError, ValueError) as error:
-            self.done = True
-            return [*events, ("invalid", str(error))]
-        if chunk.records or not self.sent_history:
-            self.offset, self.sent_history = chunk.offset, True
-            events.append(("history", chunk.records))
+        live = self.run["status"] == "running"
+        for name, event in STREAMED.items():
+            try:
+                chunk = read_lines(self.folder, name, self.read[name], live=live)
+                records = (
+                    [_log_line(line) for line in chunk.records] if event == "log" else chunk.records
+                )
+            except (OSError, ValueError) as error:
+                self.done = True
+                return [*events, ("invalid", str(error))]
+            if chunk.records or not self.sent:
+                self.read[name] = chunk.offset
+                events.append((event, (records, name, chunk.offset)))
+        self.sent = True
         return events
+
+    def delivered(self, name: str, offset: int) -> None:
+        self.offsets[name] = offset
 
     def close(self) -> None:
         self.folder.close()
 
 
-def _offsets(last_event_id: str | None) -> dict[str, int]:
-    """The byte offsets of a reconnecting multi-run stream; anything malformed restarts at 0."""
+STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
+
+
+def _log_line(record: object) -> dict[str, Any]:
+    """A log.jsonl record checked by the SDK's model and rules (results.md#log), with the
+    documentation page of its code; ValueError otherwise."""
+    try:
+        line = LogLine.model_validate(record)
+    except ValidationError as error:
+        msg = f"log.jsonl: {error.errors(include_url=False)[0]['msg']}"
+        raise ValueError(msg) from error
+    problems = log_line_problems(line)
+    if problems:
+        msg = f"log.jsonl: {problems[0]}"
+        raise ValueError(msg)
+    document = line.model_dump(mode="json")
+    return document | {"doc": doc_url(line.code) if line.code else None}
+
+
+def _offsets(last_event_id: str | None) -> dict[str, Any]:
+    """The offsets of a reconnecting stream, as its last event id carried them; anything
+    malformed restarts from the start of the files."""
     try:
         parsed = json.loads(last_event_id) if last_event_id else {}
     except ValueError:
         return {}
-    if not isinstance(parsed, dict):
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _file_offsets(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
         return {}
-    return {k: v for k, v in parsed.items() if type(v) is int and v >= 0}
+    return {k: v for k, v in value.items() if k in STREAMED and type(v) is int and v >= 0}
 
 
 def _mtime(folder: Folder) -> int | None:
@@ -145,6 +186,8 @@ def create_app(
     runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
 ) -> FastAPI:
     registry = Registry(runs_root)
+    # The last surface built: reopening a run in the viewer needs no new extraction.
+    surfaces: dict[tuple[str, int, int], bytes] = {}
     build = _open_build(static)
 
     @asynccontextmanager
@@ -225,7 +268,9 @@ def create_app(
         followers: dict[str, Follower] = {}
         try:
             for run_id in run_ids:
-                followers[run_id] = Follower(registry.run_dir(run_id), offsets.get(run_id, 0))
+                followers[run_id] = Follower(
+                    registry.run_dir(run_id), _file_offsets(offsets.get(run_id))
+                )
         except (LookupError, ValueError, OSError) as error:
             for follower in followers.values():
                 follower.close()
@@ -240,11 +285,14 @@ def create_app(
                     if follower.done:
                         continue
                     for event, data in follower.poll():
-                        payload = {"run_id": run_id, "data": data}
-                        if event == "history":
-                            ids = {k: f.offset for k, f in followers.items()}
+                        if event in STREAMED.values():
+                            records, name, offset = data
+                            follower.delivered(name, offset)
+                            ids = {k: f.offsets for k, f in followers.items()}
+                            payload = {"run_id": run_id, "data": records}
                             yield ServerSentEvent(event=event, data=payload, id=json.dumps(ids))
                         else:
+                            payload = {"run_id": run_id, "data": data}
                             yield ServerSentEvent(event=event, data=payload)
                 if all(f.done for f in followers.values()):
                     return
@@ -303,12 +351,11 @@ def create_app(
         request: Request,
         last_event_id: Annotated[str | None, Header()] = None,
     ) -> AsyncIterator[ServerSentEvent]:
-        """`run` with the current run.json, then `history` batches; the event id is the byte
-        offset reached, so a reconnecting EventSource resumes where it stopped. A history that
-        breaks the contract ends the stream with `invalid` and its reason."""
-        offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
+        """`run` with the current run.json, then `history` and `log` batches; the event id is
+        the JSON map of byte offsets reached, so a reconnecting EventSource resumes where it
+        stopped. A file that breaks the contract ends the stream with `invalid` and its reason."""
         try:
-            follower = Follower(registry.run_dir(run_id), offset)
+            follower = Follower(registry.run_dir(run_id), _file_offsets(_offsets(last_event_id)))
         except (LookupError, ValueError, OSError) as error:
             yield ServerSentEvent(event="invalid", data=f"run {run_id} is gone: {error}")
             return
@@ -318,8 +365,11 @@ def create_app(
         try:
             while True:
                 for event, data in follower.poll():
-                    if event == "history":
-                        yield ServerSentEvent(event=event, data=data, id=str(follower.offset))
+                    if event in STREAMED.values():
+                        records, name, offset = data
+                        follower.delivered(name, offset)
+                        cursor = json.dumps(follower.offsets)
+                        yield ServerSentEvent(event=event, data=records, id=cursor)
                     else:
                         yield ServerSentEvent(event=event, data=data)
                 if follower.done or await anext(changes, None) is None:
@@ -328,6 +378,28 @@ def create_app(
             stop.set()
             watcher.cancel()
             follower.close()
+
+    @app.get("/api/runs/{run_id}/surface")
+    def run_surface(run_id: Annotated[str, Depends(existing_run)]) -> Response:
+        """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
+        directory = find_run(run_id)
+        with Folder(directory) as folder:
+            if read_run(folder)["status"] == "running":
+                # results.md: the solution is not a result while the run is running.
+                raise HTTPException(409, f"run {run_id} is still running")
+            stat = folder.stat("solution.cgns")
+            if stat is None:
+                raise HTTPException(404, f"run {run_id} has no solution.cgns")
+            key = (run_id, stat.st_mtime_ns, stat.st_size)
+            message = surfaces.get(key)
+            if message is None:
+                try:
+                    message = wall_surface(folder)
+                except (OSError, ValueError, KeyError) as error:
+                    raise HTTPException(422, f"solution.cgns: {error}") from error
+                surfaces.clear()
+                surfaces[key] = message
+        return Response(message, media_type="application/octet-stream")
 
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(

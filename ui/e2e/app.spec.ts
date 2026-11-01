@@ -84,7 +84,13 @@ test("a diverged run shows its diagnostic in the log and the plan of its case", 
   await expect(page.getByRole("cell", { name: "wing.main" })).toBeVisible();
   await page.getByRole("tab", { name: "Log" }).click();
   await expect(page).toHaveURL(/tab=log/);
-  await expect(page.getByTestId("log")).toContainText("D0107");
+  const log = page.getByTestId("log");
+  await expect(log.getByRole("link", { name: "D0107" })).toHaveAttribute("href", /#d0107$/);
+  const lines = log.locator("time");
+  const all = await lines.count();
+  await page.getByRole("button", { name: /^info/ }).click();
+  await expect(lines).not.toHaveCount(all);
+  await expect(log.getByRole("link", { name: "D0107" })).toBeVisible();
 });
 
 test("viewer renders on WebGPU and picks the zone under the cursor", async ({ page }) => {
@@ -136,4 +142,17 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await group.getByRole("button", { name: "Compare" }).click();
   await expect(page.getByTestId("polar")).toBeVisible();
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
+});
+
+test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
+  const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/runs/${converged.run_id}`);
+  await page.getByRole("button", { name: "Open in Analysis" }).click();
+  await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
+  await expect(page.getByTestId("zones")).toContainText("wing.main");
+  await expect(page.getByTestId("zones")).not.toContainText("farfield");
+  await expect(page.getByTestId("legend")).toHaveText("Cp");
+  await page.getByRole("tab", { name: "Cf" }).click();
+  await expect(page.getByTestId("legend")).toHaveText("Cf");
+  await expect(page).toHaveURL(/field=Cf/);
 });

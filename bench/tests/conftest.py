@@ -65,6 +65,7 @@ def make_result(
             "during_run": {
                 "samples": 3,
                 "busy_samples": 2,
+                "busy_threshold_pct": 50.0,
                 "sm_mhz": {"min": 2400.0, "median": 2400.0, "max": 2400.0},
                 "sm_max_mhz": 3003.0,
                 "power_w": None,
