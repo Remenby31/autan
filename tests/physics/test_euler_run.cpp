@@ -372,3 +372,33 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(diagnostic["data"]["zone"] ==
         (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][2]["zone"]));
 }
+
+TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
+  // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from
+  // the freestream that rounds to zero density, so the residual is not finite and the run
+  // diverges; D0107 must name a cell of that zone. In FP64 the state is representable; whatever
+  // happens, a divergence names its cell.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    for (auto& z : d["cell_zones"]) {
+      if (z["zone"] == "lower")
+        z["initial"]["density"] = 1e-9 * d["freestream"]["density"].get<double>();
+    }
+    d["time"]["max_iterations"] = 5;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(!out.run.empty());  // a run directory, whatever the exit status
+  const Json info = Json::parse(read(out.run / "run.json"));
+  INFO(info["diagnostics"].dump());
+  if (std::string(precision) == "fp32+acc64") CHECK(info["status"] == "diverged");
+  if (info["status"] == "diverged") {
+    const auto& diagnostics = info["diagnostics"];
+    const auto d107 = std::find_if(diagnostics.begin(), diagnostics.end(),
+                                   [](const Json& g) { return g["code"] == "D0107"; });
+    REQUIRE(d107 != diagnostics.end());
+    CHECK((*d107)["data"]["zone"] == "lower");
+  }
+}

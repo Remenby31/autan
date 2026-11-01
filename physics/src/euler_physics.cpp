@@ -75,7 +75,8 @@ class EulerPhysics final : public runtime::Physics {
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)) {
+        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        reference_(scheme(ctx.input).reference) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
@@ -108,6 +109,14 @@ class EulerPhysics final : public runtime::Physics {
 
   StepReport step(std::int64_t /*iteration*/) override {
     StepReport report;
+    // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
+    // before a solve turns it into an exception.
+    if (const auto bad = first_invalid_cell()) {
+      residual_of(u_);
+      record_norms(report);
+      report.diverged_cell = bad;
+      return report;
+    }
     if (ctx_.input.time.kind == "steady") {
       steady_step(report);
     } else {
@@ -508,15 +517,25 @@ class EulerPhysics final : public runtime::Physics {
     report.time_step = dt;
   }
 
+  // The first cell whose state, as the kernels store it (P::state differences from the
+  // reference, so FP32 in fp32+acc64), has a non-finite or non-positive density or pressure;
+  // else the first cell whose residual is not finite.
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
     for (std::size_t c = 0; c < n_; ++c) {
-      const double rho = u_[c];
-      const double q2 = (u_[n_ + c] * u_[n_ + c] + u_[2 * n_ + c] * u_[2 * n_ + c] +
-                         u_[3 * n_ + c] * u_[3 * n_ + c]) /
-                        rho;
-      const double p = (gas_.gamma - 1.0) * (u_[4 * n_ + c] - 0.5 * q2);
+      std::array<double, 5> v{};
+      for (std::size_t k = 0; k < 5; ++k) {
+        v[k] = static_cast<double>(State(u_[k * n_ + c] - reference_[k])) + reference_[k];
+      }
+      const double rho = v[0];
+      const double p =
+          (gas_.gamma - 1.0) * (v[4] - 0.5 * (v[1] * v[1] + v[2] * v[2] + v[3] * v[3]) / rho);
       if (!std::isfinite(rho) || !std::isfinite(p) || rho <= 0.0 || p <= 0.0) {
         return static_cast<index_t>(c);
+      }
+    }
+    for (std::size_t c = 0; c < n_; ++c) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return static_cast<index_t>(c);
       }
     }
     return std::nullopt;
@@ -551,6 +570,7 @@ class EulerPhysics final : public runtime::Physics {
   Gas gas_;
   std::size_t n_;
   Euler<P> euler_;
+  std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
   double cfl_ = cfl_start;
