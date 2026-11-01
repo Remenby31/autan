@@ -175,9 +175,12 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
                                       : autan::physics::Flux::roe;
   scheme.mach_ref = 0.5;
   scheme.scale = {rho, a, a, a, p};
+  const double q2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  scheme.reference = {rho, rho * v[0], rho * v[1], rho * v[2], p / (gamma - 1.0) + 0.5 * rho * q2};
   autan::physics::Euler<P> host(mesh, geometry, {gamma, 287.0}, scheme);
   host.set_boundary(kind, data);
-  std::vector<S> us(u.begin(), u.end());
+  std::vector<S> us(u.size());
+  host.state(u, us);
   std::vector<R> reference(5 * nc);
   host.residual(us, reference);
 
@@ -253,6 +256,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   d.gamma[0] = typename P::param(gamma);
   d.gas_constant[0] = typename P::param(287.0);
   d.mach_ref[0] = typename P::param(0.5);
+  for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(scheme.reference[c]);
+  d.p_ref[0] = typename P::param(p);
   const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
   for (std::size_t c = 0; c < 5; ++c)
     d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);

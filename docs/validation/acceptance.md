@@ -29,10 +29,10 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | Ringleb flow, gate `ringleb-order` | L2 order 2 ± 0.1 in density and entropy | HiOCFD1 C1.2; datasets §M2 |
 | Isentropic vortex, one period (t = 40 at Mach 0.5), domain [−10, 10]², gate `vortex-order` | spatial order 2 ± 0.1 for each conserved variable; temporal order = RK order ± 0.1 | Spiegel, Huynh and DeBonis, AIAA 2015-2444 |
 | Sod shock tube, gate `sod-order` | density L1 order between 0.6 and 1.1 | Banks, Aslam and Rider 2008 (between 2/3 and 1 for a contact); *ours*: 0.6 and 1.1 allow ±0.1 of fitting noise |
-| NACA 0012 inviscid, M 0.8, α 0° | continuum CD within 1 count of 0.008342 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
-| NACA 0012 inviscid, M 0.8, α 1.25° | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 | idem, point-vortex farfield runs |
-| NACA 0012 inviscid, M 0.5, α 1.25° | CD decreases monotonically; extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
-| ONERA M6 inviscid (run 2308 conditions) | residual drop ≥ 10 orders; shock x/c within ±0.03 of experiment at η = 0.20–0.65 (report) | PLAN M2; Schmitt and Charpin 1979 (`onera-m6` case) |
+| NACA 0012 inviscid, M 0.8, α 0° | continuum CD within 1 count of 0.008342 in `fp64`; `fp32+acc64` as for ONERA M6 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
+| NACA 0012 inviscid, M 0.8, α 1.25° | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 in `fp64`; `fp32+acc64` as for ONERA M6 | idem, point-vortex farfield runs |
+| NACA 0012 inviscid, M 0.5, α 1.25° | CD decreases monotonically; extrapolated \|CD\| < 0.5 count in `fp64`; `fp32+acc64` as for ONERA M6 | idem (subcritical, CD → 0) |
+| ONERA M6 inviscid (run 2308 conditions) | `fp64`: residual drop ≥ 10 orders. `fp32+acc64`: CL, CD, CM within 0.1 % of `fp64` and Cp within 10⁻³ of it on the same mesh ([euler.md](../design/euler.md#precision)); the residual plateau is reported, not gated; shock x/c within ±0.03 of experiment at η = 0.20–0.65 (report) | PLAN M2; Schmitt and Charpin 1979 (`onera-m6` case). *Ours* (lead, 2026-11-01): 10 orders prove the discretisation and the solver, so they are measured in `fp64`; in `fp32+acc64` each face flux carries FP32 rounding, which bounds the drop by an amount that depends on the case (3.8 orders on a NACA 0012, [euler.md](../design/euler.md#precision)) |
 
 ## M3 — Navier-Stokes and Spalart-Allmaras
 
