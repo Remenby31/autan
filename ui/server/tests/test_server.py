@@ -396,3 +396,23 @@ def test_residual_drop_is_the_slowest_equation(
 ) -> None:
     orders = residual_orders(first, now)
     assert orders == (None if expected is None else pytest.approx(expected))
+
+
+def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
+    first = next(runs.iterdir())
+    second = shutil.copytree(first, runs / ".staging")
+    run = json.loads((second / "run.json").read_text())
+    run |= {"run_id": "run-20261031T235959Z-0123abcd", "started": "2026-10-31T23:59:59Z"}
+    (second / "run.json").write_text(json.dumps(run))
+    second = second.rename(runs / run["run_id"])
+    url = f"{server}/api/runs/history/events?run={first.name}&run={second.name}"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        seen = [next(events) for _ in range(4)]
+    assert sorted((kind, data["run_id"]) for kind, data in seen) == sorted(
+        [(k, r) for k in ("run", "history") for r in (first.name, second.name)]
+    )
+    assert (
+        httpx.get(f"{server}/api/runs/history/events?run=run-20261031T000000Z-deadbeef").status_code
+        == 404
+    )

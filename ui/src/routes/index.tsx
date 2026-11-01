@@ -18,6 +18,7 @@ import {
   type RunSummary,
 } from "../api/contracts";
 import { runsQuery } from "../api/runs";
+import { degrees } from "../api/units";
 import { Peek } from "../components/runs/Peek";
 import { SelectionBar } from "../components/runs/SelectionBar";
 import { SelectionContext, useSelection } from "../components/runs/selection";
@@ -122,7 +123,8 @@ function Runs() {
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const links = [...(rows.current?.querySelectorAll<HTMLAnchorElement>("a[data-row]") ?? [])];
-      const focused = links.find((link) => link === document.activeElement);
+      const row = (document.activeElement as HTMLElement | null)?.closest("li[data-run-row]");
+      const focused = links.find((link) => link === document.activeElement || row?.contains(link));
       const runId = focused?.dataset.run;
       if (e.key === "j" || e.key === "k") {
         const at = focused ? links.indexOf(focused) : -1;
@@ -138,8 +140,9 @@ function Runs() {
       } else if (e.key === "c") {
         compareSelected.current();
       } else if (e.key === "Escape") {
-        setPeek(null);
-        setSelected(new Set());
+        // The innermost layer first: an open preview closes before the selection clears.
+        if (peekOpen.current) setPeek(null);
+        else setSelected(new Set());
       }
     };
     window.addEventListener("keydown", onKey);
@@ -148,16 +151,19 @@ function Runs() {
 
   const compare = (ids: string[]) =>
     void navigate({ to: "/compare", search: { runs: ids.slice(0, 8) } });
-  // Compares in the order of the list; read through a ref by the key handler.
+  // Compares in selection order, whatever the filters show; read through refs by the key handler.
   const compareSelected = useRef(() => {});
   compareSelected.current = () => {
-    const ids = runs.map((r) => r.run_id).filter((id) => selected.has(id));
+    const known = new Set(data?.runs.map((r) => r.run_id));
+    const ids = [...selected].filter((id) => known.has(id));
     if (ids.length >= 2) compare(ids);
   };
+  const peekOpen = useRef(false);
+  peekOpen.current = peek !== null;
   const peekRun = peek ? data?.runs.find((r) => r.run_id === peek) : undefined;
 
   const filtered = Boolean(search.status?.length || search.case?.length || search.q);
-  const grouped = !search.flat && cases.length > 1;
+  const grouped = !search.flat;
 
   return (
     <SelectionContext.Provider value={{ selected, toggle, peek }}>
@@ -193,7 +199,7 @@ function Runs() {
               onChange={(c) => setSearch({ case: c.length ? c : undefined })}
               render={(c) => c}
             />
-            {cases.length > 1 && (
+            {cases.length > 0 && (
               <Button
                 size="md"
                 variant="tertiary"
@@ -412,22 +418,30 @@ function Group({
   );
 }
 
-/** "aoa 7.05–21.47 deg" for the settings that vary across a group; null when none does. */
+/** "α 7.05–21.47 deg" for the settings that vary across a group; null when none does. Angles
+ * are compared in degrees, whatever unit each case wrote. */
 export function study(settings: (RunSettings | undefined)[]): string | null {
   const parts: string[] = [];
-  for (const key of ["aoa", "mach", "re", "turbulence", "precision"] as const) {
-    const values = [...new Set(settings.map((s) => s?.[key]).filter((v) => v != null))];
-    if (values.length < 2) continue;
-    const numbers = values.map((v) => (typeof v === "number" ? v : Number.parseFloat(String(v))));
-    if (numbers.every(Number.isFinite)) {
-      const unit =
-        typeof values[0] === "string" ? String(values[0]).replace(/^[-\d.eE+]+\s*/, "") : "";
-      const label = key === "aoa" ? "α" : key;
-      parts.push(
-        `${label} ${Math.min(...numbers)}–${Math.max(...numbers)}${unit ? ` ${unit}` : ""}`,
-      );
+  const labels = {
+    aoa: "α",
+    sideslip: "β",
+    mach: "Mach",
+    re: "Re",
+    turbulence: "turbulence",
+    precision: "precision",
+  };
+  for (const key of ["aoa", "sideslip", "mach", "re", "turbulence", "precision"] as const) {
+    const raw = settings.map((s) => s?.[key]).filter((v) => v != null);
+    const angle = key === "aoa" || key === "sideslip";
+    const numbers = raw.map((v) => (angle ? degrees(String(v)) : typeof v === "number" ? v : null));
+    if (numbers.length && numbers.every((n) => n !== null)) {
+      const distinct = [...new Set(numbers as number[])];
+      if (distinct.length < 2) continue;
+      const range = `${Math.min(...distinct)}–${Math.max(...distinct)}`;
+      parts.push(`${labels[key]} ${range}${angle ? " deg" : ""}`);
     } else {
-      parts.push(`${key} ${values.join(" · ")}`);
+      const distinct = [...new Set(raw.map(String))];
+      if (distinct.length > 1) parts.push(`${labels[key]} ${distinct.join(" · ")}`);
     }
   }
   return parts.length ? parts.join(", ") : null;
@@ -455,6 +469,7 @@ function RunRow({
   const target = summary?.target_orders ?? undefined;
   return (
     <motion.li
+      data-run-row
       layout="position"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}

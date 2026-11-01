@@ -58,6 +58,47 @@ async def _until_disconnected(request: Request, stop: asyncio.Event) -> None:
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 
 
+MAX_FOLLOWED = 8
+
+
+class Follower:
+    """One run read for a stream: run.json when it changes and history.jsonl from a byte offset,
+    through a folder pinned at the start so that replacing the directory cannot redirect reads.
+    `done` once the history breaks the contract (an `invalid` event was produced)."""
+
+    def __init__(self, directory: Path, offset: int) -> None:
+        self.directory = directory
+        self.folder = Folder(directory)
+        self.offset = offset
+        self.run: dict[str, Any] | None = None
+        self.run_mtime: int | None = None
+        self.sent_history = False
+        self.done = False
+
+    def poll(self) -> list[tuple[str, Any]]:
+        events: list[tuple[str, Any]] = []
+        mtime = _mtime(self.folder)
+        if self.run is None or mtime != self.run_mtime:
+            try:
+                self.run_mtime, self.run = mtime, read_run(self.folder)
+            except ValueError as error:
+                self.done = True
+                return [("invalid", str(error))]
+            events.append(("run", self.run))
+        try:
+            chunk = read_history(self.folder, self.offset, live=self.run["status"] == "running")
+        except (OSError, ValueError) as error:
+            self.done = True
+            return [*events, ("invalid", str(error))]
+        if chunk.records or not self.sent_history:
+            self.offset, self.sent_history = chunk.offset, True
+            events.append(("history", chunk.records))
+        return events
+
+    def close(self) -> None:
+        self.folder.close()
+
+
 def _mtime(folder: Folder) -> int | None:
     stat = folder.stat("run.json")
     return stat.st_mtime_ns if stat else None
@@ -152,6 +193,60 @@ def create_app(
             stop.set()
             watcher.cancel()
 
+    def existing_runs(run: Annotated[list[str], Query()]) -> list[str]:
+        """Every requested run exists and is accepted, before a stream starts (≤ 8)."""
+        if not 1 <= len(run) <= MAX_FOLLOWED:
+            raise HTTPException(422, f"between 1 and {MAX_FOLLOWED} runs")
+        for run_id in run:
+            find_run(run_id)
+        return list(dict.fromkeys(run))
+
+    @app.get("/api/runs/history/events", response_class=EventSourceResponse)
+    async def histories_events(
+        run_ids: Annotated[list[str], Depends(existing_runs)],
+        request: Request,
+        last_event_id: Annotated[str | None, Header()] = None,
+    ) -> AsyncIterator[ServerSentEvent]:
+        """Several runs over one connection (a browser opens at most six per host): the events
+        of the single-run stream with `{run_id, ...}` payloads; the event id is the JSON map of
+        byte offsets reached, for reconnection."""
+        try:
+            offsets = json.loads(last_event_id) if last_event_id else {}
+        except ValueError:
+            offsets = {}
+        followers: dict[str, Follower] = {}
+        try:
+            for run_id in run_ids:
+                offset = offsets.get(run_id, 0) if isinstance(offsets, dict) else 0
+                followers[run_id] = Follower(registry.run_dir(run_id), int(offset))
+        except (LookupError, ValueError, OSError) as error:
+            for follower in followers.values():
+                follower.close()
+            yield ServerSentEvent(event="invalid", data={"run_id": None, "reason": str(error)})
+            return
+        stop = asyncio.Event()
+        watcher = asyncio.create_task(_until_disconnected(request, stop))
+        changes = _changes(registry.root, stop)
+        try:
+            while True:
+                for run_id, follower in followers.items():
+                    for event, data in follower.poll():
+                        payload = {"run_id": run_id, "data": data}
+                        if event == "history":
+                            ids = {k: f.offset for k, f in followers.items()}
+                            yield ServerSentEvent(event=event, data=payload, id=json.dumps(ids))
+                        else:
+                            yield ServerSentEvent(event=event, data=payload)
+                if all(f.done for f in followers.values()):
+                    return
+                if await anext(changes, None) is None:
+                    return
+        finally:
+            stop.set()
+            watcher.cancel()
+            for follower in followers.values():
+                follower.close()
+
     @app.get("/api/runs/{run_id}")
     def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         return registry.details(find_run(run_id))
@@ -203,45 +298,27 @@ def create_app(
         offset reached, so a reconnecting EventSource resumes where it stopped. A history that
         breaks the contract ends the stream with `invalid` and its reason."""
         offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
-        # Pinned for the whole stream: replacing the directory later cannot redirect reads.
         try:
-            directory = registry.run_dir(run_id)
-            folder = Folder(directory)
+            follower = Follower(registry.run_dir(run_id), offset)
         except (LookupError, ValueError, OSError) as error:
             yield ServerSentEvent(event="invalid", data=f"run {run_id} is gone: {error}")
             return
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
-        changes = _changes(directory, stop)
+        changes = _changes(follower.directory, stop)
         try:
-            run_mtime = _mtime(folder)
-            run = read_run(folder)
-            yield ServerSentEvent(event="run", data=run)
             while True:
-                try:
-                    chunk = read_history(folder, offset, live=run["status"] == "running")
-                except (OSError, ValueError) as error:
-                    yield ServerSentEvent(event="invalid", data=str(error))
+                for event, data in follower.poll():
+                    if event == "history":
+                        yield ServerSentEvent(event=event, data=data, id=str(follower.offset))
+                    else:
+                        yield ServerSentEvent(event=event, data=data)
+                if follower.done or await anext(changes, None) is None:
                     return
-                if chunk.records or offset == 0:
-                    offset = chunk.offset
-                    yield ServerSentEvent(event="history", data=chunk.records, id=str(offset))
-                # Every wake-up re-reads, timeouts included: an append that lands before the
-                # watcher starts is still picked up.
-                if await anext(changes, None) is None:
-                    return
-                mtime = _mtime(folder)
-                if mtime != run_mtime:
-                    try:
-                        run_mtime, run = mtime, read_run(folder)
-                    except ValueError as error:
-                        yield ServerSentEvent(event="invalid", data=str(error))
-                        return
-                    yield ServerSentEvent(event="run", data=run)
         finally:
             stop.set()
             watcher.cancel()
-            folder.close()
+            follower.close()
 
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(

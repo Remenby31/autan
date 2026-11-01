@@ -1,9 +1,10 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
 import { type LiveRun, runQuery, runsQuery, soleForces, useRunsHistory } from "../api/runs";
+import { degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
@@ -29,17 +30,6 @@ const resolvedColor = (k: number) =>
     .getPropertyValue(`--series-${(k % 8) + 1}`)
     .trim();
 
-/** An angle written as the case writes it ("19.57 deg", "0.34 rad"), in degrees. */
-export function degrees(value: string | null | undefined): number | null {
-  const match = /^\s*(-?[\d.eE+-]+)\s*(deg|degree|degrees|rad|radian|radians)\s*$/.exec(
-    value ?? "",
-  );
-  if (!match) return null;
-  const number = Number(match[1]);
-  if (!Number.isFinite(number)) return null;
-  return match[2]?.startsWith("rad") ? (number * 180) / Math.PI : number;
-}
-
 /** Every leaf of a case document under its dotted path; arrays of tables by index. */
 export function flatten(value: unknown, prefix = ""): Map<string, string> {
   const out = new Map<string, string>();
@@ -64,6 +54,9 @@ function Compare() {
   const live = useRunsHistory(ids);
   const details = useQueries({ queries: ids.map((id) => runQuery(id)) });
   const [all, setAll] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Arriving from Runs, focus starts on the screen's heading rather than on the body.
+  useEffect(() => heading.current?.focus(), []);
   const runs = ids.map((id) => registry.data?.runs.find((r) => r.run_id === id));
   const setRuns = (next: string[]) => void navigate({ search: { runs: next }, replace: true });
   const version = ids.map((id) => live.get(id)?.history.version ?? 0).join(",");
@@ -98,9 +91,12 @@ function Compare() {
   const diff = useMemo(() => {
     const flat = details.map((d) => (d.data ? flatten(d.data.case) : null));
     const keys = [...new Set(flat.flatMap((f) => (f ? [...f.keys()] : [])))].sort();
-    return keys
-      .map((key) => ({ key, values: flat.map((f) => (f ? (f.get(key) ?? "—") : "…")) }))
-      .map((row) => ({ ...row, differs: new Set(row.values).size > 1 }));
+    // A setting absent from a case differs from every value, "—" included.
+    return keys.map((key) => {
+      const raw = flat.map((f) => (f ? (f.has(key) ? `=${f.get(key)}` : "absent") : "loading"));
+      const values = raw.map((r) => (r === "absent" ? "—" : r === "loading" ? "…" : r.slice(1)));
+      return { key, values, raw, differs: new Set(raw).size > 1 };
+    });
   }, [details]);
 
   const others = (registry.data?.runs ?? []).filter((r) => !ids.includes(r.run_id));
@@ -110,7 +106,9 @@ function Compare() {
       <TopBar crumbs={[{ label: "Runs", to: "/" }, { label: "Compare" }]} />
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
-          <h1 className="m-0 font-semibold text-xl">Compare</h1>
+          <h1 ref={heading} tabIndex={-1} className="m-0 font-semibold text-xl outline-none">
+            Compare
+          </h1>
           <div className="flex flex-wrap items-center gap-2" data-testid="compared">
             {ids.map((id, k) => (
               <RunChip
@@ -119,7 +117,14 @@ function Compare() {
                 run={runs[k]}
                 role={String.fromCharCode(65 + k)}
                 color={seriesColor(k)}
-                onRemove={() => setRuns(ids.filter((other) => other !== id))}
+                onRemove={() => {
+                  setRuns(ids.filter((other) => other !== id));
+                  // Focus stays in the chip row: the next chip's remove button, else the heading.
+                  requestAnimationFrame(() => {
+                    const buttons = document.querySelectorAll<HTMLElement>("[data-chip-remove]");
+                    (buttons[Math.min(k, buttons.length - 1)] ?? heading.current)?.focus();
+                  });
+                }}
               />
             ))}
             {ids.length < MAX_RUNS && others.length > 0 && (
@@ -183,10 +188,20 @@ function Compare() {
               {polar && (
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="polar">
                   <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
-                    <OverlayChart series={[polar.lift]} xLabel="α (deg)" points version={version} />
+                    <OverlayChart
+                      series={[polar.lift]}
+                      xLabel="α (deg)"
+                      points
+                      version={polar.version}
+                    />
                   </ChartCard>
                   <ChartCard title="Drag polar" unit="CD against CL">
-                    <OverlayChart series={[polar.drag]} xLabel="CL" points version={version} />
+                    <OverlayChart
+                      series={[polar.drag]}
+                      xLabel="CL"
+                      points
+                      version={polar.version}
+                    />
                   </ChartCard>
                 </div>
               )}
@@ -238,7 +253,7 @@ function Compare() {
                                   "px-4 font-mono",
                                   row.differs &&
                                     k > 0 &&
-                                    value !== row.values[0] &&
+                                    row.raw[k] !== row.raw[0] &&
                                     "bg-accent-soft",
                                 )}
                               >
@@ -262,36 +277,44 @@ function Compare() {
   );
 }
 
+/** Lift and drag polars from the compared runs that converged with forces recorded at their
+ * last iteration (a sample from earlier would not be the converged value); at a repeated α the
+ * newest run wins. Null when fewer than two angles remain. */
 function polars(
   ids: string[],
   runs: (Run | undefined)[],
   live: Map<string, LiveRun>,
   summaries: Record<string, { settings?: { aoa: string | null } }>,
-): { lift: OverlaySeries; drag: OverlaySeries } | null {
-  // A polar point is a converged run's final coefficients; the newest run wins at a repeated α.
-  const points = ids
-    .filter((_, k) => runs[k]?.status === "converged")
-    .map((id) => {
-      const forces = live.get(id)?.history
-        ? soleForces(live.get(id)?.history as LiveRun["history"])
-        : null;
-      const alpha = degrees(summaries[id]?.settings?.aoa);
-      const cl = forces?.cl.at(-1);
-      const cd = forces?.cd.at(-1);
-      return alpha === null || cl === undefined || cd === undefined ? null : { alpha, cl, cd };
-    })
-    .filter((p): p is { alpha: number; cl: number; cd: number } => p !== null);
-  if (points.length < 2 || new Set(points.map((p) => p.alpha)).size < 2 || runs.length < 2)
-    return null;
-  const latest = new Map(points.map((p) => [p.alpha, p]));
-  const unique = [...latest.values()];
-  if (unique.length < 2) return null;
-  const byAlpha = [...unique].sort((a, b) => a.alpha - b.alpha);
-  const byCl = [...unique].sort((a, b) => a.cl - b.cl);
+): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
+  const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
+  ids.forEach((id, k) => {
+    const run = runs[k];
+    const history = live.get(id)?.history;
+    if (run?.status !== "converged" || !history) return;
+    const forces = soleForces(history);
+    const alpha = degrees(summaries[id]?.settings?.aoa);
+    const cl = forces?.cl.at(-1);
+    const cd = forces?.cd.at(-1);
+    if (alpha === null || cl === undefined || cd === undefined) return;
+    if (forces?.iteration.at(-1) !== history.iteration.at(-1)) return;
+    const seen = byAlpha.get(alpha);
+    if (!seen || seen.started < run.started)
+      byAlpha.set(alpha, { alpha, cl, cd, started: run.started });
+  });
+  const points = [...byAlpha.values()];
+  if (points.length < 2) return null;
+  const sortedAlpha = [...points].sort((a, b) => a.alpha - b.alpha);
+  const sortedCl = [...points].sort((a, b) => a.cl - b.cl);
   const color = getComputedStyle(document.documentElement).getPropertyValue("--fg").trim();
   return {
-    lift: { label: "CL", color, x: byAlpha.map((p) => p.alpha), y: byAlpha.map((p) => p.cl) },
-    drag: { label: "CD", color, x: byCl.map((p) => p.cl), y: byCl.map((p) => p.cd) },
+    lift: {
+      label: "CL",
+      color,
+      x: sortedAlpha.map((p) => p.alpha),
+      y: sortedAlpha.map((p) => p.cl),
+    },
+    drag: { label: "CD", color, x: sortedCl.map((p) => p.cl), y: sortedCl.map((p) => p.cd) },
+    version: JSON.stringify(sortedAlpha),
   };
 }
 
@@ -349,6 +372,7 @@ function RunChip({
       <button
         type="button"
         aria-label={`Remove ${id} from the comparison`}
+        data-chip-remove
         onClick={onRemove}
         className="flex size-6 items-center justify-center rounded-full text-fg-3 hover:bg-bg-2 hover:text-fg"
       >

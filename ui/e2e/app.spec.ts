@@ -115,6 +115,10 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await page.keyboard.press("j");
   await page.keyboard.press("x");
   await expect(page.getByTestId("selected-count")).toHaveText("2 selected");
+  await page.keyboard.press(" ");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("peek")).toHaveCount(0);
+  await expect(page.getByTestId("selected-count")).toHaveText("2 selected");
   await page.keyboard.press("c");
   await expect(page).toHaveURL(/\/compare\?runs=/);
   await expect(page.getByTestId("compared").getByRole("link")).toHaveCount(2);

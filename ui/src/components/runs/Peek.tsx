@@ -63,7 +63,7 @@ export function Peek({
       <Sparkline
         values={summary?.trend ?? []}
         {...(summary?.target_orders ? { target: summary.target_orders } : {})}
-        width={280}
+        width={240}
         height={64}
         color="var(--accent)"
         label="Residual drop along the run"
