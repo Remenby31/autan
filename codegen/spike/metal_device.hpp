@@ -47,7 +47,8 @@ class Array {
 /// Topology, colourings and scratch of a spike mesh in Metal buffers.
 template <class P>
 struct DeviceMesh {
-  static constexpr int kScratchWidth = 10;          // widest spike face loop: the Roe adjoint
+  static constexpr int kScratchWidth =
+      11;  // widest spike face loop, the Roe adjoint (10), and its owner
   static constexpr int kIncidenceScratchWidth = 1;  // spike reductions gather one scalar
   Array<index_t> owner, neighbour, cell_faces;
   Array<offset_t> offsets;

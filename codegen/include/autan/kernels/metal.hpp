@@ -98,7 +98,9 @@ struct Schedule {
   int block = 256;
   Colouring interior;
   Colouring boundary;
-  void* face_scratch = nullptr;  ///< store-gather: face_scratch_width x n_faces accumulation values
+  /// Store-gather: face_scratch_width x n_faces accumulation values. A face loop with n outputs
+  /// stores n + 1 compute values per face (the owner, then the values); a boundary loop n.
+  void* face_scratch = nullptr;
   int face_scratch_width = 0;
   /// Deterministic reduction adjoints: incidence_scratch_width x n_incidences accumulation values.
   void* incidence_scratch = nullptr;

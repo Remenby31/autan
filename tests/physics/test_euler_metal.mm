@@ -197,7 +197,6 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   topo.stencil_offsets = buf.put<offset_t>(stencil.offsets);
   topo.stencil = buf.put<index_t>(stencil.entries);
   topo.stencil_twin = buf.put<offset_t>(stencil.twin);
-  topo.incidence_twin = buf.put<offset_t>(autan::kernels::incidence_twins(c.mesh));
   const auto interior =
       autan::kernels::colour_faces(host_topo, 0, host_topo.n_owned_interior_faces);
   const auto boundary =
@@ -206,8 +205,8 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   sched.block = 128;
   sched.interior = {buf.put<index_t>(interior.faces), interior.offsets};
   sched.boundary = {buf.put<index_t>(boundary.faces), boundary.offsets};
-  sched.face_scratch = buf.zeros<typename M::compute>(5 * nf);
-  sched.face_scratch_width = 5;
+  sched.face_scratch = buf.zeros<typename M::accum>(6 * nf);
+  sched.face_scratch_width = 6;  // 5 flux components and the owner
 
   std::vector<double> kind(nf, 0.0), bc(5 * nf, 0.0);
   for (std::size_t i = 0; i < nb; ++i) {

@@ -198,8 +198,16 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
     e.w(f"  typename P::compute out[{n}];")
     for s in _face_eval(lm, "  "):
         e.w(s)
-    for j in range(n):
-        e.w(f"  a.scratch[offset_t({j}) * d.topo.n_faces + f] = out[{j}];")
+    if lm.kind == "face":
+        # One record per face, the owner's bits then the values: the gather reads the side and
+        # the values in one access per incidence, not two at random in two arrays.
+        e.w(f"  const offset_t base = offset_t(f) * {n + 1};")
+        e.w("  a.scratch[base] = as_type<typename P::compute>(l);")
+        for j in range(n):
+            e.w(f"  a.scratch[base + {j + 1}] = out[{j}];")
+    else:
+        for j in range(n):
+            e.w(f"  a.scratch[offset_t({j}) * d.topo.n_faces + f] = out[{j}];")
     e.w("}")
     e.w()
     # store-gather pass 2 and gather-recompute: one thread per cell (ghosts too), CSR order.
@@ -228,13 +236,14 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
         e.w("    }")
         if variant == "gather":
             e.w(f"    A out[{n}];")
-            for j in range(n):
-                e.w(f"    out[{j}] = A(a.scratch[offset_t({j}) * d.topo.n_faces + f]);")
             if lm.kind == "face":
-                # c owns f iff its incidence precedes the twin: interior faces have
-                # owner < neighbour (docs/contracts/mesh.md, invariant 2) and cell c's incidences
-                # are [off[c], off[c + 1]). A sequential read instead of owner[f], at random.
-                e.w("    const bool left = k < d.topo.incidence_twin[k];")
+                e.w(f"    const offset_t base = offset_t(f) * {n + 1};")
+                e.w("    const bool left = as_type<index_t>(a.scratch[base]) == c;")
+                for j in range(n):
+                    e.w(f"    out[{j}] = A(a.scratch[base + {j + 1}]);")
+            else:
+                for j in range(n):
+                    e.w(f"    out[{j}] = A(a.scratch[offset_t({j}) * d.topo.n_faces + f]);")
         else:
             e.w(f"    typename P::compute out[{n}];")
             for s in _face_eval(lm, "    "):
@@ -383,11 +392,11 @@ def _face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w("      }")
     e.w("      break;")
     e.w("    case Strategy::store_gather: {")
-    if lm.kind == "face":
-        e.w("      if (d.topo.incidence_twin == nullptr) {")
-        e.w('        throw std::invalid_argument("E1106: store-gather needs incidence twins");')
-        e.w("      }")
-    e.w(f"      if (s.face_scratch_width < {n_out(lm)}) {{")
+    # Face loops store n + 1 compute values per face (owner, values), boundary loops n.
+    words = n_out(lm) + 1 if lm.kind == "face" else n_out(lm)
+    e.w(
+        f"      if (std::size_t(s.face_scratch_width) * sizeof(typename P::accum) < {words} * sizeof(typename P::compute)) {{"
+    )
     e.w(
         '        throw std::invalid_argument("E1104: face scratch narrower than the loop outputs");'
     )
