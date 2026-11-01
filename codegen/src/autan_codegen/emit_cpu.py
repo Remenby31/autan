@@ -45,12 +45,33 @@ def n_out(lm: LoopModel) -> int:
     return sum(o.dataset.type.size for o in lm.loop.outputs)
 
 
+def acc_ref(o: dsl.Accumulator, k: int) -> str:
+    """Component k of accumulator o: Sums in the accumulation type (acc), Min/Max and Follow in
+    the compute type (accm), where they are exact: they select a body output, never add."""
+    return f"acc[{k}]" if isinstance(o, dsl.Sum) else f"accm[{k}]"
+
+
+def acc_decls(accs: list[dsl.Accumulator], offs: list[int], n: int, indent: str) -> list[str]:
+    lines = [
+        f"{indent}[[maybe_unused]] A acc[{n}];",
+        f"{indent}[[maybe_unused]] typename P::compute accm[{n}];",
+    ]
+    lines.extend(
+        f"{indent}{acc_ref(o, off + c)} = {acc_init(o)};"
+        for o, off in zip(accs, offs, strict=True)
+        for c in range(o.dataset.type.size)
+    )
+    return lines
+
+
 def acc_init(o: dsl.Accumulator) -> str:
-    if isinstance(o, dsl.Sum | dsl.Follow):
+    if isinstance(o, dsl.Sum):
         return "A(0)"
+    if isinstance(o, dsl.Follow):
+        return "typename P::compute(0)"
     if isinstance(o, dsl.Min):
-        return "::autan::kernels::infinity<A>()"
-    return "-::autan::kernels::infinity<A>()"
+        return "::autan::kernels::infinity<typename P::compute>()"
+    return "-::autan::kernels::infinity<typename P::compute>()"
 
 
 def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str) -> list[str]:
@@ -66,11 +87,11 @@ def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str
                 continue
             # Ties keep the first incidence in list order (section 4.3, reductions).
             op = "lt" if isinstance(o, dsl.Min) else "gt"
-            lines.append(f"{indent}if (::autan::kernels::{op}(A({src}[{k}]), acc[{k}])) {{")
-            lines.append(f"{indent}  acc[{k}] = A({src}[{k}]);")
+            lines.append(f"{indent}if (::autan::kernels::{op}({src}[{k}], accm[{k}])) {{")
+            lines.append(f"{indent}  accm[{k}] = {src}[{k}];")
             for f, foff in zip(accs, offs, strict=True):
                 if isinstance(f, dsl.Follow) and accs[f.leader] is o:
-                    lines.append(f"{indent}  acc[{foff + c}] = A({src}[{foff + c}]);")
+                    lines.append(f"{indent}  accm[{foff + c}] = {src}[{foff + c}];")
             lines.append(f"{indent}}}")
     return lines
 
@@ -107,12 +128,7 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     accs = loop.outputs
     offs = offsets(accs)
     n = n_out(lm)
-    lines = [f"{indent}A acc[{n}];"]
-    lines.extend(
-        f"{indent}acc[{off + c}] = {acc_init(o)};"  # type: ignore[arg-type]
-        for o, off in zip(accs, offs, strict=True)
-        for c in range(o.dataset.type.size)
-    )
+    lines = acc_decls(accs, offs, n, indent)  # type: ignore[arg-type]
     lines.extend(entry_loop(loop.over, indent))
     i2 = indent + "  "
     lines.append(f"{i2}typename P::compute out[{n}];")
@@ -133,7 +149,9 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
         for kind, ref in order:
             if kind == "acc":
                 assert isinstance(ref, int)
-                fargs += [f"acc[{offs[ref] + c}]" for c in range(accs[ref].dataset.type.size)]
+                fargs += [
+                    acc_ref(accs[ref], offs[ref] + c) for c in range(accs[ref].dataset.type.size)
+                ]  # type: ignore[arg-type]
             else:
                 assert isinstance(ref, str)
                 b = loop.finalise_bindings[ref]
@@ -149,7 +167,7 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
                 k += 1
     else:
         lines.extend(
-            f"{indent}{at(o.dataset, 'c', c, layout)} = static_cast<{ctype(o.dataset.type.role)}>(acc[{off + c}]);"
+            f"{indent}{at(o.dataset, 'c', c, layout)} = static_cast<{ctype(o.dataset.type.role)}>({acc_ref(o, off + c)});"  # type: ignore[arg-type]
             for o, off in written
             for c in range(o.dataset.type.size)
         )
@@ -224,14 +242,10 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
         return f"{ind}{target} += {v};"
 
     selects = any(isinstance(o, dsl.Min | dsl.Max) for o in accs)
-    lines = [f"{indent}A acc[{n}];"]
+    lines = acc_decls(accs, offs, n, indent)  # type: ignore[arg-type]
     if selects:
         lines.append(f"{indent}offset_t sel[{n}];")
-    for o, off in zip(accs, offs, strict=True):
-        for c in range(o.dataset.type.size):
-            lines.append(f"{indent}acc[{off + c}] = {acc_init(o)};")  # type: ignore[arg-type]
-            if selects:
-                lines.append(f"{indent}sel[{off + c}] = -1;")
+        lines.extend(f"{indent}sel[{k}] = -1;" for k in range(n))
     head = entry_loop(loop.over, indent)
     args = call_args(p.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"})
     lines += [*head, f"{i2}typename P::compute out[{n}];"]
@@ -243,8 +257,8 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
                 lines.append(f"{i2}acc[{k}] += A(out[{k}]);")
             else:
                 op = "lt" if isinstance(o, dsl.Min) else "gt"
-                lines.append(f"{i2}if (::autan::kernels::{op}(A(out[{k}]), acc[{k}])) {{")
-                lines.append(f"{i2}  acc[{k}] = A(out[{k}]);")
+                lines.append(f"{i2}if (::autan::kernels::{op}(out[{k}], accm[{k}])) {{")
+                lines.append(f"{i2}  accm[{k}] = out[{k}];")
                 lines.append(f"{i2}  sel[{k}] = k;")
                 lines.append(f"{i2}}}")
     lines.append(f"{indent}}}")
@@ -253,7 +267,11 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
     lines.append(f"{indent}A accb[{n}];")
     if ra.fin_adj is not None and p.fin_sig is not None:
         n_acc = len(accs)
-        fargs = [f"acc[{k}]" for k in range(n)]
+        fargs = [
+            acc_ref(o, off + c)  # type: ignore[arg-type]
+            for o, off in zip(accs, offs, strict=True)
+            for c in range(o.dataset.type.size)
+        ]
         fargs += call_args(p.fin_sig, loop.finalise_bindings, {"direct": "c"}, skip=n_acc)
         lines.append(f"{indent}typename P::compute finb[{len(ra.fin_adj.outputs)}];")
         lines.append(f"{indent}{ra.fin_adj.name}<P>({', '.join([*fargs, *seeds, 'finb'])});")
