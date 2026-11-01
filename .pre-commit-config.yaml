@@ -73,6 +73,17 @@ repos:
 
   - repo: local
     hooks:
+      # The error codes' registry (py/autan/errors.py) and the tables that document them must
+      # agree; the SDK's test says so in seconds, before CI's Python SDK job does.
+      - id: error-registry
+        name: error registry matches its documentation
+        language: system
+        # Everything from uv.lock, the build backend included, as CI's SDK job installs it.
+        entry: >-
+          bash -c 'uv sync --locked --no-install-project -q && uv sync --locked --no-build-isolation -q &&
+          uv run --no-sync pytest -q -p no:cacheprovider py/tests/test_errors.py'
+        files: ^(docs/(design|contracts|sdk)/.*\.(md|json)|py/autan/errors\.py|py/tests/test_errors\.py)$
+        pass_filenames: false
       # Personal home directories must not reach the repository (they carry user names). Allowed:
       # the Sparks' shared GPU lock and the CI runner's home.
       - id: no-personal-paths
