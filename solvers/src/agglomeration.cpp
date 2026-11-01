@@ -184,6 +184,12 @@ void make_lines(Graph& g, double ratio) {
     }
     std::vector<index_t> line(backward.rbegin(), backward.rend());
     line.insert(line.end(), forward.begin(), forward.end());
+    // Lines start at the boundary when one end touches it, so that neighbouring wall lines run
+    // the same way.
+    if (g.boundary[static_cast<std::size_t>(line.front())].empty() &&
+        !g.boundary[static_cast<std::size_t>(line.back())].empty()) {
+      std::reverse(line.begin(), line.end());
+    }
     lines.push_back(std::move(line));
   }
   g.line_offsets.assign(1, 0);
@@ -225,58 +231,64 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
   std::vector<std::vector<index_t>> members;     // coarse node -> fine nodes
   std::vector<std::vector<std::size_t>> clines;  // coarse lines
 
-  // Lines with their neighbouring lines.
+  // Lines with their neighbouring lines, layer by layer. A neighbouring line may run the other
+  // way: its layers are matched in the orientation that touches line s at more layers.
   std::vector<int> grouped(n_lines, 0);
+  struct Touch {
+    std::size_t line, forward, backward;
+    [[nodiscard]] std::size_t layers() const { return std::max(forward, backward); }
+  };
   for (std::size_t s = 0; s < n_lines; ++s) {
     if (line_size(s) < 2 || grouped[s] != 0) continue;
     grouped[s] = 1;
-    // Neighbouring lines with the number of layers at which they touch line s.
-    std::vector<std::pair<std::size_t, std::size_t>> touching;  // (line, layers)
+    std::vector<Touch> touching;
     for (std::size_t k = 0; k < line_size(s); ++k) {
       g.for_edges(line_node(s, k), [&](std::size_t, std::size_t m) {
         const std::size_t l = line_of[m];
-        if (l == s || grouped[l] != 0 || line_size(l) < 2 || position[m] != k) return;
+        if (l == s || grouped[l] != 0 || line_size(l) < 2) return;
+        const bool fwd = position[m] == k, bwd = line_size(l) - 1 - position[m] == k;
+        if (!fwd && !bwd) return;
         auto it = std::find_if(touching.begin(), touching.end(),
-                               [&](const auto& t) { return t.first == l; });
-        if (it == touching.end()) {
-          touching.emplace_back(l, 1);
-        } else {
-          ++it->second;
-        }
+                               [&](const Touch& t) { return t.line == l; });
+        if (it == touching.end()) it = touching.insert(touching.end(), Touch{l, 0, 0});
+        it->forward += fwd ? 1 : 0;
+        it->backward += bwd ? 1 : 0;
       });
     }
-    std::stable_sort(touching.begin(), touching.end(), [](const auto& a, const auto& b) {
-      return a.second != b.second ? a.second > b.second : a.first < b.first;
+    std::stable_sort(touching.begin(), touching.end(), [](const Touch& a, const Touch& b) {
+      return a.layers() != b.layers() ? a.layers() > b.layers() : a.line < b.line;
     });
     if (touching.size() + 1 > opt.max_agglomerate) touching.resize(opt.max_agglomerate - 1);
-    std::vector<std::size_t> group{s};
-    for (const auto& t : touching) {
-      grouped[t.first] = 1;
-      group.push_back(t.first);
-    }
+    auto layer = [&](const Touch& t, std::size_t k) {
+      return line_node(t.line, t.backward > t.forward ? line_size(t.line) - 1 - k : k);
+    };
     std::vector<std::size_t> coarse_line;
+    std::vector<std::size_t> joined(touching.size(), 0);
     for (std::size_t k = 0; k < line_size(s); ++k) {
       const std::size_t seed = line_node(s, k);
       const std::size_t c = members.size();
       members.push_back({static_cast<index_t>(seed)});
       agg[seed] = c;
-      for (std::size_t i = 1; i < group.size(); ++i) {
-        const std::size_t l = group[i];
-        if (k >= line_size(l)) continue;
-        const std::size_t m = line_node(l, k);
+      for (std::size_t i = 0; i < touching.size(); ++i) {
+        if (k >= line_size(touching[i].line)) continue;
+        const std::size_t m = layer(touching[i], k);
         bool adjacent = false;
         g.for_edges(seed, [&](std::size_t, std::size_t o) { adjacent = adjacent || o == m; });
         if (adjacent && compatible(g, seed, m)) {
           members[c].push_back(static_cast<index_t>(m));
           agg[m] = c;
+          ++joined[i];
         }
       }
       coarse_line.push_back(c);
     }
     clines.push_back(std::move(coarse_line));
-    // What did not join line s keeps its own coarse nodes, in runs that remain lines.
-    for (std::size_t i = 1; i < group.size(); ++i) {
-      const std::size_t l = group[i];
+    // A line that joined at some layer keeps its other nodes as coarse nodes of their own, in
+    // runs that remain lines; a line that joined nowhere stays free for another group.
+    for (std::size_t i = 0; i < touching.size(); ++i) {
+      if (joined[i] == 0) continue;
+      const std::size_t l = touching[i].line;
+      grouped[l] = 1;
       std::vector<std::size_t> run;
       for (std::size_t k = 0; k <= line_size(l); ++k) {
         if (k < line_size(l) && agg[line_node(l, k)] == none) {

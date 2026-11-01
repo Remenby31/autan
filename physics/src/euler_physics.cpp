@@ -139,6 +139,13 @@ class EulerPhysics final : public runtime::Physics {
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
       multigrid_.emplace(mesh, ctx.geometry);
+      std::string levels;
+      for (const auto& l : multigrid_->levels()) {
+        levels += (levels.empty() ? "" : ", ") + std::to_string(l.n_nodes);
+      }
+      ctx.log.write("info", "linear", "agglomeration multigrid", {},
+                    "{\"nodes\": [" + levels + "], \"coarsest\": \"" +
+                        (multigrid_->direct_coarsest() ? "lu" : "sweeps") + "\"}");
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -172,7 +179,7 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       unsteady_step(report);
     }
-    report.diverged_cell = first_invalid_cell();
+    if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
     return report;
   }
 
@@ -593,10 +600,15 @@ class EulerPhysics final : public runtime::Physics {
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
-    multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    const auto linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+    solvers::Multigrid::Report linear;
+    try {
+      multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+      linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+    } catch (const std::domain_error&) {
+      linear = {};  // a singular block: the solve failed
+    }
     const bool failed = !(linear.residual_drop <= linear_failure);
     if (!(linear.residual_drop <= linear_tolerance)) {
       std::array<char, 32> text{};
@@ -610,7 +622,9 @@ class EulerPhysics final : public runtime::Physics {
                          (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
     }
     if (failed) {
-      // As a step with no admissible length: the state is kept and the CFL number halves.
+      // As a step with no admissible length: the state is kept and the next CFL number is half
+      // this one, also when this one was clamped; at the smallest CFL number the run diverged.
+      if (drop > 0.0) penalty_ = cfl_ * drop / cfl_start;
       shortened_ = true;
       if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
       return;

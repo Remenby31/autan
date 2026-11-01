@@ -43,6 +43,8 @@ class Multigrid {
   Multigrid& operator=(const Multigrid&) = delete;
 
   [[nodiscard]] const std::vector<Level>& levels() const noexcept { return levels_; }
+  /// Whether the coarsest level is solved by dense LU; otherwise by `coarsest_sweeps` sweeps.
+  [[nodiscard]] bool direct_coarsest() const noexcept { return direct_; }
 
   /// Sets the fine operator, builds the coarse operators P^T A P and factors every level's
   /// smoother. The fine arrays are referenced, not copied: they must stay unchanged and alive
@@ -53,7 +55,7 @@ class Multigrid {
   void cycle(std::span<const double> b, std::span<double> x);
   struct Report {
     int cycles = 0;              ///< multigrid cycles applied
-    double residual_drop = 1.0;  ///< |b - A x| / |b - A x0|
+    double residual_drop = 1.0;  ///< |b - A x| / |b - A x0|; NaN when not finite
   };
   /// Solves A x = b from x by the generalised conjugate residual method preconditioned by one
   /// multigrid cycle per iteration, until |b - A x| <= tolerance |b - A x0| or `max_cycles`
@@ -78,6 +80,7 @@ class Multigrid {
   std::vector<std::vector<std::vector<double>>> krylov_;  // per level: v1, w1, v2, w2, r1
   std::vector<std::vector<double>> directions_, images_;  // outer iteration: z_k, A z_k
   std::vector<double> residual_;
+  bool direct_ = false;
 };
 
 }  // namespace autan::solvers

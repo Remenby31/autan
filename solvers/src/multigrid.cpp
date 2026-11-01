@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -353,16 +354,23 @@ struct Multigrid::Smoother {
 
 Multigrid::Multigrid(const Mesh& mesh, const Geometry& geometry, const MultigridOptions& options)
     : options_(options), levels_(agglomerate(mesh, geometry, options.agglomeration)) {
-  for (const Level& l : levels_) {
+  // Work vectors only where the cycle uses them: residual and correction above the coarsest
+  // level, right-hand side, solution and Krylov vectors below the finest.
+  for (std::size_t i = 0; i < levels_.size(); ++i) {
+    const Level& l = levels_[i];
+    const std::size_t above = i + 1 < levels_.size() ? 5 * l.n_nodes : 0;
+    const std::size_t below = i > 0 ? 5 * l.n_nodes : 0;
     ops_.emplace_back(l);
     smoothers_.emplace_back(l);
-    r_.emplace_back(5 * l.n_nodes);
-    bc_.emplace_back(5 * l.n_nodes);
-    xc_.emplace_back(5 * l.n_nodes);
-    e_.emplace_back(5 * l.n_nodes);
-    q_.emplace_back(5 * l.n_nodes);
-    krylov_.emplace_back(5, std::vector<double>(5 * l.n_nodes));
+    r_.emplace_back(above);
+    e_.emplace_back(above);
+    q_.emplace_back(options_.scaling != Scaling::none ? above : 0);
+    bc_.emplace_back(below);
+    xc_.emplace_back(below);
+    krylov_.emplace_back(options_.cycle == Cycle::k && i + 1 < levels_.size() ? 5 : 0,
+                         std::vector<double>(below));
   }
+  direct_ = 5 * levels_.back().n_nodes <= dense_unknowns;
 }
 
 Multigrid::~Multigrid() = default;
@@ -403,8 +411,9 @@ void Multigrid::set_operator(std::span<const double> diagonal, std::span<const d
   }
   for (std::size_t l = 0; l < levels_.size(); ++l) {
     const bool coarsest = l + 1 == levels_.size();
-    smoothers_[l].factor(ops_[l]);
-    if (coarsest && 5 * ops_[l].n <= dense_unknowns) smoothers_[l].factor_dense(ops_[l]);
+    // A coarsest level solved directly needs no smoother, unless it is also the finest.
+    if (!(coarsest && direct_) || l == 0) smoothers_[l].factor(ops_[l]);
+    if (coarsest && direct_) smoothers_[l].factor_dense(ops_[l]);
   }
 }
 
@@ -425,12 +434,21 @@ Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> 
     for (std::size_t k = 0; k < u.size(); ++k) s += u[k] * v[k];
     return s;
   };
-  const double r0 = std::sqrt(dot(residual_, residual_));
+  // The iteration runs on the residual scaled by its largest entry, so that no norm underflows.
+  double scale = 0.0;
+  for (const double v : residual_) scale = std::max(scale, std::abs(v));
   Report report;
-  if (!(r0 > 0.0)) {
+  if (!std::isfinite(scale) || std::any_of(residual_.begin(), residual_.end(),
+                                           [](double v) { return std::isnan(v); })) {
+    report.residual_drop = std::numeric_limits<double>::quiet_NaN();
+    return report;
+  }
+  if (scale == 0.0) {
     report.residual_drop = 0.0;
     return report;
   }
+  for (double& v : residual_) v /= scale;
+  const double r0 = std::sqrt(dot(residual_, residual_));
   const auto kmax = static_cast<std::size_t>(std::max(max_cycles, 0));
   if (directions_.size() < kmax) {
     directions_.resize(kmax);
@@ -456,13 +474,13 @@ Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> 
     if (!(ww > 0.0)) break;
     const double alpha = dot(residual_, w) / ww;
     for (std::size_t i = 0; i < m; ++i) {
-      x[i] += alpha * z[i];
+      x[i] += scale * alpha * z[i];
       residual_[i] -= alpha * w[i];
     }
     rr = dot(residual_, residual_);
     if (std::sqrt(rr) <= tolerance * r0) break;
   }
-  report.residual_drop = std::sqrt(rr) / r0;
+  report.residual_drop = std::isfinite(rr) ? std::sqrt(rr) / r0 : std::numeric_limits<double>::quiet_NaN();
   return report;
 }
 

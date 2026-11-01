@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <random>
@@ -16,6 +17,7 @@
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/solvers/agglomeration.hpp"
 #include "autan/solvers/multigrid.hpp"
@@ -138,13 +140,15 @@ System diffusion(const Mesh& mesh, const autan::Geometry& g, double shift, doubl
     const double dy = g.cell_centroid_y[nb] - g.cell_centroid_y[o];
     const double dz = g.cell_centroid_z[nb] - g.cell_centroid_z[o];
     const double w = g.face_area[f] / std::sqrt(dx * dx + dy * dy + dz * dz);
+    // Row o takes w a (x_o - x_n), row n takes w a' (x_n - x_o): A(o, n) != A(n, o).
     for (std::size_t i = 0; i < 5; ++i) {
       for (std::size_t j = 0; j < 5; ++j) {
         const double a = (i == j ? 1.0 : 0.0) + coupling * u(rng);
+        const double b = (i == j ? 1.0 : 0.0) + coupling * u(rng);
         s.upper[25 * f + 5 * i + j] = -w * a;
-        s.lower[25 * f + 5 * i + j] = -w * a;
+        s.lower[25 * f + 5 * i + j] = -w * b;
         s.diag[25 * o + 5 * i + j] += w * a;
-        s.diag[25 * nb + 5 * i + j] += w * a;
+        s.diag[25 * nb + 5 * i + j] += w * b;
       }
     }
   }
@@ -318,6 +322,33 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   }
 }
 
+TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigrid]") {
+  // Uniform cells of aspect ratio 16: every cell is a line seed, so the cell numbering decides
+  // where lines start. Reversing the numbering along every other column makes neighbouring
+  // lines run opposite ways; their layers must still be matched.
+  const int nx = 8;
+  const auto mesh = layered_box(nx, 1.0 / 128, Fill::hexa, false, 1.0 / 128);
+  const auto nz = static_cast<int>(mesh.n_cells()) / (nx * nx);
+  std::vector<index_t> new_to_old(static_cast<std::size_t>(mesh.n_cells()));
+  for (int k = 0; k < nz; ++k) {
+    for (int j = 0; j < nx; ++j) {
+      for (int i = 0; i < nx; ++i) {
+        const int kk = (i + j) % 2 == 0 ? k : nz - 1 - k;
+        new_to_old[static_cast<std::size_t>(i + nx * (j + nx * k))] =
+            static_cast<index_t>(i + nx * (j + nx * kk));
+      }
+    }
+  }
+  const auto reversed = autan::renumber_cells(mesh, new_to_old);
+  for (const Mesh* m : {&mesh, &reversed}) {
+    const auto g = autan::compute_geometry(*m);
+    const auto levels = autan::solvers::agglomerate(*m, g);
+    REQUIRE(levels.size() >= 2);
+    CHECK(2 * levels[1].n_nodes <= levels[0].n_nodes);
+    check_hierarchy(*m, levels);
+  }
+}
+
 TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigrid]") {
   // One column of cells of aspect ratio 4 and more: a single line holding every cell.
   const auto mesh = layered_box(1, 1e-5, Fill::hexa, false, 0.25);
@@ -333,6 +364,7 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
   const auto b = apply(mesh, s, x_exact);
   std::vector<double> x(5 * n, 0.0);
   mg.smooth(b, x, 1);
+  CHECK(std::all_of(x.begin(), x.end(), [](double v) { return std::isfinite(v); }));
   double err = 0.0, scale = 0.0;
   for (std::size_t k = 0; k < x.size(); ++k) {
     err = std::max(err, std::abs(x[k] - x_exact[k]));
@@ -363,6 +395,11 @@ TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^
   for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::cos(0.11 * static_cast<double>(k));
   std::vector<double> x(5 * n, 0.0);
   mg.cycle(b, x);
+  CHECK(std::all_of(x.begin(), x.end(), [](double v) { return std::isfinite(v); }));
+  // The hierarchy has edges whose owner lies in the coarse neighbour: both block orders are
+  // exercised.
+  const auto& flipped = mg.levels()[0].coarse_flipped;
+  CHECK(std::count(flipped.begin(), flipped.end(), std::uint8_t{1}) > 0);
   // Dense P^T A P from the columns A P e_j, then x = P (P^T A P)^-1 P^T b by elimination.
   const auto& parent = mg.levels()[0].coarse_node;
   const std::size_t m = 5 * nc;
