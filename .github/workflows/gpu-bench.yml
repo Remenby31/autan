@@ -32,6 +32,8 @@ jobs:
     outputs:
       bench: ${{ steps.filter.outputs.bench }}
       harness: ${{ steps.filter.outputs.harness }}
+      # The bisection's known-good end; looked up here because gh is not in the runner image.
+      measured: ${{ steps.measured.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,7 +41,7 @@ jobs:
           fetch-depth: 0
       - name: Find the last commit of main that was measured
         id: measured
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: echo "sha=$(bench/ci/last-measured.sh)" >> "$GITHUB_OUTPUT"
@@ -93,7 +95,6 @@ jobs:
     timeout-minutes: ${{ github.event_name == 'pull_request' && 90 || 240 }}
     permissions:
       contents: read
-      actions: read
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
       # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
@@ -141,26 +142,23 @@ jobs:
           -- meshes/hex-n128.msh --policy fp32 --order rcm
       - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
         id: loops-gate
+        # Its status: 1 only for a regression confirmed by the rerun, which alone starts a bisection.
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
-          -- meshes/hex-n128.msh --policy fp32 --order rcm
+          -- meshes/hex-n128.msh --policy fp32 --order rcm || status=$?;
+          echo "status=${status:-0}" >> "$GITHUB_OUTPUT"; exit "${status:-0}"
       # A regression of main confirmed by the gate, on a machine that passed STREAM: find its
       # commit here, on this Spark and with this protocol, before the runner takes other jobs.
-      - name: Find the last commit of main that passed the gate
-        id: good
-        if: >-
-          failure() && github.event_name != 'pull_request' &&
-          steps.stream-gate.outcome == 'success' && steps.loops-gate.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: echo "sha=$(bench/ci/last-measured.sh)" >> "$GITHUB_OUTPUT"
       - name: Bisect the regression
-        if: failure() && steps.good.outputs.sha != ''
+        if: >-
+          failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+          steps.stream-gate.outcome == 'success' && steps.loops-gate.outputs.status == '1' &&
+          needs.changes.outputs.measured != ''
         env:
-          GOOD: ${{ steps.good.outputs.sha }}
+          GOOD: ${{ needs.changes.outputs.measured }}
         run: >-
           mkdir -p "results/bisect/$GITHUB_SHA" &&
           cp results/stream.json results/codegen-hex-n128-fp32.json "results/bisect/$GITHUB_SHA/" &&
@@ -177,7 +175,9 @@ jobs:
   report-regression:
     needs: bench
     # Write access only here, on a GitHub-hosted runner and for main, never on the Spark.
-    if: always() && needs.bench.result == 'failure' && github.event_name != 'pull_request'
+    if: >-
+      always() && needs.bench.result == 'failure' && github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

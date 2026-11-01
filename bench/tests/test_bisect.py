@@ -104,6 +104,22 @@ def test_a_probe_that_cannot_measure_stops_the_bisection(tmp_path, history, code
     assert probed[-1] == shas[4]
 
 
+def test_a_bracket_that_does_not_reproduce_blames_nothing(tmp_path, history):
+    # The first commit regressed, but the last passing end now fails too: noise, not a culprit.
+    repo, shas = history
+    verdicts = verdicts_from(shas, 1, k0=1)
+    summary, _ = bisect(tmp_path, repo, shas[0], shas[8], verdicts, 1)
+    assert summary["status"] == "error"
+    assert summary["at"] == shas[0]
+
+
+def test_a_comparison_that_fails_blames_nothing(tmp_path, history):
+    repo, shas = history
+    summary, _ = bisect(tmp_path, repo, shas[0], shas[8], verdicts_from(shas, 5), 2)
+    assert summary["status"] == "error"
+    assert "culprit" not in summary
+
+
 def test_the_gate_measures_again_and_lets_the_second_run_decide(tmp_path):
     # uv is faked at the boundary: compare answers from a queue, a measurement is counted.
     answers = tmp_path / "answers"

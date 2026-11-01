@@ -48,8 +48,6 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
 
     commits = candidates(args.good, args.bad)
-    if not commits or commits[-1] != args.bad:
-        parser.error(f"{args.bad} is not a first-parent descendant of {args.good}")
     probes: list[dict[str, object]] = []
     summary: dict[str, object] = {
         "good": args.good, "bad": args.bad, "candidates": commits, "probes": probes,
@@ -66,7 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return 0 if status in ("culprit", "spread") else 1
 
-    # log2(128) + 2: the search, then the culprit and its parent at most.
+    if not commits or commits[-1] != args.bad:
+        return finish("error", at=args.bad, reason="not a first-parent descendant of the good end")
+    # log2(64) + 2: the search, then the culprit and its parent at most.
     if len(commits) > 2 ** (MAX_PROBES - 2):
         return finish("error", at=args.bad, reason=f"{len(commits)} commits to bisect")
     # Invariant: commits[lo] passes (lo = -1 stands for GOOD) and commits[hi] regressed.
@@ -82,13 +82,15 @@ def main(argv: list[str] | None = None) -> int:
 
     culprit = commits[hi]
     parent = commits[lo] if lo >= 0 else args.good
-    for sha in (culprit, parent):
+    # The ends of the bracket, if not measured during the search, must confirm their verdicts:
+    # a passing culprit or a failing parent means the search rested on noise.
+    for sha, expected in ((culprit, BAD), (parent, GOOD)):
         if not (args.out / sha).is_dir():
             status = probe(sha)
             if status == UNHEALTHY:
                 return finish("machine-unhealthy", at=sha)
-            if status not in (GOOD, BAD):
-                return finish("error", at=sha)
+            if status != expected:
+                return finish("error", at=sha, reason="the bracket did not reproduce")
     compare = subprocess.run(
         [*args.compare.split(), str(args.out / culprit), str(args.out / parent)],
         capture_output=True, text=True, check=False,
@@ -96,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     evidence = {"parent": parent, "comparison": compare.stdout[-4000:]}
     if compare.returncode == 1:
         return finish("culprit", culprit=culprit, **evidence)
-    return finish("spread", last_passing=parent, first_failing=culprit, **evidence)
+    if compare.returncode in (0, 3):
+        return finish("spread", last_passing=parent, first_failing=culprit, **evidence)
+    return finish("error", at=culprit, reason="the culprit and its parent could not be compared")
 
 
 if __name__ == "__main__":

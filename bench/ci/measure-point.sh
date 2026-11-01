@@ -23,10 +23,12 @@ stream=(stream --binary build/bench/stream --out "$out/stream.json")
 healthy=0
 for _ in 1 2 3; do
   "${bench[@]}" "${stream[@]}" || exit 2
-  if bench/ci/gate.sh "$out/stream.json" bench/baselines/gb10.json -- "${bench[@]}" "${stream[@]}"; then
-    healthy=1
-    break
-  fi
+  bench/ci/gate.sh "$out/stream.json" bench/baselines/gb10.json -- "${bench[@]}" "${stream[@]}"
+  case $? in
+    0) healthy=1; break ;;
+    1) ;;
+    *) exit 2 ;;
+  esac
 done
 ((healthy)) || exit 4
 

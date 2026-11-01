@@ -77,8 +77,8 @@ def main(argv: list[str]) -> int:
         title = f"perf-regression: bisection over {span} stopped ({status})"
         body = (
             f"A regression of main was confirmed ({run_url}), but its bisection stopped at "
-            f"`{summary.get('at', '?')[:10]}`: {status}. Nothing is interpreted from an "
-            f"unhealthy machine or a failed probe.\n\nProbes:\n{probes}\n"
+            f"`{summary.get('at', '?')[:10]}`: {status} ({summary.get('reason', 'see the run')}). Nothing is interpreted from "
+            f"an unhealthy machine or a failed probe.\n\nProbes:\n{probes}\n"
         )
 
     gh("label", "create", LABEL, "--force", "--color", "B60205",
