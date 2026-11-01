@@ -325,6 +325,21 @@ def boundary_write_body(lm: LoopModel, indent: str) -> list[str]:
     return lines
 
 
+def jacobian_lines(lm: LoopModel, args: list[str], index: str, indent: str) -> list[str]:
+    """Evaluate each Jacobian output's derivative function on the same arguments as the body
+    and write it at entity `index` (a face or a cell) in the Jac storage type."""
+    lines = []
+    for n, (j, jfn) in enumerate(lm.jac_fns):
+        size = j.dataset.type.size
+        lines.append(f"{indent}typename P::compute jac{n}[{size}];")
+        lines.append(f"{indent}{jfn.name}<P>({', '.join([*args, f'jac{n}'])});")
+        lines.extend(
+            f"{indent}{at(j.dataset, index, c)} = static_cast<typename P::jac>(jac{n}[{c}]);"
+            for c in range(size)
+        )
+    return lines
+
+
 def emit_loop(e: Emitter, lm: LoopModel) -> None:
     loop = lm.loop
     e.w("template <class P>")
@@ -344,6 +359,8 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
         e.w(f"    typename P::compute out[{n}];")
         args = call_args(lm.sig, loop.bindings, {"left": "l", "right": "r", "direct": "f"})
         e.w(f"    {lm.fn.name}<P>({', '.join([*args, 'out'])});")
+        for s in jacobian_lines(lm, args, "f", "    "):
+            e.w(s)
         for s in inc_lines(lm, "left", "l"):
             e.w(s)
         if lm.kind == "face":
@@ -360,6 +377,8 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
         e.w(f"    typename P::compute out[{n}];")
         args = call_args(lm.sig, loop.bindings, {"direct": "c"})
         e.w(f"    {lm.fn.name}<P>({', '.join([*args, 'out'])});")
+        for s in jacobian_lines(lm, args, "c", "    "):
+            e.w(s)
         for s in cell_stores(lm, "    "):
             e.w(s)
         e.w("  }")

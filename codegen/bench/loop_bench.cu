@@ -306,7 +306,8 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     gpu::check(cudaDeviceSynchronize(), "lsq stencil");
     if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
     const double st_bytes = static_cast<double>(ns) * (sizeof(index_t) + 3.0 * sizeof(w_host[0])) +
-                            cells * (sizeof(offset_t) + sizeof(S) + 3.0 * sizeof(Gr));
+                            cells * (sizeof(offset_t) + sizeof(S) + 3.0 * sizeof(Gr)) +
+                            nb * sizeof(S);
     const char* label = kind == autan::kernels::StencilKind::vertex ? "vertex" : "face2";
     std::fprintf(stderr, "%s stencil: %zu entries (%.1f per cell), built in %.3f s\n", label, ns,
                  static_cast<double>(ns) / cells, build_seconds);

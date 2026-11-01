@@ -9,6 +9,8 @@ Conservative variables U = (rho, rho u, rho v, rho w, rho E), ideal gas.
 from autan_codegen.dsl import (
     Geom,
     Inc,
+    Jac,
+    Jacobian,
     Residual,
     State,
     Vec3,
@@ -16,6 +18,7 @@ from autan_codegen.dsl import (
     cells,
     dot,
     face_loop,
+    faces,
     geometry,
     pointwise,
     sqrt,
@@ -89,4 +92,16 @@ flux = face_loop(
     n=geometry.face_normal,
     area=geometry.face_area_magnitude,
     out=Inc(res, left=+1, right=-1),
+)
+
+# The same flux with its two 5x5 face Jacobians dF/dU_L and dF/dU_R, for implicit solvers.
+face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
+
+flux_and_jacobian = face_loop(
+    roe_flux,
+    ul=u_cons.left,
+    ur=u_cons.right,
+    n=geometry.face_normal,
+    area=geometry.face_area_magnitude,
+    out=[Inc(res, left=+1, right=-1), Jacobian(face_jac, wrt=("ul", "ur"))],
 )

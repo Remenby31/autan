@@ -47,8 +47,13 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 | `boundary_loop` | boundary faces | `d.left`, `d` (faces), params | `Inc(d, left=s_L)`, or `Write(d)` of face datasets: no derivatives (face data are passive); reading active data needs `frozen=True` (E1012 otherwise), listed in the module's `frozen_loops` |
 | `cell_loop` | owned cells | `d` (cells), params | `Write(d)` |
 | `cell_reduce` | owned cells, then their faces in CSR order | `d.self_`, `d.other(boundary=f)`, incidence data (`geometry.lsq_weight`), face data of the incidence's face (`d` on faces), params | `Sum(d)`, `Min(d)`, `Max(d)`, optional `finalise` body |
+| `cell_reduce(over=STENCIL)` | owned cells, then their stencil: cells, then boundary faces | `d.self_`, `d.other(boundary=f)` (stencil cell, or `f` of a boundary face), stencil data (`geometry.stencil_lsq_weight`), params | same |
+
+**Stencils.** Least squares over face neighbours leaves the unlimited second-order scheme linearly unstable on tetrahedra (Diskin and Thomas, AIAA J. 49(4), 2011): on the V&V `tet` family at n = 5, −V⁻¹ ∂R/∂q of pure advection has five eigenvalues with positive real part (`tests/test_stencil.py`). `autan::kernels::cell_stencil(mesh, geometry, kind)` builds a wider stencil once per mesh, after renumbering: `vertex` holds the cells and boundary faces sharing a node with the cell (about 63 entries per tetrahedron), `face2` the face neighbours, theirs, and the boundary faces of both (about 13); either removes the unstable eigenvalues. It returns the CSR for `Topology::{stencil_offsets, stencil}`, the twins for `stencil_twin` and the LSQ weights for `geometry.stencil_lsq_weight`. Ghost cells get the stencil their known faces give, so the deterministic adjoint collects what owned cells send them; a partition needs a halo as deep as the stencil.
 
 `Inc` targets have role `Residual` (accumulation type). `Min`/`Max` ties keep the first incidence.
+
+**Jacobian blocks.** Face, boundary and cell loops may add `Jacobian(d, wrt=("ul", "ur"))` to `out`: per face (or cell), the derivative of the body's outputs with respect to the named arguments, the others held fixed, written to `d` of role `Jac` and shape `(n_out, n_in)` for one argument or `(len(wrt), n_out, n_in)` for several, row-major — the blocks an implicit solver assembles. `ad.jacobian` derives it by forward mode, one direction per input component in a single function sharing the body's primal, structural zeros folded. Written once per face (by the owner in gather-recompute), so every strategy gives the same blocks; the loop's tangent and adjoint ignore it. `Jac` storage is the place to move to 16-bit formats with a per-block scale later (research §7).
 
 ## Generated C++
 
@@ -64,7 +69,7 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 
 `gpu::Schedule` carries the block size, the colourings (`autan::kernels::colour_faces`), the store-gather and incidence scratch and the stream.
 
-The adjoint of a cell reduction sends values to neighbouring cells, so it takes a strategy too: with `atomic` and `warp_aggregated` it scatters with atomics; with the deterministic strategies it runs in two passes (research §6, store-then-gather on the transposed incidence list): each owned cell adds its own adjoints and stores, per incidence, what it sends across, then each cell, owned or ghost, sums what its owned neighbours stored for it, in the order of its incidences. The twin of an incidence (the same face in the other cell's list) is `Topology::incidence_twin`, from `autan::kernels::incidence_twins(mesh)`.
+The adjoint of a cell reduction sends values to neighbouring cells, so it takes a strategy too: with `atomic` and `warp_aggregated` it scatters with atomics; with the deterministic strategies it runs in two passes (research §6, store-then-gather on the transposed incidence list): each owned cell adds its own adjoints and stores, per incidence, what it sends across, then each cell, owned or ghost, sums what its owned neighbours stored for it, in the order of its incidences. The twin of an incidence (the same face in the other cell's list) is `Topology::incidence_twin`, from `autan::kernels::incidence_twins(mesh)`; over a stencil, the twin of an entry is the cell's entry in its neighbour's stencil (`stencil_twin`; stencils are symmetric).
 
 `autan::kernels::gpu::sum_of_squares` (`norms.cuh`) computes Σ x² in FP64 on the device in chunks of 4096 values and a fixed tree, so the result depends on the data and its length only, never on the launch shape.
 
@@ -72,11 +77,11 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 
 ## Precision
 
-| Policy | state, grad | residual, accum | geom, param | compute |
-|---|---|---|---|---|
-| `fp64` | double | double | double | double |
-| `fp32_acc64` (`fp32+acc64`) | float | double | double | float |
-| `fp32` | float | float | float | float |
+| Policy | state, grad | residual, accum | geom, param | compute | jac |
+|---|---|---|---|---|---|
+| `fp64` | double | double | double | double | double |
+| `fp32_acc64` (`fp32+acc64`) | float | double | double | float | float |
+| `fp32` | float | float | float | float | float |
 
 `complex_step` (host only) computes in `std::complex<double>` for complex-step tests.
 
