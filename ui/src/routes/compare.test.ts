@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { degrees } from "../api/units";
-import { flatten } from "./compare";
+import { convergedForces, flatten } from "./compare";
 import { study } from "./index";
 
 test("angles are read in degrees from the case's units", () => {
@@ -45,4 +45,15 @@ test("a study names the settings that vary across its runs", () => {
       { ...base, aoa: "1 deg" },
     ]),
   ).toBeNull();
+});
+
+test("a converged run ends with its last forces sample within one sampling interval", () => {
+  const samples = { iteration: [10860, 10870, 10880], cl: [0.52, 0.53, 0.5301], cd: [0, 0, 0.004] };
+  const ended = (status: "converged" | "completed", iterations: number, last = iterations) =>
+    convergedForces({ status, iterations }, { iteration: [1, last] }, samples);
+  expect(ended("converged", 10885)).toEqual({ cl: 0.5301, cd: 0.004 });
+  expect(ended("converged", 10880)).toEqual({ cl: 0.5301, cd: 0.004 });
+  expect(ended("converged", 10890)).toBeNull(); // a sample due at the end is missing
+  expect(ended("converged", 10885, 10884)).toBeNull(); // the history has not caught up
+  expect(ended("completed", 10885)).toBeNull();
 });

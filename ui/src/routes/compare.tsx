@@ -3,7 +3,15 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
-import { type LiveRun, runQuery, runsQuery, soleForces, useRunsHistory } from "../api/runs";
+import {
+  type ForceColumns,
+  type HistoryColumns,
+  type LiveRun,
+  runQuery,
+  runsQuery,
+  soleForces,
+  useRunsHistory,
+} from "../api/runs";
 import { degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -290,9 +298,26 @@ function Compare() {
   );
 }
 
-/** Lift and drag polars from the compared runs that converged with forces recorded at their
- * last iteration (a sample from earlier would not be the converged value); at a repeated α the
- * newest run wins. Null when fewer than two angles remain. */
+/** The coefficients a converged run ends with: its last forces sample, taken within one
+ * sampling interval of its final iteration (monitors are recorded only every `every`
+ * iterations, results.md), the history having caught up with run.json. Null otherwise. */
+export function convergedForces(
+  run: Pick<Run, "status" | "iterations">,
+  history: Pick<HistoryColumns, "iteration">,
+  forces: ForceColumns | null,
+): { cl: number; cd: number } | null {
+  if (run.status !== "converged" || history.iteration.at(-1) !== run.iterations) return null;
+  const n = forces?.iteration.length ?? 0;
+  const at = forces?.iteration[n - 1];
+  const cl = forces?.cl[n - 1];
+  const cd = forces?.cd[n - 1];
+  if (at === undefined || cl === undefined || cd === undefined) return null;
+  const every = n >= 2 ? at - (forces?.iteration[n - 2] ?? at) : 0;
+  return run.iterations - at <= Math.max(every - 1, 0) ? { cl, cd } : null;
+}
+
+/** Lift and drag polars from the compared runs that converged (convergedForces); at a
+ * repeated α the newest run wins. Null when fewer than two angles remain. */
 function polars(
   ids: string[],
   runs: (Run | undefined)[],
@@ -303,18 +328,13 @@ function polars(
   ids.forEach((id, k) => {
     const run = runs[k];
     const history = live.get(id)?.history;
-    if (run?.status !== "converged" || !history) return;
-    const forces = soleForces(history);
+    if (!run || !history) return;
     const alpha = degrees(summaries[id]?.settings?.aoa);
-    const cl = forces?.cl.at(-1);
-    const cd = forces?.cd.at(-1);
-    if (alpha === null || cl === undefined || cd === undefined) return;
-    // Converged values only: forces sampled at the run's final iteration, history caught up.
-    const last = history.iteration.at(-1);
-    if (last !== run.iterations || forces?.iteration.at(-1) !== last) return;
+    const ended = convergedForces(run, history, soleForces(history));
+    if (alpha === null || ended === null) return;
     const seen = byAlpha.get(alpha);
     if (!seen || seen.started < run.started)
-      byAlpha.set(alpha, { alpha, cl, cd, started: run.started });
+      byAlpha.set(alpha, { alpha, ...ended, started: run.started });
   });
   const points = [...byAlpha.values()];
   if (points.length < 2) return null;
