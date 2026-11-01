@@ -93,8 +93,12 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
       return 1;
     }
     char line[16];
-    static_cast<void>(std::fgets(line, sizeof line, fifo));
+    const bool released = std::fgets(line, sizeof line, fifo) != nullptr;
     std::fclose(fifo);
+    if (!released) {
+      std::fprintf(stderr, "gate %s closed before a line\n", gate);
+      return 1;
+    }
   }
   for (int i = 0; i < 5; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
   const auto t0 = Clock::now();
