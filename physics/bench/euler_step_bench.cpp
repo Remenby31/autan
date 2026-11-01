@@ -1,9 +1,10 @@
 // Time per cell of the device SSP-RK3 step (DeviceStepper::step: three residuals, the stages, the
 // norms and the D0107 check) and of the host residual, on a mesh given on the command line.
-// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [GATE]; prints one JSON object.
-// `rcm` renumbers the cells (autan::rcm_order) first. With GATE, a FIFO, the bench prints `ready`
-// after its setup and times only once a line arrives on GATE, so that a GPU lock the caller takes
-// then (autan-gpu-lock) covers the timed steps alone (docs/infra/bench.md).
+// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [--gate]; prints one JSON object.
+// `rcm` renumbers the cells (autan::rcm_order) first. With --gate (autan-bench's protocol), the
+// host setup done, it writes `autan-bench: ready` on stderr and waits for a line on stdin before
+// creating any CUDA context, so that the GPU lock covers the device work alone
+// (docs/infra/bench.md).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -42,7 +43,7 @@ class NoGhosts final : public autan::runtime::GhostExchange {
 };
 
 template <class P>
-int bench(const autan::Mesh& mesh, const char* precision, int steps, const char* gate) {
+int bench(const autan::Mesh& mesh, const char* precision, int steps, bool gate) {
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
@@ -78,27 +79,21 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
   const auto t1 = Clock::now();
   for (int i = 0; i < host_reps; ++i) host.residual(stored, res);
   const double host_s = std::chrono::duration<double>(Clock::now() - t1).count() / host_reps;
+  if (gate) {
+    // autan-bench's gate: no CUDA context before the line on stdin, which comes under the lock.
+    std::fprintf(stderr, "autan-bench: ready\n");
+    std::fflush(stderr);
+    char line[16];
+    if (std::fgets(line, sizeof line, stdin) == nullptr) {
+      std::fprintf(stderr, "stdin closed before go\n");
+      return 1;
+    }
+  }
   autan::runtime::OneRank rank;
   NoGhosts ghosts;
   auto device =
       autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
   device->upload(u);
-  if (gate != nullptr) {
-    std::printf("ready\n");
-    std::fflush(stdout);
-    std::FILE* fifo = std::fopen(gate, "r");
-    if (fifo == nullptr) {
-      std::fprintf(stderr, "cannot open %s\n", gate);
-      return 1;
-    }
-    char line[16];
-    const bool released = std::fgets(line, sizeof line, fifo) != nullptr;
-    std::fclose(fifo);
-    if (!released) {
-      std::fprintf(stderr, "gate %s closed before a line\n", gate);
-      return 1;
-    }
-  }
   for (int i = 0; i < 5; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
   const auto t0 = Clock::now();
   for (int i = 0; i < steps; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
@@ -116,13 +111,13 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
 
 int main(int argc, char** argv) {
   if (argc < 5) {
-    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [GATE]\n");
+    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [--gate]\n");
     return 2;
   }
   auto mesh = autan::io::read_mesh(argv[1]);
   if (std::string(argv[4]) == "rcm") mesh = autan::renumber_cells(mesh, autan::rcm_order(mesh));
   const int steps = std::atoi(argv[3]);
-  const char* gate = argc > 5 ? argv[5] : nullptr;
+  const bool gate = argc > 5 && std::string(argv[5]) == "--gate";
   const std::string p = argv[2];
   if (p == "fp64") return bench<autan::kernels::fp64>(mesh, argv[2], steps, gate);
   if (p == "fp32+acc64") return bench<autan::kernels::fp32_acc64>(mesh, argv[2], steps, gate);
