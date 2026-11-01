@@ -216,13 +216,13 @@ Manufactured::Manufactured(const std::string& json_text) {
       if (!pair.is_array() || pair.size() != 2 || !pair[0].is_string() || !pair[1].is_string()) {
         throw std::invalid_argument("a subexpression is a [name, expression] pair of strings");
       }
-      const auto name = pair[0].get<std::string>();
-      if (slots.contains(name) || name == "pi") {
-        throw std::invalid_argument("subexpression '" + name + "' is declared twice or reserved");
+      const auto declared = pair[0].get<std::string>();
+      if (slots.contains(declared) || declared == "pi") {
+        throw std::invalid_argument("subexpression '" + declared + "' is declared twice or reserved");
       }
       Parser parser(pair[1].get<std::string>(), slots, group->nodes);
       group->subexpressions.push_back(parser.parse());
-      slots[name] = 3 + static_cast<int>(group->subexpressions.size()) - 1;
+      slots[declared] = 3 + static_cast<int>(group->subexpressions.size()) - 1;
     }
     const auto& outputs = g.at("outputs");
     if (!outputs.is_object()) throw std::invalid_argument("outputs must be an object");
