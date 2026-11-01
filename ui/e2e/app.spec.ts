@@ -65,7 +65,7 @@ test("a run written by another process appears and updates live", async ({ page 
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
   await expect(page.getByTestId("status")).toContainText(/converged/i);
   await expect(budget).toHaveCount(0);
-  await expect(page.getByTestId("iteration")).toHaveText(String(last + 2));
+  await expect(page.getByTestId("iteration").locator("..")).toHaveText(String(last + 2));
 });
 
 test("⌘K opens a run by name and state", async ({ page }) => {

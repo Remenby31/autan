@@ -370,7 +370,6 @@ function Facts({
         { label: "State", value: <Status status={run.status} /> },
         {
           label: "Iteration",
-          // The budget matters while the run goes on; a finished run shows where it ended.
           value:
             run.status === "running" ? (
               <>
