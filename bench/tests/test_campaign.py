@@ -140,23 +140,36 @@ def test_stop_never_signals_a_process_that_is_not_its_watcher(tmp_path, monkeypa
         other.wait()
 
 
+def running_threads() -> int:
+    return sum(1 for t in Path("/proc").glob("[0-9]*/task/[0-9]*/stat")
+               if campaign._state_of(t) == b"R")  # fmt: skip
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux's")
-def test_every_campaign_is_excluded_from_the_outside_load(tmp_path, monkeypatch):
-    # Two campaigns, each a cgroup whose threads spin: their watchers publish the cgroups, and
-    # none of these threads counts as another project's load.
+def test_every_live_campaign_is_excluded_from_the_outside_load(tmp_path, monkeypatch):
+    # Two campaigns, each a cgroup whose thread spins, published by their watchers. A third
+    # publication with a stale heartbeat and a malformed one exclude nothing.
     spin = [sys.executable, "-c", "while True: pass"]
-    procs = [subprocess.Popen(spin) for _ in range(2)]
+    procs = [subprocess.Popen(spin) for _ in range(3)]
     try:
-        states = tmp_path / "campaigns"
+        root, states = tmp_path / "cgroups", tmp_path / "campaigns"
         states.mkdir()
         for k, proc in enumerate(procs):
-            cgroup = tmp_path / f"cg{k}"
-            cgroup.mkdir()
+            cgroup = root / f"cg{k}"
+            cgroup.mkdir(parents=True)
             (cgroup / "cgroup.threads").write_text(f"{proc.pid}\n")
             (states / f"c{k}.cgroup").write_text(f"{cgroup}\n")
+            (states / f"c{k}.heartbeat").touch()
+        old = time.time() - 600
+        os.utime(states / "c2.heartbeat", (old, old))
+        (states / "bad.cgroup").write_bytes(b"\xff/\n")
+        (states / "bad.heartbeat").touch()
         monkeypatch.setattr(campaign, "STATES", states)
+        monkeypatch.setattr(campaign, "CGROUPS", root)
         time.sleep(0.2)
-        assert max(campaign.campaigns_running() for _ in range(5)) == 2
+        # Outside load = runnable threads - the 2 live campaigns' threads - this sampler.
+        excluded = {running_threads() - campaign.other_runnable() for _ in range(5)}
+        assert 3 in excluded
     finally:
         for proc in procs:
             proc.kill()

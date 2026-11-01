@@ -29,6 +29,7 @@ from pathlib import Path
 
 LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
 STATES = LOCK.parent / "campaigns"
+CGROUPS = Path("/sys/fs/cgroup")
 PREFIX = "autan-campaign-"
 STATE = Path.home() / "autan-campaigns"
 POLL_S = 0.1
@@ -82,11 +83,18 @@ def other_runnable() -> int:
 
 
 def campaigns_running() -> int:
-    """Threads in state R in the cgroups the campaigns' watchers published."""
-    tids: list[str] = []
+    """Threads in state R in the cgroups that live campaigns' watchers published: a publication
+    counts only under CGROUPS and with a fresh heartbeat, each thread once."""
+    tids: set[str] = set()
     for published in STATES.glob("*.cgroup"):
-        with contextlib.suppress(OSError):
-            tids += (Path(published.read_text().strip()) / "cgroup.threads").read_text().split()
+        try:
+            fresh = time.time() - published.with_suffix(".heartbeat").stat().st_mtime
+            cgroup = Path(published.read_text().strip()).resolve()
+            if fresh > HEARTBEAT_MAX_AGE_S or not cgroup.is_relative_to(CGROUPS):
+                continue
+            tids.update((cgroup / "cgroup.threads").read_text().split())
+        except (OSError, ValueError):
+            continue
     return sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
 
 
