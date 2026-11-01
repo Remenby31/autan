@@ -15,20 +15,23 @@
            falls below it (exit 71); GB10's GPU allocates from host memory and a container's
            memory limit does not bound device allocations (autan_memfloor.py)
 
-The command runs in its own session, without the lock's descriptor. A command that is itself
-`docker run` gets a --cidfile: its container lives outside the session, so the container is
-killed with `docker kill` before the session whenever the command is stopped, and any still
-running at the end; a `docker run` nested in a shell is not seen. A signal to the wrapper
-stops it the same way (exit 143); a command that cannot start exits 127. Before the lock is
-released, every process left in the session, and every descendant of one even in a session of
-its own, is killed and waited for, so no worker outlives the hold; one that survives SIGKILL
-(stuck in the kernel) is recorded as a leftover and makes the wrapper exit 70. Every event is one line of
+The command runs in its own session, without the lock's descriptor. The wrapper is a child
+subreaper: every process below it, in any session and orphans included, is the command's. A
+command that is itself `docker run` gets a --cidfile (unless it gives its own): its container
+runs outside that tree, so it gets `docker kill`, run in the background, whenever the command is
+stopped, and at the end if docker does not report it gone; a `docker run` nested in a shell is
+not seen. A signal to the wrapper stops the command as the limit does (exit 143); a command that
+cannot start exits 127. Before the lock is released, every process of the command is killed and
+waited for, so no worker outlives the hold; one that survives SIGKILL (stuck in the kernel), or
+a container docker cannot confirm gone, is recorded as a leftover and makes the wrapper exit 70.
+Every event is one line of
 holders.log next to the lock (tab-separated: UTC time, event, who, where, seconds, exit status,
 why, command), written with a single append. Do not nest autan-bench under it: autan-bench takes
 the lock itself. See docs/infra/bench.md.
 """
 
 import contextlib
+import ctypes
 import fcntl
 import os
 import pwd
@@ -159,38 +162,48 @@ def ci_waiting() -> bool:
 
 
 TREE_EVERY_S = 0.5
+PR_SET_CHILD_SUBREAPER = 36  # prctl(2)
+
+
+def become_subreaper() -> None:
+    """Orphaned descendants of the command are reparented to this process instead of PID 1, so
+    that a worker whose parent exits early is still found in the tree."""
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        sys.stderr.write("autan-gpu-lock: cannot become a child subreaper\n")
+        sys.exit(70)
 
 
 class Tree:
-    """The command's processes: its session, and every descendant of a process ever seen in it,
-    so that a worker that starts its own session (autan-bench's gated binary) is still found.
-    Zombies left by a non-reaping PID 1 hold nothing and are not counted."""
+    """Every process below this wrapper (a subreaper) except its own helpers: the command, its
+    workers in any session, and their orphans. Zombies hold nothing and are not counted;
+    orphaned ones are reaped here."""
 
-    def __init__(self, sid: int) -> None:
-        self.sid = sid
-        self.known: dict[int, bytes] = {}
+    def __init__(self, command_pid: int, helpers: set[int]) -> None:
+        self.root = os.getpid()
+        self.command_pid = command_pid
+        self.helpers = helpers
         self.at = 0.0
 
     def scan(self) -> list[int]:
         table = {}
         for proc_stat in Path("/proc").glob("[0-9]*/stat"):
             try:
-                # proc(5): state, ppid, pgrp, session ... starttime (22nd field).
+                # proc(5): state and ppid follow the command name.
                 fields = proc_stat.read_bytes().rpartition(b")")[2].split()
-                table[int(proc_stat.parent.name)] = (fields[0], int(fields[1]), int(fields[3]),
-                                                     fields[19])  # fmt: skip
+                table[int(proc_stat.parent.name)] = (fields[0], int(fields[1]))
             except (OSError, IndexError, ValueError):
                 continue
-        members = {pid for pid, (_, _, sid, _) in table.items() if sid == self.sid}
-        members |= {
-            pid for pid, start in self.known.items() if table.get(pid, (0, 0, 0, b""))[3] == start
-        }
-        grew = True
-        while grew:
-            children = {pid for pid, (_, ppid, _, _) in table.items() if ppid in members}
-            grew = not children <= members
-            members |= children
-        self.known = {pid: table[pid][3] for pid in members}
+        members: set[int] = set()
+        frontier = {self.root}
+        while frontier:
+            frontier = {pid for pid, (_, ppid) in table.items()
+                        if ppid in frontier and pid not in self.helpers} - members  # fmt: skip
+            members |= frontier
+        for pid in members:
+            # Orphans the subreaper inherited; the command itself is Popen's to wait for.
+            if table[pid][0] == b"Z" and table[pid][1] == self.root and pid != self.command_pid:
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(pid, os.WNOHANG)
         self.at = time.monotonic()
         return [pid for pid in members if table[pid][0] not in (b"Z", b"X")]
 
@@ -205,17 +218,32 @@ class Tree:
 
 
 class Container:
-    """The container of a command that is `docker run`, which runs outside its session."""
+    """The container of a command that is `docker run`, which runs outside the command's
+    processes: killed with `docker kill`, run in the background so that a stalled daemon never
+    delays the rest."""
 
-    def __init__(self) -> None:
+    def __init__(self, tree_helpers: set[int]) -> None:
         self.cidfile: Path | None = None
+        self.own_dir: Path | None = None
         self.id: str | None = None
+        self.killers: list[subprocess.Popen] = []
+        self.killed_at = -1.0e9
+        self.helpers = tree_helpers
 
     def wrap(self, command: list[str]) -> list[str]:
         if Path(command[0]).name != "docker" or command[1:2] != ["run"]:
             return command
-        self.cidfile = Path(tempfile.mkdtemp(prefix="autan-gpu-lock-")) / "cid"
-        return [command[0], "run", "--cidfile", str(self.cidfile), *command[2:]]
+        args = command[2:]
+        for k, arg in enumerate(args):
+            if arg == "--cidfile" and k + 1 < len(args):
+                self.cidfile = Path(args[k + 1])
+                return command
+            if arg.startswith("--cidfile="):
+                self.cidfile = Path(arg.split("=", 1)[1])
+                return command
+        self.own_dir = Path(tempfile.mkdtemp(prefix="autan-gpu-lock-"))
+        self.cidfile = self.own_dir / "cid"
+        return [command[0], "run", "--cidfile", str(self.cidfile), *args]
 
     def _cid(self) -> str | None:
         if self.id is None and self.cidfile is not None:
@@ -224,33 +252,41 @@ class Container:
         return self.id
 
     def running(self) -> bool:
+        """False only once docker reports the container gone; an unanswered query counts as
+        running."""
         cid = self._cid()
         if cid is None:
             return False
         try:
             out = subprocess.run(["docker", "ps", "-q", "--no-trunc", "--filter", f"id={cid}"],
-                                 capture_output=True, text=True, timeout=20, check=False).stdout  # fmt: skip
+                                 capture_output=True, text=True, timeout=20, check=False)  # fmt: skip
         except (OSError, subprocess.SubprocessError):
             return True
-        return cid in out
+        return out.returncode != 0 or cid in out.stdout
 
     def kill(self) -> None:
-        if self.cidfile is None:
+        if self.cidfile is None or time.monotonic() - self.killed_at < 1.0:
             return
         if self._cid() is None:
             sys.stderr.write("autan-gpu-lock: docker run has written no container id yet; "
                              "its container cannot be stopped from here\n")  # fmt: skip
             return
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(
-                ["docker", "kill", self.id], capture_output=True, timeout=20, check=False
-            )
+        self.killed_at = time.monotonic()
+        with contextlib.suppress(OSError):
+            killer = subprocess.Popen(["docker", "kill", self.id], stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)  # fmt: skip
+            self.helpers.add(killer.pid)
+            self.killers.append(killer)
 
-    def remove_cidfile(self) -> None:
-        if self.cidfile is not None:
+    def finish(self, until: float) -> None:
+        for killer in self.killers:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                killer.wait(timeout=max(0.0, until - time.monotonic()))
+        if self.own_dir is not None:
+            assert self.cidfile is not None
             self.cidfile.unlink(missing_ok=True)
             with contextlib.suppress(OSError):
-                self.cidfile.parent.rmdir()
+                self.own_dir.rmdir()
 
 
 def main() -> int:
@@ -301,14 +337,17 @@ def main() -> int:
             sys.stderr.write(f"autan-gpu-lock: {memfloor.show(memfloor.available())} available, "
                              f"below the -f floor of {memfloor.show(floor)}; not started\n")  # fmt: skip
             return 71
-        container = Container()
+        become_subreaper()
+        helpers: set[int] = set()
+        container = Container(helpers)
         try:
             proc = subprocess.Popen(container.wrap(command), start_new_session=True)
         except OSError as err:
             log.record("failed", time.monotonic() - taken, 127)
             sys.stderr.write(f"autan-gpu-lock: cannot run {command[0]}: {err}\n")
             return 127
-        status, stop, leftover, low = supervise(proc, taken, hold_s, floor, cancel, container)
+        tree = Tree(proc.pid, helpers)
+        status, stop, leftover, low = supervise(proc, taken, hold_s, floor, cancel, container, tree)
         held = time.monotonic() - taken
         fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -333,13 +372,11 @@ def main() -> int:
 
 def supervise(
     proc: subprocess.Popen, taken: float, hold_s: int, floor: int, cancel: list[int],
-    container: Container,
+    container: Container, tree: Tree,
 ) -> tuple[int, str | None, int, int | None]:  # fmt: skip
     """Run the command's session to its end, its limit or the memory floor; returns its exit
     status, why it was stopped, how many of its processes outlived SIGKILL, and the lowest
     MemAvailable seen."""
-    # The session, not the process group: a job-control shell puts workers in other groups.
-    tree = Tree(proc.pid)
     grace = min(10.0, hold_s / 2)
     hard = taken + hold_s
     stop = None
@@ -375,14 +412,14 @@ def supervise(
             if now >= hard + CLEANUP_S:
                 break
         time.sleep(POLL_S)
-    # Workers the command left in its session, or its container, would outlive the hold.
+    # Workers the command left behind, or its container, would outlive the hold.
     if container.running():
         container.kill()
     tree.kill(signal.SIGKILL)
     end = time.monotonic() + CLEANUP_S
     while (tree.scan() or container.running()) and time.monotonic() < end:
         time.sleep(POLL_S)
-    container.remove_cidfile()
+    container.finish(end)
     code = proc.returncode
     status = 128 - code if code is not None and code < 0 else (code if code is not None else 137)
     return status, stop, len(tree.scan()) + container.running(), low

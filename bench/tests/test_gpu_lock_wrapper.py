@@ -108,11 +108,16 @@ def test_refuses_a_hold_outside_one_to_six_hundred_seconds(lock, hold):
 
 
 def test_no_process_left_behind_outlives_the_hold(lock, tmp_path):
-    # Also one a job-control shell put in another process group of the session.
-    for shell_options in ("", "set -m;"):
-        pid_file = tmp_path / f"worker{len(shell_options)}"
-        left = f"{shell_options} sleep 30 >/dev/null 2>&1 & echo $! > {pid_file}"
-        assert wrapper(lock, "-m", "unit test", "--", "bash", "-c", left).wait(timeout=20) == 0
+    # Also one a job-control shell put in another process group, and one in a session of its
+    # own whose parent exits at once (orphaned before any scan could see its ancestry).
+    for k, left in enumerate((
+        "sleep 30 >/dev/null 2>&1 & echo $! > {pid}",
+        "set -m; sleep 30 >/dev/null 2>&1 & echo $! > {pid}",
+        "setsid -f sh -c 'echo $$ > {pid}; exec sleep 30' >/dev/null 2>&1",
+    )):  # fmt: skip
+        pid_file = tmp_path / f"worker{k}"
+        script = left.format(pid=pid_file)
+        assert wrapper(lock, "-m", "unit test", "--", "bash", "-c", script).wait(timeout=20) == 0
         assert not alive(pid_from(pid_file))
         assert free(lock)
 
@@ -236,8 +241,11 @@ def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(loc
     assert free(lock)
 
     # The floor still holds during the grace of another stop (here the hold limit's).
-    late = allocate(lock, below_now(1), 32, done, 60, hold="6", delay="3.5")
+    # (hold 20 s: TERM at 10 s, KILL at 20 s; the allocation crosses the floor at about 11.5 s)
+    start = time.monotonic()
+    late = allocate(lock, below_now(1), 32, done, 60, hold="20", delay="11")
     assert late.wait(timeout=60) == 71
+    assert time.monotonic() - start < 17
     assert [r[1] for r in events(lock)][-1] == "memory"
 
     modest = allocate(lock, below_now(2), 2, done, 0)
@@ -285,7 +293,7 @@ def containers(label: str) -> list[str]:
 
 
 @pytest.mark.skipif(not docker_works(), reason="needs a Docker daemon")
-def test_a_docker_run_command_has_its_container_killed_with_it(lock):
+def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path):
     # A container lives outside the command's session: killing its docker client alone would
     # leave it running, past the memory floor and past the hold limit.
     subprocess.run(["docker", "pull", "-q", PYTHON_IMAGE], capture_output=True, check=True)
@@ -301,6 +309,11 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock):
         stuck = wrapper(lock, "-m", "test", "-t", "4", "--", "docker", "run", "--rm", "--label",
                         label, PYTHON_IMAGE, "sleep", "120")  # fmt: skip
         assert stuck.wait(timeout=60) == 124
+        # The same with the caller's own --cidfile, which takes precedence over one injected.
+        own = wrapper(lock, "-m", "test", "-t", "4", "--", "docker", "run", "--rm",
+                      "--cidfile", str(tmp_path / "cid"), "--label", label, PYTHON_IMAGE,
+                      "sleep", "120")  # fmt: skip
+        assert own.wait(timeout=60) == 124
         for _ in range(100):
             if not containers(label):
                 break

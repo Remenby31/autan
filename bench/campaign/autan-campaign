@@ -196,23 +196,29 @@ def watch(name: str, floor: int) -> int:
                       f"--free {memfloor.show(floor)}: not started")  # fmt: skip
             return 1
         # Its own thread: the loop below waits on docker calls (up to 30 s each), the floor
-        # cannot. It kills the container at once; the loop then removes it.
+        # cannot. It kills the container at once, and again every second while the floor is
+        # not met, in case the container was not running yet; the loop then removes it.
         breached = threading.Event()
 
         def guard() -> None:
-            while not stopping and not breached.is_set():
+            while not stopping:
                 if memfloor.below(floor):
                     breached.set()
                     with contextlib.suppress(subprocess.SubprocessError, OSError):
                         docker("kill", container, check=False)
-                    return
-                time.sleep(POLL_S)
+                    time.sleep(1.0)
+                else:
+                    time.sleep(POLL_S)
 
         threading.Thread(target=guard, daemon=True).start()
         # "running" is published before the start, so that a measurement that takes the lock
         # in between waits for the freeze instead of measuring beside the campaign.
         publish(name, "running")
         heartbeat.touch()
+        if breached.is_set():
+            log(name, f"host memory available fell below --free {memfloor.show(floor)}: "
+                      "not started")  # fmt: skip
+            return 1
         docker("start", container)
         cgroup = cgroup_of(container)
         (STATES / f"{name}.cgroup").write_text(f"{cgroup}\n")
