@@ -37,7 +37,34 @@ def test_metal_refuses_fp64_with_its_code(
 
 # Every kernel module of the solver, and the module of test_generate.py (Mat53, outer, rel inside
 # a reduction, a boundary loop writing face data), with all derivatives.
-SOURCES = [*sorted(p.name for p in (ROOT / "kernels").glob("*.py")), "test_generate.MODULE"]
+SOURCES = [
+    *sorted(p.name for p in (ROOT / "kernels").glob("*.py")),
+    "test_generate.MODULE",
+    "JACOBIANS",
+]
+# Jacobian outputs of a cell loop (the Metal emitter's own cell kernel) and of a boundary loop.
+JACOBIANS = """
+from autan_codegen.dsl import Geom, Inc, Jac, Jacobian, Residual, State, Write, boundary_loop
+from autan_codegen.dsl import cell_loop, cells, faces, geometry, pointwise
+
+u = cells.field("u", State.Vec5)
+r = cells.field("r", Residual.Vec5)
+cell_jac = cells.field("cell_jac", Jac.shape(5, 5))
+face_jac = faces.field("face_jac", Jac.shape(5, 5))
+
+@pointwise
+def volume_term(q: State.Vec5, vol: Geom) -> Residual.Vec5:
+    return vol * q[0] * q
+
+@pointwise
+def wall_term(q: State.Vec5, n: Geom.Vec3) -> Residual.Vec5:
+    return (q[1] * n[0] + q[2] * n[1] + q[3] * n[2]) * q
+
+local = cell_loop(volume_term, q=u, vol=geometry.cell_volume,
+                  out=[Write(r), Jacobian(cell_jac, wrt="q")])
+wall = boundary_loop(wall_term, q=u.left, n=geometry.face_normal,
+                     out=[Inc(r, left=+1), Jacobian(face_jac, wrt="q")])
+"""
 
 
 @pytest.mark.gpu
@@ -48,6 +75,9 @@ def test_every_kernel_module_compiles_to_metal(backend: str, tmp_path: Path, sou
     if source == "test_generate.MODULE":
         path = tmp_path / "state_gradient.py"
         path.write_text(MODULE)
+    elif source == "JACOBIANS":
+        path = tmp_path / "jacobians.py"
+        path.write_text(JACOBIANS)
     else:
         path = ROOT / "kernels" / source
     m = model.load(path)
