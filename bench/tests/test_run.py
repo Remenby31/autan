@@ -8,9 +8,10 @@ import pytest
 from autan_bench.cli import main
 
 # The binary and the GPU telemetry tools are external processes; all are faked here. The fake
-# GPU reads busy (90 %; on Linux one compute process) while the fake binary runs, idle otherwise.
+# GPU reads busy while the fake binary runs (Linux: 90 % and one compute process; macOS: 12 %, what
+# ioreg shows under a bandwidth-bound Metal kernel), idle otherwise.
 FAKE_IOREG = """#!/bin/sh
-if [ -e "{busy}" ]; then util=90; else util=3; fi
+if [ -e "{busy}" ]; then util=12; else util=3; fi
 echo '"PerformanceStatistics" = {{"Device Utilization %"='$util',"Tiler Utilization %"=2}}'
 """
 FAKE_SMI = """#!/bin/sh
@@ -110,6 +111,9 @@ def test_run_derives_bandwidth_and_time_per_cell_from_kernel_times(fake_gpu, tmp
     assert doc["provenance"]["precision"] == "fp32"
     assert doc["provenance"]["solver"] == {"commit": "a" * 40, "dirty": False}
     assert doc["config"]["n_cells"] == 1000
+    load = doc["conditions"]["host_load"]
+    assert load["cpus"] >= 1
+    assert min(load["before_1m"], load["after_1m"]) >= 0
     during = doc["conditions"]["during_run"]
     assert during["busy_samples"] >= 1
     backend = doc["provenance"]["backend"]
@@ -127,3 +131,17 @@ def test_run_refuses_an_unverified_result(fake_gpu, tmp_path, capsys):
     )
     assert "error[VERIFY_FAILED]" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_run_refuses_a_busy_host_when_asked(fake_gpu, tmp_path, monkeypatch, capsys):
+    # The load average is the operating system's: faked at that boundary.
+    monkeypatch.setattr(os, "getloadavg", lambda: (100.0, 100.0, 100.0))
+    monkeypatch.setattr(os, "cpu_count", lambda: 20)
+    out = tmp_path / "r.json"
+    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu()), "--precision", "fp32"]
+    argv += ["--out", str(out), "--lock", str(tmp_path / "l")]
+    assert main([*argv, "--max-load", "2"]) == 2
+    assert "error[HOST_BUSY]" in capsys.readouterr().err
+    assert not out.exists()
+    assert main(argv) == 0
+    assert json.loads(out.read_text())["conditions"]["host_load"]["before_1m"] == 100.0

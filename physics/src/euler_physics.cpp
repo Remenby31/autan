@@ -22,6 +22,12 @@ using runtime::Loads;
 using runtime::PhysicsContext;
 using runtime::StepReport;
 
+constexpr std::array<const char*, 6> field_names = {"Density",   "VelocityX", "VelocityY",
+                                                    "VelocityZ", "Pressure",  "Temperature"};
+// SIDS names of the conserved variables.
+constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", "MomentumY",
+                                                        "MomentumZ", "EnergyStagnationDensity"};
+
 // Three-stage scheme for steady second-order upwind discretisations, stage coefficients and
 // CFL number for upwind schemes of Blazek (2015), chapter 6.
 constexpr std::array<double, 3> steady_stages{0.1481, 0.4, 1.0};
@@ -75,6 +81,7 @@ class EulerPhysics final : public runtime::Physics {
     lambda_.assign(n_, State(0));
     stage_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
+    if (ctx.start != nullptr) start_from(*ctx.start);
   }
 
   StepReport step(std::int64_t /*iteration*/) override {
@@ -96,13 +103,32 @@ class EulerPhysics final : public runtime::Physics {
     mean_weight_ += weight;
   }
 
+  // The conserved variables bit for bit, then the averaging sums and their weight.
+  [[nodiscard]] std::vector<io::Field> restart_fields() const override {
+    std::vector<io::Field> out;
+    for (std::size_t k = 0; k < 5; ++k) {
+      out.push_back(
+          {.name = conserved_names[k],
+           .values = std::vector<double>(u_.begin() + static_cast<std::ptrdiff_t>(k * n_),
+                                         u_.begin() + static_cast<std::ptrdiff_t>((k + 1) * n_))});
+    }
+    if (mean_weight_ > 0.0) {
+      for (std::size_t k = 0; k < 6; ++k) {
+        out.push_back({.name = std::string("AverageSum") + field_names[k],
+                       .values = std::vector<double>(
+                           mean_.begin() + static_cast<std::ptrdiff_t>(k * n_),
+                           mean_.begin() + static_cast<std::ptrdiff_t>((k + 1) * n_))});
+      }
+      out.push_back({.name = "AverageWeight", .values = std::vector<double>(n_, mean_weight_)});
+    }
+    return out;
+  }
+
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
-    static const std::array<const char*, 6> names = {"Density",   "VelocityX", "VelocityY",
-                                                     "VelocityZ", "Pressure",  "Temperature"};
     std::vector<io::Field> out;
     const auto f = primitive_fields();
     for (std::size_t k = 0; k < 6; ++k) {
-      io::Field field{.name = names[k], .values = f[k]};
+      io::Field field{.name = field_names[k], .values = f[k]};
       if (mean) {
         for (std::size_t c = 0; c < n_; ++c) field.values[c] = mean_[k * n_ + c] / mean_weight_;
       }
@@ -171,6 +197,39 @@ class EulerPhysics final : public runtime::Physics {
     s.reference = {f.density, f.density * f.velocity[0], f.density * f.velocity[1],
                    f.density * f.velocity[2], f.pressure / (gamma - 1.0) + 0.5 * f.density * q2};
     return s;
+  }
+
+  // From a previous run: its conserved variables and averaging sums when it left them
+  // (`continue`), else its primitive fields (`warm`).
+  void start_from(const runtime::StartState& start) {
+    auto find = [](const std::vector<io::Field>& fields, const std::string& name) {
+      for (const auto& f : fields) {
+        if (f.name == name) return &f.values;
+      }
+      throw std::invalid_argument("start state has no field " + name);
+    };
+    if (!start.restart_fields.empty()) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        const auto& v = *find(start.restart_fields, conserved_names[k]);
+        std::copy(v.begin(), v.end(), u_.begin() + static_cast<std::ptrdiff_t>(k * n_));
+      }
+      for (const auto& f : start.restart_fields) {
+        if (f.name == "AverageWeight") mean_weight_ = f.values.front();
+      }
+      if (mean_weight_ > 0.0) {
+        for (std::size_t k = 0; k < 6; ++k) {
+          const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
+          std::copy(v.begin(), v.end(), mean_.begin() + static_cast<std::ptrdiff_t>(k * n_));
+        }
+      }
+      return;
+    }
+    const auto& rho = *find(start.fields, "Density");
+    const auto& vx = *find(start.fields, "VelocityX");
+    const auto& vy = *find(start.fields, "VelocityY");
+    const auto& vz = *find(start.fields, "VelocityZ");
+    const auto& p = *find(start.fields, "Pressure");
+    for (std::size_t c = 0; c < n_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {

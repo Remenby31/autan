@@ -530,6 +530,25 @@ int autan_spike_set_stencil(void* mesh, int kind, std::int64_t* size, char* err,
   });
 }
 
+/// Fills the volume and centroid of ghost cells (NaN from compute_geometry until a partitioner
+/// copies them from the owning partition) and repacks the geometry; call it before
+/// autan_spike_set_stencil. `centroid` is 3 x n_cells (structure of arrays), `volume` n_cells;
+/// owned entries are ignored.
+int autan_spike_fill_ghost_geometry(void* mesh, const double* centroid, const double* volume,
+                                    char* err, std::size_t err_len) {
+  auto* m = static_cast<SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto nc = static_cast<std::size_t>(m->mesh.n_cells());
+    for (auto c = static_cast<std::size_t>(m->mesh.n_owned_cells()); c < nc; ++c) {
+      m->geometry.cell_volume[c] = volume[c];
+      m->geometry.cell_centroid_x[c] = centroid[c];
+      m->geometry.cell_centroid_y[c] = centroid[nc + c];
+      m->geometry.cell_centroid_z[c] = centroid[2 * nc + c];
+    }
+    m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
+  });
+}
+
 void autan_spike_stencil_arrays(const void* mesh, std::int64_t* offsets, std::int32_t* entries) {
   const auto& st = static_cast<const SpikeMesh*>(mesh)->stencil;
   std::copy(st.offsets.begin(), st.offsets.end(), offsets);

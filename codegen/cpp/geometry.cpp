@@ -231,7 +231,7 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
   for (std::size_t c = 0; c < nc; ++c) {
     cells.clear();
     bfaces.clear();
-    if (c < n_owned && kind == StencilKind::vertex) {
+    if (kind == StencilKind::vertex) {
       for (const index_t f : faces_of(c)) {
         for (const index_t n : mesh.face_nodes(f)) {
           const auto& around = node_cells[static_cast<std::size_t>(n)];
@@ -240,7 +240,7 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
           bfaces.insert(bfaces.end(), bound.begin(), bound.end());
         }
       }
-    } else if (c < n_owned) {
+    } else {
       for (const index_t f : faces_of(c)) {
         const auto fi = static_cast<std::size_t>(f);
         if (fi >= nint) {
