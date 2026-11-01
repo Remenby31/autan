@@ -239,8 +239,11 @@ def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     assert summary["iteration"] == 30
     assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
     assert len(summary["trend"]) == 30
-    assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
     case = tomllib.loads((source / "case.toml").read_text())
+    assert (summary["target_orders"], summary["max_iterations"]) == (
+        case["time"]["residual_orders"],
+        case["time"]["max_iterations"],
+    )
     assert summary["settings"]["aoa"] == case["freestream"]["aoa"]
     assert summary["settings"]["turbulence"] == case["physics"]["turbulence"]["model"]
 
@@ -383,20 +386,92 @@ def test_a_manufactured_solution_run_plans_against_its_archive(
     assert plan["ok"] is True, plan
 
 
+INF = math.inf
+
+
 @pytest.mark.parametrize(
-    ("first", "now", "expected"),
+    ("first", "now", "woken", "floors", "expected", "now_woken"),
     [
-        ({"density": 1e-300, "energy": 1.0}, {"density": 1e-310, "energy": 1e-8}, 8.0),
-        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 0.0}, 8.0),
-        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 1.0}, None),
-        ({"density": 1.0, "energy": 1.0}, {"density": 0.0, "energy": 1e-8}, 8.0),
+        ({"rho": 1e-300, "e": 1.0}, {"rho": 1e-310, "e": 1e-8}, set(), {}, 8.0, set()),
+        ({"rho": 1.0, "e": 0.0}, {"rho": 1e-8, "e": 0.0}, set(), {}, 8.0, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 0.0, "e": 1e-8}, set(), {}, 8.0, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 0.0, "e": 0.0}, set(), {}, INF, set()),
+        # Identically zero at iteration 1 (below 1e-12 of the largest): exempt at the floor...
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-12}, set(), {}, 8.0, set()),
+        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, set(), {}, 8.0, set()),
+        # ...woken above it, for good: it must drop like the others, which it cannot from zero.
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), {}, None, {"my"}),
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, None, {"my"}),
+        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, 3.0, {"my"}),
+        # Every equation of a line wakes, even after one that cannot be compared.
+        (
+            {"rho": 1.0, "a": 0.0, "b": 1e-30},
+            {"rho": 1e-8, "a": 1.0, "b": 1.0},
+            set(),
+            {},
+            None,
+            {"a", "b"},
+        ),
+        # At or below its round-off floor (run.json convergence.floor), an equation has converged.
+        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), {"rho": 1e-4}, 6.0, set()),
+        (
+            {"rho": 1.0, "e": 1.0},
+            {"rho": 1e-4, "e": 1e-6},
+            set(),
+            {"rho": 1e-4, "e": 1e-6},
+            INF,
+            set(),
+        ),
+        (
+            {"rho": 1.0, "e": 1.0},
+            {"rho": 2e-4, "e": 1e-6},
+            set(),
+            {"rho": 1e-4, "e": 1e-6},
+            4 - math.log10(2),
+            set(),
+        ),
     ],
 )
-def test_residual_drop_is_the_slowest_equation(
-    first: dict[str, float], now: dict[str, float], expected: float | None
+def test_residual_drop_is_the_slowest_equation_not_converged(
+    first: dict[str, float],
+    now: dict[str, float],
+    woken: set[str],
+    floors: dict[str, float],
+    expected: float | None,
+    now_woken: set[str],
 ) -> None:
-    orders = residual_orders(first, now)
+    orders = residual_orders(first, now, woken, floors)
     assert orders == (None if expected is None else pytest.approx(expected))
+    assert woken == now_woken
+
+
+def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
+    source = next(runs.iterdir())
+    lines = (source / "history.jsonl").read_text().splitlines()
+    last = json.loads(lines[-1])["residuals"]
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+
+    summary = Registry(runs).scan().summaries[source.name]
+
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert summary["orders"] == case["time"]["residual_orders"]
+    assert summary["trend"][-1] == case["time"]["residual_orders"]
+
+
+def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path) -> None:
+    source = next(runs.iterdir())
+    registry = Registry(runs)
+    before = registry.scan().summaries[source.name]["orders"]
+    last = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+
+    after = registry.scan().summaries[source.name]["orders"]
+
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert before < case["time"]["residual_orders"]
+    assert after == case["time"]["residual_orders"]
 
 
 def _oracle_state_run(runs: Path, tmp_path: Path) -> Path:

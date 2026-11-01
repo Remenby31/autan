@@ -256,6 +256,12 @@ _CODES = [
         "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
     ),
     Code(
+        "E0146",
+        "Several ranks without MPI",
+        "A launcher started several ranks of a build without MPI.",
+        "Run this build on one rank, or use a build with MPI, such as the dev image.",
+    ),
+    Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "
