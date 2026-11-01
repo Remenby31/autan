@@ -3,6 +3,7 @@ FetchContent_GetProperties(picosha2)
 add_library(
   autan_runtime
   src/comm.cpp
+  src/device.cpp
   src/exact_sum.cpp
   src/input.cpp
   src/run_directory.cpp
@@ -21,6 +22,11 @@ target_link_libraries(
   PUBLIC autan::io autan::core autan::partition
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
+if(AUTAN_ENABLE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(autan_runtime PRIVATE CUDA::cudart)
+  target_compile_definitions(autan_runtime PRIVATE AUTAN_HAVE_CUDA)
+endif()
 if(AUTAN_ENABLE_MPI)
   target_link_libraries(autan_runtime PRIVATE autan::halo)
   target_compile_definitions(autan_runtime PRIVATE AUTAN_HAVE_MPI)

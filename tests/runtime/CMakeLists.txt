@@ -21,6 +21,9 @@ target_compile_definitions(
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
+if(AUTAN_ENABLE_CUDA)
+  target_compile_definitions(autan_runtime_tests PRIVATE AUTAN_HAVE_CUDA)
+endif()
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   target_compile_definitions(
     autan_runtime_tests
@@ -30,7 +33,8 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   )
 endif()
 # The multi-rank tests carry the label `mpi` (ctest -L mpi).
-catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
 catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]" PROPERTIES LABELS mpi)
 
 add_executable(autan_exact_sum_tests test_exact_sum.cpp)
