@@ -780,6 +780,14 @@ The file given to `-o`/`--output` cannot be written: missing directory, a direct
 
 Fix: Give a writable file path.
 
+## E0807
+
+**No GPU device** (error)
+
+The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA, but the process sees no CUDA device (`data.visible`, `data.needed`).
+
+Fix: Run on a host with a GPU visible to the process (`docker --gpus`), or use `devices.kind = cpu`.
+
 ## E1001
 
 **Unsupported kernel construct** (error)
