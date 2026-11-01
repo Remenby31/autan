@@ -1,9 +1,11 @@
 // STREAM-style memory bandwidth of an Apple GPU through Metal (McCalpin, "Memory Bandwidth and
 // Machine Balance in Current High Performance Computers", IEEE TCCA Newsletter, 1995): the peak
 // that the Metal loop benchmark is measured against. Kernels as bench/stream/stream.cu, on FP32
-// arrays (Metal has no FP64) with one float4 (16-byte) access per array per thread. Inputs never
-// change, so the final arrays are exactly a = q + q (1 + q), b = q, c = 1 + q; the check is
-// bitwise. Prints the raw JSON document autan-bench reads.
+// arrays (Metal has no FP64) with one float4 (16-byte) access per array per thread, plus `read`
+// (a only): Apple GPUs read faster than they copy, so the copy and read peaks together give the
+// cost of a read byte and of a written byte. Inputs never change, so the final arrays are
+// exactly a = q + q (1 + q), b = q, c = 1 + q; the check is bitwise. Prints the raw JSON document
+// autan-bench reads.
 //
 //   autan_metal_stream [--elements N] [--warmup N] [--reps N] [--batch N] [--block N]
 #include <cstdio>
@@ -48,6 +50,12 @@ kernel void add_f32(constant Arrays& d [[buffer(0)]], uint gid [[thread_position
 }
 kernel void triad_f32(constant Arrays& d [[buffer(0)]], uint gid [[thread_position_in_grid]]) {
   if (long(gid) < d.n4) d.a[gid] = d.b[gid] + d.q * d.c[gid];
+}
+kernel void read_f32(constant Arrays& d [[buffer(0)]], uint gid [[thread_position_in_grid]]) {
+  if (long(gid) < d.n4) {
+    const float4 v = d.a[gid];
+    if (v.x == -1.0f) d.c[gid] = v;  // never true: keeps the load
+  }
 }
 )msl",
                                nullptr};
@@ -114,7 +122,8 @@ int main(int argc, char** argv) {
     int arrays;
     std::vector<double> seconds;
   };
-  std::vector<Kernel> kernels{{"copy", 2, {}}, {"scale", 2, {}}, {"add", 3, {}}, {"triad", 3, {}}};
+  std::vector<Kernel> kernels{
+      {"copy", 2, {}}, {"scale", 2, {}}, {"add", 3, {}}, {"triad", 3, {}}, {"read", 1, {}}};
   for (auto& k : kernels) {
     for (int r = 0; r < o.warmup + o.reps; ++r) {
       for (int i = 0; i < o.batch; ++i) {

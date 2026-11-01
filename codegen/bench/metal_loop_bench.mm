@@ -87,6 +87,7 @@ struct Timed {
   double bytes;
   std::string strategy;
   std::vector<double> seconds;
+  double write_bytes = 0.0;  ///< the part of `bytes` written: weights the reference peak
 };
 
 /// GPU time of one command buffer holding `batch` launches, per launch.
@@ -205,7 +206,8 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
     std::string kernel = std::string("advection_") + autan::kernels::name(s);
     std::replace(kernel.begin(), kernel.end(), '-', '_');
     out.push_back({kernel, adv_bytes, autan::kernels::name(s),
-                   time_it(ctx, o, [&] { av::metal_loops::residual(ctx, a, s, dm.schedule); })});
+                   time_it(ctx, o, [&] { av::metal_loops::residual(ctx, a, s, dm.schedule); }),
+                   cells * sizeof(R)});
   }
 
   namespace gr = autan::kernels::gradients;
@@ -243,9 +245,10 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
   const double lsq_bytes = inc * (sizeof(index_t) + 3.0 * sizeof(G)) +
                            cells * (sizeof(offset_t) + 3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
                            ni * 2 * sizeof(index_t) + nb * sizeof(S);
-  out.push_back({"lsq_gradient_bounds", lsq_bytes, "cell", time_it(ctx, o, [&] {
-                   gr::metal_loops::lsq_gradient_bounds(ctx, d, dm.schedule);
-                 })});
+  out.push_back(
+      {"lsq_gradient_bounds", lsq_bytes, "cell",
+       time_it(ctx, o, [&] { gr::metal_loops::lsq_gradient_bounds(ctx, d, dm.schedule); }),
+       cells * (3.0 * sizeof(Gr) + 2.0 * sizeof(S))});
 
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
   namespace rf = autan::kernels::roe;
@@ -337,9 +340,10 @@ int main(int argc, char** argv) {
   for (std::size_t k = 0; k < timed.size(); ++k) {
     const auto& t = timed[k];
     std::printf("%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":"
-                "\"%s\",\"policy\":\"%s\",\"order\":\"%s\"},\"seconds\":[",
+                "\"%s\",\"policy\":\"%s\",\"order\":\"%s\",\"write_bytes\":%.0f},"
+                "\"seconds\":[",
                 k ? "," : "", t.name.c_str(), t.bytes, m.topo.n_cells, t.strategy.c_str(),
-                o.policy.c_str(), o.order.c_str());
+                o.policy.c_str(), o.order.c_str(), t.write_bytes);
     for (std::size_t r = 0; r < t.seconds.size(); ++r)
       std::printf("%s%.9e", r ? "," : "", t.seconds[r]);
     std::printf("]}");
