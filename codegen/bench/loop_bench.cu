@@ -330,7 +330,7 @@ int main(int argc, char** argv) {
   } else if (o.order != "input") {
     fail("--order is input or rcm");
   }
-  SpikeMesh m{std::move(mesh), {}, {}, {}, {}};
+  SpikeMesh m{std::move(mesh), {}, {}, {}, {}, {}};
   m.geometry = autan::compute_geometry(m.mesh);
   m.packed = autan::kernels::pack_geometry(m.mesh, m.geometry);
   m.topo = autan::kernels::topology(m.mesh.view());

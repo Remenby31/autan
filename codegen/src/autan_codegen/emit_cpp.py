@@ -136,6 +136,7 @@ def stride(d: dsl.Dataset) -> str:
         dsl.MeshSet.CELLS: "d.topo.n_cells",
         dsl.MeshSet.FACES: "d.topo.n_faces",
         dsl.MeshSet.INCIDENCES: "d.topo.n_incidences",
+        dsl.MeshSet.STENCIL: "d.topo.n_stencil",
     }[d.set]
 
 
@@ -186,9 +187,7 @@ def call_args(
                     if b.boundary is not None
                     else f"{ctype(t.role)}(0)"
                 )
-                out.append(
-                    f"(f < d.topo.n_interior_faces ? {at(b.dataset, 'nb', c, layout)} : {bnd})"
-                )
+                out.append(f"(across ? {at(b.dataset, 'nb', c, layout)} : {bnd})")
             else:
                 out.append(at(b.dataset, index_of[b.via], c, layout))
     return out

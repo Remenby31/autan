@@ -1,0 +1,24 @@
+{
+  "schema": "autan.mesh-family/1",
+  "kind": "tet",
+  "perturbation": 0.0,
+  "seed": 0,
+  "gmsh_version": "4.15.2",
+  "levels": [
+    {
+      "n": 5,
+      "file": "tet-n005.msh",
+      "file_sha256": "72dcddac6da79bc75317fcdc9cd87dec6f2ea4779261f4dde893e530c28721ae",
+      "mesh_sha256": "d5ca7411c3da73584459cbbb26716aa1cb9697107054a62306d06d5fa0e4b478",
+      "n_cells": 762,
+      "n_faces": 1724,
+      "n_points": 241,
+      "cell_counts": {
+        "tet": 762
+      },
+      "min_subvolume_ratio": 0.08333333333333277,
+      "volume": 1.0,
+      "h": 0.10948341687822283
+    }
+  ]
+}

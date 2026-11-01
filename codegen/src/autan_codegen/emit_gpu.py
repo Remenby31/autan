@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
+from autan_codegen.derive import ReduceAdjoint
 from autan_codegen.emit_cpp import Emitter, at, call_args
 from autan_codegen.emit_cpu import (
     cell_stores,
@@ -359,7 +360,10 @@ def emit_reduce_adjoint_deterministic(e: Emitter, lm: LoopModel) -> None:
             '      throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
         )
         e.w("    }")
-        e.w("    if (d.topo.incidence_twin == nullptr) {")
+        assert isinstance(lm.radj, ReduceAdjoint)
+        over = lm.radj.primal.loop.over
+        twin = "stencil_twin" if over == dsl.STENCIL else "incidence_twin"
+        e.w(f"    if (d.topo.{twin} == nullptr) {{")
         e.w(
             '      throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
         )

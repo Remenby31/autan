@@ -85,7 +85,7 @@ def _derived(
     outputs: list[object],
     kind: str | None = None,
 ) -> LoopModel:
-    loop = dsl.Loop(kind or lm.kind, lm.loop.body, bindings, outputs, name=name)  # type: ignore[arg-type]
+    loop = dsl.Loop(kind or lm.kind, lm.loop.body, bindings, outputs, name=name, over=lm.loop.over)  # type: ignore[arg-type]
     fn.name = name + "_body"
     return LoopModel(name, loop, fn, Signature(names, types, None), None, None)
 
