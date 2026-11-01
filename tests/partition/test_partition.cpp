@@ -518,39 +518,39 @@ TEST_CASE("Periodic images fill in device memory as on the host", "[partition][p
   const auto& m = part.mesh;
 #ifdef AUTAN_HAVE_CUDA
   const auto n = at(m.n_cells());
-  // Two components, owned values distinct, ghosts unset.
-  std::vector<double> a(n, -1.0), b(n, -1.0);
-  for (std::size_t c = 0; c < at(m.n_owned_cells()); ++c) {
-    a[c] = static_cast<double>(m.cell_global_id()[c]) + 0.25;
-    b[c] = -static_cast<double>(m.cell_global_id()[c]);
-  }
-  std::vector<double> host_a = a, host_b = b;
-  const std::array<double*, 2> host{host_a.data(), host_b.data()};
-  autan::forward_self(part.halo, m.n_owned_cells(), std::span<double* const>(host));
-
-  std::array<double*, 2> device{};
-  for (std::size_t k = 0; k < 2; ++k) {
-    REQUIRE(cudaMalloc(&device[k], n * sizeof(double)) == cudaSuccess);
-    REQUIRE(cudaMemcpy(device[k], (k == 0 ? a : b).data(), n * sizeof(double),
-                       cudaMemcpyHostToDevice) == cudaSuccess);
-  }
-  cudaStream_t stream = nullptr;
-  REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
   autan::DeviceSelfForward images(part.halo, m.n_owned_cells());
-  images.forward(std::span<double* const>(device), stream);
-  REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
-  REQUIRE(cudaMemcpy(a.data(), device[0], n * sizeof(double), cudaMemcpyDeviceToHost) ==
-          cudaSuccess);
-  REQUIRE(cudaMemcpy(b.data(), device[1], n * sizeof(double), cudaMemcpyDeviceToHost) ==
-          cudaSuccess);
-  CHECK(a == host_a);
-  CHECK(b == host_b);
-
-  std::array<double*, 17> too_many{};
-  too_many.fill(device[0]);
-  require_error(autan::ErrorCode::partition_invalid_request,
-                [&] { images.forward(std::span<double* const>(too_many), stream); });
-  for (double* d : device) cudaFree(d);
+  cudaStream_t stream = nullptr;
+  REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+  // Two components, owned values distinct, ghosts unset, in each precision.
+  const auto check_precision = [&]<class T>(T) {
+    std::vector<T> a(n, T{-1}), b(n, T{-1});
+    for (std::size_t c = 0; c < at(m.n_owned_cells()); ++c) {
+      a[c] = static_cast<T>(m.cell_global_id()[c]) + T{0.25};
+      b[c] = -static_cast<T>(m.cell_global_id()[c]);
+    }
+    std::vector<T> host_a = a, host_b = b;
+    const std::array<T*, 2> host{host_a.data(), host_b.data()};
+    autan::forward_self(part.halo, m.n_owned_cells(), std::span<T* const>(host));
+    std::array<T*, 2> device{};
+    for (std::size_t k = 0; k < 2; ++k) {
+      REQUIRE(cudaMalloc(&device[k], n * sizeof(T)) == cudaSuccess);
+      REQUIRE(cudaMemcpy(device[k], (k == 0 ? a : b).data(), n * sizeof(T),
+                         cudaMemcpyHostToDevice) == cudaSuccess);
+    }
+    images.forward(std::span<T* const>(device), stream);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    REQUIRE(cudaMemcpy(a.data(), device[0], n * sizeof(T), cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(b.data(), device[1], n * sizeof(T), cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(a == host_a);
+    CHECK(b == host_b);
+    std::array<T*, 17> too_many{};
+    too_many.fill(device[0]);
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { images.forward(std::span<T* const>(too_many), stream); });
+    for (T* d : device) cudaFree(d);
+  };
+  check_precision(float{});
+  check_precision(double{});
   cudaStreamDestroy(stream);
 #else
   require_error(autan::ErrorCode::halo_device_unsupported,

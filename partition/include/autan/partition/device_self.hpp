@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <span>
 
 #include "autan/partition/partition.hpp"
@@ -22,8 +23,9 @@ class DeviceSelfForward {
   void forward(std::span<double* const> components, void* stream);
 
  private:
-  index_t* pairs_ = nullptr;  // device: owner, ghost, owner, ghost...
-  index_t n_pairs_ = 0;
+  // Device: owner, ghost, owner, ghost... (unused in a build without CUDA).
+  [[maybe_unused]] index_t* pairs_ = nullptr;
+  [[maybe_unused]] std::int64_t n_pairs_ = 0;
 };
 
 }  // namespace autan

@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -19,9 +20,8 @@ struct Components {
 };
 
 template <class T>
-__global__ void copy_images(Components<T> c, const index_t* pairs, index_t n_pairs) {
-  const auto p = static_cast<index_t>(blockIdx.x) * static_cast<index_t>(blockDim.x) +
-                 static_cast<index_t>(threadIdx.x);
+__global__ void copy_images(Components<T> c, const index_t* pairs, std::int64_t n_pairs) {
+  const std::int64_t p = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
   if (p >= n_pairs) return;
   const index_t owner = pairs[2 * p], ghost = pairs[2 * p + 1];
   for (int k = 0; k < c.n; ++k) c.data[k][ghost] = c.data[k][owner];
@@ -35,7 +35,7 @@ void check(cudaError_t e, const char* what) {
 }
 
 template <class T>
-void run(std::span<T* const> components, const index_t* pairs, index_t n_pairs, void* stream) {
+void run(std::span<T* const> components, const index_t* pairs, std::int64_t n_pairs, void* stream) {
   if (components.size() > static_cast<std::size_t>(max_components)) {
     throw Error(ErrorCode::partition_invalid_request,
                 "at most 16 components per forward, not " + std::to_string(components.size()));
@@ -45,8 +45,9 @@ void run(std::span<T* const> components, const index_t* pairs, index_t n_pairs, 
   c.n = static_cast<int>(components.size());
   for (std::size_t k = 0; k < components.size(); ++k) c.data[k] = components[k];
   constexpr int block = 256;
-  const auto blocks = static_cast<unsigned>((n_pairs + block - 1) / block);
-  copy_images<<<blocks, block, 0, static_cast<cudaStream_t>(stream)>>>(c, pairs, n_pairs);
+  const std::int64_t blocks = (n_pairs + block - 1) / block;
+  copy_images<<<static_cast<unsigned>(blocks), block, 0, static_cast<cudaStream_t>(stream)>>>(
+      c, pairs, n_pairs);
   check(cudaGetLastError(), "copy_images");
 }
 
@@ -63,12 +64,21 @@ DeviceSelfForward::DeviceSelfForward(const HaloPattern& halo, index_t n_owned_ce
       pairs.push_back(n_owned_cells + halo.recv_offsets[i] + k);
     }
   }
-  n_pairs_ = static_cast<index_t>(pairs.size() / 2);
   if (pairs.empty()) return;
-  check(cudaMalloc(reinterpret_cast<void**>(&pairs_), pairs.size() * sizeof(index_t)),
+  index_t* device = nullptr;
+  check(cudaMalloc(reinterpret_cast<void**>(&device), pairs.size() * sizeof(index_t)),
         "cudaMalloc");
-  check(cudaMemcpy(pairs_, pairs.data(), pairs.size() * sizeof(index_t), cudaMemcpyHostToDevice),
-        "cudaMemcpy");
+  // From pageable memory a copy may return before its transfer ends, and the
+  // caller's stream, possibly non-blocking, would not wait for it.
+  const cudaError_t copied =
+      cudaMemcpy(device, pairs.data(), pairs.size() * sizeof(index_t), cudaMemcpyHostToDevice);
+  const cudaError_t done = copied == cudaSuccess ? cudaDeviceSynchronize() : copied;
+  if (done != cudaSuccess) {
+    (void)cudaFree(device);
+    check(done, "uploading the image pairs");
+  }
+  pairs_ = device;
+  n_pairs_ = static_cast<std::int64_t>(pairs.size() / 2);
 }
 
 DeviceSelfForward::~DeviceSelfForward() {
