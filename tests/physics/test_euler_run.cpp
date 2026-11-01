@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #ifdef AUTAN_MPIEXEC
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -486,11 +487,18 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
 #ifdef AUTAN_MPIEXEC
 namespace {
 
-// autan-run under the launcher on `ranks` ranks: its run directory, none for an invalid input.
-fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0) {
+// autan-run under the launcher on `ranks` ranks: its run directory, none for an invalid input;
+// its standard error in `err` when given.
+fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
+                      std::string* err = nullptr) {
   std::random_device random;
   const fs::path dir = fs::temp_directory_path() / ("autan_euler_mpi-" + std::to_string(random()));
   fs::create_directories(dir);
+  const std::string err_file = (dir / "stderr").string();
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                   0644);
   std::ofstream(dir / "solver-input.json") << doc.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
@@ -504,9 +512,11 @@ fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0) {
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
   pid_t pid = 0;
-  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, nullptr, nullptr, argv.data(), environ) == 0);
+  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, &actions, nullptr, argv.data(), environ) == 0);
+  posix_spawn_file_actions_destroy(&actions);
   int status = 0;
   REQUIRE(waitpid(pid, &status, 0) == pid);
+  if (err != nullptr) *err = read(err_file);
   REQUIRE(WIFEXITED(status));
   CHECK(WEXITSTATUS(status) == expected_status);
   fs::path run;
@@ -602,6 +612,19 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
 TEST_CASE("a steady case on several ranks is refused before any directory exists", "[euler][mpi]") {
   // The steady solver's Gauss-Seidel is coloured in one mesh's order: E0706, exit 2.
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) { inviscid_along_x(d, "fp64"); });
-  CHECK(run_on_ranks(doc, 2, 2).empty());
+  std::string err;
+  CHECK(run_on_ranks(doc, 2, 2, &err).empty());
+  INFO(err);
+  // The launcher may write its own lines; the diagnostic is the first JSON object.
+  Json diagnostic;
+  std::istringstream lines(err);
+  for (std::string line; std::getline(lines, line);) {
+    if (line.starts_with('{')) {
+      diagnostic = Json::parse(line);
+      break;
+    }
+  }
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["location"]["path"] == "time.kind");
 }
 #endif

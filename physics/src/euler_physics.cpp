@@ -78,7 +78,8 @@ class EulerPhysics final : public runtime::Physics {
         owned_(static_cast<std::size_t>(ctx.mesh.n_owned_cells())),
         ghost_fill_(ctx.ghosts),
         euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)) {
-    if (owned_ < n_) euler_.set_ghosts(&ghost_fill_);
+    // On every rank: the exchange is collective, even for a part without ghosts.
+    euler_.set_ghosts(&ghost_fill_);
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
