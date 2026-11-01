@@ -8,6 +8,7 @@ from pathlib import Path
 
 import autan
 import pytest
+from autan.units import Quantity as Q
 
 from tests.conftest import EXAMPLES
 
@@ -161,19 +162,75 @@ def test_canonical_code_survives_load_toml_and_json(
         assert reloaded.to_python() == source
 
 
-@pytest.mark.parametrize("name", sorted(CASES))
-def test_canonical_code_is_ruff_clean(name: str) -> None:
-    subprocess.run(
-        [sys.executable, "-m", "ruff", "check", "--select", "I", "--stdin-filename", "case.py"],
-        input=CASES[name],
+def ruff_clean(source: str) -> bool:
+    ruff = [sys.executable, "-m", "ruff"]
+    imports = subprocess.run(
+        [*ruff, "check", "--select", "I", "--stdin-filename", "case.py"],
+        input=source,
+        capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
     formatted = subprocess.run(
-        [sys.executable, "-m", "ruff", "format", "--line-length", "100", "-"],
-        input=CASES[name],
+        [*ruff, "format", "--line-length", "100", "-"],
+        input=source,
         capture_output=True,
         text=True,
         check=True,
-    ).stdout
-    assert formatted == CASES[name]
+    )
+    return imports.returncode == 0 and formatted.stdout == source
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_canonical_code_is_ruff_clean(name: str) -> None:
+    assert ruff_clean(CASES[name])
+
+
+def co2_viscosity_in_base_units(case: autan.Case) -> None:
+    gas = autan.gases.CO2.model_dump()
+    gas["viscosity"]["mu_ref"] = gas["viscosity"]["mu_ref"].to("kg / m / s")
+    case.cell_zone("co2").fluid(autan.IdealGas(**gas))
+
+
+# Cases built in Python whose values the canonical form must keep as the document writes them:
+# units autan.units does not export, values equal to a default or a library material in another
+# unit or sign, characters a Python string must escape, calls too long for one line.
+EDGES: dict[str, Callable[[autan.Case], None]] = {
+    "micrometre": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), ref_length=Q(1, "um")
+    ),
+    "angstrom": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), ref_length=Q(1, "angstrom")
+    ),
+    "percent": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), ref_length=Q(1, "percent * m")
+    ),
+    "integer": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), ref_length=Q(2**53 + 1, "m")
+    ),
+    "aoa-radian": lambda case: case.freestream(mach=0.2, pressure=Q(101325, "Pa"), aoa=Q(0, "rad")),
+    "aoa-negative-zero": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), aoa=Q(-0.0, "deg")
+    ),
+    "celsius": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), temperature=Q(15, "degC")
+    ),
+    "library-units": co2_viscosity_in_base_units,
+    "long-zone": lambda case: case.boundary("w" * 80).wall(),
+    "long-zone-arguments": lambda case: case.boundary("w" * 80).wall(temperature=Q(400, "K")),
+}
+NAMES = {"quote": 'a"b', "both-quotes": "a\"b'c", "carriage-return": "a\rb", "nul": "a\x00b"}
+
+
+@pytest.mark.parametrize("edge", sorted(EDGES) + sorted(NAMES))
+def test_rendering_keeps_the_document(edge: str, write_case: Callable[..., Path]) -> None:
+    case = autan.Case(NAMES.get(edge, "edge"), mesh="crm-hl.cgns")
+    case.physics = autan.Compressible(turbulence=autan.SA())
+    case.freestream(mach=0.2, pressure=Q(101325, "Pa"))
+    if edge in EDGES:
+        EDGES[edge](case)
+    source = case.to_python()
+    reloaded = autan.load(write_case(source))
+    assert reloaded.spec == case.spec
+    assert reloaded.spec.hash() == case.spec.hash()
+    assert ruff_clean(source)
