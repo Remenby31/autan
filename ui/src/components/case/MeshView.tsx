@@ -115,7 +115,7 @@ export function MeshView({
                   type="button"
                   aria-pressed={selected === zone}
                   onClick={() => onPick(zone)}
-                  className="rounded-sm px-2 py-1 font-mono text-sm shadow-[0_0_0_1px_var(--line)] hover:bg-bg-2 aria-pressed:bg-accent-soft aria-pressed:text-accent"
+                  className="rounded-sm px-2 py-1 font-mono text-sm shadow-[0_0_0_1px_var(--line)] hover:bg-bg-2 focus-visible:shadow-[var(--focus-ring)] aria-pressed:bg-accent-soft aria-pressed:text-accent"
                 >
                   {zone}
                 </button>

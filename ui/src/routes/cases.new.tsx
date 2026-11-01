@@ -126,12 +126,15 @@ function CaseEditor() {
   const [picked, setPicked] = useState<string | null>(null);
   // After a change of mesh, the rules whose pattern matches none of its zones, offered for
   // removal; rules typed afterwards are the user's own business (the plan reports them).
-  const [changedTo, setChangedTo] = useState<string | null>(null);
+  const [inherited, setInherited] = useState<{ mesh: string; rules: Set<object> } | null>(null);
   const cellNames = mesh?.cell_zones.map((z) => z.name) ?? [];
   const matchesNone = (pattern: string, names: string[]) =>
     !names.some((n) => globMatches(pattern, n));
   const isStale = (rule: { zones: string }, names: string[]) =>
-    mesh !== undefined && form.mesh === changedTo && matchesNone(rule.zones, names);
+    mesh !== undefined &&
+    inherited?.mesh === form.mesh &&
+    inherited.rules.has(rule) &&
+    matchesNone(rule.zones, names);
   const stale = [
     ...form.boundaries.filter((r) => isStale(r, zones)),
     ...form.cellZones.filter((r) => isStale(r, cellNames)),
@@ -142,7 +145,7 @@ function CaseEditor() {
       boundaries: f.boundaries.filter((r) => !isStale(r, zones)),
       cellZones: f.cellZones.filter((r) => !isStale(r, cellNames)),
     }));
-    setChangedTo(null);
+    setInherited(null);
   };
 
   // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
@@ -254,7 +257,10 @@ function CaseEditor() {
                     const chosen = meshes.data?.find((m) => m.name === name);
                     setPicked(null);
                     setNotice(null);
-                    setChangedTo(name);
+                    setInherited({
+                      mesh: name,
+                      rules: new Set([...form.boundaries, ...form.cellZones]),
+                    });
                     setForm((f) => ({
                       ...f,
                       mesh: name,
@@ -637,7 +643,12 @@ function CaseEditor() {
                 <span className="text-fg-3 text-sm">written by the SDK</span>
                 <CaseActions
                   name={form.name}
-                  rendered={rendered.data?.ok && !rendered.isPlaceholderData ? rendered.data : null}
+                  // Only the case shown, once it is the form's: an edit not yet rendered waits.
+                  rendered={
+                    rendered.data?.ok && !rendered.isPlaceholderData && settled === form
+                      ? rendered.data
+                      : null
+                  }
                 />
               </div>
               <TabPanel value="python" className="min-w-0 outline-none">
@@ -773,13 +784,17 @@ function CaseActions({
   name: string;
   rendered: { python: string; toml: string; plan: Plan | null } | null;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"copied" | "refused" | null>(null);
   const ready = rendered !== null && rendered.plan?.ok === true;
   const copy = async () => {
     if (!rendered) return;
-    await navigator.clipboard.writeText(rendered.python);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(rendered.python);
+      setCopied("copied");
+    } catch {
+      setCopied("refused");
+    }
+    setTimeout(() => setCopied(null), 4000);
   };
   const save = () => {
     if (!rendered) return;
@@ -790,9 +805,12 @@ function CaseActions({
     URL.revokeObjectURL(link.href);
   };
   return (
-    <span className="ml-auto flex gap-2">
+    <span className="ml-auto flex items-center gap-2">
+      <span role="status" className="text-danger text-sm">
+        {copied === "refused" && "The clipboard refused: select the code instead."}
+      </span>
       <Button size="sm" variant="primary" disabled={!ready} onClick={() => void copy()}>
-        {copied ? "Copied" : "Copy case.py"}
+        {copied === "copied" ? "Copied" : "Copy case.py"}
       </Button>
       <Button size="sm" disabled={!ready} onClick={save}>
         Save case.toml

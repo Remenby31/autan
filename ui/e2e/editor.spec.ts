@@ -357,6 +357,10 @@ test("a planned case is copied as case.py or saved as case.toml", async ({ page,
 
   await crmHl(page);
   await expect(page.getByTestId("plan-status")).toHaveText("ready");
+  // An edit not yet rendered is not what the buttons would hand over.
+  await page.getByLabel("Mach").fill("0.25");
+  await expect(copy).toBeDisabled();
+  await page.getByLabel("Mach").fill("0.2");
   await copy.click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(CRM_HL);
   const download = page.waitForEvent("download");
@@ -366,6 +370,18 @@ test("a planned case is copied as case.py or saved as case.toml", async ({ page,
   const saved = readFileSync(await file.path(), "utf8");
   await page.getByRole("tab", { name: "case.toml" }).click();
   expect(saved).toBe(await page.getByTestId("case-toml").textContent());
+});
+
+test("a clipboard that refuses the copy says so", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+    });
+  });
+  await page.goto("/cases/new");
+  await crmHl(page);
+  await page.getByRole("button", { name: "Copy case.py" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "clipboard" })).toBeVisible();
 });
 
 test("the plan sits below the code, and its status counts its errors", async ({ page }) => {
@@ -396,12 +412,14 @@ test("rules a new mesh does not have are offered for removal", async ({ page }) 
 
   await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
 
-  // crm-hl.meshinfo.json has no zone zmax or xmin.
+  // crm-hl.meshinfo.json has no zone zmax or xmin; a rule added since is not the mesh's doing.
   await expect(page.getByTestId("stale-rules")).toHaveText("zmax · xmin");
+  await page.getByRole("button", { name: "Add rule" }).click();
   await page.getByRole("button", { name: "Remove", exact: true }).click();
   const rules = page.getByRole("group", { name: /^Boundary rule/ });
-  await expect(rules).toHaveCount(1);
-  await expect(rules.getByLabel("Zones")).toHaveValue("wing.*");
+  await expect(rules).toHaveCount(2);
+  await expect(rules.first().getByLabel("Zones")).toHaveValue("wing.*");
+  await expect(rules.last().getByLabel("Zones")).toHaveValue("");
   await expect(page.getByTestId("stale-rules")).toHaveCount(0);
 });
 
@@ -418,7 +436,15 @@ test("a mesh without a 3D view lists its zones to pick from", async ({ page }) =
   );
 
   await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
-  await list.getByRole("button", { name: "symmetry" }).click();
+  const symmetry = list.getByRole("button", { name: "symmetry" });
+  await symmetry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(symmetry).toBeFocused();
+  const ring = await symmetry.evaluate((el) => getComputedStyle(el).boxShadow);
+  await page.getByLabel("Name").focus();
+  expect(ring).not.toBe(await symmetry.evaluate((el) => getComputedStyle(el).boxShadow));
+  await symmetry.click();
   const rule = page.getByRole("group", { name: "Boundary rule 1" });
   await expect(rule.getByLabel("Zones")).toHaveValue("symmetry");
   await expect(rule.getByLabel("Condition")).toHaveValue("symmetry");
