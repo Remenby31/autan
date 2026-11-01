@@ -92,10 +92,13 @@ function Compare() {
     return { drop, cl, cd };
   }, [ids, live, version]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: histories grow in place, see charts
+  const every = details.map((d) => forcesEvery(d.data?.case));
+  const everyKey = every.join(",");
+  // Histories grow in place (`version`), and `every` is a new array each render (`everyKey`).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const polar = useMemo(
-    () => polars(ids, runs, live, registry.data?.summaries ?? {}),
-    [ids, runs, live, registry.data, version],
+    () => polars(ids, runs, live, registry.data?.summaries ?? {}, every),
+    [ids, runs, live, registry.data, version, everyKey],
   );
 
   const diff = useMemo(() => {
@@ -298,22 +301,32 @@ function Compare() {
   );
 }
 
-/** The coefficients a converged run ends with: its last forces sample, taken within one
- * sampling interval of its final iteration (monitors are recorded only every `every`
- * iterations, results.md), the history having caught up with run.json. Null otherwise. */
-export function convergedForces(
+/** The coefficients a converged run ends with: its last forces sample, taken less than
+ * `every` iterations before its final one (monitors are recorded at iterations divisible by
+ * their `every`, results.md), the history having caught up with run.json. Null otherwise, and
+ * without `every` unless the sample is at the final iteration. */
+function convergedForces(
   run: Pick<Run, "status" | "iterations">,
   history: Pick<HistoryColumns, "iteration">,
   forces: ForceColumns | null,
+  every: number | undefined,
 ): { cl: number; cd: number } | null {
   if (run.status !== "converged" || history.iteration.at(-1) !== run.iterations) return null;
-  const n = forces?.iteration.length ?? 0;
-  const at = forces?.iteration[n - 1];
-  const cl = forces?.cl[n - 1];
-  const cd = forces?.cd[n - 1];
+  const at = forces?.iteration.at(-1);
+  const cl = forces?.cl.at(-1);
+  const cd = forces?.cd.at(-1);
   if (at === undefined || cl === undefined || cd === undefined) return null;
-  const every = n >= 2 ? at - (forces?.iteration[n - 2] ?? at) : 0;
-  return run.iterations - at <= Math.max(every - 1, 0) ? { cl, cd } : null;
+  return run.iterations - at < (every ?? 1) ? { cl, cd } : null;
+}
+
+/** The `every` of a case's sole forces monitor, as soleForces reads the history. */
+function forcesEvery(caseDocument: Record<string, unknown> | undefined): number | undefined {
+  const monitors = Array.isArray(caseDocument?.monitors) ? caseDocument.monitors : [];
+  const forces = monitors.filter(
+    (m): m is { every: number } =>
+      typeof m === "object" && m !== null && m.kind === "forces" && typeof m.every === "number",
+  );
+  return forces.length === 1 ? forces[0]?.every : undefined;
 }
 
 /** Lift and drag polars from the compared runs that converged (convergedForces); at a
@@ -323,6 +336,7 @@ function polars(
   runs: (Run | undefined)[],
   live: Map<string, LiveRun>,
   summaries: Record<string, { settings?: { aoa: string | null } }>,
+  every: (number | undefined)[],
 ): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
   const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
   ids.forEach((id, k) => {
@@ -330,7 +344,7 @@ function polars(
     const history = live.get(id)?.history;
     if (!run || !history) return;
     const alpha = degrees(summaries[id]?.settings?.aoa);
-    const ended = convergedForces(run, history, soleForces(history));
+    const ended = convergedForces(run, history, soleForces(history), every[k]);
     if (alpha === null || ended === null) return;
     const seen = byAlpha.get(alpha);
     if (!seen || seen.started < run.started)

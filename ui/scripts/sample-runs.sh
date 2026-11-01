@@ -14,7 +14,8 @@ autan run $hx --runs "$runs"
 # An angle-of-attack sweep of the same case: a study for the Compare screen and its polar.
 sweep=$(mktemp -d)
 for aoa in 7.05 11.29 17.05 21.47; do
-  sed "s/aoa=19.57/aoa=$aoa/" "$repo/py/examples/crm_hl.py" > "$sweep/crm_hl_$aoa.py"
+  # Forces every 30 iterations: the fake converges at 100, between two samples, as real runs do.
+  sed "s/aoa=19.57/aoa=$aoa/; s/every=10/every=30/" "$repo/py/examples/crm_hl.py" > "$sweep/crm_hl_$aoa.py"
   autan run "$sweep/crm_hl_$aoa.py" --mesh-info "$repo/py/tests/fixtures/crm-hl.meshinfo.json" --runs "$runs"
 done
 rm -r "$sweep"
