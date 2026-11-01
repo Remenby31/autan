@@ -11,6 +11,27 @@
       "momentum-x": 10.178946519,
       "momentum-z": 10.057402553,
       "energy": 10.695812214
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "4c17ce0703d953039861830eae504862907cbec3cf00889a4cbc8c03f74d21e6",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 65.546022121,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.14217140108208837",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-k4-m050-a125/n0512": {
@@ -25,6 +46,27 @@
       "momentum-x": 10.133097865,
       "momentum-z": 10.001675572000002,
       "energy": 10.604232610999999
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "cdda1084e5bcbc534926957ca759854062b49e7f4491ce2bee044aa7d419807a",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 557.343559606,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.08957028111143867",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-k4-m080-a000/n0256": {
@@ -39,6 +81,27 @@
       "momentum-x": 10.064335006,
       "momentum-z": 10.338287455,
       "energy": 10.431323738
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "9d20ffd99861021e2677f852732baf42ca21b408350a76d44b00318abdab1da1",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 296.242029721,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.14217140108208837",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-k4-m080-a000/n0512": {
@@ -53,6 +116,27 @@
       "momentum-x": 10.003740357,
       "momentum-z": 10.348008818,
       "energy": 10.339999137
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "cf02d6cb95d42fcec0bdeb3e5baf6dacbedddb2fca4616e3fdaa89bdba693be7",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 1128.949822338,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.08957028111143867",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-none-m050-a125/n0256": {
@@ -67,6 +151,27 @@
       "momentum-x": 10.168408268999999,
       "momentum-z": 10.007167803,
       "energy": 10.678879324
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "d86c0e1980da03f8ec5158ed2d6b6f8f95a239e8559940dc1b7bf081fa2fb9a7",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 60.473296521,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "NONE",
+      "VENKAT_LIMITER_COEFF": "0.5686856043283535",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-none-m050-a125/n0512": {
@@ -81,6 +186,27 @@
       "momentum-x": 10.135025705,
       "momentum-z": 10.003828722000002,
       "energy": 10.604171501000001
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "327742444a2ce3d95150ea10f397e1ff5c8abfa2b0452ca1322ace0ab5ac38b3",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 571.924486264,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "NONE",
+      "VENKAT_LIMITER_COEFF": "0.35828112444575466",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-none-m080-a000/n0256": {
@@ -95,6 +221,27 @@
       "momentum-x": 10.025903236,
       "momentum-z": 10.320853744999999,
       "energy": 10.319849038000001
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "aab2f0bcd4368f2ea3d00988b91b98bbb82addce8ab69fb9d65892d8e0c6fdf9",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 321.139045769,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "NONE",
+      "VENKAT_LIMITER_COEFF": "0.5686856043283535",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   },
   "sens-none-m080-a000/n0512": {
@@ -109,6 +256,27 @@
       "momentum-x": 10.043084267,
       "momentum-z": 10.299110628000001,
       "energy": 10.315548637000001
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "5ad4ee09221480b64391038a87456ce4b4ecf13ca245811de83aecb5362e5911",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 787.811886137,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "NONE",
+      "VENKAT_LIMITER_COEFF": "0.35828112444575466",
+      "ENTROPY_FIX_COEFF": "0.001",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
     }
   }
 }
