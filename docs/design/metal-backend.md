@@ -50,24 +50,24 @@ Residual norms on the device are fixed-order sums of squares in double-float, sc
 
 ## Measurements
 
-Apple M4 Pro (20 GPU cores, 48 GB unified memory), macOS 26.7.1, solver commit `93083380`, clean tree. Meshes: V&V families renumbered by `autan::rcm_order`; tet n=96 (3.93 M cells) and hex n=128 (2.10 M cells), loop footprints 0.32–0.81 GB. Medians of 30 samples of 5 launches (STREAM: 100), GPU time of each command buffer. Raw JSON with provenance: `codegen/spike/results/metal/bench/`; table: `python codegen/bench/metal_summarize.py STREAM RESULTS...`.
+Apple M4 Pro (20 GPU cores, 48 GB unified memory), macOS 26.7.1, solver commit `39528f2`, clean tree, through `autan-bench run` (GPU idle before the run, lock held). Meshes: V&V families renumbered by `autan::rcm_order`; tet n=96 (3.93 M cells) and hex n=128 (2.10 M cells), loop footprints 0.32–0.81 GB. Medians of 30 samples of 5 launches (STREAM: 100), GPU time of each command buffer. Results: `codegen/spike/results/metal/bench/`; table: `python codegen/bench/metal_summarize.py stream.json RESULTS...`.
 
-**Peak.** `autan_metal_stream`, FP32 arrays of 1 GiB, float4 accesses: copy 203.0 GB/s (IQR 200.7–205.0, CV 1.9 %), read 231.9 GB/s (IQR 226.3–236.7, CV 3.3 %); scale 202.5, add 210.0, triad 209.0. An earlier session on the same Mac gave copy 182.6 GB/s (CV 2 %): sessions differ by about 10 %, samples within one session by 2–3 %. Apple's nominal figure is 273 GB/s.
+**Peak.** `autan_metal_stream`, FP32 arrays of 1 GiB, float4 accesses, before the loops: copy 202.9 GB/s (IQR 200.5–205.1, CV 1.7 %), read 238.5 GB/s (IQR 234.9–243.0, CV 2.3 %); scale 198.8, add 209.9, triad 207.9. After the loops (`stream-after.json`): copy 190.3, read 239.9. Copy moves by 6–10 % between runs on this Mac, read by 1 %. Apple's nominal figure is 273 GB/s.
 
-**Reference of the gate.** Apple GPUs read faster than they copy, and the loops mostly read: atomic advection reaches 117 % of the copy peak. Each loop is therefore measured against its own mix: a read byte costs 1/B_r, a written byte 1/B_w = 2/B_c − 1/B_r (copy moves one of each), and a loop reading R and writing W bytes has the reference (R + W) / (R/B_r + W/B_w), 220–230 GB/s for the loops below. Bytes are the analytic minimum of [kernel-generator-spike.md](kernel-generator-spike.md#bandwidth); W is the residual (advection) or the gradient and bounds (LSQ).
+**Reference of the gate.** Apple GPUs read faster than they copy, and the loops mostly read: atomic advection reaches 115 % of the copy peak. Each loop is therefore measured against its own mix: a read byte costs 1/B_r, a written byte 1/B_w = 2/B_c − 1/B_r (copy moves one of each), and a loop reading R and writing W bytes has the reference (R + W) / (R/B_r + W/B_w): 224–236 GB/s for the loops below, set mostly by the read peak. Bytes are the analytic minimum of [kernel-generator-spike.md](kernel-generator-spike.md#bandwidth); W is the residual (advection) or the gradient and bounds (LSQ).
 
 | Loop | Mesh | Policy | Best strategy | GB/s | % reference | % copy | ns/cell |
 |---|---|---|---|---|---|---|---|
-| advection | tet | fp32 | warp-aggregated | 237.7 | 104 % | 117 % | 0.50 |
-| advection | tet | fp32+acc64 | store-gather | 174.6 | 76 % | 86 % | 1.18 |
-| advection | hex | fp32 | warp-aggregated | 237.2 | 103 % | 117 % | 0.70 |
-| advection | hex | fp32+acc64 | store-gather | 172.1 | 75 % | 85 % | 1.71 |
-| LSQ + bounds | tet | fp32 | — | 213.0 | 97 % | 105 % | 0.53 |
-| LSQ + bounds | tet | fp32+acc64 | — | 204.4 | 91 % | 101 % | 0.78 |
-| LSQ + bounds | hex | fp32 | — | 178.6 | 80 % | 88 % | 0.85 |
-| LSQ + bounds | hex | fp32+acc64 | — | 125.3 | **55 %** | 62 % | 1.79 |
+| advection | tet | fp32 | atomic | 232.2 | 99 % | 114 % | 0.51 |
+| advection | tet | fp32+acc64 | store-gather | 185.6 | 79 % | 91 % | 1.11 |
+| advection | hex | fp32 | atomic | 234.0 | 99 % | 115 % | 0.71 |
+| advection | hex | fp32+acc64 | store-gather | 187.2 | 79 % | 92 % | 1.57 |
+| LSQ + bounds | tet | fp32 | — | 214.2 | 95 % | 106 % | 0.52 |
+| LSQ + bounds | tet | fp32+acc64 | — | 198.4 | 87 % | 98 % | 0.81 |
+| LSQ + bounds | hex | fp32 | — | 179.5 | 79 % | 88 % | 0.85 |
+| LSQ + bounds | hex | fp32+acc64 | — | 126.1 | **55 %** | 62 % | 1.78 |
 
-Deterministic strategies in `fp32`: store-gather 73 % (tet) and 70 % (hex), gather-recompute 65 % and 71 %; global colouring 18–22 %, as on GB10. In `fp32+acc64`, store-gather is the fastest strategy (75–76 %): the double-float sums of gather-recompute (55–61 %) cost more than the scratch traffic.
+Deterministic strategies in `fp32`: store-gather 70 % (tet and hex), gather-recompute 62 % and 72 %; global colouring 18–19 %, as on GB10. In `fp32+acc64`, store-gather is the fastest strategy (79 %): its scratch holds the faces' FP32 values (exact: they are body outputs) and the gather sums them in double-float; gather-recompute (52–61 %) pays the double-float sums of every face twice.
 
 LSQ on hex in `fp32+acc64` misses the gate. Not the double-float arithmetic: with its sums replaced by float sums, the time does not change. It is the 8-byte read of `lsq_weight` per incidence (six per cell): read as float, the same kernel takes 0.76 ns/cell instead of 1.80. The same loop is at 72 % on GB10. The fix belongs to the generator: geometry that bodies only convert to the compute type is stored in it, with values identical to the CPU `fp32+acc64` loops ([Open items](#open-items)).
 
@@ -89,6 +89,6 @@ CI: `.github/workflows/metal.yml` on GitHub's `macos-26` arm64 runner builds the
 ## Open items
 
 - **LSQ on hex in `fp32+acc64` at 55 % of the reference.** Geometry read only through conversion to the compute type will be stored in it (generator, after #98); re-measure then.
-- **autan-bench on macOS.** Its busy-sample threshold (50 % utilisation) is never reached on Apple GPUs, whose IO-registry utilisation stays at 8–18 % during a saturating STREAM; the results above are the binaries' raw JSON with autan-bench's statistics, to be re-run through `autan-bench run` once fixed (CFD - HPC Spark).
+- **autan-bench on macOS.** The results above ran with the busy-sample fix of PR #107 (Apple's IO-registry utilisation stays at 3–18 % under a saturating load); rerun them from `main` once it lands.
 - **Shader compilation.** Libraries compile from source at first use (4 s for the spike modules, then the system cache); a precompiled `.metallib` (Metal Toolchain) is an option for packaged wheels.
 - **Hierarchical colouring and SIMD-group transposition** are not emitted, as on CUDA.
