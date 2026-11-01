@@ -138,7 +138,7 @@ struct Euler<P>::Impl {
                            a[2] * (a[3] * a[7] - a[4] * a[6]);
         // Rank test against the matrix's own size, not against its diagonal: on a one-cell-thick
         // slab the offsets across the layer are round-off, and a diagonal-scaled test would accept
-        // that direction and turn the round-off into a gradient (issue #161).
+        // that direction and turn the round-off into a gradient.
         const double size = (a[0] + a[4] + a[8]) / 3.0;
         if (!(std::abs(det) > 1e-10 * size * size * size)) return false;
         const std::array<double, 9> inv = {
