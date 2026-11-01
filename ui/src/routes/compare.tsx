@@ -4,9 +4,10 @@ import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
+import { polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
-import { degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
+import { PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -88,8 +89,20 @@ function Compare() {
   }, [ids, live, version, registry.data]);
 
   const polar = useMemo(
-    () => polars(ids, runs, registry.data?.summaries ?? {}),
+    () =>
+      polars(
+        ids.map((id, k) => ({
+          id,
+          role: String.fromCharCode(65 + k),
+          run: runs[k],
+          settings: registry.data?.summaries[id]?.settings,
+        })),
+      ),
     [ids, runs, registry.data],
+  );
+  const plotted = polar.series.reduce((n, s) => n + s.points.length, 0);
+  const polarColors = polar.series.map((_, k) =>
+    polar.series.length === 1 ? "var(--fg)" : seriesColor(k),
   );
 
   const diff = useMemo(() => {
@@ -208,25 +221,66 @@ function Compare() {
                 </ChartCard>
               </div>
 
-              {polar && (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="polar">
-                  <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
-                    <OverlayChart
-                      series={[polar.lift]}
-                      xLabel="α (deg)"
-                      points
-                      version={polar.version}
-                    />
-                  </ChartCard>
-                  <ChartCard title="Drag polar" unit="CD against CL">
-                    <OverlayChart
-                      series={[polar.drag]}
-                      xLabel="CL"
-                      points
-                      version={polar.version}
-                    />
-                  </ChartCard>
+              {plotted >= 2 && (
+                <div className="flex flex-col gap-3" data-testid="polar">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+                    {polar.fixed && (
+                      <span className="text-fg-3" data-testid="polar-fixed">
+                        {polar.fixed}
+                      </span>
+                    )}
+                    {polar.series.length > 1 &&
+                      polar.series.map((s, k) => (
+                        <span
+                          key={s.key}
+                          className="inline-flex items-center gap-2"
+                          data-testid="polar-series"
+                        >
+                          <i
+                            className="inline-block h-0.5 w-4 rounded"
+                            style={{ background: polarColors[k] }}
+                          />
+                          {s.label}
+                          <span className="font-mono text-fg-3">
+                            {s.points.map((p) => p.role).join(" ")}
+                          </span>
+                        </span>
+                      ))}
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
+                      <PolarChart
+                        series={polar.series}
+                        x={(p) => p.alpha}
+                        y={(p) => p.cl}
+                        xLabel="α (deg)"
+                        colors={polarColors}
+                        testId="lift-polar"
+                      />
+                    </ChartCard>
+                    <ChartCard title="Drag polar" unit="CD against CL">
+                      <PolarChart
+                        series={polar.series}
+                        x={(p) => p.cl}
+                        y={(p) => p.cd}
+                        xLabel="CL"
+                        colors={polarColors}
+                        testId="drag-polar"
+                      />
+                    </ChartCard>
+                  </div>
                 </div>
+              )}
+              {polar.unplotted.length > 0 && (
+                <p className="m-0 text-fg-2 text-sm" data-testid="polar-missing">
+                  Not on the polars:{" "}
+                  {polar.unplotted.map((u, k) => (
+                    <span key={u.id}>
+                      {k > 0 && " · "}
+                      <span className="font-mono">{u.role}</span> {u.reason}
+                    </span>
+                  ))}
+                </p>
               )}
 
               <section className="overflow-hidden rounded-lg border border-line bg-bg-0">
@@ -304,54 +358,6 @@ function Compare() {
       </div>
     </>
   );
-}
-
-/** The coefficients a converged run ends with: its sole monitor giving them, on the final
- * state as run.json records it (results.md#runjson). Null otherwise. */
-function finalCoefficients(run: Run): { cl: number; cd: number } | null {
-  if (run.status !== "converged") return null;
-  const coefficients = Object.values(run.monitors ?? {}).filter(
-    (m) => m.cl !== undefined && m.cd !== undefined,
-  );
-  const [only] = coefficients;
-  return coefficients.length === 1 && only?.cl !== undefined && only.cd !== undefined
-    ? { cl: only.cl, cd: only.cd }
-    : null;
-}
-
-/** Lift and drag polars from the compared runs that converged (finalCoefficients); at a
- * repeated α the newest run wins. Null when fewer than two angles remain. */
-function polars(
-  ids: string[],
-  runs: (Run | undefined)[],
-  summaries: Record<string, { settings?: { aoa: string | null } }>,
-): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
-  const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
-  ids.forEach((id, k) => {
-    const run = runs[k];
-    if (!run) return;
-    const alpha = degrees(summaries[id]?.settings?.aoa);
-    const ended = finalCoefficients(run);
-    if (alpha === null || ended === null) return;
-    const seen = byAlpha.get(alpha);
-    if (!seen || seen.started < run.started)
-      byAlpha.set(alpha, { alpha, ...ended, started: run.started });
-  });
-  const points = [...byAlpha.values()];
-  if (points.length < 2) return null;
-  const sortedAlpha = [...points].sort((a, b) => a.alpha - b.alpha);
-  const sortedCl = [...points].sort((a, b) => a.cl - b.cl);
-  const color = getComputedStyle(document.documentElement).getPropertyValue("--fg").trim();
-  return {
-    lift: {
-      label: "CL",
-      color,
-      x: sortedAlpha.map((p) => p.alpha),
-      y: sortedAlpha.map((p) => p.cl),
-    },
-    drag: { label: "CD", color, x: sortedCl.map((p) => p.cl), y: sortedCl.map((p) => p.cd) },
-    version: JSON.stringify(sortedAlpha),
-  };
 }
 
 function ChartCard({

@@ -1,5 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { RUNS } from "../playwright.config";
@@ -167,8 +177,71 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
 
   await page.goto("/");
   await group.getByRole("button", { name: "Compare" }).click();
-  await expect(page.getByTestId("polar")).toBeVisible();
+  // One condition, one series; every converged run of the study a point, none merged by angle.
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  const compared: string[] = JSON.parse(new URL(page.url()).searchParams.get("runs") ?? "[]");
+  const all = await runs(page);
+  const converged = compared.filter(
+    (id) => all.find((r) => r.run_id === id)?.status === "converged",
+  );
+  expect(converged.length).toBeGreaterThan(4);
+  await expect(page.getByTestId("lift-polar").locator("circle")).toHaveCount(converged.length);
+  await expect(page.getByTestId("polar-series")).toHaveCount(0);
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
+});
+
+test("polars keep each Mach number apart and every run, and say which runs are missing", async ({
+  page,
+}) => {
+  // As in the review: M0.80 at 0° and twice at 1.25°, M0.50 at 1.25°; and a diverged run.
+  const dir = mkdtempSync(join(tmpdir(), "autan-polars-"));
+  const tag = Date.now();
+  const cases = [
+    ["0.8", "0.0"],
+    ["0.5", "1.25"],
+    ["0.8", "1.25"],
+    ["0.8", "1.25"],
+  ] as const;
+  const example = readFileSync("../py/examples/crm_hl.py", "utf8");
+  const write = (k: number, mach: string, aoa: string, extra: string[] = []) => {
+    const file = join(dir, `case${k}.py`);
+    writeFileSync(
+      file,
+      example
+        .replace('"crm-hl"', `"polar-${tag}-${k}"`)
+        .replace("mach=0.2", `mach=${mach}`)
+        .replace("aoa=19.57", `aoa=${aoa}`),
+    );
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "autan", "run", file, ...extra],
+      ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
+    ]);
+  };
+  cases.forEach(([mach, aoa], k) => write(k, mach, aoa));
+  try {
+    write(4, "0.8", "2.5", ["--diverge-at", "40"]);
+  } catch {
+    // A diverged run exits 1, as autan run documents.
+  }
+  const ids = (await runs(page))
+    .filter((r) => r.case.name.startsWith(`polar-${tag}-`))
+    .sort((a, b) => a.case.name.localeCompare(b.case.name))
+    .map((r) => r.run_id);
+  try {
+    expect(ids).toHaveLength(5);
+    await page.goto(`/compare?runs=${encodeURIComponent(JSON.stringify(ids))}`);
+
+    const series = page.getByTestId("polar-series");
+    await expect(series).toHaveText([/^M 0\.5\s*B$/, /^M 0\.8\s*A C D$/]);
+    await expect(page.getByTestId("lift-polar").locator("circle")).toHaveCount(4);
+    await expect(page.getByTestId("drag-polar").locator("circle")).toHaveCount(4);
+    await expect(page.getByTestId("polar-missing")).toHaveText(
+      "Not on the polars: E diverged, not converged",
+    );
+  } finally {
+    for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
