@@ -68,7 +68,8 @@ TEST_CASE("the assembled Jacobian of the first-order residual matches its centra
   for (std::size_t k = 0; k < 5; ++k) {
     for (std::size_t c = 0; c < nc; ++c) {
       const double x = geometry.cell_centroid_x[c], y = geometry.cell_centroid_y[c];
-      u[k * nc + c] = uc[k] * (1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y));
+      u[k * nc + c] =
+          uc[k] * (1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y));
       v[k * nc + c] = uc[k] * std::cos(5.0 * x + 2.0 * y + static_cast<double>(k));
     }
   }
@@ -135,4 +136,3 @@ TEST_CASE("multicolour block Gauss-Seidel solves a block diagonally dominant sys
   }
   CHECK(err <= 1e-12 * ref);
 }
-

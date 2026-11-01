@@ -73,7 +73,7 @@ BlockMatrix::BlockMatrix(const Mesh& mesh)
     for (auto k = cell_offsets_[c]; k < cell_offsets_[c + 1]; ++k) {
       const auto f = static_cast<std::size_t>(cell_faces_[static_cast<std::size_t>(k)]);
       const auto o = static_cast<std::size_t>(owner_[f] == static_cast<index_t>(c) ? neighbour_[f]
-                                                                                    : owner_[f]);
+                                                                                   : owner_[f]);
       if (colour[o] >= 0) seen[static_cast<std::size_t>(colour[o])] = 1;
     }
     int k = 0;
@@ -82,7 +82,8 @@ BlockMatrix::BlockMatrix(const Mesh& mesh)
     n_colours = std::max(n_colours, k + 1);
   }
   colours_.assign(static_cast<std::size_t>(n_colours), {});
-  for (std::size_t c = 0; c < n_cells_; ++c) colours_[static_cast<std::size_t>(colour[c])].push_back(c);
+  for (std::size_t c = 0; c < n_cells_; ++c)
+    colours_[static_cast<std::size_t>(colour[c])].push_back(c);
   diag_.assign(25 * n_cells_, 0.0);
   inverse_.assign(25 * n_cells_, 0.0);
   upper_.assign(25 * ni, 0.0);

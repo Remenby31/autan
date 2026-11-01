@@ -38,7 +38,7 @@ class BlockMatrix {
 
   std::size_t n_cells_;
   std::vector<index_t> owner_, neighbour_;
-  std::vector<offset_t> cell_offsets_;      // cell -> interior faces CSR
+  std::vector<offset_t> cell_offsets_;  // cell -> interior faces CSR
   std::vector<index_t> cell_faces_;
   std::vector<std::vector<std::size_t>> colours_;
   std::vector<double> diag_, upper_, lower_, inverse_;

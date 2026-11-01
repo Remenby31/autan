@@ -5,9 +5,9 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
-#include <span>
 #include <map>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -138,6 +138,12 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(n_, mean_weight_)});
     }
+    // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
+    if (ctx_.input.time.kind == "steady") {
+      for (const auto& [name, value] : solver_state()) {
+        out.push_back({.name = name, .values = std::vector<double>(n_, value)});
+      }
+    }
     return out;
   }
 
@@ -233,6 +239,11 @@ class EulerPhysics final : public runtime::Physics {
       for (const auto& f : start.restart_fields) {
         if (f.name == "AverageWeight") mean_weight_ = f.values.front();
       }
+      if (ctx_.input.time.kind == "steady") {
+        auto state = solver_state();
+        for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
+        set_solver_state(state);
+      }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -247,6 +258,31 @@ class EulerPhysics final : public runtime::Physics {
     const auto& vz = *find(start.fields, "VelocityZ");
     const auto& p = *find(start.fields, "Pressure");
     for (std::size_t c = 0; c < n_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
+  }
+
+  [[nodiscard]] std::vector<std::pair<std::string, double>> solver_state() const {
+    std::vector<std::pair<std::string, double>> v = {
+        {"SolverPenalty", penalty_},
+        {"SolverShortened", shortened_ ? 1.0 : 0.0},
+        {"SolverSecondOrder", second_order_ ? 1.0 : 0.0},
+        {"SolverFirstOrderSteps", static_cast<double>(first_order_steps_)}};
+    for (std::size_t k = 0; k < 5; ++k) {
+      v.emplace_back("SolverReferenceResidual" + std::to_string(k),
+                     first_norms_.empty() ? -1.0 : first_norms_[k]);
+    }
+    return v;
+  }
+
+  void set_solver_state(const std::vector<std::pair<std::string, double>>& v) {
+    penalty_ = v[0].second;
+    shortened_ = v[1].second != 0.0;
+    second_order_ = v[2].second != 0.0;
+    euler_.set_second_order(second_order_);
+    first_order_steps_ = static_cast<int>(v[3].second);
+    first_norms_.clear();
+    if (v[4].second >= 0.0) {
+      for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
+    }
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -355,7 +391,8 @@ class EulerPhysics final : public runtime::Physics {
     }
     // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
     // solution; second order from the step after the first-order residual has dropped.
-    if (!second_order_ && (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+    if (!second_order_ &&
+        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
       second_order_ = true;
       euler_.set_second_order(true);
       first_norms_.clear();
