@@ -417,8 +417,9 @@ class Relaxation final : public autan::runtime::Physics {
         context_.face_reversed.size() != context_.face_global_id.size())
       throw std::runtime_error("relaxation: face keys of another size than the mesh's faces");
     // The geometry is the mesh file's, bit for bit: each owned cell's by its
-    // global id, each face's by its key, the area vector negated if reversed
-    // (faces to a periodic image excepted).
+    // global id, each face between owned cells (or of one, on the boundary)
+    // by its key, the area vector negated if reversed. Faces of a ghost may
+    // sit on a periodic image, translated.
     const autan::Geometry file = autan::compute_geometry(global);
     const auto& geometry = context_.geometry;
     for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
@@ -432,13 +433,14 @@ class Relaxation final : public autan::runtime::Physics {
       const auto i = static_cast<std::size_t>(f);
       const auto g = static_cast<std::size_t>(context_.face_global_id[i]);
       const bool reversed = context_.face_reversed[i] != 0;
-      const bool image =
-          f < mesh.n_interior_faces() && g >= static_cast<std::size_t>(global.n_interior_faces());
+      const bool owned =
+          mesh.owner()[i] < mesh.n_owned_cells() &&
+          (f >= mesh.n_interior_faces() || mesh.neighbour()[i] < mesh.n_owned_cells());
       const double sign = reversed ? -1.0 : 1.0;
-      if (!image && (geometry.face_area[i] != file.face_area[g] ||
-                     geometry.face_area_x[i] != sign * file.face_area_x[g] ||
-                     geometry.face_area_z[i] != sign * file.face_area_z[g] ||
-                     geometry.face_centroid_y[i] != file.face_centroid_y[g]))
+      if (owned && (geometry.face_area[i] != file.face_area[g] ||
+                    geometry.face_area_x[i] != sign * file.face_area_x[g] ||
+                    geometry.face_area_z[i] != sign * file.face_area_z[g] ||
+                    geometry.face_centroid_y[i] != file.face_centroid_y[g]))
         throw std::runtime_error("relaxation: a face's geometry is not the mesh file's");
       const auto owner = ids[static_cast<std::size_t>(mesh.owner()[i])];
       if (f >= mesh.n_interior_faces()) {
