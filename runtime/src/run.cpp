@@ -542,6 +542,20 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     }
     p.monitor_zones.push_back(std::move(ids));
   }
+  // A point vortex takes its circulation from the lift on walls (slip walls in inviscid flow).
+  std::map<std::string, std::string> condition;
+  for (const auto& b : p.input.boundaries) condition[b.zone] = b.kind;
+  for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
+    const auto& vortex = p.input.boundaries[i].point_vortex;
+    if (!vortex) continue;
+    const std::string path = "boundaries[" + std::to_string(i) + "].point_vortex.zones";
+    for (const auto& name : vortex->zones) {
+      if (!p.face_zone.contains(name)) invalid(path, "no boundary zone '" + name + "'");
+      const auto it = condition.find(name);
+      if (it == condition.end() || (it->second != "wall" && it->second != "slip"))
+        invalid(path, "zone '" + name + "' is not a wall");
+    }
+  }
   load_states(p);
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;

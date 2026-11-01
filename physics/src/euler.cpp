@@ -278,6 +278,20 @@ void Euler<P>::set_boundary(std::span<const BoundaryKind> kind, std::span<const 
 }
 
 template <class P>
+void Euler<P>::set_boundary_data(std::span<const double> data) {
+  auto& m = *impl_;
+  const auto nb = static_cast<std::size_t>(n_boundary_faces());
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  if (data.size() != 5 * nb) {
+    throw std::invalid_argument("boundary data does not match the boundary faces");
+  }
+  for (std::size_t b = 0; b < nb; ++b) {
+    for (std::size_t c = 0; c < 5; ++c) m.bc[c * nf + ni + b] = State(data[c * nb + b]);
+  }
+}
+
+template <class P>
 std::vector<double> Euler<P>::gradient_weights() const {
   const auto& w = impl_->stencil_lsq_weight;
   return {w.begin(), w.end()};

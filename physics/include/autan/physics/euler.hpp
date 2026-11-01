@@ -71,6 +71,8 @@ class Euler {
 
   /// Sets each boundary face's condition and its data (5 x n_boundary_faces).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
+  /// Replaces the data of the conditions set_boundary set (5 x n_boundary_faces), keeping them.
+  void set_boundary_data(std::span<const double> data);
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
   /// The least-squares weights of the gradient over its stencil (layout of
