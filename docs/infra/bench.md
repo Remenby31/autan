@@ -28,6 +28,16 @@ The binary prints one JSON object on stdout: `revision` (`commit`, `dirty`, embe
 
 On a Mac, `autan-bench run` reads GPU utilisation from the IOAccelerator registry (`ioreg -r -d 1 -c IOAccelerator`, "Device Utilization %") and takes its lock at `~/.autan-gpu.lock`. macOS lists no GPU processes, so the result records `compute_apps_max: null`: contention from another process is not checked there, only utilisation. Clocks, power and temperature need root (`powermetrics`) and are recorded as unknown. That gauge stays at 8–18 % while a bandwidth-bound kernel saturates memory, so on macOS a sample counts as busy above the 5 % idle threshold instead of 50 %; every result records its `busy_threshold_pct` and the utilisation spread during the run. A Metal binary prints `backend: "metal"`, a `device` with `name`, `registry_id` (decimal string), `gpu_cores`, `recommended_max_working_set_bytes`, `memory_bytes` and, from the chip's published specification only, `l2_bytes`; `runtime_version` and `driver_version` encode the macOS version (26.7 → 26070) and `os_version` gives it as text.
 
+## The GPU lock
+
+Every GPU job on a Spark holds `/home/admin/autan-gpu/gpu.lock` while it uses the GPU: one measurement or one test run at a time, at most 10 minutes per hold, at least 2 minutes between two holds by the same agent. `autan-bench` takes it itself. Anything else runs under `bench/lock/autan-gpu-lock`:
+
+```sh
+bench/lock/autan-gpu-lock -m "AGENT: what for" [-w WAIT_S] [-t HOLD_S] -- COMMAND...
+```
+
+It waits for the lock (at most `-w`, default 3600 s, then exits 75) and runs the command in its own session, without the lock's descriptor. At `-t` seconds (1 to 600, default 600) the session's processes get TERM shortly before the limit and KILL at it (exit 124); a signal to the wrapper does the same (exit 143); a command that cannot start exits 127. Before the lock is released, every process left in the session is killed and waited for, so no worker outlives the hold; a process that starts its own session escapes this, and one stuck in the kernel past SIGKILL is recorded as `leftover` (exit 70). Each event (`wait`, `take`, `release`, `timeout`, `cancelled`, `failed`, `overrun`, `killed`, `leftover`) is one line appended to `/home/admin/autan-gpu/holders.log` in a single write: UTC time, event, user (`$AUTAN_AGENT` or the account name), container (`$AUTAN_CONTAINER`, which `docker/spark.sh` sets to `autan-work-<worktree>`, else the host name), seconds waited or held, exit status, the `-m` text and the command, line-breaking characters replaced by spaces. `tail /home/admin/autan-gpu/holders.log` shows who holds the lock. Containers mount the lock's directory read-only and the log file read-write (`docker/spark.sh` does both); the CI runners keep both read-only, so their holds appear in the Actions logs, not in this file.
+
 ## Timing method
 
 `autan-bench` applies the same procedure to every benchmark:
