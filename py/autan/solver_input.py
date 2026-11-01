@@ -21,7 +21,11 @@ from autan.meshinfo import (
     Translation,
     shared_zones,
 )
-from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
+from autan.results import (
+    WOKEN_SCHEMA,
+    Devices,
+    woken_problem,
+)
 from autan.schema import (
     DDES,
     SA,
@@ -318,7 +322,15 @@ class StartInput(_Strict):
     iterations: Annotated[int, Field(strict=True, ge=1)]
     time: Number | None
     residual_reference: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]] | None
+    woken: list[str] | None
     solution_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+    @model_validator(mode="after")
+    def _woken_names(self) -> Self:
+        problem = woken_problem(self.residual_reference, self.woken)
+        if problem:
+            raise ValueError(problem)
+        return self
 
 
 class SolverInput(_Strict):
@@ -756,6 +768,10 @@ def json_schema() -> dict[str, Any]:
             }
         }
         for (model, base), values in TURBULENCE_VALUES.items()
+    ]
+    defs["StartInput"]["oneOf"] = [
+        {"properties": {"residual_reference": {"type": "null"}, "woken": {"type": "null"}}},
+        {"properties": {"residual_reference": {"type": "object"}, "woken": WOKEN_SCHEMA}},
     ]
     defs["UnsteadyInput"]["oneOf"] = [
         {"properties": {"dt": {"type": "number"}, "cfl": {"type": "null"}}},
