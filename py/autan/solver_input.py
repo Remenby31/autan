@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from autan.errors import CaseError, Location
-from autan.meshinfo import Translation  # noqa: TC001 -- pydantic resolves field types at runtime
+from autan.meshinfo import (
+    PairZones,
+    Translation,
+    shared_zones,
+)
 from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
 from autan.schema import (
     DDES,
@@ -283,7 +287,7 @@ class VerificationInput(_Strict):
 
 
 class PeriodicInput(_Strict):
-    zones: tuple[str, str]
+    zones: PairZones
     transform: Translation
 
 
@@ -324,6 +328,9 @@ class SolverInput(_Strict):
         turbulence, fs = self.physics.turbulence, self.freestream
         if turbulence.model in ("ddes", "wmles") and self.time.kind != "unsteady":
             message = f"{turbulence.model} needs an unsteady time"
+            raise ValueError(message)
+        if shared_zones(pair.zones for pair in self.periodic):
+            message = "a zone is in two periodic pairs"
             raise ValueError(message)
         periodic = {zone for pair in self.periodic for zone in pair.zones}
         if periodic & {b.zone for b in self.boundaries}:

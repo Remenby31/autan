@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autan.errors import CaseError, Location, diagnostic
 from autan.units import fail
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 SCHEMA_ID = "autan.mesh-info/1"
 
@@ -70,15 +73,45 @@ class Interface(_Strict):
 Finite = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
+def _distinct(zones: tuple[str, str]) -> tuple[str, str]:
+    if zones[0] == zones[1]:
+        message = "a periodic pair is two distinct zones"
+        raise ValueError(message)
+    return zones
+
+
+def _non_zero(vector: tuple[float, float, float]) -> tuple[float, float, float]:
+    if not any(vector):
+        message = "a periodic translation is not zero"
+        raise ValueError(message)
+    return vector
+
+
+PairZones = Annotated[
+    tuple[Name, Name], AfterValidator(_distinct), Field(json_schema_extra={"uniqueItems": True})
+]
+ZERO = {"prefixItems": [{"const": 0}] * 3}
+
+
 class Translation(_Strict):
     kind: Literal["translation"]
-    vector: tuple[Finite, Finite, Finite]
+    vector: Annotated[
+        tuple[Finite, Finite, Finite],
+        AfterValidator(_non_zero),
+        Field(json_schema_extra={"not": ZERO}),
+    ]
 
 
 class PeriodicPair(_Strict):
-    zones: tuple[Name, Name]
+    zones: PairZones
     transform: Translation
     faces: Positive
+
+
+def shared_zones(pairs: Iterable[tuple[str, str]]) -> set[str]:
+    """Zones that appear in more than one of ``pairs``."""
+    names = [name for pair in pairs for name in pair]
+    return {name for name in names if names.count(name) > 1}
 
 
 class Quality(_Strict):
@@ -138,12 +171,10 @@ class MeshInfo(_Strict):
         problems = []
         for pair in self.periodic:
             a, b = pair.zones
-            if a == b or not {a, b} <= periodic:
-                problems.append(f"periodic pair {[a, b]} is not two distinct periodic zones")
+            if not {a, b} <= periodic:
+                problems.append(f"periodic pair {[a, b]} is not two periodic zones")
             elif faces[a] != pair.faces or faces[b] != pair.faces:
                 problems.append(f"periodic pair {[a, b]} has another face count than its zones")
-            if not any(pair.transform.vector):
-                problems.append(f"periodic pair {[a, b]} has a zero translation")
         if sorted(paired) != sorted(periodic):
             problems.append("each periodic zone must be in exactly one periodic pair")
         return problems

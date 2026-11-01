@@ -9,6 +9,7 @@ from typing import Any
 import autan
 import autan.solver_input
 import jsonschema
+import pydantic
 import pytest
 from autan.cli import json_schema, main
 
@@ -59,6 +60,43 @@ def test_periodic_pairs_must_match_their_zones(
     assert error.value.codes == ["E0202"]
 
 
+BAD_PAIRS = [
+    {"zones": ["fuselage", "fuselage"]},
+    {"zones": ["", "empennage"]},
+    {"transform": {"kind": "translation", "vector": [0, 0.0, 0]}},
+]
+
+
+@pytest.mark.parametrize("change", BAD_PAIRS)
+def test_both_schemas_reject_a_malformed_pair(
+    change: dict[str, Any],
+    mesh: Path,
+    write_case: Callable[..., Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    info = json.loads(mesh.read_text())
+    assert main(["prepare", str(write_case(CRM_HL)), "--mesh-info", str(mesh)]) == 0
+    prepared = json.loads(capsys.readouterr().out)
+    for kind, document in (("mesh-info", info), ("solver-input", prepared)):
+        document["periodic"][0].update(change)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(json_schema(kind)).validate(document)
+    with pytest.raises(autan.CaseError):
+        autan.MeshInfo.from_document(info, autan.Location())
+    with pytest.raises(pydantic.ValidationError):
+        autan.solver_input.SolverInput.model_validate(prepared)
+
+
+def test_a_zone_in_two_solver_input_pairs_is_rejected(
+    mesh: Path, write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["prepare", str(write_case(CRM_HL)), "--mesh-info", str(mesh)]) == 0
+    document = json.loads(capsys.readouterr().out)
+    document["periodic"].append(document["periodic"][0])
+    with pytest.raises(ValueError, match="two periodic pairs"):
+        autan.solver_input.SolverInput.model_validate(document)
+
+
 def test_a_periodic_pair_resolves_from_the_mesh(
     write_case: Callable[..., Path], mesh: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -90,6 +128,19 @@ def test_a_wildcard_skips_periodic_zones_and_a_name_is_e0424(
 
     named = autan.load(write_case(CRM_HL + "case.boundary('fuselage').slip()\n"))
     assert [d.code for d in named.plan(info).diagnostics if d.severity == "error"] == ["E0424"]
+
+
+def test_a_wildcard_that_spells_a_periodic_zone_is_still_a_wildcard(
+    mesh_variant: Callable[..., autan.MeshInfo], write_case: Callable[..., Path]
+) -> None:
+    def rename(document: dict[str, Any]) -> None:
+        periodic(document, PAIR | {"zones": ["fuse*", "empennage"]})
+        document["boundary_zones"][3]["name"] = "fuse*"
+
+    info = mesh_variant("crm-hl", rename)
+    case = autan.load(write_case(CRM_HL + "case.boundary('fuse*').slip()\n"))
+    codes = [d.code for d in case.plan(info).diagnostics if d.severity == "error"]
+    assert codes == ["E0410"]  # it matches no other zone; not E0424
 
 
 def test_no_backend_runs_periodic_pairs_yet(

@@ -340,7 +340,7 @@ def _resolve_boundaries(
     owner: dict[str, int] = {}
     for index, rule in enumerate(spec.boundaries):
         where = case.locate(f"boundaries[{index}]")
-        if rule.zones in partners:
+        if rule.zones in partners and not any(c in rule.zones for c in "*?["):
             found.append(
                 diagnostic(
                     "E0424",
