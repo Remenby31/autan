@@ -1,0 +1,31 @@
+{
+  "schema": "autan.e2e-reference/1",
+  "name": "fun3d-dpw4-crm",
+  "source": "G. Nastac et al., A Multi-Architecture Approach for Implicit CFD on Unstructured Grids, AIAA 2023-1226, section IV.A, Tables 3 and 4. https://ntrs.nasa.gov/api/citations/20220016937/downloads/2023_AIAA_SciTech_FLUDA_Paper.pdf",
+  "grid": {
+    "url": "https://dpw.larc.nasa.gov/DPW4/unstructured_Larc/NodeBase/dpw_wbt0_crs-3.6Mn_5.tgz",
+    "description": "the workshop tetrahedral grid after FUN3D's vgrid_merge_into_prisms",
+    "vertices": 3675916,
+    "elements": 9794089,
+    "discretisation": "node-centred"
+  },
+  "case": "DPW4 case 1: M 0.85, Re_c 5e6, C_L 0.5 (alpha 2.41 deg), T 560 degR, SA-QCR2000, local time stepping, CFL 200 / 30",
+  "iterations": 3000,
+  "converged_iterations": 2500,
+  "convergence": "machine zero (Fig. 2); 3000 iterations run",
+  "cd": 0.01435840192,
+  "runs": [
+    {"device": "NVIDIA 40 GB SXM A100", "kind": "gpu", "seconds": 430, "peak_GBps": 1555},
+    {"device": "NVIDIA 16 GB SXM V100", "kind": "gpu", "seconds": 720, "peak_GBps": 900},
+    {"device": "AMD MI210", "kind": "gpu", "seconds": 620, "peak_GBps": 1638.4},
+    {"device": "2x AMD EPYC 7742 (128 cores)", "kind": "cpu", "seconds": 1639, "peak_GBps": 409.6},
+    {"device": "2x Intel Skylake 6148 (40 cores)", "kind": "cpu", "seconds": 2818, "peak_GBps": 256}
+  ],
+  "pyfr": {
+    "source": "F. Witherden, P. Vincent et al., PyFR v2.0.3, Computer Physics Communications 311 (2025) 109567, Tables 2-3",
+    "device": "NVIDIA GH200",
+    "gdof_per_s": 6.004,
+    "peak_GBps": 4000,
+    "case": "Taylor-Green vortex, 13.9M tetrahedra, p = 7, Navier-Stokes, explicit, fp64"
+  }
+}
