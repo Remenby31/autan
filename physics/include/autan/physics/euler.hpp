@@ -111,7 +111,7 @@ class Euler {
     State* bc;
     const typename P::jac* dwdu;
     kernels::Topology topo;  ///< with the gradient stencil
-    const typename P::geom* stencil_lsq_weight;
+    const typename P::geom_value* stencil_lsq_weight;
   };
   [[nodiscard]] Arrays arrays() noexcept;
 
