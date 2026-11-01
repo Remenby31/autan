@@ -9,12 +9,15 @@ import { useResolvedTheme } from "../shell/theme";
 export function MeshView({
   mesh,
   zones,
+  colors,
   selected,
   onPick,
   webgl,
 }: {
   mesh: string;
   zones: string[];
+  /** A flat colour per zone name (a design token), the field's neutral tone otherwise. */
+  colors: Record<string, string>;
   selected: string | null;
   onPick: (zone: string) => void;
   webgl: boolean;
@@ -73,6 +76,12 @@ export function MeshView({
       });
     return () => abort.abort();
   }, [mesh, ready]);
+
+  const colorKey = JSON.stringify(colors);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: colorKey stands for colors
+  useEffect(() => {
+    viewer.current?.setZoneColors(surface?.zones.map((z) => colors[z.name] ?? null) ?? []);
+  }, [surface, colorKey]);
 
   useEffect(() => {
     const index = surface?.zones.findIndex((z) => z.name === selected) ?? -1;

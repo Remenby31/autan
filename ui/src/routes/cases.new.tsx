@@ -205,6 +205,19 @@ function CaseEditor() {
         : shown?.plan?.ok
           ? "The plan is ready."
           : "";
+  // Each zone in the colour of the condition the plan gives it, so that coverage reads from
+  // the 3D view; zones without one keep the neutral tone.
+  const planned = shown?.ok ? shown.plan : null;
+  const conditionColors = Object.fromEntries(
+    (planned?.boundaries ?? []).flatMap((b) =>
+      b.condition && CONDITION_COLOR[b.condition.kind]
+        ? [[b.zone, CONDITION_COLOR[b.condition.kind] as string]]
+        : [],
+    ),
+  );
+  const shownKinds = [
+    ...new Set((planned?.boundaries ?? []).flatMap((b) => (b.condition ? [b.condition.kind] : []))),
+  ].filter((k) => k in CONDITION_COLOR);
   const set = <K extends keyof CaseForm>(key: K, value: CaseForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   const setIn = <K extends "physics" | "freestream" | "time">(
@@ -639,10 +652,31 @@ function CaseEditor() {
             <MeshView
               mesh={form.mesh}
               zones={zones}
+              colors={conditionColors}
               selected={picked}
               onPick={pick}
               webgl={webgl}
             />
+          )}
+          {form.mesh && shownKinds.length > 0 && (
+            <ul
+              className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 text-fg-2 text-sm"
+              data-testid="condition-legend"
+            >
+              {shownKinds.map((kind) => (
+                <li key={kind} className="inline-flex items-center gap-2">
+                  <i
+                    className="inline-block size-2.5 rounded-sm"
+                    style={{ background: `var(${CONDITION_COLOR[kind]})` }}
+                  />
+                  {kind}
+                </li>
+              ))}
+              <li className="inline-flex items-center gap-2 text-fg-3">
+                <i className="inline-block size-2.5 rounded-sm bg-fg-3/40" />
+                no condition
+              </li>
+            </ul>
           )}
           {stale.length > 0 && (
             <Note
@@ -912,6 +946,16 @@ function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
     </section>
   );
 }
+
+// The colour of each condition kind in the 3D view and its legend.
+const CONDITION_COLOR: Record<string, string> = {
+  wall: "--series-1",
+  slip: "--series-6",
+  symmetry: "--series-3",
+  farfield: "--series-4",
+  inlet: "--series-2",
+  outlet: "--series-5",
+};
 
 // What the editor calls a setting, from its path in the case document.
 const LABELS: Record<string, string> = {
