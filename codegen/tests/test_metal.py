@@ -1,5 +1,5 @@
 """Metal backend of the generator: what it refuses, and the Metal compiler accepting what it
-emits for every DSL shape. Execution on an Apple GPU: `pytest tests/test_gpu.py --backend metal`.
+emits for every kernel module and DSL shape. Execution on an Apple GPU: `pytest tests/test_gpu.py --backend metal`.
 """
 
 from __future__ import annotations
@@ -35,19 +35,26 @@ def test_metal_refuses_fp64_with_its_code(
     assert (tmp_path / "advection_metal.hpp").exists()
 
 
+# Every kernel module of the solver, and the module of test_generate.py (Mat53, outer, rel inside
+# a reduction, a boundary loop writing face data), with all derivatives.
+SOURCES = [*sorted(p.name for p in (ROOT / "kernels").glob("*.py")), "test_generate.MODULE"]
+
+
 @pytest.mark.gpu
-def test_every_dsl_shape_compiles_to_metal(backend: str, tmp_path: Path) -> None:
-    # The module of test_generate.py (Mat53, outer, rel inside a reduction, a boundary loop
-    # writing face data, all derivatives) compiled by the Metal compiler of the device.
+@pytest.mark.parametrize("source", SOURCES)
+def test_every_kernel_module_compiles_to_metal(backend: str, tmp_path: Path, source: str) -> None:
     if backend != "metal":
         pytest.skip("needs --backend metal")
-    src = tmp_path / "state_gradient.py"
-    src.write_text(MODULE)
-    m = model.load(src)
+    if source == "test_generate.MODULE":
+        path = tmp_path / "state_gradient.py"
+        path.write_text(MODULE)
+    else:
+        path = ROOT / "kernels" / source
+    m = model.load(path)
     derive(m)
     text = emit_msl(m, list(METAL_POLICIES))
     err = ctypes.create_string_buffer(4096)
-    rc = s.lib().autan_spike_metal_compile(b"state_gradient", text.encode(), err, len(err))
+    rc = s.lib().autan_spike_metal_compile(path.stem.encode(), text.encode(), err, len(err))
     assert rc == 0, err.value.decode()
 
 
