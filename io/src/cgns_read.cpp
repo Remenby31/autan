@@ -674,6 +674,7 @@ class Reader {
     // Reciprocal connections declare the same face pairs, in any order.
     const auto pairs_of = [](const Side& side, bool mirrored) {
       std::vector<std::pair<cgsize_t, cgsize_t>> pairs;
+      pairs.reserve(side.faces.size());
       for (std::size_t k = 0; k < side.faces.size(); ++k) {
         pairs.emplace_back(mirrored ? side.donor[k] : side.faces[k],
                            mirrored ? side.faces[k] : side.donor[k]);
