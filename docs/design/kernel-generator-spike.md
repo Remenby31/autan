@@ -6,7 +6,7 @@ The ten-day spike of [research §8](../research/kernel-generator.md#8-two-week-s
 
 **Go for option A**: Python DSL, our own SSA IR, our own tangent and adjoint by source transformation, ahead-of-time C++20 for CPU, CUDA and HIP. No fallback is triggered: the in-house adjoint passes every correctness criterion (fallback (a), Tapenade, is not needed), and Enzyme agrees with it to 2×10⁻¹⁵. Option B (hand-written templated bodies on dual numbers) is 3–7 % faster on the Roe Jacobian but needs 2.4× the source lines, 255 registers instead of 183, and gives no adjoint.
 
-The spike does not close M1. Open for the M1 gate: execution on AMD hardware, a deterministic adjoint of cell reductions and device-side norms, the hierarchical (OP2) colouring and shared-memory transposition strategies, and the ARM NEON CPU backend ([Open items](#open-items)).
+The spike does not close M1. Open for the M1 gate: a deterministic adjoint of cell reductions and device-side norms, the hierarchical (OP2) colouring and shared-memory transposition strategies, and the ARM NEON CPU backend ([Open items](#open-items)).
 
 ## Criteria
 
@@ -67,7 +67,7 @@ One pinned attempt, `codegen/spike/enzyme_gpu/attempt.sh`, in a throwaway `autan
 
 ## Open items
 
-- **AMD execution.** HIP compiles for `gfx942`; nothing has run on AMD hardware (decision pending with the lead).
+- **AMD execution.** HIP compiles for `gfx942` in CI (`gpu-hip`, compile only); nothing has run on AMD hardware. The M1 measurement on AMD is deferred for lack of hardware (lead decision, 2026-11-01): no AMD performance is claimed until measured.
 - **Deterministic mode, complete.** Done after the spike: cell-reduction adjoints in two passes over a transposed incidence list and fixed-order device norms ([kernel-generator.md](kernel-generator.md#generated-c)); the composed residual, its norm and its adjoint are bitwise reproducible in the three deterministic strategies.
 - **Strategies.** Hierarchical colouring (OP2) and shared-memory transposition are not emitted; the global colouring measured here is 4–5× slower than atomics, so the deterministic mode currently relies on store-gather and gather-recompute (57–86 % of peak).
 - **Measurements not taken.** Measured DRAM traffic (Nsight Compute) beside the useful bytes; AoS layout; FP64 atomic throughput on GB10 in isolation.

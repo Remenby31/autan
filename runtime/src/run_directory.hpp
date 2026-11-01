@@ -5,6 +5,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace autan::runtime {
 
@@ -23,6 +24,9 @@ class RunDirectory {
                const std::string& mesh_info_json, const std::string& first_log_line,
                const std::optional<std::string>& manufactured_json = std::nullopt,
                const std::map<std::string, std::string>& state_files = {});
+  /// The published directory `path`, for another rank of the run to append
+  /// to and write run.json in.
+  explicit RunDirectory(std::filesystem::path path) : path_(std::move(path)) {}
   RunDirectory(const RunDirectory&) = delete;
   RunDirectory& operator=(const RunDirectory&) = delete;
   ~RunDirectory();

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -44,7 +45,12 @@ void rename_no_replace(const fs::path& from, const fs::path& to) {
 }  // namespace
 
 void write_atomically(const fs::path& path, const std::string& text) {
-  const fs::path staging = path.parent_path() / ("." + path.filename().string() + ".tmp");
+  // A staging file per writer: the ranks of a run, on one host or several,
+  // may write at once.
+  std::random_device random;
+  const fs::path staging =
+      path.parent_path() / ("." + path.filename().string() + "." + std::to_string(random()) +
+                            std::to_string(random()) + ".tmp");
   write_file(staging, text);
   if (std::rename(staging.c_str(), path.c_str()) != 0) fail("replace", path);
 }
