@@ -858,6 +858,7 @@ class Run final : public Log {
       std::iota(face_global_id_.begin(), face_global_id_.end(), std::int64_t{0});
       face_reversed_.assign(face_global_id_.size(), 0);
     }
+    colour_cells_of_physics();
     // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
@@ -981,7 +982,9 @@ class Run final : public Log {
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
                                  .face_global_id = face_global_id_,
-                                 .face_reversed = face_reversed_};
+                                 .face_reversed = face_reversed_,
+                                 .cell_colours = colours_,
+                                 .n_colours = n_colours_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1087,6 +1090,21 @@ class Run final : public Log {
     write("info", "mpi", "mesh partitioned over " + std::to_string(comm_.size()) + " ranks", "",
           Json{{"ranks", comm_.size()}, {"owned_cells", owned}, {"ghost_cells", ghosts}}.dump());
   }
+  // The global colouring of the mesh (colour_cells), for each cell of the
+  // physics' mesh through its global id: every rank computes the same.
+  void colour_cells_of_physics() {
+    const Mesh& mesh = p_.mesh;
+    const auto colours = colour_cells(mesh);
+    std::vector<std::int32_t> by_id(colours.size());
+    for (std::size_t c = 0; c < colours.size(); ++c)
+      by_id[static_cast<std::size_t>(mesh.cell_global_id()[c])] = colours[c];
+    const auto ids = physics_mesh().cell_global_id();
+    colours_.resize(ids.size());
+    for (std::size_t c = 0; c < ids.size(); ++c)
+      colours_[c] = by_id[static_cast<std::size_t>(ids[c])];
+    for (const std::int32_t k : colours) n_colours_ = std::max(n_colours_, k + 1);
+  }
+
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
@@ -1217,7 +1235,7 @@ class Run final : public Log {
     for (std::int64_t it = from; it <= budget; ++it) {
       // A launcher forwards a signal to every rank, not at the same instant:
       // the ranks stop together once any has received it.
-      if (comm_.max(stop_requested) != 0) {
+      if (comm_.max(std::int64_t{stop_requested}) != 0) {
         stopped_by_signal_ = true;
         return "stopped";
       }
@@ -1512,6 +1530,8 @@ class Run final : public Log {
   // the mesh's own (identity, none reversed).
   std::vector<std::int64_t> face_global_id_;
   std::vector<std::uint8_t> face_reversed_;
+  std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
+  std::int32_t n_colours_ = 0;
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial

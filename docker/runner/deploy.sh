@@ -24,9 +24,17 @@ prepare() {
   # do not own with O_CREAT, which flock(1) uses.
   install -d -m 0755 "$lock_dir"
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
-  local log=$lock_dir/holders.log
-  [[ -f $log ]] || { (set -C; : >"$log") 2>/dev/null && chmod 0666 "$log"; }
-  [[ -f $log ]] || { echo "error: $log is not a regular file" >&2; exit 1; }
+  local file
+  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock"; do
+    [[ -f $file ]] || { (set -C; : >"$file") 2>/dev/null && chmod 0666 "$file"; }
+    [[ -f $file ]] || { echo "error: $file is not a regular file" >&2; exit 1; }
+  done
+  # The lock tools, at a path every container that mounts the lock's directory sees; the guard
+  # runs from cron, one instance (flock -n), so it comes back within a minute and after a reboot.
+  install -d -m 0755 "$lock_dir/bin" "$HOME/autan-gpu-guard"
+  install -m 0755 "$here/../../bench/lock/autan-gpu-lock" "$here/../../bench/lock/autan-gpu-guard" "$lock_dir/bin/"
+  local cron="* * * * * flock -n $HOME/autan-gpu-guard/run.lock $lock_dir/bin/autan-gpu-guard >> $HOME/autan-gpu-guard/guard.log 2>&1"
+  { crontab -l 2>/dev/null | grep -v autan-gpu-guard || true; echo "$cron"; } | crontab -
   # Internal: no route out. Isolated gateway: the host gets no address on this bridge, so a job
   # cannot reach host services listening on all interfaces.
   if ! docker network inspect "$internal_net" >/dev/null 2>&1; then

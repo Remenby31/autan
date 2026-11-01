@@ -24,6 +24,7 @@ ROLE_TYPE = {
     dsl.Role.GEOM: "geom",
     dsl.Role.PARAM: "param",
     dsl.Role.JAC: "jac",
+    dsl.Role.JAC_ACCUM: "accum",
 }
 
 
@@ -203,9 +204,10 @@ def _jacobian_fn(where: str, lm: LoopModel, j: dsl.Jacobian) -> Function:
             isinstance(b.dataset, dsl.Dataset)
             and b.dataset.set is dsl.MeshSet.CELLS
             and not b.dataset.geometry
+            and b.dataset.type.role not in dsl.PASSIVE_ROLES
         ):
             raise CodegenError(
-                Code.INVALID_BINDING, f"Jacobian wrt {name!r}: not a cell dataset", where
+                Code.INVALID_BINDING, f"Jacobian wrt {name!r}: not an active cell dataset", where
             )
         idx.append(lm.sig.names.index(name))
     sizes = {lm.sig.types[k].size for k in idx}
@@ -216,7 +218,7 @@ def _jacobian_fn(where: str, lm: LoopModel, j: dsl.Jacobian) -> Function:
     shape = (n_out, n_in) if len(idx) == 1 else (len(idx), n_out, n_in)
     ds = j.dataset
     wanted = dsl.MeshSet.CELLS if loop.kind == "cell" else dsl.MeshSet.FACES
-    if ds.set is not wanted or ds.type.role is not dsl.Role.JAC or ds.type.shape != shape:
+    if ds.set is not wanted or ds.type.role not in dsl.PASSIVE_ROLES or ds.type.shape != shape:
         raise CodegenError(
             Code.INVALID_LOOP_OUTPUT,
             f"Jacobian dataset {ds.name} must be Jac{shape} on {wanted.value}, is "
@@ -253,6 +255,7 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
             if isinstance(b.dataset, dsl.Dataset)
             and not b.dataset.geometry
             and b.dataset.set is dsl.MeshSet.CELLS
+            and b.dataset.type.role not in dsl.PASSIVE_ROLES
         ]
         if active:
             raise CodegenError(
@@ -296,6 +299,12 @@ def load(path: Path) -> Module:
                         Code.INVALID_BINDING, f"two different data named {d.name}", str(path)
                     )
                 target.append(d)  # type: ignore[arg-type]
+    # A reversed face reads face_r_left from face_r_right and back (Topology::face_reversed).
+    pairs = {"face_r_left": dsl.geometry.face_r_right, "face_r_right": dsl.geometry.face_r_left}
+    for d in list(datasets):
+        partner = pairs.get(d.name) if d.geometry else None
+        if partner is not None and all(partner is not x for x in datasets):
+            datasets.append(partner)
     bodies: list[tuple[Function, Signature]] = []
     for lm in loops:
         bodies.append((lm.fn, lm.sig))

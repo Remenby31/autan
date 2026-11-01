@@ -45,12 +45,33 @@ def n_out(lm: LoopModel) -> int:
     return sum(o.dataset.type.size for o in lm.loop.outputs)
 
 
+def acc_ref(o: dsl.Accumulator, k: int) -> str:
+    """Component k of accumulator o: Sums in the accumulation type (acc), Min/Max and Follow in
+    the compute type (accm), where they are exact: they select a body output, never add."""
+    return f"acc[{k}]" if isinstance(o, dsl.Sum) else f"accm[{k}]"
+
+
+def acc_decls(accs: list[dsl.Accumulator], offs: list[int], n: int, indent: str) -> list[str]:
+    lines = [
+        f"{indent}[[maybe_unused]] A acc[{n}];",
+        f"{indent}[[maybe_unused]] typename P::compute accm[{n}];",
+    ]
+    lines.extend(
+        f"{indent}{acc_ref(o, off + c)} = {acc_init(o)};"
+        for o, off in zip(accs, offs, strict=True)
+        for c in range(o.dataset.type.size)
+    )
+    return lines
+
+
 def acc_init(o: dsl.Accumulator) -> str:
-    if isinstance(o, dsl.Sum | dsl.Follow):
+    if isinstance(o, dsl.Sum):
         return "A(0)"
+    if isinstance(o, dsl.Follow):
+        return "typename P::compute(0)"
     if isinstance(o, dsl.Min):
-        return "::autan::kernels::infinity<A>()"
-    return "-::autan::kernels::infinity<A>()"
+        return "::autan::kernels::infinity<typename P::compute>()"
+    return "-::autan::kernels::infinity<typename P::compute>()"
 
 
 def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str) -> list[str]:
@@ -66,11 +87,11 @@ def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str
                 continue
             # Ties keep the first incidence in list order (section 4.3, reductions).
             op = "lt" if isinstance(o, dsl.Min) else "gt"
-            lines.append(f"{indent}if (::autan::kernels::{op}(A({src}[{k}]), acc[{k}])) {{")
-            lines.append(f"{indent}  acc[{k}] = A({src}[{k}]);")
+            lines.append(f"{indent}if (::autan::kernels::{op}({src}[{k}], accm[{k}])) {{")
+            lines.append(f"{indent}  accm[{k}] = {src}[{k}];")
             for f, foff in zip(accs, offs, strict=True):
                 if isinstance(f, dsl.Follow) and accs[f.leader] is o:
-                    lines.append(f"{indent}  acc[{foff + c}] = A({src}[{foff + c}]);")
+                    lines.append(f"{indent}  accm[{foff + c}] = {src}[{foff + c}];")
             lines.append(f"{indent}}}")
     return lines
 
@@ -107,12 +128,7 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     accs = loop.outputs
     offs = offsets(accs)
     n = n_out(lm)
-    lines = [f"{indent}A acc[{n}];"]
-    lines.extend(
-        f"{indent}acc[{off + c}] = {acc_init(o)};"  # type: ignore[arg-type]
-        for o, off in zip(accs, offs, strict=True)
-        for c in range(o.dataset.type.size)
-    )
+    lines = acc_decls(accs, offs, n, indent)  # type: ignore[arg-type]
     lines.extend(entry_loop(loop.over, indent))
     i2 = indent + "  "
     lines.append(f"{i2}typename P::compute out[{n}];")
@@ -133,7 +149,9 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
         for kind, ref in order:
             if kind == "acc":
                 assert isinstance(ref, int)
-                fargs += [f"acc[{offs[ref] + c}]" for c in range(accs[ref].dataset.type.size)]
+                fargs += [
+                    acc_ref(accs[ref], offs[ref] + c) for c in range(accs[ref].dataset.type.size)
+                ]  # type: ignore[arg-type]
             else:
                 assert isinstance(ref, str)
                 b = loop.finalise_bindings[ref]
@@ -149,7 +167,7 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
                 k += 1
     else:
         lines.extend(
-            f"{indent}{at(o.dataset, 'c', c, layout)} = static_cast<{ctype(o.dataset.type.role)}>(acc[{off + c}]);"
+            f"{indent}{at(o.dataset, 'c', c, layout)} = static_cast<{ctype(o.dataset.type.role)}>({acc_ref(o, off + c)});"  # type: ignore[arg-type]
             for o, off in written
             for c in range(o.dataset.type.size)
         )
@@ -224,14 +242,10 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
         return f"{ind}{target} += {v};"
 
     selects = any(isinstance(o, dsl.Min | dsl.Max) for o in accs)
-    lines = [f"{indent}A acc[{n}];"]
+    lines = acc_decls(accs, offs, n, indent)  # type: ignore[arg-type]
     if selects:
         lines.append(f"{indent}offset_t sel[{n}];")
-    for o, off in zip(accs, offs, strict=True):
-        for c in range(o.dataset.type.size):
-            lines.append(f"{indent}acc[{off + c}] = {acc_init(o)};")  # type: ignore[arg-type]
-            if selects:
-                lines.append(f"{indent}sel[{off + c}] = -1;")
+        lines.extend(f"{indent}sel[{k}] = -1;" for k in range(n))
     head = entry_loop(loop.over, indent)
     args = call_args(p.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"})
     lines += [*head, f"{i2}typename P::compute out[{n}];"]
@@ -243,8 +257,8 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
                 lines.append(f"{i2}acc[{k}] += A(out[{k}]);")
             else:
                 op = "lt" if isinstance(o, dsl.Min) else "gt"
-                lines.append(f"{i2}if (::autan::kernels::{op}(A(out[{k}]), acc[{k}])) {{")
-                lines.append(f"{i2}  acc[{k}] = A(out[{k}]);")
+                lines.append(f"{i2}if (::autan::kernels::{op}(out[{k}], accm[{k}])) {{")
+                lines.append(f"{i2}  accm[{k}] = out[{k}];")
                 lines.append(f"{i2}  sel[{k}] = k;")
                 lines.append(f"{i2}}}")
     lines.append(f"{indent}}}")
@@ -253,7 +267,11 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
     lines.append(f"{indent}A accb[{n}];")
     if ra.fin_adj is not None and p.fin_sig is not None:
         n_acc = len(accs)
-        fargs = [f"acc[{k}]" for k in range(n)]
+        fargs = [
+            acc_ref(o, off + c)  # type: ignore[arg-type]
+            for o, off in zip(accs, offs, strict=True)
+            for c in range(o.dataset.type.size)
+        ]
         fargs += call_args(p.fin_sig, loop.finalise_bindings, {"direct": "c"}, skip=n_acc)
         lines.append(f"{indent}typename P::compute finb[{len(ra.fin_adj.outputs)}];")
         lines.append(f"{indent}{ra.fin_adj.name}<P>({', '.join([*fargs, *seeds, 'finb'])});")
@@ -317,6 +335,29 @@ def cell_stores(lm: LoopModel, indent: str) -> list[str]:
     return lines
 
 
+def face_ends(kind: str, indent: str) -> list[str]:
+    """`l` (and `r`) of face f in its global orientation: an interior face listed in
+    Topology::face_reversed has its local owner on the global right (`rev`)."""
+    if kind != "face":
+        return [f"{indent}const index_t l = d.topo.owner[f];"]
+    return [
+        (
+            f"{indent}[[maybe_unused]] const bool rev = "
+            "d.topo.face_reversed != nullptr && d.topo.face_reversed[f] != 0;"
+        ),
+        f"{indent}const index_t l = rev ? d.topo.neighbour[f] : d.topo.owner[f];",
+        f"{indent}const index_t r = rev ? d.topo.owner[f] : d.topo.neighbour[f];",
+    ]
+
+
+def global_left(face: str = "f") -> str:
+    """C++ expression: the global left cell of interior face `f`."""
+    return (
+        f"((d.topo.face_reversed != nullptr && d.topo.face_reversed[{face}] != 0) "
+        f"? d.topo.neighbour[{face}] : d.topo.owner[{face}])"
+    )
+
+
 def boundary_write_body(lm: LoopModel, indent: str) -> list[str]:
     """Body of a boundary loop writing face datasets, for boundary face f."""
     lines = [f"{indent}[[maybe_unused]] const index_t l = d.topo.owner[f];"]
@@ -353,17 +394,26 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
     e.w("  using A [[maybe_unused]] = typename P::accum;")
     n = n_out(lm) if lm.kind != "reduce_adjoint" else 0
     if lm.kind in ("face", "boundary"):
+        # The scatter order follows the local numbering: refused on a rank-independent topology.
+        e.w("  if (d.topo.rank_independent) {")
+        e.w(
+            '    throw std::invalid_argument("E1109: a rank-independent topology needs a gather '
+            'strategy (store-gather or gather-recompute)");'
+        )
+        e.w("  }")
         lo, hi = (
             ("0", "d.topo.n_owned_interior_faces")
             if lm.kind == "face"
             else ("d.topo.n_interior_faces", "d.topo.n_owned_faces")
         )
         e.w(f"  for (index_t f = {lo}; f < {hi}; ++f) {{")
-        e.w("    const index_t l = d.topo.owner[f];")
-        if lm.kind == "face":
-            e.w("    const index_t r = d.topo.neighbour[f];")
+        for s in face_ends(lm.kind, "    "):
+            e.w(s)
         e.w(f"    typename P::compute out[{n}];")
-        args = call_args(lm.sig, loop.bindings, {"left": "l", "right": "r", "direct": "f"})
+        args = call_args(
+            lm.sig, loop.bindings, {"left": "l", "right": "r", "direct": "f"},
+            reversible=lm.kind == "face",
+        )  # fmt: skip
         e.w(f"    {lm.fn.name}<P>({', '.join([*args, 'out'])});")
         for s in jacobian_lines(lm, args, "f", "    "):
             e.w(s)
@@ -402,10 +452,85 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
     e.w()
 
 
+def signed(sign: int | None, v: str) -> str:
+    """`v` times an Inc sign (+1, -1 or another integer; none: zero)."""
+    if not sign:
+        return "A(0)"
+    if sign == 1:
+        return v
+    if sign == -1:
+        return f"-{v}"
+    return f"A({sign}) * {v}"
+
+
+def emit_gather(e: Emitter, lm: LoopModel) -> None:
+    """`name(d, strategy)` of a face or boundary loop: store_gather and gather_recompute make
+    each cell (owned or ghost) evaluate its own faces, in Topology::cell_faces order, and add
+    their contributions in that order: the deterministic order of the GPU gathers, so a cell's
+    sum does not depend on the face numbering when cell_faces is ordered by a global key. The
+    other strategies are the scatter loop `name(d)`, which they all equal on one thread."""
+    n = n_out(lm)
+    e.w("template <class P>")
+    e.w(f"void {lm.name}(const Data<P>& d, const ::autan::kernels::Strategy strategy) {{")
+    e.w("  using A [[maybe_unused]] = typename P::accum;")
+    e.w("  if (strategy != ::autan::kernels::Strategy::store_gather &&")
+    e.w("      strategy != ::autan::kernels::Strategy::gather_recompute) {")
+    e.w(f"    {lm.name}(d);")
+    e.w("    return;")
+    e.w("  }")
+    e.w("  for (index_t c = 0; c < d.topo.n_cells; ++c) {")
+    e.w(f"    A acc[{n}] = {{}};")
+    e.w(
+        "    for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {"
+    )
+    e.w("      const index_t f = d.topo.cell_faces[k];")
+    skip = (
+        "f >= d.topo.n_owned_interior_faces"
+        if lm.kind == "face"
+        else "f < d.topo.n_interior_faces || f >= d.topo.n_owned_faces"
+    )
+    e.w(f"      if ({skip}) {{")
+    e.w("        continue;")
+    e.w("      }")
+    for s in face_ends(lm.kind, "      "):
+        e.w(s)
+    e.w(f"      typename P::compute out[{n}];")
+    args = call_args(
+        lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"},
+        reversible=lm.kind == "face",
+    )  # fmt: skip
+    e.w(f"      {lm.fn.name}<P>({', '.join([*args, 'out'])});")
+    if lm.jac_fns:
+        e.w("      if (l == c) {")
+        for s in jacobian_lines(lm, args, "f", "        "):
+            e.w(s)
+        e.w("      }")
+    if lm.kind == "face":
+        e.w("      const bool left = l == c;")
+    for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
+        assert isinstance(o, dsl.Inc)
+        for c in range(o.dataset.type.size):
+            k = off + c
+            lv = signed(o.left, f"A(out[{k}])")
+            if lm.kind == "face":
+                rv = signed(o.right, f"A(out[{k}])")
+                e.w(f"      acc[{k}] += left ? {lv} : {rv};")
+            else:
+                e.w(f"      acc[{k}] += {lv};")
+    e.w("    }")
+    for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
+        for c in range(o.dataset.type.size):
+            e.w(f"    {at(o.dataset, 'c', c)} += acc[{off + c}];")
+    e.w("  }")
+    e.w("}")
+    e.w()
+
+
 def emit_cpu_header(m: Module) -> str:
     e = Emitter(f"{m.name}_cpu.hpp", line_directives=False)
     e.w(f"// Generated by autan_codegen from {m.path.name}. Do not edit.")
     e.w("#pragma once")
+    e.w('#include "autan/kernels/strategy.hpp"')
     e.w(f'#include "{m.name}.hpp"')
     e.w()
     e.w(f"namespace autan::kernels::{m.name}::cpu {{")
@@ -414,5 +539,7 @@ def emit_cpu_header(m: Module) -> str:
     e.w()
     for lm in m.loops:
         emit_loop(e, lm)
+        if lm.kind in ("face", "boundary"):
+            emit_gather(e, lm)
     e.w(f"}}  // namespace autan::kernels::{m.name}::cpu")
     return e.text()
