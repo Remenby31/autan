@@ -1,6 +1,6 @@
 import fcntl
 import os
-import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -9,9 +9,7 @@ from pathlib import Path
 import pytest
 
 WRAPPER = Path(__file__).parents[1] / "lock" / "autan-gpu-lock"
-pytestmark = pytest.mark.skipif(
-    sys.platform != "linux" or shutil.which("flock") is None, reason="flock(1) is util-linux's"
-)
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the wrapper reads Linux's /proc")
 
 
 def wrapper(lock: Path, *args: str, **kwargs) -> subprocess.Popen:
@@ -33,8 +31,10 @@ def wait_for(lock: Path, event: str) -> None:
 
 
 def alive(pid: int) -> bool:
-    stat = Path(f"/proc/{pid}/stat")
-    return stat.exists() and stat.read_text().rpartition(")")[2].split()[0] != "Z"
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[0] not in "ZX"
+    except FileNotFoundError:
+        return False
 
 
 def free(lock: Path) -> bool:
@@ -116,13 +116,33 @@ def test_a_signal_stops_the_command_and_is_recorded(lock):
 
 
 def test_fields_cannot_forge_records(lock):
-    env = {**os.environ, "AUTAN_GPU_LOCK": str(lock), "AUTAN_AGENT": "a\tb\nc"}
+    env = {**os.environ, "AUTAN_GPU_LOCK": str(lock), "AUTAN_AGENT": "a\tb\nc\\nd"}
     why = "job\n2026-01-01T00:00:00Z\ttake\tforged"
     cmd = [str(WRAPPER), "-m", why, "--", "echo", "x\ny"]
     assert subprocess.run(cmd, env=env, capture_output=True, check=False).returncode == 0
     rows = events(lock)
     assert [r[1] for r in rows] == ["wait", "take", "release"]
     assert all(len(r) == 8 for r in rows)
+
+
+def test_concurrent_records_stay_whole(lock):
+    why = "x" * 3000
+    procs = [wrapper(lock, "-m", why, "--", "true") for _ in range(8)]
+    assert [p.wait(timeout=30) for p in procs] == [0] * 8
+    rows = events(lock)
+    assert len(rows) == 24
+    assert all(len(r) == 8 for r in rows)
+
+
+def test_a_signal_to_the_callers_process_group_still_cleans_up(lock):
+    proc = wrapper(lock, "-m", "unit test", "--", "sh", "-c", "sleep 60 & echo $!; wait",
+                   stdout=subprocess.PIPE, start_new_session=True)  # fmt: skip
+    worker = int(proc.stdout.readline())
+    os.killpg(proc.pid, signal.SIGINT)
+    assert proc.wait(timeout=15) == 143
+    assert events(lock)[-1][1] == "killed"
+    assert not alive(worker)
+    assert free(lock)
 
 
 def test_an_unwritable_log_is_reported_not_fatal(lock):

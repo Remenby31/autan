@@ -1,106 +1,200 @@
-#!/usr/bin/env bash
-# Runs a command under the Spark GPU lock, bounded, and records who held it and why.
-# Usage: autan-gpu-lock -m WHY [-w WAIT_S] [-t HOLD_S] -- COMMAND...
-#   -m WHY     what the command is for (agent, task), written to the holders log; required
-#   -w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
-#   -t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's process
-#              group gets TERM shortly before, KILL at the limit (exit 124)
-# Every wait, take, release, timeout, overrun and kill goes to holders.log next to the lock, one
-# tab-separated line: UTC time, event, who, where, seconds, exit status, why, command.
-# The command runs in its own process group without the lock's descriptor; whatever is left of
-# that group is killed before the lock is released, so no worker outlives the hold (a process
-# that leaves the group, with setsid, escapes this). Do not nest autan-bench under it:
-# autan-bench takes the lock itself.
-set -euo pipefail
+#!/usr/bin/env python3
+"""autan-gpu-lock: run a command under the Spark GPU lock, bounded, and record who held it.
 
-lock=${AUTAN_GPU_LOCK:-/home/admin/autan-gpu/gpu.lock}
-log=$(dirname "$lock")/holders.log
-max_hold=600
-wait_s=3600
-hold_s=$max_hold
-why=
-usage() { sed -n '2,13p' "$0" >&2; exit 2; }
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -m) why=$2; shift 2 ;;
-    -w) wait_s=$2; shift 2 ;;
-    -t) hold_s=$2; shift 2 ;;
-    --) shift; break ;;
-    *) usage ;;
-  esac
-done
-[[ -n $why && $# -gt 0 ]] || usage
-# Decimal only: a leading zero would be octal in bash arithmetic and decimal for sleep.
-[[ $wait_s =~ ^(0|[1-9][0-9]{0,5})$ ]] || usage
-if ! [[ $hold_s =~ ^[1-9][0-9]{0,2}$ ]] || ((hold_s > max_hold)); then
-  echo "autan-gpu-lock: -t must be 1 to $max_hold seconds" >&2
-  exit 2
-fi
+    autan-gpu-lock -m WHY [-w WAIT_S] [-t HOLD_S] -- COMMAND...
 
-field() { local v=${1//[$'\t\n\r']/ }; printf '%s' "$v"; }
-who=$(field "${AUTAN_AGENT:-$(id -un 2>/dev/null || id -u)}")
-where=$(field "${AUTAN_CONTAINER:-$(hostname)}")
-why=$(field "$why")
-command_text=$(printf '%q ' "$@")
-command_text=$(field "${command_text:0:300}")
-command_text=${command_text% }
-warned=0
-record() {  # event seconds status
-  local line
-  line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
-    "$who" "$where" "$2" "$3" "$why" "$command_text")
-  if ! { [[ -f $log ]] && echo "$line" >>"$log"; } 2>/dev/null && ((warned == 0)); then
-    echo "autan-gpu-lock: cannot write $log; this hold is not recorded" >&2
-    warned=1
-  fi
-}
+-m WHY     what the command is for (agent, task), written to the holders log; required
+-w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
+-t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's process group
+           gets TERM shortly before and KILL at the limit (exit 124)
 
-exec 9<"$lock"
-start=$SECONDS
-record wait 0 -
-if ! flock -w "$wait_s" 9; then
-  record timeout $((SECONDS - start)) 75
-  echo "autan-gpu-lock: $lock still held after $wait_s s (see $log)" >&2
-  exit 75
-fi
-taken=$SECONDS
-record take $((taken - start)) -
+The command runs in its own session and process group, without the lock's descriptor. A signal
+to the wrapper stops the group the same way (exit 143). Before the lock is released, whatever is
+left of the group is killed and waited for, so no worker outlives the hold; a process that
+starts its own session escapes this. Every wait, take, release, timeout, overrun, kill and
+leftover is one line of holders.log next to the lock (tab-separated: UTC time, event, who, where,
+seconds, exit status, why, command), written with a single append. Do not nest autan-bench under
+it: autan-bench takes the lock itself. See docs/infra/bench.md.
+"""
 
-cancel=0
-trap 'cancel=1' TERM INT HUP
-# Not a process group leader (no job control), so setsid execs in place: the child's pid is
-# also its process group id.
-setsid "$@" 9<&- 0<&0 &
-group=$!
-grace=$((hold_s >= 20 ? 10 : hold_s / 2))
-termed=0
-stop=
-while kill -0 "$group" 2>/dev/null; do
-  elapsed=$((SECONDS - taken))
-  if ((cancel)) && [[ -z $stop ]]; then stop=killed; fi
-  if [[ -z $stop ]] && ((elapsed >= hold_s - grace)); then stop=overrun; fi
-  if [[ -n $stop ]]; then
-    if ((termed == 0)); then
-      kill -TERM -- "-$group" 2>/dev/null || true
-      termed=$SECONDS
-    elif ((SECONDS - termed >= grace || elapsed >= hold_s)); then
-      kill -KILL -- "-$group" 2>/dev/null || true
-    fi
-  fi
-  sleep 0.2
-done
-status=0
-wait "$group" || status=$?
-# Workers the command left in its group would outlive the hold.
-kill -KILL -- "-$group" 2>/dev/null || true
-for _ in $(seq 50); do kill -0 -- "-$group" 2>/dev/null || break; sleep 0.1; done
-held=$((SECONDS - taken))
-flock -u 9
-case $stop in
-  overrun)
-    record overrun "$held" 124
-    echo "autan-gpu-lock: stopped at the $hold_s s limit: split the work into shorter holds" >&2
-    exit 124 ;;
-  killed) record killed "$held" 143; exit 143 ;;
-  *) record release "$held" "$status"; exit "$status" ;;
-esac
+import contextlib
+import fcntl
+import os
+import pwd
+import re
+import shlex
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
+LOG = LOCK.parent / "holders.log"
+MAX_HOLD_S = 600
+POLL_S = 0.05
+CLEANUP_S = 10.0
+RECORD_BYTES = 4000
+
+
+def usage(message: str) -> None:
+    sys.stderr.write(f"autan-gpu-lock: {message}\n{__doc__.split(chr(10) * 2)[1]}\n")
+    sys.exit(2)
+
+
+def seconds(text: str, low: int, high: int) -> int:
+    # Decimal digits only: no octal, sign, exponent or fraction.
+    if not re.fullmatch(r"0|[1-9][0-9]{0,6}", text) or not low <= int(text) <= high:
+        usage(f"{text!r} is not a whole number of seconds from {low} to {high}")
+    return int(text)
+
+
+def parse(argv: list[str]) -> tuple[str, int, int, list[str]]:
+    why, wait_s, hold_s = "", 3600, MAX_HOLD_S
+    while argv and argv[0] != "--":
+        if len(argv) < 2 or argv[0] not in ("-m", "-w", "-t"):
+            usage(f"unexpected {argv[0]!r}")
+        flag, value, argv = argv[0], argv[1], argv[2:]
+        if flag == "-m":
+            why = value
+        elif flag == "-w":
+            wait_s = seconds(value, 0, 10**6)
+        else:
+            hold_s = seconds(value, 1, MAX_HOLD_S)
+    command = argv[1:]
+    if not why or not command:
+        usage("-m WHY and a command after -- are required")
+    return why, wait_s, hold_s, command
+
+
+def field(text: str) -> str:
+    return re.sub(r"[\x00-\x1f\x7f]", " ", text)
+
+
+class Log:
+    def __init__(self, why: str, command: list[str]) -> None:
+        try:
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except KeyError:
+            user = str(os.getuid())
+        who = os.environ.get("AUTAN_AGENT") or user
+        where = os.environ.get("AUTAN_CONTAINER") or socket.gethostname()
+        self.fields = [field(who), field(where)]
+        self.tail = [field(why)[:500], field(shlex.join(command))[:1000]]
+        self.warned = False
+
+    def record(self, event: str, secs: float, status: object = "-") -> None:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        line = "\t".join([stamp, event, *self.fields, f"{secs:.0f}", str(status), *self.tail])
+        data = (line.encode()[: RECORD_BYTES - 1] + b"\n").decode(errors="ignore").encode()
+        try:
+            # One write on an O_APPEND descriptor: concurrent records do not interleave.
+            fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+        except OSError:
+            if not self.warned:
+                sys.stderr.write(f"autan-gpu-lock: cannot write {LOG}; this hold is not recorded\n")
+                self.warned = True
+
+
+def group_alive(pgid: int) -> bool:
+    """Whether any process of the group is still running (zombies left by a non-reaping
+    PID 1 do not count: they hold no GPU context and no memory)."""
+    for proc_stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            # proc(5): state and process group follow the parenthesised command name.
+            fields = proc_stat.read_text().rpartition(")")[2].split()
+        except OSError:
+            continue
+        if int(fields[2]) == pgid and fields[0] not in "ZX":
+            return True
+    return False
+
+
+def killpg(pgid: int, sig: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(pgid, sig)
+
+
+def main() -> int:
+    why, wait_s, hold_s, command = parse(sys.argv[1:])
+    log = Log(why, command)
+    cancel = []
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda signum, _frame: cancel.append(signum))
+
+    with LOCK.open() as handle:
+        start = time.monotonic()
+        log.record("wait", 0)
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                waited = time.monotonic() - start
+                if cancel:
+                    log.record("cancelled", waited, 143)
+                    return 143
+                if waited >= wait_s:
+                    log.record("timeout", waited, 75)
+                    sys.stderr.write(f"autan-gpu-lock: {LOCK} still held after {wait_s} s\n")
+                    return 75
+                time.sleep(0.2)
+        taken = time.monotonic()
+        log.record("take", taken - start)
+
+        grace = min(10.0, hold_s / 2)
+        hard = taken + hold_s
+        proc = subprocess.Popen(command, start_new_session=True)
+        pgid = proc.pid
+        stop = None
+        termed_at = None
+        while True:
+            now = time.monotonic()
+            if proc.poll() is not None:
+                break
+            if stop is None and cancel:
+                stop = "killed"
+            if stop is None and now >= hard - grace:
+                stop = "overrun"
+            if stop is not None:
+                if now >= hard or (termed_at is not None and now >= termed_at + grace):
+                    killpg(pgid, signal.SIGKILL)
+                elif termed_at is None:
+                    killpg(pgid, signal.SIGTERM)
+                    termed_at = now
+            time.sleep(POLL_S)
+        # Workers the command left in its group would outlive the hold.
+        killpg(pgid, signal.SIGKILL)
+        cleanup_end = time.monotonic() + CLEANUP_S
+        while group_alive(pgid) and time.monotonic() < cleanup_end:
+            time.sleep(POLL_S)
+        held = time.monotonic() - taken
+        if group_alive(pgid):
+            log.record("leftover", held, "-")
+            sys.stderr.write(f"autan-gpu-lock: process group {pgid} survived SIGKILL\n")
+        if stop is None and cancel:
+            stop = "killed"
+        fcntl.flock(handle, fcntl.LOCK_UN)
+
+    status = proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
+    if stop == "overrun":
+        log.record("overrun", held, 124)
+        sys.stderr.write(f"autan-gpu-lock: stopped at the {hold_s} s limit; split the work\n")
+        return 124
+    if stop == "killed":
+        log.record("killed", held, 143)
+        return 143
+    log.record("release", held, status)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())
