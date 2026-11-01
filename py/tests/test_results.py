@@ -826,3 +826,32 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(result.path)
     assert error.value.codes == ["E0701"]
+
+
+def test_runs_of_one_study_differ_only_in_their_freestream(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    # results.md#studies: a study is one problem at several freestream states.
+    def parts(body: str, name: str, mesh: str | None = None) -> autan.results.IdentityParts:
+        case = autan.load(write_case(body, name))
+        result = case.run(
+            crm_mesh, backend=autan.FakeBackend(iterations=2), runs=tmp_path / "runs" / name
+        )
+        document = result.run.document()
+        if mesh is not None:
+            document["mesh"]["sha256"] = mesh
+        return autan.results.run_identity_parts(document, result.case)
+
+    base = parts(CRM_HL, "base.py")
+    alpha = parts(CRM_HL.replace("19.57 * deg", "21.47 * deg"), "alpha.py")
+    other = parts(CRM_HL.replace("autan.SA()", "autan.SST()"), "other.py")
+    assert alpha.case_without_freestream == base.case_without_freestream
+    assert alpha.fields["case.sha256"] != base.fields["case.sha256"]
+    assert {k: v for k, v in alpha.fields.items() if k != "case.sha256"} == {
+        k: v for k, v in base.fields.items() if k != "case.sha256"
+    }
+    assert (base.freestream["aoa"], alpha.freestream["aoa"]) == ("19.57 deg", "21.47 deg")
+    assert other.case_without_freestream != base.case_without_freestream
+    moved = parts(CRM_HL, "moved.py", mesh="1" * 64)
+    assert moved.fields["mesh.sha256"] != base.fields["mesh.sha256"]
+    assert list(base.fields) == identity_fields()[:7]  # no start: the start fields are absent

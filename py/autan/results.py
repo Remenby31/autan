@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
 
 import numpy as np
+import rfc8785
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autan import cgns
@@ -194,6 +195,39 @@ def run_identity(run: RunInfo | dict[str, Any]) -> str:
             value = value[key]
         parts.append("" if value is None else str(value))
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+class IdentityParts(BaseModel):
+    """What a run's identity is made of (results.md#studies)."""
+
+    model_config = ConfigDict(frozen=True)
+    fields: dict[str, str | int | None]
+    case_without_freestream: Hex
+    freestream: dict[str, Any]
+
+
+def run_identity_parts(run: RunInfo | dict[str, Any], case: CaseSpec) -> IdentityParts:
+    """The fields of ``run``'s identity one by one, in the order of results.md#identity (the
+    ``start.`` fields only for a run with a start), the SHA-256 of ``case`` without its
+    freestream, and that freestream as the case document writes it (results.md#studies).
+    ``case`` is the run's ``case.toml``; ``run`` a ``RunInfo`` or a ``run.json`` document."""
+    if not isinstance(run, RunInfo):
+        run = RunInfo.model_validate({**run, "identity": "0" * 64})
+    document = run.document()
+    fields: dict[str, str | int | None] = {}
+    for path in IDENTITY:
+        if path.startswith("start.") and document["start"] is None:
+            continue
+        value: Any = document
+        for key in path.split("."):
+            value = value[key]
+        fields[path] = value
+    rest = {key: value for key, value in case.document().items() if key != "freestream"}
+    return IdentityParts(
+        fields=fields,
+        case_without_freestream=hashlib.sha256(rfc8785.dumps(rest)).hexdigest(),
+        freestream=case.document()["freestream"],
+    )
 
 
 class LogLine(_Strict):

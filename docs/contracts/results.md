@@ -84,6 +84,10 @@ Two runs of the solver (not the `fake` backend) with the same `identity` whose c
 10. `start.iterations`
 11. `start.solution_sha256`
 
+### Studies
+
+A **study** is a set of runs that solve one problem at several freestream states: their identities have the same fields except `case.sha256`, and their cases are the same once `freestream` is removed. `autan.results.run_identity_parts(run, case)` gives a run's identity fields one by one, `case_without_freestream` (the SHA-256 of the RFC 8785 canonical JSON of the case document without its `freestream` table, [case-schema.md](case-schema.md#case-hash)) and that `freestream` table as the document writes it. The state a run starts from is no part of the freestream: an explicit `initial` of a cell zone, an `initial_state` file or a `start` makes another study.
+
 ## History
 
 `history.jsonl` holds one JSON object per line, in increasing `iteration`:
