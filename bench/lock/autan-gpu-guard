@@ -9,9 +9,10 @@ Every 0.5 s it reads /proc/locks for /home/admin/autan-gpu/gpu.lock and:
 - records in holders.log each holder it sees (`held` when it appears, `released` with the
   duration when it goes, `overhold` every 5 minutes past 10 minutes), with the holder's
   container and command line, whether or not the holder used autan-gpu-lock;
-- every 30 s, lists the GPU's processes outside Autan's containers (`autan*`): `foreign-gpu`
-  and `foreign-gone` in holders.log, and the current list in `foreign-gpu` next to the lock,
-  which a failed CI job reads to name what took the GPU (bench/ci/gpu-tenants.sh).
+- every 30 s, in a thread of its own, lists the GPU's processes outside Autan's containers
+  (`autan*`) by nvidia-smi's process name and container name only, never their command lines:
+  `foreign-gpu` and `foreign-gone` in holders.log, and the current list in `foreign-gpu` next to
+  the lock, which a failed CI job reads to name what took the GPU (bench/ci/gpu-tenants.sh).
 It never signals or stops anything. See docs/infra/bench.md.
 """
 
@@ -21,6 +22,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -105,6 +107,12 @@ def gpu_apps(csv: str) -> dict[int, tuple[str, str]]:
     return apps
 
 
+def clean(text: str) -> str:
+    """A name from another tenant, reduced to plain characters for one log or annotation field:
+    no tab, newline, `#` or `[`, so it can neither split a field nor form a workflow command."""
+    return re.sub(r"[^A-Za-z0-9._:/@+=, -]", "?", text)[:200]
+
+
 def foreign_apps(containers: "Containers") -> dict[int, dict] | None:
     """The GPU's processes outside Autan's containers, or None when nvidia-smi fails."""
     try:
@@ -115,10 +123,27 @@ def foreign_apps(containers: "Containers") -> dict[int, dict] | None:
     for pid, (name, mib) in gpu_apps(out.stdout).items():
         where = containers.name(container_of(pid))
         if not where.startswith("autan"):
-            who, cmd = describe(pid)
-            foreign[pid] = {"where": where, "who": who, "what": f"{name} ({mib} MiB): {cmd}",
-                            "name": name, "mib": mib}  # fmt: skip
+            foreign[pid] = {"where": clean(where), "name": clean(name), "mib": clean(mib)}
     return foreign
+
+
+def watch_foreign(containers: "Containers", stopping: list) -> None:
+    """Every DOCKER_EVERY_S, publishes the foreign GPU processes and logs their arrivals and exits."""
+    seen: dict[int, dict] = {}
+    while not stopping:
+        at = time.monotonic()
+        foreign = foreign_apps(containers)
+        publish(foreign)
+        if foreign is not None:
+            for pid, f in foreign.items():
+                if pid not in seen:
+                    seen[pid] = {**f, "since": at}
+                    record("foreign-gpu", "-", f["where"], 0, f"{f['name']} ({f['mib']} MiB)")
+            for pid in [p for p in seen if p not in foreign]:
+                f = seen.pop(pid)
+                record("foreign-gone", "-", f["where"], at - f["since"],
+                       f"{f['name']} ({f['mib']} MiB)")  # fmt: skip
+        time.sleep(max(0.0, DOCKER_EVERY_S - (time.monotonic() - at)))
 
 
 def publish(foreign: dict[int, dict] | None) -> None:
@@ -166,22 +191,10 @@ def main() -> int:
     ci = CI_LOCK.open()
     announcing = False
     seen: dict[int, dict] = {}
-    foreign_seen: dict[int, dict] = {}
-    foreign_at = 0.0
+    containers.refresh()
+    threading.Thread(target=watch_foreign, args=(containers, stopping), daemon=True).start()
     while not stopping:
         containers.refresh()
-        if time.monotonic() - foreign_at >= DOCKER_EVERY_S:
-            foreign_at = time.monotonic()
-            foreign = foreign_apps(containers)
-            publish(foreign)
-            for pid, f in (foreign or {}).items():
-                if pid not in foreign_seen:
-                    f["since"] = foreign_at
-                    foreign_seen[pid] = f
-                    record("foreign-gpu", f["who"], f["where"], 0, f["what"])
-            for pid in [p for p in foreign_seen if foreign is not None and p not in foreign]:
-                f = foreign_seen.pop(pid)
-                record("foreign-gone", f["who"], f["where"], foreign_at - f["since"], f["what"])
         holders, waiters = lock_users(key, Path("/proc/locks").read_text())
         runner = {c for c, n in containers.names.items() if n == RUNNER}
         ci_present = any(container_of(p) in runner for p in holders | waiters)
