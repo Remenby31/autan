@@ -8,6 +8,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/runtime.hpp"
 #include "autan/physics/block_matrix.hpp"
 
 namespace autan::physics {
@@ -22,6 +23,7 @@ enum class BoundaryKind : std::uint8_t {
   slip,      ///< slip wall or symmetry plane; data unused
   inlet,     ///< subsonic, flow normal to the face: (p0, T0, -, -, -)
   outlet,    ///< subsonic: (-, -, -, -, p); supersonic outflow extrapolates
+  wall,      ///< no-slip wall at rest: (T_wall, -, -, -, -), T_wall = 0 when adiabatic
 };
 
 struct Gas {
@@ -73,6 +75,8 @@ class Euler {
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
+  /// Holds the limiter of the last evaluation fixed in residual() (scratch).
+  void freeze_limiter(bool on);
   /// The least-squares weights of the gradient over its stencil (layout of
   /// kernels::CellStencil::lsq_weight). They depend on set_boundary: boundary faces take part
   /// where their condition gives the state there, and in the cells whose interior stencil alone
@@ -97,6 +101,22 @@ class Euler {
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
   void spectral_radius(std::span<State> lambda);
+  /// Arrays of the last evaluation, for physics that add terms to this residual (viscous fluxes,
+  /// docs/design/ns-sa.md): primitives W - (0, 0, 0, 0, p_ref) and their gradients per cell,
+  /// boundary states, codes and data per face, dW/dU per cell after residual_and_jacobian.
+  /// Layouts as the datasets of kernels/euler.py.
+  struct Arrays {
+    State* prim;
+    typename P::grad* grad;
+    State* prim_b;
+    typename P::geom* bc_kind;
+    State* bc;
+    const typename P::jac* dwdu;
+    kernels::Topology topo;  ///< with the gradient stencil
+    const typename P::geom_value* stencil_lsq_weight;
+  };
+  [[nodiscard]] Arrays arrays() noexcept;
+
   /// After residual(s): absolute pressure of the boundary flux's face state at every boundary face
   /// (n_boundary_faces, FP64) and, unless `force` is empty, the pressure force on each face as
   /// the residual integrates it, warped-face correction included (3 x n_boundary_faces).

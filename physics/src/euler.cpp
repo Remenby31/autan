@@ -36,6 +36,7 @@ struct Euler<P>::Impl {
   stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<double> bc_kind;
+  bool frozen_limiter = false;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, zero_grad;
@@ -296,6 +297,11 @@ void Euler<P>::set_second_order(bool on) {
 }
 
 template <class P>
+void Euler<P>::freeze_limiter(bool on) {
+  impl_->frozen_limiter = on;
+}
+
+template <class P>
 void Euler<P>::set_source(std::span<const double> source) {
   auto& m = *impl_;
   if (source.size() != m.source.size()) {
@@ -324,7 +330,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
     ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
+    if (m.scheme.limiter && !m.frozen_limiter) {
       ek::cpu::limiter(m.d);
     }
   }
@@ -438,6 +444,13 @@ void Euler<P>::spectral_radius(std::span<State> lambda) {
   auto& m = *impl_;
   m.d.lam = lambda.data();
   ek::cpu::spectral_radius(m.d);
+}
+
+template <class P>
+typename Euler<P>::Arrays Euler<P>::arrays() noexcept {
+  auto& m = *impl_;
+  return {m.prim.data(), m.grad.data(), m.prim_b.data(), m.bc_kind.data(),
+          m.bc.data(),   m.dwdu.data(), m.topo,          m.stencil_lsq_weight.data()};
 }
 
 template <class P>

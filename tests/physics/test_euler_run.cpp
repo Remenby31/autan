@@ -1,5 +1,6 @@
-// The Euler physics through autan-run's public entry point, run_case, on tests/data/mesh/hybrid:
-// solver inputs written by `autan prepare` (tests/data/runtime), edited per test.
+// The Euler and Navier-Stokes physics through autan-run's public entry point, run_case, on
+// tests/data/mesh/hybrid: solver inputs written by `autan prepare` (tests/data/runtime), edited
+// per test.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -66,6 +67,7 @@ Outcome run(const Json& doc) {
   std::ofstream(dir / "solver-input.json") << doc.dump();
   autan::runtime::PhysicsRegistry registry;
   autan::physics::register_euler(registry);
+  autan::physics::register_navier_stokes(registry);
   std::FILE* out = std::tmpfile();
   std::FILE* err = std::tmpfile();
   const ExitStatus status =
@@ -689,5 +691,29 @@ TEST_CASE("oracle-state faces impose their states component by component", "[eul
     const double scale =
         std::string(name) == "Density" || std::string(name) == "Pressure" ? std::abs(value) : speed;
     for (const double v : field(out.run, name)) CHECK(std::abs(v - value) <= 64 * eps * scale);
+  }
+}
+
+TEST_CASE("a Spalart-Allmaras run steps its six equations", "[navier-stokes]") {
+  // The contract's hybrid case as it is: SA-neg, a no-slip wall, farfield faces.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    d["time"]["max_iterations"] = 3;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "completed");
+  const auto lines = history(out.run);
+  REQUIRE(lines.size() == 3);
+  for (const auto& line : lines) {
+    CHECK(line["residuals"].size() == 6);
+    for (const auto& [name, r] : line["residuals"].items()) {
+      INFO(name);
+      CHECK(std::isfinite(r.get<double>()));
+    }
   }
 }

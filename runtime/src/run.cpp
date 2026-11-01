@@ -32,12 +32,19 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/runtime/diagnostic.hpp"
 #include "comm.hpp"
+#include "device.hpp"
 #include "run_directory.hpp"
 
 namespace autan::runtime {
 namespace {
 
 namespace fs = std::filesystem;
+
+#ifdef AUTAN_HAVE_CUDA
+constexpr bool gpu_build = true;
+#else
+constexpr bool gpu_build = false;
+#endif
 using Json = nlohmann::ordered_json;
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
@@ -543,6 +550,26 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     p.monitor_zones.push_back(std::move(ids));
   }
   load_states(p);
+  // A device run needs a build that drives that device and a device to
+  // drive; neither falls back to the CPU.
+  if (p.input.device_kind != "cpu") {
+    const bool built = p.input.device_kind == "cuda" && gpu_build;
+    if (!built) {
+      throw InputError(Diagnostic{
+          .code = "E0706",
+          .message = "this build of autan-run does not drive " + p.input.device_kind + " devices",
+          .path = "devices.kind",
+          .data_json = nlohmann::json{{"path", "devices.kind"}}.dump()});
+    }
+    if (visible_gpus() == 0) {
+      throw InputError(Diagnostic{
+          .code = "E0807",
+          .message = "devices.kind is cuda, but this process sees no CUDA device",
+          .path = "devices.kind",
+          .data_json =
+              nlohmann::json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}}.dump()});
+    }
+  }
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   if (entry != nullptr && entry->scope) {
@@ -613,6 +640,7 @@ class Run final : public Log {
  public:
   Run(Prepared& p, const SolverBuild& build, Comm& comm)
       : p_(p), comm_(comm), geometry_(compute_geometry(p.mesh)), local_(make_part()) {
+    if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
     if (local_) {
       ghosts_ = comm_.ghost_exchange(*local_);
       if (p_.start) local_start_ = owned_start(*p_.start);
@@ -709,6 +737,14 @@ class Run final : public Log {
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
     if (comm_.size() > 1) log_partition();
+    if (gpu_) {
+      note(
+          "info", "cuda",
+          "rank 0 runs on CUDA device " + std::to_string(gpu_->index()) + " (" + gpu_->name() + ")",
+          "",
+          Json{{"device", gpu_->index()}, {"name", gpu_->name()}, {"visible", visible_gpus()}}
+              .dump());
+    }
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 
@@ -722,7 +758,9 @@ class Run final : public Log {
                                  .start = start,
                                  .ghosts = *ghosts_,
                                  .ranks = comm_,
-                                 .boundary_states = p_.boundary_states};
+                                 .boundary_states = p_.boundary_states,
+                                 .device = gpu_ ? gpu_->index() : -1,
+                                 .stream = gpu_ ? gpu_->stream() : nullptr};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1246,6 +1284,8 @@ class Run final : public Log {
 
   Prepared& p_;
   Comm& comm_;
+  // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
+  std::optional<Gpu> gpu_;
   Geometry geometry_;
   std::optional<LocalPartition> local_;
   std::unique_ptr<GhostExchange> ghosts_;

@@ -21,6 +21,9 @@ target_compile_definitions(
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
+if(AUTAN_ENABLE_CUDA)
+  target_compile_definitions(autan_runtime_tests PRIVATE AUTAN_HAVE_CUDA)
+endif()
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   target_compile_definitions(
     autan_runtime_tests
@@ -30,7 +33,8 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   )
 endif()
 # The multi-rank tests carry the label `mpi` (ctest -L mpi).
-catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
 catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]" PROPERTIES LABELS mpi)
 
 add_executable(autan_exact_sum_tests test_exact_sum.cpp)
@@ -39,6 +43,27 @@ target_link_libraries(
   PRIVATE autan::runtime Catch2::Catch2WithMain autan_compile_options
 )
 catch_discover_tests(autan_exact_sum_tests)
+
+if(AUTAN_ENABLE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  # The kernel launch, compiled by nvcc without the host warning flags.
+  add_library(autan_exact_sum_device OBJECT exact_sum_device.cu)
+  set_target_properties(
+    autan_exact_sum_device
+    PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+  )
+  target_link_libraries(autan_exact_sum_device PRIVATE autan::runtime CUDA::cudart)
+  add_executable(
+    autan_exact_sum_device_tests
+    test_exact_sum_device.cpp
+    $<TARGET_OBJECTS:autan_exact_sum_device>
+  )
+  target_link_libraries(
+    autan_exact_sum_device_tests
+    PRIVATE autan::runtime CUDA::cudart Catch2::Catch2WithMain autan_compile_options
+  )
+  catch_discover_tests(autan_exact_sum_device_tests PROPERTIES LABELS gpu)
+endif()
 
 # autan-run as shipped, through its output and exit status: no physics yet.
 set_property(
@@ -54,11 +79,14 @@ string(
   "${shipped_input}"
 )
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hybrid.solver-input.json "${shipped_input}")
+# The same case on CUDA devices, which no physics of this autan-run registers.
+string(REPLACE "\"kind\": \"cpu\"" "\"kind\": \"cuda\"" cuda_input "${shipped_input}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hybrid-cuda.solver-input.json "${cuda_input}")
 add_test(
   NAME autan-run.no-physics
   COMMAND
     ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-run>
-    "-DARGS=--input;${CMAKE_CURRENT_BINARY_DIR}/hybrid.solver-input.json;--runs;${CMAKE_CURRENT_BINARY_DIR}/runs"
+    "-DARGS=--input;${CMAKE_CURRENT_BINARY_DIR}/hybrid-cuda.solver-input.json;--runs;${CMAKE_CURRENT_BINARY_DIR}/runs"
     -DEXPECT_CODE=2 "-DEXPECT=E0706" -P ${PROJECT_SOURCE_DIR}/tests/io/run_cli.cmake
 )
 add_test(

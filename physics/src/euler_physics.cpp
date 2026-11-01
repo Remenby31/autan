@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <cstdlib>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -16,10 +17,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/solvers/gcr.hpp"
+#include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/spalart_allmaras.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -62,6 +66,9 @@ constexpr int newton_max_iterations = 40;
 // Below this relative residual, ANK hands over to Newton-Krylov with the full residual and
 // HANIM's controls (Wang, Diskin, Nielsen and Liu 2021, AIAA SciTech, sec. II.D).
 constexpr double newton_drop = 1e-5;
+constexpr double ser_cfl_start = 1000.0;
+constexpr double ser_cfl_min = 1.0;
+constexpr double ser_cfl_max = 1e6;
 constexpr double hanim_cfl_increase = 2.0;
 constexpr double hanim_cfl_decrease = 0.1;
 constexpr double hanim_cfl_min = 1e-12;
@@ -72,6 +79,11 @@ constexpr double max_decrease = 0.5;
 template <class State>
 constexpr double round_off_correction =
     std::max(1e-12, 8.0 * static_cast<double>(std::numeric_limits<State>::epsilon()));
+// Largest relative decrease and increase of rho nt in one step, and the symmetric Gauss-Seidel
+// sweeps of its scalar system (SA).
+constexpr double nt_max_decrease = 0.5;
+constexpr double nt_max_increase = 2.0;
+constexpr int nt_sweeps = 4;
 constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
@@ -91,17 +103,59 @@ Gas gas_of(const runtime::SolverInput& in) {
   return *gas;
 }
 
+Transport transport_of(const runtime::SolverInput& in) {
+  const auto& m = in.cell_zones.front().medium;
+  const auto& v = *m.viscosity;
+  Transport t;
+  t.sutherland = v.law == "sutherland";
+  t.mu_ref = t.sutherland ? *v.mu_ref : *v.mu;
+  if (t.sutherland) {
+    t.t_ref = *v.t_ref;
+    t.s = *v.s;
+  }
+  t.prandtl = *m.prandtl;
+  for (const auto& z : in.cell_zones) {
+    const auto& w = *z.medium.viscosity;
+    if (w.law != v.law || w.mu_ref != v.mu_ref || w.t_ref != v.t_ref || w.s != v.s ||
+        w.mu != v.mu || z.medium.prandtl != m.prandtl) {
+      throw std::invalid_argument(
+          "the Navier-Stokes physics takes a single gas for every cell zone");
+    }
+  }
+  return t;
+}
+
+// Spalart-Allmaras (SA-neg) beside a NavierStokes<P> flow: its state rho nt in FP64 and the
+// arrays of its loosely coupled implicit step.
 template <class P>
+struct SaState {
+  SaState(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& flow, const Transport& t,
+          bool ft2)
+      : model(mesh, geometry, flow, t, ft2) {}
+  SpalartAllmaras<P> model;
+  std::vector<double> rnu, rhs, dx, diag, upper, lower;
+  double nt_inf = 0.0;  ///< m^2/s, the freestream's
+  std::vector<typename P::state> s;
+  std::vector<typename P::residual> res;
+
+  std::span<const typename P::state> stored(const std::vector<double>& v) {
+    for (std::size_t c = 0; c < v.size(); ++c) s[c] = typename P::state(v[c]);
+    return s;
+  }
+};
+
+template <class P, class Flow>
 class EulerPhysics final : public runtime::Physics {
  public:
   using State = typename P::state;
   using Res = typename P::residual;
+  static constexpr bool is_viscous = !std::is_same_v<Flow, Euler<P>>;
 
   explicit EulerPhysics(const PhysicsContext& ctx)
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        euler_(make_flow(ctx, gas_)),
         reference_(scheme(ctx.input).reference) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
@@ -137,6 +191,9 @@ class EulerPhysics final : public runtime::Physics {
     rhs_.assign(5 * n_, 0.0);
     du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
+    if constexpr (is_viscous) {
+      if (in.turbulence.model == "sa") init_sa(mms ? &*mms : nullptr);
+    }
     if (ctx.start != nullptr) start_from(*ctx.start);
   }
 
@@ -185,6 +242,7 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(n_, mean_weight_)});
     }
+    if (sa_) out.push_back({.name = "DensityNuTilde", .values = sa_->rnu});
     // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
     if (ctx_.input.time.kind == "steady") {
       for (const auto& [name, value] : solver_state()) {
@@ -196,7 +254,7 @@ class EulerPhysics final : public runtime::Physics {
 
   // Phi_k = f_k sqrt(sum_i A_i^2 / N), A_i the surface of cell i and f_k the face flux magnitude
   // of the freestream with q = |v| + c: rho q, rho q^2 (each momentum) and rho H q
-  // (docs/design/euler.md, Precision).
+  // (docs/design/euler.md, Precision); SA's rho nt q with the freestream nt.
   [[nodiscard]] std::vector<double> residual_scales() const override {
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
@@ -216,6 +274,7 @@ class EulerPhysics final : public runtime::Physics {
     const double h = c * c / (gas_.gamma - 1.0) + 0.5 * fs.speed * fs.speed;
     const double mass = fs.density * q * area;
     const double momentum = mass * q;
+    if (sa_) return {mass, momentum, momentum, momentum, mass * h, mass * sa_->nt_inf};
     return {mass, momentum, momentum, momentum, mass * h};
   }
 
@@ -229,33 +288,54 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back(std::move(field));
     }
+    if (sa_) {
+      if (mean) throw std::invalid_argument("time averages of SA runs are not supported");
+      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(n_)};
+      for (std::size_t c = 0; c < n_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
+      out.push_back(std::move(nt));
+    }
     return out;
   }
 
   [[nodiscard]] std::vector<io::Field> wall_fields(std::span<const index_t> faces) const override {
     std::vector<double> p(static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()));
     face_pressure(p, {});
+    const auto t = face_traction();
+    const auto& g = ctx_.geometry;
     const auto ni = static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(ctx_.mesh.n_boundary_faces());
     std::vector<io::Field> out{{.name = "Pressure", .values = {}},
                                {.name = "WallShearStressX", .values = {}},
                                {.name = "WallShearStressY", .values = {}},
                                {.name = "WallShearStressZ", .values = {}}};
     for (const auto f : faces) {
-      out[0].values.push_back(p[static_cast<std::size_t>(f) - ni]);
-      for (std::size_t k = 1; k < 4; ++k) out[k].values.push_back(0.0);
+      const auto i = static_cast<std::size_t>(f);
+      const auto b = i - ni;
+      out[0].values.push_back(p[b]);
+      // The tangential part of the viscous traction (results.md, WallSolution).
+      const double a =
+          std::sqrt(g.face_area_x[i] * g.face_area_x[i] + g.face_area_y[i] * g.face_area_y[i] +
+                    g.face_area_z[i] * g.face_area_z[i]);
+      const std::array<double, 3> n{g.face_area_x[i] / a, g.face_area_y[i] / a,
+                                    g.face_area_z[i] / a};
+      const std::array<double, 3> tv{t[b], t[nb + b], t[2 * nb + b]};
+      const double tn = tv[0] * n[0] + tv[1] * n[1] + tv[2] * n[2];
+      for (std::size_t k = 0; k < 3; ++k) out[1 + k].values.push_back(tv[k] - tn * n[k]);
     }
     return out;
   }
 
   [[nodiscard]] Loads loads(std::span<const index_t> zones,
                             const std::array<double, 3>& center) const override {
-    // The pressure force exactly as the residual integrates it, minus p_inf S (results.md).
+    // The pressure force exactly as the residual integrates it, minus p_inf S (results.md), plus
+    // the viscous force.
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<double> p(nb), face_force(3 * nb);
     face_pressure(p, face_force);
+    const auto t = face_traction();
     const double p_inf = ctx_.input.freestream.pressure;
     const auto offsets = mesh.boundary_zone_offsets();
     Loads loads;
@@ -264,9 +344,13 @@ class EulerPhysics final : public runtime::Physics {
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
         const auto i = static_cast<std::size_t>(f);
         const auto b = i - ni;
-        const std::array<double, 3> force{face_force[b] - p_inf * g.face_area_x[i],
-                                          face_force[nb + b] - p_inf * g.face_area_y[i],
-                                          face_force[2 * nb + b] - p_inf * g.face_area_z[i]};
+        const double a =
+            std::sqrt(g.face_area_x[i] * g.face_area_x[i] + g.face_area_y[i] * g.face_area_y[i] +
+                      g.face_area_z[i] * g.face_area_z[i]);
+        const std::array<double, 3> force{
+            face_force[b] - p_inf * g.face_area_x[i] + a * t[b],
+            face_force[nb + b] - p_inf * g.face_area_y[i] + a * t[nb + b],
+            face_force[2 * nb + b] - p_inf * g.face_area_z[i] + a * t[2 * nb + b]};
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
@@ -280,6 +364,15 @@ class EulerPhysics final : public runtime::Physics {
   }
 
  private:
+  // Guaranteed copy elision: Flow is neither copyable nor movable.
+  static Flow make_flow(const PhysicsContext& ctx, const Gas& gas) {
+    if constexpr (is_viscous) {
+      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), transport_of(ctx.input));
+    } else {
+      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input));
+    }
+  }
+
   static Scheme scheme(const runtime::SolverInput& in) {
     const auto& f = in.freestream;
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
@@ -323,6 +416,7 @@ class EulerPhysics final : public runtime::Physics {
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
       }
+      if (sa_) sa_->rnu = *find(start.restart_fields, "DensityNuTilde");
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -337,6 +431,10 @@ class EulerPhysics final : public runtime::Physics {
     const auto& vz = *find(start.fields, "VelocityZ");
     const auto& p = *find(start.fields, "Pressure");
     for (std::size_t c = 0; c < n_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
+    if (sa_) {
+      const auto& nt = *find(start.fields, "TurbulentSANuTilde");
+      for (std::size_t c = 0; c < n_; ++c) sa_->rnu[c] = rho[c] * nt[c];
+    }
   }
 
   [[nodiscard]] std::vector<std::pair<std::string, double>> solver_state() const {
@@ -374,6 +472,66 @@ class EulerPhysics final : public runtime::Physics {
     freestream_norm_ = v[16].second;
   }
 
+  // SA-neg: rho nt from the zones' initial nt, nt at the boundary faces that give it, the wall
+  // distance; a manufactured solution gives its own nt, wall distance and source.
+  void init_sa(const Manufactured* mms) {
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    const auto& in = ctx_.input;
+    if (in.time.kind != "steady") {
+      throw std::invalid_argument("the SA physics runs steady cases only");
+    }
+    sa_ = std::make_unique<SaState<P>>(mesh, g, euler_, transport_of(in),
+                                       mms == nullptr || mms->turbulence() != "sa-noft2");
+    auto& t = *sa_;
+    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+    std::vector<std::array<double, 3>> cells(n_), bfaces(nb);
+    for (std::size_t c = 0; c < n_; ++c) {
+      cells[c] = {g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]};
+    }
+    for (std::size_t b = 0; b < nb; ++b) {
+      bfaces[b] = {g.face_centroid_x[ni + b], g.face_centroid_y[ni + b], g.face_centroid_z[ni + b]};
+    }
+    t.nt_inf = in.freestream.nu_tilde.value_or(0.0);
+    std::vector<double> nt_b(nb, t.nt_inf);
+    std::vector<double> d;
+    if (mms != nullptr) {
+      static const std::array<std::string, 1> nt_name = {"nu_hat"};
+      static const std::array<std::string, 1> d_name = {"wall_distance"};
+      static const std::array<std::string, 1> s_name = {"rhonu"};
+      nt_b = mms->evaluate("fields", nt_name, bfaces)[0];
+      d = mms->evaluate("auxiliary", d_name, cells)[0];
+      t.model.set_source(mms->evaluate("sources", s_name, cells)[0]);
+    } else {
+      std::map<std::string, std::string> kinds;
+      for (const auto& b : in.boundaries) kinds[b.zone] = b.kind;
+      std::vector<index_t> walls;
+      for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+        const auto it = kinds.find(mesh.face_zones()[z].name);
+        if (it != kinds.end() && it->second == "wall") walls.push_back(static_cast<index_t>(z));
+      }
+      if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
+      d = wall_distance(mesh, g, walls);
+    }
+    t.model.set_boundary(nt_b);
+    t.model.set_wall_distance(d);
+    std::map<std::string, const runtime::CellZoneInput*> zones;
+    for (const auto& z : in.cell_zones) zones[z.zone] = &z;
+    t.rnu.assign(n_, 0.0);
+    for (std::size_t c = 0; c < n_; ++c) {
+      const auto zi = static_cast<std::size_t>(mesh.cell_zone()[c]);
+      t.rnu[c] = u_[c] * zones.at(mesh.cell_zones()[zi].name)->initial.nu_tilde.value_or(0.0);
+    }
+    t.rhs.assign(n_, 0.0);
+    t.dx.assign(n_, 0.0);
+    t.diag.assign(n_, 0.0);
+    t.upper.assign(static_cast<std::size_t>(mesh.n_interior_faces()), 0.0);
+    t.lower.assign(t.upper.size(), 0.0);
+    t.s.assign(n_, typename P::state(0));
+    t.res.assign(n_, typename P::residual(0));
+  }
+
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
     u_[c] = rho;
     for (std::size_t k = 0; k < 3; ++k) u_[(1 + k) * n_ + c] = rho * v[k];
@@ -409,6 +567,8 @@ class EulerPhysics final : public runtime::Physics {
       };
       if (bc.kind == "slip" || bc.kind == "symmetry") {
         put(BoundaryKind::slip, {});
+      } else if (bc.kind == "wall" && is_viscous) {
+        put(BoundaryKind::wall, {bc.temperature.value_or(0.0), 0.0, 0.0, 0.0, 0.0});
       } else if (bc.kind == "farfield") {
         put(BoundaryKind::farfield, freestream);
       } else if (bc.kind == "inlet") {
@@ -432,7 +592,7 @@ class EulerPhysics final : public runtime::Physics {
         manufactured_index.push_back(b);
       } else {
         throw std::invalid_argument("boundary zone '" + zone + "': condition '" + bc.kind +
-                                    "' does not apply to inviscid flow");
+                                    "' is not supported by this physics");
       }
     }
     if (!manufactured_faces.empty()) {
@@ -492,6 +652,14 @@ class EulerPhysics final : public runtime::Physics {
     std::vector<double> norms = report.residuals;
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
+    if (sa_) {
+      // Loosely coupled: the SA residual at the same state, after the flow's evaluation.
+      auto& t = *sa_;
+      t.model.residual_and_jacobian(t.stored(t.rnu), t.res);
+      double sum = 0.0;
+      for (const auto r : t.res) sum += static_cast<double>(r) * static_cast<double>(r);
+      report.residuals.push_back(std::sqrt(sum / static_cast<double>(n_)));
+    }
     euler_.spectral_radius(lambda_);
     // Largest relative residual over the equations, of the order being solved: each residual
     // relative to its largest value so far in this order, so that the transient of a start from
@@ -513,13 +681,58 @@ class EulerPhysics final : public runtime::Physics {
         drop = std::max(drop, current[k] / first_norms_[k]);
       }
     }
+    // Phases (fp64): second order runs ANK with matrix-free products of the residual, the
+    // limiter frozen; below newton_drop, Newton-Krylov on the full residual with HANIM's controls.
+    static const bool exp_mf = [] {
+      const char* e = std::getenv("AUTAN_EXP_MF");
+      return e == nullptr || std::string(e) != "0";
+    }();
+    static const double exp_nk_drop = [] {
+      const char* e = std::getenv("AUTAN_EXP_NKDROP");
+      return e == nullptr ? newton_drop : std::stod(e);
+    }();
+    static const bool exp_ser = [] {
+      const char* e = std::getenv("AUTAN_EXP_START");
+      return e != nullptr && std::string(e).starts_with("ser");
+    }();
+    static const bool exp_ser0 = [] {
+      const char* e = std::getenv("AUTAN_EXP_START");
+      return e != nullptr && std::string(e) == "ser0";
+    }();
+    // main's SER ratio: each residual relative to its first value in the order.
+    if (first0_.empty()) first0_ = current;
+    double drop0 = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (first0_[k] > 0.0) drop0 = std::max(drop0, current[k] / first0_[k]);
+    }
+    constexpr bool fp64 = std::is_same_v<P, kernels::fp64>;
+    const bool hanim = fp64 && second_order_ && drop <= exp_nk_drop;
+    const bool matrix_free = fp64 && second_order_ && (hanim || (exp_mf && !exp_ser));
+    const bool ser = exp_ser && !hanim;
+    if (hanim != newton_) {
+      newton_ = hanim;
+      if (hanim) {
+        ctx_.log.write("info", "solver", "Newton-Krylov steps", {},
+                       nlohmann::json{{"cfl", cfl_}, {"iteration", iteration}}.dump());
+      }
+    }
     // The CFL number of this step (ANK eqs. 18-20) from the previous step's length and residual,
     // never below the SER floor (|R_fs| / |R|)^beta, R_fs the residual at the first step.
     const double norm = scaled_norm(res_, {}, 0.0);
     if (freestream_norm_ <= 0.0) freestream_norm_ = norm;
     const double floor =
         norm > 0.0 ? std::pow(freestream_norm_ / norm, cfl_floor_exponent) : cfl_max;
-    if (previous_norm_ > 0.0) {
+    if (ser) {
+      // Switched evolution relaxation as on #205 (Mulder and van Leer 1985).
+      penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+      if (exp_ser0) {
+        if (drop0 > 0.0) cfl_ = std::clamp(penalty_ * ser_cfl_start / drop0, ser_cfl_min, ser_cfl_max);
+      } else {
+        const double ratio = drop > 0.0 ? penalty_ * ser_cfl_start / drop : ser_cfl_max;
+        cfl_ = std::clamp(std::min(ratio, cfl_cap_), ser_cfl_min, ser_cfl_max);
+        cfl_cap_ = ser_cfl_max;
+      }
+    } else if (!hanim && previous_norm_ > 0.0) {
       if (previous_omega_ > omega_ramp) {
         const double gamma = std::max((previous_norm_ - norm) / previous_norm_, 0.0);
         cfl_ = std::min(cfl_ * std::pow(cfl_ramp, gamma), cfl_max);
@@ -534,71 +747,85 @@ class EulerPhysics final : public runtime::Physics {
     euler_.assemble(shift, *matrix_);
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
+    const double tolerance = hanim || ser ? hanim_tolerance : linear_tolerance;
     solvers::Multigrid::Report linear;
     try {
       multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-      const bool newton = second_order_ && drop <= newton_drop;
-      if (newton != newton_) {
-        newton_ = newton;
-        if constexpr (std::is_same_v<P, kernels::fp64>) {
-          if (newton) ctx_.log.write("info", "solver", "Newton-Krylov steps", {}, "{}");
-        } else if (newton) {
-          ctx_.log.write("info", "solver",
-                         "no Newton-Krylov steps in fp32+acc64: finite differences of an FP32 "
-                         "state are round-off",
-                         {}, "{}");
-        }
-      }
-      if constexpr (std::is_same_v<P, kernels::fp64>) {
-        linear = newton ? newton_solve(shift)
-                        : multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      if (matrix_free) {
+        euler_.freeze_limiter(!hanim);
+        linear = newton_solve(shift, tolerance);
+        euler_.freeze_limiter(false);
       } else {
-        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, tolerance);
       }
     } catch (const std::domain_error&) {
+      euler_.freeze_limiter(false);
       linear = {};  // a singular block
       linear.residual_drop = std::numeric_limits<double>::quiet_NaN();
     }
     const nlohmann::json residual_drop =
         std::isfinite(linear.residual_drop) ? nlohmann::json(linear.residual_drop) : nullptr;
-    if (!(linear.residual_drop <= linear_tolerance) && std::isfinite(linear.residual_drop)) {
+    if (!(linear.residual_drop <= tolerance) && std::isfinite(linear.residual_drop)) {
       ctx_.log.write(
           "info", "linear", "the implicit step's linear solve stopped above its tolerance", {},
           nlohmann::json{{"cycles", linear.cycles}, {"residual_drop", residual_drop}}.dump());
     }
-    // Physicality (ANK eq. 15, density and energy) then backtracking on the unsteady residual
-    // |w V/dt du + R(u + w du)| until it is below |R(u)| (ANK eq. 17, algorithm 2).
     double omega = 0.0;
-    if (std::isfinite(linear.residual_drop)) {
-      omega = physical_step();
-      double unsteady = scaled_norm(trial_residual(omega), shift, omega);
-      while (!(unsteady <= norm) && omega > omega_min) {
-        omega *= backtrack;
-        unsteady = scaled_norm(trial_residual(omega), shift, omega);
-      }
-      // At the CFL floor the step is taken whatever its length (ANK sec. 3.6), unless it is
-      // not finite: the run has diverged.
-      if (!(unsteady <= norm) && (cfl_ > floor || !std::isfinite(unsteady))) {
-        if (!std::isfinite(unsteady) && cfl_ <= floor) {
-          report.diverged_cell = static_cast<index_t>(worst_cell());
+    if (hanim) {
+      omega = hanim_step(report, iteration, shift, linear, residual_drop);
+    } else if (ser) {
+      omega = ser_step(report, iteration, linear, residual_drop, exp_ser0 ? drop0 : drop);
+    } else {
+      // Physicality (ANK eq. 15, density and energy) then backtracking on the unsteady residual
+      // |w V/dt du + R(u + w du)| until it is below |R(u)| (ANK eq. 17, algorithm 2).
+      if (std::isfinite(linear.residual_drop)) {
+        omega = physical_step();
+        double unsteady = scaled_norm(trial_residual(omega), shift, omega);
+        while (!(unsteady <= norm) && omega > omega_min) {
+          omega *= backtrack;
+          unsteady = scaled_norm(trial_residual(omega), shift, omega);
         }
-        omega = 0.0;
+        if (!(unsteady <= norm) && (cfl_ > floor || !std::isfinite(unsteady))) {
+          if (!std::isfinite(unsteady) && cfl_ <= floor) {
+            report.diverged_cell = static_cast<index_t>(worst_cell());
+          }
+          omega = 0.0;
+        }
+      }
+      if (!(omega > 0.0)) {
+        ctx_.log.write("warning", "solver", "implicit step rejected: no decrease of the residual",
+                       "W0711",
+                       nlohmann::json{{"iteration", iteration},
+                                      {"reason", std::isfinite(linear.residual_drop) ? "nonlinear"
+                                                                                     : "linear"},
+                                      {"cfl", cfl_},
+                                      {"residual_drop", residual_drop}}
+                           .dump());
+      } else if (omega < 1.0) {
+        ctx_.log.write("info", "solver", "line search", {},
+                       nlohmann::json{{"omega", omega}, {"cfl", cfl_}}.dump());
       }
     }
-    if (!(omega > 0.0)) {
-      ctx_.log.write("warning", "solver", "implicit step rejected: no decrease of the residual",
-                     "W0711",
-                     nlohmann::json{{"iteration", iteration},
-                                    {"reason", std::isfinite(linear.residual_drop) ? "nonlinear"
-                                                                                   : "linear"},
-                                    {"cfl", cfl_},
-                                    {"residual_drop", residual_drop}}
-                         .dump());
-    } else if (omega < 1.0) {
-      ctx_.log.write("info", "solver", "line search", {},
-                     nlohmann::json{{"omega", omega}, {"cfl", cfl_}}.dump());
+    if (omega > 0.0) {
+      for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += omega * du_[i];
+      if (sa_) {
+        // The first-order start has no velocity gradients, hence no production: SA waits for
+        // the second order.
+        auto& t = *sa_;
+        if (second_order_) {
+          for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
+          std::fill(t.dx.begin(), t.dx.end(), 0.0);
+          t.model.assemble(shift, t.diag, t.upper, t.lower);
+          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
+          for (std::size_t c = 0; c < n_; ++c) {
+            const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
+            t.rnu[c] +=
+                omega * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
+          }
+        }
+        t.model.eddy_viscosity(t.stored(t.rnu));
+      }
     }
-    for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += omega * du_[i];
     previous_omega_ = omega;
     previous_norm_ = norm;
     // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
@@ -608,8 +835,131 @@ class EulerPhysics final : public runtime::Physics {
       second_order_ = true;
       euler_.set_second_order(true);
       first_norms_.clear();
+      first0_.clear();
       previous_norm_ = 0.0;  // the norms are scaled per order
     }
+  }
+
+  double ser_step(StepReport& report, std::int64_t iteration, const solvers::KrylovReport& linear,
+                  const nlohmann::json& residual_drop, double drop) {
+    if (!(linear.residual_drop <= linear_failure)) {
+      ctx_.log.write("warning", "solver", "implicit step rejected: its linear solve failed",
+                     "W0711",
+                     nlohmann::json{{"iteration", iteration},
+                                    {"reason", "linear"},
+                                    {"cfl", cfl_},
+                                    {"residual_drop", residual_drop}}
+                         .dump());
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / ser_cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
+      shortened_ = true;
+      if (cfl_ <= ser_cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return 0.0;
+    }
+    const double alpha = admissible_step();
+    shortened_ = alpha < 1.0;
+    if (shortened_) {
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / ser_cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
+      ctx_.log.write("info", "solver", "step shortened", {},
+                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+    }
+    if (alpha < 1e-6) {
+      if (cfl_ <= ser_cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return 0.0;
+    }
+    return alpha;
+  }
+
+  [[nodiscard]] double admissible_step() const {
+    double alpha = 1.0;
+    for (std::size_t c = 0; c < n_; ++c) {
+      const double rho = u_[c], drho = du_[c];
+      if (drho < 0.0) alpha = std::min(alpha, max_decrease * rho / -drho);
+      const double p = pressure(c, 0.0);
+      while (alpha >= 1e-6 && !(pressure(c, alpha) >= (1.0 - max_decrease) * p)) alpha *= 0.5;
+    }
+    return alpha;
+  }
+
+  // HANIM (Wang et al. 2021, sec. II.D) on the Newton-Krylov step: the step length, 0 when
+  // rejected; the CFL number doubled after a full step, kept after a line-searched one, divided
+  // by 10 after a rejection.
+  double hanim_step(StepReport& report, std::int64_t iteration, const std::vector<double>& shift,
+                    const solvers::KrylovReport& linear, const nlohmann::json& residual_drop) {
+    auto reject = [&](const char* reason, const char* message, nlohmann::json drop_data) {
+      ctx_.log.write("warning", "solver", message, "W0711",
+                     nlohmann::json{{"iteration", iteration},
+                                    {"reason", reason},
+                                    {"cfl", cfl_},
+                                    {"residual_drop", std::move(drop_data)}}
+                         .dump());
+      if (cfl_ <= hanim_cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      cfl_ = std::max(hanim_cfl_min, hanim_cfl_decrease * cfl_);
+      return 0.0;
+    };
+    if (!(linear.residual_drop <= linear_failure)) {
+      return reject("linear", "implicit step rejected: its linear solve failed", residual_drop);
+    }
+    const double nonlinear_target = 0.5 * (1.0 + std::max(hanim_tolerance, linear.residual_drop));
+    if (!realisable(1.0)) {
+      return reject("admissible", "implicit step rejected: not realisable", nullptr);
+    }
+    const double f0 = active_norm(res_);
+    const double g1 = linear.residual_drop * f0;
+    const double f1 = pseudo_time_residual(shift, 1.0);
+    double omega = 1.0;
+    bool accepted = f1 <= nonlinear_target * f0;
+    const bool grow = accepted;
+    if (!accepted && active_norm(du_) <= round_off_correction<State> * active_norm(u_)) {
+      accepted = true;
+    }
+    if (!accepted && f1 > g1) {
+      omega = -(g1 - f0) / (2.0 * (f1 - g1));  // HANIM eq. 22
+      if (omega > 0.0 && omega < 1.0 && realisable(omega) &&
+          pseudo_time_residual(shift, omega) <= nonlinear_target * f0) {
+        accepted = true;
+        ctx_.log.write("info", "solver", "line search", {},
+                       nlohmann::json{{"omega", omega}, {"cfl", cfl_}}.dump());
+      }
+    }
+    if (!accepted) {
+      return reject("nonlinear", "implicit step rejected: too small a residual decrease",
+                    residual_drop);
+    }
+    if (grow) cfl_ = std::min(hanim_cfl_max, hanim_cfl_increase * cfl_);
+    return omega;
+  }
+
+  [[nodiscard]] double active_norm(std::span<const double> r) const {
+    double s = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (exempt_[k]) continue;
+      for (std::size_t c = 0; c < n_; ++c) s += r[k * n_ + c] * r[k * n_ + c];
+    }
+    return std::sqrt(s / static_cast<double>(n_));
+  }
+
+  double pseudo_time_residual(const std::vector<double>& shift, double omega) {
+    const auto r = trial_residual(omega);
+    double s = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (exempt_[k]) continue;
+      for (std::size_t c = 0; c < n_; ++c) {
+        const std::size_t i = k * n_ + c;
+        const double v = shift[c] * omega * du_[i] + static_cast<double>(r[i]);
+        s += v * v;
+      }
+    }
+    return std::sqrt(s / static_cast<double>(n_));
+  }
+
+  [[nodiscard]] bool realisable(double omega) const {
+    for (std::size_t c = 0; c < n_; ++c) {
+      if (!(u_[c] + omega * du_[c] >= (1.0 - max_decrease) * u_[c])) return false;
+      if (!(pressure(c, omega) >= (1.0 - max_decrease) * pressure(c, 0.0))) return false;
+    }
+    return true;
   }
 
   // Largest fraction of du (at most 1) that changes no cell's density or total energy by more
@@ -657,7 +1007,7 @@ class EulerPhysics final : public runtime::Physics {
   // GCR on (V / dt + dR/dU) du = -R from du = 0, dR/dU v = (R(u + eps v) - R(u)) / eps with
   // eps = sqrt((1 + |u|) eps_mach) / |v| (Knoll and Keyes 2004, J. Comput. Phys. 193:357-397,
   // eq. 14), preconditioned by one multigrid cycle on the assembled approximate Jacobian.
-  solvers::KrylovReport newton_solve(const std::vector<double>& shift) {
+  solvers::KrylovReport newton_solve(const std::vector<double>& shift, double tolerance) {
     auto norm = [](std::span<const double> v) {
       double s = 0.0;
       for (const double x : v) s += x * x;
@@ -705,7 +1055,7 @@ class EulerPhysics final : public runtime::Physics {
       restrict_to_active(z);
     };
     return newton_gcr_.solve(apply, precondition, newton_r_, du_, newton_max_iterations,
-                             linear_tolerance);
+                             tolerance);
   }
 
   // The cell whose density or pressure the full step lowers the most, relatively.
@@ -817,6 +1167,14 @@ class EulerPhysics final : public runtime::Physics {
     return f;
   }
 
+  // Viscous traction -tau n on every boundary face (3 x n_boundary_faces), zero for inviscid flow;
+  // after face_pressure(), which evaluates the residual.
+  [[nodiscard]] std::vector<double> face_traction() const {
+    std::vector<double> t(3 * static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()), 0.0);
+    if constexpr (is_viscous) euler_.viscous_traction(t);
+    return t;
+  }
+
   void face_pressure(std::span<double> p, std::span<double> force) const {
     auto& self = const_cast<EulerPhysics&>(*this);
     self.residual_of(u_);
@@ -826,7 +1184,8 @@ class EulerPhysics final : public runtime::Physics {
   PhysicsContext ctx_;
   Gas gas_;
   std::size_t n_;
-  Euler<P> euler_;
+  Flow euler_;
+  std::unique_ptr<SaState<P>> sa_;   // SA-neg runs only
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
@@ -836,6 +1195,10 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<State> newton_state_;
   std::vector<Res> newton_res_;
   bool newton_ = false;
+  std::vector<double> first0_;
+  double penalty_ = 1.0;
+  double cfl_cap_ = 1e6;
+  bool shortened_ = false;
   double previous_norm_ = 0.0;
   double previous_omega_ = 1.0;
   double freestream_norm_ = 0.0;
@@ -853,10 +1216,10 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<Res> res_;
 };
 
-template <class P>
+template <class P, class Flow>
 runtime::PhysicsFactory factory() {
   return [](const PhysicsContext& ctx) -> std::unique_ptr<runtime::Physics> {
-    return std::make_unique<EulerPhysics<P>>(ctx);
+    return std::make_unique<EulerPhysics<P, Flow>>(ctx);
   };
 }
 
@@ -912,12 +1275,64 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
+// The Navier-Stokes physics: one ideal gas as Euler, the Euler conditions and no-slip walls; SA
+// runs steady (its loosely coupled step is the steady solver's) and needs a wall to measure
+// distances from, unless a manufactured solution gives them.
+std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in,
+                                                           int ranks) {
+  bool wall = false;
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    const auto& b = in.boundaries[i];
+    if (b.kind == "wall") {
+      wall = true;
+      continue;
+    }
+    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
+        b.kind != "outlet" && b.kind != "manufactured") {
+      return runtime::PhysicsRefusal{
+          .message = "the Navier-Stokes physics has no '" + b.kind +
+                     "' condition; boundary zone '" + b.zone +
+                     "' needs wall, slip, symmetry, farfield, inlet or outlet",
+          .path = "boundaries[" + std::to_string(i) + "].kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
+    }
+  }
+  if (in.turbulence.model == "sa") {
+    if (in.time.kind != "steady") {
+      return runtime::PhysicsRefusal{.message = "the SA physics runs steady cases only",
+                                     .path = "time.kind",
+                                     .data_json = nlohmann::json{{"time", in.time.kind}}.dump()};
+    }
+    if (!wall && !in.verification) {
+      return runtime::PhysicsRefusal{
+          .message = "the SA physics needs a wall boundary to measure the wall distance from",
+          .path = "boundaries",
+          .data_json = "{}"};
+    }
+  }
+  // The gas checks are the Euler physics' own; its condition check is replaced above.
+  runtime::SolverInput gas_only = in;
+  gas_only.boundaries.clear();
+  return euler_scope(gas_only, ranks);
+}
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope);
-  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
-               euler_scope);
+  registry.add({"compressible", "inviscid", "fp64", "cpu"},
+               factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
+               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope);
+}
+
+void register_navier_stokes(runtime::PhysicsRegistry& registry) {
+  for (const char* model : {"laminar", "sa"}) {
+    registry.add({"compressible", model, "fp64", "cpu"},
+                 factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope);
+    registry.add({"compressible", model, "fp32+acc64", "cpu"},
+                 factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
+                 navier_stokes_scope);
+  }
 }
 
 }  // namespace autan::physics

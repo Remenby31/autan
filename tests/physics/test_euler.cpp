@@ -441,7 +441,7 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
   const auto u = stored(e, uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1));
   std::vector<typename P::residual> r(5);
-  e.residual(std::span<const typename P::state>(u), r);
+  e.residual(u, r);
   const double v = c.geometry.cell_volume[0];
   CHECK(std::abs(static_cast<double>(r[0]) - a * v) <= 64 * eps<P>() * a * c.cell_surface()[0]);
 }
