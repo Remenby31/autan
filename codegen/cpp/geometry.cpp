@@ -1,5 +1,6 @@
 #include "autan/kernels/geometry.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -38,7 +39,32 @@ Topology topology(const MeshView& mesh) noexcept {
           mesh.owner,
           mesh.neighbour,
           mesh.cell_face_offsets,
-          mesh.cell_faces};
+          mesh.cell_faces,
+          nullptr};
+}
+
+std::vector<offset_t> incidence_twins(const Mesh& mesh) {
+  const auto off = mesh.cell_face_offsets();
+  const auto cf = mesh.cell_faces();
+  const auto own = mesh.owner();
+  const auto nei = mesh.neighbour();
+  std::vector<offset_t> twin(cf.size(), -1);
+  for (std::size_t c = 0; c + 1 < off.size(); ++c) {
+    for (auto k = off[c]; k < off[c + 1]; ++k) {
+      const index_t f = cf[static_cast<std::size_t>(k)];
+      const auto fi = static_cast<std::size_t>(f);
+      if (fi >= nei.size()) {
+        continue;
+      }
+      const auto other = static_cast<std::size_t>(
+          static_cast<std::size_t>(own[fi]) == c ? nei[fi] : own[fi]);
+      // Faces of a cell are listed in increasing order (mesh contract).
+      const auto first = cf.begin() + off[other];
+      const auto last = cf.begin() + off[other + 1];
+      twin[static_cast<std::size_t>(k)] = std::lower_bound(first, last, f) - cf.begin();
+    }
+  }
+  return twin;
 }
 
 PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {

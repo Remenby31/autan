@@ -1,6 +1,7 @@
 // C ABI of the GPU spike driver: the generated CUDA loops on device copies of a spike mesh, for
 // the tests that compare them with the host loops and check determinism.
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -10,6 +11,7 @@
 #include "advection_gpu.cuh"
 #include "autan/kernels/colouring.hpp"
 #include "autan/kernels/gpu.hpp"
+#include "autan/kernels/norms.cuh"
 #include "device.cuh"
 #include "gradients_gpu.cuh"
 #include "roe_gpu.cuh"
@@ -45,7 +47,7 @@ void synchronise() { gpu::check(cudaDeviceSynchronize(), "kernel execution"); }
 template <class P>
 void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, const double* q,
                       const double* q_b, const double* source, const double* velocity, double nu,
-                      double* res, double* grad) {
+                      double* res, double* grad, double* norm) {
   namespace ad = autan::kernels::advection_diffusion;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
@@ -78,9 +80,13 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   ad::gpu_loops::init_residual(d, dm.schedule);
   ad::gpu_loops::flux(d, strategy, dm.schedule);
   ad::gpu_loops::boundary_flux(d, strategy, dm.schedule);
+  DeviceArray<double> partials(static_cast<std::size_t>(gpu::norm_partials(m.topo.n_owned_cells)));
+  DeviceArray<double> sum(1);
+  gpu::sum_of_squares(rs.get(), m.topo.n_owned_cells, partials.get(), sum.get(), nullptr);
   synchronise();
   copy_out(rs.download(), res);
   copy_out(gs.download(), grad);
+  *norm = std::sqrt(sum.download()[0]);
 }
 
 template <class P>
@@ -233,7 +239,7 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   ad::gpu_loops::boundary_flux_adjoint(d, strategy, dm.schedule);
   ad::gpu_loops::flux_adjoint(d, strategy, dm.schedule);
   ad::gpu_loops::init_residual_adjoint(d, dm.schedule);
-  ad::gpu_loops::lsq_gradient_adjoint(d, dm.schedule);
+  ad::gpu_loops::lsq_gradient_adjoint(d, strategy, dm.schedule);
   synchronise();
   copy_out(q_adj.download(), out);
 }
@@ -270,12 +276,13 @@ int autan_spike_gpu_advdiff_adjoint(const void* mesh, const char* policy, const 
 int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const char* strategy,
                                      int block, const double* q, const double* q_b,
                                      const double* source, const double* velocity, double nu,
-                                     double* res, double* grad, char* err, std::size_t err_len) {
+                                     double* res, double* grad, double* norm, char* err,
+                                     std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::with_policy(policy, [&](auto p) {
-      advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad);
+      advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
   });
 }

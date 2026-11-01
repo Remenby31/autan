@@ -288,10 +288,12 @@ int main(int argc, char** argv) {
   } else if (o.order != "input") {
     fail("--order is input or rcm");
   }
-  SpikeMesh m{std::move(mesh), {}, {}, {}};
+  SpikeMesh m{std::move(mesh), {}, {}, {}, {}};
   m.geometry = autan::compute_geometry(m.mesh);
   m.packed = autan::kernels::pack_geometry(m.mesh, m.geometry);
   m.topo = autan::kernels::topology(m.mesh.view());
+  m.twins = autan::kernels::incidence_twins(m.mesh);
+  m.topo.incidence_twin = m.twins.data();
   const double read_seconds = std::chrono::duration<double>(t1 - t0).count();
 
   std::vector<Timed> timed;
