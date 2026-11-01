@@ -98,8 +98,13 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
   d.nu[0] = typename P::param(nu);
   lsq(d, m);
   ad::cpu::init_residual(d);
-  ad::cpu::flux(d);
-  ad::cpu::boundary_flux(d);
+  if (m.topo.rank_independent) {
+    ad::cpu::flux(d, autan::kernels::Strategy::gather_recompute);
+    ad::cpu::boundary_flux(d, autan::kernels::Strategy::gather_recompute);
+  } else {
+    ad::cpu::flux(d);
+    ad::cpu::boundary_flux(d);
+  }
   copy_out(rs, res);
   if (grad != nullptr) {
     copy_out(gs, grad);
@@ -218,8 +223,13 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
   d.nu[0] = nu;
   lsq(d, m);
   ad::cpu::init_residual(d);
-  ad::cpu::flux(d);
-  ad::cpu::boundary_flux(d);
+  if (m.topo.rank_independent) {
+    ad::cpu::flux(d, autan::kernels::Strategy::gather_recompute);
+    ad::cpu::boundary_flux(d, autan::kernels::Strategy::gather_recompute);
+  } else {
+    ad::cpu::flux(d);
+    ad::cpu::boundary_flux(d);
+  }
   for (std::size_t c = 0; c < nc; ++c) {
     out[c] = rs[c].imag() / h;
   }
@@ -581,6 +591,7 @@ int autan_spike_set_global_order(void* mesh, int stencil_kind, char* err, std::s
     m->topo.cell_faces = m->order.cell_faces.data();
     m->topo.incidence_twin = m->order.twin.data();
     m->topo.face_reversed = m->face_reversed.empty() ? nullptr : m->face_reversed.data();
+    m->topo.rank_independent = true;
     m->global = true;
     if (stencil_kind >= 0) {
       m->stencil =

@@ -48,6 +48,10 @@ struct Topology {
   /// orientation: left and right swapped, oriented geometry negated back, so a face gives the
   /// same bits on every rank count. Jacobian blocks follow: block "left" is the global left cell.
   const std::uint8_t* face_reversed = nullptr;
+  /// Set with the global order (GlobalKeys): results must not depend on the partition, so face
+  /// and boundary loops accept only the gather strategies (E1109), whose per-cell order is the
+  /// global one; scatter, atomic and coloured orders follow the local numbering.
+  bool rank_independent = false;
 };
 
 /// Precision policies (docs/research/kernel-generator.md section 7): storage type of each role,

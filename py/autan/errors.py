@@ -788,6 +788,12 @@ _CODES = [
         "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
+        "E1109",
+        "Strategy not rank-independent",
+        "A face or boundary loop runs on a topology ordered for results independent of the partition (rank_independent) with a strategy whose summation order follows the local numbering: the scatter loop, atomic, warp-aggregated or coloured.",
+        "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",

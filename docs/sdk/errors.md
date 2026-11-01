@@ -963,3 +963,11 @@ Fix: Check that the Mac has an Apple GPU with `autan doctor`, then report the me
 A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.
 
 Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.
+
+## E1109
+
+**Strategy not rank-independent** (error)
+
+A face or boundary loop runs on a topology ordered for results independent of the partition (rank_independent) with a strategy whose summation order follows the local numbering: the scatter loop, atomic, warp-aggregated or coloured.
+
+Fix: Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.

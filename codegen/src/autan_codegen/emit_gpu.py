@@ -247,6 +247,13 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w(
         f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{"
     )
+    e.w("  if (d.topo.rank_independent && strategy != ::autan::kernels::Strategy::store_gather &&")
+    e.w("      strategy != ::autan::kernels::Strategy::gather_recompute) {")
+    e.w(
+        '    throw std::invalid_argument("E1109: a rank-independent topology needs a gather '
+        'strategy (store-gather or gather-recompute)");'
+    )
+    e.w("  }")
     e.w(f"  const index_t lo = {lo};")
     e.w(f"  const index_t hi = {hi};")
     e.w(

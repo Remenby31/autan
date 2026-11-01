@@ -171,6 +171,7 @@ class DeviceMesh {
       reversed_ = copy(options.global->reversed);
       topo_.face_reversed = reversed_.get();
     }
+    topo_.rank_independent = options.global != nullptr;
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
       stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));

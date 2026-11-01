@@ -95,3 +95,31 @@ def test_results_are_bit_identical_across_rank_counts(backend: str, kind: str, w
         got = owned(two)
         assert got.keys() <= reference.keys()
         assert all(got[g] == reference[g] for g in got), kind
+
+
+NUMBERED = [
+    "scatter",
+    *(pytest.param(x, marks=pytest.mark.gpu) for x in ("atomic", "warp-aggregated", "coloured")),
+]
+
+
+@pytest.mark.parametrize("strategy", NUMBERED)
+def test_orders_that_follow_the_numbering_are_refused_when_rank_independent(
+    backend: str, strategy: str
+) -> None:
+    # Scatter, atomic, warp-aggregated and coloured sum in an order set by the local numbering
+    # (a coloured run on 2 ranks differs from 1 rank): a rank-independent topology refuses them.
+    if strategy != "scatter" and backend == "metal":
+        pytest.skip("the global order is a DeviceMesh option (CUDA/HIP)")
+    full = s.mesh(meshes.build("hex", 4))
+    m = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, layers=2)
+    s.set_global_order(m, None)
+    q, grad = np.zeros(m.n_cells), np.zeros((m.n_cells, 3))
+    run = (
+        (lambda: s.advection(m, "fp64", q, grad, mms.VELOCITY, "scatter"))
+        if strategy == "scatter"
+        else (lambda: s.gpu_advection(m, "fp64", strategy, 64, q, grad, mms.VELOCITY))
+    )
+    with pytest.raises(s.SpikeError) as err:
+        run()
+    assert err.value.code == "E1109"

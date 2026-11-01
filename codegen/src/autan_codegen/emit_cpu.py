@@ -370,6 +370,13 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
     e.w("  using A [[maybe_unused]] = typename P::accum;")
     n = n_out(lm) if lm.kind != "reduce_adjoint" else 0
     if lm.kind in ("face", "boundary"):
+        # The scatter order follows the local numbering: refused on a rank-independent topology.
+        e.w("  if (d.topo.rank_independent) {")
+        e.w(
+            '    throw std::invalid_argument("E1109: a rank-independent topology needs a gather '
+            'strategy (store-gather or gather-recompute)");'
+        )
+        e.w("  }")
         lo, hi = (
             ("0", "d.topo.n_owned_interior_faces")
             if lm.kind == "face"
