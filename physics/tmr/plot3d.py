@@ -43,7 +43,21 @@ def _flatplate(x: np.ndarray, side: str, index: np.ndarray) -> str:
     return {"imin": "inflow", "imax": "outflow", "jmax": "top"}[side]
 
 
-ZONES = {"flatplate": _flatplate}
+def _bump(x: np.ndarray, side: str, index: np.ndarray) -> str:
+    """TMR 2DBC: the wall from x = 0 to 1.5 (the bump in between), symmetry on y = 0 elsewhere."""
+    if side == "jmin":
+        return "wall" if 0.0 <= x[0, index].mean() <= 1.5 else "symmetry"
+    return {"imin": "inflow", "imax": "outflow", "jmax": "top"}[side]
+
+
+def _airfoil(x: np.ndarray, side: str, index: np.ndarray) -> str:
+    """C-grid around an airfoil (TMR 2DN00): j = 0 is the airfoil and the wake cut, which `extrude`
+    joins into interior faces; every other edge is farfield."""
+    del x, index
+    return "airfoil" if side == "jmin" else "farfield"
+
+
+ZONES = {"flatplate": _flatplate, "bump": _bump, "airfoil": _airfoil}
 
 
 def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of) -> object:
@@ -55,8 +69,18 @@ def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of) -> object:
     pts[:, :, 1, 2] = span
     points = pts.reshape(-1, 3)
 
+    # A C-grid's wake cut: nodes of j = 0 that coincide with their mirror i -> ni - 1 - i are
+    # merged, so that the cut's faces become interior faces.
+    merged = np.arange(points.shape[0])
+    tol = 1e-9 * float(np.ptp(x))
+    for i in range(ni // 2 + 1, ni):
+        mirror = ni - 1 - i
+        if abs(x[0, i] - x[0, mirror]) <= tol and abs(y[0, i] - y[0, mirror]) <= tol:
+            for k in (0, 1):
+                merged[i * 2 + k] = mirror * 2 + k
+
     def node(j, i, k):
-        return (j * ni + i) * 2 + k
+        return merged[(j * ni + i) * 2 + k]
 
     def cell(j, i):
         return j * nci + i
@@ -118,9 +142,22 @@ def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of) -> object:
         else:
             o = cell(0 if j == 0 else ncj - 1, i)
             side = "jmin" if j == 0 else "jmax"
+            keep = np.ones(i.size, dtype=bool)
+            if j == 0:
+                # Faces of the cut appear twice, once per side: interior faces between their cells.
+                key = np.sort(polys, axis=1)
+                for a in range(i.size):
+                    b = i.size - 1 - a
+                    if a < b and np.array_equal(key[a], key[b]):
+                        interior_polys.append(
+                            oriented(polys[a : a + 1], o[a : a + 1], o[b : b + 1])
+                        )
+                        owners.append(o[a : a + 1])
+                        neighbours.append(o[b : b + 1])
+                        keep[a] = keep[b] = False
             names = np.array([str(zone_of(x, side, np.array([k, k + 1]))) for k in i])
-            for name in dict.fromkeys(names):
-                m = names == name
+            for name in dict.fromkeys(names[keep]):
+                m = keep & (names == name)
                 add_boundary(name, oriented(polys[m], o[m], None), o[m])
     # The two symmetry planes of the 2D problem.
     c = cell(jj, ii)
@@ -131,13 +168,19 @@ def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of) -> object:
         )
         add_boundary(name, oriented(polys, c, None), c)
 
+    used = np.unique(merged)
+    renumber = np.full(points.shape[0], -1)
+    renumber[used] = np.arange(used.size)
+    interior_polys = [renumber[q] for q in interior_polys]
+    boundary = {name: [(renumber[q], o) for q, o in parts] for name, parts in boundary.items()}
+    points = points[used]
     mesh = from_faces(
         points,
         nci * ncj,
         (np.concatenate(interior_polys), np.concatenate(owners), np.concatenate(neighbours)),
         {
             name: (
-                "wall" if name == "plate" else "pressure-far-field",
+                "wall" if name in ("plate", "wall", "airfoil") else "pressure-far-field",
                 np.concatenate([p for p, _ in parts]),
                 np.concatenate([o for _, o in parts]),
             )
