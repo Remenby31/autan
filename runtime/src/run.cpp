@@ -758,6 +758,7 @@ class Run final : public Log {
     }
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
+  void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
     const StartState* start = nullptr;
@@ -948,6 +949,8 @@ class Run final : public Log {
   // errors, with their rank in `data`.
   void write(std::string_view level, std::string_view source, std::string_view message,
              std::string_view code, std::string_view data_json) override {
+    // Time spent here is the log's, not the solve's (timing.solve_seconds).
+    const auto start = std::chrono::steady_clock::now();
     if (comm_.rank() == 0) {
       dir_->append_log(log_line(level, source, message, code, data_json));
     } else if (level != "info") {
@@ -955,6 +958,7 @@ class Run final : public Log {
       data["rank"] = comm_.rank();
       dir_->append_log(log_line(level, source, message, code, data.dump()));
     }
+    log_seconds_ += seconds_since(start);
   }
 
  private:
@@ -1000,17 +1004,25 @@ class Run final : public Log {
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
     }
     for (std::int64_t it = from; it <= budget; ++it) {
-      // A launcher forwards a signal to every rank, not at the same instant:
-      // the ranks stop together once any has received it.
-      if (comm_.max(stop_requested) != 0) {
+      // A launcher forwards a signal to every rank, not at the same instant,
+      // and may abort the job on one: the stop file asks for the same stop
+      // without signals. Rank 0 looks for it; the ranks stop together once
+      // any has a reason to.
+      std::int64_t stop = stop_requested;
+      if (comm_.rank() == 0 && !stop_file_.empty()) {
+        std::error_code ec;
+        if (fs::exists(stop_file_, ec)) stop = 1;
+      }
+      if (comm_.max(stop) != 0) {
         stopped_by_signal_ = true;
         return "stopped";
       }
       iteration_ = it;
       // The solve: the physics' own work, without the history and log writes.
       const auto stepping = std::chrono::steady_clock::now();
+      const double logged = log_seconds_;
       StepReport report = physics_->step(it);
-      solve_seconds_ += seconds_since(stepping);
+      solve_seconds_ += seconds_since(stepping) - (log_seconds_ - logged);
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -1035,8 +1047,9 @@ class Run final : public Log {
       if (!steady && in.time.average_from && it > *in.time.average_from) {
         if (it == *in.time.average_from + 1) average_start = time;
         const auto averaging_start = std::chrono::steady_clock::now();
+        const double logged_before = log_seconds_;
         physics_->accumulate_average(report.time_step);
-        solve_seconds_ += seconds_since(averaging_start);
+        solve_seconds_ += seconds_since(averaging_start) - (log_seconds_ - logged_before);
         averaging = Json{{"from_step", *in.time.average_from + 1},
                          {"to_step", it},
                          {"from_time", average_start},
@@ -1302,7 +1315,8 @@ class Run final : public Log {
     }
     // Only rank 0 writes the solution: its status is the run's.
     status = comm_.broadcast(status);
-    info_["timing"] = timing(done);
+    // A failed run is not timed (results.md).
+    info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
@@ -1316,6 +1330,8 @@ class Run final : public Log {
   Prepared& p_;
   Comm& comm_;
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
+  double log_seconds_ = 0.0;                        // spent in write()
+  fs::path stop_file_;                              // --stop-file; empty: none
   double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
@@ -1354,7 +1370,7 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
-                    std::FILE* err) {
+                    std::FILE* err, const fs::path& stop_file) {
   const auto launched = std::chrono::steady_clock::now();
   // Every rank reads and checks the same input, so all reach the same
   // verdict; rank 0 prints it.
@@ -1395,6 +1411,7 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   const SignalGuard signals;
   try {
     Run run(*prepared, build, *comm, launched);
+    run.stop_on(stop_file);
     run.open(runs);
     if (comm->rank() == 0) {
       std::fprintf(out, "%s\n", run.path().string().c_str());
