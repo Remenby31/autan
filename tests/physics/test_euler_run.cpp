@@ -707,11 +707,16 @@ TEST_CASE("a steady case on several ranks is refused before any directory exists
 
 TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
   // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from
-  // the freestream that rounds to zero density, so the residual is not finite and the run
-  // diverges; D0107 must name a cell of that zone. In FP64 the state is representable; whatever
-  // happens, a divergence names its cell.
+  // the freestream that rounds to zero density, so the run diverges at once; D0107 must name the
+  // least cell of that zone in the mesh file, in RCM order as in the file's own order. In FP64 the
+  // state is representable; whatever happens, a divergence names its cell.
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  INFO(precision);
+  const char* order = GENERATE("rcm", "input");
+  INFO(precision << ", cell order " << order);
+  if (std::string(order) == "input") REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
+  struct Unset {
+    ~Unset() { unsetenv("AUTAN_CELL_ORDER"); }
+  } unset;
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
     for (auto& z : d["cell_zones"]) {
@@ -735,7 +740,14 @@ TEST_CASE("a diverged run names the cell whose stored state is not physical", "[
     const auto d107 = std::find_if(diagnostics.begin(), diagnostics.end(),
                                    [](const Json& g) { return g["code"] == "D0107"; });
     REQUIRE(d107 != diagnostics.end());
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+    const auto zones = mesh.cell_zones();
+    const auto lower = static_cast<autan::index_t>(
+        std::ranges::find_if(zones, [](const auto& z) { return z.name == "lower"; }) -
+        zones.begin());
+    const auto first = std::ranges::find(mesh.cell_zone(), lower) - mesh.cell_zone().begin();
     CHECK((*d107)["data"]["zone"] == "lower");
+    CHECK((*d107)["data"]["cell"] == first);
   }
 }
 
