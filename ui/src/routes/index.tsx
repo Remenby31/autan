@@ -17,6 +17,7 @@ import {
   type RunStatus,
   type RunSummary,
 } from "../api/contracts";
+import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
 import { degrees } from "../api/units";
 import { Peek } from "../components/runs/Peek";
@@ -528,7 +529,7 @@ function RunRow({
           {iteration.toLocaleString("en")}
         </span>
         <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap font-mono text-fg-2 text-sm">
-          {run.devices.count}× {run.devices.kind}
+          {devicesLabel(run.devices)}
           <span className="text-fg-3">·</span>
           <span className="truncate">{run.precision}</span>
           {run.solver.backend === "fake" && (

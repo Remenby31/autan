@@ -168,6 +168,9 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await group.getByRole("button", { name: "Compare" }).click();
   await expect(page.getByTestId("polar")).toBeVisible();
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
+  await page.getByRole("button", { name: "Show all" }).click();
+  await expect(page.getByTestId("settings-diff")).toContainText("run.devices");
+  await expect(page.getByTestId("settings-diff")).toContainText("1 CPU");
 });
 
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
