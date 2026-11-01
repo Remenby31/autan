@@ -20,7 +20,11 @@ The least-squares gradients are the Euler ones (unlimited, face2 stencil); the l
 
 ## Boundary conditions
 
-A boundary face's gradient comes from a **quadratic** least-squares fit of T and the velocity over the boundary cell's vertex stencil (every cell sharing a node with it, and the boundary faces among them that give T and the velocity: manufactured and wall faces), evaluated at the face, with its component along r = x_f − x_c replaced by the secant slope (φ_b − φ_c)/|r| as on interior faces. The linear least-squares gradient of a boundary cell is first order (its stencil is one-sided), so the half-cell difference built on it makes the viscous flux of boundary faces first order: on the `navier_stokes` MMS (Re ≈ 8 on the unit cube) the density then converges at 1.67–1.84 on the hex, poly and hybrid families, against 2.0 with μ ten or a hundred times smaller. The fit is exact for quadratic fields (tests below); its weights are computed once per mesh for the boundary cells only; a cell whose stencil does not determine a quadratic keeps the linear gradient with the one-sided estimate 2(φ_b − φ_c)/|r| − ∇φ_c · e. The boundary state is that of the Euler boundary condition ([euler.md](euler.md#boundary-conditions)), with one more kind:
+A boundary face's gradient comes from a **cubic** least-squares fit of T and the velocity (weights 1/d², 19 unknowns: gradient, Hessian, third derivatives) over the two rings of cells around the boundary cell (cells sharing a node with it or with one of those) and the boundary faces among them that give T and the velocity (manufactured and wall faces), evaluated at the face, with its component along r = x_f − x_c set to the secant slope (φ_b − φ_c)/|r|, which the cubic reproduces. Only cells owning such a face carry the fit. Monomials in a direction where no stencil entry extends (the span of a one-cell-thick 2D mesh) are left out; a cell whose entries leave the rest undetermined is refused with an error.
+
+Why cubic: the linear least-squares gradient of a boundary cell is first order (one-sided stencil), so the half-cell difference built on it makes the viscous flux of boundary faces first order, and the `navier_stokes` MMS (Re ≈ 8) converges at 1.67–1.84 in density on hex, poly and hybrid, against 2.0 when μ is ten or a hundred times smaller. A quadratic fit makes the wall stress second order face by face (measured 1.98), yet the density still converges at 1.73–1.84 on hex 32–96 and poly 16–48, while the same code with the manufactured solution's exact gradients at the boundary faces gives 1.97: the O(h²) boundary-face error decays only slowly in the solution. The cubic fit's wall stress is third order (measured 2.95–2.98 on hex 32–96, 3.09–3.12 on poly 16–48). On one ring of cells the quadratic fit also made the hybrid family weakly unstable (residual growing from 10⁻¹⁰ after convergence); the two-ring cubic fit converges there.
+
+The boundary state is that of the Euler boundary condition ([euler.md](euler.md#boundary-conditions)), with one more kind:
 
 | Kind | Values | Boundary state | Viscous flux |
 |---|---|---|---|
@@ -39,10 +43,8 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 | Test | Oracle | Where |
 |---|---|---|
 | Linear velocity and temperature, every cell type, `fp64` and `fp32+acc64`, with and without a no-slip wall (isothermal and adiabatic) | viscous residual = −V (0, 0, 0, 0, τ : ∇u) to round-off | `tests/physics/test_navier_stokes.cpp` |
-| Quadratic velocity vanishing on a wall, every cell type, both precisions | wall shear stress μ ∂u_t/∂y at each face to round-off | same |
+| Cubic velocity vanishing on a wall, every cell type, both precisions | wall shear stress μ ∂u_t/∂y at each face to round-off | same |
 | MMS `navier_stokes` through `autan-run` and `autan-vv verify`, gate `ns-mms-order` | Roy et al. (2004) form, μ = 10, Pr = 0.72 | `physics/mms/study.sh` |
 | MMS `rans_sa`, gate `rans-sa-mms-order` | Eça et al. (2007), Oliver et al. (2012) principles, wall y = 0 | same |
 
 Levels: [acceptance.md §M3](../validation/acceptance.md#m3--navier-stokes-and-spalart-allmaras). The `rans_sa` fields have a boundary layer of thickness 0.15 at y = 0, under three cells on the coarse levels of the cube families, hence its Cartesian family (n, 4n, n) (`autan_vv.meshes.families.cartesian`, written with `write_fluent`); its aspect ratio is the same on every level, so h = (V/N)^(1/3) measures the refinement.
-
-Control experiment for `ns-mms-order` (hex 16–48, not part of the code): the exact gradients of the manufactured solution at the boundary faces give orders 1.95–2.06 for every conserved variable; with the quadratic fit, whose wall stress converges at order 1.98 face by face, the density's error is the same at 48³ (9.8×10⁻⁵) but smaller on the coarse levels, where the boundary faces' error offsets part of the interior one: the fitted order is then 1.58. Finer levels measure the asymptotic order.
