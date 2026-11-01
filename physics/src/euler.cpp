@@ -88,6 +88,9 @@ struct Euler<P>::Impl {
     d.stencil_lsq_weight = stencil_lsq_weight.data();
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
+    if (!(scheme.mach_ref > 0.0)) {
+      throw std::invalid_argument("AUSM+-up needs a positive cut-off Mach number");
+    }
     d.mach_ref[0] = typename P::param(scheme.mach_ref);
     const auto& r = scheme.reference;
     if (!(r[0] > 0.0)) throw std::invalid_argument("reference density must be positive");
@@ -100,6 +103,73 @@ struct Euler<P>::Impl {
     for (std::size_t c = 0; c < 5; ++c) {
       d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);
     }
+  }
+
+  // Least-squares weights over the stencil, 1/|d|^2 weighting as kernels::cell_stencil, but
+  // with only the boundary faces whose condition gives the state there: elsewhere the boundary
+  // value is the adjacent cell's, which sits at the cell centroid and not at the face, and would
+  // make the gradient inconsistent next to slip walls and extrapolating boundaries. A cell whose
+  // remaining entries do not determine a gradient keeps every boundary face.
+  void gradient_weights(std::span<const BoundaryKind> kind) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nst = stencil.entries.size();
+    std::vector<double> w(3 * nst, 0.0);
+    for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
+      const auto begin = static_cast<std::size_t>(stencil.offsets[c]);
+      const auto end = static_cast<std::size_t>(stencil.offsets[c + 1]);
+      auto weights = [&](bool all_boundaries) {
+        std::array<double, 9> a{};
+        std::vector<std::array<double, 4>> offs;  // offset and weight per entry, 0 if excluded
+        for (std::size_t k = begin; k < end; ++k) {
+          const index_t e = stencil.entries[k];
+          std::array<double, 3> x{};
+          bool used = true;
+          if (e >= 0) {
+            for (std::size_t j = 0; j < 3; ++j) {
+              x[j] = static_cast<double>(cell_centroid[j * nc + static_cast<std::size_t>(e)]);
+            }
+          } else {
+            const auto f = static_cast<std::size_t>(-e - 1);
+            used = all_boundaries || kind[f - ni] == BoundaryKind::state;
+            for (std::size_t j = 0; j < 3; ++j) {
+              x[j] = static_cast<double>(face_centroid[j * nf + f]);
+            }
+          }
+          std::array<double, 4> dk{};
+          for (std::size_t j = 0; j < 3; ++j) {
+            dk[j] = x[j] - static_cast<double>(cell_centroid[j * nc + c]);
+          }
+          dk[3] = used ? 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]) : 0.0;
+          for (std::size_t u = 0; u < 3; ++u) {
+            for (std::size_t v = 0; v < 3; ++v) a[3 * u + v] += dk[3] * dk[u] * dk[v];
+          }
+          offs.push_back(dk);
+        }
+        const double det = a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) +
+                           a[2] * (a[3] * a[7] - a[4] * a[6]);
+        const double scale = a[0] * a[4] * a[8];
+        if (!(std::abs(det) > 1e-10 * std::abs(scale))) return false;
+        const std::array<double, 9> inv = {
+            (a[4] * a[8] - a[5] * a[7]) / det, (a[2] * a[7] - a[1] * a[8]) / det,
+            (a[1] * a[5] - a[2] * a[4]) / det, (a[5] * a[6] - a[3] * a[8]) / det,
+            (a[0] * a[8] - a[2] * a[6]) / det, (a[2] * a[3] - a[0] * a[5]) / det,
+            (a[3] * a[7] - a[4] * a[6]) / det, (a[1] * a[6] - a[0] * a[7]) / det,
+            (a[0] * a[4] - a[1] * a[3]) / det};
+        for (std::size_t k = begin; k < end; ++k) {
+          const auto& dk = offs[k - begin];
+          for (std::size_t u = 0; u < 3; ++u) {
+            w[u * nst + k] =
+                dk[3] * (inv[3 * u] * dk[0] + inv[3 * u + 1] * dk[1] + inv[3 * u + 2] * dk[2]);
+          }
+        }
+        return true;
+      };
+      if (!weights(false)) weights(true);
+    }
+    stencil_lsq_weight = kernels::converted<G>(w);
+    d.stencil_lsq_weight = stencil_lsq_weight.data();
   }
 
   void faces() {
@@ -186,6 +256,7 @@ void Euler<P>::set_boundary(std::span<const BoundaryKind> kind, std::span<const 
       m.bc[c * nf + ni + b] = State(data[c * nb + b]);
     }
   }
+  m.gradient_weights(kind);
 }
 
 template <class P>
@@ -221,7 +292,7 @@ void Euler<P>::state(std::span<const double> u, std::span<State> s) const {
 }
 
 template <class P>
-void Euler<P>::residual(std::span<const State> u, std::span<Res> res, bool frozen_limiter) {
+void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   auto& m = *impl_;
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
@@ -342,22 +413,46 @@ typename Euler<P>::Arrays Euler<P>::arrays() noexcept {
 }
 
 template <class P>
-void Euler<P>::boundary_pressure(std::span<double> p) const {
+void Euler<P>::boundary_pressure(std::span<double> p, std::span<double> force) const {
+  // The face state of the boundary flux (reconstruct in kernels/euler.py, with its fallback to
+  // the cell value) and, for the force, the pressure correction of warped faces (wall_warp).
   const auto& m = *impl_;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  const auto nb = nf - ni;
+  // grad is 5 x 3 per cell, row-major: component (i, j) at (3 i + j) * n_cells + c.
+  auto g = [&](std::size_t i, std::size_t j, std::size_t c) {
+    return static_cast<double>(m.grad[(3 * i + j) * nc + c]);
+  };
   for (std::size_t f = ni; f < nf; ++f) {
     const auto c = static_cast<std::size_t>(m.topo.owner[f]);
-    double dp = 0.0;
+    double drho = 0.0, dp = 0.0;
     for (std::size_t j = 0; j < 3; ++j) {
-      // grad is 5 x 3 per cell, component (4, j) at (4 * 3 + j) * n_cells + c.
-      dp += static_cast<double>(m.grad[(12 + j) * nc + c]) *
-            (static_cast<double>(m.face_centroid[j * nf + f]) -
-             static_cast<double>(m.cell_centroid[j * nc + c]));
+      const double r = static_cast<double>(m.face_centroid[j * nf + f]) -
+                       static_cast<double>(m.cell_centroid[j * nc + c]);
+      drho += g(0, j, c) * r;
+      dp += g(4, j, c) * r;
     }
-    p[f - ni] = static_cast<double>(m.d.p_ref[0]) + static_cast<double>(m.prim[4 * nc + c]) +
-                static_cast<double>(m.phi[4 * nc + c]) * dp;
+    const double rho_c = static_cast<double>(m.prim[c]);
+    // prim[4] is the gauge pressure p - p_ref.
+    const double p_c = static_cast<double>(m.d.p_ref[0]) + static_cast<double>(m.prim[4 * nc + c]);
+    const double rho_f = rho_c + static_cast<double>(m.phi[c]) * drho;
+    double p_f = p_c + static_cast<double>(m.phi[4 * nc + c]) * dp;
+    if (!(rho_f > 0.0 && p_f > 0.0)) p_f = p_c;
+    p[f - ni] = p_f;
+    if (force.empty()) continue;
+    const double phi_p = static_cast<double>(m.phi[4 * nc + c]);
+    for (std::size_t k = 0; k < 3; ++k) {
+      // p S + phi_p M^T grad p, M row-major 3 x 3 per face: entry (j, k) at (3 j + k) * nf + f.
+      double warp = 0.0;
+      for (std::size_t j = 0; j < 3; ++j) {
+        warp += static_cast<double>(m.face_moment[(3 * j + k) * nf + f]) * g(4, j, c);
+      }
+      const double area_k = static_cast<double>(m.face_normal[k * nf + f]) *
+                            static_cast<double>(m.face_area_magnitude[f]);
+      force[k * nb + (f - ni)] = p_f * area_k + phi_p * warp;
+    }
   }
 }
 

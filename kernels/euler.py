@@ -549,7 +549,7 @@ def reconstruct(
     w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, pref: Param
 ) -> State.Vec5:
     # Falls back to the cell value where the linear reconstruction would make the density or the
-    # pressure non-positive (the Venkatakrishnan limiter does not preserve positivity).
+    # (absolute) pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
     d = gw @ r
     wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
     return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
@@ -737,7 +737,7 @@ def roe_boundary(
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * roe(wf, wb, n, g, pref) + warp(wf, gl, pl, gl, pl, m, g, pref)
+        f = area * roe(wf, wb, n, g, pref)
     return f
 
 
@@ -762,7 +762,7 @@ def hllc_boundary(
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * hllc(wf, wb, n, g, pref) + warp(wf, gl, pl, gl, pl, m, g, pref)
+        f = area * hllc(wf, wb, n, g, pref)
     return f
 
 
@@ -788,7 +788,7 @@ def ausm_boundary(
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * ausm_up(wf, wb, n, g, minf, pref) + warp(wf, gl, pl, gl, pl, m, g, pref)
+        f = area * ausm_up(wf, wb, n, g, minf, pref)
     return f
 
 
@@ -830,10 +830,12 @@ lam = cells.field("lam", State)
 def wave_speed(
     wc: State.Vec5, wn: State.Vec5, n: Geom.Vec3, area: Geom, g: Param, pref: Param
 ) -> State:
-    # Convective spectral radius of a face, (|v . n| + c) A at the arithmetic mean state
-    # (Blazek 2015, chapter 6): its sum over the faces of a cell bounds the local time step.
-    w = 0.5 * (wc + wn)
-    return (abs(dot(velocity(w), n)) + sqrt(g * (w[4] + pref) / w[0])) * area
+    # Convective spectral radius of a face, (|v . n| + c) A, the larger of the two sides' so that
+    # opposing flows do not cancel (Blazek 2015, chapter 6): its sum over a cell's faces bounds
+    # the local time step.
+    lc = abs(dot(velocity(wc), n)) + sqrt(g * (wc[4] + pref) / wc[0])
+    ln = abs(dot(velocity(wn), n)) + sqrt(g * (wn[4] + pref) / wn[0])
+    return max(lc, ln) * area
 
 
 spectral_radius = cell_reduce(

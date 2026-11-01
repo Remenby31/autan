@@ -79,9 +79,8 @@ class Euler {
 
   /// The stored state of conserved variables u (5 x n_cells, FP64): u - U_ref.
   void state(std::span<const double> u, std::span<State> s) const;
-  /// R(s) into res, s a stored state; both 5 x n_cells. With `frozen_limiter`, the limiter of
-  /// the previous evaluation is kept: the residual is then differentiable (Newton-Krylov).
-  void residual(std::span<const State> s, std::span<Res> res, bool frozen_limiter = false);
+  /// R(s) into res, s a stored state; both 5 x n_cells.
+  void residual(std::span<const State> s, std::span<Res> res);
   /// R(s) into res, and the approximate Jacobian's blocks: dF/dW of every face with the
   /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
@@ -108,9 +107,10 @@ class Euler {
   };
   [[nodiscard]] Arrays arrays() noexcept;
 
-  /// After residual(s): absolute pressure of the reconstruction at every boundary face's centroid,
-  /// from its owner cell (n_boundary_faces, FP64).
-  void boundary_pressure(std::span<double> p) const;
+  /// After residual(s): absolute pressure of the boundary flux's face state at every boundary face
+  /// (n_boundary_faces, FP64) and, unless `force` is empty, the pressure force on each face as
+  /// the residual integrates it, warped-face correction included (3 x n_boundary_faces).
+  void boundary_pressure(std::span<double> p, std::span<double> force = {}) const;
 
  private:
   struct Impl;

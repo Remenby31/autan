@@ -98,7 +98,9 @@ double relative_residual(Euler<P>& e, const Case& c, std::span<const typename P:
   double worst = 0.0;
   for (std::size_t k = 0; k < 5; ++k) {
     for (std::size_t i = 0; i < n; ++i) {
-      worst = std::max(worst, std::abs(static_cast<double>(r[k * n + i])) / (flux[k] * surface[i]));
+      const double v = std::abs(static_cast<double>(r[k * n + i])) / (flux[k] * surface[i]);
+      if (!std::isfinite(v)) return std::numeric_limits<double>::infinity();
+      worst = std::max(worst, v);
     }
   }
   return worst;
@@ -207,10 +209,12 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
     const auto y = c.geometry.cell_centroid_y[i];
     const auto z = c.geometry.cell_centroid_z[i];
     absolute[i] =
-        1.0 + 0.5 * std::sin(7.0 * x + 3.0 * y) * std::cos(5.0 * z) + (x > 0.5 ? 1.0 : 0.0);
+        1.0 + 0.5 * std::sin(7.0 * x + 3.0 * y) * std::cos(5.0 * z) + (x > 0.5 ? 9.0 : 0.0);
   }
   const auto u = stored(e, absolute);
-  const Prim scale{2.5, {0.0, 0.0, 0.0}, 1e5};
+  // A 10:1 density jump: the linear reconstruction would make the density negative at some
+  // faces, where the scheme falls back to the cell value.
+  const Prim scale{11.0, {0.0, 0.0, 0.0}, 1e5};
   CHECK(relative_residual(e, c, std::span<const typename P::state>(u), scale) <= 64 * eps<P>());
 }
 
@@ -266,9 +270,101 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
   double norm = 0.0;
   for (std::size_t i = 0; i < u.size(); ++i) {
     const double fd = (rp[i] - rm[i]) / (2.0 * h);
+    REQUIRE(std::isfinite(fd));
+    REQUIRE(std::isfinite(jv[i]));
     diff = std::max(diff, std::abs(fd - jv[i]));
     norm = std::max(norm, std::abs(jv[i]));
   }
   // Central differences: truncation O(h^2) and round-off O(eps / h) relative.
   CHECK(diff <= 1e-6 * norm);
+}
+
+TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass divergence", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // rho = 1, v = (a x, 0, 0): tangent to the y and z sides (slip), exact state on the x sides.
+  // The linear reconstruction is exact, so the mass residual of each cell is a V_c exactly.
+  using P = TestType;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  const double a = 50.0, p = 1e5;
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto z = c.zone(b);
+    const double x = c.geometry.face_centroid_x[ni + b];
+    kind[b] = (z == "xmin" || z == "xmax") ? BoundaryKind::state : BoundaryKind::slip;
+    const std::array<double, 5> w = {1.0, a * x, 0.0, 0.0, p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  s.limiter = false;
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  e.set_boundary(kind, data);
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const auto uc = conserved({1.0, {a * c.geometry.cell_centroid_x[i], 0.0, 0.0}, p});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
+  }
+  const auto st = stored(e, u);
+  std::vector<typename P::residual> r(5 * nc);
+  e.residual(st, r);
+  const auto surface = c.cell_surface();
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double v = c.geometry.cell_volume[i];
+    // Round-off of the face mass fluxes, each at most a |x| <= a times the face area.
+    CHECK(std::abs(static_cast<double>(r[i]) - a * v) <= 64 * eps<P>() * a * surface[i]);
+  }
+}
+
+TEST_CASE("the local time step bounds the faster side of every face", "[euler]") {
+  // Opposing flows in neighbouring cells: sum over the faces of max over both sides of
+  // (|v . n| + c) A, computed here from the mesh; slip walls mirror the cell.
+  using P = autan::kernels::fp64;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.5));
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip), std::vector<double>(5 * nb));
+  std::vector<Prim> w(nc);
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double s = i % 2 == 0 ? 1.0 : -1.0;
+    w[i] = {1.0 + 0.1 * static_cast<double>(i % 3), {1000.0 * s, 300.0 * s, -200.0 * s}, 1e5};
+    const auto uc = conserved(w[i]);
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
+  }
+  const auto st = stored(e, u);
+  std::vector<P::residual> r(5 * nc);
+  e.residual(st, r);
+  std::vector<P::state> lambda(nc);
+  e.spectral_radius(lambda);
+  auto speed = [&](std::size_t i, std::size_t f) {
+    const auto& g = c.geometry;
+    const double n[3] = {g.face_area_x[f] / g.face_area[f], g.face_area_y[f] / g.face_area[f],
+                         g.face_area_z[f] / g.face_area[f]};
+    const double vn = w[i].v[0] * n[0] + w[i].v[1] * n[1] + w[i].v[2] * n[2];
+    return (std::abs(vn) + sound(w[i])) * g.face_area[f];
+  };
+  std::vector<double> expected(nc, 0.0);
+  for (std::size_t f = 0; f < ni; ++f) {
+    const auto o = static_cast<std::size_t>(c.mesh.owner()[f]);
+    const auto n = static_cast<std::size_t>(c.mesh.neighbour()[f]);
+    const double m = std::max(speed(o, f), speed(n, f));
+    expected[o] += m;
+    expected[n] += m;
+  }
+  for (std::size_t f = ni; f < ni + nb; ++f) {
+    expected[static_cast<std::size_t>(c.mesh.owner()[f])] +=
+        speed(static_cast<std::size_t>(c.mesh.owner()[f]), f);
+  }
+  for (std::size_t i = 0; i < nc; ++i) {
+    CHECK(std::abs(lambda[i] - expected[i]) <= 1e-12 * expected[i]);
+  }
 }

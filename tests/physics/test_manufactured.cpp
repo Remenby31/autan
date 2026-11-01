@@ -79,4 +79,21 @@ TEST_CASE("an expression outside the autan.mms/1 grammar is refused", "[manufact
   CHECK_THROWS_AS(autan::physics::Manufactured(doc("system(1)")), std::invalid_argument);
   CHECK_THROWS_AS(autan::physics::Manufactured(doc("x ** 2")), std::invalid_argument);
   CHECK_THROWS_AS(autan::physics::Manufactured(doc("t0 + 1")), std::invalid_argument);
+  auto with_subexpressions = [](const std::string& subexpressions, const std::string& expr) {
+    return R"({"schema": "autan.mms/1", "model": {"physics": "compressible", "turbulence": null},
+               "parameters": {}, "fields": {"subexpressions": )" +
+           subexpressions + R"(, "outputs": {"rho": ")" + expr + R"("}}})";
+  };
+  const std::array<std::string, 1> rho = {"rho"};
+  const std::vector<std::array<double, 3>> origin = {{0.0, 0.0, 0.0}};
+  const autan::physics::Manufactured chained(
+      with_subexpressions(R"([["a", "1"], ["b", "a + 2"], ["c", "b * 3"]])", "c - a"));
+  CHECK(chained.evaluate("fields", rho, origin)[0][0] == 8.0);
+  CHECK_THROWS_AS(
+      autan::physics::Manufactured(with_subexpressions(R"([["a", "1"], ["a", "2"]])", "a")),
+      std::invalid_argument);
+  CHECK_THROWS_AS(autan::physics::Manufactured(with_subexpressions(R"([["a", "1", "2"]])", "a")),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(autan::physics::Manufactured(with_subexpressions(R"({"a": "1"})", "a")),
+                  std::invalid_argument);
 }
