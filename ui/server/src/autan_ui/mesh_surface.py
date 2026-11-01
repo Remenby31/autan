@@ -131,8 +131,9 @@ def _check_polygons(
         / 2
     )
     area = np.linalg.norm(normal, axis=1)
-    size = float(np.ptp(points, axis=0).max()) if len(points) else 0.0
-    if size == 0 or np.any(area <= 1e3 * np.finfo(np.float64).eps * size**2):
+    # Measured against the face's own longest edge, so that a thin mesh's small faces count.
+    edge = np.maximum.reduceat(np.linalg.norm(b - a, axis=1), offsets[:-1])
+    if np.any(area <= 1e3 * np.finfo(np.float64).eps * edge**2):
         msg = "a face has no area"
         raise _broken(msg)
     centroid = (

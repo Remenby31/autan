@@ -12,6 +12,8 @@ export interface MeshSummary {
   cell_zones: { name: string; cells: number }[];
   /** The mesh's zone groups (mesh-info.md#zone-groups): each its boundary zones, in order. */
   groups: { name: string; zones: string[] }[];
+  /** The groups file read, null without groups; its hash is part of a run's identity. */
+  groups_source: { path: string; sha256: string } | null;
 }
 
 /** What a selection of boundary zones matches: their names, or the names of the mesh's zone
@@ -235,7 +237,7 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
             kind: "forces",
             // Names are unique in a case; the first keeps the SDK's default, "forces".
             // A name given is kept verbatim: " loads " and "loads" are two monitors.
-            name: m.name.trim() !== "" ? m.name : k === 0 ? undefined : `forces-${k + 1}`,
+            name: m.name !== "" ? m.name : k === 0 ? undefined : `forces-${k + 1}`,
             [m.by === "group" ? "group" : "surfaces"]: m.surfaces,
             ref_area: quantity(m.ref_area),
             every: number(m.every),

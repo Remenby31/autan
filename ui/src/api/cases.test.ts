@@ -37,3 +37,13 @@ test("group selectors read into the form and back", () => {
   expect(back.boundaries).toEqual(document.boundaries);
   expect(back.monitors).toEqual(document.monitors);
 });
+
+test("a monitor name is kept as given, blanks included", () => {
+  const document = {
+    monitors: [
+      { kind: "forces", name: " ", surfaces: "a" },
+      { kind: "forces", name: "forces", surfaces: "b" },
+    ],
+  };
+  expect(caseDocument(formFromDocument(document, [])).monitors).toEqual(document.monitors);
+});

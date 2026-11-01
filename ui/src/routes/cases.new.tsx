@@ -84,14 +84,18 @@ function CaseEditor() {
   const solids = library.filter((m) => m.document.kind === "solid");
   const [form, setForm] = useState<CaseForm>(EMPTY_CASE);
   // A copy of a run's case: read once the library materials are known, its mesh chosen among
-  // the listed MeshInfos by the run's mesh hash.
+  // the listed MeshInfos by the run's mesh hash and groups hash: the same selectors on other
+  // groups would select other zones.
   const source = useQuery({ ...runQuery(from ?? ""), enabled: from !== undefined });
   const [imported, setImported] = useState<CaseDocument | null>(null);
   useEffect(() => {
     if (!source.data || !materials.isSuccess || !meshes.isSuccess || imported) return;
     const copy = formFromDocument(source.data.case, materials.data);
-    const sha = source.data.mesh_info.source.sha256;
-    const listed = meshes.data.find((m) => m.source.sha256 === sha);
+    const { sha256, groups_sha256 } = source.data.run.mesh;
+    const listed = meshes.data.find(
+      (m) =>
+        m.source.sha256 === sha256 && (m.groups_source?.sha256 ?? null) === (groups_sha256 ?? null),
+    );
     setForm({ ...copy, mesh: listed?.name ?? "" });
     setImported(source.data.case);
   }, [source.data, materials, meshes, imported]);
@@ -251,6 +255,9 @@ function CaseEditor() {
                   value={form.mesh}
                   onChange={(name) => {
                     const chosen = meshes.data?.find((m) => m.name === name);
+                    setPicked(null);
+                    setNotice(null);
+                    setOffer(null);
                     setForm((f) => ({
                       ...f,
                       mesh: name,
@@ -463,12 +470,17 @@ function CaseEditor() {
                     variant="tertiary"
                     aria-label={`Remove boundary rule ${k + 1}`}
                     icon={<Trash2 className="size-4" />}
-                    onClick={() =>
+                    onClick={() => {
                       set(
                         "boundaries",
                         form.boundaries.filter((_, i) => i !== k),
-                      )
-                    }
+                      );
+                      setOffer((o) =>
+                        o === null || o.rule === k
+                          ? null
+                          : { ...o, rule: o.rule > k ? o.rule - 1 : o.rule },
+                      );
+                    }}
                   />
                   {CONDITIONS[rule.kind].map(({ key, dimension, optional }) => (
                     <Field

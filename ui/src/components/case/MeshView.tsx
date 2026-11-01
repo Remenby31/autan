@@ -5,6 +5,9 @@ import { useResolvedTheme } from "../shell/theme";
 
 /** The boundary of a mesh in 3D, one zone per boundary zone; a click picks the zone under the
  * cursor. `selected` is a zone name, highlighted when the mesh has it. */
+// Pointer travel, in CSS pixels, beyond which a press is a drag (an orbit), not a click.
+const DRAG_PX = 4;
+
 export function MeshView({
   mesh,
   selected,
@@ -18,6 +21,7 @@ export function MeshView({
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const viewer = useRef<SurfaceViewer | null>(null);
+  const press = useRef<{ x: number; y: number } | null>(null);
   const [surface, setSurface] = useState<Surface | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,7 +95,13 @@ export function MeshView({
         data-testid="mesh-view"
         data-ready={surface ? "true" : undefined}
         aria-label={`Boundary of ${mesh}; click a zone to set its condition`}
+        onPointerDown={(e) => {
+          press.current = { x: e.clientX, y: e.clientY };
+        }}
         onClick={async (e) => {
+          // A drag orbits the view: only a click that stays put picks.
+          const from = press.current;
+          if (from && Math.hypot(e.clientX - from.x, e.clientY - from.y) > DRAG_PX) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const index = await viewer.current?.pick(e.clientX - rect.left, e.clientY - rect.top);
           const zone = index == null ? undefined : surface?.zones[index]?.name;

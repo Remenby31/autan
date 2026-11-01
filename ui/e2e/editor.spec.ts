@@ -413,3 +413,86 @@ test("a picked zone's rule can select a group holding it instead", async ({ page
   await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
   await expect(rule.getByLabel("Zones", { exact: true })).toBeFocused();
 });
+
+test("a group offer follows its rule and leaves with its mesh", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("grouped");
+  await rule(page, 1, "xmin", "farfield");
+  await clickCentre(page);
+  const offer = page.getByTestId("group-offer");
+  await expect(offer).toContainText("Rule 2");
+
+  await page.getByRole("button", { name: "Remove boundary rule 1" }).click();
+  await expect(offer).toContainText("Rule 1");
+  await offer.getByRole("button", { name: "walls" }).click();
+  const first = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(first.getByLabel("Zones", { exact: true })).toHaveValue("walls");
+
+  await page.getByRole("button", { name: "Add rule" }).click();
+  await page.getByRole("button", { name: "Remove boundary rule 2" }).click();
+  await clickCentre(page);
+  await page.getByRole("button", { name: "Remove boundary rule 1" }).click();
+  await clickCentre(page);
+  await expect(offer).toBeVisible();
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await expect(offer).toHaveCount(0);
+});
+
+test("dragging the view orbits it and picks nothing", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+  const box = await view.boundingBox();
+  if (!box) throw new Error("the mesh view has no box");
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 35, y + 20, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
+  await clickCentre(page);
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+});
+
+test("a copy keeps its run's zone groups: same mesh hash, other groups is another mesh", async ({
+  page,
+}) => {
+  // grouped and polyMesh are one mesh file; only grouped has groups. A real run on polyMesh.
+  const dir = mkdtempSync(join(tmpdir(), "autan-groups-"));
+  const name = `ungrouped-${Date.now()}`;
+  writeFileSync(
+    join(dir, "case.py"),
+    [
+      "import autan",
+      "from autan.units import Pa",
+      "",
+      `case = autan.Case("${name}", mesh="polyMesh")`,
+      "case.physics = autan.Compressible(turbulence=autan.Inviscid())",
+      "case.freestream(mach=0.3, pressure=101325.0 * Pa)",
+      'case.boundary("*").farfield()',
+      "",
+    ].join("\n"),
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "server/tests/data/surface/polyMesh.meshinfo.json", "--runs", RUNS],
+  ]);
+  const listed: { run_id: string; case: { name: string } }[] = (
+    await (await page.request.get("/api/runs")).json()
+  ).runs;
+  const run = listed.find((r) => r.case.name === name);
+  if (!run) throw new Error("the polyMesh run is not listed");
+  try {
+    await page.goto(`/cases/new?run=${run.run_id}`);
+
+    await expect(page.getByLabel("Name")).toHaveValue(name);
+    await expect(page.getByLabel("Mesh", { exact: true })).toHaveValue("polyMesh");
+  } finally {
+    rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

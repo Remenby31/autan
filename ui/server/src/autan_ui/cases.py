@@ -81,6 +81,7 @@ class Meshes:
                     "boundary_zones": info["boundary_zones"],
                     "cell_zones": info["cell_zones"],
                     "groups": info["groups"],
+                    "groups_source": info["groups_source"],
                 }
             )
         return out
