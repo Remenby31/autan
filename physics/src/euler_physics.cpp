@@ -75,7 +75,10 @@ class EulerPhysics final : public runtime::Physics {
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
+        owned_(static_cast<std::size_t>(ctx.mesh.n_owned_cells())),
+        ghost_fill_(ctx.ghosts),
         euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)) {
+    if (owned_ < n_) euler_.set_ghosts(&ghost_fill_);
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
@@ -91,7 +94,7 @@ class EulerPhysics final : public runtime::Physics {
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
     u_.assign(5 * n_, 0.0);
-    for (std::size_t c = 0; c < n_; ++c) {
+    for (std::size_t c = 0; c < owned_; ++c) {
       const auto zi = static_cast<std::size_t>(mesh.cell_zone()[c]);
       const auto& init = zones.at(mesh.cell_zones()[zi].name)->initial;
       set_cell(c, *init.density, *init.velocity, *init.pressure);
@@ -120,7 +123,7 @@ class EulerPhysics final : public runtime::Physics {
   void accumulate_average(double weight) override {
     const auto f = primitive_fields();
     for (std::size_t k = 0; k < 6; ++k) {
-      for (std::size_t c = 0; c < n_; ++c) mean_[k * n_ + c] += weight * f[k][c];
+      for (std::size_t c = 0; c < owned_; ++c) mean_[k * n_ + c] += weight * f[k][c];
     }
     mean_weight_ += weight;
   }
@@ -129,24 +132,19 @@ class EulerPhysics final : public runtime::Physics {
   [[nodiscard]] std::vector<io::Field> restart_fields() const override {
     std::vector<io::Field> out;
     for (std::size_t k = 0; k < 5; ++k) {
-      out.push_back(
-          {.name = conserved_names[k],
-           .values = std::vector<double>(u_.begin() + static_cast<std::ptrdiff_t>(k * n_),
-                                         u_.begin() + static_cast<std::ptrdiff_t>((k + 1) * n_))});
+      out.push_back({.name = conserved_names[k], .values = owned(u_, k)});
     }
     if (mean_weight_ > 0.0) {
       for (std::size_t k = 0; k < 6; ++k) {
-        out.push_back({.name = std::string("AverageSum") + field_names[k],
-                       .values = std::vector<double>(
-                           mean_.begin() + static_cast<std::ptrdiff_t>(k * n_),
-                           mean_.begin() + static_cast<std::ptrdiff_t>((k + 1) * n_))});
+        out.push_back(
+            {.name = std::string("AverageSum") + field_names[k], .values = owned(mean_, k)});
       }
-      out.push_back({.name = "AverageWeight", .values = std::vector<double>(n_, mean_weight_)});
+      out.push_back({.name = "AverageWeight", .values = std::vector<double>(owned_, mean_weight_)});
     }
     // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
     if (ctx_.input.time.kind == "steady") {
       for (const auto& [name, value] : solver_state()) {
-        out.push_back({.name = name, .values = std::vector<double>(n_, value)});
+        out.push_back({.name = name, .values = std::vector<double>(owned_, value)});
       }
     }
     return out;
@@ -165,9 +163,14 @@ class EulerPhysics final : public runtime::Physics {
         surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
       }
     }
-    double sum = 0.0;
-    for (const double a : surface) sum += a * a;
-    const double area = std::sqrt(sum / static_cast<double>(n_));
+    // Over the owned cells of every rank, as the history's norms.
+    std::array<runtime::ExactSum, 2> sums;
+    for (std::size_t c = 0; c < owned_; ++c) {
+      sums[0].add(surface[c] * surface[c]);
+      sums[1].add(1.0);
+    }
+    ctx_.ranks.sum(sums);
+    const double area = std::sqrt(sums[0].value() / sums[1].value());
     const auto& fs = ctx_.input.freestream;
     const double c = std::sqrt(gas_.gamma * fs.pressure / fs.density);
     const double q = fs.speed + c;
@@ -183,7 +186,7 @@ class EulerPhysics final : public runtime::Physics {
     for (std::size_t k = 0; k < 6; ++k) {
       io::Field field{.name = field_names[k], .values = f[k]};
       if (mean) {
-        for (std::size_t c = 0; c < n_; ++c) field.values[c] = mean_[k * n_ + c] / mean_weight_;
+        for (std::size_t c = 0; c < owned_; ++c) field.values[c] = mean_[k * n_ + c] / mean_weight_;
       }
       out.push_back(std::move(field));
     }
@@ -216,7 +219,9 @@ class EulerPhysics final : public runtime::Physics {
     face_pressure(p, face_force);
     const double p_inf = ctx_.input.freestream.pressure;
     const auto offsets = mesh.boundary_zone_offsets();
-    Loads loads;
+    // Exact sums over this rank's faces, then over the ranks: the same bits on any number of
+    // ranks for the same face values.
+    std::array<runtime::ExactSum, 6> sums;
     for (const auto z : zones) {
       for (auto f = offsets[static_cast<std::size_t>(z)];
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
@@ -228,11 +233,17 @@ class EulerPhysics final : public runtime::Physics {
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
-        for (std::size_t k = 0; k < 3; ++k) loads.force[k] += force[k];
-        loads.moment[0] += arm[1] * force[2] - arm[2] * force[1];
-        loads.moment[1] += arm[2] * force[0] - arm[0] * force[2];
-        loads.moment[2] += arm[0] * force[1] - arm[1] * force[0];
+        for (std::size_t k = 0; k < 3; ++k) sums[k].add(force[k]);
+        sums[3].add(arm[1] * force[2] - arm[2] * force[1]);
+        sums[4].add(arm[2] * force[0] - arm[0] * force[2]);
+        sums[5].add(arm[0] * force[1] - arm[1] * force[0]);
       }
+    }
+    ctx_.ranks.sum(sums);
+    Loads loads;
+    for (std::size_t k = 0; k < 3; ++k) {
+      loads.force[k] = sums[k].value();
+      loads.moment[k] = sums[3 + k].value();
     }
     return loads;
   }
@@ -294,7 +305,7 @@ class EulerPhysics final : public runtime::Physics {
     const auto& vy = *find(start.fields, "VelocityY");
     const auto& vz = *find(start.fields, "VelocityZ");
     const auto& p = *find(start.fields, "Pressure");
-    for (std::size_t c = 0; c < n_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
+    for (std::size_t c = 0; c < owned_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
   }
 
   [[nodiscard]] std::vector<std::pair<std::string, double>> solver_state() const {
@@ -404,15 +415,20 @@ class EulerPhysics final : public runtime::Physics {
     euler_.residual(state_, res_);
   }
 
+  // results.md#history: sqrt(sum R_i^2 / N) over the owned cells of every rank, summed exactly.
   void record_norms(StepReport& report) const {
+    std::array<runtime::ExactSum, 6> sums;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double r = static_cast<double>(res_[k * n_ + c]);
+        sums[k].add(r * r);
+      }
+    }
+    sums[5].add(static_cast<double>(owned_));
+    ctx_.ranks.sum(sums);
     report.residuals.assign(5, 0.0);
     for (std::size_t k = 0; k < 5; ++k) {
-      double s = 0.0;
-      for (std::size_t c = 0; c < n_; ++c) {
-        const double r = static_cast<double>(res_[k * n_ + c]);
-        s += r * r;
-      }
-      report.residuals[k] = std::sqrt(s / static_cast<double>(n_));
+      report.residuals[k] = std::sqrt(sums[k].value() / sums[5].value());
     }
   }
 
@@ -512,9 +528,10 @@ class EulerPhysics final : public runtime::Physics {
     if (t.cfl) {
       euler_.spectral_radius(lambda_);
       dt = std::numeric_limits<double>::infinity();
-      for (std::size_t c = 0; c < n_; ++c) {
+      for (std::size_t c = 0; c < owned_; ++c) {
         dt = std::min(dt, *t.cfl * g.cell_volume[c] / static_cast<double>(lambda_[c]));
       }
+      dt = ctx_.ranks.min(dt);
     }
     const std::array<std::array<double, 2>, 3> weights{
         {{0.0, 1.0}, {0.75, 0.25}, {1.0 / 3.0, 2.0 / 3.0}}};
@@ -522,7 +539,7 @@ class EulerPhysics final : public runtime::Physics {
     for (std::size_t s = 0; s < 3; ++s) {
       if (s > 0) residual_of(stage_);
       for (std::size_t k = 0; k < 5; ++k) {
-        for (std::size_t c = 0; c < n_; ++c) {
+        for (std::size_t c = 0; c < owned_; ++c) {
           const auto i = k * n_ + c;
           const double next = stage_[i] - dt / g.cell_volume[c] * static_cast<double>(res_[i]);
           stage_[i] = weights[s][0] * u_[i] + weights[s][1] * next;
@@ -534,7 +551,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
-    for (std::size_t c = 0; c < n_; ++c) {
+    for (std::size_t c = 0; c < owned_; ++c) {
       const double rho = u_[c];
       const double q2 = (u_[n_ + c] * u_[n_ + c] + u_[2 * n_ + c] * u_[2 * n_ + c] +
                          u_[3 * n_ + c] * u_[3 * n_ + c]) /
@@ -549,8 +566,8 @@ class EulerPhysics final : public runtime::Physics {
 
   [[nodiscard]] std::array<std::vector<double>, 6> primitive_fields() const {
     std::array<std::vector<double>, 6> f;
-    for (auto& v : f) v.resize(n_);
-    for (std::size_t c = 0; c < n_; ++c) {
+    for (auto& v : f) v.resize(owned_);
+    for (std::size_t c = 0; c < owned_; ++c) {
       const double rho = u_[c];
       double q2 = 0.0;
       for (std::size_t k = 0; k < 3; ++k) {
@@ -572,9 +589,32 @@ class EulerPhysics final : public runtime::Physics {
     euler_.boundary_pressure(p, force);
   }
 
+  // The runtime's ghost exchange, on the host, for Euler<P>.
+  class HostGhosts final : public GhostFill {
+   public:
+    explicit HostGhosts(runtime::GhostExchange& ghosts) : ghosts_(ghosts) {}
+    void forward(std::span<float* const> components) override {
+      ghosts_.forward(components, MemorySpace::host, nullptr);
+    }
+    void forward(std::span<double* const> components) override {
+      ghosts_.forward(components, MemorySpace::host, nullptr);
+    }
+
+   private:
+    runtime::GhostExchange& ghosts_;
+  };
+
+  // Component k of `v` (laid out k * n_ + c) over the owned cells.
+  [[nodiscard]] std::vector<double> owned(const std::vector<double>& v, std::size_t k) const {
+    const auto begin = v.begin() + static_cast<std::ptrdiff_t>(k * n_);
+    return {begin, begin + static_cast<std::ptrdiff_t>(owned_)};
+  }
+
   PhysicsContext ctx_;
   Gas gas_;
-  std::size_t n_;
+  std::size_t n_;      // cells of the mesh: owned, then ghosts
+  std::size_t owned_;  // owned cells: what this rank updates and reports
+  HostGhosts ghost_fill_;
   Euler<P> euler_;
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
@@ -606,9 +646,11 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and no periodic pairs (it exchanges no ghost cells yet).
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
-  if (!in.periodic.empty()) {
+  // The steady solver's block Gauss-Seidel acts on the cells of one mesh: image ghosts would be
+  // other unknowns, not copies.
+  if (!in.periodic.empty() && in.time.kind == "steady") {
     return runtime::PhysicsRefusal{
-        .message = "the Euler physics does not exchange periodic ghost cells yet",
+        .message = "the steady Euler solver does not run with periodic pairs yet",
         .path = "periodic",
         .data_json = nlohmann::json{{"pairs", in.periodic.size()}}.dump()};
   }
@@ -650,9 +692,10 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope);
+  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope,
+               /*several_ranks=*/true);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
-               euler_scope);
+               euler_scope, /*several_ranks=*/true);
 }
 
 }  // namespace autan::physics
