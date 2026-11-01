@@ -145,3 +145,42 @@ def test_the_guard_reads_holders_and_waiters_from_proc_locks():
         "23: POSIX  ADVISORY  WRITE 99 103:02:1 0 EOF\n"
     )
     assert guard.lock_users(key, text) == ({4242}, {4343})
+
+
+def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, monkeypatch):
+    loader = importlib.machinery.SourceFileLoader("guard", str(GUARD))
+    spec = importlib.util.spec_from_loader("guard", loader)
+    guard = importlib.util.module_from_spec(spec)
+    loader.exec_module(guard)
+    # nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits
+    # as it printed on spark-5512 (a process name may contain commas).
+    csv = "3285079, VLLM::EngineCore, 22484\n3292695, /w/build/autan_halo_tests, 170\n7, a, b, 3\n"
+    assert guard.gpu_apps(csv) == {
+        3285079: ("VLLM::EngineCore", "22484"),
+        3292695: ("/w/build/autan_halo_tests", "170"),
+        7: ("a, b", "3"),
+    }
+    # The external boundaries: nvidia-smi, and the cgroups that place each process.
+    fake = tmp_path / "nvidia-smi"
+    fake.write_text(f"#!/bin/sh\nprintf '{csv}'\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(guard, "GPU_APPS", [str(fake)])
+    monkeypatch.setattr(guard, "FOREIGN", tmp_path / "foreign-gpu")
+    ours, theirs = "a" * 64, "b" * 64
+    places = {3285079: theirs, 3292695: ours, 7: None}
+    monkeypatch.setattr(guard, "container_of", places.get)
+    containers = guard.Containers()
+    containers.names = {ours: "autan-runner", theirs: "mcpbench-vllm"}
+    foreign = guard.foreign_apps(containers)
+    assert {pid: f["where"] for pid, f in foreign.items()} == {3285079: "mcpbench-vllm", 7: "host"}
+    guard.publish(foreign)
+    env = {**os.environ, "AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock")}
+    report = subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env=env, capture_output=True,
+                            text=True, check=True).stdout  # fmt: skip
+    error = next(line for line in report.splitlines() if line.startswith("::error::"))
+    assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in error
+    assert "autan_halo_tests" not in error
+    guard.publish({})
+    report = subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env=env, capture_output=True,
+                            text=True, check=True).stdout  # fmt: skip
+    assert "::error::" not in report
