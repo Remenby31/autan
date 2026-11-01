@@ -1745,13 +1745,29 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(solution_field(many_lined / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
         lined_one);
   if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
-  // Groups the partition refuses end every rank before any directory, with their code.
+  // Groups that cannot be formed or partitioned, on every rank or on rank 1
+  // alone, are refused by the ranks together before any directory (#334):
+  // the refusing rank's code reaches stderr, and the ranks return from main.
+  // An MPI_Abort ends every rank without its exit handlers; a normal return
+  // runs them, at least on the first rank to exit (the launcher may end the
+  // others once one has exited non-zero).
+  const auto refused_together = [&](const char* groups, Json& diagnostic) {
+    const fs::path exits = fresh_dir();
+    CHECK(run_on_ranks(
+              doc, ranks,
+              {std::string("AUTAN_TEST_GROUPS=") + groups, "AUTAN_TEST_EXIT_DIR=" + exits.string()},
+              1, &diagnostic, {}, false)
+              .empty());
+    int returned = 0;
+    for (int r = 0; r < ranks; ++r) returned += fs::exists(exits / ("exit-" + std::to_string(r)));
+    CAPTURE(groups);
+    CHECK(returned >= 1);
+  };
   Json malformed;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, {}, false).empty());
+  refused_together("-1", malformed);
   CHECK(malformed["code"] == "E0140");
-  // Rank 1 alone fails while the others go on into the partition: every rank ends.
   Json alone;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, {}, false).empty());
+  refused_together("-2", alone);
   CHECK(alone["code"] == "E0140");
   CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
