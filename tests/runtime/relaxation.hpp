@@ -25,6 +25,10 @@ struct RelaxationOptions {
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
+  /// An equation the flow does not excite: its residual stays at round-off
+  /// (1e-15), until iteration `wake_at` (0: never) from which it is 1e-3.
+  std::int64_t silent_equation = -1;
+  std::int64_t wake_at = 0;
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -97,6 +101,10 @@ class Relaxation final : public autan::runtime::Physics {
     const auto equations = autan::runtime::residual_names(context_.input).size();
     for (std::size_t e = 0; e < equations; ++e)
       report.residuals.push_back(static_cast<double>(e + 1) * r);
+    if (options_.silent_equation >= 0) {
+      const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at;
+      report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
+    }
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
     }

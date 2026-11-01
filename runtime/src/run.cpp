@@ -549,6 +549,8 @@ class Run final : public Log {
     // Steady convergence is measured against iteration 1 of the original run
     // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
+    std::vector<char> exempt;
+    double floor = 0.0;
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -615,10 +617,30 @@ class Run final : public Log {
       }
       if (steady) {
         if (first.empty()) first = report.residuals;
+        // case-schema.md#time: an equation whose residual at iteration 1 is
+        // below 1e-12 of the largest is exempt while it stays below that
+        // floor; once above, it must drop like the others (W0710, once).
+        if (exempt.empty()) {
+          floor = 1e-12 * *std::ranges::max_element(first);
+          for (const double f : first) exempt.push_back(f < floor ? 1 : 0);
+        }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
         for (std::size_t e = 0; e < equations.size(); ++e) {
-          converged = converged && report.residuals[e] <= first[e] * drop;
+          const double r = report.residuals[e];
+          if (exempt[e] != 0 && r > floor) {
+            exempt[e] = 0;
+            write("warning", "solver",
+                  "equation " + equations[e] + " left its floor at iteration " +
+                      std::to_string(it) + ": it now has to converge like the others",
+                  "W0710",
+                  Json{{"equation", equations[e]},
+                       {"iteration", it},
+                       {"residual", r},
+                       {"floor", floor}}
+                      .dump());
+          }
+          converged = converged && (exempt[e] != 0 || r <= first[e] * drop);
         }
         if (converged) return "converged";
       }

@@ -766,3 +766,36 @@ TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "
   require_error(run(with_pairs(1.0)), "E0706");
   require_error(run(with_pairs(2.0)), "E0705");
 }
+
+TEST_CASE("An equation at round-off from iteration 1 does not hold back convergence", "[runtime]") {
+  // Residuals (e + 1) 0.5^(k-1) drop 8 orders at k = 28; momentum-x stays at
+  // 1e-15, below the floor 1e-12 x 6 (case-schema.md#time), so it is exempt.
+  autan_test::RelaxationOptions quiet;
+  quiet.silent_equation = 1;
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), quiet);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"] == 28);
+
+  // From iteration 10 it is 1e-3, above the floor: W0710 once, and the run
+  // cannot converge on it any more.
+  autan_test::RelaxationOptions waking = quiet;
+  waking.wake_at = 10;
+  const Outcome w = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(w.status == ExitStatus::finished);
+  CHECK(Json::parse(read(w.run / "run.json"))["status"] == "completed");
+  std::vector<Json> warnings;
+  std::ifstream in(w.run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["code"] == "W0710") warnings.push_back(event);
+  }
+  REQUIRE(warnings.size() == 1);
+  CHECK(warnings[0]["level"] == "warning");
+  CHECK(warnings[0]["iteration"] == 10);
+  CHECK(warnings[0]["data"]["equation"] == "momentum-x");
+  CHECK(warnings[0]["data"]["iteration"] == 10);
+  CHECK(warnings[0]["data"]["residual"] == 1e-3);
+  CHECK(warnings[0]["data"]["floor"] == 1e-12 * 6.0);
+}
