@@ -1,8 +1,9 @@
 // Time per cell of the device SSP-RK3 step (DeviceStepper::step: three residuals, the stages, the
 // norms and the D0107 check) and of the host residual, on a mesh given on the command line.
-// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [LOCK]; prints one JSON object.
-// `rcm` renumbers the cells (autan::rcm_order) first; with LOCK, only the timed device steps hold
-// that file's lock (docs/infra/bench.md).
+// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [GATE]; prints one JSON object.
+// `rcm` renumbers the cells (autan::rcm_order) first. With GATE, a FIFO, the bench prints `ready`
+// after its setup and times only once a line arrives on GATE, so that a GPU lock the caller takes
+// then (autan-gpu-lock) covers the timed steps alone (docs/infra/bench.md).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -13,9 +14,6 @@
 #include <string>
 #include <vector>
 
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
@@ -45,7 +43,7 @@ class NoGhosts final : public autan::runtime::GhostExchange {
 };
 
 template <class P>
-int bench(const autan::Mesh& mesh, const char* precision, int steps, const char* lock) {
+int bench(const autan::Mesh& mesh, const char* precision, int steps, const char* gate) {
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
@@ -86,19 +84,22 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
   auto device =
       autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
   device->upload(u);
-  int fd = -1;
-  if (lock != nullptr) {
-    fd = ::open(lock, O_RDONLY);
-    if (fd < 0 || ::flock(fd, LOCK_EX) != 0) {
-      std::fprintf(stderr, "cannot lock %s\n", lock);
+  if (gate != nullptr) {
+    std::printf("ready\n");
+    std::fflush(stdout);
+    std::FILE* fifo = std::fopen(gate, "r");
+    if (fifo == nullptr) {
+      std::fprintf(stderr, "cannot open %s\n", gate);
       return 1;
     }
+    char line[16];
+    static_cast<void>(std::fgets(line, sizeof line, fifo));
+    std::fclose(fifo);
   }
   for (int i = 0; i < 5; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
   const auto t0 = Clock::now();
   for (int i = 0; i < steps; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
   const double step_s = std::chrono::duration<double>(Clock::now() - t0).count() / steps;
-  if (fd >= 0) ::close(fd);
 
   std::printf(
       "{\"precision\":\"%s\",\"cells\":%zu,\"steps\":%d,\"device_step_ns_per_cell\":%.4f,"
@@ -112,16 +113,16 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
 
 int main(int argc, char** argv) {
   if (argc < 5) {
-    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [LOCK]\n");
+    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS input|rcm [GATE]\n");
     return 2;
   }
   auto mesh = autan::io::read_mesh(argv[1]);
   if (std::string(argv[4]) == "rcm") mesh = autan::renumber_cells(mesh, autan::rcm_order(mesh));
   const int steps = std::atoi(argv[3]);
-  const char* lock = argc > 5 ? argv[5] : nullptr;
+  const char* gate = argc > 5 ? argv[5] : nullptr;
   const std::string p = argv[2];
-  if (p == "fp64") return bench<autan::kernels::fp64>(mesh, argv[2], steps, lock);
-  if (p == "fp32+acc64") return bench<autan::kernels::fp32_acc64>(mesh, argv[2], steps, lock);
+  if (p == "fp64") return bench<autan::kernels::fp64>(mesh, argv[2], steps, gate);
+  if (p == "fp32+acc64") return bench<autan::kernels::fp32_acc64>(mesh, argv[2], steps, gate);
   std::fprintf(stderr, "unknown precision %s\n", argv[2]);
   return 2;
 }
