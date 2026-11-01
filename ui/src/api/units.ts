@@ -13,12 +13,18 @@ const ANGLE: Record<string, number> = {
   arcsec: 1 / 3600,
   arcsecond: 1 / 3600,
   turn: 360,
+  grad: 0.9,
+  gradian: 0.9,
+  gon: 0.9,
+  urad: 1.8e-4 / Math.PI,
+  μrad: 1.8e-4 / Math.PI,
+  microradian: 1.8e-4 / Math.PI,
 };
 
 /** An angle written as the case writes it ("19.57 deg", "0.34 rad", "100 mrad"), in degrees;
  * null if the value has no angle unit. */
 export function degrees(value: string | null | undefined): number | null {
-  const match = /^\s*(-?[\d.eE+-]+)\s*([a-z]+)\s*$/.exec(value ?? "");
+  const match = /^\s*(-?[\d.eE+-]+)\s*([a-zμ]+)\s*$/u.exec(value ?? "");
   const factor =
     match?.[2] !== undefined && Object.hasOwn(ANGLE, match[2]) ? ANGLE[match[2]] : undefined;
   if (!match || factor === undefined) return null;

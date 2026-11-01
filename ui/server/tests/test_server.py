@@ -131,7 +131,7 @@ def test_a_run_without_history_has_a_summary_with_its_settings(runs: Path) -> No
 
     summary = Registry(runs).scan().summaries[early.name]
 
-    assert (summary["iteration"], summary["trend"]) == (0, [])
+    assert (summary["iteration"], summary["trend"]) == (None, [])
     assert (summary["settings"]["mach"], summary["settings"]["aoa"]) == (0.2, "19.57 deg")
 
 

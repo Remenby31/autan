@@ -513,15 +513,24 @@ function RunRow({
             </Tooltip>
           )}
         </span>
-        <span className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <Status status={run.status} duration={duration(run)} />
+        <span className="flex min-w-0 items-center gap-2">
+          {/* The status shrinks first: the diagnostic's code always shows whole. */}
+          <span className="min-w-0 overflow-hidden whitespace-nowrap">
+            <Status status={run.status} duration={duration(run)} />
+          </span>
           {run.diagnostics[0] && (
-            <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
+            <span className="flex-none font-mono text-danger text-xs">
+              {run.diagnostics[0].code}
+            </span>
           )}
         </span>
         <span className="text-right font-mono text-sm tabular-nums">
           <span className="sr-only">Mach </span>
-          <span data-testid="mach">{summary?.settings?.mach ?? "—"}</span>
+          <span data-testid="mach">
+            {summary?.settings?.mach == null
+              ? "—"
+              : String(Number(summary.settings.mach.toPrecision(3)))}
+          </span>
         </span>
         <span className="text-right font-mono text-sm tabular-nums">
           <span className="sr-only">angle of attack </span>

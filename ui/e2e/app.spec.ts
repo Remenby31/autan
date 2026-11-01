@@ -46,6 +46,13 @@ test("each run in the list shows its Mach, angle and final coefficients", async 
   const first = page.locator("a[data-row]").first();
   await expect(first).toBeVisible();
   expect(await first.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  // A diverged run's diagnostic code shows whole beside its state.
+  const diverged = (registry.runs as Run[]).find((r) => r.status === "diverged") as Run;
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diverged.diagnostics[0]?.code ?? "", { exact: true });
+  await expect(code).toBeVisible();
+  expect(await code.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   for (const run of sweep) {
     const row = page.locator(`a[data-run="${run.run_id}"]`);
     await expect(row.getByTestId("mach")).toHaveText("0.2");
