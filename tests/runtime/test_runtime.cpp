@@ -1261,6 +1261,22 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(f["diagnostics"][0]["code"] == "E0704");
   CHECK(f["diagnostics"][0]["data"]["rank"] == ranks - 1);
 
+  // The same failure in the final monitor record (loads() called only by
+  // finish, `every` beyond the run), the others inside the collective sum of
+  // their loads(): every rank ends, none waits forever (ctest TIMEOUT).
+  Json final_only = doc;
+  final_only["monitors"][0]["every"] = 1000;
+  const Json g =
+      Json::parse(read(run_on_ranks(final_only, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.5", "AUTAN_TEST_THROW_IN_LOADS=1",
+                                     "AUTAN_TEST_THROW_RANK=" + std::to_string(ranks - 1)},
+                                    1) /
+                       "run.json"));
+  CHECK(g["status"] == "failed");
+  CHECK(g["monitors"].is_null());
+  CHECK(g["diagnostics"][0]["code"] == "E0704");
+  CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
+
   // A signal reaching the last rank alone, after iteration 5, stops all of
   // them before iteration 6, with the solution written.
   const fs::path stopped = run_on_ranks(doc, ranks,

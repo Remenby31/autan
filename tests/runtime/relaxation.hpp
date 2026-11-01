@@ -63,6 +63,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
+    read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
     read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
     return o;
@@ -233,7 +234,9 @@ class Relaxation final : public autan::runtime::Physics {
                                             const std::array<double, 3>& center) const override {
     // Pressure force (p - p_inf) S over the zones' faces, its moment about
     // `center`; the cell's pressure stands for the face's.
-    if (options_.throw_in_loads) throw std::runtime_error("relaxation: requested loads failure");
+    if (options_.throw_in_loads &&
+        (options_.throw_rank < 0 || options_.throw_rank == context_.ranks.rank()))
+      throw std::runtime_error("relaxation: requested loads failure");
     // Exact sums over this rank's faces, then over the ranks: the same bits
     // on any number of ranks.
     std::array<autan::runtime::ExactSum, 6> sums;
