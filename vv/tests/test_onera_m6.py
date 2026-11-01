@@ -12,6 +12,7 @@ from autan_vv.cases import fetch, get_case, read_columns
 from autan_vv.cases import onera_m6 as cases
 from autan_vv.errors import VVError
 from autan_vv.meshes import onera_m6
+from autan_vv.meshes.facemesh import FaceMesh
 from autan_vv.runs import mesh_info, write_run
 
 gmsh = pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
@@ -37,12 +38,12 @@ def test_planform_reproduces_the_published_figures() -> None:
 
 
 @pytest.fixture(scope="module")
-def coarse() -> tuple[object, Path]:
-    return onera_m6.generate_level(4)
+def coarse() -> FaceMesh:
+    return onera_m6.generate_level(4)[0]
 
 
-def test_mesh_bounds_the_wing_in_a_half_sphere(coarse: tuple) -> None:
-    mesh, _ = coarse
+def test_mesh_bounds_the_wing_in_a_half_sphere(coarse: FaceMesh) -> None:
+    mesh = coarse
     g = mesh.geometry
     assert g.cell_volume.min() > 0.0
     zones = {z.name: z for z in mesh.zones}
@@ -51,7 +52,8 @@ def test_mesh_bounds_the_wing_in_a_half_sphere(coarse: tuple) -> None:
     def nodes(name: str) -> np.ndarray:
         z = zones[name]
         ids = np.concatenate([mesh.face(f) for f in range(z.start, z.start + z.count)])
-        return mesh.points[np.unique(ids)]
+        points: np.ndarray = mesh.points[np.unique(ids)]
+        return points
 
     np.testing.assert_array_equal(nodes("symmetry")[:, 1], 0.0)
     r = np.linalg.norm(nodes("farfield") - np.array(onera_m6.CENTRE), axis=1)
@@ -113,8 +115,8 @@ def test_shock_is_where_cp_rises_through_the_critical_value() -> None:
     assert cases.shock_positions(x, cp, -0.9) == []
 
 
-def test_cut_interpolates_linear_fields_exactly(coarse: tuple) -> None:
-    mesh, _ = coarse
+def test_cut_interpolates_linear_fields_exactly(coarse: FaceMesh) -> None:
+    mesh = coarse
     zone = next(z for z in mesh.zones if z.name == "wing")
     faces = [mesh.face(f) for f in range(zone.start, zone.start + zone.count)]
     field = 2.0 * mesh.points[:, 0] - 3.0 * mesh.points[:, 2] + 0.5

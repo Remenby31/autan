@@ -82,7 +82,7 @@ def case(
 def critical_cp(mach: float, gamma: float = GAMMA) -> float:
     """Pressure coefficient where the isentropic flow from the freestream turns sonic."""
     ratio = ((2.0 + (gamma - 1.0) * mach**2) / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
-    return 2.0 / (gamma * mach**2) * (ratio - 1.0)
+    return float(2.0 / (gamma * mach**2) * (ratio - 1.0))
 
 
 def shock_positions(xc: FloatArray, cp: FloatArray, cp_star: float) -> list[float]:
@@ -261,5 +261,6 @@ def study(run: Path, experiment_file: Path) -> dict[str, Any]:
             str(eta): {"upper": sec.upper.tolist(), "lower": sec.lower.tolist()}
             for eta, sec in computed.items()
         },
-        "evidence": results.run.solver.backend != "fake",
+        # acceptance.md: the ten-order drop is measured in fp64.
+        "evidence": results.run.solver.backend != "fake" and results.run.precision == "fp64",
     }
