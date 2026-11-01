@@ -3,6 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
+import { devicesLabel } from "../api/devices";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
 import { degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
@@ -92,7 +93,21 @@ function Compare() {
   );
 
   const diff = useMemo(() => {
-    const flat = details.map((d) => (d.data ? flatten(d.data.case) : null));
+    const flat = details.map((d) =>
+      d.data
+        ? new Map([
+            ...flatten(d.data.case),
+            ...flatten({
+              run: {
+                devices: devicesLabel(d.data.run.devices),
+                backend: d.data.run.solver.backend,
+                solver: d.data.run.solver.commit,
+                deterministic: d.data.run.deterministic,
+              },
+            }),
+          ])
+        : null,
+    );
     const keys = [...new Set(flat.flatMap((f) => (f ? [...f.keys()] : [])))].sort();
     // A setting absent from a case differs from every value, "—" included.
     return keys.map((key) => {
