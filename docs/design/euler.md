@@ -60,7 +60,7 @@ Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R
 - J̃ is the approximate Jacobian: dF/dW of every face with the reconstruction's gradients and limiter held fixed, written by the face loops in the same pass as the residual (`*_jacobian` loops of `kernels/euler.py`), times dW/dU of each cell; it is assembled in 5 × 5 blocks (`BlockMatrix`) and the step's system is solved to a relative residual of 0.1 by the [agglomeration multigrid](multigrid.md).
 - The run starts at first order, where J̃ is the exact Jacobian, and switches to second order once the first-order residual has dropped three orders (at most 200 steps).
 - CFL = 1000 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
-- A step is shortened so that no cell loses more than half its density or pressure.
+- A step is shortened so that no cell loses more than half its density or pressure, and logged (`solver` warning with alpha and the CFL number); the next CFL number is then half the one used.
 
 Steps to ten orders: [multigrid.md](multigrid.md#measurements). A Newton-Krylov variant (FGMRES on finite differences of the full residual, the limiter frozen, block Gauss-Seidel sweeps as preconditioner) was less robust far from the solution: on the MMS from the freestream (hex, n = 16) its steps were shortened at almost every iteration and the run stalled after 1.3 orders, where the defect correction converged ten orders in 177 steps (Gauss-Seidel, CFL = 10 / drop). It is left for M3 as an end phase, switched on once the residual has dropped.
 
