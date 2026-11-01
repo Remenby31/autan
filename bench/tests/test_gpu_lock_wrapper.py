@@ -37,6 +37,14 @@ def alive(pid: int) -> bool:
         return False
 
 
+def pid_from(path: Path) -> int:
+    for _ in range(200):
+        if path.exists() and path.read_text().strip():
+            return int(path.read_text())
+        time.sleep(0.05)
+    pytest.fail(f"{path} never written")
+
+
 def free(lock: Path) -> bool:
     with lock.open() as handle:
         try:
@@ -76,17 +84,17 @@ def test_gives_up_after_the_wait_limit(lock):
     assert [r[1] for r in events(lock)] == ["wait", "timeout"]
 
 
-def test_the_hold_limit_stops_every_worker_before_releasing(lock):
-    # A shell whose worker ignores TERM: only KILL, within the limit, stops it.
-    worker = 'trap "" TERM; sleep 60 & echo $!; wait'
+def test_the_hold_limit_stops_every_worker_before_releasing(lock, tmp_path):
+    # A shell whose worker ignores TERM: only KILL, at the limit, stops it.
+    pid_file = tmp_path / "worker"
+    worker = f'trap "" TERM; sleep 60 & echo $! > {pid_file}; wait'
+    proc = wrapper(lock, "-m", "unit test", "-t", "2", "--", "sh", "-c", worker)
+    wait_for(lock, "take")
     start = time.monotonic()
-    proc = wrapper(lock, "-m", "unit test", "-t", "2", "--", "sh", "-c", worker,
-                   stdout=subprocess.PIPE)  # fmt: skip
-    out, _ = proc.communicate(timeout=20)
-    assert proc.returncode == 124
-    assert time.monotonic() - start < 4
+    assert proc.wait(timeout=20) == 124
+    assert time.monotonic() - start < 3.5
     assert events(lock)[-1][1] == "overrun"
-    assert not alive(int(out))
+    assert not alive(pid_from(pid_file))
     assert free(lock)
 
 
@@ -96,12 +104,30 @@ def test_refuses_a_hold_outside_one_to_six_hundred_seconds(lock, hold):
     assert events(lock) == []
 
 
-def test_no_process_left_behind_outlives_the_hold(lock):
-    left = "sleep 30 >/dev/null 2>&1 & echo $!"
-    proc = wrapper(lock, "-m", "unit test", "--", "sh", "-c", left, stdout=subprocess.PIPE)
-    out, _ = proc.communicate(timeout=10)
+def test_no_process_left_behind_outlives_the_hold(lock, tmp_path):
+    # Also one a job-control shell put in another process group of the session.
+    for shell_options in ("", "set -m;"):
+        pid_file = tmp_path / f"worker{len(shell_options)}"
+        left = f"{shell_options} sleep 30 >/dev/null 2>&1 & echo $! > {pid_file}"
+        assert wrapper(lock, "-m", "unit test", "--", "bash", "-c", left).wait(timeout=20) == 0
+        assert not alive(pid_from(pid_file))
+        assert free(lock)
+
+
+def test_a_command_that_cannot_start_is_recorded(lock):
+    assert wrapper(lock, "-m", "unit test", "--", "/nonexistent/cmd").wait(timeout=10) == 127
+    assert [r[1] for r in events(lock)] == ["wait", "take", "failed"]
+    assert free(lock)
+
+
+def test_a_log_that_is_not_a_regular_file_never_blocks_the_hold(lock):
+    log = lock.parent / "holders.log"
+    log.unlink()
+    os.mkfifo(log)
+    proc = wrapper(lock, "-m", "unit test", "--", "true")
+    _, err = proc.communicate(timeout=10)
     assert proc.returncode == 0
-    assert not alive(int(out))
+    assert err
     assert free(lock)
 
 
@@ -117,8 +143,8 @@ def test_a_signal_stops_the_command_and_is_recorded(lock):
 
 def test_fields_cannot_forge_records(lock):
     env = {**os.environ, "AUTAN_GPU_LOCK": str(lock), "AUTAN_AGENT": "a\tb\nc\\nd"}
-    why = "job\n2026-01-01T00:00:00Z\ttake\tforged"
-    cmd = [str(WRAPPER), "-m", why, "--", "echo", "x\ny"]
+    why = "job\n2026-01-01T00:00:00Z\ttake\tforged\u0085x\u2028y".encode() + b"\xff"
+    cmd = [str(WRAPPER).encode(), b"-m", why, b"--", b"echo", b"x\ny"]
     assert subprocess.run(cmd, env=env, capture_output=True, check=False).returncode == 0
     rows = events(lock)
     assert [r[1] for r in rows] == ["wait", "take", "release"]
@@ -134,10 +160,11 @@ def test_concurrent_records_stay_whole(lock):
     assert all(len(r) == 8 for r in rows)
 
 
-def test_a_signal_to_the_callers_process_group_still_cleans_up(lock):
-    proc = wrapper(lock, "-m", "unit test", "--", "sh", "-c", "sleep 60 & echo $!; wait",
-                   stdout=subprocess.PIPE, start_new_session=True)  # fmt: skip
-    worker = int(proc.stdout.readline())
+def test_a_signal_to_the_callers_process_group_still_cleans_up(lock, tmp_path):
+    pid_file = tmp_path / "worker"
+    proc = wrapper(lock, "-m", "unit test", "--", "sh", "-c", f"sleep 60 & echo $! > {pid_file}; wait",
+                   start_new_session=True)  # fmt: skip
+    worker = pid_from(pid_file)
     os.killpg(proc.pid, signal.SIGINT)
     assert proc.wait(timeout=15) == 143
     assert events(lock)[-1][1] == "killed"
