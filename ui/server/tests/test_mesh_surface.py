@@ -118,6 +118,20 @@ def _mutated(change: str) -> bytes:
     elif change == "repeated node":
         nodes, offsets = arrays["face_nodes"], arrays["face_offsets"]
         nodes[offsets[0] + 1] = nodes[offsets[0]]
+    elif change == "retraced node":
+        nodes, offsets = arrays["face_nodes"], arrays["face_offsets"]
+        first = nodes[offsets[0] : offsets[1]].copy()
+        spiked = np.concatenate([first[:2], first[:2], first[2:]]).astype(np.uint32)
+        arrays["face_nodes"] = np.concatenate([nodes[: offsets[0]], spiked, nodes[offsets[1] :]])
+        arrays["face_offsets"] = np.concatenate([offsets[:1], offsets[1:] + 2]).astype(np.uint32)
+    elif change == "collapsed positions":
+        arrays["positions"][:] = 0
+    elif change == "every face reversed":
+        nodes, offsets = arrays["face_nodes"], arrays["face_offsets"]
+        for f in range(len(offsets) - 1):
+            nodes[offsets[f] : offsets[f + 1]] = nodes[offsets[f] : offsets[f + 1]][::-1].copy()
+    elif change == "float first face":
+        header["zones"][0]["first_face"] = 0.0
     elif change == "reversed face":
         nodes, offsets = arrays["face_nodes"], arrays["face_offsets"]
         nodes[offsets[0] : offsets[1]] = nodes[offsets[0] : offsets[1]][::-1].copy()
@@ -135,6 +149,10 @@ def _mutated(change: str) -> bytes:
         "infinite position",
         "repeated node",
         "reversed face",
+        "retraced node",
+        "collapsed positions",
+        "every face reversed",
+        "float first face",
     ],
 )
 def test_a_surface_that_breaks_its_contract_is_refused(tmp_path: Path, change: str) -> None:

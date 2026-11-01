@@ -176,3 +176,29 @@ test("picking keeps working on another mesh", async ({ page }) => {
   await expect(rule.getByLabel("Zones")).toHaveValue("ymin");
   await expect(rule.getByLabel("Condition")).toHaveValue("wall");
 });
+
+test("a mesh without a surface draws nothing to pick", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await expect(page.getByTestId("mesh-view")).toHaveAttribute("data-ready", "true");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
+  await expect(page.getByText("No boundary surface for this mesh")).toBeVisible();
+
+  const view = page.getByTestId("mesh-view");
+  const box = await view.boundingBox();
+  if (!box) throw new Error("the mesh view has no box");
+  await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
+
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
+});
+
+test("an inviscid case walls a picked wall with slip", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await clickCentre(page);
+
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(rule.getByLabel("Zones")).toHaveValue("ymin");
+  await expect(rule.getByLabel("Condition")).toHaveValue("slip");
+});

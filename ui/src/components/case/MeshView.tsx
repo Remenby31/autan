@@ -22,33 +22,41 @@ export function MeshView({
   const [error, setError] = useState<string | null>(null);
 
   // One renderer for the canvas's life: disposing it loses the WebGL context, which a new
-  // renderer on the same canvas cannot get back.
+  // renderer on the same canvas cannot get back. Disposal waits a tick, so that a remount at
+  // once (React's development StrictMode replays effects) takes the same renderer back.
   const [ready, setReady] = useState(false);
+  const life = useRef<{ creating: Promise<SurfaceViewer>; dispose?: number } | null>(null);
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
-    let disposed = false;
-    SurfaceViewer.create(el, { forceWebGL: webgl })
+    if (life.current?.dispose !== undefined) clearTimeout(life.current.dispose);
+    else life.current = { creating: SurfaceViewer.create(el, { forceWebGL: webgl }) };
+    const current = life.current;
+    if (!current) return;
+    delete current.dispose;
+    let live = true;
+    current.creating
       .then((v) => {
-        if (disposed) {
-          v.dispose();
-          return;
-        }
+        if (!live) return;
         viewer.current = v;
         setReady(true);
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     return () => {
-      disposed = true;
-      viewer.current?.dispose();
-      viewer.current = null;
+      live = false;
       setReady(false);
+      current.dispose = window.setTimeout(() => {
+        current.creating.then((v) => v.dispose()).catch(() => {});
+        if (life.current === current) life.current = null;
+        viewer.current = null;
+      }, 0);
     };
   }, [webgl]);
 
   useEffect(() => {
     if (!ready) return;
     const abort = new AbortController();
+    viewer.current?.clear();
     setSurface(null);
     setError(null);
     fetchSurface(`/api/meshes/${encodeURIComponent(mesh)}/surface`, abort.signal)

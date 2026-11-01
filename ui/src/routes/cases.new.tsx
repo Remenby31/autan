@@ -14,7 +14,7 @@ import {
   UNITS,
 } from "../api/cases";
 import type { Diagnostic } from "../api/contracts";
-import { globMatches } from "../api/glob";
+import { globEscape, globMatches } from "../api/glob";
 import type { Plan } from "../api/runs";
 import { MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
@@ -88,8 +88,10 @@ function CaseEditor() {
       setFocusRule(index);
       return;
     }
-    const kind: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
-    set("boundaries", [...form.boundaries, { zones: zone, kind, values: {} }]);
+    const typed: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
+    // A no-slip wall needs viscous flow (E0414): an inviscid case walls it with slip.
+    const kind = typed === "wall" && form.physics.turbulence === "inviscid" ? "slip" : typed;
+    set("boundaries", [...form.boundaries, { zones: globEscape(zone), kind, values: {} }]);
     setFocusRule(form.boundaries.length);
   };
   // Focused once React has committed the rule's fieldset.

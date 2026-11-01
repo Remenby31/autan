@@ -23,12 +23,34 @@ function translate(pattern: string): string {
         out += "\\[";
         continue;
       }
-      let body = pattern.slice(i + 1, j).replace(/[\\\]]/g, "\\$&");
-      if (body.startsWith("!")) body = `^${body.slice(1)}`;
-      else if (body.startsWith("^")) body = `\\${body}`;
-      out += `[${body}]`;
+      out += charClass(pattern.slice(i + 1, j));
       i = j;
     } else out += c.replace(SPECIAL, "\\$&");
   }
   return out;
+}
+
+// A character class as Python reads it: `!` first negates, `a-b` is a range, a reversed range
+// (`z-a`) is dropped, and a class left empty matches nothing, or any character when negated.
+function charClass(body: string): string {
+  const negated = body.startsWith("!");
+  const stuff = negated ? body.slice(1) : body;
+  const items: string[] = [];
+  for (let k = 0; k < stuff.length; k++) {
+    const c = stuff[k] as string;
+    const end = stuff[k + 2];
+    if (stuff[k + 1] === "-" && end !== undefined) {
+      if (c <= end) items.push(`${escapeInClass(c)}-${escapeInClass(end)}`);
+      k += 2;
+    } else items.push(escapeInClass(c));
+  }
+  if (!items.length) return negated ? "." : "(?!)";
+  return `[${negated ? "^" : ""}${items.join("")}]`;
+}
+
+const escapeInClass = (c: string) => c.replace(/[\\\][^-]/g, "\\$&");
+
+/** A zone name as a pattern matching that name only (`[`, `*`, `?` made literal). */
+export function globEscape(name: string): string {
+  return name.replace(/[[*?]/g, "[$&]");
 }

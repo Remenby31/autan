@@ -56,7 +56,7 @@ def mesh_surface(data: bytes, mesh_info: dict[str, Any]) -> bytes:
     if not np.isfinite(positions).all():
         msg = "a node position is not finite"
         raise _broken(msg)
-    _check_polygons(offsets, nodes)
+    _check_polygons(offsets, nodes, positions)
     origin = (positions.min(axis=0) + positions.max(axis=0)) / 2 if len(positions) else np.zeros(3)
     return encode(
         [
@@ -90,30 +90,57 @@ def _zones(header: dict[str, Any], mesh_info: dict[str, Any]) -> list[dict[str, 
         raise _broken(msg)
     first = 0
     for zone in zones:
-        if not _count(zone["faces"]) or zone.get("first_face") != first:
+        if (
+            not _count(zone["faces"])
+            or not _count(zone.get("first_face"))
+            or zone["first_face"] != first
+        ):
             msg = f"zone {zone['name']!r} does not start where the previous one ends"
             raise _broken(msg)
         first += zone["faces"]
     return zones
 
 
-def _check_polygons(offsets: npt.NDArray[np.int64], nodes: npt.NDArray[np.int64]) -> None:
-    # Each face a polygon of distinct consecutive nodes; the boundary closed and consistently
-    # oriented: every edge traversed as often in each direction (mesh.md#boundary-surface).
+def _check_polygons(
+    offsets: npt.NDArray[np.int64], nodes: npt.NDArray[np.int64], positions: npt.NDArray[Any]
+) -> None:
+    # Each face a polygon of distinct nodes with an area; the boundary closed and consistently
+    # oriented (every edge traversed as often in each direction) and outward: the volume it
+    # encloses, ∮ x·n dA / 3, is positive (mesh.md#boundary-surface).
     count = np.diff(offsets)
     face = np.repeat(np.arange(len(count)), count)
+    width = int(nodes.max()) + 1 if len(nodes) else 1
+    if len(np.unique(face * width + nodes)) != len(nodes):
+        msg = "a face repeats a node"
+        raise _broken(msg)
     position = np.arange(len(nodes)) - np.repeat(offsets[:-1], count)
     following = nodes[offsets[:-1][face] + (position + 1) % count[face]]
-    if np.any(nodes == following):
-        msg = "a face repeats a node along its boundary"
-        raise _broken(msg)
-    width = int(nodes.max()) + 1 if len(nodes) else 1
-    forward = nodes * width + following
-    backward = following * width + nodes
-    edges, there = np.unique(forward, return_counts=True)
-    back = dict(zip(*np.unique(backward, return_counts=True), strict=True))
+    edges, there = np.unique(nodes * width + following, return_counts=True)
+    back = dict(zip(*np.unique(following * width + nodes, return_counts=True), strict=True))
     if any(back.get(edge, 0) != n for edge, n in zip(edges, there, strict=True)):
         msg = "the boundary is not closed with a consistent orientation"
+        raise _broken(msg)
+    points = positions.astype(np.float64)
+    centre = (points.min(axis=0) + points.max(axis=0)) / 2
+    a, b = points[nodes] - centre, points[following] - centre
+    normal = (
+        np.stack(
+            [np.bincount(face, np.cross(a, b)[:, k], minlength=len(count)) for k in range(3)],
+            axis=1,
+        )
+        / 2
+    )
+    area = np.linalg.norm(normal, axis=1)
+    size = float(np.ptp(points, axis=0).max()) if len(points) else 0.0
+    if size == 0 or np.any(area <= 1e3 * np.finfo(np.float64).eps * size**2):
+        msg = "a face has no area"
+        raise _broken(msg)
+    centroid = (
+        np.stack([np.bincount(face, a[:, k], minlength=len(count)) for k in range(3)], axis=1)
+        / count[:, None]
+    )
+    if np.einsum("ij,ij->", centroid, normal) <= 0:
+        msg = "the boundary is not oriented outward: the volume it encloses is not positive"
         raise _broken(msg)
 
 

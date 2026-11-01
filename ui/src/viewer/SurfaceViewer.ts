@@ -135,6 +135,13 @@ export class SurfaceViewer {
     this.frameAll();
   }
 
+  /** Draw nothing, until the next setSurface. */
+  clear(): void {
+    this.clearMesh();
+    this.surface = null;
+    this.requestRender();
+  }
+
   /** Re-read the background and selection colours from the design tokens. */
   applyTheme(): void {
     this.scene.background = token("--bg-0");
