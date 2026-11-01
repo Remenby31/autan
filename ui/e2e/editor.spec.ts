@@ -522,7 +522,9 @@ test("zones take the colour of their condition in 3D", async ({ page }) => {
     width: 4,
     height: 4,
   };
-  await expect(page.getByTestId("condition-legend")).toContainText("wall");
+  // Which zone has which condition is said in words too: polyMesh types zmax as a symmetry.
+  await expect(page.getByLabel("symmetry: zmax")).toBeVisible();
+  await expect(page.getByLabel("wall: ymin")).toBeVisible();
   await expect(page.getByTestId("condition-legend")).not.toContainText("slip");
   const wall = await page.screenshot({ clip: centre });
 
