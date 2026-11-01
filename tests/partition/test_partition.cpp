@@ -811,6 +811,39 @@ TEST_CASE("Cells across a face or a periodic pair never share a colour, in any c
   const auto again = autan::colour_cells(renumbered);
   for (std::size_t c = 0; c < again.size(); ++c)
     CHECK(again[c] == colour[at(renumbered.cell_global_id()[c])]);
+  // Groups of four consecutive cells, every other block: a group shares one colour, and two
+  // cells of different nodes across a face or a periodic pair never do.
+  std::vector<autan::offset_t> group_offsets{0};
+  std::vector<index_t> group_cells;
+  std::vector<std::int64_t> node(at(mesh.n_cells()));
+  std::iota(node.begin(), node.end(), std::int64_t{mesh.n_cells()});
+  for (index_t c = 0; c + 4 <= mesh.n_cells(); c += 8) {
+    for (index_t k = c; k < c + 4; ++k) {
+      group_cells.push_back(k);
+      node[at(k)] = c;
+    }
+    group_offsets.push_back(static_cast<autan::offset_t>(group_cells.size()));
+  }
+  const auto grouped = autan::colour_cells(mesh, group_offsets, group_cells);
+  REQUIRE(grouped.size() == at(mesh.n_cells()));
+  const auto apart = [&](index_t a, index_t b) {
+    if (node[at(a)] != node[at(b)]) CHECK(grouped[at(a)] != grouped[at(b)]);
+  };
+  for (std::size_t g = 0; g + 1 < group_offsets.size(); ++g) {
+    for (auto k = group_offsets[g]; k < group_offsets[g + 1]; ++k)
+      CHECK(grouped[at(group_cells[at(k)])] == grouped[at(group_cells[at(group_offsets[g])])]);
+  }
+  for (index_t f = 0; f < mesh.n_interior_faces(); ++f)
+    apart(mesh.owner()[at(f)], mesh.neighbour()[at(f)]);
+  for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+    const auto partners = mesh.periodic_partners(p);
+    const index_t first = offsets[at(mesh.periodic_pairs()[p].zone_a)];
+    for (std::size_t k = 0; k < partners.size(); ++k)
+      apart(mesh.owner()[at(first) + k], mesh.owner()[at(partners[k])]);
+  }
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_cells(mesh, std::vector<autan::offset_t>{0, 2}, std::vector<index_t>{0, 0});
+  });
   require_error(autan::ErrorCode::partition_input_has_ghosts, [&] {
     const autan::LocalPartition part =
         autan::extract_partition(mesh, autan::compute_geometry(mesh),

@@ -842,7 +842,12 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
 class Run final : public Log {
  public:
   Run(Prepared& p, const SolverBuild& build, Comm& comm)
-      : p_(p), comm_(comm), geometry_(compute_geometry(p.mesh)), local_(make_part()) {
+      : p_(p),
+        comm_(comm),
+        geometry_(compute_geometry(p.mesh)),
+        groups_(p.groups != nullptr && *p.groups ? (*p.groups)(p.input, p.mesh, geometry_)
+                                                 : CellGroups{}),
+        local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
     if (local_) {
       ghosts_ = comm_.ghost_exchange(*local_);
@@ -970,7 +975,11 @@ class Run final : public Log {
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
                                  .cell_colours = colours_,
-                                 .n_colours = n_colours_};
+                                 .n_colours = n_colours_,
+                                 .group_offsets = group_offsets_,
+                                 .group_cells = group_cells_,
+                                 .cell_group_colours = group_colours_,
+                                 .n_group_colours = n_group_colours_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1024,12 +1033,10 @@ class Run final : public Log {
     if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
     if (n > 1) {
-      CellGroups groups;
-      if (p_.groups != nullptr && *p_.groups) groups = (*p_.groups)(p_.input, mesh, geometry_);
       parts = partition_cells(mesh, n,
                               {.cell_weights = cell_cost_weights(mesh),
-                               .group_offsets = groups.offsets,
-                               .group_cells = groups.cells});
+                               .group_offsets = groups_.offsets,
+                               .group_cells = groups_.cells});
     }
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
@@ -1083,17 +1090,42 @@ class Run final : public Log {
   }
   // The global colouring of the mesh (colour_cells), for each cell of the
   // physics' mesh through its global id: every rank computes the same.
+  // With the physics' groups, their colouring and the groups this rank owns
+  // (by increasing least global id, each in the physics' order) likewise.
   void colour_cells_of_physics() {
     const Mesh& mesh = p_.mesh;
-    const auto colours = colour_cells(mesh);
-    std::vector<std::int32_t> by_id(colours.size());
-    for (std::size_t c = 0; c < colours.size(); ++c)
-      by_id[static_cast<std::size_t>(mesh.cell_global_id()[c])] = colours[c];
+    const auto z = [](std::int64_t i) { return static_cast<std::size_t>(i); };
+    const auto global_ids = mesh.cell_global_id();
     const auto ids = physics_mesh().cell_global_id();
-    colours_.resize(ids.size());
-    for (std::size_t c = 0; c < ids.size(); ++c)
-      colours_[c] = by_id[static_cast<std::size_t>(ids[c])];
-    for (const std::int32_t k : colours) n_colours_ = std::max(n_colours_, k + 1);
+    const auto of_physics = [&](const std::vector<std::int32_t>& colours,
+                                std::vector<std::int32_t>& out, std::int32_t& n_out) {
+      std::vector<std::int32_t> by_id(colours.size());
+      for (std::size_t c = 0; c < colours.size(); ++c) by_id[z(global_ids[c])] = colours[c];
+      out.resize(ids.size());
+      for (std::size_t c = 0; c < ids.size(); ++c) out[c] = by_id[z(ids[c])];
+      for (const std::int32_t k : colours) n_out = std::max(n_out, k + 1);
+    };
+    of_physics(colour_cells(mesh), colours_, n_colours_);
+    if (p_.groups == nullptr || !*p_.groups) return;
+    of_physics(colour_cells(mesh, groups_.offsets, groups_.cells), group_colours_,
+               n_group_colours_);
+    std::vector<index_t> owned_at(at(mesh.n_cells()), -1);  // by global id
+    for (index_t c = 0; c < physics_mesh().n_owned_cells(); ++c) owned_at[z(ids[at(c)])] = c;
+    std::vector<std::pair<std::int64_t, std::size_t>> order;  // (least global id, group)
+    for (std::size_t g = 0; g + 1 < groups_.offsets.size(); ++g) {
+      std::int64_t least = std::numeric_limits<std::int64_t>::max();
+      for (auto k = groups_.offsets[g]; k < groups_.offsets[g + 1]; ++k)
+        least = std::min(least, global_ids[at(groups_.cells[z(k)])]);
+      order.emplace_back(least, g);
+    }
+    std::ranges::sort(order);
+    group_offsets_.assign(1, 0);
+    for (const auto& [least, g] : order) {
+      if (owned_at[z(least)] < 0) continue;
+      for (auto k = groups_.offsets[g]; k < groups_.offsets[g + 1]; ++k)
+        group_cells_.push_back(owned_at[z(global_ids[at(groups_.cells[z(k)])])]);
+      group_offsets_.push_back(static_cast<offset_t>(group_cells_.size()));
+    }
   }
 
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
@@ -1516,9 +1548,15 @@ class Run final : public Log {
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;
+  CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   std::optional<LocalPartition> local_;
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
   std::int32_t n_colours_ = 0;
+  // The groups this rank owns, over the physics mesh's owned cells, and their colouring.
+  std::vector<offset_t> group_offsets_;
+  std::vector<index_t> group_cells_;
+  std::vector<std::int32_t> group_colours_;
+  std::int32_t n_group_colours_ = 0;
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial

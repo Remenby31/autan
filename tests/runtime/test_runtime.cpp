@@ -1497,16 +1497,62 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
 // The relaxation physics' colour sweeps redone on the whole mesh, from the
 // global colouring: each step, `sweeps` symmetric sweeps over the colours,
 // each cell of a colour taking the mean of itself and its face neighbours,
-// summed in increasing global id; the field starts at global id mod 7.
-std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
-  const auto colours = autan::colour_cells(mesh);
-  const std::int32_t n_colours = *std::ranges::max_element(colours) + 1;
+// summed in increasing global id; the field starts at global id mod 7. With
+// `groups` (RelaxationOptions::groups), a line smoother: a group is one node
+// of the colouring, greedy by increasing least global id, and its cells are
+// swept in decreasing id; this colouring is computed here, not by the code
+// under test.
+std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int groups = 0) {
   const auto ids = mesh.cell_global_id();
-  std::vector<double> w(colours.size());
+  const auto z = [](auto i) { return static_cast<std::size_t>(i); };
+  const std::int64_t period = 2 * std::int64_t{groups};
+  const auto node = [&](autan::index_t c) -> std::int64_t {
+    return groups > 0 && ids[z(c)] % period < groups ? ids[z(c)] % period
+                                                     : std::int64_t{groups} + ids[z(c)];
+  };
+  std::map<std::int64_t, std::vector<autan::index_t>> members;  // node -> cells, by id
+  std::map<std::int64_t, std::set<std::int64_t>> around_node;
+  for (autan::index_t c = 0; c < mesh.n_cells(); ++c) members[node(c)].push_back(c);
+  for (autan::index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+    const auto a = node(mesh.owner()[z(f)]), b = node(mesh.neighbour()[z(f)]);
+    if (a != b) {
+      around_node[a].insert(b);
+      around_node[b].insert(a);
+    }
+  }
+  std::vector<std::pair<std::int64_t, std::int64_t>> by_least;  // (least id, node)
+  for (const auto& [n, cells] : members) {
+    std::int64_t least = ids[z(cells.front())];
+    for (const auto c : cells) least = std::min(least, ids[z(c)]);
+    by_least.emplace_back(least, n);
+  }
+  std::ranges::sort(by_least);
+  std::map<std::int64_t, std::int32_t> node_colour;
+  for (const auto& [least, n] : by_least) {
+    std::set<std::int32_t> taken;
+    for (const auto m : around_node[n]) {
+      if (node_colour.contains(m)) taken.insert(node_colour[m]);
+    }
+    std::int32_t k = 0;
+    while (taken.contains(k)) ++k;
+    node_colour[n] = k;
+  }
+  std::int32_t n_colours = 0;
+  for (const auto& [n, k] : node_colour) n_colours = std::max(n_colours, k + 1);
+  std::vector<double> w(z(mesh.n_cells()));
   for (std::size_t c = 0; c < w.size(); ++c) w[c] = static_cast<double>(ids[c] % 7);
   const auto colour_sweep = [&](std::int32_t k) {
+    std::vector<autan::index_t> cells;
+    for (const auto& [least, n] : by_least) {
+      if (node_colour[n] != k || n >= groups) continue;
+      auto line = members[n];
+      std::ranges::sort(line, std::greater{}, [&](autan::index_t c) { return ids[z(c)]; });
+      cells.insert(cells.end(), line.begin(), line.end());
+    }
     for (autan::index_t c = 0; c < mesh.n_cells(); ++c) {
-      if (colours[static_cast<std::size_t>(c)] != k) continue;
+      if (node(c) >= groups && node_colour[node(c)] == k) cells.push_back(c);
+    }
+    for (const autan::index_t c : cells) {
       std::vector<std::pair<std::int64_t, double>> around{
           {ids[static_cast<std::size_t>(c)], w[static_cast<std::size_t>(c)]}};
       for (const autan::index_t f : mesh.cell_faces(c)) {
@@ -1599,11 +1645,9 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
       .factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3, .vary = true};
   const Outcome one = run(doc, options);
   REQUIRE(one.status == ExitStatus::finished);
-  // The physics' groups (each spanning the mesh) stay whole on one rank.
-  const fs::path many = run_on_ranks(
-      doc, ranks,
-      {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000", "AUTAN_TEST_GROWTH=0.001",
-       "AUTAN_TEST_VARY=1", "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
+  const fs::path many = run_on_ranks(doc, ranks,
+                                     {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
   // A smoother sweeping the global colours (PhysicsContext::cell_colours),
@@ -1626,6 +1670,30 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(solution_field(many_swept / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
         swept_one);
   if (!periodic) CHECK(swept_one == swept(autan::io::read_mesh(mesh_path), 12, 2));
+  // A line smoother: the physics' groups (each spanning the mesh) stay whole
+  // on one rank, and it sweeps the colours of its groups, each in its order;
+  // on several ranks, the bits of one, and on one, those of an independent
+  // sweep of the whole mesh.
+  autan_test::RelaxationOptions lining = sweeping;
+  lining.groups = ranks;
+  const Outcome one_lined = run(doc, lining);
+  REQUIRE(one_lined.status == ExitStatus::finished);
+  const fs::path many_lined =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2",
+                    "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
+  CHECK(lines_of(many_lined / "history.jsonl") == lines_of(one_lined.run / "history.jsonl"));
+  const auto lined_one =
+      solution_field(one_lined.run / "solution.cgns", "FlowSolution", "TurbulentSANuTilde");
+  CHECK(lined_one != swept_one);
+  CHECK(solution_field(many_lined / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
+        lined_one);
+  if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
+  // Groups the partition refuses end every rank before any directory, with their code.
+  Json malformed;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, false).empty());
+  CHECK(malformed["code"] == "E0140");
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in
