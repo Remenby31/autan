@@ -136,7 +136,7 @@ export class SurfaceViewer {
    * geometry rebuild. */
   setField(fieldName: string): void {
     const field = this.surface?.fields.find((f) => f.name === fieldName);
-    if (!field || !this.geometry) throw new Error(`surface has no field ${fieldName}`);
+    if (!field || !this.geometry) return;
     this.geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
     const range = displayRange(field.min, field.max);
     this.range.min.value = range.min;

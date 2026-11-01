@@ -60,6 +60,7 @@ def wall_surface(folder: Folder) -> bytes:
             if isinstance(bc, h5py.Group) and "PointList" in bc
         ]
     row = {int(face): k for k, face in enumerate(wall_faces)}
+    origin = (coords.min(axis=0) + coords.max(axis=0)) / 2
     zones = []
     for name, faces in sorted(regions):
         if not len(faces) or any(int(f) not in row for f in faces):
@@ -70,14 +71,10 @@ def wall_surface(folder: Folder) -> bytes:
             "Cf": np.linalg.norm(shear[rows], axis=1) / q_inf,
             "Pressure": pressure[rows],
         }
-        zones.append(_zone(name, faces, start, connectivity, coords, values))
+        zones.append(_zone(name, faces, start, connectivity, coords, values, origin))
     if not zones:
         msg = "the solution has no wall face"
         raise ValueError(msg)
-    low, high = coords.min(axis=0), coords.max(axis=0)
-    origin = (low + high) / 2
-    for z in zones:
-        z.positions -= origin.astype(np.float32)
     return encode(zones, origin=(float(origin[0]), float(origin[1]), float(origin[2])))
 
 
@@ -88,19 +85,22 @@ def _zone(
     connectivity: npt.NDArray[np.int64],
     coords: npt.NDArray[np.float64],
     face_values: dict[str, npt.NDArray[np.float64]],
+    origin: npt.NDArray[np.float64],
 ) -> Zone:
-    """Fan-triangulated faces with node values averaged from face values by face area."""
+    """Faces triangulated (`_triangles`), node values averaged from face values with the face
+    areas of results.md (half the norm of the summed edge cross products), positions relative
+    to `origin` computed in FP64 before the FP32 cast."""
     first, count = start[faces], start[faces + 1] - start[faces]
-    owner = np.repeat(np.arange(len(faces)), count - 2)
-    corner = np.arange(len(owner)) - np.repeat(np.cumsum(count - 2) - (count - 2), count - 2)
-    a = connectivity[first[owner]]
-    b = connectivity[first[owner] + corner + 1]
-    c = connectivity[first[owner] + corner + 2]
-    area = 0.5 * np.linalg.norm(np.cross(coords[b] - coords[a], coords[c] - coords[a]), axis=1)
-    face_area = np.bincount(owner, area, minlength=len(faces))
-
+    polygons = [connectivity[s : s + n] for s, n in zip(first, count, strict=True)]
+    vertices = np.concatenate(polygons)
     vertex_face = np.repeat(np.arange(len(faces)), count)
-    vertices = np.concatenate([connectivity[s : s + n] for s, n in zip(first, count, strict=True)])
+    following = np.concatenate([np.roll(p, -1) for p in polygons])
+    cross = np.cross(coords[vertices], coords[following])
+    vector = np.stack(
+        [np.bincount(vertex_face, cross[:, k], minlength=len(faces)) for k in range(3)], axis=1
+    )
+    face_area = 0.5 * np.linalg.norm(vector, axis=1)
+
     nodes, local = np.unique(vertices, return_inverse=True)
     weight = np.bincount(local, face_area[vertex_face], minlength=len(nodes))
     fields = {
@@ -110,5 +110,54 @@ def _zone(
         ).astype(np.float32)
         for key, value in face_values.items()
     }
-    lookup = np.searchsorted(nodes, np.stack([a, b, c], axis=1))
-    return Zone(name, coords[nodes].astype(np.float32), lookup.astype(np.uint32), fields)
+    triangles = np.concatenate(
+        [_triangles(p, coords, n) for p, n in zip(polygons, vector, strict=True)]
+    )
+    lookup = np.searchsorted(nodes, triangles)
+    positions = (coords[nodes] - origin).astype(np.float32)
+    return Zone(name, positions, lookup.astype(np.uint32), fields)
+
+
+def _triangles(
+    polygon: npt.NDArray[np.int64], coords: npt.NDArray[np.float64], normal: npt.NDArray[np.float64]
+) -> npt.NDArray[np.int64]:
+    """Triangles of one polygon with its winding: a fan when it is convex, ear clipping in the
+    plane of its Newell normal otherwise (a fan crosses the notch of a concave face)."""
+    n = len(polygon)
+    if n == 3:
+        return polygon.reshape(1, 3)
+    axis = int(np.argmax(np.abs(normal)))
+    u, v = [k for k in range(3) if k != axis]
+    flat = coords[polygon][:, [u, v]]
+    sign = 1.0 if normal[axis] >= 0 else -1.0
+
+    def turn(a: int, b: int, c: int) -> float:
+        (ax, ay), (bx, by), (cx, cy) = flat[a], flat[b], flat[c]
+        return float(sign * ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)))
+
+    if all(turn(k, (k + 1) % n, (k + 2) % n) >= 0 for k in range(n)):
+        return np.stack([np.full(n - 2, polygon[0]), polygon[1:-1], polygon[2:]], axis=1)
+    remaining = list(range(n))
+    out = []
+    while len(remaining) > 3:
+        m = len(remaining)
+        for k in range(m):
+            a, b, c = remaining[k - 1], remaining[k], remaining[(k + 1) % m]
+            if turn(a, b, c) <= 0:
+                continue
+            inside = any(
+                turn(a, b, q) >= 0 and turn(b, c, q) >= 0 and turn(c, a, q) >= 0
+                for q in remaining
+                if q not in (a, b, c)
+            )
+            if not inside:
+                out.append((a, b, c))
+                remaining.pop(k)
+                break
+        else:  # degenerate polygon: no ear, close it with a fan
+            out.extend((remaining[0], remaining[j], remaining[j + 1]) for j in range(1, m - 1))
+            break
+    if len(remaining) == 3:
+        out.append((remaining[0], remaining[1], remaining[2]))
+    triangles: npt.NDArray[np.int64] = polygon[np.array(out)]
+    return triangles

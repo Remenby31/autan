@@ -11,5 +11,5 @@ test("a signed field puts zero on the neutral colour of the diverging map", () =
 
 test("a uniform field sits in the middle of the map", () => {
   expect(displayRange(0, 0)).toEqual({ min: -1, max: 1 });
-  expect(displayRange(101325, 101325)).toEqual({ min: 101324, max: 101326 });
+  expect(displayRange(1e8, 1e8)).toEqual({ min: 0, max: 2e8 });
 });

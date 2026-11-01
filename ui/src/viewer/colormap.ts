@@ -63,8 +63,12 @@ export function cssGradient(map: Colormap): string {
 /** Display range of a field: symmetric about zero when the field changes sign, so the neutral
  * colour of a diverging map marks zero. */
 export function displayRange(min: number, max: number): { min: number; max: number } {
-  // A uniform field sits in the middle of the map instead of at one end.
-  if (max - min <= 1e-9 * Math.max(1, Math.abs(max))) return { min: min - 1, max: max + 1 };
+  // A uniform field sits in the middle of the map instead of at one end; the half-width
+  // scales with the value so that FP32 in the shader still resolves it.
+  if (max - min <= 1e-9 * Math.max(1, Math.abs(max))) {
+    const half = Math.max(1, Math.abs(min));
+    return { min: min - half, max: max + half };
+  }
   if (min < 0 && max > 0) {
     const bound = Math.max(-min, max);
     return { min: -bound, max: bound };

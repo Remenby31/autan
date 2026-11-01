@@ -74,6 +74,9 @@ function Viewer() {
     if (!el) return;
     const abort = new AbortController();
     let disposed = false;
+    // A new run starts from nothing: the previous surface's fields must not reach this viewer.
+    setSurface(null);
+    setSelected(null);
     const surfaceRequest = fetchSurface(
       run ? `/api/runs/${run}/surface` : `/api/surfaces/synthetic?triangles=${triangles}`,
       abort.signal,

@@ -384,6 +384,9 @@ def create_app(
         """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
         directory = find_run(run_id)
         with Folder(directory) as folder:
+            if read_run(folder)["status"] == "running":
+                # results.md: the solution is not a result while the run is running.
+                raise HTTPException(409, f"run {run_id} is still running")
             stat = folder.stat("solution.cgns")
             if stat is None:
                 raise HTTPException(404, f"run {run_id} has no solution.cgns")
