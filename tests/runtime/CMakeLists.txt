@@ -22,7 +22,11 @@ target_compile_definitions(
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
 if(AUTAN_ENABLE_CUDA)
-  target_compile_definitions(autan_runtime_tests PRIVATE AUTAN_HAVE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  foreach(target autan_runtime_tests autan-run-relaxation)
+    target_compile_definitions(${target} PRIVATE AUTAN_HAVE_CUDA)
+    target_link_libraries(${target} PRIVATE CUDA::cudart)
+  endforeach()
 endif()
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   target_compile_definitions(
