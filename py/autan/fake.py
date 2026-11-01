@@ -352,6 +352,10 @@ class FakeBackend:
         )
         layout = cell_layout(box, plan)
         changes: dict[str, Any] = {"status": status, "iterations": done, "time": history.time(done)}
+        if status in ("converged", "completed", "stopped"):
+            changes["monitors"] = {
+                m.name: {"iteration": done, **history.forces(m, done)} for m in spec.monitors
+            }
         if status == "diverged":
             assert self.diverge_at is not None
             cell = box.n**3 // 2
@@ -409,7 +413,7 @@ class _History:
             for index, name in enumerate(self.equations)
         }
         monitors = {
-            monitor.name: self._forces(monitor, iteration)
+            monitor.name: self.forces(monitor, iteration)
             for monitor in self.spec.monitors
             if iteration % monitor.every == 0
         }
@@ -420,7 +424,7 @@ class _History:
             "monitors": monitors,
         }
 
-    def _forces(self, monitor: Any, iteration: int) -> dict[str, float]:
+    def forces(self, monitor: Any, iteration: int) -> dict[str, float]:
         fs, state = self.spec.freestream, self.state
         alpha, beta = si(fs.aoa, "rad"), si(fs.sideslip, "rad")
         q = 0.5 * state["density"] * state["speed"] ** 2
@@ -500,7 +504,7 @@ def _write_solution(
         metadata = {
             k: v
             for k, v in info.document().items()
-            if k not in ("status", "finished", "iterations", "diagnostics")
+            if k not in ("status", "finished", "iterations", "monitors", "diagnostics")
         }
         cgns.node(base, "RunMetadata", "Descriptor_t", json.dumps(metadata, sort_keys=True))
         cgns.node(

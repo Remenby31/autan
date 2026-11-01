@@ -94,6 +94,7 @@ class RunInfo(_Strict):
     time: float | None
     averaging: Averaging | None
     start: StartInfo | None = None
+    monitors: dict[str, dict[str, Any]] | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -192,6 +193,7 @@ class RunWriter:
         staging.mkdir()
         self.path = staging
         self.info = info
+        self.spec = spec
         (staging / "case.toml").write_text(_toml(spec))
         (staging / "mesh-info.json").write_text(json.dumps(mesh_info.document(), indent=2))
         if manufactured is not None:
@@ -267,6 +269,11 @@ class RunWriter:
         )
 
     def finish(self, **changes: Any) -> None:
+        if changes.get("status") in FINAL and "monitors" not in changes:
+            if self.spec.monitors:
+                message = "a finished run of a case with monitors records their final values"
+                raise ValueError(message)
+            changes["monitors"] = {}
         self.info = self.info.model_copy(update={**changes, "finished": iso(utc_now())})
         for found in self.info.diagnostics:
             self.diagnose(found)
@@ -378,8 +385,9 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        if "start" not in document:
-            broken("run.json has no start key (null for a run from the freestream)", "run.json")
+        for key in ("start", "monitors"):
+            if key not in document:
+                broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
             run = RunInfo.model_validate(document)
         except ValidationError as error:
@@ -423,6 +431,8 @@ class Results:
             broken(problem, "log.jsonl")
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
+        for problem in final_monitor_problems(records, run, case):
+            broken(problem, "run.json")
         results = cls(
             path,
             run,
@@ -681,6 +691,38 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
         last = records[-1]["iteration"] if records else base
         if last != run.iterations:
             found.append(f"history ends at iteration {last}, run.json says {run.iterations}")
+    return found
+
+
+FINAL = frozenset({"converged", "completed", "stopped"})
+
+
+def final_monitor_problems(
+    records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
+) -> list[str]:
+    """run.json ``monitors``: each monitor on the final state of a finished run, equal to the
+    last history line when that line carries it (results.md#runjson)."""
+    final = run.monitors
+    if (final is None) != (run.status not in FINAL):
+        return ["monitors must be given exactly for converged, completed and stopped runs"]
+    if final is None:
+        return []
+    monitors = {m.name: m for m in case.monitors}
+    if set(final) != set(monitors):
+        return [f"monitors must be exactly {sorted(monitors)}"]
+    found = []
+    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
+    for name, record in final.items():
+        values = {k: v for k, v in record.items() if k != "iteration"}
+        iteration = record.get("iteration")
+        if type(iteration) is not int or iteration != run.iterations:
+            found.append(f"monitor {name!r}: iteration must be {run.iterations}")
+        elif set(values) != force_keys(monitors[name], case) or not all(
+            _finite(v) for v in values.values()
+        ):
+            found.append(f"monitor {name!r} has the wrong or non-finite quantities")
+        elif last is not None and name in last["monitors"] and last["monitors"][name] != values:
+            found.append(f"monitor {name!r} differs from the last history line")
     return found
 
 

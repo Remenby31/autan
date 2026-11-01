@@ -673,7 +673,7 @@ def test_log_lines_are_framed_on_bytes(crm_run: autan.Results) -> None:
     assert autan.Results.open(crm_run.path).log[0].message == first["message"]
 
     document = json.loads((crm_run.path / "run.json").read_text())
-    document.update(status="running", finished=None)
+    document.update(status="running", finished=None, monitors=None)
     (crm_run.path / "run.json").write_text(json.dumps(document))
     with path.open("ab") as log:
         log.write('{"message": "half a character \u00e9'.encode()[:-1])
@@ -689,3 +689,59 @@ def test_the_writer_refuses_lines_the_reader_would_reject(crm_run: autan.Results
         writer.log("error", "x", source="solver", code="E9999")
     with pytest.raises(ValueError, match="level"):
         writer.log("info", "x", source="solver", code="D0107")
+
+
+@pytest.mark.parametrize(
+    ("options", "every", "status", "iteration"),
+    [
+        ({}, 10, "converged", 100),  # on cadence: the last history line carries it
+        ({}, 7, "converged", 100),  # off cadence
+        ({"iterations": 0}, 10, "stopped", 0),  # the initial state
+        ({"diverge_at": 10, "iterations": 30}, 10, "diverged", None),
+    ],
+)
+def test_run_json_records_the_final_monitors(
+    options: dict[str, Any],
+    every: int,
+    status: str,
+    iteration: int | None,
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+) -> None:
+    body = CRM_HL.replace("every=10", f"every={every}")
+    result = autan.load(write_case(body)).run(
+        crm_mesh, backend=autan.FakeBackend(**options), runs=tmp_path
+    )
+    assert result.run.status == status
+    final = result.run.monitors
+    if iteration is None:
+        assert final is None
+        return
+    assert final is not None
+    assert final["forces"]["iteration"] == iteration
+    history = result.path / "history.jsonl"  # absent before the first iteration
+    lines = history.read_text().splitlines() if history.exists() else []
+    last = json.loads(lines[-1])["monitors"] if lines else {}
+    if iteration % every == 0 and "forces" in last:
+        assert {k: v for k, v in final["forces"].items() if k != "iteration"} == last["forces"]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda d: d.pop("monitors"),
+        lambda d: d["monitors"]["forces"].update(iteration=99),
+        lambda d: d["monitors"]["forces"].update(cl=d["monitors"]["forces"]["cl"] + 1),
+        lambda d: d.update(monitors=None),
+    ],
+)
+def test_the_reader_checks_the_final_monitors(
+    damage: Callable[[dict[str, Any]], object], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    damage(document)
+    (crm_run.path / "run.json").write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]

@@ -309,6 +309,9 @@ def json_schema(name: str) -> dict[str, Any]:
     models: dict[str, type[BaseModel]] = {"mesh-info": MeshInfo, "results": RunInfo}
     schema = models[name].model_json_schema(by_alias=True, mode="validation")
     require_tags(schema)
+    if name == "results":
+        # Optional in RunInfo only for writers' convenience; run.json always carries them.
+        schema["required"] = [*schema["required"], "start", "monitors"]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMAS[name],
