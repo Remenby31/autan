@@ -2,7 +2,7 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "mms",
-    "sha256": "4130db9ee225ef23465f08d1afd86fea4acf2adb2f75a9809f1cf1972680999e",
+    "sha256": "bc5f2ba6e436f5c0bddc48a5b5d3c48577f983024519959bf3a9b7ec5ba8f1f0",
     "toml": "schema = \"autan.case/1\"\nname = \"mms\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = []\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"compressible\"\nprecision = \"fp32+acc64\"\n\n[physics.turbulence]\nmodel = \"inviscid\"\n\n[physics.gas]\nkind = \"ideal-gas\"\nname = \"mms\"\nmolar_mass = \"0.028970253024390245 kg / mol\"\ngamma = 1.4\nprandtl = 0.72\n\n[physics.gas.viscosity]\nlaw = \"constant\"\nmu = \"0.001 Pa * s\"\n\n[freestream]\nmach = 0.3\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\ntemperature = \"300.0 K\"\npressure = \"101325.0 Pa\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\n\n[verification.manufactured]\npath = \"euler.mms.json\"\nsha256 = \"7555af6d04b90046c676c6f9c15e26507ff96f0cf763d877ba5f30c63788bf7e\"\n"
   },
   "mesh": {
@@ -176,7 +176,8 @@
   "time": {
     "kind": "steady",
     "max_iterations": 10000,
-    "residual_orders": 8.0
+    "residual_orders": 8.0,
+    "linear_solver": "multigrid"
   },
   "monitors": [],
   "start": null,

@@ -81,7 +81,12 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     assert forces["zones"] == ["wing.slat", "wing.main", "wing.flap"]
     assert forces["ref_area"] == pytest.approx(191.84)
     assert forces["ref_length"] == pytest.approx(7.0)
-    assert document["time"] == {"kind": "steady", "max_iterations": 10000, "residual_orders": 8.0}
+    assert document["time"] == {
+        "kind": "steady",
+        "max_iterations": 10000,
+        "residual_orders": 8.0,
+        "linear_solver": "multigrid",
+    }
 
 
 def test_heat_exchanger_media_and_inlets_in_si(
@@ -252,3 +257,21 @@ def test_mesh_unit_scales_the_mesh_alone(
     assert document["monitors"][0]["ref_length"] == pytest.approx(7.0)
     in_metres = autan.load(write_case(CRM_HL, "metres.py")).spec
     assert (case.spec.hash() == in_metres.hash()) == (unit == "m")
+
+
+def test_the_linear_solver_is_a_steady_choice(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    body = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    case = write_case(body)
+    copy = tmp_path / "copy.toml"
+    copy.write_text(autan.load(case).to_toml())
+    assert autan.load(copy).spec == autan.load(case).spec
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    validator = jsonschema.Draft202012Validator(json_schema("solver-input"))
+    validator.validate(document)
+    assert document["time"]["linear_solver"] == "gauss-seidel"
+    unsteady = {"kind": "unsteady", "steps": 10, "dt": 1e-3, "cfl": None, "average_from": None}
+    with pytest.raises(jsonschema.ValidationError):  # an unsteady run has no linear solver choice
+        validator.validate(document | {"time": unsteady | {"linear_solver": "multigrid"}})

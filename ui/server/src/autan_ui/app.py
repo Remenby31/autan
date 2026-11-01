@@ -80,7 +80,7 @@ class Follower:
         self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
         self.read = dict(self.offsets)
         self.run: dict[str, Any] | None = None
-        self.run_mtime: int | None = None
+        self.version: tuple[object, ...] | None = None
         self.sent = False
         self.done = False
 
@@ -89,10 +89,10 @@ class Follower:
         the stream calls `delivered` once it has sent it, so that a reconnection resumes from
         what the client received, not from what was read."""
         events: list[tuple[str, Any]] = []
-        mtime = _mtime(self.folder)
-        if self.run is None or mtime != self.run_mtime:
+        version = _version(self.folder)
+        if self.run is None or version != self.version:
             try:
-                self.run_mtime, self.run = mtime, read_run(self.folder)
+                self.version, self.run = version, read_run(self.folder)
             except ValueError as error:
                 self.done = True
                 return [("invalid", str(error))]
@@ -155,9 +155,11 @@ def _file_offsets(value: object) -> dict[str, int]:
     return {k: v for k, v in value.items() if k in STREAMED and type(v) is int and v >= 0}
 
 
-def _mtime(folder: Folder) -> int | None:
-    stat = folder.stat("run.json")
-    return stat.st_mtime_ns if stat else None
+def _version(folder: Folder) -> tuple[object, ...]:
+    # Every file run.json is checked against: a change to any of them, even one that keeps the
+    # modification time and size, can change the verdict (ctime moves with any write).
+    stats = (folder.stat(name) for name in ("run.json", "case.toml", "mesh-info.json"))
+    return tuple((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats)
 
 
 def _open_build(static: Path | None) -> Folder | None:
@@ -184,6 +186,13 @@ def _list_build(build: Folder) -> set[str]:
             if not is_link(here / name):
                 names.add((here / name).relative_to(build.path).as_posix())
     return names
+
+
+def checked_run(folder: Folder) -> dict[str, Any]:
+    try:
+        return read_run(folder)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 def create_app(
@@ -318,13 +327,16 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
-        return registry.details(find_run(run_id))
+        try:
+            return registry.details(find_run(run_id))
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         """`autan plan --json` of the run's stored case against its stored MeshInfo."""
         with Folder(find_run(run_id)) as folder:
-            run = read_run(folder)
+            run = checked_run(folder)
             case_toml = folder.read("case.toml")
             mesh_info = folder.read("mesh-info.json")
             manufactured = (
@@ -422,7 +434,7 @@ def create_app(
         """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
         directory = find_run(run_id)
         with Folder(directory) as folder:
-            if read_run(folder)["status"] == "running":
+            if checked_run(folder)["status"] == "running":
                 # results.md: the solution is not a result while the run is running.
                 raise HTTPException(409, f"run {run_id} is still running")
             stat = folder.stat("solution.cgns")
