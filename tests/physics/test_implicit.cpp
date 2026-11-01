@@ -220,6 +220,7 @@ TEST_CASE("the assembled Jacobian matches its central differences across periodi
     for (std::size_t c = 0; c < owned; ++c) {
       const auto i = k * nc + c;
       REQUIRE(std::isfinite(av[i]));
+      REQUIRE(std::isfinite(rp[i] - rm[i]));
       diff = std::max(diff, std::abs((rp[i] - rm[i]) / (2.0 * h) - av[i]));
       norm = std::max(norm, std::abs(av[i]));
     }
