@@ -30,7 +30,7 @@ struct NavierStokes<P>::Impl {
   std::vector<offset_t> fit_offsets;
   std::vector<index_t> fit_entries;
   std::vector<typename P::grad> fit_g, fit_hd, fit_ho;
-  const Geometry& geometry;
+  const Geometry& geo;  // FP64 geometry of the quadratic fit
   std::vector<typename P::jac> visc_jac, visc_bnd_jac;
   nk::Data<P> d{};
   const typename P::jac* dwdu = nullptr;
@@ -69,7 +69,7 @@ struct NavierStokes<P>::Impl {
     for (std::size_t f = ni; f < static_cast<std::size_t>(t.n_faces); ++f) {
       boundary_cell[static_cast<std::size_t>(t.owner[f])] = 1;
     }
-    const auto& g = geometry;
+    const auto& g = geo;
     for (std::size_t c = 0; c < nc; ++c) {
       if (boundary_cell[c] == 0) continue;
       const auto begin = static_cast<std::size_t>(t.stencil_offsets[c]);
@@ -182,7 +182,7 @@ struct NavierStokes<P>::Impl {
   }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t)
-      : euler(mesh, geometry, gas, scheme), geometry(geometry) {
+      : euler(mesh, geometry, gas, scheme), geo(geometry) {
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||
         (t.sutherland && (!(t.t_ref > 0.0) || !(t.s >= 0.0)))) {
       throw std::invalid_argument("transport properties must be positive");
