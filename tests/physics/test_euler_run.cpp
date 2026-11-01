@@ -1,6 +1,7 @@
 // The Euler physics through autan-run's public entry point, run_case, on tests/data/mesh/hybrid:
 // solver inputs written by `autan prepare` (tests/data/runtime), edited per test.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -500,4 +501,142 @@ TEST_CASE("a fast flow at low pressure that the kernels resolve is not taken for
   INFO(out.err);
   REQUIRE(out.status == ExitStatus::finished);
   CHECK(Json::parse(read(out.run / "run.json"))["status"] == "completed");
+}
+
+TEST_CASE("oracle-state faces take their paired states, whatever the row order", "[euler]") {
+  // tests/data/mesh/ringleb with the exact Ringleb states (autan-vv) on its four in-plane sides,
+  // in the oracle's units (R = 1/gamma); the same rows in reverse order within each zone give
+  // the same solution bit for bit, because faces pair with rows by centroid (face-states.md).
+  const fs::path dir = data_dir / "mesh" / "ringleb";
+  auto doc_for = [&](bool reversed) {
+    Json states = Json::parse(read(dir / "ringleb-n004.states.json"));
+    if (reversed) {
+      for (auto& [name, z] : states["zones"].items()) {
+        std::reverse(z["centroids"].begin(), z["centroids"].end());
+        std::reverse(z["values"].begin(), z["values"].end());
+      }
+    }
+    const std::string bytes = states.dump();
+    std::random_device random;
+    const fs::path file =
+        fs::temp_directory_path() / ("autan_ringleb-" + std::to_string(random()) + ".json");
+    std::ofstream(file, std::ios::binary) << bytes;
+    std::string sha;
+    picosha2::hash256_hex_string(bytes, sha);
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      const fs::path mesh = dir / "ringleb-n004.msh";
+      d["mesh"]["path"] = fs::absolute(mesh).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+      const double gamma = 1.4, rho = 0.8, p = 0.6, r = 1.0 / gamma;
+      auto& f = d["freestream"];
+      f["density"] = rho;
+      f["pressure"] = p;
+      f["temperature"] = p / (rho * r);
+      f["speed"] = 0.5;
+      f["velocity"] = {0.0, -0.5, 0.0};
+      f["mach"] = 0.5 / std::sqrt(gamma * p / rho);
+      Json zone = d["cell_zones"][0];
+      zone["zone"] = "fluid";
+      zone["medium"]["gas_constant"] = r;
+      zone["initial"]["density"] = rho;
+      zone["initial"]["pressure"] = p;
+      zone["initial"]["temperature"] = p / (rho * r);
+      zone["initial"]["velocity"] = f["velocity"];
+      d["cell_zones"] = Json::array({zone});
+      Json boundaries = Json::array();
+      for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+        Json b = d["boundaries"][0];
+        for (auto& [key, value] : b.items()) {
+          if (key != "zone" && key != "kind") value = nullptr;
+        }
+        b["zone"] = name;
+        const bool side = std::string(name) != "back" && std::string(name) != "front";
+        b["kind"] = side ? "oracle-state" : "symmetry";
+        if (side) b["states"] = Json{{"path", file.string()}, {"sha256", sha}};
+        boundaries.push_back(b);
+      }
+      d["boundaries"] = boundaries;
+      d["monitors"][0]["zones"] = {"k-min"};
+      d["time"]["max_iterations"] = 200;
+    });
+  };
+  const auto a = run(doc_for(false));
+  INFO(a.err);
+  REQUIRE(a.status == ExitStatus::finished);
+  const auto b = run(doc_for(true));
+  REQUIRE(b.status == ExitStatus::finished);
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "Pressure"}) {
+    CHECK(field(a.run, name) == field(b.run, name));
+  }
+  // The states reach the cells: the flow is no longer the uniform initial state.
+  const auto rho = field(a.run, "Density");
+  CHECK(*std::ranges::max_element(rho) - *std::ranges::min_element(rho) > 0.1);
+}
+
+TEST_CASE("oracle-state faces impose their states component by component", "[euler]") {
+  // Every side of the hybrid mesh takes one uniform state with all five components distinct and
+  // non-zero; started there, the flow stays there in both precisions.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const std::array<double, 5> w{1.2, 80.0, -30.0, 20.0, 1.1e5};
+  Json zones = Json::object();
+  const auto off = mesh.boundary_zone_offsets();
+  for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+    Json centroids = Json::array(), values = Json::array();
+    for (auto f = off[z]; f < off[z + 1]; ++f) {
+      const auto i = static_cast<std::size_t>(f);
+      centroids.push_back({g.face_centroid_x[i], g.face_centroid_y[i], g.face_centroid_z[i]});
+      values.push_back(w);
+    }
+    if (!centroids.empty()) {
+      zones[mesh.face_zones()[z].name] = {
+          {"faces", centroids.size()}, {"centroids", centroids}, {"values", values}};
+    }
+  }
+  const Json states = {
+      {"schema", "autan.face-states/1"},
+      {"oracle", "uniform"},
+      {"mesh_sha256", autan::io::mesh_hash(mesh_path)},
+      {"variables", {"density", "velocity-x", "velocity-y", "velocity-z", "pressure"}},
+      {"zones", zones}};
+  const std::string bytes = states.dump();
+  std::random_device random;
+  const fs::path file =
+      fs::temp_directory_path() / ("autan_uniform-" + std::to_string(random()) + ".json");
+  std::ofstream(file, std::ios::binary) << bytes;
+  std::string sha;
+  picosha2::hash256_hex_string(bytes, sha);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    for (auto& z : d["cell_zones"]) {
+      z["initial"]["density"] = w[0];
+      z["initial"]["velocity"] = {w[1], w[2], w[3]};
+      z["initial"]["pressure"] = w[4];
+    }
+    for (auto& b : d["boundaries"]) {
+      b["kind"] = "oracle-state";
+      b["states"] = Json{{"path", file.string()}, {"sha256", sha}};
+    }
+    d["time"]["max_iterations"] = 20;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
+                                                      : std::numeric_limits<float>::epsilon();
+  const double speed = std::hypot(w[1], w[2], w[3]);
+  const std::array<std::pair<const char*, double>, 5> expected{{{"Density", w[0]},
+                                                                {"VelocityX", w[1]},
+                                                                {"VelocityY", w[2]},
+                                                                {"VelocityZ", w[3]},
+                                                                {"Pressure", w[4]}}};
+  for (const auto& [name, value] : expected) {
+    INFO(name);
+    const double scale =
+        std::string(name) == "Density" || std::string(name) == "Pressure" ? std::abs(value) : speed;
+    for (const double v : field(out.run, name)) CHECK(std::abs(v - value) <= 64 * eps * scale);
+  }
 }
