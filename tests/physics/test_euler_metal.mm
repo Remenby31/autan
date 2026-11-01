@@ -111,6 +111,7 @@ Scheme scheme(Flux flux, bool second_order) {
   s.second_order = second_order;
   s.mach_ref = 0.3;
   s.scale = {1.0, 100.0, 100.0, 100.0, 1e5};
+  s.reference = {1.0, 0.0, 0.0, 0.0, 1e5 / (air.gamma - 1.0)};  // at rest, p_ref = 1e5
   return s;
 }
 
@@ -119,7 +120,8 @@ std::vector<double> cpu_residual(const Case& c, const Scheme& s, const Boundarie
   using P = autan::kernels::fp32_acc64;
   autan::physics::Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(b.kind, b.data);
-  const std::vector<typename P::state> us(u.begin(), u.end());
+  std::vector<typename P::state> us(u.size());
+  e.state(u, us);
   std::vector<typename P::residual> r(us.size());
   e.residual(us, r);
   return {r.begin(), r.end()};
@@ -197,7 +199,12 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   }
   ek::Data<M> d{};
   d.topo = topo;
-  d.u = buf.put<S>(u);
+  // Stored state U - U_ref and gauge pressure p - p_ref (Scheme::reference).
+  std::vector<double> stored(u.size());
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t i = 0; i < nc; ++i) stored[k * nc + i] = u[k * nc + i] - s.reference[k];
+  }
+  d.u = buf.put<S>(stored);
   d.prim = buf.zeros<S>(5 * nc);
   d.bc_kind = buf.put<G>(kind);
   d.bc = buf.put<S>(bc);
@@ -218,6 +225,10 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   d.gamma[0] = typename M::param(air.gamma);
   d.gas_constant[0] = typename M::param(air.gas_constant);
   d.mach_ref[0] = typename M::param(s.mach_ref);
+  const auto& r0 = s.reference;
+  for (std::size_t k = 0; k < 5; ++k) d.u_ref[k] = typename M::param(r0[k]);
+  d.p_ref[0] = typename M::param(
+      (air.gamma - 1.0) * (r0[4] - 0.5 * (r0[1] * r0[1] + r0[2] * r0[2] + r0[3] * r0[3]) / r0[0]));
   const double k3 = std::pow(s.venkat_k / s.length, 3);
   for (std::size_t k = 0; k < 5; ++k) {
     d.limiter_scale[k] = typename M::param(k3 * s.scale[k] * s.scale[k]);
