@@ -495,6 +495,7 @@ class Run final : public Log {
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
         {"start", start},
+        {"monitors", nullptr},
         {"diagnostics", Json::array()}};
     if (continued()) {
       info_["iterations"] = in.start->iterations;
@@ -709,7 +710,8 @@ class Run final : public Log {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
-    for (const char* key : {"status", "finished", "iterations", "diagnostics"}) metadata.erase(key);
+    for (const char* key : {"status", "finished", "iterations", "monitors", "diagnostics"})
+      metadata.erase(key);
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
     std::map<std::string, const BoundaryInput*> conditions;
@@ -756,8 +758,35 @@ class Run final : public Log {
     dir_->publish_solution();
   }
 
+  // The forces of every monitor on the final state, whether or not its last
+  // iteration was a multiple of `every` (results.md, run.json `monitors`).
+  void record_final_monitors(std::int64_t done) {
+    const auto& in = p_.input;
+    Json monitors = Json::object();
+    try {
+      for (std::size_t m = 0; m < in.monitors.size(); ++m) {
+        Json record =
+            forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
+                          in.monitors[m], in.freestream);
+        record["iteration"] = done;
+        monitors[in.monitors[m].name] = std::move(record);
+      }
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(e.what());
+    }
+    info_["monitors"] = std::move(monitors);
+  }
+
   ExitStatus finish(std::string status, std::int64_t done) {
     info_["iterations"] = done;
+    if (physics_ && status != "failed" && status != "diverged") {
+      try {
+        record_final_monitors(done);
+      } catch (const PhysicsFailure& e) {
+        record_failure(e.what());
+        status = "failed";
+      }
+    }
     // results.md: the solution is required unless the run diverged (written
     // if possible) or failed (optional).
     if (physics_ && status != "failed") {

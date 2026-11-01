@@ -253,6 +253,14 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
       for (const auto& [key, value] : f.items()) CHECK(value == 0.0);
     }
   }
+  // Convergence between two monitor iterations: run.json still holds the
+  // final forces, at the last iteration.
+  const Json& final_forces = info["monitors"]["forces"];
+  CHECK(final_forces.size() == 13);
+  CHECK(final_forces["iteration"] == 28);
+  for (const auto& [key, value] : final_forces.items()) {
+    if (key != "iteration") CHECK(value == 0.0);
+  }
 
   const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
   const autan::Mesh back = autan::io::read_mesh(o.run / "solution.cgns");
@@ -273,6 +281,41 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["iterations"] == 10);
     CHECK(fs::exists(o.run / "solution.cgns"));
   }
+  SECTION("final monitors: the last state, equal to its history line when it has one") {
+    // The pressure grows at each step, so each line's forces differ.
+    const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 10; }),
+                          {.factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3});
+    const Json info = Json::parse(read(o.run / "run.json"));
+    Json expected = history(o.run)[9]["monitors"]["forces"];
+    CHECK(expected != history(o.run)[4]["monitors"]["forces"]);
+    expected["iteration"] = 10;
+    CHECK(info["monitors"] == Json{{"forces", expected}});
+  }
+  SECTION("stopped before iteration 1: the initial state at iteration 0") {
+    // ymin, the unit square y = 0 with outward normal -y, under a pressure
+    // excess dp carries F = (0, -dp, 0).
+    const Outcome o =
+        run(input(), {.factor = 0.9, .pressure_offset = 1000.0, .signal_on_start = true});
+    CHECK(o.status == ExitStatus::signalled);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "stopped");
+    CHECK(info["iterations"] == 0);
+    CHECK_FALSE(fs::exists(o.run / "history.jsonl"));
+    const Json& f = info["monitors"]["forces"];
+    CHECK(f["iteration"] == 0);
+    CHECK_THAT(f["fy"].get<double>(), Catch::Matchers::WithinAbs(-1000.0, 1e-9));
+    CHECK(fs::exists(o.run / "solution.cgns"));
+  }
+  SECTION("failed in the final loads: E0704, no monitors") {
+    const Outcome o = run(input([](Json& d) { d["monitors"][0]["every"] = 1000; }),
+                          {.factor = 0.5, .throw_in_loads = true});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["iterations"] == 28);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+  }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
     CHECK(o.status == ExitStatus::finished);
@@ -289,6 +332,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(d["data"]["zone"] ==
           mesh.cell_zones()[static_cast<std::size_t>(mesh.cell_zone()[3])].name);
     CHECK(history(o.run).size() == 6);
+    CHECK(info["monitors"].is_null());
     // The diverged state holds a NaN: no solution can satisfy the readers.
     CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
   }
@@ -299,6 +343,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(history(o.run).size() == 3);
+    CHECK(info["monitors"].is_null());
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -495,14 +540,20 @@ TEST_CASE("Forces monitors report the loads and their coefficients", "[runtime]"
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   };
   const std::array<std::string, 3> axes{"x", "y", "z"};
-  for (std::size_t k = 0; k < 3; ++k) {
-    CHECK_THAT(f["f" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(force[k], 1e-9));
-    CHECK_THAT(f["m" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k], 1e-9));
-    CHECK_THAT(f["cm" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k] / q, 1e-9));
+  // A history line, and run.json's final record at iteration 28, between two
+  // monitor iterations.
+  const Json final_forces = Json::parse(read(o.run / "run.json"))["monitors"]["forces"];
+  CHECK(final_forces["iteration"] == 28);
+  for (const Json& r : {f, final_forces}) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      CHECK_THAT(r["f" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(force[k], 1e-9));
+      CHECK_THAT(r["m" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k], 1e-9));
+      CHECK_THAT(r["cm" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k] / q, 1e-9));
+    }
+    CHECK_THAT(r["cd"].get<double>(), Catch::Matchers::WithinAbs(dot(force, drag) / q, 1e-12));
+    CHECK_THAT(r["cl"].get<double>(), Catch::Matchers::WithinAbs(dot(force, lift) / q, 1e-12));
+    CHECK_THAT(r["cs"].get<double>(), Catch::Matchers::WithinAbs(dot(force, side) / q, 1e-12));
   }
-  CHECK_THAT(f["cd"].get<double>(), Catch::Matchers::WithinAbs(dot(force, drag) / q, 1e-12));
-  CHECK_THAT(f["cl"].get<double>(), Catch::Matchers::WithinAbs(dot(force, lift) / q, 1e-12));
-  CHECK_THAT(f["cs"].get<double>(), Catch::Matchers::WithinAbs(dot(force, side) / q, 1e-12));
   CHECK(std::abs(f["cd"].get<double>()) > 1e-3);
 }
 

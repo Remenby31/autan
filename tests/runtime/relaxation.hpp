@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -27,6 +28,8 @@ struct RelaxationOptions {
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
+  bool signal_on_start = false;  ///< raise SIGTERM once constructed, before iteration 1
+  bool throw_in_loads = false;
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -89,6 +92,7 @@ class Relaxation final : public autan::runtime::Physics {
         weight_ = restart.back().values.at(0);
       }
     }
+    if (options_.signal_on_start) std::raise(SIGTERM);
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
@@ -175,6 +179,7 @@ class Relaxation final : public autan::runtime::Physics {
                                             const std::array<double, 3>& center) const override {
     // Pressure force (p - p_inf) S over the zones' faces, its moment about
     // `center`; the cell's pressure stands for the face's.
+    if (options_.throw_in_loads) throw std::runtime_error("relaxation: requested loads failure");
     autan::runtime::Loads loads;
     const auto& mesh = context_.mesh;
     const auto& g = context_.geometry;

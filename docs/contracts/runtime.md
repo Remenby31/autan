@@ -19,7 +19,7 @@ On a mesh with periodic pairs, `mesh` and `geometry` are those of its one-part p
 | `fields(mean)` | The cell fields of `field_names(input)`, in that order, current state or time average. |
 | `restart_fields()` | The cell-centred state beyond `fields(false)` that a `continue` needs to go on bit for bit (earlier time levels, averaging sums), written as `RestartState`; empty when there is none. |
 | `wall_fields(faces)` | `Pressure`, `WallShearStressX`, `WallShearStressY`, `WallShearStressZ` on the given wall and slip faces. |
-| `loads(zones, moment_center)` | Force and moment the fluid exerts on the boundary faces of the zones (results.md, forces monitor), in N and N·m; the runtime derives the coefficients. |
+| `loads(zones, moment_center)` | Force and moment the fluid exerts on the boundary faces of the zones (results.md, forces monitor), in N and N·m; the runtime derives the coefficients. Called at each monitor iteration and once more on the final state of a converged, completed or stopped run, for run.json's `monitors`. |
 
 An exception from any member ends the run as `failed` with `E0704`. A report with a diverged cell or a non-finite residual ends it as `diverged` with `D0107`; the solution is then written only if every field is finite.
 
