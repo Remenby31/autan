@@ -73,3 +73,42 @@ def peak_bandwidth(doc: dict[str, Any]) -> float:
     if not medians:
         raise BenchError(Code.NO_STREAM, "the result holds no stream.* benchmark")
     return max(medians)
+
+
+_SAME_IN_POOLED_RUNS = (
+    "solver",
+    "binary_sha256",
+    "image",
+    "backend",
+    "precision",
+    "devices",
+    "gpu",
+)
+
+
+def pool(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge runs of one binary, image, GPU and configuration into one result.
+
+    Each benchmark gets the samples of every run, in run order, and statistics recomputed from
+    them, so its median spans the drift between runs. ``pooled_from`` lists the runs' creation
+    times; ``conditions`` are those of the last run.
+    """
+    first = docs[0]
+    for doc in docs[1:]:
+        for key in _SAME_IN_POOLED_RUNS:
+            if doc["provenance"][key] != first["provenance"][key]:
+                raise BenchError(Code.INCOMPATIBLE, f"runs differ in provenance.{key}")
+        if doc["suite"] != first["suite"] or doc["config"] != first["config"]:
+            raise BenchError(Code.INCOMPATIBLE, "runs differ in suite or config")
+        if [b["name"] for b in doc["benchmarks"]] != [b["name"] for b in first["benchmarks"]]:
+            raise BenchError(Code.INCOMPATIBLE, "runs hold different benchmarks")
+    created = [d["created"] for d in docs]
+    if len(set(created)) != len(created):
+        raise BenchError(Code.INCOMPATIBLE, "the same run is given twice")
+    pooled = json.loads(json.dumps(docs[-1]))
+    for i, bench in enumerate(pooled["benchmarks"]):
+        bench["samples"] = [x for d in docs for x in d["benchmarks"][i]["samples"]]
+        bench["stats"] = summarize(bench["samples"])
+    pooled["pooled_from"] = created
+    validate(pooled)
+    return pooled

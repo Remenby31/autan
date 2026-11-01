@@ -71,7 +71,7 @@ jobs:
         run: REQUIRE_GPU=1 flock /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
       - name: STREAM bandwidth
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
-      - name: Compare with the GB10 baseline (one rerun if inconclusive)
+      - name: Compare with the GB10 baseline (failures confirmed by a rerun)
         run: >-
           bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
           uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
@@ -89,7 +89,7 @@ jobs:
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
-      - name: Compare the tracked loops with their GB10 baseline (one rerun if inconclusive)
+      - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen

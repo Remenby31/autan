@@ -94,7 +94,13 @@ def _compare(args: argparse.Namespace) -> int:
 
 
 def _baseline(args: argparse.Namespace) -> int:
-    doc = result.load(args.result)
+    if len(args.results) < args.min_runs:
+        raise BenchError(
+            Code.TOO_FEW_RUNS,
+            f"{len(args.results)} run(s) given, the baseline needs {args.min_runs}",
+        )
+    runs = [result.load(path) for path in args.results]
+    doc = runs[0] if len(runs) == 1 else result.pool(runs)
     if args.select:
         unmatched = [
             p for p in args.select if not any(fnmatch(b["name"], p) for b in doc["benchmarks"])
@@ -194,8 +200,14 @@ def parser() -> argparse.ArgumentParser:
     c.set_defaults(func=_compare)
 
     b = sub.add_parser("baseline", help="promote a clean, low-noise result to a baseline")
-    b.add_argument("result", type=Path)
+    b.add_argument("results", type=Path, nargs="+", help="one run, or several runs to pool")
     b.add_argument("--out", type=Path, required=True)
+    b.add_argument(
+        "--min-runs",
+        type=int,
+        default=1,
+        help="refuse fewer runs (tracked loops: 5, spaced in time)",
+    )
     b.add_argument("--max-cv", type=float, default=MAX_BASELINE_CV)
     b.add_argument(
         "--select",

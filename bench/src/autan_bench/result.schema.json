@@ -468,6 +468,16 @@
           }
         }
       }
+    },
+    "pooled_from": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "description": "Creation times of the runs whose samples this result pools (autan-bench baseline with several runs)."
     }
   },
   "allOf": [
