@@ -14,7 +14,10 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the wrapper rea
 
 def wrapper(lock: Path, *args: str, **kwargs) -> subprocess.Popen:
     env = {**os.environ, "AUTAN_GPU_LOCK": str(lock), "AUTAN_AGENT": "tester"}
-    return subprocess.Popen([str(WRAPPER), *args], env=env, stderr=subprocess.PIPE, **kwargs)
+    # The default floor (24 GiB) is a Spark's; a test host may have less memory in all.
+    floor = [] if "-f" in args else ["-f", "0G"]
+    return subprocess.Popen([str(WRAPPER), *floor, *args], env=env, stderr=subprocess.PIPE,
+                            **kwargs)  # fmt: skip
 
 
 def events(lock: Path) -> list[list[str]]:
@@ -179,3 +182,56 @@ def test_an_unwritable_log_is_reported_not_fatal(lock):
     _, err = proc.communicate(timeout=10)
     assert proc.returncode == 0
     assert err
+
+
+def mem_available() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) * 1024
+    pytest.fail("no MemAvailable")
+
+
+# Real host memory, touched page by page: what a GB10 device allocation also consumes.
+ALLOCATE = """
+import sys, time
+chunks = []
+for _ in range(int(sys.argv[1])):
+    chunks.append(b"\\1" * (128 << 20))
+    time.sleep(0.05)
+open(sys.argv[2], "w").write("done")
+time.sleep(float(sys.argv[3]))
+"""
+
+
+def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(lock, tmp_path):
+    # The floor sits 1.5 GiB below what is available now: 3 GiB crosses it, 256 MiB does not.
+    floor = f"{(mem_available() - (3 << 29)) >> 20}M"
+    done = tmp_path / "done"
+    start = time.monotonic()
+    greedy = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--",
+                     sys.executable, "-c", ALLOCATE, "24", str(done), "60")  # fmt: skip
+    assert greedy.wait(timeout=60) == 71
+    assert time.monotonic() - start < 30
+    assert not done.exists()
+    assert [r[1] for r in events(lock)][-1] == "memory"
+    assert free(lock)
+
+    modest = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--",
+                     sys.executable, "-c", ALLOCATE, "2", str(done), "0")  # fmt: skip
+    assert modest.wait(timeout=60) == 0
+    assert done.exists()
+    assert [r[1] for r in events(lock)][-1] == "release"
+
+    # Below the floor already: the command never starts.
+    done.unlink()
+    above = f"{(mem_available() >> 20) + 4096}M"
+    refused = wrapper(lock, "-m", "test", "-f", above, "--", "touch", str(done))
+    assert refused.wait(timeout=30) == 71
+    assert not done.exists()
+    assert [r[1] for r in events(lock)][-2:] == ["take", "memory"]
+
+
+@pytest.mark.parametrize("floor", ["24", "1.5G", "-1G", "24T", "0x10G"])
+def test_refuses_a_floor_that_is_not_a_size(lock, floor):
+    proc = wrapper(lock, "-m", "test", "-f", floor, "--", "true")
+    assert proc.wait(timeout=10) == 2

@@ -2,8 +2,10 @@ import fcntl
 import importlib.machinery
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -174,3 +176,64 @@ def test_every_live_campaign_is_excluded_from_the_outside_load(tmp_path, monkeyp
         for proc in procs:
             proc.kill()
             proc.wait()
+
+
+def mem_available() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) * 1024
+    pytest.fail("no MemAvailable")
+
+
+def watched(tmp_path: Path, monkeypatch) -> Path:
+    """docker faked at the boundary: records its calls, reports the container running as this
+    test's own process (so its cgroup is real) and gone once removed."""
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f'#!/bin/sh\necho "$*" >> {calls}\n'
+        f'case "$1" in inspect) echo "running {os.getpid()}" ;; esac\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    campaign.STATE.mkdir()
+    campaign.STATES.mkdir()
+    return calls
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/meminfo and cgroups are Linux's")
+def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(tmp_path, monkeypatch):
+    calls = watched(tmp_path, monkeypatch)
+    # The watcher installs its own signal handlers; this process keeps pytest's.
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    # Below the floor before it starts: never started, removed.
+    assert campaign.watch("c1", mem_available() + (4 << 30)) == 1
+    lines = calls.read_text().splitlines()
+    assert not any(c.startswith("start") for c in lines)
+    assert any(c.startswith("rm -f autan-campaign-c1") for c in lines)
+
+    # Running, then real host memory taken past a floor 1.5 GiB below what is available.
+    calls.unlink()
+    floor = mem_available() - (3 << 29)
+    hog = subprocess.Popen([sys.executable, "-c", (
+        "import time\ntime.sleep(1)\nchunks = []\nfor _ in range(24):\n"
+        "    chunks.append(b'\\1' * (128 << 20)); time.sleep(0.05)\ntime.sleep(60)\n")])  # fmt: skip
+    outcome: list[int] = []
+    try:
+        # Bounded: a watcher that ignores the floor never returns.
+        watcher = threading.Thread(target=lambda: outcome.append(campaign.watch("c2", floor)),
+                                   daemon=True)  # fmt: skip
+        watcher.start()
+        watcher.join(timeout=30)
+        assert outcome == [1]
+    finally:
+        hog.kill()
+        hog.wait()
+    lines = calls.read_text().splitlines()
+    assert lines.index("start autan-campaign-c2") < lines.index("rm -f autan-campaign-c2")
+    assert "below --free" in (campaign.STATE / "c2.log").read_text()
