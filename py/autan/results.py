@@ -775,10 +775,7 @@ def _solution_problems(
     if ("FlowSolutionMean" in zone.children) != (run.averaging is not None):
         found.append("FlowSolutionMean must exist exactly when run.json has averaging")
     periodic = {name for pair in mesh_info.periodic for name in pair.zones}
-    conditioned = any(z.faces > 0 and z.name not in periodic for z in mesh_info.boundary_zones)
     zone_bc = zone.children.get("ZoneBC")
-    if conditioned and zone_bc is None:
-        found.append("ZoneBC is missing")
     bc_faces: set[int] = set()
     for bc in zone_bc.with_label("BC_t") if zone_bc is not None else []:
         if bc.text() not in SIDS_BC_TYPES:
@@ -787,7 +784,20 @@ def _solution_problems(
             found.append(f"BC {bc.name} PointList must hold face ids")
         bc_faces |= set(np.asarray(bc.child("PointList").data).ravel().tolist())
     nodes_of = {zone_name: node for node, zone_name in names["boundary"].items()}
-    found += _periodic_problems(zone, mesh_info, nodes_of, faces, bc_faces)
+    expected_bcs = {
+        nodes_of[z.name] for z in mesh_info.boundary_zones if z.faces > 0 and z.name not in periodic
+    }
+    present_bcs = {bc.name for bc in zone_bc.with_label("BC_t")} if zone_bc is not None else set()
+    if present_bcs != expected_bcs:
+        found.append(f"ZoneBC must hold a BC_t for exactly {sorted(expected_bcs)}")
+    for name in periodic:
+        family = base.children.get(nodes_of[name])
+        if family is None or family.label != "Family_t" or "FamilyBC" in family.children:
+            found.append(f"periodic zone {name!r} needs a Family_t without FamilyBC")
+    used = np.abs(np.asarray(nface.child("ElementConnectivity").data)).ravel()
+    counts = np.bincount(used, minlength=faces + 1)
+    exterior = set(np.flatnonzero(counts == 1).tolist())
+    found += _periodic_problems(zone, mesh_info, nodes_of, exterior, bc_faces)
     for region in zone.with_label("ZoneSubRegion_t"):
         low, high = (1, faces) if region.name == "WallSolution" else (faces + 1, faces + cells)
         if not _ids_in(region.child("PointList").data, low, high):
@@ -795,8 +805,29 @@ def _solution_problems(
     return found
 
 
+def _vector(node: cgns.Node) -> NDArray[Any] | None:
+    """A 3-vector stored in four-byte floats (R4), in either byte order, as float32."""
+    array = np.asarray(node.data)
+    if node.label != "DataArray_t" or array.dtype.kind != "f" or array.dtype.itemsize != 4:
+        return None
+    return array.astype(np.float32).ravel() if array.size == 3 else None
+
+
+def _exact(text: str) -> list[float] | None:
+    """Three finite JSON numbers, booleans excluded."""
+    value = json.loads(text)
+    ok = isinstance(value, list) and len(value) == 3
+    if not ok or not all(type(v) in (int, float) and math.isfinite(v) for v in value):
+        return None
+    return [float(v) for v in value]
+
+
 def _periodic_problems(
-    zone: cgns.Node, mesh_info: MeshInfo, nodes_of: dict[str, str], faces: int, bc_faces: set[int]
+    zone: cgns.Node,
+    mesh_info: MeshInfo,
+    nodes_of: dict[str, str],
+    exterior: set[int],
+    bc_faces: set[int],
 ) -> list[str]:
     """The two reciprocal GridConnectivity_t of every periodic pair (results.md#solutioncgns)."""
     connectivity = zone.children.get("ZoneGridConnectivity")
@@ -807,6 +838,9 @@ def _periodic_problems(
     if connectivity is None:
         return []
     found = []
+    if connectivity.label != "ZoneGridConnectivity_t":
+        found.append("ZoneGridConnectivity must be a ZoneGridConnectivity_t")
+    claimed: set[int] = set()
     for pair in mesh_info.periodic:
         a, b = pair.zones
         vector = np.array(pair.transform.vector)
@@ -820,23 +854,43 @@ def _periodic_problems(
                 found.append(f"{what} must be Abutting1to1")
             if gc.child("GridLocation").text() != "FaceCenter":
                 found.append(f"{what} must be at FaceCenter")
-            points = np.asarray(gc.child("PointList").data).ravel()
-            donors = np.asarray(gc.child("PointListDonor").data).ravel()
-            if points.size != donors.size or len(set(points.tolist())) != points.size:
+            lists = [gc.child(name) for name in ("PointList", "PointListDonor")]
+            arrays = [np.asarray(node.data).ravel() for node in lists]
+            if any(
+                n.label != "IndexArray_t" or x.dtype.kind != "i"
+                for n, x in zip(lists, arrays, strict=True)
+            ):
+                found.append(f"{what} PointList and PointListDonor must be integer IndexArray_t")
+                continue
+            points, donors = (x.tolist() for x in arrays)
+            if not points or len(points) != len(donors) or len(set(points)) != len(points):
                 found.append(f"{what} must pair distinct faces one to one")
-            if not (_ids_in(points, 1, faces) and _ids_in(donors, 1, faces)):
-                found.append(f"{what} PointList and PointListDonor must hold face ids")
-            if bc_faces & set(points.tolist()):
-                found.append(f"{what} shares faces with ZoneBC")
-            exact = json.loads(gc.child("PeriodicTranslation").text())
-            single = gc.child("GridConnectivityProperty").child("Periodic").child("Translation")
-            r4 = np.asarray(single.data)
+            if not set(points) | set(donors) <= exterior:
+                found.append(f"{what} must pair boundary faces")
+            if set(points) & set(donors):
+                found.append(f"{what} pairs faces of its own zone")
+            if side == a and points != sorted(points):
+                found.append(f"{what} PointList must list the faces of {a!r} in mesh order")
+            if (bc_faces | claimed) & set(points):
+                found.append(f"{what} shares faces with ZoneBC or another periodic zone")
+            claimed |= set(points)
+            periodic = gc.child("GridConnectivityProperty").child("Periodic")
+            if (gc.child("GridConnectivityProperty").label, periodic.label) != (
+                "GridConnectivityProperty_t",
+                "Periodic_t",
+            ):
+                found.append(f"{what} must hold GridConnectivityProperty_t/Periodic_t")
+            rotation = [_vector(periodic.child(n)) for n in ("RotationCenter", "RotationAngle")]
+            if any(r is None or r.any() for r in rotation):
+                found.append(f"{what} RotationCenter and RotationAngle must be zero R4 vectors")
+            exact = _exact(gc.child("PeriodicTranslation").text())
+            single = _vector(periodic.child("Translation"))
             if exact != shift.tolist():
                 found.append(f"{what} PeriodicTranslation must be {shift.tolist()}")
-            elif r4.dtype != np.float32 or r4.tolist() != shift.astype(np.float32).tolist():
+            elif single is None or single.tolist() != shift.astype(np.float32).tolist():
                 found.append(f"{what} Translation must be its PeriodicTranslation in R4")
-            matches[side] = set(zip(points.tolist(), donors.tolist(), strict=False))
-        if matches[b] != {(d, p) for p, d in matches[a]}:
+            matches[side] = set(zip(points, donors, strict=False))
+        if a in matches and b in matches and matches[b] != {(d, p) for p, d in matches[a]}:
             found.append(f"the GridConnectivity of {a!r} and {b!r} are not reciprocal")
     return found
 

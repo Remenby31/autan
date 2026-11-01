@@ -10,6 +10,7 @@ import autan
 import autan.solver_input
 import h5py
 import jsonschema
+import numpy as np
 import pydantic
 import pytest
 from autan import cgns
@@ -174,6 +175,21 @@ def _retype(text: Any, old: str, new: str) -> None:
     text[list(text[...]).index(ord(old))] = ord(new)
 
 
+def _replace(node: Any, change: Callable[[Any], Any]) -> None:
+    data = change(node[" data"][...])
+    del node[" data"]
+    node.create_dataset(" data", data=data)
+
+
+def _set_text(node: Any, text: str) -> None:
+    _replace(node, lambda _: np.frombuffer(text.encode(), dtype=np.int8))
+
+
+def _reverse_side_a(group: Any) -> None:
+    for name in ("PointList", "PointListDonor"):
+        _replace(group[f"fuselage/{name}"], lambda a: a.ravel()[::-1].reshape(a.shape))
+
+
 def _edit(path: Path, change: Callable[[Any], None]) -> None:
     with h5py.File(path / "solution.cgns", "r+") as handle:
         change(handle["Base/Zone/ZoneGridConnectivity"])
@@ -188,6 +204,15 @@ def _edit(path: Path, change: Callable[[Any], None]) -> None:
         ),
         lambda g: _retype(g["fuselage/PeriodicTranslation/ data"], "2", "3"),  # [0, 3.5, 0]
         lambda g: g.__delitem__("empennage"),
+        lambda g: g["fuselage/GridConnectivityProperty/Periodic/RotationAngle/ data"].__setitem__(
+            0, 0.125
+        ),
+        _reverse_side_a,  # the same correspondence, not in mesh order
+        lambda g: _replace(g["fuselage/PointList"], lambda a: a + 0.5),  # not integer ids
+        lambda g: _set_text(g["fuselage/PeriodicTranslation"], "[false, 2.5, false]"),
+        lambda g: g.parent.copy(
+            g.parent["ZoneBC"][next(iter(g.parent["ZoneBC"]))], "ZoneBC/fuselage"
+        ),
     ],
 )
 def test_the_reader_checks_the_periodic_layout(
@@ -201,3 +226,19 @@ def test_the_reader_checks_the_periodic_layout(
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(result.path).field("Density")
     assert error.value.codes == ["E0701"]
+
+
+def test_a_big_endian_r4_translation_is_valid(
+    write_case: Callable[..., Path], mesh: Path, tmp_path: Path
+) -> None:
+    case = autan.load(write_case(CRM_HL))
+    result = case.run(
+        autan.MeshInfo.load(mesh), backend=autan.FakeBackend(iterations=2), runs=tmp_path
+    )
+    _edit(
+        result.path,
+        lambda g: _replace(
+            g["fuselage/GridConnectivityProperty/Periodic/Translation"], lambda a: a.astype(">f4")
+        ),
+    )
+    assert autan.Results.open(result.path).field("Density").size > 0

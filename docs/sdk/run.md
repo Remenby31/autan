@@ -20,7 +20,7 @@ In Python: `case.run(mesh_info, backend=..., runs="runs")`, which returns `autan
 
 | What | Fake backend |
 |---|---|
-| Geometry | A unit cube of n³ hexahedra written as polyhedra, n ≥ 8 and set by the MeshInfo zone counts; boundary zones are consecutive groups of its boundary faces (the two zones of a periodic pair get as many faces each, paired in order), cell zones are slabs along x. Zone names, conditions and media are the case's. |
+| Geometry | A unit cube of n³ hexahedra written as polyhedra, n ≥ 8 and set by the MeshInfo zone counts; boundary zones are consecutive groups of its boundary faces (the two zones of a periodic pair get as many faces each, paired in order, without the pair's translation relating them: the box is not periodic), cell zones are slabs along x. Zone names, conditions and media are the case's. |
 | Fields | The freestream state of [case-schema.md](../contracts/case-schema.md#freestream) in every fluid cell (each zone with its own gas), the solid density in solid cells, zero wall shear. |
 | History | Residuals that reach `residual_orders` orders of decay at iteration 100, where a steady run converges (`completed` if `max_iterations` ends it first); forces approaching a thin-airfoil lift, projected as the contract defines. One line per iteration, flushed as written. The trajectory depends only on the case and the mesh, so runs with the same identity agree line for line. Unsteady runs without `dt` use 1 ms steps. |
 | Options | `--iterations N` stops the run after N iterations (or steps), status `stopped`; `--pace S` sleeps S seconds per iteration to imitate a live run; `--diverge-at N` stops at iteration N with status `diverged` and `D0107`. |
