@@ -51,6 +51,9 @@ constexpr double cfl_max = 1e6;
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
 constexpr int linear_max_cycles = 10;
+// A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
+// diverge on a system the CFL number made too weakly diagonal): the step is rejected.
+constexpr double linear_failure = 0.9;
 // The loosely coupled SA equation's scalar system: symmetric Gauss-Seidel sweeps.
 constexpr int gauss_seidel_sweeps = 4;
 // No update may lower density or pressure by more than this fraction in one step; a step
@@ -594,13 +597,23 @@ class EulerPhysics final : public runtime::Physics {
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
     const auto linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+    const bool failed = !(linear.residual_drop <= linear_failure);
     if (!(linear.residual_drop <= linear_tolerance)) {
       std::array<char, 32> text{};
       std::snprintf(text.data(), text.size(), "%.6g", linear.residual_drop);
-      ctx_.log.write(
-          "warning", "linear", "the implicit step's linear solve stopped above its tolerance", {},
-          std::string("{\"cycles\": ") + std::to_string(linear.cycles) + ", \"residual_drop\": " +
-              (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
+      ctx_.log.write("warning", "linear",
+                     failed ? "the implicit step's linear solve failed: step rejected"
+                            : "the implicit step's linear solve stopped above its tolerance",
+                     {},
+                     std::string("{\"cycles\": ") + std::to_string(linear.cycles) +
+                         ", \"residual_drop\": " +
+                         (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
+    }
+    if (failed) {
+      // As a step with no admissible length: the state is kept and the CFL number halves.
+      shortened_ = true;
+      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return;
     }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
