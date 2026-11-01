@@ -105,7 +105,7 @@ struct DeviceMesh {
 template <class P>
 struct DeviceGeomArray {
   DeviceArray<typename P::geom> geom;
-  DeviceArray<typename P::geom_value> value;
+  DeviceArray<typename P::geom_value> value;  // empty when GeomArray<P>::same
   explicit DeviceGeomArray(const GeomArray<P>& a) : geom(a.geom), value(a.value) {}
   template <class T>
   [[nodiscard]] const T* as() const {

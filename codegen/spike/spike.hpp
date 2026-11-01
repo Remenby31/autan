@@ -56,11 +56,14 @@ int guarded(char* err, std::size_t len, F&& body) {
 /// geom_value type (Geom datasets no body reads through rel(); kernel-generator.md, Precision).
 template <class P>
 struct GeomArray {
+  // `value` stays empty when the two types coincide (fp64, fp32): `geom` serves both.
+  static constexpr bool same = std::is_same_v<typename P::geom, typename P::geom_value>;
   std::vector<typename P::geom> geom;
   std::vector<typename P::geom_value> value;
   explicit GeomArray(const std::vector<double>& v)
       : geom(autan::kernels::converted<typename P::geom>(v)),
-        value(autan::kernels::converted<typename P::geom_value>(v)) {}
+        value(same ? std::vector<typename P::geom_value>{}
+                   : autan::kernels::converted<typename P::geom_value>(v)) {}
   template <class T>
   [[nodiscard]] const T* as() const {
     if constexpr (std::is_same_v<T, typename P::geom>) {

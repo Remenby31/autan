@@ -166,14 +166,17 @@ def rel_datasets(m: Module) -> set[int]:
                     b = bindings.get(fn.arg_names[k])
                     if b is not None:
                         out.add(id(b.dataset))
+                        if b.boundary is not None:
+                            out.add(id(b.boundary))
     return out
 
 
 def storage_type(d: dsl.Dataset, rel_read: set[int]) -> str:
-    """Storage of a dataset in Data<P>: its role's type, except Geom datasets no body reads
-    through rel(): those only reach bodies converted to P::compute and are stored in
-    P::geom_value (the compute type's precision, as a real type): same values, fewer bytes."""
-    if d.type.role is dsl.Role.GEOM and id(d) not in rel_read:
+    """Storage of a dataset in Data<P>: its role's type, except built-in geometry no body
+    reads through rel(): it only reaches bodies converted to P::compute and is stored in
+    P::geom_value (the compute type's precision, as a real type): same values, fewer bytes.
+    Datasets kernels write keep their role's type."""
+    if d.geometry and d.type.role is dsl.Role.GEOM and id(d) not in rel_read:
         return "typename P::geom_value"
     return ctype(d.type.role)
 
