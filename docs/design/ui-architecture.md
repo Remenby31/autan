@@ -11,15 +11,17 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 
 - **One process, one port, loopback only.** Requests whose `Host` is not the served address are refused (DNS rebinding). `autan_ui.serve(runs, host, port)` serves the built app and the API. `autan ui [--runs DIR] [--port N] [--no-open]` in the SDK CLI is a thin call to it; the default runs directory is `./runs`, the same one `autan run` writes.
 - **The registry is the runs directory.** Every directory under `<runs>` that the SDK's reader (`autan.Results.open`) accepts is a run, whoever wrote it; names starting with `.` are directories still being written. There is no database and no UI-side state: a run started from a notebook appears in the UI the moment its directory does. Directories that do not conform are listed as rejected with the reason, never hidden.
+- **POSIX only.** Every file of a run or of the built app is opened beneath a pinned directory descriptor without following links (`dir_fd`, `O_NOFOLLOW`), so the server runs on Linux and macOS; on Windows, through WSL.
 - **Heavy data stays on the server.** Volume fields (tens of millions of cells) never reach the browser. The server extracts what is displayed (wall surfaces, slices, iso-surfaces, probes) and sends triangles and node values. Slices and probes are server-side NumPy operations, so the browser renderer only needs to draw triangle surfaces fast.
 
 ## API
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/runs` | `{runs: [run.json…], rejected: [{dir, reason}], progress: {run_id: iteration}}`, newest first. `run.json` is rewritten only when the status changes, so `progress` gives the last complete `history.jsonl` iteration of each running run. |
-| `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json), `removed` (run id), `rejected` (the whole list) and `progress` as they change |
-| `GET /api/runs/{id}` | `{run, case, mesh_info}`: run.json, case.toml as JSON, mesh-info.json of an accepted run |
+| `GET /api/runs` | `{runs: [run.json…], rejected: [{dir, reason}], summaries: {run_id: summary}}`, newest first. A summary is read incrementally from `history.jsonl`: the last complete `iteration` (run.json is rewritten only when the status changes), `orders` the slowest residual has dropped since iteration 1, their `trend` (≤ 48 points), and the case's `target_orders` and `max_iterations`. |
+| `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json), `removed` (run id), `rejected` (the whole list) and `summaries` as they change |
+| `GET /api/runs/{id}` | `{run, case, case_toml, mesh_info, outputs}`: run.json, case.toml as JSON and as text, mesh-info.json and the files of an accepted run |
+| `GET /api/runs/{id}/plan` | `autan plan --json` of the stored case against the stored MeshInfo, for the run's GPU count |
 | `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 and rejected ones 409 with the reason, before any stream starts. |
 | `GET /api/surfaces/synthetic?triangles=N` | A synthetic wing surface for the viewer and its benchmark, until `solution.cgns` surfaces are served |
 
@@ -50,10 +52,10 @@ Chosen on the project's criteria: fluid 3D on 5–20 M faces, live data, keyboar
 | UI | React 19 | MIT | Largest ecosystem for accessible primitives, palette and charts. |
 | Routing, server state | TanStack Router (typed search params) + TanStack Query | MIT | Filters, camera and displayed field live in the URL (design principle 7) with types; SSE events write straight into the Query cache. |
 | Styling | Tailwind v4 over `tokens.css` (`@theme inline`) | MIT | Utilities read the design tokens; no second source of values. Geist via `@fontsource-variable` (OFL-1.1), self-hosted. |
-| Primitives | Base UI 1.9 | MIT | Unstyled, accessible components (toggle groups, menus, dialogs, popovers) styled by data attributes. |
+| Primitives | Base UI 1.9, lucide-react icons | MIT, ISC | Unstyled, accessible components (menus, tabs, collapsibles, tooltips, hover cards, toasts, toggles, meters) styled by data attributes; `ui/src/components/ui/` builds the component library on them (below). |
 | Palette | cmdk | MIT | ⌘K with fuzzy ranking and grouped results. |
 | Motion | Motion 14 | MIT | Layout and presence animations (rows entering the registry); follows the system's reduced-motion setting. |
-| Charts | uPlot | MIT | Canvas time series built for large, appended data; log axes; 50 kB. |
+| Charts, long lists | uPlot, TanStack Virtual | MIT | Canvas time series built for large, appended data, log axes, 50 kB; the log renders only the visible lines of a 100 k-line history. |
 | 3D | three.js 0.186 `WebGPURenderer`, wrapped in one imperative `SurfaceViewer` class | MIT | Measured below. No react-three-fiber: the scene is one mesh per surface, and a declarative scene graph adds a reconciler for nothing. vtk.js rejected (below). |
 | Lint, format | Biome 2.6 (repository-wide, with the docs site) | MIT/Apache-2.0 | One tool for TS, JSON and CSS. |
 | Tests | Vitest 5, Playwright 1.64 on headless Chrome | MIT, Apache-2.0 | Playwright drives the real server, real files and the real GPU. |
@@ -76,6 +78,35 @@ Once loaded, all three draw 20 M triangles in about 5–6 ms, far under a 16.7 m
 Transfer of the 20 M-triangle message (400 MB, loopback): 1.0–1.5 s; at 5 M triangles the whole path from request to first frame is about 0.4 s. The measurement uses a structured triangulation with good vertex locality; an unstructured surface will be slower to draw and is re-measured when `solution.cgns` surfaces are served.
 
 Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench/results/`. The vtk.js comparison was a one-off prototype and is not kept.
+
+### Component library
+
+`ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition.
+
+| Geist pattern | Component | Used on |
+|---|---|---|
+| Button (primary, secondary, tertiary; 32/36/40 px) | `Button` | Run header, empty states |
+| Badge (subtle tones) | `Badge` | Plan provenance, tab counts, fake backend |
+| Status Dot | `StateGlyph`, `Status` (glyph, label, duration) | Home rows, run header, ⌘K |
+| Table (interactive rows) | Home run list (rows are links), `PlanTable`, `MonitorTable` | Home, run page |
+| Collapse | `Collapse` (count or state on the right) | Run sections, rejected directories |
+| Entity | `Entity` | Outputs |
+| Gauge | `Gauge` | Iteration budget, residual drop towards the target |
+| Loading Dots, Skeleton | `LoadingDots`, `Skeleton` | Plan loading, Home loading, reconnecting stream |
+| Menu | `Menu`, `MenuItem`, `MenuCheckboxItem` | Row actions, filter chips |
+| Command Menu | `CommandPalette` (groups, preview, key bar) | ⌘K everywhere |
+| Toast | `ToastProvider`, `useToast` | Copy confirmations |
+| Tooltip | `Tooltip` | Hashes, fake backend, disabled actions |
+| Relative Time Card | `RelativeTime` (UTC and local on hover) | Started, outputs |
+| Empty State | `EmptyState` | No runs, no match |
+| Snippet | `Snippet` | Empty Home, Case tab |
+| Tabs (secondary) | `TabList` (sliding indicator) | Run page |
+| Note | `Note` | Diagnostics, server errors |
+| Keyboard Input | `Kbd` | Find, search, palette |
+| Input (search) | `SearchInput`, `FilterChip` | Home filters |
+| Toggle | `LiveToggle`, theme toggle group | Log, sidebar |
+| Middle Truncate | `MiddleTruncate` | Mesh hash, solver commit |
+| Description | `MetaGrid` | Run facts |
 
 ### Viewer
 

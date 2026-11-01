@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { fetchSurface, type Surface } from "../api/surface";
+import { TopBar } from "../components/shell/TopBar";
 import { COOL_WARM, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
 
@@ -104,50 +105,63 @@ function Viewer() {
   const field = surface?.fields[0];
   const range = field ? displayRange(field.min, field.max) : null;
   return (
-    <div className="absolute inset-0">
-      <canvas
-        ref={canvas}
-        onClick={onClick}
-        className="block h-full w-full touch-none"
-        aria-label="3D surface"
-        data-testid="viewport"
+    <>
+      <TopBar
+        crumbs={[{ label: "Analysis" }]}
+        actions={
+          <span className="text-fg-3 text-sm">
+            Synthetic surface until solution.cgns surfaces are served
+          </span>
+        }
       />
-      {error && <p className="absolute top-4 left-4 m-0 text-danger">{error}</p>}
-      {surface && (
-        <aside className="absolute top-4 left-4 flex w-60 flex-col gap-1 rounded-lg border border-line bg-glass p-2 backdrop-blur">
-          {surface.zones.map((zone, k) => (
-            <button
-              type="button"
-              key={zone.name}
-              aria-pressed={selected === k}
-              onClick={() => setSelected(selected === k ? null : k)}
-              className="flex items-center justify-between rounded-md px-2 py-1.5 text-left font-mono text-sm hover:bg-bg-2 aria-pressed:bg-accent-soft aria-pressed:text-accent"
-            >
-              {zone.name}
-              <span className="text-fg-3 text-xs">{zone.triangles.toLocaleString("en")}</span>
-            </button>
-          ))}
-        </aside>
-      )}
-      {field && range && (
-        <div className="pointer-events-none absolute right-4 bottom-10 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs">
-          <span>{field.name} · synthetic</span>
-          <div className="h-2 rounded" style={{ background: cssGradient(COOL_WARM) }} />
-          <div className="flex justify-between">
-            <span>{range.min.toFixed(2)}</span>
-            {range.min < 0 && range.max > 0 && <span>0</span>}
-            <span>{range.max.toFixed(2)}</span>
+      <div className="relative min-h-0 flex-1">
+        <canvas
+          ref={canvas}
+          onClick={onClick}
+          className="block h-full w-full touch-none"
+          aria-label="3D surface"
+          data-testid="viewport"
+        />
+        {error && <p className="absolute top-4 left-4 m-0 text-danger">{error}</p>}
+        {surface && (
+          <aside
+            data-testid="zones"
+            className="absolute top-4 left-4 flex w-60 flex-col gap-1 rounded-lg border border-line bg-glass p-2 backdrop-blur"
+          >
+            {surface.zones.map((zone, k) => (
+              <button
+                type="button"
+                key={zone.name}
+                aria-pressed={selected === k}
+                onClick={() => setSelected(selected === k ? null : k)}
+                className="flex items-center justify-between rounded-md px-2 py-1.5 text-left font-mono text-sm hover:bg-bg-2 aria-pressed:bg-accent-soft aria-pressed:text-accent"
+              >
+                {zone.name}
+                <span className="text-fg-3 text-xs">{zone.triangles.toLocaleString("en")}</span>
+              </button>
+            ))}
+          </aside>
+        )}
+        {field && range && (
+          <div className="pointer-events-none absolute right-4 bottom-10 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs">
+            <span>{field.name} · synthetic</span>
+            <div className="h-2 rounded" style={{ background: cssGradient(COOL_WARM) }} />
+            <div className="flex justify-between">
+              <span>{range.min.toFixed(2)}</span>
+              {range.min < 0 && range.max > 0 && <span>0</span>}
+              <span>{range.max.toFixed(2)}</span>
+            </div>
           </div>
+        )}
+        <div
+          className="pointer-events-none absolute bottom-3 left-4 font-mono text-fg-3 text-xs"
+          data-testid="viewer-status"
+          data-backend={backend ?? ""}
+        >
+          {backend ?? "…"} · {surface ? (surface.indices.length / 3).toLocaleString("en") : "–"}{" "}
+          triangles
         </div>
-      )}
-      <div
-        className="pointer-events-none absolute bottom-3 left-4 font-mono text-fg-3 text-xs"
-        data-testid="viewer-status"
-        data-backend={backend ?? ""}
-      >
-        {backend ?? "…"} · {surface ? (surface.indices.length / 3).toLocaleString("en") : "–"}{" "}
-        triangles
       </div>
-    </div>
+    </>
   );
 }
