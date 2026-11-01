@@ -325,8 +325,7 @@ def farfield_state(wi: State.Vec5, wf: State.Vec5, n: Geom.Vec3, g: Param) -> St
     rb = exp(log(cb * cb / (g * ent)) / (g - 1.0))
     vb = vt + vnb * n
     sub = Vec5(rb, vb[0], vb[1], vb[2], rb * cb * cb / g)
-    # EXPERIMENT: supersonic outflow decided on the boundary state of the Riemann invariants.
-    if vnb >= cb:
+    if vni >= ci:
         w = wi
     elif vnf <= -cf:
         w = wf
