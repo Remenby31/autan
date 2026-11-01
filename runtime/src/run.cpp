@@ -127,7 +127,7 @@ struct Prepared {
   SolverInput input;
   Mesh mesh;
   std::string mesh_hash;
-  std::string mesh_info;  // MeshInfo of the mesh as read, before mesh.scale
+  std::string mesh_info;                     // MeshInfo of the mesh as read, before mesh.scale
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
