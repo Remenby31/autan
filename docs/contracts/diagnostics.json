@@ -475,6 +475,12 @@
       "fix": "Prepare the input again from the run as it is now.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0709"
     },
+    "W0710": {
+      "severity": "warning",
+      "title": "Exempt equation left its floor",
+      "fix": "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0710"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",

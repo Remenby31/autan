@@ -81,7 +81,8 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     assert forces["zones"] == ["wing.slat", "wing.main", "wing.flap"]
     assert forces["ref_area"] == pytest.approx(191.84)
     assert forces["ref_length"] == pytest.approx(7.0)
-    assert document["time"] == {"kind": "steady", "max_iterations": 10000, "residual_orders": 8.0}
+    # residual_orders: the fp32+acc64 default (case-schema.md#time).
+    assert document["time"] == {"kind": "steady", "max_iterations": 10000, "residual_orders": 5.0}
 
 
 def test_heat_exchanger_media_and_inlets_in_si(

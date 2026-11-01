@@ -271,11 +271,12 @@ class Freestream(Spec):
 
 class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
-    ``max_iterations`` iterations."""
+    ``max_iterations`` iterations; ``residual_orders`` defaults to the physics' precision
+    (``DEFAULT_RESIDUAL_ORDERS``)."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
-    residual_orders: PositiveNumber = 8.0
+    residual_orders: PositiveNumber | None = None
 
 
 class Unsteady(Spec):
@@ -297,6 +298,8 @@ class Unsteady(Spec):
 
 
 Time = Annotated[Steady | Unsteady, Field(discriminator="kind")]
+# The round-off plateau of fp32+acc64 lies about five orders below the initial residuals.
+DEFAULT_RESIDUAL_ORDERS = {"fp64": 8.0, "fp32+acc64": 5.0}
 
 
 # --- boundaries, cell zones, monitors ----------------------------------------------------
@@ -429,6 +432,11 @@ class CaseSpec(Spec):
         if isinstance(self.physics, Compressible) and self.freestream.temperature is None:
             filled = self.freestream.model_copy(update={"temperature": 288.15 * K})
             object.__setattr__(self, "freestream", filled)
+        if isinstance(self.time, Steady) and self.time.residual_orders is None:
+            orders = DEFAULT_RESIDUAL_ORDERS[self.physics.precision]
+            object.__setattr__(
+                self, "time", self.time.model_copy(update={"residual_orders": orders})
+            )
         problems = consistency(self)
         if problems:
             fail("consistency", "{problems}", problems=problems)

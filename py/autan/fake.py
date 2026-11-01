@@ -388,7 +388,8 @@ class _History:
     def __init__(self, spec: CaseSpec, state: dict[str, Any]) -> None:
         self.spec, self.state = spec, state
         self.equations = residual_names(spec)
-        self.orders = spec.time.residual_orders if isinstance(spec.time, Steady) else 3.0
+        orders = spec.time.residual_orders if isinstance(spec.time, Steady) else None
+        self.orders = 3.0 if orders is None else orders
 
     def time(self, step: int) -> float | None:
         if isinstance(self.spec.time, Steady):

@@ -636,6 +636,14 @@ The solution of the run to start from no longer has the SHA-256 the solver input
 
 Fix: Prepare the input again from the run as it is now.
 
+## W0710
+
+**Exempt equation left its floor** (warning)
+
+An equation that was identically zero at iteration 1 (below 1e-12 times the largest initial residual) rose above that floor, so it must now drop `residual_orders` like the others (case-schema.md#time). `data` gives the equation, iteration, residual and floor.
+
+Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
