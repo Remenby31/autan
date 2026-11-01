@@ -44,7 +44,7 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 | Declaration | Iterates | Bindings | Outputs |
 |---|---|---|---|
 | `face_loop` | interior faces | `d.left`, `d.right` (cells), `d` (faces), params | `Inc(d, left=s_L, right=s_R)` |
-| `boundary_loop` | boundary faces | `d.left`, `d` (faces), params | `Inc(d, left=s_L)`, or `Write(d)` of face datasets (no derivatives: face data are passive) |
+| `boundary_loop` | boundary faces | `d.left`, `d` (faces), params | `Inc(d, left=s_L)`, or `Write(d)` of face datasets: no derivatives (face data are passive); reading active data needs `frozen=True` (E1012 otherwise), listed in the module's `frozen_loops` |
 | `cell_loop` | owned cells | `d` (cells), params | `Write(d)` |
 | `cell_reduce` | owned cells, then their faces in CSR order | `d.self_`, `d.other(boundary=f)`, incidence data (`geometry.lsq_weight`), face data of the incidence's face (`d` on faces), params | `Sum(d)`, `Min(d)`, `Max(d)`, optional `finalise` body |
 
@@ -91,7 +91,7 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 | E1009 | `invalid_kernel_module` | A kernel module cannot be imported or declares no loop. |
 | E1010 | `unknown_backend` | `--backends` names an unknown backend. |
 | E1011 | `unknown_policy` | `--policies` names an unknown policy. |
-| E1012 | `ad_unsupported` | A loop with several output datasets is differentiated. |
+| E1012 | `ad_unsupported` | A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True. |
 | E1100 | `runtime_failure` | A generated loop or the spike driver fails without a more specific code. |
 | E1101 | `gpu_runtime_error` | A CUDA or HIP call or kernel launch fails. |
 | E1102 | `unknown_precision_policy` | A driver receives an unknown policy name. |

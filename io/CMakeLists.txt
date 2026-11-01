@@ -23,6 +23,26 @@ add_library(
 )
 add_library(autan::io ALIAS autan_io)
 
+if(AUTAN_ENABLE_CGNS)
+  # autan_cgns: the CGNS library with what it links against. A shared
+  # libcgns carries its HDF5 dependency itself; a static one needs HDF5 on
+  # the link line, which the package's CMake targets provide.
+  add_library(autan_cgns INTERFACE)
+  find_path(CGNS_INCLUDE_DIR cgnslib.h REQUIRED)
+  find_library(CGNS_LIBRARY cgns REQUIRED)
+  target_include_directories(autan_cgns SYSTEM INTERFACE ${CGNS_INCLUDE_DIR})
+  if(CGNS_LIBRARY MATCHES "\\${CMAKE_STATIC_LIBRARY_SUFFIX}$")
+    find_package(HDF5 NAMES hdf5 CONFIG REQUIRED)
+    find_package(CGNS CONFIG REQUIRED)
+    target_link_libraries(autan_cgns INTERFACE CGNS::cgns_static)
+  else()
+    target_link_libraries(autan_cgns INTERFACE ${CGNS_LIBRARY})
+  endif()
+  target_sources(autan_io PRIVATE src/cgns_read.cpp src/cgns_write.cpp)
+  target_link_libraries(autan_io PRIVATE autan_cgns)
+  target_compile_definitions(autan_io PRIVATE AUTAN_HAVE_CGNS)
+endif()
+
 target_include_directories(autan_io PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(autan_io SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
 target_link_libraries(

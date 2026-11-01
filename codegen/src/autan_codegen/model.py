@@ -186,6 +186,21 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         _check_bindings(where, "cell", fin_sig, loop.finalise_bindings, skip=n_acc)
     lm = LoopModel(name, loop, fn, sig, fin_fn, fin_sig)
     _check_outputs(where, lm)
+    if loop.kind == "boundary_write" and not loop.frozen:
+        active = [
+            b.dataset.name
+            for b in loop.bindings.values()
+            if isinstance(b.dataset, dsl.Dataset)
+            and not b.dataset.geometry
+            and b.dataset.set is dsl.MeshSet.CELLS
+        ]
+        if active:
+            raise CodegenError(
+                Code.AD_UNSUPPORTED,
+                f"boundary loop writes face data from active {active}: derivatives would be "
+                "dropped; declare frozen=True to accept that",
+                where,
+            )
     read = {id(d) for d in lm.reads()}
     for d in lm.writes():
         if id(d) in read:

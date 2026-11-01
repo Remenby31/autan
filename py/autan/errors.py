@@ -274,6 +274,37 @@ _CODES = [
         "Put the mesh at the path the case gives, relative to the case file.",
     ),
     Code(
+        "E0206",
+        "Manufactured solution differs from its hash",
+        "The SHA-256 of the manufactured-solution file named by `verification.manufactured` "
+        "differs from the `sha256` the case records, so the case would verify against "
+        "another solution.",
+        "Regenerate the file, or update the case's sha256 to the file the study uses.",
+    ),
+    Code(
+        "E0207",
+        "Manufactured solution not found",
+        "The file named by `verification.manufactured.path` does not exist, relative to the "
+        "case file.",
+        "Export the manufactured solution with autan-vv and give its path.",
+    ),
+    Code(
+        "E0208",
+        "Not a manufactured solution",
+        "The file named by `verification.manufactured.path` is not JSON with "
+        '`"schema": "autan.mms/1"` (docs/validation/mms.md).',
+        "Point the case at a manufactured solution exported by autan-vv.",
+    ),
+    Code(
+        "E0209",
+        "Manufactured solution does not match the case",
+        "The constants the manufactured solution declares (gamma, gas constant, viscosity, "
+        "Prandtl number) differ from the case's gas, its declared model is not compressible "
+        "flow with the case's turbulence model, or the case has cell zone rules a "
+        "single-medium solution cannot cover. The message names the difference.",
+        "Build the case gas from the solution's parameters, or export the solution the case needs.",
+    ),
+    Code(
         "W0204",
         "Highly non-orthogonal cells",
         "The maximum face non-orthogonality exceeds 70°, the threshold above which "
@@ -362,6 +393,21 @@ _CODES = [
         "The case applies a condition of another kind than the type stored in the mesh file. "
         "This is allowed; the warning makes the override visible.",
         "Check that the override is intended.",
+    ),
+    Code(
+        "E0416",
+        "Boundary rules with a manufactured solution",
+        "A case verified against a manufactured solution takes the data of every boundary zone "
+        "from the exact solution; a `case.boundary(...)` rule would contradict it.",
+        "Remove the boundary rules from the verification case.",
+    ),
+    Code(
+        "E0417",
+        "Unsteady verification case",
+        "Manufactured solutions are steady, and a run starting from the freestream would keep "
+        "an initial-condition error at fixed time; `autan.case/1` verification cases are "
+        "steady.",
+        "Set `case.time = autan.Steady(...)` in the verification case.",
     ),
     Code(
         "E0501",
@@ -465,6 +511,108 @@ _CODES = [
         "`data` gives the iteration, the cell (0-based) and its cell zone.",
         "Lower the CFL number or use a more dissipative limiter; check the mesh quality "
         "near the cell.",
+    ),
+    Code(
+        "E1001",
+        "Unsupported kernel construct",
+        "A body uses a statement, expression or call outside the subset.",
+        "Rewrite the body with the DSL subset of docs/design/kernel-generator.md.",
+    ),
+    Code(
+        "E1002",
+        "Argument is not a DSL type",
+        "An argument has no annotation, or one that is not a role type.",
+        "Annotate every argument with a role type (Geom, State, Residual, Param, ...).",
+    ),
+    Code(
+        "E1003",
+        "Invalid loop binding",
+        "Loop bindings do not match the body's arguments, their types, or the loop kind.",
+        "Make the loop's bindings match the body's arguments, their types and the loop kind.",
+    ),
+    Code(
+        "E1004",
+        "Invalid loop output",
+        "A loop's outputs do not fit its kind (`Inc` signs, `Write`, accumulators).",
+        "Give the loop outputs that fit its kind (Inc with signs, Write, accumulators).",
+    ),
+    Code(
+        "E1005",
+        "Invalid control flow in a kernel",
+        "A name is assigned in one branch only, `return` is in one branch only, or code follows `return`.",
+        "Assign each name and return on every branch, and put no code after return.",
+    ),
+    Code(
+        "E1006",
+        "Type mismatch in a kernel",
+        "Shapes or kinds of operands disagree.",
+        "Make the operand shapes and kinds agree.",
+    ),
+    Code(
+        "E1007",
+        "rel() of a computed value",
+        "`rel()` receives something other than `Geom` arguments as loaded.",
+        "Call rel() on Geom arguments as loaded, not on computed values.",
+    ),
+    Code(
+        "E1008",
+        "Inc target is not an accumulation",
+        "An `Inc` target does not have role `Residual`.",
+        "Accumulate with Inc only into Residual datasets.",
+    ),
+    Code(
+        "E1009",
+        "Invalid kernel module",
+        "A kernel module cannot be imported or declares no loop.",
+        "Fix the module so it imports and declares at least one loop.",
+    ),
+    Code(
+        "E1010",
+        "Unknown backend",
+        "`--backends` names an unknown backend.",
+        "Use a backend listed by the generator's --help.",
+    ),
+    Code(
+        "E1011",
+        "Unknown policy",
+        "`--policies` names an unknown policy.",
+        "Use a policy listed by the generator's --help.",
+    ),
+    Code(
+        "E1012",
+        "Differentiation not supported",
+        "A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.",
+        "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
+    ),
+    Code(
+        "E1100",
+        "Generated loop failed",
+        "A generated loop or the spike driver fails without a more specific code.",
+        "Report the message with the kernel and the input that triggered it.",
+    ),
+    Code(
+        "E1101",
+        "GPU runtime error",
+        "A CUDA or HIP call or kernel launch fails.",
+        "Check the driver and the device with `autan doctor`, then report the message.",
+    ),
+    Code(
+        "E1102",
+        "Unknown precision policy",
+        "A driver receives an unknown policy name.",
+        "Use one of the precision policies the driver lists.",
+    ),
+    Code(
+        "E1103",
+        "Unknown race strategy",
+        "A driver receives an unknown strategy name.",
+        "Use one of the race strategies the driver lists.",
+    ),
+    Code(
+        "E1104",
+        "Face scratch too narrow",
+        "Store-gather scratch has fewer components per face than the loop's outputs.",
+        "Regenerate the loop so its scratch holds every output component per face.",
     ),
     Code(
         "W0801",

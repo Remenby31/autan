@@ -235,3 +235,32 @@ def test_matrix_gradients_of_vector_states() -> None:
     d = np.subtract(qn, qc)
     np.testing.assert_array_equal(out[:15], np.outer(d, w).ravel())
     np.testing.assert_array_equal(out[15:], np.add(qc, np.outer(d, w) @ r))
+
+
+@pointwise
+def outer_of_one(v: State.Vec3) -> Grad.Mat3:
+    return outer(v)
+
+
+def test_intrinsic_arity_is_a_coded_error() -> None:
+    with pytest.raises(CodegenError) as info:
+        parse(outer_of_one)
+    assert info.value.code == "E1006"
+
+
+q_face = dsl.faces.field("q_face", State)
+
+
+@pointwise
+def copy_state(x: State) -> State:
+    return x
+
+
+def test_boundary_states_from_active_data_must_be_declared_frozen() -> None:
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face)))
+    assert info.value.code == "E1012"
+    lm = build_loop(
+        "ok", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face), frozen=True)
+    )
+    assert lm.kind == "boundary_write"

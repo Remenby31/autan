@@ -41,7 +41,7 @@ lock_holders=()
 hold_gpu_lock() {
   local host=$1 fifo="$local_tmp/lock-$1"
   mkfifo "$fifo"
-  ssh "$host" 'flock /tmp/cfd-gpu.lock sh -c "echo locked; cat >/dev/null"' <"$fifo" >"$fifo.out" &
+  ssh "$host" 'flock /home/admin/autan-gpu/gpu.lock sh -c "echo locked; cat >/dev/null"' <"$fifo" >"$fifo.out" &
   lock_holders+=("$!")
   exec {lock_fd}>"$fifo"
   until grep -q locked "$fifo.out" 2>/dev/null; do

@@ -63,7 +63,7 @@ for name in hex prism pyramid tet hybrid tet-gmsh; do
   set_types
   export_case "$name"
   [ "$name" = hybrid ] && export_binary "$name"
-  cp "$src/$name.ascii.msh" "$src/$name.binary.msh" "$out/$name/"
+  cp "$src/$name.ascii.msh" "$src/$name.binary.msh" "$src/$name.cgns" "$out/$name/"
 done
 
 # Polyhedral dual of the unstructured tetrahedral mesh; feature angle 80

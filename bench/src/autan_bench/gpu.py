@@ -15,7 +15,8 @@ from autan_bench.errors import BenchError, Code
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_LOCK = Path("/tmp/cfd-gpu.lock")
+# One lock per Spark, outside sticky /tmp so that every uid can open it (docs/infra/bench.md).
+DEFAULT_LOCK = Path("/home/admin/autan-gpu/gpu.lock")
 IDLE_UTILIZATION_PCT = 5.0
 BUSY_UTILIZATION_PCT = 50.0
 
