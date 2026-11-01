@@ -967,28 +967,6 @@ TEST_CASE("a point vortex takes the Kutta-Joukowski circulation of its surfaces'
     }
     d["monitors"] = Json::array();
     d["time"]["max_iterations"] = 1;
-
-#ifdef AUTAN_PHYSICS_CUDA
-namespace {
-
-void on_device(Json& d) { d["devices"] = {{"kind", "cuda"}, {"count", 1}}; }
-
-}  // namespace
-
-TEST_CASE("on a device, a uniform flow along slip walls and farfield faces stays uniform",
-          "[euler][gpu]") {
-  const char* precision = GENERATE("fp64", "fp32+acc64");
-  const bool steady = GENERATE(true, false);
-  INFO(precision << (steady ? " steady" : " unsteady"));
-  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    inviscid_along_x(d, precision);
-    on_device(d);
-    if (steady) {
-      d["time"]["max_iterations"] = 20;
-    } else {
-      d["time"] = {
-          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 10}};
-    }
   });
   const auto out = run(doc);
   INFO(out.err);
@@ -1040,7 +1018,45 @@ TEST_CASE("a point vortex reaches the flow and continues bit for bit", "[euler]"
   const auto first = run(doc(4));
   REQUIRE(first.status == ExitStatus::finished);
   auto next = doc(8);
+  next["start"] = continue_from(first.run);
+  const auto second = run(next);
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  CHECK(read(first.run / "history.jsonl") + read(second.run / "history.jsonl") ==
+        read(whole.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
+    CHECK(field(second.run, name) == field(whole.run, name));
+  }
+  CHECK(field(second.run, "VortexCirculation0", "RestartState") ==
+        field(whole.run, "VortexCirculation0", "RestartState"));
+}
 
+#ifdef AUTAN_PHYSICS_CUDA
+namespace {
+
+void on_device(Json& d) { d["devices"] = {{"kind", "cuda"}, {"count", 1}}; }
+
+}  // namespace
+
+TEST_CASE("on a device, a uniform flow along slip walls and farfield faces stays uniform",
+          "[euler][gpu]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool steady = GENERATE(true, false);
+  INFO(precision << (steady ? " steady" : " unsteady"));
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    on_device(d);
+    if (steady) {
+      d["time"]["max_iterations"] = 20;
+    } else {
+      d["time"] = {
+          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 10}};
+    }
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const auto& f = doc["freestream"];
   const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
                                                       : std::numeric_limits<float>::epsilon();
   const double rho = f["density"].get<double>(), p = f["pressure"].get<double>();
@@ -1150,13 +1166,6 @@ TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[
   REQUIRE(second.status == ExitStatus::finished);
   CHECK(read(first.run / "history.jsonl") + read(second.run / "history.jsonl") ==
         read(whole.run / "history.jsonl"));
-  for (const char* name : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
-    CHECK(field(second.run, name) == field(whole.run, name));
-  }
-  CHECK(field(second.run, "VortexCirculation0", "RestartState") ==
-        field(whole.run, "VortexCirculation0", "RestartState"));
-}
-
   for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
     CHECK(field(again.run, name) == field(whole.run, name));
     CHECK(field(second.run, name) == field(whole.run, name));
