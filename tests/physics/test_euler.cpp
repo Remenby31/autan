@@ -396,7 +396,7 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   s.limiter = false;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
-  const auto u = uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1);
+  const auto u = uniform<P>(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1);
   std::vector<typename P::residual> r(5);
   e.residual(std::span<const typename P::state>(u), r);
   const double v = c.geometry.cell_volume[0];
