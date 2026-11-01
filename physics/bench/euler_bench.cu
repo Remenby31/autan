@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -255,41 +256,58 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   sched.face_scratch = scratch.get();
   sched.face_scratch_width = scratch_width;
 
-  auto residual = [&](gpu::Strategy s) {
-    ek::gpu_loops::primitives(d, sched);
-    ek::gpu_loops::boundary_states(d, sched);
-    ek::gpu_loops::gradients(d, sched);
-    ek::gpu_loops::bounds(d, sched);
-    ek::gpu_loops::limiter(d, sched);
-    ek::gpu_loops::sources(d, sched);
-    if (scheme.flux == autan::physics::Flux::hllc) {
-      ek::gpu_loops::hllc_faces(d, s, sched);
-      ek::gpu_loops::hllc_boundaries(d, s, sched);
-    } else if (scheme.flux == autan::physics::Flux::ausm_up) {
-      ek::gpu_loops::ausm_faces(d, s, sched);
-      ek::gpu_loops::ausm_boundaries(d, s, sched);
-    } else {
-      ek::gpu_loops::roe_faces(d, s, sched);
-      ek::gpu_loops::roe_boundaries(d, s, sched);
-    }
-  };
 
-  // Analytic minimum per loop, summed: every array a loop touches, read or written once.
-  const double cs = static_cast<double>(nc), fs = static_cast<double>(nf), is = static_cast<double>(ni),
-               bs = static_cast<double>(nb), st = static_cast<double>(stencil.entries.size()),
-               inc = static_cast<double>(topo.n_incidences);
-  const double sS = sizeof(S), sG = sizeof(G), sGr = sizeof(Gr), sR = sizeof(R), sI = sizeof(index_t),
-               sO = sizeof(offset_t);
-  const double bytes =
-      cs * 10 * sS                                                        // primitives
-      + bs * (5 * sS + sI + sizeof(double) + 5 * sS + 3 * sG + 5 * sS)    // boundary states
-      + cs * 5 * sS + bs * 5 * sS + st * (sI + 3 * sG) + cs * sO + cs * 15 * sGr  // gradients
-      + cs * 5 * sS + bs * 5 * sS + inc * sI + cs * sO + fs * sI + is * sI + cs * 10 * sS  // bounds
-      + cs * (5 * sS + 15 * sGr + 10 * sS + sG + 3 * sG + 5 * sS) + fs * 3 * sG + inc * sI +
-          cs * sO                                                         // limiter
-      + cs * (5 * sS + sG + 5 * sR)                                       // sources
-      + cs * (5 * sS + 15 * sGr + 5 * sS + 3 * sG + 10 * sR) + is * (2 * sI + 7 * sG + 9 * sG)  // faces
-      + bs * (sI + sizeof(double) + 5 * sS + 7 * sG + 9 * sG);            // boundary fluxes
+  // Analytic minimum of each loop: every array it touches read or written once.
+  const double cs = static_cast<double>(nc), fs = static_cast<double>(nf),
+               is = static_cast<double>(ni), bs = static_cast<double>(nb),
+               st = static_cast<double>(stencil.entries.size());
+  const double sS = sizeof(S), sG = sizeof(G), sGr = sizeof(Gr), sR = sizeof(R),
+               sI = sizeof(index_t), sO = sizeof(offset_t), sK = sizeof(double);
+  const double gather = cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO;  // values over the stencil
+  struct Loop {
+    const char* name;
+    double bytes;
+    std::function<void(gpu::Strategy)> launch;
+  };
+  const std::vector<Loop> loops = {
+      {"primitives", cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::primitives(d, sched); }},
+      {"boundary_states", bs * (sI + 5 * sS + sK + 5 * sS + 3 * sG + 5 * sS),
+       [&](gpu::Strategy) { ek::gpu_loops::boundary_states(d, sched); }},
+      {"gradients", gather + st * 3 * sG + cs * 15 * sGr,
+       [&](gpu::Strategy) { ek::gpu_loops::gradients(d, sched); }},
+      {"bounds", gather + cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::bounds(d, sched); }},
+      {"limiter",
+       cs * (5 * sS + 15 * sGr + 10 * sS + sG + 3 * sG + 5 * sS + sO) +
+           static_cast<double>(topo.n_incidences) * sI + fs * 3 * sG,
+       [&](gpu::Strategy) { ek::gpu_loops::limiter(d, sched); }},
+      {"sources", cs * (5 * sS + sG + 5 * sR),
+       [&](gpu::Strategy) { ek::gpu_loops::sources(d, sched); }},
+      {"faces", cs * (25 * sGr + 3 * sG + 10 * sR) + is * (2 * sI + 16 * sG),
+       [&](gpu::Strategy s) {
+         if (scheme.flux == autan::physics::Flux::hllc) {
+           ek::gpu_loops::hllc_faces(d, s, sched);
+         } else if (scheme.flux == autan::physics::Flux::ausm_up) {
+           ek::gpu_loops::ausm_faces(d, s, sched);
+         } else {
+           ek::gpu_loops::roe_faces(d, s, sched);
+         }
+       }},
+      {"boundaries", bs * (sI + sK + 5 * sS + 16 * sG) + bs * (25 * sGr + 3 * sG + 10 * sR),
+       [&](gpu::Strategy s) {
+         if (scheme.flux == autan::physics::Flux::hllc) {
+           ek::gpu_loops::hllc_boundaries(d, s, sched);
+         } else if (scheme.flux == autan::physics::Flux::ausm_up) {
+           ek::gpu_loops::ausm_boundaries(d, s, sched);
+         } else {
+           ek::gpu_loops::roe_boundaries(d, s, sched);
+         }
+       }},
+  };
+  double bytes = 0.0;
+  for (const auto& l : loops) bytes += l.bytes;
+  auto residual = [&](gpu::Strategy s) {
+    for (const auto& l : loops) l.launch(s);
+  };
 
   Run out;
   for (auto s : {gpu::Strategy::atomic, gpu::Strategy::warp_aggregated, gpu::Strategy::store_gather,
@@ -314,6 +332,13 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     std::replace(tag.begin(), tag.end(), '-', '_');
     out.timed.push_back({"residual_" + o.flux + "_" + tag, gpu::name(s), bytes,
                          time_it(o, [&] { residual(s); })});
+    for (const auto& l : loops) {
+      const bool by_strategy = std::string_view(l.name) == "faces" ||
+                               std::string_view(l.name) == "boundaries";
+      if (!by_strategy && s != gpu::Strategy::atomic) continue;
+      out.timed.push_back({std::string(l.name) + (by_strategy ? "_" + o.flux + "_" + tag : ""),
+                           gpu::name(s), l.bytes, time_it(o, [&] { l.launch(s); })});
+    }
   }
   return out;
 }
