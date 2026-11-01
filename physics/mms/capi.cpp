@@ -54,13 +54,15 @@ int guarded(char* err, std::size_t len, F&& body) {
   }
 }
 
-/// Converts FP64 arrays to the policy's state type, runs f, converts the result back.
+/// Converts the conserved variables `a` to the stored state and `b` (a direction) to the state
+/// type, runs f, converts the result back to FP64.
 template <class E, class F>
 void in_policy(E& e, const double* a, const double* b, double* out, F&& f) {
   using S = typename std::remove_reference_t<decltype(*e)>::State;
   using R = typename std::remove_reference_t<decltype(*e)>::Res;
   const auto n = 5 * static_cast<std::size_t>(e->n_cells());
-  std::vector<S> sa(a, a + n);
+  std::vector<S> sa(n);
+  e->state(std::span<const double>(a, n), sa);
   std::vector<S> sb(b != nullptr ? b : a, (b != nullptr ? b : a) + n);
   std::vector<R> r(n, R(0));
   f(*e, std::span<const S>(sa), std::span<const S>(sb), std::span<R>(r));

@@ -49,6 +49,10 @@ Face neighbours stay stable on the hexahedral, prismatic, hybrid and polyhedral 
 
 The faces of polyhedral duals are not planar. A one-point flux at the face centroid then commits an O(h) relative error per face, and the solution converges at first order (measured: finest-pair order 1.05–1.26 on the `poly` family). Integrating the linear reconstruction over the fan triangles through the face moment M restores order 2 (2.1–2.6).
 
+## Precision
+
+Cells store U − U_ref, the reference being the freestream, and the primitive pressure is the gauge pressure p − p_ref, computed from the differences only: p − p_ref = (γ − 1)(ΔE − (|m|²/ρ − |m_ref|²/ρ_ref)/2), the kinetic difference written with Δm and Δρ. Momentum fluxes take the gauge pressure (p_ref sums to zero over a closed cell); every other use of p adds p_ref back. In `fp32+acc64` the residual evaluated in FP32 has a rounding floor: on the MMS (hex, n = 16, from the freestream) the residuals drop 5.9–6.0 orders with absolute storage and 6.3–6.4 orders with the reference state, then stay there. The rest of the floor is the FP32 rounding of the fluxes themselves. A ten-order drop is therefore measured in `fp64`; in `fp32+acc64` the gate is the plateau and the integrated forces against `fp64` ([acceptance.md](../validation/acceptance.md#m2--compressible-euler)).
+
 ## Manufactured solution
 
 Steady `euler` solution of autan-vv (Roy et al. 2004 form), boundary faces at the exact state, cell sources at centroids; Newton-Krylov on the generated residual (`physics/mms/euler_mms.py`). The table is filled from the study of PR #99.

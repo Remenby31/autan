@@ -45,6 +45,9 @@ struct Scheme {
   std::array<double, 5> scale{1.0, 1.0, 1.0, 1.0, 1.0};  ///< W units: rho, u, v, w, p
   /// Cut-off Mach number of AUSM+-up's low-Mach scaling (the freestream Mach number).
   double mach_ref = 0.3;
+  /// Reference conserved state (the freestream): cells store U - U_ref and fluxes use the gauge
+  /// pressure p - p_ref, so that FP32 keeps the resolution of the variations. Density > 0.
+  std::array<double, 5> reference{1.0, 0.0, 0.0, 0.0, 2.5};
 };
 
 /// Euler residual R(U) = sum_f F . S - s V of a mesh, in precision policy P
@@ -70,8 +73,10 @@ class Euler {
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 
-  /// R(u) into res; both 5 x n_cells.
-  void residual(std::span<const State> u, std::span<Res> res);
+  /// The stored state of conserved variables u (5 x n_cells, FP64): u - U_ref.
+  void state(std::span<const double> u, std::span<State> s) const;
+  /// R(s) into res, s a stored state; both 5 x n_cells.
+  void residual(std::span<const State> s, std::span<Res> res);
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
   void first_order_tangent(std::span<const State> u, std::span<const State> du,
                            std::span<Res> dres);
@@ -79,8 +84,8 @@ class Euler {
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
   void spectral_radius(std::span<State> lambda);
-  /// After residual(u): pressure of the reconstruction at every boundary face's centroid, from
-  /// its owner cell (n_boundary_faces, FP64).
+  /// After residual(s): absolute pressure of the reconstruction at every boundary face's centroid,
+  /// from its owner cell (n_boundary_faces, FP64).
   void boundary_pressure(std::span<double> p) const;
 
  private:

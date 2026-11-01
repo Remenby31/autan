@@ -104,14 +104,20 @@ double relative_residual(Euler<P>& e, const Case& c, std::span<const typename P:
   return worst;
 }
 
-template <class P>
-std::vector<typename P::state> uniform(const Prim& w, std::size_t n) {
+std::vector<double> uniform(const Prim& w, std::size_t n) {
   const auto uc = conserved(w);
-  std::vector<typename P::state> u(5 * n);
+  std::vector<double> u(5 * n);
   for (std::size_t k = 0; k < 5; ++k) {
-    std::fill_n(u.begin() + static_cast<std::ptrdiff_t>(k * n), n, typename P::state(uc[k]));
+    std::fill_n(u.begin() + static_cast<std::ptrdiff_t>(k * n), n, uc[k]);
   }
   return u;
+}
+
+template <class P>
+std::vector<typename P::state> stored(const Euler<P>& e, const std::vector<double>& u) {
+  std::vector<typename P::state> s(u.size());
+  e.state(u, s);
+  return s;
 }
 
 Scheme second_order(Flux flux, double mach) {
@@ -119,6 +125,8 @@ Scheme second_order(Flux flux, double mach) {
   s.flux = flux;
   s.mach_ref = mach;
   s.scale = {1.0, 100.0, 100.0, 100.0, 1e5};
+  // A reference state apart from every test state, so that the stored differences are not zero.
+  s.reference = conserved({1.1, {10.0, 5.0, 0.0}, 0.95e5});
   return s;
 }
 
@@ -160,7 +168,7 @@ TEMPLATE_TEST_CASE("a uniform flow that satisfies every boundary condition is st
     }
     Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.5));
     e.set_boundary(kind, data);
-    const auto u = uniform<P>(w, nc);
+    const auto u = stored(e, uniform(w, nc));
     CHECK(relative_residual(e, c, std::span<const typename P::state>(u), w) <= 64 * eps<P>());
   }
 
@@ -173,7 +181,7 @@ TEMPLATE_TEST_CASE("a uniform flow that satisfies every boundary condition is st
     }
     Euler<P> e(c.mesh, c.geometry, air, second_order(flux, mach));
     e.set_boundary(kind, data);
-    const auto u = uniform<P>(w, nc);
+    const auto u = stored(e, uniform(w, nc));
     CHECK(relative_residual(e, c, std::span<const typename P::state>(u), w) <= 64 * eps<P>());
   }
 }
@@ -193,14 +201,15 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
   Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.1));
   e.set_boundary(kind, data);
   const Prim w{1.0, {0.0, 0.0, 0.0}, 1e5};
-  auto u = uniform<P>(w, nc);
+  auto absolute = uniform(w, nc);
   for (std::size_t i = 0; i < nc; ++i) {
     const auto x = c.geometry.cell_centroid_x[i];
     const auto y = c.geometry.cell_centroid_y[i];
     const auto z = c.geometry.cell_centroid_z[i];
-    u[i] = typename P::state(1.0 + 0.5 * std::sin(7.0 * x + 3.0 * y) * std::cos(5.0 * z) +
-                             (x > 0.5 ? 1.0 : 0.0));
+    absolute[i] =
+        1.0 + 0.5 * std::sin(7.0 * x + 3.0 * y) * std::cos(5.0 * z) + (x > 0.5 ? 1.0 : 0.0);
   }
+  const auto u = stored(e, absolute);
   const Prim scale{2.5, {0.0, 0.0, 0.0}, 1e5};
   CHECK(relative_residual(e, c, std::span<const typename P::state>(u), scale) <= 64 * eps<P>());
 }
@@ -230,17 +239,19 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
   s.second_order = false;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(kind, data);
-  auto u = uniform<P>(w, nc);
+  auto absolute = uniform(w, nc);
   std::vector<double> du(5 * nc);
   const auto uc = conserved(w);
   for (std::size_t k = 0; k < 5; ++k) {
     for (std::size_t i = 0; i < nc; ++i) {
       const double x = c.geometry.cell_centroid_x[i];
       const double y = c.geometry.cell_centroid_y[i];
-      u[k * nc + i] *= 1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y);
+      absolute[k * nc + i] *=
+          1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y);
       du[k * nc + i] = uc[k] * std::cos(5.0 * x + 2.0 * y + static_cast<double>(k));
     }
   }
+  const auto u = stored(e, absolute);
   std::vector<double> jv(5 * nc), rp(5 * nc), rm(5 * nc);
   e.first_order_tangent(u, du, jv);
   const double h = 1e-6;

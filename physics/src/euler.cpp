@@ -80,6 +80,11 @@ struct Euler<P>::Impl {
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
     d.mach_ref[0] = typename P::param(scheme.mach_ref);
+    const auto& r = scheme.reference;
+    if (!(r[0] > 0.0)) throw std::invalid_argument("reference density must be positive");
+    for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(r[c]);
+    d.p_ref[0] = typename P::param((gas.gamma - 1.0) *
+                                   (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     // Venkatakrishnan (1995), eq. 5, threshold eps^2 = (K h)^3 made dimensional:
     // eps_k^2 = (K / L)^3 V q_k^2.
     const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
@@ -169,6 +174,15 @@ void Euler<P>::set_source(std::span<const double> source) {
 }
 
 template <class P>
+void Euler<P>::state(std::span<const double> u, std::span<State> s) const {
+  const auto n = static_cast<std::size_t>(n_cells());
+  const auto& r = impl_->scheme.reference;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < n; ++c) s[k * n + c] = State(u[k * n + c] - r[k]);
+  }
+}
+
+template <class P>
 void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   auto& m = *impl_;
   m.d.u = const_cast<State*>(u.data());
@@ -232,8 +246,8 @@ void Euler<P>::boundary_pressure(std::span<double> p) const {
             (static_cast<double>(m.face_centroid[j * nf + f]) -
              static_cast<double>(m.cell_centroid[j * nc + c]));
     }
-    p[f - ni] =
-        static_cast<double>(m.prim[4 * nc + c]) + static_cast<double>(m.phi[4 * nc + c]) * dp;
+    p[f - ni] = static_cast<double>(m.d.p_ref[0]) + static_cast<double>(m.prim[4 * nc + c]) +
+                static_cast<double>(m.phi[4 * nc + c]) * dp;
   }
 }
 
