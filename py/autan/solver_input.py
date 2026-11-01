@@ -246,6 +246,7 @@ class BoundaryInput(_Strict):
     static_pressure: Positive | None
     states: StatesRef | None
     point_vortex: PointVortexInput | None
+    rule: Annotated[int, Field(strict=True, ge=0)] | None
 
     @model_validator(mode="after")
     def _values_match_kind(self) -> Self:
@@ -350,6 +351,33 @@ class StartInput(_Strict):
         return self
 
 
+def _rule_problem(boundary: BoundaryInput, case: CaseSpec) -> str | None:
+    """How ``boundary`` disagrees with the case rule it names (a group's zones need the
+    MeshInfo; a glob over zone names is checked here)."""
+    globbed = [
+        i
+        for i, r in enumerate(case.boundaries)
+        if r.zones is not None and fnmatchcase(boundary.zone, r.zones)
+    ]
+    if boundary.rule is None:
+        if globbed or boundary.states is not None:
+            return "takes no rule of the case, yet a rule selects it or it has states"
+        return None
+    if boundary.rule >= len(case.boundaries):
+        return f"rule {boundary.rule} is not a rule of the case"
+    rule = case.boundaries[boundary.rule]
+    if rule.zones is not None and boundary.rule not in globbed:
+        return f"rule {boundary.rule} does not select it"
+    if rule.group is None and globbed != [boundary.rule]:
+        return "another rule selects it"
+    if boundary.kind != rule.condition.kind:
+        return f"its kind is not that of rule {boundary.rule}"
+    named = rule.condition.sha256 if isinstance(rule.condition, OracleState) else None
+    if (boundary.states.sha256 if boundary.states else None) != named:
+        return "its states differ from the case's rule"
+    return None
+
+
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
@@ -433,23 +461,10 @@ class SolverInput(_Strict):
         ) not in {("compressible", m) for m in ORACLE_MODELS}:
             message = "oracle-state needs compressible inviscid or laminar physics"
             raise ValueError(message)
-        # Without the MeshInfo a group's zones are unknown: a zone's states must be those of
-        # an oracle-state rule, and of the rule a glob over zone names gives it, if any.
-        oracles = {
-            r.condition.sha256 for r in case.boundaries if isinstance(r.condition, OracleState)
-        }
         for boundary in self.boundaries:
-            rules = [
-                r.condition
-                for r in case.boundaries
-                if r.zones is not None and fnmatchcase(boundary.zone, r.zones)
-            ]
-            named = (
-                rules[0].sha256 if len(rules) == 1 and isinstance(rules[0], OracleState) else None
-            )
-            states = boundary.states.sha256 if boundary.states else None
-            if (states is not None and states not in oracles) or (rules and states != named):
-                message = f"boundary {boundary.zone!r}: states differ from the case's rule"
+            problem = _rule_problem(boundary, case)
+            if problem:
+                message = f"boundary {boundary.zone!r}: {problem}"
                 raise ValueError(message)
         manufactured = {b.kind == "manufactured" for b in self.boundaries}
         if manufactured and manufactured != {self.verification is not None}:
@@ -720,6 +735,7 @@ def build(
                     else None
                 ),
                 point_vortex=_point_vortex(spec, resolution, mesh_info, plan),
+                rule=resolution.rule,
             )
         )
     freestream, turbulence = freestream_state(spec), turbulence_input(spec)

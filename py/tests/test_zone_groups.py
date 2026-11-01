@@ -5,10 +5,13 @@ from pathlib import Path
 from typing import Any
 
 import autan
+import autan.restart
 import autan.solver_input
+import jsonschema
 import pytest
+from autan.cli import json_schema
 
-from tests.conftest import CRM_HL
+from tests.conftest import CRM_HL, mesh_document
 
 # Overlapping groups as a zones.json gives them: families in capitals, components dotted.
 GROUPS = {
@@ -20,7 +23,7 @@ GROUPS = {
 SIDECAR = json.dumps(
     {
         "schema": "autan.zone-groups/1",
-        "mesh_sha256": "",
+        "mesh_sha256": mesh_document("crm-hl")["source"]["sha256"],
         "provenance": {"note": "test"},
         "groups": GROUPS,
     }
@@ -47,7 +50,7 @@ def grouped(
 
 BODY = (
     CRM_HL.replace('case.boundary("wing.*").wall()', 'case.boundary(group="WING").wall()')
-    .replace('autan.forces("wing.*"', 'autan.forces(group="wing.*"')
+    .replace('autan.forces("wing.*"', 'autan.forces(group="[Ww]*"')
     .replace(
         'case.boundary("symmetry").symmetry()',
         'case.boundary("symmetry").symmetry()\ncase.boundary(group="FUSE").wall()',
@@ -74,7 +77,8 @@ def test_a_group_selects_the_union_of_its_groups_zones(
     document = autan.solver_input.build(
         case, grouped, devices=autan.Devices(kind="cpu", count=1), deterministic=False
     )
-    # wing.* takes wing.high-lift and wing.main: each zone once, in MeshInfo order.
+    # [Ww]* takes WING, wing.high-lift and wing.main, which overlap: each zone once, in
+    # MeshInfo order.
     assert document.monitors[0].zones == ("wing.slat", "wing.main", "wing.flap")
     assert document.mesh.groups_sha256 == SIDECAR_SHA256
     assert grouped.groups_of("wing.slat") == ("WING", "wing.high-lift")
@@ -84,7 +88,7 @@ def test_a_group_selects_the_union_of_its_groups_zones(
     ("replace", "code"),
     [
         (('group="WING"', 'group="TAIL"'), "E0426"),
-        (('autan.forces(group="wing.*"', 'autan.forces(group="tail.*"'), "E0426"),
+        (('autan.forces(group="[Ww]*"', 'autan.forces(group="tail.*"'), "E0426"),
         (('group="FUSE"', 'group="wing.main"'), "E0411"),  # wing.main is also in WING
     ],
 )
@@ -153,3 +157,60 @@ def test_a_run_records_the_groups_file_in_its_identity(
     parts += [run.precision, run.solver.backend, run.devices.kind, str(run.devices.count)]
     assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
     assert autan.Results.open(result.path).run == run  # mesh-info.json and run.json agree
+
+
+def test_the_published_schema_requires_zones_or_a_group(write_case: Callable[..., Path]) -> None:
+    validator = jsonschema.Draft202012Validator(json_schema("case"))
+    document = autan.load(write_case(BODY)).spec.document()
+    validator.validate(document)
+    for rule in (
+        {"condition": {"kind": "wall"}},
+        {"zones": "*", "group": "W", "condition": {"kind": "wall"}},
+    ):
+        assert not validator.is_valid(document | {"boundaries": [rule]})
+    monitor = document["monitors"][0]
+    assert not validator.is_valid(document | {"monitors": [monitor | {"surfaces": "*"}]})
+
+
+def test_the_solver_input_binds_each_zone_to_its_rule(
+    grouped: autan.MeshInfo, write_case: Callable[..., Path]
+) -> None:
+    case = autan.load(write_case(BODY))
+    document = autan.solver_input.build(
+        case, grouped, devices=autan.Devices(kind="cpu", count=1), deterministic=False
+    ).model_dump(mode="json")
+    autan.solver_input.SolverInput.model_validate(document)
+    [slat] = [b for b in document["boundaries"] if b["zone"] == "wing.slat"]
+    assert slat["rule"] == 0
+    slat["kind"] = "symmetry"  # rule 0, a group's, makes it a wall
+    with pytest.raises(ValueError, match="boundary"):
+        autan.solver_input.SolverInput.model_validate(document)
+
+
+def test_continue_needs_the_groups_of_the_previous_run(
+    grouped: autan.MeshInfo,
+    mesh_variant: Callable[..., autan.MeshInfo],
+    write_case: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    case = autan.load(write_case(BODY))
+    first = case.run(grouped, backend=autan.FakeBackend(iterations=2), runs=tmp_path / "runs")
+
+    def regrouped(document: dict[str, Any]) -> None:
+        with_groups(document)
+        document["groups_source"]["sha256"] = "1" * 64
+
+    problems = autan.restart.problems(
+        case.spec, mesh_variant("crm-hl", regrouped), first, "continue"
+    )
+    assert "E0708" in [d.code for d in problems]
+
+
+def test_an_unreadable_groups_file_is_e0210(
+    grouped: autan.MeshInfo, write_case: Callable[..., Path]
+) -> None:
+    path = write_case(BODY)
+    sidecar = path.parent / "crm-hl.cgns.zones.json"
+    sidecar.unlink()
+    sidecar.mkdir()
+    assert "E0210" in [d.code for d in autan.load(path).plan(grouped).diagnostics]
