@@ -282,6 +282,15 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       ].join("\n"),
     )
     .digest("hex");
+  // A run of the solver carries the timing it measured (results.md#runjson).
+  const cells = JSON.parse(readFileSync(join(RUNS, source.run_id, "mesh-info.json"), "utf8")).counts
+    .cells;
+  const timing = {
+    wall_seconds: 12.5,
+    solve_seconds: 10,
+    iterations: source.iterations,
+    ns_per_cell_iteration: (10 * 1e9) / (cells * source.iterations),
+  };
   const staging = join(RUNS, `.staging-${suffix}`);
   cpSync(join(RUNS, source.run_id), staging, { recursive: true });
   const run = {
@@ -291,6 +300,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     identity,
     solver,
     devices,
+    timing,
     deterministic: !source.deterministic,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
