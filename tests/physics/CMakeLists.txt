@@ -60,7 +60,30 @@ if(AUTAN_ENABLE_CGNS)
     )
     add_dependencies(autan_euler_run_tests autan-run)
   endif()
-  # The multi-rank tests carry the label `mpi` (ctest -L mpi).
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[mpi]")
+  # The multi-rank tests carry the label `mpi` (ctest -L mpi), the device ones `gpu`.
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]")
   catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]" PROPERTIES LABELS mpi)
+  if(AUTAN_ENABLE_CUDA)
+    target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
+    catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
+  endif()
+endif()
+
+# The Euler residual on a CUDA device against the host's.
+if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_CGNS)
+  add_executable(autan_euler_device_tests test_euler_device.cpp)
+  target_link_libraries(
+    autan_euler_device_tests
+    PRIVATE
+      autan::physics_runtime
+      autan::physics
+      autan::io
+      Catch2::Catch2WithMain
+      autan_compile_options
+  )
+  target_compile_definitions(
+    autan_euler_device_tests
+    PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
+  )
+  catch_discover_tests(autan_euler_device_tests PROPERTIES LABELS gpu)
 endif()
