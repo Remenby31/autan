@@ -54,6 +54,19 @@ set_target_properties(autan_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # C ABI over the residual, loaded through ctypes by the manufactured-solution study (mms/).
 add_library(autan_physics_mms SHARED mms/capi.cpp)
 target_link_libraries(autan_physics_mms PRIVATE autan::physics autan::io autan_compile_options)
+# The commit the library is built from, recorded by the study (as the runtime records its own).
+set(mms_build_info ${CMAKE_CURRENT_BINARY_DIR}/mms_generated/autan_build_info.hpp)
+add_custom_target(
+  autan_physics_mms_build_info
+  COMMAND
+    ${CMAKE_COMMAND} -DSOURCE=${PROJECT_SOURCE_DIR} -DOUT=${mms_build_info}
+    -DVERSION=${AUTAN_VERSION} "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -P
+    ${PROJECT_SOURCE_DIR}/runtime/cmake/build_info.cmake
+  BYPRODUCTS ${mms_build_info}
+  VERBATIM
+)
+add_dependencies(autan_physics_mms autan_physics_mms_build_info)
+target_include_directories(autan_physics_mms PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mms_generated)
 
 # The Euler physics behind autan-run's Physics interface; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)

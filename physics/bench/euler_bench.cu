@@ -264,6 +264,10 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   const double sS = sizeof(S), sG = sizeof(G), sGr = sizeof(Gr), sR = sizeof(R),
                sI = sizeof(index_t), sO = sizeof(offset_t), sK = sizeof(double);
   const double gather = cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO;  // values over the stencil
+  std::vector<index_t> owners(mesh.owner().begin() + static_cast<std::ptrdiff_t>(ni),
+                              mesh.owner().end());
+  std::sort(owners.begin(), owners.end());
+  const double bo = static_cast<double>(std::unique(owners.begin(), owners.end()) - owners.begin());
   struct Loop {
     const char* name;
     double bytes;
@@ -271,7 +275,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   };
   const std::vector<Loop> loops = {
       {"primitives", cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::primitives(d, sched); }},
-      {"boundary_states", bs * (sI + 5 * sS + sK + 5 * sS + 3 * sG + 5 * sS),
+      {"boundary_states", bs * (sI + sK + 5 * sS + 3 * sG + 5 * sS) + bo * 5 * sS,
        [&](gpu::Strategy) { ek::gpu_loops::boundary_states(d, sched); }},
       {"gradients", gather + st * 3 * sG + cs * (15 * sGr + 10 * sS),
        [&](gpu::Strategy) { ek::gpu_loops::gradients(d, sched); }},
@@ -291,7 +295,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
            ek::gpu_loops::roe_faces(d, s, sched);
          }
        }},
-      {"boundaries", bs * (sI + sK + 5 * sS + 16 * sG) + bs * (25 * sGr + 3 * sG + 10 * sR),
+      {"boundaries", bs * (sI + sK + 5 * sS + 16 * sG) + bo * (25 * sGr + 3 * sG + 10 * sR),
        [&](gpu::Strategy s) {
          if (scheme.flux == autan::physics::Flux::hllc) {
            ek::gpu_loops::hllc_boundaries(d, s, sched);
@@ -314,17 +318,21 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     residual(s);
     gpu::check(cudaDeviceSynchronize(), "residual");
     const auto r = d_res.download();
-    double num = 0.0, den = 0.0;
-    for (std::size_t i = 0; i < r.size(); ++i) {
-      const double a1 = static_cast<double>(r[i]), b1 = static_cast<double>(reference[i]);
-      if (!std::isfinite(a1)) num = std::numeric_limits<double>::infinity();
-      num = std::max(num, std::abs(a1 - b1));
-      den = std::max(den, std::abs(b1));
-    }
-    // Same loops on host and device: only the order of floating-point operations differs, and
-    // the residual is a difference of fluxes of size den: allow 1024 eps of the compute type.
+    // Same loops on host and device: only the order of floating-point operations differs. Each
+    // equation against its own scale: allow 1024 eps of the compute type.
     out.tolerance = 1024.0 * std::numeric_limits<typename P::compute>::epsilon();
-    const double diff = num / den;
+    double diff = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      double num = 0.0, den = 0.0;
+      for (std::size_t c = 0; c < nc; ++c) {
+        const double a1 = static_cast<double>(r[k * nc + c]);
+        const double b1 = static_cast<double>(reference[k * nc + c]);
+        if (!std::isfinite(a1)) num = std::numeric_limits<double>::infinity();
+        num = std::max(num, std::abs(a1 - b1));
+        den = std::max(den, std::abs(b1));
+      }
+      diff = std::max(diff, num / den);
+    }
     out.difference = std::max(out.difference, diff);
     out.verified = out.verified && diff <= out.tolerance;
     std::string tag = gpu::name(s);

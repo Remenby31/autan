@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -27,6 +27,7 @@ import numpy as np
 import numpy.typing as npt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+from autan_vv.mms.export import to_json
 from autan_vv.mms.solutions import euler
 from autan_vv.order import fit_order, mesh_size
 
@@ -111,6 +112,7 @@ class Euler:
             err,
         )
         self.handle = h
+        self.mesh = m  # the native residual borrows the mesh's topology
 
     def __del__(self) -> None:
         lib().autan_mms_euler_free(self.handle)
@@ -319,9 +321,9 @@ def main() -> None:
     ap.add_argument("--stencil", default="face2", choices=sorted(STENCILS))
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    ).stdout.strip()
+    lib().autan_mms_commit.restype = ctypes.c_char_p
+    commit = lib().autan_mms_commit().decode()  # the library's build, not the checkout's
+    solution = json.dumps(to_json(euler()), sort_keys=True)
     kinds = a.kinds.split(",") if a.kinds else None
     for fam in sorted(d for d in a.families.iterdir() if (d / "manifest.json").exists()):
         if kinds and fam.name not in kinds:
@@ -330,6 +332,9 @@ def main() -> None:
         meshes = [(lv, read(fam / lv["file"])) for lv in manifest["levels"]]
         for policy in a.policies.split(","):
             for flux in a.fluxes.split(","):
+                config = {"solution": solution, "precision": policy, "flux": flux,
+                          "limiter": a.limiter, "stencil": a.stencil}  # fmt: skip
+                case_sha = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
                 levels = []
                 for lv, m in meshes:
                     t0 = time.perf_counter()
@@ -339,7 +344,8 @@ def main() -> None:
                     levels.append({
                         "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),
                         "errors": errors(m, s.u), "mesh_sha256": lv["mesh_sha256"],
-                        "solver_commit": commit, "precision": policy, "flux": flux,
+                        "solver_commit": commit, "case_sha256": case_sha,
+                        "precision": policy, "flux": flux,
                         "limiter": a.limiter, "stencil": a.stencil, "relative_residual": s.relative_residual,
                         "newton": s.newton, "gmres": s.gmres,
                         "seconds": time.perf_counter() - t0,
@@ -348,9 +354,15 @@ def main() -> None:
                     " limited" if a.limiter else ""
                 )
                 name = label.replace(" ", "-").replace("+", "")
-                (a.out / f"{name}.json").write_text(
-                    json.dumps({"label": label, "dim": 3, "levels": levels}, indent=1) + "\n"
-                )
+                # One study per conserved variable, in the input format of `autan-vv order`.
+                for var in CONSERVED:
+                    per_var = [{**lv, "errors": lv["errors"][var]} for lv in levels]
+                    (a.out / f"{name}-{var}.json").write_text(
+                        json.dumps(
+                            {"label": f"{label} {var}", "dim": 3, "levels": per_var}, indent=1
+                        )
+                        + "\n"
+                    )
                 h = [mesh_size(lv["n_cells"], lv["volume"], 3) for lv in levels]
                 row = [label]
                 for var in CONSERVED:
