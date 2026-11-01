@@ -7,6 +7,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -20,6 +21,7 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/partition.hpp"
 #include "face_weighted_cpu.hpp"
 #include "gradients_cpu.hpp"
 #include "roe_cpu.hpp"
@@ -448,14 +450,19 @@ int dispatch(const char* policy, char* err, std::size_t len, F&& f) {
   return guarded(err, len, [&] { autan::spike::with_policy(policy, f); });
 }
 
-std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
-  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}, {}, {}});
-  m->geometry = autan::compute_geometry(m->mesh);
+std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh, autan::Geometry geometry) {
+  auto m = std::make_unique<SpikeMesh>(
+      SpikeMesh{std::move(mesh), std::move(geometry), {}, {}, {}, {}, {}});
   m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
   m->topo = autan::kernels::topology(m->mesh.view());
   m->twins = autan::kernels::incidence_twins(m->mesh);
   m->topo.incidence_twin = m->twins.data();
   return m;
+}
+
+std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
+  auto g = autan::compute_geometry(mesh);
+  return finish(std::move(mesh), std::move(g));
 }
 
 }  // namespace
@@ -496,6 +503,49 @@ int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::i
     in.source = {"memory", ""};
     *out = finish(autan::assemble(std::move(in))).release();
   });
+}
+
+/// Part `rank` of `parts` (one per cell of the unpartitioned `global`) with `layers` ghost
+/// layers (autan::extract_partition). Ghost cells get the volume and translated centroid of their
+/// global cell, as the forward halo exchange of geometry would give them.
+int autan_spike_mesh_partition(const void* global, const std::int32_t* parts, std::int32_t n_parts,
+                               std::int32_t rank, std::int32_t layers, void** out, char* err,
+                               std::size_t err_len) {
+  const auto* g = static_cast<const SpikeMesh*>(global);
+  return guarded(err, err_len, [&] {
+    auto lp = autan::extract_partition(
+        g->mesh, g->geometry,
+        std::span<const std::int32_t>(parts, static_cast<std::size_t>(g->mesh.n_cells())), n_parts,
+        rank, layers);
+    const auto gid = lp.mesh.cell_global_id();
+    const auto shift = lp.mesh.ghost_translation();
+    const auto n_owned = static_cast<std::size_t>(lp.mesh.n_owned_cells());
+    auto& lg = lp.geometry;
+    const auto& gg = g->geometry;
+    for (std::size_t c = n_owned; c < gid.size(); ++c) {
+      const auto o = static_cast<std::size_t>(gid[c]);
+      const auto t = shift.empty() ? std::array<double, 3>{} : shift[c - n_owned];
+      lg.cell_volume[c] = gg.cell_volume[o];
+      lg.cell_centroid_x[c] = gg.cell_centroid_x[o] + t[0];
+      lg.cell_centroid_y[c] = gg.cell_centroid_y[o] + t[1];
+      lg.cell_centroid_z[c] = gg.cell_centroid_z[o] + t[2];
+    }
+    auto m = finish(std::move(lp.mesh), std::move(lg));
+    m->face_global_id = std::move(lp.face_global_id);
+    *out = m.release();
+  });
+}
+
+/// Global cell and face of every local cell and face (identity on an unpartitioned mesh).
+void autan_spike_global_ids(const void* mesh, std::int64_t* cells, std::int64_t* faces) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  const auto gid = m->mesh.cell_global_id();
+  for (index_t c = 0; c < m->mesh.n_cells(); ++c) {
+    cells[c] = gid.empty() ? c : gid[static_cast<std::size_t>(c)];
+  }
+  for (index_t f = 0; f < m->mesh.n_faces(); ++f) {
+    faces[f] = m->face_global_id.empty() ? f : m->face_global_id[static_cast<std::size_t>(f)];
+  }
 }
 
 /// Reads a mesh file through the core readers (autan::io::read_mesh).

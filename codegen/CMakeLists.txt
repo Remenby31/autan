@@ -82,11 +82,14 @@ set_target_properties(autan_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # The spike drivers are shared libraries loaded by ctypes, so the static core they link must be
 # position independent.
-set_target_properties(autan_core autan_io PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(autan_core autan_io autan_partition PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Spike driver: C ABI over the generated host loops, loaded by codegen/tests through ctypes.
 add_library(autan_spike SHARED spike/capi.cpp)
-target_link_libraries(autan_spike PRIVATE autan::kernels autan::io autan_compile_options)
+target_link_libraries(
+  autan_spike
+  PRIVATE autan::kernels autan::io autan::partition autan_compile_options
+)
 
 if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_METAL)
   # Commit of the benchmark binaries, for the provenance autan-bench records.
@@ -109,7 +112,7 @@ if(AUTAN_ENABLE_CUDA)
 
   # GPU spike driver: the same C ABI on device memory, and the loop benchmark.
   add_library(autan_spike_gpu SHARED spike/capi.cpp spike/capi_gpu.cu)
-  target_link_libraries(autan_spike_gpu PRIVATE autan::kernels autan::io)
+  target_link_libraries(autan_spike_gpu PRIVATE autan::kernels autan::io autan::partition)
   set_target_properties(autan_spike_gpu PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
   target_compile_options(
     autan_spike_gpu
@@ -164,7 +167,7 @@ if(AUTAN_ENABLE_METAL)
   target_include_directories(autan_spike_metal PRIVATE spike)
   target_link_libraries(
     autan_spike_metal
-    PRIVATE autan::kernels autan::io autan_metal autan_compile_options
+    PRIVATE autan::kernels autan::io autan::partition autan_metal autan_compile_options
   )
 
   # Peak bandwidth of the Mac's GPU, and the generated loops timed against it.

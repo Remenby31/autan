@@ -43,6 +43,7 @@ def _check(rc: int, err: ctypes.Array[ctypes.c_char]) -> None:
 class Mesh:
     handle: ctypes.c_void_p
     n_cells: int
+    n_owned: int
     n_faces: int
     n_interior: int
     n_incidences: int
@@ -90,10 +91,31 @@ def mesh(fa: FaceArrays, n_ghost_cells: int = 0) -> Mesh:
     return _wrap(h)
 
 
+def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, layers: int) -> Mesh:
+    """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with `layers` ghost layers,
+    ghost geometry filled from `m` (autan::extract_partition)."""
+    err = ctypes.create_string_buffer(512)
+    h = ctypes.c_void_p()
+    parts = np.ascontiguousarray(parts, dtype=np.int32)
+    rc = lib().autan_spike_mesh_partition(
+        m.handle, _p(parts), ctypes.c_int32(n_parts), ctypes.c_int32(rank), ctypes.c_int32(layers),
+        ctypes.byref(h), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return _wrap(h)
+
+
+def global_ids(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Global cell of each local cell and global face of each local face."""
+    cells, faces = np.zeros(m.n_cells, np.int64), np.zeros(m.n_faces, np.int64)
+    lib().autan_spike_global_ids(m.handle, _p(cells), _p(faces))
+    return cells, faces
+
+
 def _wrap(h: ctypes.c_void_p) -> Mesh:
     counts = np.zeros(5, dtype=np.int64)
     lib().autan_spike_mesh_counts(h, _p(counts))
-    nc, _, nf, ni, nk = (int(c) for c in counts)
+    nc, no, nf, ni, nk = (int(c) for c in counts)
     a = {
         "owner": np.zeros(nf, np.int32),
         "neighbour": np.zeros(ni, np.int32),
@@ -110,7 +132,7 @@ def _wrap(h: ctypes.c_void_p) -> Mesh:
     soa = {k: a[k].reshape(3, n).T.copy() for k, n in
            (("face_area", nf), ("face_centroid", nf), ("cell_centroid", nc), ("lsq_weight", nk))}  # fmt: skip
     moment = a["face_moment"].reshape(9, nf).T.reshape(nf, 3, 3).copy()
-    return Mesh(h, nc, nf, ni, nk, a["owner"], a["neighbour"], a["cell_face_offsets"], a["cell_faces"],
+    return Mesh(h, nc, no, nf, ni, nk, a["owner"], a["neighbour"], a["cell_face_offsets"], a["cell_faces"],
                 soa["face_area"], soa["face_centroid"], moment, soa["cell_centroid"], a["cell_volume"],
                 soa["lsq_weight"])  # fmt: skip
 

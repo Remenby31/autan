@@ -59,6 +59,8 @@ Topology topology(const MeshView& mesh) noexcept {
           mesh.n_owned_cells,
           mesh.n_faces,
           mesh.n_interior_faces,
+          mesh.n_owned_interior_faces,
+          mesh.n_owned_faces,
           mesh.cell_face_offsets[mesh.n_cells],
           mesh.owner,
           mesh.neighbour,
