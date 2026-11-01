@@ -56,12 +56,13 @@ constexpr int linear_max_cycles = 10;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
 constexpr double linear_failure = 0.9;
-// The loosely coupled SA equation's scalar system: symmetric Gauss-Seidel sweeps.
-constexpr int gauss_seidel_sweeps = 4;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
 constexpr double min_step = 1e-6;
+// Largest relative decrease and increase of rho nt in one step (SA).
+constexpr double nt_max_decrease = 0.5;
+constexpr double nt_max_increase = 2.0;
 constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
@@ -112,6 +113,7 @@ struct SaState {
       : model(mesh, geometry, flow, t, ft2) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
+  double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
   std::vector<typename P::residual> res;
 
@@ -426,7 +428,8 @@ class EulerPhysics final : public runtime::Physics {
     for (std::size_t b = 0; b < nb; ++b) {
       bfaces[b] = {g.face_centroid_x[ni + b], g.face_centroid_y[ni + b], g.face_centroid_z[ni + b]};
     }
-    std::vector<double> nt_b(nb, in.freestream.nu_tilde.value_or(0.0));
+    t.nt_inf = in.freestream.nu_tilde.value_or(0.0);
+    std::vector<double> nt_b(nb, t.nt_inf);
     std::vector<double> d;
     if (mms != nullptr) {
       static const std::array<std::string, 1> nt_name = {"nu_hat"};
@@ -607,7 +610,7 @@ class EulerPhysics final : public runtime::Physics {
     euler_.assemble(shift, *matrix_);
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    solvers::Multigrid::Report linear;
+    solvers::Multigrid<5>::Report linear;
     try {
       multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
       linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
@@ -661,8 +664,35 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, gauss_seidel_sweeps);
-        for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
+        // The scalar system on the mean flow's agglomeration hierarchy.
+        if (!sa_multigrid_) sa_multigrid_.emplace(multigrid_->hierarchy());
+        solvers::Multigrid<1>::Report linear_sa;
+        try {
+          sa_multigrid_->set_operator(t.diag, t.upper, t.lower);
+          linear_sa = sa_multigrid_->solve(t.rhs, t.dx, linear_max_cycles, linear_tolerance);
+        } catch (const std::domain_error&) {
+          linear_sa = {};
+        }
+        if (linear_sa.residual_drop <= linear_failure) {
+          // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
+          // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches.
+          for (std::size_t c = 0; c < n_; ++c) {
+            const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
+            t.rnu[c] +=
+                alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
+          }
+        } else {
+          // nu-tilde keeps its value and the next CFL number is half this one.
+          std::array<char, 32> text{};
+          std::snprintf(text.data(), text.size(), "%.6g", linear_sa.residual_drop);
+          ctx_.log.write("warning", "linear",
+                         "the SA equation's linear solve failed: nu-tilde not updated", {},
+                         std::string("{\"cycles\": ") + std::to_string(linear_sa.cycles) +
+                             ", \"residual_drop\": " +
+                             (std::isfinite(linear_sa.residual_drop) ? text.data() : "null") + "}");
+          if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+          shortened_ = true;
+        }
       }
       t.model.eddy_viscosity(t.stored(t.rnu));
     }
@@ -787,7 +817,8 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<SaState<P>> sa_;  // SA-neg runs only
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;
+  std::optional<solvers::Multigrid<5>> multigrid_;
+  std::optional<solvers::Multigrid<1>> sa_multigrid_;  // SA runs, on multigrid_'s hierarchy
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;
@@ -851,9 +882,9 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
-// The Navier-Stokes physics: one ideal gas as Euler, the Euler conditions and no-slip walls; SA runs
-// steady (its loosely coupled step is the steady solver's) and needs a wall to measure distances
-// from, unless a manufactured solution gives them.
+// The Navier-Stokes physics: one ideal gas as Euler, the Euler conditions and no-slip walls; SA
+// runs steady (its loosely coupled step is the steady solver's) and needs a wall to measure
+// distances from, unless a manufactured solution gives them.
 std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in) {
   bool wall = false;
   for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
@@ -865,22 +896,24 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
     if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
         b.kind != "outlet" && b.kind != "manufactured") {
       return runtime::PhysicsRefusal{
-          .message = "the Navier-Stokes physics has no '" + b.kind + "' condition; boundary zone '" +
-                     b.zone + "' needs wall, slip, symmetry, farfield, inlet or outlet",
+          .message = "the Navier-Stokes physics has no '" + b.kind +
+                     "' condition; boundary zone '" + b.zone +
+                     "' needs wall, slip, symmetry, farfield, inlet or outlet",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }
   }
   if (in.turbulence.model == "sa") {
     if (in.time.kind != "steady") {
-      return runtime::PhysicsRefusal{
-          .message = "the SA physics runs steady cases only", .path = "time.kind",
-          .data_json = nlohmann::json{{"time", in.time.kind}}.dump()};
+      return runtime::PhysicsRefusal{.message = "the SA physics runs steady cases only",
+                                     .path = "time.kind",
+                                     .data_json = nlohmann::json{{"time", in.time.kind}}.dump()};
     }
     if (!wall && !in.verification) {
       return runtime::PhysicsRefusal{
           .message = "the SA physics needs a wall boundary to measure the wall distance from",
-          .path = "boundaries", .data_json = "{}"};
+          .path = "boundaries",
+          .data_json = "{}"};
     }
   }
   // The gas checks are the Euler physics' own; its condition check is replaced above.
