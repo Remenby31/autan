@@ -40,6 +40,8 @@ export interface Run {
   diagnostics: Diagnostic[];
   /** Where the run started from, null from the freestream (results.md#runjson). */
   start: RunStart | null;
+  /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
+  convergence: { floor: Record<string, number> } | null;
 }
 
 export interface RunStart {
@@ -50,6 +52,7 @@ export interface RunStart {
   time: number | null;
   solution_sha256: string;
   residual_reference: Record<string, number> | null;
+  woken: string[] | null;
 }
 
 export interface Forces {

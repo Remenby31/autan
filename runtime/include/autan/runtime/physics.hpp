@@ -85,6 +85,10 @@ struct PhysicsContext {
   const std::map<index_t, std::vector<double>>& boundary_states;
 };
 
+// case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
+// measured on a NACA 0012 slice, manufactured solutions and Ni's transonic bump.
+inline constexpr double round_off_floor = 0.5 * 0x1p-23;
+
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
 /// arrays (host or device), its kernels and their schedule. Constructed from
@@ -102,6 +106,11 @@ class Physics {
   /// Cell-centred fields with the SIDS names of results.md (field_names()),
   /// current state or time average.
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
+  /// A constant flux scale per equation of residual_names(input), in that
+  /// order, finite and >= 0; empty for none. Called once, after
+  /// construction: in fp32+acc64, an equation converges at a residual of
+  /// round_off_floor times its scale at the latest (docs/contracts/runtime.md).
+  [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;
