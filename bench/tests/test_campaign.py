@@ -138,3 +138,26 @@ def test_stop_never_signals_a_process_that_is_not_its_watcher(tmp_path, monkeypa
     finally:
         other.kill()
         other.wait()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux's")
+def test_every_campaign_is_excluded_from_the_outside_load(tmp_path, monkeypatch):
+    # Two campaigns, each a cgroup whose threads spin: their watchers publish the cgroups, and
+    # none of these threads counts as another project's load.
+    spin = [sys.executable, "-c", "while True: pass"]
+    procs = [subprocess.Popen(spin) for _ in range(2)]
+    try:
+        states = tmp_path / "campaigns"
+        states.mkdir()
+        for k, proc in enumerate(procs):
+            cgroup = tmp_path / f"cg{k}"
+            cgroup.mkdir()
+            (cgroup / "cgroup.threads").write_text(f"{proc.pid}\n")
+            (states / f"c{k}.cgroup").write_text(f"{cgroup}\n")
+        monkeypatch.setattr(campaign, "STATES", states)
+        time.sleep(0.2)
+        assert max(campaign.campaigns_running() for _ in range(5)) == 2
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
