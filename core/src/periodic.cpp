@@ -60,7 +60,9 @@ void check_declaration(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
     }
   }
   for (std::size_t z = 0; z < zones.size(); ++z) {
-    if (uses[z] == 0 && zones[z].kind == BcKind::periodic) {
+    // A partition turns periodic faces into interior faces to image ghosts:
+    // only a boundary zone needs its pair.
+    if (uses[z] == 0 && zones[z].kind == BcKind::periodic && zones[z].boundary) {
       invalid("zone '" + zones[z].name + "' is periodic but in no pair");
     }
   }
