@@ -143,8 +143,7 @@ class DeviceMesh {
     const auto nf = static_cast<std::size_t>(host.n_faces);
     owner_ = copy(std::span(host.owner, nf));
     neighbour_ = copy(std::span(host.neighbour, static_cast<std::size_t>(host.n_interior_faces)));
-    offsets_ =
-        copy(std::span(host.cell_face_offsets, static_cast<std::size_t>(host.n_cells) + 1));
+    offsets_ = copy(std::span(host.cell_face_offsets, static_cast<std::size_t>(host.n_cells) + 1));
     cell_faces_ = copy(std::span(host.cell_faces, static_cast<std::size_t>(host.n_incidences)));
     twin_ = copy(std::span<const offset_t>(twins));
     interior_ = colour_faces(host, 0, host.n_owned_interior_faces);
@@ -189,12 +188,16 @@ class DeviceMesh {
 
   /// Sets d.topo and points every built-in geometry member of a generated Data struct at a
   /// device copy in that member's own type (P::geom or P::geom_value), uploaded on first use.
+  /// Built-in geometry is read-only (`const T*`); a physics' own dataset of the same name is
+  /// writable and left alone.
   template <class Data>
   void bind(Data& d) {
     d.topo = topo_;
-#define AUTAN_BIND_GEOMETRY(name)                                                   \
-  if constexpr (requires { d.name; }) {                                             \
-    d.name = field<std::remove_cvref_t<decltype(*d.name)>>(#name, geometry_.name); \
+#define AUTAN_BIND_GEOMETRY(name)                                                    \
+  if constexpr (requires { d.name; }) {                                              \
+    if constexpr (std::is_const_v<std::remove_pointer_t<decltype(d.name)>>) {        \
+      d.name = field<std::remove_cvref_t<decltype(*d.name)>>(#name, geometry_.name); \
+    }                                                                                \
   }
     AUTAN_BIND_GEOMETRY(face_area)
     AUTAN_BIND_GEOMETRY(face_centroid)
@@ -212,13 +215,20 @@ class DeviceMesh {
 
   /// Replaces what bind() gives stencil_lsq_weight: 3 x n_stencil values in the entry order of
   /// the stencil given at construction (component-major). Data structs bound before keep the
-  /// previous weights until bound again.
+  /// previous weights, still allocated, until bound again.
   void set_stencil_weights(std::span<const double> weights) {
     if (weights.size() != 3 * stencil_.entries.size()) {
       throw std::invalid_argument("E1101: stencil weights of the wrong size");
     }
     geometry_.stencil_lsq_weight.assign(weights.begin(), weights.end());
-    std::erase_if(fields_, [](const auto& f) { return f.first.first == "stencil_lsq_weight"; });
+    for (auto it = fields_.begin(); it != fields_.end();) {
+      if (it->first.first == "stencil_lsq_weight") {
+        retired_.push_back(std::move(it->second));
+        it = fields_.erase(it);
+      } else {
+        ++it;
+      }
+    }
   }
 
  private:
@@ -250,6 +260,7 @@ class DeviceMesh {
   HostColouring interior_, boundary_;
   DeviceArray<double> face_scratch_, incidence_scratch_;
   std::map<std::pair<std::string, std::type_index>, DeviceArray<std::byte>> fields_;
+  std::vector<DeviceArray<std::byte>> retired_;  // replaced weights some Data may still point at
   Topology topo_{};
   Schedule schedule_;
 };
@@ -265,10 +276,10 @@ __device__ inline bool before(T a, T b) {
 template <class T>
 __global__ void min_blocks(index_t n, const T* __restrict__ v, T* __restrict__ out) {
   __shared__ T s[256];
-  const auto t = static_cast<index_t>(threadIdx.x);
+  const auto t = static_cast<int>(threadIdx.x);
   T m = infinity<T>();
-  for (auto i = static_cast<index_t>(blockIdx.x) * 256 + t; i < n;
-       i += static_cast<index_t>(gridDim.x) * 256) {
+  for (auto i = static_cast<offset_t>(blockIdx.x) * 256 + t; i < n;
+       i += static_cast<offset_t>(gridDim.x) * 256) {
     if (before(v[i], m)) {
       m = v[i];
     }
@@ -288,9 +299,9 @@ __global__ void min_blocks(index_t n, const T* __restrict__ v, T* __restrict__ o
 
 template <class F>
 __global__ void first_flag(index_t n, const F* __restrict__ flags, index_t* __restrict__ out) {
-  const auto i = static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (i < n && flags[i] != 0) {
-    atomicMin(out, i);
+  const auto i = static_cast<offset_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n && flags[i] != F(0)) {
+    atomicMin(out, static_cast<index_t>(i));
   }
 }
 
@@ -312,13 +323,15 @@ T min(index_t n, const T* values, stream_t stream = nullptr) {
   return n > 0 ? h[0] : infinity<T>();
 }
 
-/// Smallest i < n with flags[i] != 0, or n if none.
-inline index_t first_index(index_t n, const std::uint8_t* flags, stream_t stream = nullptr) {
+/// Smallest i < n with flags[i] != 0, or n if none; flags of any arithmetic type (a generated
+/// cell dataset written 0 or 1, for instance).
+template <class F>
+index_t first_index(index_t n, const F* flags, stream_t stream = nullptr) {
   DeviceArray<index_t> out(1, stream);
   out.upload(std::span<const index_t>(&n, 1), stream);
   if (n > 0) {
-    detail::first_flag<std::uint8_t>
-        <<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(n, flags, out.get());
+    detail::first_flag<F>
+        <<<static_cast<unsigned>((offset_t(n) + 255) / 256), 256, 0, stream>>>(n, flags, out.get());
     check(last_error(), "gpu::first_index");
   }
   index_t r = n;
