@@ -1,20 +1,23 @@
 #!/bin/sh
 # Writes run directories of the real runtime with the Euler physics, for the UI: a manufactured
-# solution on the hybrid mesh, a two-zone Sod shock tube, and a NACA 0012 slab at three angles of
+# solution on the hybrid mesh, a two-zone Sod shock tube, and a NACA 0012 slab at four angles of
 # attack (a polar for Compare). Meant for a DGX Spark through docker/spark.sh after
 #   cmake --build build --target autan-run autan-mesh-info
-# with the NACA mesh written by ui/scripts/naca0012_mesh.py at build/naca0012.msh.
+# with the NACA mesh written by ui/scripts/naca0012_mesh.py, at build/naca0012.msh by default.
+# The NACA runs target 2.4 orders: their fp32 residuals level off at 2.4 to 2.6 on this mesh.
 set -eu
-runs=${1:?usage: euler-runs.sh RUNS}
+runs=${1:?usage: euler-runs.sh RUNS [NACA_MESH]}
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 hybrid="$repo/tests/data/mesh/hybrid/polyMesh"
-naca="$repo/build/naca0012.msh"
+mesh=${2:-$repo/build/naca0012.msh}
+folder=$(CDPATH='' cd -- "$(dirname -- "$mesh")" && pwd)
+export NACA_MESH="$folder/$(basename -- "$mesh")"
 export AUTAN_RUN="$repo/build/runtime/autan-run"
 info() { "$repo/build/io/autan-mesh-info" --json "$1" > "$2"; }
 autan() { uv run --locked --project "$repo/ui/server" autan "$@"; }
 info "$hybrid" "$work/hybrid.meshinfo.json"
-info "$naca" "$work/naca.meshinfo.json"
+info "$NACA_MESH" "$work/naca.meshinfo.json"
 cp "$repo/py/tests/fixtures/euler.mms.json" "$work/"
 digest=$(sha256sum "$work/euler.mms.json" | cut -d' ' -f1)
 
@@ -44,12 +47,13 @@ CASE
 
 for aoa in 0 2 4 6; do
 cat > "$work/naca_$aoa.py" <<CASE
+import os
 import autan
 from autan.units import K, Pa, deg, m
-case = autan.Case("naca0012", mesh="$naca")
+case = autan.Case("naca0012", mesh=os.environ["NACA_MESH"])
 case.physics = autan.Compressible(turbulence=autan.Inviscid())
 case.freestream(mach=0.5, aoa=$aoa * deg, pressure=101325 * Pa, temperature=288.15 * K, ref_length=1.0 * m)
-case.time = autan.Steady(max_iterations=20000, residual_orders=2.5)
+case.time = autan.Steady(max_iterations=20000, residual_orders=2.4)
 case.boundary("airfoil").slip()
 case.boundary("farfield").farfield()
 case.boundary("symmetry").symmetry()

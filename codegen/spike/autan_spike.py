@@ -345,6 +345,28 @@ def roe(m: Mesh, policy: str, mode: str, u: F64, seed: F64 | None = None) -> F64
     return out.reshape(5, -1).T
 
 
+def roe_jacobian(
+    m: Mesh, policy: str, u: F64, strategy: str | None = None, block: int = 128
+) -> tuple[F64, F64]:
+    """Residual (n, 5) and face Jacobians (n_faces, 2, 5, 5) of the fused Roe loop, on the host
+    or, with a strategy, on the device."""
+    err = ctypes.create_string_buffer(512)
+    res = np.zeros(5 * m.n_cells)
+    jac = np.zeros(50 * m.n_faces)
+    us = soa(u)
+    if strategy is None:
+        rc = lib().autan_spike_roe_jacobian(
+            m.handle, policy.encode(), _p(us), _p(res), _p(jac), err, ctypes.c_size_t(len(err))
+        )
+    else:
+        rc = lib().autan_spike_gpu_roe_jacobian(
+            m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(us), _p(res), _p(jac),
+            err, ctypes.c_size_t(len(err)),
+        )  # fmt: skip
+    _check(rc, err)
+    return res.reshape(5, -1).T, jac.reshape(50, -1).T.reshape(-1, 2, 5, 5)
+
+
 def roe_complex_step(m: Mesh, u: F64, du: F64, h: float = 1e-30) -> F64:
     err = ctypes.create_string_buffer(512)
     out = np.zeros(5 * m.n_cells)
