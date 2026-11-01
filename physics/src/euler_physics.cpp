@@ -542,23 +542,33 @@ class EulerPhysics final : public runtime::Physics {
     report.time_step = dt;
   }
 
-  // The first cell whose state, as the kernels read it (P::state differences from the
-  // reference, added in P::compute: FP32 in fp32+acc64), has a non-finite or non-positive
-  // density or pressure; else the first cell whose residual is not finite.
+  // The first cell whose state, as the kernels read it, has a non-finite or non-positive
+  // density or pressure (to_primitive of kernels/euler.py: P::state differences from the
+  // reference, the gauge pressure from the differences, all in P::compute, FP32 in
+  // fp32+acc64); else the first cell whose residual is not finite.
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
+    using C = typename P::compute;
+    const auto& r = reference_;
+    const C g = static_cast<C>(gas_.gamma);
+    const C r0 = static_cast<C>(r[0]);
+    const std::array<C, 3> mr{static_cast<C>(r[1]), static_cast<C>(r[2]), static_cast<C>(r[3])};
+    const C p_ref = static_cast<C>((gas_.gamma - 1.0) *
+                                   (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     for (std::size_t c = 0; c < n_; ++c) {
-      std::array<double, 5> v{};
+      std::array<C, 5> dq{};
       for (std::size_t k = 0; k < 5; ++k) {
-        // As the primitives kernel adds them: the stored difference and the reference in the
-        // compute type (FP32 in fp32+acc64).
-        using C = typename P::compute;
-        v[k] = static_cast<double>(static_cast<C>(State(u_[k * n_ + c] - reference_[k])) +
-                                   static_cast<C>(reference_[k]));
+        dq[k] = static_cast<C>(State(u_[k * n_ + c] - r[k]));
       }
-      const double rho = v[0];
-      const double p =
-          (gas_.gamma - 1.0) * (v[4] - 0.5 * (v[1] * v[1] + v[2] * v[2] + v[3] * v[3]) / rho);
-      if (!std::isfinite(rho) || !std::isfinite(p) || rho <= 0.0 || p <= 0.0) {
+      const C rho = r0 + dq[0];
+      C dm_m = 0, mr_mr = 0;
+      for (std::size_t k = 0; k < 3; ++k) {
+        dm_m += dq[k + 1] * (C(2) * mr[k] + dq[k + 1]);
+        mr_mr += mr[k] * mr[k];
+      }
+      const C dk = (dm_m * r0 - mr_mr * dq[0]) / (rho * r0);
+      const C p = (g - C(1)) * (dq[4] - C(0.5) * dk) + p_ref;
+      if (!std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
+          !(rho > C(0)) || !(p > C(0))) {
         return static_cast<index_t>(c);
       }
     }
