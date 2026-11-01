@@ -462,6 +462,15 @@ _CODES = [
         "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
     ),
     Code(
+        "E0425",
+        "Point-vortex surfaces match no wall",
+        "The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of "
+        "a periodic pair, or match zones that are not wall or slip zones: the vortex's "
+        "circulation comes from the lift on the body. Patterns with wildcards skip periodic "
+        "zones.",
+        'Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.',
+    ),
+    Code(
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",

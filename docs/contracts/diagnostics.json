@@ -397,6 +397,12 @@
       "fix": "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0424"
     },
+    "E0425": {
+      "severity": "error",
+      "title": "Point-vortex surfaces match no wall",
+      "fix": "Give a pattern that matches the walls of the lifting body, e.g. `surfaces=\"wing.*\"`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0425"
+    },
     "E0501": {
       "severity": "error",
       "title": "Cell zone rule matches no zone",
