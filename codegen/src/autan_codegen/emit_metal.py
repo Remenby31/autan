@@ -184,8 +184,9 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
             e.w(s)
     e.w("}")
     e.w()
-    # store-gather, pass 1: face values to scratch.
-    k.head(f"{lm.name}_store", "StoreArgs<typename P::accum>")
+    # store-gather, pass 1: face values to scratch, in the compute type they are evaluated in
+    # (exact: accumulating them later in double-float gives the same sums, at half the traffic).
+    k.head(f"{lm.name}_store", "StoreArgs<typename P::compute>")
     e.w("  const index_t f = a.lo + index_t(gid);")
     e.w("  if (f >= a.hi) {")
     e.w("    return;")
@@ -194,14 +195,14 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
     for s in _face_eval(lm, "  "):
         e.w(s)
     for j in range(n):
-        e.w(f"  a.scratch[offset_t({j}) * d.topo.n_faces + f] = A(out[{j}]);")
+        e.w(f"  a.scratch[offset_t({j}) * d.topo.n_faces + f] = out[{j}];")
     e.w("}")
     e.w()
     # store-gather pass 2 and gather-recompute: one thread per cell (ghosts too), CSR order.
     for variant in ("gather", "gather_recompute"):
         k.head(
             f"{lm.name}_{variant}",
-            "GatherArgs<typename P::accum>" if variant == "gather" else None,
+            "GatherArgs<typename P::compute>" if variant == "gather" else None,
         )
         e.w("  const index_t c = index_t(gid);")
         e.w("  if (c >= d.topo.n_cells) {")
@@ -221,7 +222,7 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
         if variant == "gather":
             e.w(f"    A out[{n}];")
             for j in range(n):
-                e.w(f"    out[{j}] = a.scratch[offset_t({j}) * d.topo.n_faces + f];")
+                e.w(f"    out[{j}] = A(a.scratch[offset_t({j}) * d.topo.n_faces + f]);")
             if lm.kind == "face":
                 e.w("    const bool left = d.topo.owner[f] == c;")
         else:
@@ -347,7 +348,6 @@ def _face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w(
         f"void {nm}(mtl::Context& ctx, const Data<P>& d, const Strategy strategy, const mtl::Schedule& s) {{"
     )
-    e.w("  using A = typename P::accum;")
     e.w(f"  const index_t lo = {lo};")
     e.w(f"  const index_t hi = {hi};")
     e.w("  switch (strategy) {")
@@ -378,14 +378,14 @@ def _face_launcher(e: Emitter, lm: LoopModel) -> None:
         '        throw std::invalid_argument("E1104: face scratch narrower than the loop outputs");'
     )
     e.w("      }")
-    e.w("      auto* scratch = static_cast<A*>(s.face_scratch);")
+    e.w("      auto* scratch = static_cast<typename P::compute*>(s.face_scratch);")
     e.w("      if (hi > lo) {")
     e.w(
-        f'        ctx.dispatch(library, "{nm}_store", P::tag, d, mtl::StoreArgs<A>{{lo, hi, scratch}}, hi - lo, s.block);'
+        f'        ctx.dispatch(library, "{nm}_store", P::tag, d, mtl::StoreArgs<typename P::compute>{{lo, hi, scratch}}, hi - lo, s.block);'
     )
     e.w("      }")
     e.w(
-        f'      ctx.dispatch(library, "{nm}_gather", P::tag, d, mtl::GatherArgs<A>{{scratch}}, d.topo.n_cells, s.block);'
+        f'      ctx.dispatch(library, "{nm}_gather", P::tag, d, mtl::GatherArgs<typename P::compute>{{scratch}}, d.topo.n_cells, s.block);'
     )
     e.w("      break;")
     e.w("    }")
