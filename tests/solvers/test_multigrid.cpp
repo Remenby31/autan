@@ -117,6 +117,56 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
   return autan::assemble(autan::to_face_based(std::move(m)));
 }
 
+// One-cell-thick slab in the x-z plane: the x spacing grows by 1.3 from 1e-3 on either side of
+// x = 0, the z spacing by 1.3 from 1e-3 at the wall z = 0 (zone "wall"). Above the wall, cells
+// are stretched along z near x = 0, so lines run along x and, in each row, begin where the cells
+// become anisotropic enough: they start at different columns, as above a flat plate's leading
+// edge.
+Mesh staggered_slab(int n) {
+  autan::CellwiseMesh m;
+  autan::CellZone zone;
+  zone.name = "a";
+  zone.kind = autan::CellKind::fluid;
+  m.cell_zones.push_back(zone);
+  autan::FaceZone wall;
+  wall.name = "wall";
+  wall.kind = autan::BcKind::wall;
+  m.face_zones.push_back(wall);
+  std::vector<double> half{0.0}, z{0.0};
+  for (double d = 1e-3; static_cast<int>(half.size()) <= n; d *= 1.3)
+    half.push_back(half.back() + d);
+  for (double d = 1e-3; static_cast<int>(z.size()) <= n; d *= 1.3) z.push_back(z.back() + d);
+  std::vector<double> x;
+  for (auto it = half.rbegin(); it != half.rend(); ++it) x.push_back(-*it);
+  for (std::size_t i = 1; i < half.size(); ++i) x.push_back(half[i]);
+  const int nx = static_cast<int>(x.size()) - 1, nz = static_cast<int>(z.size()) - 1;
+  const int p = nx + 1;
+  for (int k = 0; k <= nz; ++k) {
+    for (int j = 0; j <= 1; ++j) {
+      for (int i = 0; i <= nx; ++i) {
+        m.x.push_back(x[static_cast<std::size_t>(i)]);
+        m.y.push_back(j * 1e-2);
+        m.z.push_back(z[static_cast<std::size_t>(k)]);
+      }
+    }
+  }
+  auto v = [&](int i, int j, int k) { return static_cast<index_t>(i + p * (j + 2 * k)); };
+  for (int k = 0; k < nz; ++k) {
+    for (int i = 0; i < nx; ++i) {
+      m.add_cell(autan::CellShape::hexa,
+                 std::array<index_t, 8>{v(i, 0, k), v(i + 1, 0, k), v(i + 1, 1, k), v(i, 1, k),
+                                        v(i, 0, k + 1), v(i + 1, 0, k + 1), v(i + 1, 1, k + 1),
+                                        v(i, 1, k + 1)},
+                 0);
+      if (k == 0) {
+        m.add_labelled_face(
+            std::array<index_t, 4>{v(i, 0, 0), v(i, 1, 0), v(i + 1, 1, 0), v(i + 1, 0, 0)}, 0);
+      }
+    }
+  }
+  return autan::assemble(autan::to_face_based(std::move(m)));
+}
+
 // Operator of the tests: a diffusion stencil (V shift + sum over faces of A_f / d_f) on every
 // component, coupled through a random face perturbation, so that the 5 x 5 blocks are full.
 struct System {
@@ -400,6 +450,16 @@ TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigr
     CHECK(2 * levels[1].n_nodes <= levels[0].n_nodes);
     check_hierarchy(*m, levels);
   }
+  // Lines that start at different columns: their layers are matched with a shift, so the
+  // coarsening reaches the coarsest size instead of stalling.
+  const auto slab = staggered_slab(24);
+  const auto g = autan::compute_geometry(slab);
+  const autan::solvers::AgglomerationOptions options;
+  const auto levels = autan::solvers::agglomerate(slab, g, options);
+  REQUIRE(levels.size() >= 2);
+  CHECK(2 * levels[1].n_nodes <= levels[0].n_nodes);
+  CHECK(levels.back().n_nodes <= options.coarsest_nodes);
+  check_hierarchy(slab, levels);
 }
 
 TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigrid]") {

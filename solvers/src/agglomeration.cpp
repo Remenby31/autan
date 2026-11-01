@@ -295,15 +295,20 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
 
   // Lines with their neighbouring lines, layer by layer: a group grows from a seed line by the
   // free line touching the most lines of the group, at the most layers, the nearest among equals
-  // (a 2 x 2 block of wall lines). A line may run the other way than its neighbours: its layers
-  // are matched in the orientation that touches the group at more layers.
+  // (a 2 x 2 block of wall lines). A neighbouring line may run the other way and start at another
+  // layer (lines that do not start on a wall): its layers are matched to the seed's in the
+  // orientation and shift that pair the most adjacent nodes.
   std::vector<int> grouped(n_lines, 0);
   struct Member {
     std::size_t line;
     bool reversed;
+    std::ptrdiff_t shift;  // index along the line of the seed's layer k: k + shift
   };
   auto layer_node = [&](const Member& m, std::size_t k) {
-    return line_node(m.line, m.reversed ? line_size(m.line) - 1 - k : k);
+    const std::ptrdiff_t j = static_cast<std::ptrdiff_t>(k) + m.shift;
+    const auto size = static_cast<std::ptrdiff_t>(line_size(m.line));
+    if (j < 0 || j >= size) return none;
+    return line_node(m.line, static_cast<std::size_t>(m.reversed ? size - 1 - j : j));
   };
   auto separation = [&](std::size_t a, std::size_t b) {
     double d = 0.0;
@@ -311,31 +316,60 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       d += (g.centroid[a][i] - g.centroid[b][i]) * (g.centroid[a][i] - g.centroid[b][i]);
     return d;
   };
+  // Semi-coarsening along a run of consecutive line nodes, two per coarse node (Mavriplis and
+  // Pirzadeh 1999, J. Aircraft 36(6):987-998): the coarse nodes form a coarse line.
+  auto pair_along = [&](const std::vector<std::size_t>& run) {
+    std::vector<std::size_t> coarse_line;
+    for (std::size_t k = 0; k < run.size(); ++k) {
+      if (k % 2 == 1 && compatible(g, run[k - 1], run[k])) {
+        members[coarse_line.back()].push_back(static_cast<index_t>(run[k]));
+        agg[run[k]] = coarse_line.back();
+        continue;
+      }
+      agg[run[k]] = members.size();
+      coarse_line.push_back(members.size());
+      members.push_back({static_cast<index_t>(run[k])});
+    }
+    clines.push_back(std::move(coarse_line));
+  };
   for (std::size_t s = 0; s < n_lines; ++s) {
     if (line_size(s) < opt.min_line || grouped[s] != 0) continue;
     grouped[s] = 1;
-    std::vector<Member> group{{s, false}};
+    std::vector<Member> group{{s, false, 0}};
     while (group.size() < opt.max_lines) {
       struct Candidate {
-        std::size_t line, touched = 0, forward = 0, backward = 0;
+        std::size_t line, touched = 0;
+        std::vector<std::pair<std::pair<int, std::ptrdiff_t>, std::size_t>> votes;
       };
       std::vector<Candidate> candidates;
       for (const Member& member : group) {
         std::vector<std::size_t> seen;  // candidate lines this member touches
-        for (std::size_t k = 0; k < line_size(member.line); ++k) {
-          g.for_edges(layer_node(member, k), [&](std::size_t, std::size_t m) {
+        for (std::size_t k = 0; k < line_size(s); ++k) {
+          const std::size_t a = layer_node(member, k);
+          if (a == none) continue;
+          g.for_edges(a, [&](std::size_t, std::size_t m) {
             const std::size_t l = line_of[m];
             if (grouped[l] != 0 || line_size(l) < opt.min_line) return;
-            const bool fwd = position[m] == k, bwd = line_size(l) - 1 - position[m] == k;
-            if (!fwd && !bwd) return;
             // Only a layer the seed line's node there would accept counts (else the line would
             // join the group at no layer and keep the seed line from coarsening along itself).
-            if (k >= line_size(s) || !compatible(g, line_node(s, k), m)) return;
+            if (!compatible(g, line_node(s, k), m)) return;
             auto it = std::find_if(candidates.begin(), candidates.end(),
                                    [&](const Candidate& c) { return c.line == l; });
-            if (it == candidates.end()) it = candidates.insert(candidates.end(), Candidate{l});
-            it->forward += fwd ? 1 : 0;
-            it->backward += bwd ? 1 : 0;
+            if (it == candidates.end())
+              it = candidates.insert(candidates.end(), Candidate{l, 0, {}});
+            const auto p = static_cast<std::ptrdiff_t>(position[m]);
+            const auto last = static_cast<std::ptrdiff_t>(line_size(l)) - 1;
+            const auto kk = static_cast<std::ptrdiff_t>(k);
+            for (const auto& key : {std::pair<int, std::ptrdiff_t>{0, p - kk},
+                                    std::pair<int, std::ptrdiff_t>{1, last - p - kk}}) {
+              auto v = std::find_if(it->votes.begin(), it->votes.end(),
+                                    [&](const auto& x) { return x.first == key; });
+              if (v == it->votes.end()) {
+                it->votes.emplace_back(key, 1);
+              } else {
+                ++v->second;
+              }
+            }
             if (std::find(seen.begin(), seen.end(), l) == seen.end()) {
               seen.push_back(l);
               ++it->touched;
@@ -344,38 +378,37 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
         }
       }
       if (candidates.empty()) break;
+      // The orientation and shift of a candidate: the most layers, then forward, then the
+      // smallest shift.
+      auto hypothesis = [](const Candidate& c) {
+        return *std::min_element(c.votes.begin(), c.votes.end(), [](const auto& x, const auto& y) {
+          if (x.second != y.second) return x.second > y.second;
+          if (x.first.first != y.first.first) return x.first.first < y.first.first;
+          const auto ax = x.first.second < 0 ? -x.first.second : x.first.second;
+          const auto ay = y.first.second < 0 ? -y.first.second : y.first.second;
+          return ax != ay ? ax < ay : x.first.second < y.first.second;
+        });
+      };
       const std::size_t origin = line_node(s, 0);
       const auto best = std::min_element(
           candidates.begin(), candidates.end(), [&](const Candidate& x, const Candidate& y) {
             if (x.touched != y.touched) return x.touched > y.touched;
-            const std::size_t lx = std::max(x.forward, x.backward),
-                              ly = std::max(y.forward, y.backward);
+            const std::size_t lx = hypothesis(x).second, ly = hypothesis(y).second;
             if (lx != ly) return lx > ly;
             const double dx = separation(line_node(x.line, 0), origin);
             const double dy = separation(line_node(y.line, 0), origin);
             return dx != dy ? dx < dy : x.line < y.line;
           });
       grouped[best->line] = 1;
-      group.push_back({best->line, best->backward > best->forward});
+      const auto h = hypothesis(*best);
+      group.push_back({best->line, h.first.first == 1, h.first.second});
     }
     if (group.size() == 1) {
-      // No free neighbouring line: the line coarsens along itself, two layers per coarse node
-      // (semi-coarsening in the strong direction, Mavriplis and Pirzadeh 1999, J. Aircraft
-      // 36(6):987-998), so that coarse levels keep shrinking once the wall plane is exhausted.
-      std::vector<std::size_t> coarse_line;
-      for (std::size_t k = 0; k < line_size(s); ++k) {
-        const std::size_t node = line_node(s, k);
-        const bool pair = k % 2 == 1 && compatible(g, line_node(s, k - 1), node);
-        if (pair) {
-          members[coarse_line.back()].push_back(static_cast<index_t>(node));
-          agg[node] = coarse_line.back();
-          continue;
-        }
-        agg[node] = members.size();
-        coarse_line.push_back(members.size());
-        members.push_back({static_cast<index_t>(node)});
-      }
-      clines.push_back(std::move(coarse_line));
+      // No free neighbouring line: the line coarsens along itself, so that coarse levels keep
+      // shrinking once the wall plane is exhausted.
+      std::vector<std::size_t> run;
+      for (std::size_t k = 0; k < line_size(s); ++k) run.push_back(line_node(s, k));
+      pair_along(run);
       continue;
     }
     std::vector<std::size_t> coarse_line;
@@ -386,8 +419,8 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       members.push_back({static_cast<index_t>(seed)});
       agg[seed] = c;
       for (std::size_t i = 1; i < group.size(); ++i) {
-        if (k >= line_size(group[i].line)) continue;
         const std::size_t m = layer_node(group[i], k);
+        if (m == none || agg[m] != none) continue;
         bool adjacent = false;
         g.for_edges(m, [&](std::size_t, std::size_t o) { adjacent = adjacent || agg[o] == c; });
         if (adjacent && compatible(g, seed, m)) {
@@ -399,8 +432,8 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       coarse_line.push_back(c);
     }
     clines.push_back(std::move(coarse_line));
-    // A line that joined at some layer keeps its other nodes as coarse nodes of their own, in
-    // runs that remain lines; a line that joined nowhere is free again for another group.
+    // A line that joined at some layer coarsens the rest of its nodes along itself, in runs that
+    // remain lines; a line that joined nowhere is free again for another group.
     for (std::size_t i = 1; i < group.size(); ++i) {
       const std::size_t l = group[i].line;
       if (joined[i] == 0) {
@@ -410,12 +443,9 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       std::vector<std::size_t> run;
       for (std::size_t k = 0; k <= line_size(l); ++k) {
         if (k < line_size(l) && agg[line_node(l, k)] == none) {
-          const std::size_t c = members.size();
-          members.push_back({static_cast<index_t>(line_node(l, k))});
-          agg[line_node(l, k)] = c;
-          run.push_back(c);
+          run.push_back(line_node(l, k));
         } else if (!run.empty()) {
-          clines.push_back(std::move(run));
+          pair_along(run);
           run.clear();
         }
       }
