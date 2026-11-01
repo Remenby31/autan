@@ -1,5 +1,5 @@
 ---
-source_hash: "b94b09b2d8c5"
+source_hash: "d1ab26ee9ba4"
 ---
 
 # Architecture
@@ -16,9 +16,9 @@ Autan est un cœur C++, un générateur de kernels et un SDK Python qui échange
 | `core/` | Le [maillage](meshes.fr.md) par faces, la géométrie FP64, la qualité et la renumérotation. | M0 |
 | `partition/` | Partitionnement par METIS ou Scotch, et échange de halos MPI. | M0 |
 | `py/` | Le SDK et la CLI `autan` : schéma de cas, `plan`, `run`, résultats. | M0, M4 |
-| `codegen/`, `kernels/` | Kernels écrits une fois, émis pour CUDA, HIP et CPU avec leur tangent et leur adjoint. | M1 |
-| `runtime/` | `autan-run` : lit une entrée du solveur, pilote une physique enregistrée, écrit le répertoire de calcul. Il n'enregistre aucune physique avant M2. | M2 |
-| `physics/`, `solvers/` | Schémas de flux, modèles de turbulence, pas de temps, solveurs linéaires. | M2, M3 |
+| `codegen/`, `kernels/` | Kernels écrits une fois, émis pour CUDA, HIP, CPU et Metal avec leur tangent et leur adjoint. | M1, M1b |
+| `runtime/` | `autan-run` : lit une entrée du solveur, pilote une physique enregistrée, écrit le répertoire de calcul. | M2 |
+| `physics/`, `solvers/` | Schémas de flux, modèles de turbulence, pas de temps, solveurs linéaires. Aujourd'hui : écoulements compressibles non visqueux sur CPU, en `fp64` et `fp32+acc64` ([discrétisation Euler](../design/euler.md), en anglais). | M2, M3 |
 | `vv/`, `bench/`, `docker/` | Vérification par solutions manufacturées et données de référence ; image de développement et mesures de bande passante. | M0 |
 | `ui/` | Interface web : éditeur de cas et visualisation des résultats. | M10 |
 
