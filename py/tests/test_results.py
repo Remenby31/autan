@@ -96,9 +96,7 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
         assert line["time"] is None
     first, last = lines[0]["residuals"]["density"], lines[-1]["residuals"]["density"]
     assert isinstance(crm_run.case.time, autan.Steady)
-    orders = crm_run.case.time.residual_orders
-    assert orders is not None
-    assert math.log10(first / last) >= orders - 1e-9
+    assert math.log10(first / last) >= crm_run.case.time.residual_orders - 1e-9
 
 
 def test_force_coefficients_are_the_contract_projections(crm_run: autan.Results) -> None:
@@ -412,12 +410,9 @@ def test_status_follows_the_convergence_criterion(
     )
     assert result.run.status == status
     density = result.history.residual("density")
-    assert isinstance(result.case.time, autan.Steady)
-    orders = result.case.time.residual_orders
-    assert orders == 5.0  # the fp32+acc64 default (case-schema.md#time)
-    assert extra or options or math.log10(density[0] / density[-1]) >= orders - 1e-9
+    assert extra or options or math.log10(density[0] / density[-1]) >= 8.0 - 1e-9
     if status != "converged":
-        assert density.size < 2 or math.log10(density[0] / density[-1]) < orders
+        assert density.size < 2 or math.log10(density[0] / density[-1]) < 8.0
 
 
 def test_each_zone_uses_its_own_medium(tmp_path: Path) -> None:

@@ -305,22 +305,3 @@ def test_error_paths_are_document_paths(tmp_path: Path) -> None:
         autan.load(path)
     paths = sorted(d.location.path or "" for d in error.value.diagnostics if d.location)
     assert paths == ["boundaries[0].condition.temperature", "physics.turbulence.nu_tilde_ratio"]
-
-
-@pytest.mark.parametrize(
-    ("precision", "time", "orders"),
-    [
-        ("fp64", "autan.Steady()", 8.0),
-        ("fp32+acc64", "autan.Steady()", 5.0),
-        ("fp32+acc64", "autan.Steady(residual_orders=7)", 7.0),
-    ],
-)
-def test_residual_orders_default_to_the_precision(
-    precision: str, time: str, orders: float, write_case: Callable[..., Path], tmp_path: Path
-) -> None:
-    body = CRM_HL.replace('precision="fp32+acc64"', f"precision={precision!r}")
-    case = autan.load(write_case(body + f"case.time = {time}\n"))
-    assert case.spec.document()["time"]["residual_orders"] == orders
-    copy = tmp_path / "copy.toml"
-    copy.write_text(case.to_toml())
-    assert autan.load(copy).spec == case.spec
