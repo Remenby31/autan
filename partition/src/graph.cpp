@@ -46,6 +46,9 @@ class Level {
     for (const index_t c : coarse_node) {
       if (c < 0 || at(c) >= coarse_parts.size()) invalid("a coarse node is out of range");
     }
+    for (const std::int32_t p : coarse_parts) {
+      if (p < 0 || p >= n_parts) invalid("coarse part " + std::to_string(p) + " out of range");
+    }
   }
 
   [[nodiscard]] std::int32_t edge_part(std::size_t e) const { return parts_[at(level_.owner[e])]; }
@@ -140,11 +143,11 @@ std::vector<std::int32_t> coarse_parts(std::span<const std::int32_t> parts,
   if (parts.size() != coarse_node.size() || global_id.size() != coarse_node.size())
     invalid("parts, coarse_node and global_id differ in size");
   std::vector<std::int32_t> out(n_coarse, -1);
-  std::vector<std::int64_t> least(n_coarse, std::numeric_limits<std::int64_t>::max());
+  std::vector<std::int64_t> least(n_coarse, 0);
   for (std::size_t v = 0; v < coarse_node.size(); ++v) {
     const index_t c = coarse_node[v];
     if (c < 0 || at(c) >= n_coarse) invalid("a coarse node is out of range");
-    if (global_id[v] < least[at(c)]) {
+    if (out[at(c)] == -1 || global_id[v] < least[at(c)]) {
       least[at(c)] = global_id[v];
       out[at(c)] = parts[v];
     }

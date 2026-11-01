@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <numeric>
 #include <set>
 #include <span>
 #include <vector>
@@ -613,13 +615,23 @@ TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
                                              .group_cells = grouped}));
     }
   }
-  // A cell in two groups.
-  const std::vector<autan::offset_t> twice_offsets{0, 2, 4};
-  const std::vector<index_t> twice{0, 1, 1, 2};
-  require_error(autan::ErrorCode::partition_invalid_request, [&] {
-    (void)autan::partition_cells(
-        mesh, 2, {.cell_weights = {}, .group_offsets = twice_offsets, .group_cells = twice});
-  });
+  // Malformed groups, refused on one part as on two: a cell in two groups, an empty group
+  // (no phantom node), cells without offsets.
+  const auto refused = [&](std::vector<autan::offset_t> group_offsets,
+                           std::vector<index_t> group_cells) {
+    for (const std::int32_t n : {1, 2}) {
+      require_error(autan::ErrorCode::partition_invalid_request, [&] {
+        (void)autan::partition_cells(
+            mesh, n,
+            {.cell_weights = {}, .group_offsets = group_offsets, .group_cells = group_cells});
+      });
+    }
+  };
+  refused({0, 2, 4}, {0, 1, 1, 2});
+  std::vector<index_t> all(at(mesh.n_cells()));
+  std::iota(all.begin(), all.end(), index_t{0});
+  refused({0, 0, static_cast<autan::offset_t>(all.size())}, all);
+  refused({}, {0, 1});
 }
 #endif
 
@@ -636,6 +648,10 @@ TEST_CASE("A coarse node goes to the part of its least child", "[partition][grap
   CHECK(autan::remote_children(0, parts, coarse, cp).empty());
   require_error(autan::ErrorCode::partition_invalid_request,
                 [&] { (void)autan::coarse_parts(parts, coarse, ids, 3); });  // coarse 2 empty
+  // The largest id is an id like any other.
+  const std::vector<std::int64_t> top{std::numeric_limits<std::int64_t>::max()};
+  CHECK(autan::coarse_parts(std::vector<std::int32_t>{1}, std::vector<index_t>{0}, top, 1) ==
+        std::vector<std::int32_t>{1});
 }
 
 TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partition][graph]") {
@@ -717,4 +733,12 @@ TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partitio
           return l.edge_global_id;
         },
         [](const autan::LocalGraph& l) { return l.n_owned_edges; });
+
+  // A coarse node owned by no part is refused.
+  for (const std::int32_t wrong : {-1, n_parts}) {
+    auto bad = cp;
+    bad.front() = wrong;
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { (void)autan::extract_graph(dual.level, parts, n_parts, 0, coarse, bad); });
+  }
 }

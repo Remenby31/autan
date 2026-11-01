@@ -56,34 +56,48 @@ DualGraph dual_graph(const Mesh& mesh) {
   return g;
 }
 
-// The dual graph with each group of `options` contracted into one node,
-// groups first in their order, then the other cells in theirs; `node_of`
-// receives each cell's node. Throws E0140 for a malformed group, a cell in
-// two groups, or fewer nodes than parts.
-DualGraph contracted(const DualGraph& graph, const Mesh& mesh, const PartitionOptions& options,
-                     std::int32_t n_parts, std::vector<std::int64_t>& node_of) {
-  const auto n_cells = at(mesh.n_cells());
+// Each cell's node once the groups of `options` contract: groups first in
+// their order, then the other cells in theirs; empty when there is no group.
+// Throws E0140 for malformed offsets, an empty group, or a cell out of range
+// or in two groups.
+std::vector<std::int64_t> group_nodes(const Mesh& mesh, const PartitionOptions& options) {
   const auto& offsets = options.group_offsets;
-  if (offsets.front() != 0 || at(offsets.back()) != options.group_cells.size() ||
-      !std::ranges::is_sorted(offsets)) {
-    throw Error(ErrorCode::partition_invalid_request, "malformed group offsets");
+  if (offsets.empty()) {
+    if (!options.group_cells.empty()) {
+      throw Error(ErrorCode::partition_invalid_request, "group_cells without group_offsets");
+    }
+    return {};
   }
-  node_of.assign(n_cells, -1);
+  if (offsets.front() != 0 || at(offsets.back()) != options.group_cells.size() ||
+      std::ranges::adjacent_find(offsets, std::greater_equal{}) != offsets.end()) {
+    throw Error(ErrorCode::partition_invalid_request,
+                "group offsets are malformed or a group is empty");
+  }
+  std::vector<std::int64_t> node_of(at(mesh.n_cells()), -1);
   const std::size_t n_groups = offsets.size() - 1;
   for (std::size_t g = 0; g < n_groups; ++g) {
     for (auto k = offsets[g]; k < offsets[g + 1]; ++k) {
       const index_t c = options.group_cells[at(k)];
-      if (c < 0 || at(c) >= n_cells || node_of[at(c)] != -1) {
+      if (c < 0 || c >= mesh.n_cells() || node_of[at(c)] != -1) {
         throw Error(ErrorCode::partition_invalid_request,
                     "cell " + std::to_string(c) + " is out of range or in two groups");
       }
       node_of[at(c)] = static_cast<std::int64_t>(g);
     }
   }
-  auto n_nodes = static_cast<std::int64_t>(n_groups);
+  auto next = static_cast<std::int64_t>(n_groups);
   for (auto& node : node_of) {
-    if (node == -1) node = n_nodes++;
+    if (node == -1) node = next++;
   }
+  return node_of;
+}
+
+// The dual graph with the cells of each node of `node_of` contracted into one.
+// Throws E0140 for fewer nodes than parts.
+DualGraph contracted(const DualGraph& graph, std::span<const std::int64_t> node_of,
+                     std::int32_t n_parts) {
+  const std::size_t n_cells = node_of.size();
+  const std::int64_t n_nodes = *std::ranges::max_element(node_of) + 1;
   if (n_nodes < n_parts) {
     throw Error(ErrorCode::partition_invalid_request, "cannot cut " + std::to_string(n_nodes) +
                                                           " groups and cells into " +
@@ -249,13 +263,11 @@ std::vector<std::int32_t> partition_cells(const Mesh& mesh, std::int32_t n_parts
   if (!(options.imbalance_tolerance >= 0.0)) {
     throw Error(ErrorCode::partition_invalid_request, "imbalance_tolerance must be ≥ 0");
   }
-  if (n_parts == 1) return std::vector<std::int32_t>(at(mesh.n_cells()), 0);
-
   // Groups contract into one node each; the other cells stay alone.
-  std::vector<std::int64_t> node_of;  // empty: no group, nodes are cells
-  const DualGraph graph = options.group_offsets.empty()
-                              ? dual_graph(mesh)
-                              : contracted(dual_graph(mesh), mesh, options, n_parts, node_of);
+  const std::vector<std::int64_t> node_of = group_nodes(mesh, options);
+  if (n_parts == 1) return std::vector<std::int32_t>(at(mesh.n_cells()), 0);
+  const DualGraph graph =
+      node_of.empty() ? dual_graph(mesh) : contracted(dual_graph(mesh), node_of, n_parts);
   PartitionOptions contracted_options = options;
   std::vector<std::int32_t> weights;
   if (!node_of.empty()) {

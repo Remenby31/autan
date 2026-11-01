@@ -25,7 +25,8 @@ struct PartitionOptions {
   std::int32_t seed = 0;
   /// Groups of cells that must share a part (a smoother's lines), as CSR: group g holds
   /// group_cells[group_offsets[g] .. group_offsets[g + 1]). Each group is one node of the graph
-  /// the method partitions, weighing the sum of its cells. Empty: no group.
+  /// the method partitions, weighing the sum of its cells. Groups are non-empty and disjoint,
+  /// or the request is refused (E0140) whatever the part count. Both empty: no group.
   std::span<const offset_t> group_offsets = {};
   std::span<const index_t> group_cells = {};
 };
