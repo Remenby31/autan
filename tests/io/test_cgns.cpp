@@ -11,6 +11,7 @@
 
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
+#include "fixtures.hpp"
 #include "support.hpp"
 
 using autan::index_t;
@@ -94,7 +95,11 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   const std::string name = GENERATE("hybrid", "poly", "hanging");
   CAPTURE(name);
   const autan::Mesh mesh = autan::io::read_mesh(data_dir / name / "polyMesh");
-  const autan::io::Solution solution = solution_for(mesh);
+  autan::io::Solution solution = solution_for(mesh);
+  solution.mean_fields.push_back(solution.fields[0]);
+  autan::io::Field previous{.name = "DensityPreviousLevel", .values = {}};
+  for (index_t c = 0; c < mesh.n_cells(); ++c) previous.values.push_back(-1.0 / (c + 1));
+  solution.restart_fields.push_back(previous);
   const fs::path file = temp_dir() / (name + "-solution.cgns");
   fs::create_directories(temp_dir());
   autan::io::write_solution(file, mesh, solution);
@@ -119,6 +124,21 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   for (const auto& field : solution.fields) {
     CHECK(read_field(file, field.name.c_str(), mesh.n_cells()) == field.values);
   }
+
+  const auto stored = autan::io::read_solution(file);
+  CHECK(stored.cells == mesh.n_cells());
+  CHECK(stored.run_metadata == solution.run_metadata);
+  const auto same = [](const std::vector<autan::io::Field>& a,
+                       const std::vector<autan::io::Field>& b) {
+    REQUIRE(a.size() == b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      CHECK(a[i].name == b[i].name);
+      CHECK(a[i].values == b[i].values);
+    }
+  };
+  same(stored.fields, solution.fields);
+  same(stored.mean_fields, solution.mean_fields);
+  same(stored.restart_fields, solution.restart_fields);
 }
 
 TEST_CASE("Zone node names follow the results.md rule", "[cgns]") {
@@ -142,13 +162,19 @@ TEST_CASE("CGNS files outside the supported layout are coded errors", "[cgns]") 
                     unstructured_tet(fn, base, "B");
                   }));
   }
-  SECTION("structured zone") {
-    require_error(
-        ErrorCode::io_unsupported, cgns_file("structured.cgns", [](int fn, int base) {
-          cgsize_t size[9] = {2, 2, 2, 1, 1, 1, 0, 0, 0};
-          int zone = 0;
-          REQUIRE(cg_zone_write(fn, base, "Block", size, CGNS_ENUMV(Structured), &zone) == CG_OK);
-        }));
+  SECTION("structured zone, as a mesh and as a solution") {
+    const auto file = cgns_file("structured.cgns", [](int fn, int base) {
+      cgsize_t size[9] = {2, 2, 2, 1, 1, 1, 0, 0, 0};
+      int zone = 0;
+      REQUIRE(cg_zone_write(fn, base, "Block", size, CGNS_ENUMV(Structured), &zone) == CG_OK);
+    });
+    require_error(ErrorCode::io_unsupported, file);
+    try {
+      (void)autan::io::read_solution(file);
+      FAIL("expected E0133");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == ErrorCode::io_unsupported);
+    }
   }
   SECTION("link to another file") {
     require_error(ErrorCode::io_external_reference, cgns_file("linked.cgns", [](int fn, int base) {
@@ -176,6 +202,21 @@ TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
   }
+}
+
+TEST_CASE("The writer rejects a periodic mesh until CGNS records its pairs", "[cgns]") {
+  autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  try {
+    autan::io::write_solution(temp_dir() / "periodic.cgns", mesh, solution_for(mesh));
+    FAIL("expected E0133");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::io_unsupported);
+  }
+  CHECK(!fs::exists(temp_dir() / "periodic.cgns"));
 }
 
 namespace {

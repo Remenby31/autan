@@ -26,6 +26,7 @@ from autan.solver_input import build
 if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
+    from autan.restart import Start
 
 EXECUTABLE_VARIABLE = "AUTAN_RUN"
 
@@ -50,12 +51,14 @@ class SolverBackend:
     deterministic: bool = False
     executable: Path | None = None
 
-    def run(self, case: Case, mesh_info: MeshInfo, runs: Path) -> Results:
+    def run(
+        self, case: Case, mesh_info: MeshInfo, runs: Path, start: Start | None = None
+    ) -> Results:
         executable = (self.executable or find_executable() or Path()).absolute()
         if not executable.is_file():
             raise CaseError([_not_installed(f"{executable} is not a file")])
         document = build(
-            case, mesh_info, devices=self.devices, deterministic=self.deterministic
+            case, mesh_info, devices=self.devices, deterministic=self.deterministic, start=start
         ).document()
         runs = runs.absolute()
         runs.mkdir(parents=True, exist_ok=True)
@@ -100,6 +103,7 @@ class SolverBackend:
             "precision": document["precision"],
             "devices": self.devices,
             "deterministic": self.deterministic,
+            "start": document["start"],
         }
         found = {
             "case": run.case.sha256,
@@ -107,6 +111,11 @@ class SolverBackend:
             "precision": run.precision,
             "devices": run.devices,
             "deterministic": run.deterministic,
+            "start": (
+                {"run": document["start"]["run"], **run.start.model_dump(mode="json")}  # type: ignore[index]
+                if run.start is not None
+                else None
+            ),
         }
         return [f"{key} differs" for key in expected if expected[key] != found[key]]
 

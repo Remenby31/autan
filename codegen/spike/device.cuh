@@ -119,14 +119,6 @@ struct DeviceGeom {
         stencil_lsq_weight(g.stencil_lsq_weight) {}
 };
 
-inline gpu::Strategy strategy_of(std::string_view s) {
-  for (auto k : {gpu::Strategy::atomic, gpu::Strategy::warp_aggregated, gpu::Strategy::coloured,
-                 gpu::Strategy::store_gather, gpu::Strategy::gather_recompute}) {
-    if (s == gpu::name(k)) {
-      return k;
-    }
-  }
-  throw std::invalid_argument("E1103: unknown race strategy");
-}
+using autan::kernels::strategy_of;
 
 }  // namespace autan::spike

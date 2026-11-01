@@ -29,7 +29,8 @@ from autan.errors import (
 )
 from autan.fake import FakeBackend
 from autan.meshinfo import MeshInfo
-from autan.results import Devices, RunInfo
+from autan.restart import resolve as resolve_start
+from autan.results import Devices, Results, RunInfo
 from autan.schema import json_schema as case_json_schema
 from autan.schema import require_tags
 from autan.solver_backend import SolverBackend
@@ -132,7 +133,13 @@ def command_run(args: argparse.Namespace) -> int:
         )
         previous = signal.signal(signal.SIGTERM, _interrupt)
         try:
-            results = case.run(MeshInfo.load(args.mesh_info), backend=backend, runs=args.runs)
+            results = case.run(
+                MeshInfo.load(args.mesh_info),
+                backend=backend,
+                runs=args.runs,
+                start=_start(args),
+                mode="warm" if args.warm else "continue",
+            )
         finally:
             signal.signal(signal.SIGTERM, previous)
     except CaseError as error:
@@ -171,8 +178,11 @@ def command_prepare(args: argparse.Namespace) -> int:
         mesh_info = MeshInfo.load(args.mesh_info)
         warnings = [d for d in case.plan(mesh_info).diagnostics if d.severity == "warning"]
         devices = Devices(kind=args.device_kind, count=args.device_count)
+        start = resolve_start(
+            case.spec, mesh_info, _start(args), "warm" if args.warm else "continue"
+        )
         document = build_solver_input(
-            case, mesh_info, devices=devices, deterministic=args.deterministic
+            case, mesh_info, devices=devices, deterministic=args.deterministic, start=start
         ).document()
         text = json.dumps(document, indent=2) + "\n"
         if args.output:
@@ -200,6 +210,10 @@ def _positive(text: str) -> int:
         message = f"{text} is not a positive integer"
         raise argparse.ArgumentTypeError(message)
     return value
+
+
+def _start(args: argparse.Namespace) -> Results | None:
+    return Results.open(args.start) if args.start else None
 
 
 def _interrupt(_signal: int, _frame: object) -> None:
@@ -355,6 +369,8 @@ def parser() -> argparse.ArgumentParser:
     )
     sub.add_argument("--device-count", type=_positive, default=1, help="autan-run: devices")
     sub.add_argument("--deterministic", action="store_true", help="autan-run: bitwise mode")
+    sub.add_argument("--start", help="run directory to start from (default: the freestream)")
+    sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
     sub.add_argument("--runs", default="runs", help="directory of run directories")
     sub.add_argument("--iterations", type=int, default=200, help="fake: iterations to write")
     sub.add_argument("--pace", type=float, default=0.0, help="fake: seconds per iteration")
@@ -370,6 +386,8 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--device-kind", choices=["cpu", "cuda", "hip"], default="cpu")
     sub.add_argument("--device-count", type=_positive, default=1)
     sub.add_argument("--deterministic", action="store_true", help="bitwise-deterministic run")
+    sub.add_argument("--start", help="run directory to start from (default: the freestream)")
+    sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
     sub.add_argument("-o", "--output", help="file to write (default: stdout)")
     sub.add_argument("--json", action="store_true", help="diagnostics as JSON on failure")
     sub.set_defaults(func=command_prepare)
