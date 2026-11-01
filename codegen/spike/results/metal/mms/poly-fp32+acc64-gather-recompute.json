@@ -11,7 +11,8 @@
     "Linf": 0.011982526682496442
    },
    "mesh_sha256": "cc3f72c98a4309e00c5ad6f30c8d7789e3870dfdbf2df662e0a1d2edeeb9a4f9",
-   "solver_commit": "a4d6012150d81061e0a23d4df3d2fae996158f67",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
    "precision": "fp32+acc64",
    "relative_residual": 8.128309927003123e-08,
    "strategy": "gather-recompute"
@@ -25,7 +26,8 @@
     "Linf": 0.005169408476089599
    },
    "mesh_sha256": "bec699f414430838b65a72425dfd5a1cbc99d4f1bdc20ab54d31759191632d20",
-   "solver_commit": "a4d6012150d81061e0a23d4df3d2fae996158f67",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
    "precision": "fp32+acc64",
    "relative_residual": 8.418167521757339e-08,
    "strategy": "gather-recompute"
@@ -39,7 +41,8 @@
     "Linf": 0.0026552319795122292
    },
    "mesh_sha256": "597d0be37bba1bcb3b296ef7a310972999945da33fe4ca3be39ad7447509389d",
-   "solver_commit": "a4d6012150d81061e0a23d4df3d2fae996158f67",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
    "precision": "fp32+acc64",
    "relative_residual": 9.072992174680272e-08,
    "strategy": "gather-recompute"
@@ -53,7 +56,8 @@
     "Linf": 0.0011169991169925897
    },
    "mesh_sha256": "93f40740c19ff926affbe9e155b9aa73b03674c2c86e71ac8c53e7c69e8f940f",
-   "solver_commit": "a4d6012150d81061e0a23d4df3d2fae996158f67",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
    "precision": "fp32+acc64",
    "relative_residual": 1.0249496842381517e-07,
    "strategy": "gather-recompute"
