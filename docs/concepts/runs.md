@@ -6,7 +6,7 @@ A run is one execution of a case on a mesh. It writes one directory with its res
 
 ![Run states](../assets/diagrams/run-lifecycle.svg)
 
-`autan plan` runs first. If it finds an error, nothing is written; nor does `autan-run` write anything when its build has no physics for the case (`E0706`). Otherwise the run starts in `running` and ends in one state:
+`autan plan` runs first. If it finds an error, nothing is written; nor does `autan-run` write anything for physics it does not run (`E0706`). Otherwise the run starts in `running` and ends in one state:
 
 | State | Meaning |
 |---|---|

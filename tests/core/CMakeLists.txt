@@ -5,6 +5,7 @@ add_executable(
   test_geometry.cpp
   test_quality.cpp
   test_renumber.cpp
+  test_wall_distance.cpp
   test_periodic.cpp
 )
 target_link_libraries(

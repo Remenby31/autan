@@ -2,10 +2,11 @@
 
 import argparse
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
 from autan_bench import gpu, result, runner
-from autan_bench.compare import DEFAULT_THRESHOLD, compare
+from autan_bench.compare import DEFAULT_THRESHOLD, INCONCLUSIVE, REGRESSION, compare
 from autan_bench.errors import BenchError, Code
 
 MAX_BASELINE_CV = 0.02
@@ -70,24 +71,51 @@ def _validate(args: argparse.Namespace) -> int:
 
 def _compare(args: argparse.Namespace) -> int:
     rows = compare(result.load(args.result), result.load(args.baseline), args.threshold)
-    _say(f"{'benchmark':<16} {'baseline':>10} {'current':>10} {'change':>8}")
+    width = max(len(r.name) for r in rows)
+    _say(
+        f"{'benchmark':<{width}} {'baseline [95 % CI]':>26} {'current [95 % CI]':>26} {'change':>8}"
+    )
     for r in rows:
-        flag = "  REGRESSION" if r.regression else ""
-        _say(
-            f"{r.name:<16} {r.baseline:>10.2f} {r.current:>10.2f} {r.change:>+8.2%}  {r.unit}{flag}"
-        )
-    bad = [r.name for r in rows if r.regression]
+        base = f"{r.baseline:.2f} [{r.baseline_ci[0]:.2f}, {r.baseline_ci[1]:.2f}]"
+        now = f"{r.current:.2f} [{r.current_ci[0]:.2f}, {r.current_ci[1]:.2f}]"
+        flag = "" if r.verdict == "ok" else f"  {r.verdict.upper()}"
+        _say(f"{r.name:<{width}} {base:>26} {now:>26} {r.change:>+8.2%}  {r.unit}{flag}")
+    bad = [r.name for r in rows if r.verdict == REGRESSION]
     if bad:
         _say(
-            f"error[REGRESSION]: {', '.join(bad)} worse than the baseline by more than {args.threshold:.0%}",
+            f"error[REGRESSION]: {', '.join(bad)} worse than the baseline by more than "
+            f"{args.threshold:.0%}, with disjoint 95 % intervals of the medians",
             err=True,
         )
         return 1
+    doubt = [r.name for r in rows if r.verdict == INCONCLUSIVE]
+    if doubt:
+        _say(
+            f"error[INCONCLUSIVE]: {', '.join(doubt)} worse by more than {args.threshold:.0%} "
+            "but within noise; measure again",
+            err=True,
+        )
+        return 3
     return 0
 
 
 def _baseline(args: argparse.Namespace) -> int:
-    doc = result.load(args.result)
+    if len(args.results) < args.min_runs:
+        raise BenchError(
+            Code.TOO_FEW_RUNS,
+            f"{len(args.results)} run(s) given, the baseline needs {args.min_runs}",
+        )
+    runs = [result.load(path) for path in args.results]
+    doc = runs[0] if len(runs) == 1 else result.pool(runs)
+    if args.select:
+        unmatched = [
+            p for p in args.select if not any(fnmatch(b["name"], p) for b in doc["benchmarks"])
+        ]
+        if unmatched:
+            raise BenchError(Code.MISSING_BENCHMARK, f"no benchmark matches {', '.join(unmatched)}")
+        doc["benchmarks"] = [
+            b for b in doc["benchmarks"] if any(fnmatch(b["name"], p) for p in args.select)
+        ]
     if doc["provenance"]["solver"]["dirty"]:
         raise BenchError(
             Code.DIRTY_TREE, "a baseline must come from a binary built from a clean checkout"
@@ -119,7 +147,10 @@ def _baseline(args: argparse.Namespace) -> int:
             Code.CV_TOO_HIGH, f"coefficient of variation >= {args.max_cv:.0%}: {', '.join(noisy)}"
         )
     result.write(doc, args.out)
-    _say(f"wrote {args.out}: peak {result.peak_bandwidth(doc):.1f} GB/s")
+    tracked = ", ".join(b["name"] for b in doc["benchmarks"])
+    _say(f"wrote {args.out}: {tracked}")
+    if doc["suite"] == "stream":
+        _say(f"peak {result.peak_bandwidth(doc):.1f} GB/s")
     return 0
 
 
@@ -187,9 +218,21 @@ def parser() -> argparse.ArgumentParser:
     c.set_defaults(func=_compare)
 
     b = sub.add_parser("baseline", help="promote a clean, low-noise result to a baseline")
-    b.add_argument("result", type=Path)
+    b.add_argument("results", type=Path, nargs="+", help="one run, or several runs to pool")
     b.add_argument("--out", type=Path, required=True)
+    b.add_argument(
+        "--min-runs",
+        type=int,
+        default=1,
+        help="refuse fewer runs (tracked loops: 5, spaced in time)",
+    )
     b.add_argument("--max-cv", type=float, default=MAX_BASELINE_CV)
+    b.add_argument(
+        "--select",
+        action="append",
+        metavar="PATTERN",
+        help="keep only the benchmarks whose name matches this glob (repeatable): the tracked set",
+    )
     b.set_defaults(func=_baseline)
 
     k = sub.add_parser("peak", help="print the peak STREAM bandwidth (GB/s) of a baseline")
@@ -199,7 +242,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point of the ``autan-bench`` command; returns 0 on success, 1 on regression, 2 on error."""
+    """Entry point of the ``autan-bench`` command; returns 0 on success, 1 on regression, 2 on error, 3 when a comparison is inconclusive."""
     args = parser().parse_args(argv)
     try:
         return args.func(args)

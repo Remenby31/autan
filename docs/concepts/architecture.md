@@ -12,9 +12,9 @@ Autan is a C++ core, a kernel generator and a Python SDK that exchange documents
 | `core/` | The face-based [mesh](meshes.md), FP64 geometry, quality and renumbering. | M0 |
 | `partition/` | Partitioning with METIS or Scotch, and the MPI halo exchange. | M0 |
 | `py/` | The `autan` SDK and CLI: case schema, `plan`, `run`, results. | M0, M4 |
-| `codegen/`, `kernels/` | Kernels written once, emitted for CUDA, HIP and CPU with their tangent and adjoint. | M1 |
-| `runtime/` | `autan-run`: reads a solver input, drives a registered physics, writes the run directory. It registers no physics before M2. | M2 |
-| `physics/`, `solvers/` | Flux schemes, turbulence models, time stepping, linear solvers. | M2, M3 |
+| `codegen/`, `kernels/` | Kernels written once, emitted for CUDA, HIP, CPU and Metal with their tangent and adjoint. | M1, M1b |
+| `runtime/` | `autan-run`: reads a solver input, drives a registered physics, writes the run directory. | M2 |
+| `physics/`, `solvers/` | Flux schemes, turbulence models, time stepping, linear solvers. Today: inviscid compressible flow on the CPU, in `fp64` and `fp32+acc64` ([Euler discretisation](../design/euler.md)). | M2, M3 |
 | `vv/`, `bench/`, `docker/` | Verification against manufactured solutions and reference data; development image and bandwidth benchmarks. | M0 |
 | `ui/` | Web UI: case editor and result viewer. | M10 |
 

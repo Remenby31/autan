@@ -26,7 +26,9 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 | `face_zone` | n_faces | Index into `face_zones`. |
 | `cell_zone` | n_cells | Index into `cell_zones`. |
 | `cell_global_id` | n_cells | `int64` identity of the cell: its index in the mesh as first assembled (the identity then), kept through partitioning and renumbering. |
-| `boundary_zone_offsets` | n_face_zones + 1 | Boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_faces`. Interior zones have an empty range. |
+| `boundary_zone_offsets` | n_face_zones + 1 | Owned boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_owned_faces`. Interior zones have an empty range. |
+| `halo_boundary_zone_offsets` | n_face_zones + 1 | The same for the boundary faces of ghost cells, from `n_owned_faces` to `n_faces`. |
+| `ghost_translation` | n_cells − n_owned_cells | Translation of each ghost cell: zero, or the shift of a periodic image ([Periodic pairs](#periodic-pairs)). |
 | `cell_face_offsets`, `cell_faces` | n_cells + 1, 2·n_interior + n_boundary | CSR of the faces of each cell, in increasing face index. A face is outward for cell `c` iff `owner[f] == c`. |
 
 ## Invariants
@@ -35,11 +37,11 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 
 1. Faces `[0, n_interior_faces)` are interior, faces `[n_interior_faces, n_faces)` are boundary.
 2. Interior faces have `owner < neighbour` and are sorted by `(owner, neighbour)`. Two cells may share several faces.
-3. Boundary faces are grouped by ascending zone index and sorted by owner within a zone.
+3. Boundary faces of owned cells come first, then those of ghost cells; each half is grouped by ascending zone index and sorted by owner within a zone.
 4. Each face has ≥ 3 distinct nodes; each owned cell has ≥ 4 faces; each ghost cell has ≥ 1 face.
-5. Every owned cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction. Ghost cells carry only the faces they share with owned cells.
-6. Every face touches an owned cell, so `owner[f] < n_owned_cells` for every face: a face loop over all faces visits each owned cell's faces, and its contributions to ghost cells (`neighbour[f] ≥ n_owned_cells`) are partial sums that a reverse halo exchange adds to the owning partition, as an adjoint (transposed) kernel needs.
-7. A face zone's `boundary` flag says whether it holds boundary or interior faces, and every face matches the role of its zone (a declared zone may be empty). Face-zone names are unique; cell-zone names are unique. Global ids are distinct and ≥ 0.
+5. Every owned cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction. A ghost cell carries any subset of its faces.
+6. Faces that touch an owned cell come first: interior faces `[0, n_owned_interior_faces)` and boundary faces `[n_interior_faces, n_owned_faces)`; their owner is owned (orientation from the lower index puts the owned cell first). The others, halo faces, join ghost cells only, so that stencils of owned cells see the faces of their ghost neighbours. A face loop that writes residuals runs over the owned faces only: its contributions to ghost cells (`neighbour[f] ≥ n_owned_cells`) are partial sums that a reverse halo exchange adds to the owning partition, as an adjoint (transposed) kernel needs. An unpartitioned mesh has no halo faces.
+7. A face zone's `boundary` flag says whether it holds boundary or interior faces, and every face matches the role of its zone (a declared zone may be empty). Face-zone names are unique; cell-zone names are unique. Global ids are ≥ 0, and no two cells share both their global id and their translation (`ghost_translation`, zero for owned cells): a periodic image repeats the id of the cell it copies.
 8. Every point is referenced by a face (unreferenced points are removed).
 9. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit. `assemble(input, &map)` returns, in a `autan::AssemblyMap`, the input face of each face, whether it was reversed, and the input point of each point.
 
@@ -62,12 +64,12 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 
 ## Periodic pairs
 
-`Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, empty, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a periodic zone in no pair, a translation that is zero or not finite) and matches the faces (E0119):
+`Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, empty, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a boundary zone of kind periodic in no pair, a translation that is zero or not finite) and matches the faces (E0119):
 
 - each node of zone a, translated, coincides with exactly one node of zone b: closer than 1e-4 of the shortest edge of zone a's faces at that node, far below any spacing and far above single-precision coordinates;
 - each face of zone a, so mapped, has the node set of exactly one face of zone b, the two zones have as many faces, and partners run through their nodes in opposite directions (both point out of the domain).
 
-`renumber_cells` keeps the pairs. A partition carries none: `extract_partition` rejects a mesh with periodic pairs (E0140), and `write_solution` rejects one (E0133), until periodic faces become interior faces to image ghost cells in a partition and pairs are written to CGNS. Rotations are reserved.
+`renumber_cells` keeps the pairs. A partition carries none: there each periodic face is an interior face to an image ghost cell, the cell across it translated (`ghost_translation`), and the pair's zones hold interior faces ([partitioning.md](../design/partitioning.md#periodic-images)). Both cells of such a face see the zone-a face: where the two zones coincide only within the matching tolerance, their closure across it holds to that tolerance, not to round-off. `write_solution` rejects a mesh with pairs (E0133) until pairs are written to CGNS. Rotations are reserved.
 
 ## Geometry
 
@@ -86,6 +88,10 @@ Ghost cells get NaN volume and centroid: the forward halo exchange fills them fr
 On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Green–Gauss with face-centroid values is exact for linear fields. On warped faces a single (c_f, S_f) pair cannot integrate a linear field over the fan exactly; the error is of the order of the warp, as in other cell-centred codes. Kernels that need exactness there must use least-squares gradients or per-triangle quadrature.
 
 `autan::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
+
+## Wall distance
+
+`autan::WallSurface(mesh, wall_zones)` (`core/include/autan/core/wall_distance.hpp`) holds the fan triangles of the zones' boundary faces, as `compute_geometry` splits them (a strongly non-convex face is represented by its fan); `distance(p)` is the exact distance from `p` to the nearest of them and of their periodic copies, as far as the mesh spans, FP64, through a bounding-volume tree. Errors: a wall node or node mean that is not finite is E0120; periodic translations that do not reduce to three independent directions, or that would need more than 10⁶ periodic copies to cover the mesh, are E0118. `autan::wall_distance(mesh, geometry, wall_zones)` gives it for every cell centroid. On a partition, build the surface from the global mesh: a part's nearest wall may lie in another. A zone out of range or holding interior faces is E0102.
 
 ## Quality and ordering
 
@@ -135,9 +141,8 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0113 | `mesh_too_large` | A count exceeds the `index_t` range. |
 | E0114 | `mesh_shared_face_orientation` | Two cells list their common face with the same orientation (one is inverted). |
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
-| E0116 | `mesh_face_without_owned_cell` | A face touches only ghost cells. |
 | E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
-| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite. |
+| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a boundary zone of kind periodic in no pair, or a translation that is zero or not finite. |
 | E0119 | `mesh_periodic_unmatched` | The faces of a periodic pair do not match one to one under its translation. |
 | E0120 | `geometry_degenerate_face` | A face has zero or non-finite area. |
 | E0121 | `geometry_non_positive_volume` | An owned cell has zero, negative or non-finite volume. |

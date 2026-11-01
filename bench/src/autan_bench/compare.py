@@ -2,10 +2,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from autan_bench.errors import BenchError, Code
+from autan_bench.stats import median_ci
 
 DEFAULT_THRESHOLD = 0.05
 # A change of exactly the threshold is tolerated; the ratio carries a few ulps of round-off.
 _ROUND_OFF = 1e-12
+
+
+# Verdicts: a median worse than the threshold is a regression only when the 95 % bootstrap
+# intervals of the two medians are disjoint; with overlapping intervals it is inconclusive and
+# the measurement is repeated (docs/infra/bench.md).
+OK = "ok"
+REGRESSION = "regression"
+INCONCLUSIVE = "inconclusive"
 
 
 @dataclass(frozen=True)
@@ -15,13 +24,15 @@ class Row:
     baseline: float
     current: float
     change: float
-    regression: bool
+    baseline_ci: tuple[float, float]
+    current_ci: tuple[float, float]
+    verdict: str
 
 
 def compare(
     current: dict[str, Any], baseline: dict[str, Any], threshold: float = DEFAULT_THRESHOLD
 ) -> list[Row]:
-    """Compare medians of every baseline benchmark; a change worse than ``threshold`` is a regression."""
+    """Judge every baseline benchmark: ok, regression, or inconclusive (see the verdicts above)."""
     gpu_now = current["provenance"]["gpu"]["name"]
     gpu_base = baseline["provenance"]["gpu"]["name"]
     if gpu_now != gpu_base:
@@ -47,6 +58,13 @@ def compare(
                 )
         change = now["stats"]["median"] / base["stats"]["median"] - 1.0
         worse = -change if base["better"] == "higher" else change
+        base_ci, now_ci = median_ci(base["samples"]), median_ci(now["samples"])
+        higher = base["better"] == "higher"
+        separated = now_ci[1] < base_ci[0] if higher else now_ci[0] > base_ci[1]
+        if worse - threshold <= _ROUND_OFF:
+            verdict = OK
+        else:
+            verdict = REGRESSION if separated else INCONCLUSIVE
         rows.append(
             Row(
                 name=base["name"],
@@ -54,7 +72,9 @@ def compare(
                 baseline=base["stats"]["median"],
                 current=now["stats"]["median"],
                 change=change,
-                regression=worse - threshold > _ROUND_OFF,
+                baseline_ci=base_ci,
+                current_ci=now_ci,
+                verdict=verdict,
             )
         )
     return rows

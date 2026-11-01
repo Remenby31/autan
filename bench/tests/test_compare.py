@@ -10,6 +10,17 @@ def scaled(samples: list[float], factor: float) -> list[float]:
 BASE = [100.0, 101.0, 99.0, 100.5, 99.5]
 
 
+# Samples spread over ±40 %: a 6 % shift of the median stays inside the noise.
+WIDE = [60.0, 70.0, 80.0, 90.0, 95.0, 100.0, 105.0, 110.0, 120.0, 130.0, 140.0]
+
+
+def test_compare_calls_a_shift_within_the_noise_inconclusive(write_json, capsys):
+    base = write_json("base.json", make_result([bench("stream.triad", WIDE)]))
+    now = make_result([bench("stream.triad", scaled(WIDE, 0.94))])
+    assert main(["compare", str(write_json("now.json", now)), str(base)]) == 3
+    assert "error[INCONCLUSIVE]" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("factor", "unit", "better", "exit_code"),
     [
