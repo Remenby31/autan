@@ -219,7 +219,11 @@ function RunView() {
             <TabPanel value="run" className="flex flex-col gap-6 outline-none">
               <section className="grid grid-cols-1 gap-6 rounded-lg border border-line bg-bg-0 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
                 <div className="h-72 min-w-0 rounded-md border border-line bg-bg-1 p-3">
-                  <ResidualChart history={history} floors={run?.convergence?.floor} />
+                  <ResidualChart
+                    history={history}
+                    floors={run?.convergence?.floor}
+                    steady={time?.kind === "steady"}
+                  />
                 </div>
                 {run ? (
                   <Facts
@@ -405,7 +409,9 @@ function Facts({
                     label="Residual drop towards the target"
                   />
                 )}
-                <span className="font-mono tabular-nums">{orders.toFixed(2)}</span>
+                <span className="font-mono tabular-nums" data-testid="orders">
+                  {orders.toFixed(2)}
+                </span>
                 {targetOrders !== undefined && (
                   <span className="font-mono text-fg-3">/ {targetOrders} orders</span>
                 )}

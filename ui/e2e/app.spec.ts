@@ -190,3 +190,37 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
   await expect(page.locator("[data-exempt]")).toHaveText(/momentum-y\s*exempt/);
   expect(errors).toEqual([]);
 });
+
+test("floors written while a run page is open recompute its residual drop", async ({ page }) => {
+  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const started = new Date(Date.now() - 7_200_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const suffix = Math.floor(Math.random() * 2 ** 32)
+    .toString(16)
+    .padStart(8, "0");
+  const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
+  const staging = join(RUNS, `.staging-${suffix}`);
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  // Stopped short of its target: its first 30 lines.
+  const lines = readFileSync(join(staging, "history.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .slice(0, 30);
+  writeFileSync(join(staging, "history.jsonl"), `${lines.join("\n")}\n`);
+  const run = { ...source, run_id: runId, started, status: "completed", iterations: 30 };
+  writeFileSync(join(staging, "run.json"), JSON.stringify({ ...run, convergence: null }));
+  renameSync(staging, join(RUNS, runId));
+  const last = JSON.parse(lines.at(-1) as string).residuals;
+  const target = Number(
+    /residual_orders = ([0-9.]+)/.exec(readFileSync(join(RUNS, runId, "case.toml"), "utf8"))?.[1],
+  );
+
+  await page.goto(`/runs/${runId}`);
+  const orders = page.getByTestId("orders");
+  await expect(orders).not.toHaveText(target.toFixed(2));
+  writeFileSync(
+    join(RUNS, runId, "run.json"),
+    JSON.stringify({ ...run, convergence: { floor: last } }),
+  );
+
+  await expect(orders).toHaveText(target.toFixed(2));
+});

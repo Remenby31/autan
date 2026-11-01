@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { HistoryRecord, Run, RunStart } from "./contracts";
-import { appendHistory, emptyColumns as empty, reapplyRule, soleForces } from "./runs";
+import { appendHistory, emptyColumns as empty, soleForces } from "./runs";
 
 const record = (iteration: number, monitors?: HistoryRecord["monitors"]): HistoryRecord => ({
   iteration,
@@ -124,16 +124,4 @@ test("an equation missing from a continued run's reference leaves the drop undef
     run({ residual_reference: { density: 1 }, woken: [] }),
   );
   expect(history.orders.at(-1)).toBeNaN();
-});
-
-test("floors that arrive after the history recompute its drop", () => {
-  const rows = [
-    { iteration: 1, time: null, residuals: { density: 1, energy: 1 } },
-    { iteration: 2, time: null, residuals: { density: 1e-4, energy: 1e-8 } },
-  ];
-  const before = run({ residual_reference: null, woken: null });
-  const history = appendHistory(empty(), rows, before);
-  expect(history.orders).toEqual([0, 4]);
-  const after = run({ residual_reference: null, woken: null }, { density: 1e-4, energy: 1e-9 });
-  expect(reapplyRule(history, before, after).orders).toEqual([0, 8]);
 });

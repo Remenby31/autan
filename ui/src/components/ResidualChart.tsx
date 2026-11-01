@@ -43,9 +43,12 @@ const decades = (_: uPlot, __: number, min: number, max: number) => {
 export function ResidualChart({
   history,
   floors,
+  steady,
 }: {
   history: HistoryColumns;
   floors?: Record<string, number> | undefined;
+  /** The convergence rule, and so its exemptions, applies to steady runs only. */
+  steady: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const plot = useRef<uPlot | null>(null);
@@ -147,10 +150,10 @@ export function ResidualChart({
     <div className="flex h-full flex-col gap-2">
       <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-fg-3 text-xs">
         {names.map((name, k) =>
-          history.exempt.has(name) ? (
+          steady && history.exempt.has(name) ? (
             <Tooltip
               key={name}
-              content="Identically zero: exempt while below 1e-12 × the largest initial residual"
+              content="Identically zero: exempt while ≤ 1e-12 × the largest initial residual"
             >
               <span className="flex items-center gap-1.5 opacity-50" data-exempt>
                 <Swatch k={k} />
