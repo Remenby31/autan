@@ -69,7 +69,7 @@ The two forms differ by more than κ∞ says: the host's LU carries its pivot gr
 
 ## Cycle and reductions
 
-V, W and K cycles and the outer GCR follow the host's algorithm line for line (`Multigrid::cycle_level`, `coarse_solve`, and `solvers::Gcr` once #282 extracts it): pre- and post-sweeps, the correction factor α of `MultigridOptions::scaling` and its `den > 0` test, the scaling of the outer residual by its largest entry (an exact device maximum), the K-cycle's α₁, β, α₂ and its test |r₁|² ≤ |b|²/16, GCR's coefficients and stopping test. The residual r = b − A x is a generated reduction whose diagonal product and sums run in the accumulation type; J4's `multiply` rounds them to the compute type, which is too coarse for a residual that cancels. The scalars stay on the device:
+V, W and K cycles and the outer GCR follow the host's algorithm line for line (`Multigrid::cycle_level`, `coarse_solve`, and `solvers::Gcr` once #282 extracts it): pre- and post-sweeps, the correction factor α of `MultigridOptions::scaling` and its `den > 0` test, the scaling of the outer residual by its largest entry (an exact device maximum), the K-cycle's α₁, β, α₂ and its test |r₁|² ≤ |b|²/16, GCR's coefficients and stopping test. Every application of a level's operator (the residual b − A x, the correction's image A e, GCR's images A z) is a generated reduction whose diagonal product and sums run in the accumulation type; J4's `multiply` rounds them to the compute type, which can turn a small residual or image into zero and break GCR's `ww > 0` test. The scalars stay on the device:
 
 - dot products are `gpu::exact_sums` (#227): they depend only on the two vectors, not on the launch. The host's are sequential sums until CFD - Multigrille routes them through `ExactSum` (D2, also on one rank); from then on equal vectors give equal dots;
 - each scalar is formed by a one-thread kernel from the rounded sums; the branches of the K-cycle and GCR's stopping test become flags on the device, read by the kernels that follow, which return at once when the flag says so, the exact sums included;
@@ -88,21 +88,21 @@ Declared before any measurement. u is the unit round-off of the type that comput
 | Piece | Gate | Oracle |
 |---|---|---|
 | Restriction, prolongation | bitwise equal | host `cycle_level` |
-| Galerkin operator | bitwise equal on every level; within k u Σ\|terms\| per entry of a dense Pᵀ A P, k its number of terms | host `set_operator`; dense product, independent of the lists |
-| Point rows, one colour from the same x | componentwise ≤ 64 u ‖D_i⁻¹‖∞ (\|b\| + Σ \|A\| \|x\|)_i, the bound agreed for J5 | host `relax_line` on lines of one node |
+| Galerkin operator | bitwise equal on every level; within 2 k u Σ\|terms\| per entry of a dense Pᵀ A P, k its number of terms (both sums' rounding) | host `set_operator`; dense product, independent of the lists |
+| Point rows, one colour from the same x | componentwise ≤ max(64, 4 (k + 5)) u ‖D_i⁻¹‖∞ (\|b\| + Σ \|A\| \|x\|)_i, k the row's incidences: J5's agreed 64 u on mesh rows, growing with the degree of coarse rows | host `relax_line` on lines of one node |
 | Line factors | each block within 10⁻¹² of the largest entry of the host's | host `Smoother::factor` |
-| Line solves, one colour from the same x and the same factors | each line within 10⁻¹² ‖x_host‖∞ of that line | host `relax_line` |
+| Line solves, one colour from the same x and the same factors | each node within 10⁻¹² ℓ max_k ‖D'_k⁻¹‖∞ max_k (\|b\| + Σ \|A\| \|x\|)_k over its line, ℓ the line's length (scaled by the data, not by a solution that may cancel to zero) | host `relax_line` |
 | Coarsest solve | within 10⁻¹⁰ ‖x_host‖∞, κ∞ and pivot growth reported ([rule](#coarsest-level)) | host `solve_dense` |
 | One cycle, V and K | each component within 10⁻¹⁰ (fp64) or 10⁻³ (fp32+acc64) of \|x_host\|∞ | host `cycle` |
 | GCR to a drop of 10⁻⁶, MMS hex and tet 48³, NACA 256² | each iteration's drop within 10⁻⁸ (fp64) or 10⁻² (fp32+acc64) relative of the host's; the same iteration count | host `solve` |
-| Steady Euler to ten orders (MMS hex and tet 16³–96³, NACA 0012 cases of [multigrid.md](multigrid.md#measurements)) | the host's step count | `autan-run`, cpu backend |
-| Converged solutions | each field within 10⁻⁸ of its range of the host multigrid's run (measured between host solvers: 5.1 × 10⁻⁹); `euler-mms-order` PASS with the device multigrid | host run; the manufactured solution |
+| Steady Euler to convergence (the run's rule, the fp32+acc64 floor of [case-schema.md](../contracts/case-schema.md) included; MMS hex and tet 16³–96³, NACA 0012 cases of [multigrid.md](multigrid.md#measurements)) | the host's step count | `autan-run`, cpu backend, same policy |
+| Converged solutions | fp64: each field within 10⁻⁸ of its range of the host multigrid's run (measured between host solvers: 5.1 × 10⁻⁹) and `euler-mms-order` PASS; fp32+acc64: `autan-vv agree` with the fp64 run, as [acceptance.md](../validation/acceptance.md) requires | host run; the manufactured solution |
 | Two runs | bitwise equal | itself |
 | Restriction, prolongation, Galerkin | ≥ 75 % of measured GB10 peak bandwidth, bytes counted as each array read or written once | `bench/`, spark-5359 |
 | Fine-level product and sweep | E2's gates, unchanged | J4, J5 |
 | Whole solve | ns per fine cell per cycle, reported with the host's and AmgX's | `bench/` |
 
-The cycle and GCR tolerances are declared, not derived: rounding differences pass through the cycle's conditioning and its branches, so no operation count bounds them. The fp32+acc64 ones allow for the FP32 products of the fine level (64 u₃₂ ≈ 4 × 10⁻⁶ per row), the fp64 ones for the same rows at u₆₄. An equal count of iterations or steps is required, with one exception declared now: when the host's deciding quantity (the drop that stops GCR, the residual that ends the run) lies within 10⁻³ relative of its threshold, a count differing by one is reported, not failed. Nothing else is: a gate that fails is fixed in the code, never relaxed. The linear solver changes only the path to R(U) = 0, not the discretisation, so conservation is unchanged and the observed orders are checked through the converged solutions.
+The cycle and GCR tolerances are declared, not derived: rounding differences pass through the cycle's conditioning and its branches, so no operation count bounds them. The fp32+acc64 ones allow for the FP32 products of the fine level (64 u₃₂ ≈ 4 × 10⁻⁶ per row), the fp64 ones for the same rows at u₆₄. An equal count of iterations or steps is required, with one exception declared now: when the host's deciding quantity (the drop that stops GCR, the residual that ends the run) lies within 10⁻³ relative of its threshold, a count differing by one is reported, not failed. Nothing else is: a gate that fails is fixed in the code, never relaxed. The linear solver changes only the path to R(U) = 0, not the discretisation, so conservation, a property of the face fluxes at R(U) = 0, is unchanged; the converged solutions carry the check.
 
 ## Interfaces
 
