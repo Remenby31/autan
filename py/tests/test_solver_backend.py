@@ -311,6 +311,7 @@ def _box(tmp_path: Path, turbulence: str) -> tuple[autan.Case, autan.MeshInfo]:
         f"case.physics = autan.Compressible(turbulence=autan.{turbulence}())\n"
         "case.freestream(mach=0.2, pressure=101325 * Pa, temperature=300 * K)\n"
         "case.boundary('z*').slip()\n"
+        "case.monitor(autan.forces('*'), every=7)\n"
     )
     return autan.load(case), autan.MeshInfo.load(info)
 
@@ -332,10 +333,15 @@ def test_a_periodic_run_reads_back_through_the_results_contract(tmp_path: Path) 
         assert json.loads(side_a.child("PeriodicTranslation").text()) == vector
         assert json.loads(side_b.child("PeriodicTranslation").text()) == [-v for v in vector]
         assert side_a.child("PointList").data.size == pair.faces
+    # The monitor integrates over the slip walls only, every 7 iterations.
+    iterations = result.history.monitor("forces")["iteration"].tolist()
+    assert iterations == list(range(7, result.run.iterations + 1, 7))
 
 
 def test_euler_refuses_a_periodic_mesh(tmp_path: Path) -> None:
     case, mesh = _box(tmp_path, "Inviscid")
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
-    assert error.value.codes == ["E0706"]
+    [found] = error.value.diagnostics
+    assert (found.code, found.data.get("path")) == ("E0706", "periodic")  # not missing physics
+    assert not any((tmp_path / "runs").iterdir())
