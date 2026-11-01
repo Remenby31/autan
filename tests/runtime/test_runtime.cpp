@@ -1582,7 +1582,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
 
 }  // namespace
 
-TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
+TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to
   // the wrong place or a norm summed in another order would change bits;
   // forces are recorded at every iteration, and the state grows.
