@@ -663,6 +663,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
   check_periodic(p);
+  // solver-input.md, mesh.scale: the coordinates and periodic translations in
+  // metres once checked against the file, before any geometry or pairing.
+  if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
