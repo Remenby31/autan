@@ -395,6 +395,12 @@ def _family_problem(opened: list[autan.Results]) -> list[str]:
         doc: dict[str, Any] = results.case.model_dump(mode="json")
         doc.pop("mesh", None)
         doc.pop("name", None)
+        # Face states are exported per mesh: each level names its own file.
+        for rule in doc.get("boundaries", []):
+            condition = rule.get("condition") or {}
+            if condition.get("kind") == "oracle-state":
+                condition.pop("path", None)
+                condition.pop("sha256", None)
         return doc
 
     first = opened[0]
@@ -593,6 +599,8 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
     hs = [r.h for r in runs]
     for r in runs[1:]:
         for a in range(3):
+            if oracle.curved and a in oracle.axes:
+                continue
             extent = max(runs[0].bounds[a][1] - runs[0].bounds[a][0], 1e-300)
             if any(abs(r.bounds[a][k] - runs[0].bounds[a][k]) > 1e-9 * extent for k in (0, 1)):
                 msg = f"run {r.provenance['run_id']} covers another domain along {'xyz'[a]}: a family refines one domain"

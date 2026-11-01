@@ -446,3 +446,37 @@ def test_freestream_refuses_cell_zone_gas_overrides(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         verify([results.path], "freestream", "freestream-preservation")
     assert err.value.code == "V0724"
+
+
+def test_ringleb_family_with_its_face_states_meets_the_gate(tmp_path: Path) -> None:
+    # Each level imposes its own face-state file (another path and hash per level) on a curved
+    # domain whose polygonal bounds move with refinement: still one problem and one domain.
+    import hashlib  # noqa: PLC0415
+
+    family, meshes = generate_family("ringleb", (6, 8, 12, 16), tmp_path / "ringleb")
+    oracle = get_oracle("ringleb")
+    paths = []
+    for lv, mesh in zip(family.levels, meshes, strict=True):
+        path = tmp_path / "ringleb" / lv.file
+        states = path.with_suffix(".states.json")
+        sha = hashlib.sha256(states.read_bytes()).hexdigest()
+
+        case = autan.Case("verify-ringleb", mesh=path)
+        case.physics = autan.Compressible(
+            turbulence=autan.Inviscid(), gas=_gas(oracle.gas_constant)
+        )
+        case.freestream(mach=0.3, pressure=1e5 * Pa, temperature=300 * K)
+        for zone in ("k-min", "k-max", "inflow", "outflow"):
+            case.boundary(zone).oracle_state(path=str(states), sha256=sha)
+        for zone in ("back", "front"):
+            case.boundary(zone).symmetry()
+        x = mesh.geometry.cell_centroid
+        exact = oracle.fields(x, None)
+        h = _h(mesh, oracle.axes)
+        g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1])
+        fields = {k: exact[k] * (1.0 + 0.05 * h**2.0 * g) for k in field_names(case.spec)}
+        paths.append(
+            write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, "gmsh"), fields).path
+        )
+    verdict = verify(paths, "ringleb", "ringleb-order")["verdict"]
+    assert verdict["pass"], verdict["checks"]

@@ -249,7 +249,22 @@ def test_ringleb_family_carries_the_exact_states_of_its_boundary(tmp_path: Path)
             if name in ("inflow", "outflow"):
                 np.testing.assert_allclose(speed, RINGLEB_SPEED_MIN, rtol=1e-12)
             values = np.array(states.values)
-            np.testing.assert_allclose(
-                values[:, 0], ringleb_fields(centroid, extended=True)["Density"]
-            )
-            assert values[:, 0].min() > 0.0
+            rho, vel, p = values[:, 0], values[:, 1:4], values[:, 4]
+            # Independent of the oracle's inversion: isentropic flow in stagnation units
+            # (p = rho^gamma / gamma), and the speed or direction along the side's curve.
+            np.testing.assert_allclose(p, rho**1.4 / 1.4, rtol=1e-12)
+            np.testing.assert_array_equal(vel[:, 2], 0.0)
+            speed = np.linalg.norm(vel, axis=1)
+            normal = g.face_area[z.start : z.start + z.count]
+            normal = normal / np.linalg.norm(normal, axis=1, keepdims=True)
+            h = 1.0 / level.n
+            if name in ("inflow", "outflow"):
+                # Faces on the iso-speed V = 0.5, to the chord's O(h^2).
+                np.testing.assert_allclose(speed, RINGLEB_SPEED_MIN, atol=2.0 * h**2)
+                # The flow enters at y > 0 and leaves at y < 0.
+                flux = np.einsum("ij,ij->i", vel, normal)
+                assert np.all(flux < 0.0) if name == "inflow" else np.all(flux > 0.0)
+            else:
+                # Streamlines: the flow runs along the side, to the chord's O(h).
+                tangential = np.abs(np.einsum("ij,ij->i", vel, normal)) / speed
+                assert tangential.max() < 4.0 * h

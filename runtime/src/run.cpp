@@ -18,6 +18,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -268,8 +270,71 @@ void load_start(Prepared& p) {
   p.start = std::move(state);
 }
 
-// face-states.md: the file of each oracle-state condition, checked by its hash, as a document
-// and against the mesh, then each face of the zone paired with exactly one row by centroid.
+// One zone of an autan.face-states/1 document: rows of centroids (3) and values (5).
+struct ZoneStates {
+  std::size_t faces = 0;
+  std::vector<double> centroids, values;
+};
+
+// The zones of a face-state document, or why it is not one (face-states.md, Document): every
+// key, every zone and every row are checked, whatever the case uses.
+std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, std::string& why) {
+  std::map<std::string, ZoneStates> zones;
+  const auto fail = [&](std::string what) {
+    why = std::move(what);
+    return std::map<std::string, ZoneStates>{};
+  };
+  if (!doc.is_object()) return fail("not a JSON object");
+  for (const auto& [key, value] : doc.items()) {
+    if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
+        key != "zones")
+      return fail("unknown key '" + key + "'");
+  }
+  const auto string_at = [&](const char* key) {
+    return doc.contains(key) && doc[key].is_string() ? doc[key].get<std::string>() : std::string();
+  };
+  if (string_at("schema") != "autan.face-states/1") return fail("schema");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string()) return fail("oracle");
+  const std::string mesh = string_at("mesh_sha256");
+  if (mesh.size() != 64 || mesh.find_first_not_of("0123456789abcdef") != std::string::npos)
+    return fail("mesh_sha256");
+  if (!doc.contains("variables") ||
+      doc["variables"] !=
+          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+    return fail("variables");
+  if (!doc.contains("zones") || !doc["zones"].is_object()) return fail("zones");
+  for (const auto& [name, z] : doc["zones"].items()) {
+    const std::string at_zone = "zones." + name;
+    if (!z.is_object() || z.size() != 3 || !z.contains("faces") ||
+        !z["faces"].is_number_integer() || z["faces"].get<std::int64_t>() < 0)
+      return fail(at_zone + ".faces");
+    ZoneStates out;
+    out.faces = z["faces"].get<std::size_t>();
+    for (const auto& [array, width] : {std::pair{"centroids", 3}, std::pair{"values", 5}}) {
+      const auto& rows = z.contains(array) ? z[array] : nlohmann::json();
+      if (!rows.is_array() || rows.size() != out.faces) return fail(at_zone + "." + array);
+      auto& to = std::string(array) == "centroids" ? out.centroids : out.values;
+      for (const auto& row : rows) {
+        if (!row.is_array() || row.size() != static_cast<std::size_t>(width))
+          return fail(at_zone + "." + array);
+        for (const auto& v : row) {
+          if (!v.is_number() || !std::isfinite(v.get<double>())) return fail(at_zone + "." + array);
+          to.push_back(v.get<double>());
+        }
+      }
+    }
+    for (std::size_t r = 0; r < out.faces; ++r) {
+      if (!(out.values[5 * r] > 0.0) || !(out.values[5 * r + 4] > 0.0))
+        return fail(at_zone + ".values: density and pressure must be > 0");
+    }
+    zones.emplace(name, std::move(out));
+  }
+  return zones;
+}
+
+// face-states.md: the file of each oracle-state condition, checked by its hash and as a
+// document, then against the mesh and the zone, then each face of the zone paired with exactly
+// one row by centroid.
 void load_states(Prepared& p) {
   std::optional<Geometry> geometry;
   const auto offsets = p.mesh.boundary_zone_offsets();
@@ -282,6 +347,10 @@ void load_states(Prepared& p) {
       throw InputError(Diagnostic{
           .code = code, .message = message, .path = key + sub, .data_json = data.dump()});
     };
+    std::error_code ec;
+    if (!fs::is_regular_file(b.states->path, ec)) {
+      fail("E0420", "'" + b.states->path + "' is not a readable file", ".path");
+    }
     std::ifstream in(b.states->path, std::ios::binary);
     if (!in) fail("E0420", "cannot read '" + b.states->path + "'", ".path");
     std::ostringstream text;
@@ -292,58 +361,30 @@ void load_states(Prepared& p) {
       fail("E0420", "the face-state file's SHA-256 differs from states.sha256", ".sha256",
            {{"expected", b.states->sha256}, {"found", found}});
     }
-    const auto invalid_document = [&](const std::string& why) {
-      fail("E0420", "'" + b.states->path + "' is not an autan.face-states/1 document: " + why,
-           ".path");
-    };
     const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
-    if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
-    if (doc.value("schema", "") != "autan.face-states/1") invalid_document("schema");
-    if (doc.value("variables", nlohmann::json()) !=
-        nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"}) {
-      invalid_document("variables");
+    std::string why = doc.is_discarded() ? "not JSON" : "";
+    const auto zones =
+        why.empty() ? face_state_zones(doc, why) : std::map<std::string, ZoneStates>{};
+    if (!why.empty()) {
+      fail("E0420", "'" + b.states->path + "' is not an autan.face-states/1 document: " + why,
+           ".path", {{"problem", why}});
     }
-    if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string())
-      invalid_document("mesh_sha256");
-    if (doc["mesh_sha256"] != p.mesh_hash) {
+    if (doc["mesh_sha256"].get<std::string>() != p.mesh_hash) {
       fail("E0422", "the face states were exported for another mesh", ".path",
            {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
     }
-    if (!doc.contains("zones") || !doc["zones"].is_object()) invalid_document("zones");
-    if (!doc["zones"].contains(b.zone)) {
+    const auto it = zones.find(b.zone);
+    if (it == zones.end()) {
       fail("E0423", "the face states do not cover zone '" + b.zone + "'", ".path",
            {{"zone", b.zone}});
     }
-    const auto& z = doc["zones"][b.zone];
+    const ZoneStates& z = it->second;
     const index_t zone = p.face_zone.at(b.zone);
     const auto first = static_cast<std::size_t>(offsets[at(zone)]);
     const auto n = static_cast<std::size_t>(offsets[at(zone) + 1]) - first;
-    if (!z.is_object() || !z.contains("faces") || !z["faces"].is_number_integer())
-      invalid_document("zones." + b.zone + ".faces");
-    if (z["faces"].get<std::int64_t>() != static_cast<std::int64_t>(n)) {
+    if (z.faces != n) {
       fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
-           {{"zone", b.zone}, {"expected", n}, {"found", z["faces"]}});
-    }
-    const auto rows = [&](const char* array, std::size_t width) {
-      std::vector<double> out;
-      const auto& a = z.contains(array) ? z[array] : nlohmann::json();
-      if (!a.is_array() || a.size() != n) invalid_document("zones." + b.zone + "." + array);
-      for (const auto& row : a) {
-        if (!row.is_array() || row.size() != width)
-          invalid_document("zones." + b.zone + "." + array);
-        for (const auto& v : row) {
-          if (!v.is_number() || !std::isfinite(v.get<double>()))
-            invalid_document("zones." + b.zone + "." + array);
-          out.push_back(v.get<double>());
-        }
-      }
-      return out;
-    };
-    const std::vector<double> centroids = rows("centroids", 3);
-    const std::vector<double> values = rows("values", 5);
-    for (std::size_t r = 0; r < n; ++r) {
-      if (!(values[5 * r] > 0.0) || !(values[5 * r + 4] > 0.0))
-        invalid_document("zones." + b.zone + ".values: density and pressure must be > 0");
+           {{"zone", b.zone}, {"expected", n}, {"found", z.faces}});
     }
     if (!geometry) geometry = compute_geometry(p.mesh);
     const auto& g = *geometry;
@@ -360,24 +401,28 @@ void load_states(Prepared& p) {
         }
       }
     }
-    const double tol = 1e-9 * std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
-    std::vector<std::size_t> by_x(n);
-    for (std::size_t r = 0; r < n; ++r) by_x[r] = r;
-    std::ranges::sort(
-        by_x, [&](std::size_t a, std::size_t c) { return centroids[3 * a] < centroids[3 * c]; });
+    std::size_t axis = 0;
+    for (std::size_t d = 1; d < 3; ++d) {
+      if (hi[d] - lo[d] > hi[axis] - lo[axis]) axis = d;
+    }
+    const double tol = 1e-9 * (hi[axis] - lo[axis]);
+    // Rows sorted along the zone's widest axis: a face looks only at the rows within tol on it.
+    std::vector<std::size_t> sorted(n);
+    for (std::size_t r = 0; r < n; ++r) sorted[r] = r;
+    const auto coordinate = [&](std::size_t r) { return z.centroids[3 * r + axis]; };
+    std::ranges::sort(sorted, {}, coordinate);
     std::vector<char> used(n, 0);
     std::vector<double> paired(5 * n);
     for (std::size_t j = 0; j < n; ++j) {
       const std::size_t f = first + j;
       const std::array<double, 3> c{g.face_centroid_x[f], g.face_centroid_y[f],
                                     g.face_centroid_z[f]};
-      auto it = std::ranges::lower_bound(by_x, c[0] - tol, {},
-                                         [&](std::size_t r) { return centroids[3 * r]; });
       std::size_t match = n, count = 0;
-      for (; it != by_x.end() && centroids[3 * *it] <= c[0] + tol; ++it) {
-        const double* q = &centroids[3 * *it];
+      for (auto r = std::ranges::lower_bound(sorted, c[axis] - tol, {}, coordinate);
+           r != sorted.end() && coordinate(*r) <= c[axis] + tol; ++r) {
+        const double* q = &z.centroids[3 * *r];
         if (std::hypot(q[0] - c[0], q[1] - c[1], q[2] - c[2]) <= tol) {
-          match = *it;
+          match = *r;
           ++count;
         }
       }
@@ -388,7 +433,7 @@ void load_states(Prepared& p) {
              ".path", {{"zone", b.zone}, {"face", j}, {"centroid", c}, {"matches", count}});
       }
       used[match] = 1;
-      for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = values[5 * match + k];
+      for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = z.values[5 * match + k];
     }
     p.boundary_states[zone] = std::move(paired);
     p.state_files.emplace(found, bytes);

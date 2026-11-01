@@ -3,7 +3,7 @@
 The domain is mapped from the hodograph: streamline parameter k in [0.7, 1.5] and flow angle
 theta in [asin(0.5/k), pi - asin(0.5/k)], with speed V = k sin(theta), so that the lines of
 the grid are streamlines and isoclines and the cells vary smoothly. One layer of hexahedra,
-as thick as the mean in-plane cell, carries the 2D flow.
+THICKNESS thick at every level, carries the 2D flow.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ VARIABLES = ("density", "velocity-x", "velocity-y", "velocity-z", "pressure")
 _ORACLE_FIELDS = ("Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure")
 # Every in-plane side takes the exact state; the two planes of the layer are symmetry planes.
 STATE_ZONES = ("k-min", "k-max", "inflow", "outflow")
+# The same at every level, so that a family covers one domain; about the in-plane cell of n = 16.
+THICKNESS = 0.1
 SYMMETRY_ZONES = ("back", "front")
 
 
@@ -47,11 +49,7 @@ def plane_points(n: int) -> tuple[FloatArray, int, int]:
 def grid(n: int) -> tuple[FloatArray, dict[str, IntArray], dict[str, IntArray]]:
     """Points, hexahedra and boundary faces (zones of STATE_ZONES and SYMMETRY_ZONES) of level n."""
     xy, nk, nt = plane_points(n)
-    lengths = (
-        np.linalg.norm(np.diff(xy, axis=0), axis=-1).mean()
-        * np.linalg.norm(np.diff(xy, axis=1), axis=-1).mean()
-    )
-    dz = math.sqrt(float(lengths))
+    dz = THICKNESS
     pts = np.concatenate(
         [
             np.concatenate([xy.reshape(-1, 2), np.full(((nk + 1) * (nt + 1), 1), z)], axis=1)

@@ -98,6 +98,7 @@ def ringleb() -> Oracle:
         evaluate=lambda points, _t: ringleb_fields(points),
         parameters={"k_min": RINGLEB_K[0], "k_max": RINGLEB_K[1], "speed_min": RINGLEB_SPEED_MIN},
         references=("chiocchia1985", "hiocfd_c12"),
+        curved=True,
     )
 
 
