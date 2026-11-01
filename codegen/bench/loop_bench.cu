@@ -323,7 +323,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                  static_cast<double>(ns) / cells, build_seconds);
     out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
                    time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
-    for (const int team : {4, 8}) {
+    for (const int team : {4, 8, 16, 32}) {
       gpu::Schedule ts = dm.schedule;
       ts.reduce_team = team;
       gr::gpu_loops::lsq_gradient_stencil(dst, ts);

@@ -5,7 +5,9 @@
 // host residual (autan::physics::Euler) before timing.
 //
 //   euler_bench MESH [--policy fp64|fp32+acc64] [--flux roe|hllc|ausm-up] [--block N]
-//                    [--warmup N] [--reps N] [--batch N]
+//                    [--reduce-team N] [--warmup N] [--reps N] [--batch N]
+// --reduce-team sets the lanes per cell of the stencil gradients (gpu::Schedule::reduce_team);
+// the other loops keep one thread per cell.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -42,6 +44,7 @@ struct Options {
   std::string policy = "fp32+acc64";
   std::string flux = "roe";
   int block = 256;
+  int reduce_team = 1;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -65,6 +68,8 @@ Options parse(int argc, char** argv) {
       o.flux = v;
     else if (f == "--block")
       o.block = std::stoi(v);
+    else if (f == "--reduce-team")
+      o.reduce_team = std::stoi(v);
     else if (f == "--warmup")
       o.warmup = std::stoi(v);
     else if (f == "--reps")
@@ -285,12 +290,14 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     double bytes;
     std::function<void(gpu::Strategy)> launch;
   };
+  gpu::Schedule gradient_sched = sched;
+  gradient_sched.reduce_team = o.reduce_team;
   const std::vector<Loop> loops = {
       {"primitives", cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::primitives(d, sched); }},
       {"boundary_states", bs * (sI + sK + 5 * sS + 3 * sN + 5 * sS) + bo * 5 * sS,
        [&](gpu::Strategy) { ek::gpu_loops::boundary_states(d, sched); }},
       {"gradients", gather + st * 3 * sW + cs * (15 * sGr + 10 * sS),
-       [&](gpu::Strategy) { ek::gpu_loops::gradients(d, sched); }},
+       [&](gpu::Strategy) { ek::gpu_loops::gradients(d, gradient_sched); }},
       {"limiter",
        cs * (5 * sS + 15 * sGr + 10 * sS + sV + 3 * sC + 5 * sS + sO) +
            static_cast<double>(topo.n_incidences) * sI + fs * 3 * sFC,
@@ -418,9 +425,9 @@ int main(int argc, char** argv) {
     const auto& t = r.timed[k];
     std::printf(
         "%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":\"%s\","
-        "\"policy\":\"%s\",\"flux\":\"%s\"},\"seconds\":[",
+        "\"policy\":\"%s\",\"flux\":\"%s\",\"reduce_team\":%d},\"seconds\":[",
         k ? "," : "", t.name.c_str(), t.bytes, mesh.n_cells(), t.strategy.c_str(), o.policy.c_str(),
-        o.flux.c_str());
+        o.flux.c_str(), o.reduce_team);
     for (std::size_t i = 0; i < t.seconds.size(); ++i)
       std::printf("%s%.9e", i ? "," : "", t.seconds[i]);
     std::printf("]}");
