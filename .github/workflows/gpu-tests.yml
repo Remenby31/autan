@@ -1,0 +1,41 @@
+# Builds the solver with CUDA, MPI, METIS and Scotch and runs the whole test suite (CPU and GPU)
+# on a DGX Spark runner labelled `tests` (spark; spark-5359 is kept for benchmarks), under the
+# GPU lock. Self-hosted runners never run fork pull requests: the job condition skips them and
+# the runner's job-started hook refuses them (docs/infra/runners.md).
+name: gpu-tests
+
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml]
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: gpu-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10, tests]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure with CUDA, MPI, METIS and Scotch
+        run: >-
+          cmake -S . -B build -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
+          -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
+          -DAUTAN_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test (under the GPU lock)
+        run: flock /home/admin/autan-gpu/gpu.lock ctest --test-dir build -j 8 --output-on-failure
