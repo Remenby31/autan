@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import stat
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -431,7 +433,12 @@ def _check_oracle(
         found.append(diagnostic(code, message, location=where, path=str(source)))
 
     try:
-        data = source.read_bytes()
+        # O_NONBLOCK: opening a FIFO must not wait for a writer before the check below.
+        with os.fdopen(os.open(source, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                problem("E0420", f"face-state file {str(source)!r} is not a regular file")
+                return
+            data = handle.read()
     except OSError:
         problem("E0420", f"face-state file {str(source)!r} cannot be read")
         return

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -173,4 +174,28 @@ def test_the_solver_input_states_are_those_of_the_case(
     [boundary] = [b for b in document["boundaries"] if b["zone"] == "farfield"]
     boundary["states"]["sha256"] = "0" * 64
     with pytest.raises(ValueError, match="states"):
+        autan.solver_input.SolverInput.model_validate(document)
+
+
+def test_a_face_state_path_must_be_a_regular_file(
+    write_case: Callable[..., Path], two_faces: Path
+) -> None:
+    case = oracle_case(write_case, states())
+    (case.parent / "ringleb.json").unlink()
+    os.mkfifo(case.parent / "ringleb.json")  # no writer: a blocking read would hang
+    codes = [d.code for d in autan.load(case).plan(autan.MeshInfo.load(two_faces)).diagnostics]
+    assert codes == ["E0420"]
+
+
+def test_both_validators_reject_oracle_states_with_a_turbulence_model(
+    write_case: Callable[..., Path], two_faces: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = oracle_case(write_case, states())
+    assert main(["prepare", str(case), "--mesh-info", str(two_faces)]) == 0
+    document = json.loads(capsys.readouterr().out)
+    document["physics"]["turbulence"].update(model="sa", nu_tilde_ratio=3.0)
+    document["freestream"]["nu_tilde"] = 4.5e-5
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    with pytest.raises(ValueError, match="oracle-state"):
         autan.solver_input.SolverInput.model_validate(document)

@@ -76,6 +76,8 @@ BOUNDARY_KEYS = (
     "static_pressure",
     "states",
 )
+# The face states carry no turbulence variable (face-states.md).
+ORACLE_MODELS = ("inviscid", "laminar")
 # Turbulence parameters each (model, base) requires; every other parameter is null.
 TURBULENCE_VALUES: dict[tuple[str, str | None], frozenset[str]] = {
     ("inviscid", None): frozenset(),
@@ -341,6 +343,12 @@ class SolverInput(_Strict):
         recorded = case.verification.manufactured.sha256 if case.verification else None
         if recorded != (self.verification.sha256 if self.verification else None):
             message = "verification differs from the case's verification"
+            raise ValueError(message)
+        if any(b.kind == "oracle-state" for b in self.boundaries) and (
+            self.physics.kind,
+            turbulence.model,
+        ) not in {("compressible", m) for m in ORACLE_MODELS}:
+            message = "oracle-state needs compressible inviscid or laminar physics"
             raise ValueError(message)
         for boundary in self.boundaries:
             rules = [r.condition for r in case.boundaries if fnmatchcase(boundary.zone, r.zones)]
@@ -710,6 +718,23 @@ def json_schema() -> dict[str, Any]:
         return {"properties": {"boundaries": {"items": {"properties": {"kind": rule}}}}}
 
     schema["allOf"] = [
+        {
+            "if": {
+                "properties": {
+                    "physics": {
+                        "not": {
+                            "properties": {
+                                "kind": {"const": "compressible"},
+                                "turbulence": {
+                                    "properties": {"model": {"enum": list(ORACLE_MODELS)}}
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+            "then": boundary_kinds({"not": {"const": "oracle-state"}}),
+        },
         {
             "if": {"properties": {"verification": {"type": "object"}}},
             "then": boundary_kinds({"const": "manufactured"}),
