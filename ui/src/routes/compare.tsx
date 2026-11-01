@@ -92,13 +92,13 @@ function Compare() {
     return { drop, cl, cd };
   }, [ids, live, version]);
 
-  const every = details.map((d) => forcesEvery(d.data?.case));
-  const everyKey = every.join(",");
-  // Histories grow in place (`version`), and `every` is a new array each render (`everyKey`).
+  const cases = details.map((d) => d.data?.case);
+  const loaded = details.map((d) => d.dataUpdatedAt).join(",");
+  // Histories grow in place (`version`); `cases` is a new array each render (`loaded`).
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const polar = useMemo(
-    () => polars(ids, runs, live, registry.data?.summaries ?? {}, every),
-    [ids, runs, live, registry.data, version, everyKey],
+    () => polars(ids, runs, live, registry.data?.summaries ?? {}, cases),
+    [ids, runs, live, registry.data, version, loaded],
   );
 
   const diff = useMemo(() => {
@@ -319,14 +319,14 @@ function convergedForces(
   return run.iterations - at < (every ?? 1) ? { cl, cd } : null;
 }
 
-/** The `every` of a case's sole forces monitor, as soleForces reads the history. */
-function forcesEvery(caseDocument: Record<string, unknown> | undefined): number | undefined {
+/** The `every` of the monitor `name` of a case document. */
+function monitorEvery(caseDocument: Record<string, unknown> | undefined, name: string) {
   const monitors = Array.isArray(caseDocument?.monitors) ? caseDocument.monitors : [];
-  const forces = monitors.filter(
+  const monitor = monitors.find(
     (m): m is { every: number } =>
-      typeof m === "object" && m !== null && m.kind === "forces" && typeof m.every === "number",
+      typeof m === "object" && m !== null && m.name === name && typeof m.every === "number",
   );
-  return forces.length === 1 ? forces[0]?.every : undefined;
+  return monitor?.every;
 }
 
 /** Lift and drag polars from the compared runs that converged (convergedForces); at a
@@ -336,7 +336,7 @@ function polars(
   runs: (Run | undefined)[],
   live: Map<string, LiveRun>,
   summaries: Record<string, { settings?: { aoa: string | null } }>,
-  every: (number | undefined)[],
+  cases: (Record<string, unknown> | undefined)[],
 ): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
   const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
   ids.forEach((id, k) => {
@@ -344,7 +344,9 @@ function polars(
     const history = live.get(id)?.history;
     if (!run || !history) return;
     const alpha = degrees(summaries[id]?.settings?.aoa);
-    const ended = convergedForces(run, history, soleForces(history), every[k]);
+    const [name] = history.forces.size === 1 ? history.forces.keys() : [];
+    const every = name === undefined ? undefined : monitorEvery(cases[k], name);
+    const ended = convergedForces(run, history, soleForces(history), every);
     if (alpha === null || ended === null) return;
     const seen = byAlpha.get(alpha);
     if (!seen || seen.started < run.started)
