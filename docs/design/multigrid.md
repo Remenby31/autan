@@ -55,39 +55,32 @@ The multigrid runs on the host, as the whole implicit step today. The port (#163
 
 ## Measurements
 
-Steps of `autan-run` to ten orders, `fp64`, cpu backend, from the freestream; manufactured solutions on `autan-vv meshes hex` through `physics/mms/study.sh`. Gauss-Seidel: four sweeps per step, CFL = 10 / drop (commit 131c574); multigrid: this design (commit 1cbb3e3). "> 2000": not converged at the study's limit.
+Steps of `autan-run` to ten orders, `fp64`, cpu backend, from the freestream. Gauss-Seidel: four sweeps per step, CFL = 10 / drop (main at 971ac5c); multigrid: this design. Manufactured solutions on `autan-vv meshes hex`; equations whose residual stays at round-off (the span momentum of one-cell-thick meshes) are exempt, as in the runtime.
 
 | Case | Solver | 16³ | 24³ | 32³ | 48³ | 96³ |
 |---|---|---|---|---|---|---|
 | MMS `euler` | Gauss-Seidel | 87 | 121 | 157 | 232 | 657 |
-| | multigrid | 40 | 47 | 51 | 60 | 78 |
-| MMS `navier_stokes` (μ = 10) | Gauss-Seidel | 111 | 214 | 347 | 700 | > 395 ¹ |
-| | multigrid, CFL = 10 / drop | 51 | 76 | 112 | 200 | |
-| | multigrid | 24 | 25 | 25 | 28 | 36 |
-| MMS `rans_sa` | Gauss-Seidel | | 369 | | 1057 | |
-| | multigrid (ν̃ still by Gauss-Seidel, #162) | | 65 | | 176 | |
+| | multigrid | 41 | 47 | 52 | 60 | 77 |
 
-¹ Still running after 395 steps (about 5 s per step); the study stops at 2000. After the merge of the viscous discretisation of 309f82e (quadratic boundary-cell fit), the multigrid takes 28 and 32 steps on 24³ and 48³.
+The converged solutions of both solvers differ by at most 5.1 × 10⁻⁹ of each field's range (16³ to 48³), the residual tolerance's share: the observed orders are those of the discretisation (`euler-mms-order` PASS, 1.95–2.18). Two runs of the same case give the same history and solution bit for bit.
 
-The converged solutions of both solvers differ by at most 7.5 × 10⁻⁹ of each field's range (16³ to 48³, Euler and Navier-Stokes), the residual tolerance's share: the observed orders are those of the discretisation (Euler gate `euler-mms-order` PASS, 1.95–2.18). Two runs of the same case give the same history and solution bit for bit.
+Ni's transonic bump (circular arc 10 % thick in a channel, inlet Mach 0.675, peak Mach 1.39, one hexahedron thick) and the NACA 0012 O-grids of Vassberg and Jameson (#186), from the freestream:
 
-Ni's transonic bump (circular arc 10 % thick in a channel, inlet Mach 0.675, Euler, peak Mach 1.39, one hexahedron thick), from the freestream:
-
-| Mesh | Gauss-Seidel | multigrid, CFL = 10 / drop | multigrid | steps shortened / rejected |
+| Case | Mesh | Gauss-Seidel | multigrid | steps shortened / rejected (multigrid) |
 |---|---|---|---|---|
-| 96 × 32 | 2566 | 355 | 54 | 0 / 0 |
-| 192 × 64 | > 4000 | 446 | 95 | 0 / 0 |
-| 384 × 128 | > 3424 | > 975 | 298 | 8 / 0 (first steps) |
+| bump | 96 × 32 | 2714 | 55 | 0 / 0 |
+| | 192 × 64 | > 4000 | 93 | 0 / 0 |
+| | 384 × 128 | > 4000 | 293 | 6 / 0, in the first 20 steps |
+| NACA 0012, M 0.5, α 1.25° | 64² / 128² / 256² | | 43 / 47 / 69 | 0 / 0 |
+| NACA 0012, M 0.8, α 0° | 64² / 128² / 256² | 128²: no drop in 3000 | 234 / 261 / 1334 | 1 / 0 |
+| NACA 0012, M 0.8, α 1.25° | 64² / 128² / 256² | | 54 / 57 / 109 | 1 / 0 |
 
 Time to ten orders on a quiet GB10 (spark-5359, one Grace core, the run alone under the machine's lock):
 
 | Case | Gauss-Seidel | multigrid | Gain |
 |---|---|---|---|
-| `euler` 24³ | 4.0 s (121 steps) | 2.1 s (47) | 1.9 × |
-| `euler` 48³ | 73.5 s (232) | 28.9 s (60) | 2.5 × |
-| `navier_stokes` 24³ | 10.4 s (214) | 1.8 s (25) | 5.8 × |
-| `navier_stokes` 48³ | 323.6 s (700) | 20.3 s (28) | 15.9 × |
-| `navier_stokes` 96³ | | 215.5 s (36) | |
-| `euler` 96³ | | 367.9 s (78) | |
+| `euler` 24³ | 4.0 s (121 steps) | 2.2 s (47) | 1.8 × |
+| `euler` 48³ | 70.2 s (232) | 28.4 s (60) | 2.5 × |
+| `euler` 96³ | | 358.2 s (77) | |
 
-A multigrid step costs about 1.5 Gauss-Seidel steps (Euler 48³: 0.48 s against 0.32 s). The remaining growth of the Euler steps (40 → 78) is the outer defect correction's: a linear tolerance of 0.01 gives the same counts.
+A multigrid step costs about 1.5 Gauss-Seidel steps (Euler 48³: 0.47 s against 0.30 s). The remaining growth of the Euler steps (41 → 77) is the outer defect correction's: a linear tolerance of 0.01 gives the same counts. On viscous cases at large CFL numbers the defect correction with the approximate Jacobian can stall where the multigrid solves every step to its tolerance (#185): the Newton-Krylov end phase is the remedy.
