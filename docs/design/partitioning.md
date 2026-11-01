@@ -23,7 +23,8 @@ Partitioning is serial: every rank reads the global mesh, rank 0 partitions it a
 
 - `mesh`: owned cells in the order of the global mesh, then the ghost cells within `layers` face steps (2 by default, 1 on request), ordered by owning rank, the same order, then periodic shift. The first ghost layer carries all its faces, so the face-of-face stencil of every owned cell is local; those halo faces come after the owned faces (mesh contract, invariant 6), and loops that write residuals stop at `n_owned_interior_faces` and `n_owned_faces`. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
 - `geometry`: the global geometry, copied bit for bit. A face whose orientation flips (its owned cell has the higher global index) has its area vector negated, which is exact. Ghost cells are NaN until a forward exchange fills them (`exchange_ghost_geometry`). `compute_geometry` on the partition would agree only to round-off, because a reversed face sums its nodes in another order.
-- `face_global_id`: the global face of each local face, the key for summing a cell's faces in an order that no partition changes.
+- `face_global_id`: the global face of each local face, the key for summing a cell's faces in an order that no partition changes. For a periodic face it is the face that represents the pair, the same on every part.
+- `face_reversed`: 1 where the local face runs opposite to its global face (the negated area vectors above), so that a kernel can evaluate a flux in the global orientation, swapping its two states, and get the global bits; never on a boundary face.
 - `halo`: the `HaloPattern` below.
 
 ## Halo pattern
