@@ -670,6 +670,8 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
   CHECK(peak >= 0);
   CHECK(memory["after_setup"]["device"].get<std::int64_t>() <= peak);
   CHECK(memory["device_peak_bytes_by_rank"] == Json::array({peak}));
+  // Once the stream exists, the process's resident memory is positive.
+  CHECK(memory["host_at_device_start_bytes_by_rank"][0].get<std::int64_t>() > 0);
   std::ifstream log_in(o.run / "log.jsonl");
   Json ready, cuda;
   for (std::string line; std::getline(log_in, line);) {
@@ -1968,4 +1970,5 @@ TEST_CASE("A run logs the memory it used", "[runtime]") {
   CHECK(memory["host_peak_bytes_by_rank"] == Json::array({host}));
   CHECK(memory["device_peak_bytes"] == 0);
   CHECK(memory["device_peak_bytes_by_rank"] == Json::array({0}));
+  CHECK(memory["host_at_device_start_bytes_by_rank"] == Json::array({0}));
 }
