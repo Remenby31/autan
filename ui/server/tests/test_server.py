@@ -400,8 +400,7 @@ def test_residual_drop_is_the_slowest_equation(
 
 
 def _oracle_state_run(runs: Path, tmp_path: Path) -> Path:
-    """A run whose farfield takes an oracle-state condition, written by the SDK from face
-    states the case names by their absolute path, tmp_path/ringleb.json."""
+    # The case names its face states by absolute path: a plan that reads them is not confined.
     mesh = json.loads((PY / "tests" / "fixtures" / "crm-hl.meshinfo.json").read_text())
     for zone in mesh["boundary_zones"]:
         if zone["name"] == "farfield":
