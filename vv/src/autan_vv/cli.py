@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,13 +34,63 @@ def _cmd_mms(args: argparse.Namespace) -> None:
 
 
 def _cmd_meshes(args: argparse.Namespace) -> None:
-    from autan_vv.meshes.families import generate_family  # noqa: PLC0415
+    if args.kind == "naca0012":
+        from autan_vv.meshes import naca0012  # noqa: PLC0415
 
-    family, _ = generate_family(
-        args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
-    )
+        family, _ = naca0012.generate_family(args.levels, args.out)
+    else:
+        from autan_vv.meshes.families import generate_family  # noqa: PLC0415
+
+        family, _ = generate_family(
+            args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
+        )
     for lv in family.levels:
         _say(f"{lv.file}: {lv.n_cells} cells, h = {lv.h:.4g}, sha256 {lv.file_sha256[:12]}")
+
+
+def _cmd_m2_cases(args: argparse.Namespace) -> None:
+    from autan_vv.cases import naca0012  # noqa: PLC0415
+
+    manifest = json.loads((args.family / "manifest.json").read_text())
+    for condition in naca0012.CONDITIONS:
+        out = args.out / condition
+        out.mkdir(parents=True, exist_ok=True)
+        for level in manifest["levels"]:
+            mesh = (args.family / level["file"]).resolve()
+            case = naca0012.case(
+                condition,
+                os.path.relpath(mesh, out),
+                precision=args.precision,
+                max_iterations=args.max_iterations,
+            )
+            path = out / f"{Path(level['file']).stem}.toml"
+            path.write_text(case.to_toml())
+            _say(str(path))
+
+
+def _cmd_forces(args: argparse.Namespace) -> None:
+    from autan_vv.cases import naca0012  # noqa: PLC0415
+
+    report = naca0012.study(args.runs)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for level in report["levels"]:
+        _say(
+            f"{level['run']}: {level['n_cells']} cells, CL {level['cl']:.9f}, "
+            f"CD {level['cd']:.9f}, CM {level['cmy']:.9f}"
+        )
+    for name, est in report["continuum"].items():
+        if "error" in est:
+            _say(f"{name}: no continuum estimate ({est['error']})")
+        else:
+            _say(
+                f"{name}: continuum {est['estimate']:.9f}, p = {est['order']:.3f}, GCI {est['gci']:.3g}"
+            )
+    note = "" if report["evidence"] else " (not evidence: fake backend)"
+    for verdict in report["verdicts"]:
+        _say(f"gate {verdict['gate']}: {'PASS' if verdict['pass'] else 'FAIL'}{note}")
+    if not report["pass"]:
+        raise SystemExit(1)
 
 
 def _cmd_order(args: argparse.Namespace) -> None:
@@ -141,13 +192,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_mms)
 
-    p = sub.add_parser("meshes", help="generate a seeded mesh family of the unit cube")
-    p.add_argument("kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated"))
+    p = sub.add_parser(
+        "meshes", help="generate a seeded mesh family of the unit cube, or the NACA 0012 O-meshes"
+    )
+    p.add_argument(
+        "kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated", "naca0012")
+    )
     p.add_argument("--levels", type=_levels, default=(8, 16, 32, 64))
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_meshes)
+
+    p = sub.add_parser("m2-cases", help="write the NACA 0012 cases of every condition and level")
+    p.add_argument("case", choices=("naca0012",))
+    p.add_argument("--family", type=Path, required=True, help="directory of the mesh manifest")
+    p.add_argument("--precision", choices=("fp64", "fp32+acc64"), default="fp64")
+    p.add_argument("--max-iterations", type=int, default=200000)
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=_cmd_m2_cases)
+
+    p = sub.add_parser(
+        "forces", help="continuum forces of a NACA 0012 family and its gates (exit 1 on failure)"
+    )
+    p.add_argument("case", choices=("naca0012",))
+    p.add_argument("runs", type=Path, nargs="+", help="run directories of one condition")
+    p.add_argument("--out", type=Path, help="write the report (autan.vv-force-study/1) as JSON")
+    p.set_defaults(func=_cmd_forces)
 
     p = sub.add_parser(
         "order", help="observed order from errors on a mesh family (JSON in, JSON out)"

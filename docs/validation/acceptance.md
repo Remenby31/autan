@@ -2,7 +2,7 @@
 
 The numbers each milestone gate in [PLAN.md](../PLAN.md) must meet, where they come from, and the `autan-vv` tool that measures them. A threshold marked *ours* is a project decision; its rationale is in the row. Dataset details (files, conditions, licences, further cases) live in [validation-datasets.md](../research/validation-datasets.md); this page states the gate once.
 
-Conventions for every gate (a gate identifier in a row means `autan-vv verify <runs> --against <oracle> --gate <id>` checks it; see [harness.md](harness.md)):
+Conventions for every gate (a gate identifier in a row means `autan-vv verify <runs> --against <oracle> --gate <id>` checks it, see [harness.md](harness.md); the `naca0012-*` force gates are checked by `autan-vv forces naca0012 <runs>`, see [cases.md](cases.md#naca-0012-inviscid)):
 
 - **Order** is the least-squares order of the L2 error over at least four levels and the order of the finest pair, both from `autan-vv order` ([order.md](order.md)). L∞ is reported, not gated: on non-nested unstructured families it fluctuates by ±1 (measured, [order.md](order.md#measured-orders)).
 - **Code-to-code** gates compare our **continuum estimate** (Richardson from the three finest of at least four levels, with its GCI, `autan_vv.order.richardson`) with the published continuum estimate, never level by level.
@@ -29,9 +29,9 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | Ringleb flow, gate `ringleb-order` | L2 order 2 ± 0.1 in density and entropy | HiOCFD1 C1.2; datasets §M2 |
 | Isentropic vortex, one period (t = 40 at Mach 0.5), domain [−10, 10]², gate `vortex-order` | spatial order 2 ± 0.1 for each conserved variable; temporal order = RK order ± 0.1 | Spiegel, Huynh and DeBonis, AIAA 2015-2444 |
 | Sod shock tube, gate `sod-order` | density L1 order between 0.6 and 1.1 | Banks, Aslam and Rider 2008 (between 2/3 and 1 for a contact); *ours*: 0.6 and 1.1 allow ±0.1 of fitting noise |
-| NACA 0012 inviscid, M 0.8, α 0° | continuum CD within 1 count of 0.008342 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
-| NACA 0012 inviscid, M 0.8, α 1.25° | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 | idem, point-vortex farfield runs |
-| NACA 0012 inviscid, M 0.5, α 1.25° | CD decreases monotonically; extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
+| NACA 0012 inviscid, M 0.8, α 0°, gate `naca0012-m080-a000-cd` | continuum CD within 1 count of 0.008342 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
+| NACA 0012 inviscid, M 0.8, α 1.25°, gates `naca0012-m080-a125-cl`, `naca0012-m080-a125-cd` | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 | idem, point-vortex farfield runs |
+| NACA 0012 inviscid, M 0.5, α 1.25°, gate `naca0012-m050-a125-cd` | CD decreases monotonically; extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
 | ONERA M6 inviscid (run 2308 conditions) | residual drop ≥ 10 orders; shock x/c within ±0.03 of experiment at η = 0.20–0.65 (report) | PLAN M2; Schmitt and Charpin 1979 (`onera-m6` case) |
 
 ## M3 — Navier-Stokes and Spalart-Allmaras

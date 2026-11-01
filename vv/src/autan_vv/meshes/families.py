@@ -93,6 +93,33 @@ class Family:
         return {"schema": MANIFEST_SCHEMA, **asdict(self)}
 
 
+def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
+    """The manifest entry of level `n`, written to `path` from `mesh`."""
+    volume = float(mesh.geometry.cell_volume.sum())
+    counts: dict[str, int] = {}
+    for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
+        counts[k] = counts.get(k, 0) + 1
+    return Level(
+        n=n,
+        file=path.name,
+        file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        mesh_sha256=mesh.sha256(),
+        n_cells=mesh.n_cells,
+        n_faces=mesh.n_faces,
+        n_points=int(mesh.points.shape[0]),
+        cell_counts=counts,
+        min_subvolume_ratio=mesh.min_subvolume_ratio(),
+        volume=volume,
+        h=(volume / mesh.n_cells) ** (1.0 / 3.0),
+    )
+
+
+def write_manifest(family: Family, out_dir: Path) -> None:
+    """Write `manifest.json` (schema autan.mesh-family/1) of `family` into `out_dir`."""
+    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
+    (out_dir / "manifest.json").write_text(manifest + "\n")
+
+
 def _build_geometry(gmsh: ModuleType, kind: str, n: int) -> None:
     geo = gmsh.model.geo
     corners = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
@@ -223,14 +250,14 @@ def _to_facemesh(
     single_key = {tuple(key[i]): i for i in single}
     zones: dict[str, tuple[str, IntArray, IntArray]] = {}
     used = np.zeros(poly.shape[0], dtype=bool)
-    for name in BOX_ZONES:
-        bkey = np.sort(np.where(boundary[name] < 0, np.iinfo(np.int64).max, boundary[name]), axis=1)
+    for name, faces in boundary.items():
+        bkey = np.sort(np.where(faces < 0, np.iinfo(np.int64).max, faces), axis=1)
         idx = np.array([single_key.get(tuple(k), -1) for k in bkey], dtype=np.int64)
         if np.any(idx < 0):
             msg = f"zone {name} has a face that is not a cell boundary face"
             raise VVError(msg, code="V0302")
         used[idx] = True
-        zones[name] = (BC_TYPES[name], poly[idx], owner[idx])
+        zones[name] = (BC_TYPES.get(name, "pressure-far-field"), poly[idx], owner[idx])
     if not np.all(used[single]):
         msg = "boundary faces without a zone"
         raise VVError(msg, code="V0302")
@@ -410,9 +437,8 @@ def _write_msh(
                 (conn + 1).ravel().tolist(),
             )
             tag += conn.shape[0]
-    for name in BOX_ZONES:
+    for name, faces in boundary.items():
         surface = gmsh.model.addDiscreteEntity(2)
-        faces = boundary[name]
         for k, gmsh_type in ((3, 2), (4, 3)):
             rows = faces[(faces >= 0).sum(axis=1) == k][:, :k]
             if rows.size:
@@ -505,27 +531,7 @@ def generate_family(
         path = out_dir / name
         mesh, version = generate_level(kind, n, perturbation=perturbation, seed=seed, path=path)
         meshes.append(mesh)
-        g = mesh.geometry
-        volume = float(g.cell_volume.sum())
-        counts: dict[str, int] = {}
-        for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
-            counts[k] = counts.get(k, 0) + 1
-        records.append(
-            Level(
-                n=n,
-                file=name,
-                file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                mesh_sha256=mesh.sha256(),
-                n_cells=mesh.n_cells,
-                n_faces=mesh.n_faces,
-                n_points=int(mesh.points.shape[0]),
-                cell_counts=counts,
-                min_subvolume_ratio=mesh.min_subvolume_ratio(),
-                volume=volume,
-                h=(volume / mesh.n_cells) ** (1.0 / 3.0),
-            )
-        )
+        records.append(level_record(n, path, mesh))
     family = Family(kind, perturbation, seed, version, tuple(records))
-    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
-    (out_dir / "manifest.json").write_text(manifest + "\n")
+    write_manifest(family, out_dir)
     return family, meshes
