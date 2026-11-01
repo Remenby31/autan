@@ -86,6 +86,10 @@ struct PhysicsContext {
   /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
   /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
   const std::map<index_t, std::vector<double>>& boundary_states;
+  /// devices.kind = cuda: this rank's CUDA device, current on the calling thread, and its
+  /// stream (a cudaStream_t) for the physics' work and ghost exchanges. -1 and null on the CPU.
+  int device = -1;
+  void* stream = nullptr;
 };
 
 // case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
