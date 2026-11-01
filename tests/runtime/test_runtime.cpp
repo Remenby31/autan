@@ -844,6 +844,7 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
       Json zone = d["cell_zones"][0];
       zone["zone"] = "fluid";
       d["cell_zones"] = Json::array({zone});
+      d["monitors"][0]["zones"] = Json::array({"zmin"});
       if (edit) edit(d);
     });
   };
@@ -852,11 +853,24 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
   const Json info = Json::parse(read(o.run / "run.json"));
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
+  // The physics ran on the partition: image ghosts, as many as the
+  // relaxation physics reported in its first log line.
+  std::ifstream log_in(o.run / "log.jsonl");
+  std::int64_t ghosts = -1;
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "relaxation physics ready") ghosts = event["data"]["ghosts"];
+  }
+  CHECK(ghosts > 0);
   const autan::Mesh back = autan::io::read_mesh(o.run / "solution.cgns");
   CHECK(back.periodic_pairs().size() == 2);
   CHECK(!solution_field(o.run / "solution.cgns", "FlowSolution", "Density").empty());
 
   require_error(run(with_pairs(2.0)), "E0705");
+  // A periodic zone takes no condition and carries no forces monitor.
+  require_error(
+      run(with_pairs(1.0, [](Json& d) { d["monitors"][0]["zones"] = Json::array({"ymin"}); })),
+      "E0705");
   // A periodic zone takes no condition.
   require_error(run(with_pairs(1.0,
                                [](Json& d) {

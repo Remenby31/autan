@@ -374,6 +374,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     for (const auto& name : p.input.monitors[m].zones) {
       if (!p.face_zone.contains(name))
         invalid("monitors[" + std::to_string(m) + "].zones", "no boundary zone '" + name + "'");
+      // A periodic zone is no surface the fluid exerts a load on.
+      if (p.mesh.face_zones()[at(p.face_zone.at(name))].kind == BcKind::periodic)
+        invalid("monitors[" + std::to_string(m) + "].zones", "zone '" + name + "' is periodic");
       ids.push_back(p.face_zone.at(name));
     }
     p.monitor_zones.push_back(std::move(ids));

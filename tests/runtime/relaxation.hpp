@@ -76,7 +76,9 @@ class Relaxation final : public autan::runtime::Physics {
       }
     }
     mean_ = state_;
-    context_.log.write("info", "solver", "relaxation physics ready");
+    context_.log.write(
+        "info", "solver", "relaxation physics ready", "",
+        "{\"ghosts\": " + std::to_string(mesh.n_cells() - mesh.n_owned_cells()) + "}");
     for (auto& f : mean_) std::fill(f.values.begin(), f.values.end(), 0.0);
     if (context.start != nullptr) {
       state_ = context.start->fields;

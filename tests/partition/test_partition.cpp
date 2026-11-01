@@ -441,6 +441,15 @@ TEST_CASE("One part fills its periodic images alone", "[partition][periodic]") {
   for (index_t c = 0; c < m.n_cells(); ++c)
     CHECK(id[at(c)] == static_cast<double>(m.cell_global_id()[at(c)]));
 
+  // The same in single precision.
+  std::vector<float> id32(at(m.n_cells()), -1.0F);
+  for (index_t c = 0; c < m.n_owned_cells(); ++c)
+    id32[at(c)] = static_cast<float>(m.cell_global_id()[at(c)]);
+  float* const component32 = id32.data();
+  autan::forward_self(part.halo, m.n_owned_cells(), std::span<float* const>(&component32, 1));
+  for (index_t c = 0; c < m.n_cells(); ++c)
+    CHECK(id32[at(c)] == static_cast<float>(m.cell_global_id()[at(c)]));
+
   autan::fill_ghost_geometry(part);
   for (index_t c = m.n_owned_cells(); c < m.n_cells(); ++c) {
     const auto source = at(m.cell_global_id()[at(c)]);
