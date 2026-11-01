@@ -34,3 +34,26 @@ test("an escaped zone name matches that name only", () => {
   expect(globMatches(globEscape("wing[1]"), "wing1")).toBe(false);
   expect(globMatches(globEscape("a*b"), "axxb")).toBe(false);
 });
+
+// Classes with dashes, as Python 3.12+ rewrites them (fnmatch._translate); the names each
+// pattern matches are fnmatchcase's.
+test.each([
+  ["[a--!]min", ["ymin", "-min", "!min", "bmin", "dmin", "]min", "^min", "amin"]],
+  ["[!-a]min", ["ymin", "!min", "bmin", "dmin", "]min", "^min"]],
+  ["[a-]min", ["-min", "amin"]],
+  ["[--z]min", ["ymin", "-min", "bmin", "dmin", "]min", "^min", "amin"]],
+  ["[z-a-c]min", ["-min"]],
+  ["[a-c-e]min", ["-min", "bmin", "amin"]],
+  ["[!]min", []],
+  ["[]-a]min", ["]min", "^min", "amin"]],
+])("%s matches exactly %j", (pattern, matched) => {
+  const names = ["ymin", "-min", "!min", "bmin", "dmin", "]min", "^min", "amin"];
+  expect(names.filter((n) => globMatches(pattern, n))).toEqual(matched);
+});
+
+test("ranges are over code points, and runs of stars stay linear", () => {
+  expect(globMatches("[😀-🙏]*", "😀wall")).toBe(true);
+  expect(globMatches("[!😀-🙏]*", "😀wall")).toBe(false);
+  expect(globMatches("************z", "farfield-downstream-outlet")).toBe(false);
+  expect(globMatches("*a*a*a*a*a*a*a*a*b", "a".repeat(200))).toBe(false);
+});

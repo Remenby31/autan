@@ -1,7 +1,7 @@
 {
   "schema": "autan.mesh-info/1",
   "source": {
-    "path": "tests/data/mesh/hybrid/hybrid.ascii.msh",
+    "path": "/src/tests/data/mesh/hybrid/hybrid.ascii.msh",
     "format": "gmsh",
     "sha256": "54a9e0b4efd741811e223ea15ad79cb319195f9fde3b2f0c90c8d08aebdca185"
   },
@@ -16,6 +16,18 @@
       "hexa": 8,
       "polyhedron": 0
     }
+  },
+  "bounds": {
+    "min": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max": [
+      1.0,
+      1.0,
+      1.0
+    ]
   },
   "boundary_zones": [
     {
@@ -79,6 +91,8 @@
     }
   ],
   "periodic": [],
+  "groups": [],
+  "groups_source": null,
   "quality": {
     "max_non_orthogonality_deg": 36.6992252004899,
     "max_faces_per_cell": 6

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { differences, sameValue } from "./cases";
+import { caseDocument, differences, formFromDocument, sameValue } from "./cases";
 
 test("values are equal whatever the order of their keys", () => {
   expect(sameValue({ a: 1, b: { c: [1, 2] } }, { b: { c: [1, 2] }, a: 1 })).toBe(true);
@@ -18,4 +18,32 @@ test("documents differ path by path, a value hidden elsewhere included", () => {
     { path: "a[1]", before: 2, after: undefined },
   ]);
   expect(differences({ x: { y: 1 } }, { x: { y: 1 } })).toEqual([]);
+});
+
+test("group selectors read into the form and back", () => {
+  const document = {
+    boundaries: [
+      { group: "WING", condition: { kind: "wall" } },
+      { zones: "far*", condition: { kind: "farfield" } },
+    ],
+    monitors: [{ kind: "forces", group: "wing.*", ref_area: "1 m ** 2" }],
+  };
+  const form = formFromDocument(document, []);
+  expect(form.boundaries.map((r) => [r.by, r.zones])).toEqual([
+    ["group", "WING"],
+    ["zones", "far*"],
+  ]);
+  const back = caseDocument(form);
+  expect(back.boundaries).toEqual(document.boundaries);
+  expect(back.monitors).toEqual(document.monitors);
+});
+
+test("a monitor name is kept as given, blanks included", () => {
+  const document = {
+    monitors: [
+      { kind: "forces", name: " ", surfaces: "a" },
+      { kind: "forces", name: "forces", surfaces: "b" },
+    ],
+  };
+  expect(caseDocument(formFromDocument(document, [])).monitors).toEqual(document.monitors);
 });

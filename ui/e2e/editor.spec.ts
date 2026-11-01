@@ -20,14 +20,14 @@ const HEAT_EXCHANGER = withoutDocstring(readFileSync("../py/examples/heat_exchan
 async function rule(page: Page, k: number, zones: string, kind: string) {
   await page.getByRole("button", { name: "Add rule" }).click();
   const fieldset = page.getByRole("group", { name: `Boundary rule ${k}` });
-  await fieldset.getByLabel("Zones").fill(zones);
+  await fieldset.getByLabel("Zones", { exact: true }).fill(zones);
   await fieldset.getByLabel("Condition").selectOption(kind);
 }
 
 async function forces(page: Page, k: number, surfaces: string, area: string, every: string) {
   await page.getByRole("button", { name: "Add forces" }).click();
   const monitor = page.getByRole("group", { name: `Forces monitor ${k}` });
-  await monitor.getByLabel("Surfaces").fill(surfaces);
+  await monitor.getByLabel("Surfaces", { exact: true }).fill(surfaces);
   await monitor.getByLabel("Reference area", { exact: true }).fill(area);
   await monitor.getByLabel("Every").fill(every);
 }
@@ -211,7 +211,7 @@ test("an inviscid case walls a picked wall with slip", async ({ page }) => {
 async function cellZone(page: Page, k: number, zones: string, kind: string, material: string) {
   await page.getByRole("button", { name: "Add zone" }).click();
   const fieldset = page.getByRole("group", { name: `Cell zone ${k}` });
-  await fieldset.getByLabel("Zones").fill(zones);
+  await fieldset.getByLabel("Zones", { exact: true }).fill(zones);
   await fieldset.getByLabel("Medium").selectOption(kind);
   await fieldset.getByLabel("Material").selectOption(material);
 }
@@ -361,4 +361,143 @@ test("the form waits for the copy, and a run it cannot read says so", async ({ p
   ).toBeVisible({
     timeout: 15_000,
   });
+});
+
+// server/tests/data/surface/grouped: the unit cube's polyMesh with the groups of
+// ui/scripts/surface-fixtures.sh: plates = ymin, ymax; box.x = xmin, xmax; walls = ymin.
+test("rules and monitors select the mesh's zone groups", async ({ page }) => {
+  await page.goto("/cases/new");
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("grouped");
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mach").fill("0.3");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+  await page.getByRole("button", { name: "Add rule" }).click();
+  const plates = page.getByRole("group", { name: "Boundary rule 1" });
+  await plates.getByLabel("Zones by").selectOption("group");
+  await plates.getByLabel("Zones", { exact: true }).fill("plates");
+  await plates.getByLabel("Condition").selectOption("symmetry");
+  await rule(page, 2, "[xz]*", "farfield");
+  await page.getByRole("button", { name: "Add forces" }).click();
+  const monitor = page.getByRole("group", { name: "Forces monitor 1" });
+  await monitor.getByLabel("Surfaces by").selectOption("group");
+  await monitor.getByLabel("Surfaces", { exact: true }).fill("wall?");
+  await monitor.getByLabel("Reference area", { exact: true }).fill("1");
+
+  // case-schema.md#boundaries: a group glob is the `group` keyword.
+  const code = page.getByTestId("case-py");
+  await expect(code).toContainText('case.boundary(group="plates").symmetry()');
+  await expect(code).toContainText('autan.forces(group="wall?"');
+  await expect(page.getByTestId("plan")).toContainText("6 of 6 zones covered");
+
+  await plates.getByLabel("Zones", { exact: true }).fill("plate");
+  await expect(page.getByTestId("plan-diagnostics")).toContainText("E0426");
+});
+
+test("a picked zone's rule can select a group holding it instead", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("grouped");
+  await clickCentre(page);
+
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(rule.getByLabel("Zones", { exact: true })).toHaveValue("ymin");
+  const offer = page.getByTestId("group-offer");
+  await expect(offer.getByRole("button")).toHaveText(["plates", "walls"]);
+  await offer.getByRole("button", { name: "plates" }).click();
+
+  await expect(rule.getByLabel("Zones by")).toHaveValue("group");
+  await expect(rule.getByLabel("Zones", { exact: true })).toHaveValue("plates");
+  await expect(offer).toHaveCount(0);
+  await page.getByLabel("Name").focus();
+  await clickCentre(page);
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+  await expect(rule.getByLabel("Zones", { exact: true })).toBeFocused();
+});
+
+test("a group offer follows its rule and leaves with its mesh", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("grouped");
+  await rule(page, 1, "xmin", "farfield");
+  await clickCentre(page);
+  const offer = page.getByTestId("group-offer");
+  await expect(offer).toContainText("Rule 2");
+
+  await page.getByRole("button", { name: "Remove boundary rule 1" }).click();
+  await expect(offer).toContainText("Rule 1");
+  await offer.getByRole("button", { name: "walls" }).click();
+  const first = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(first.getByLabel("Zones", { exact: true })).toHaveValue("walls");
+
+  await page.getByRole("button", { name: "Add rule" }).click();
+  await page.getByRole("button", { name: "Remove boundary rule 2" }).click();
+  await clickCentre(page);
+  await page.getByRole("button", { name: "Remove boundary rule 1" }).click();
+  await clickCentre(page);
+  await expect(offer).toBeVisible();
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await expect(offer).toHaveCount(0);
+});
+
+test("dragging the view orbits it and picks nothing", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+  const box = await view.boundingBox();
+  if (!box) throw new Error("the mesh view has no box");
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 35, y + 20, { steps: 5 });
+  await page.mouse.up();
+  // Out and back: released where it was pressed, still a drag.
+  await page.mouse.down();
+  await page.mouse.move(x + 35, y + 20, { steps: 5 });
+  await page.mouse.move(x, y, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
+  await clickCentre(page);
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+});
+
+test("a copy keeps its run's zone groups: same mesh hash, other groups is another mesh", async ({
+  page,
+}) => {
+  // grouped and polyMesh are one mesh file; only grouped has groups. A real run on polyMesh.
+  const dir = mkdtempSync(join(tmpdir(), "autan-groups-"));
+  const name = `ungrouped-${Date.now()}`;
+  writeFileSync(
+    join(dir, "case.py"),
+    [
+      "import autan",
+      "from autan.units import Pa",
+      "",
+      `case = autan.Case("${name}", mesh="polyMesh")`,
+      "case.physics = autan.Compressible(turbulence=autan.Inviscid())",
+      "case.freestream(mach=0.3, pressure=101325.0 * Pa)",
+      'case.boundary("*").farfield()',
+      "",
+    ].join("\n"),
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "server/tests/data/surface/polyMesh.meshinfo.json", "--runs", RUNS],
+  ]);
+  const listed: { run_id: string; case: { name: string } }[] = (
+    await (await page.request.get("/api/runs")).json()
+  ).runs;
+  const run = listed.find((r) => r.case.name === name);
+  if (!run) throw new Error("the polyMesh run is not listed");
+  try {
+    await page.goto(`/cases/new?run=${run.run_id}`);
+
+    await expect(page.getByLabel("Name")).toHaveValue(name);
+    await expect(page.getByLabel("Mesh", { exact: true })).toHaveValue("polyMesh");
+  } finally {
+    rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

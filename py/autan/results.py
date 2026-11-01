@@ -19,6 +19,7 @@ from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
 from autan.meshinfo import MeshInfo
 from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady
+from autan.units import metres_per
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -43,6 +44,7 @@ class CaseIdentity(_Strict):
 class MeshIdentity(_Strict):
     path: str
     sha256: Hex
+    groups_sha256: Hex | None
 
 
 class Solver(_Strict):
@@ -165,13 +167,15 @@ def iso(moment: datetime) -> str:
 def identity(
     case: str,
     mesh: str,
+    groups: str | None,
     solver: Solver,
     precision: str,
     devices: Devices,
     start: StartInfo | None = None,
 ) -> str:
     """The reproducibility fingerprint of a run (results.md, ``identity``)."""
-    parts = [case, mesh, solver.commit, precision, solver.backend, devices.kind, str(devices.count)]
+    parts = [case, mesh, groups or ""]
+    parts += [solver.commit, precision, solver.backend, devices.kind, str(devices.count)]
     if start is not None:
         parts += [start.identity, start.mode, str(start.iterations), start.solution_sha256]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
@@ -641,8 +645,15 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
         found.append("finished must be null exactly while running")
     if run.finished is not None and not _TIMESTAMP.fullmatch(run.finished):
         found.append(f"finished {run.finished!r} is not a UTC ISO 8601 timestamp")
+    groups = mesh_info.groups_source.sha256 if mesh_info.groups_source else None
     expected = identity(
-        case.hash(), mesh_info.source.sha256, run.solver, run.precision, run.devices, run.start
+        case.hash(),
+        mesh_info.source.sha256,
+        groups,
+        run.solver,
+        run.precision,
+        run.devices,
+        run.start,
     )
     if run.identity != expected:
         found.append("identity does not match its definition")
@@ -650,6 +661,8 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
         found.append("case.toml does not match run.json case")
     if mesh_info.source.sha256 != run.mesh.sha256:
         found.append("mesh-info.json does not match run.json mesh.sha256")
+    if groups != run.mesh.groups_sha256:
+        found.append("mesh-info.json groups_source does not match run.json mesh.groups_sha256")
     if not Path(run.mesh.path).is_absolute():
         found.append("mesh.path must be absolute")
     if run.precision != case.physics.precision:
@@ -916,7 +929,8 @@ def _solution_problems(
     used = np.abs(np.asarray(nface.child("ElementConnectivity").data)).ravel()
     counts = np.bincount(used, minlength=faces + 1)
     exterior = set(np.flatnonzero(counts == 1).tolist())
-    found += _periodic_problems(zone, mesh_info, nodes_of, exterior, bc_faces)
+    scale = metres_per(case.mesh_unit)
+    found += _periodic_problems(zone, mesh_info, scale, nodes_of, exterior, bc_faces)
     for region in zone.with_label("ZoneSubRegion_t"):
         low, high = (1, faces) if region.name == "WallSolution" else (faces + 1, faces + cells)
         if not _ids_in(region.child("PointList").data, low, high):
@@ -944,6 +958,7 @@ def _exact(text: str) -> list[float] | None:
 def _periodic_problems(
     zone: cgns.Node,
     mesh_info: MeshInfo,
+    scale: float,
     nodes_of: dict[str, str],
     exterior: set[int],
     bc_faces: set[int],
@@ -962,7 +977,7 @@ def _periodic_problems(
     claimed: set[int] = set()
     for pair in mesh_info.periodic:
         a, b = pair.zones
-        vector = np.array(pair.transform.vector)
+        vector = np.array(pair.transform.vector) * scale
         matches = {}
         for side, shift in ((a, vector), (b, -vector)):
             gc = connectivity.child(nodes_of[side])

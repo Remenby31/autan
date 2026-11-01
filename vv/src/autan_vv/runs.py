@@ -79,6 +79,12 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "format": mesh_format,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         },
+        "groups": [],
+        "groups_source": None,
+        "bounds": {
+            "min": [float(x) for x in mesh.points.min(axis=0)],
+            "max": [float(x) for x in mesh.points.max(axis=0)],
+        },
         "counts": {
             "cells": mesh.n_cells,
             "faces": mesh.n_faces,
@@ -251,10 +257,12 @@ def write_run(
     devices = Devices(kind="cpu", count=1)
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),
-        identity=identity(spec.hash(), info.source.sha256, solver, spec.physics.precision, devices),
+        identity=identity(
+            spec.hash(), info.source.sha256, None, solver, spec.physics.precision, devices
+        ),
         status="running",
         case=CaseIdentity(name=spec.name, sha256=spec.hash()),
-        mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
+        mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256, groups_sha256=None),
         solver=solver,
         precision=spec.physics.precision,
         # The fields come from the caller, not from the identified configuration.

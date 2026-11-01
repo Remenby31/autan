@@ -207,6 +207,9 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                     "polyhedron": 0,
                 },
             },
+            "bounds": {"min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]},
+            "groups": [],
+            "groups_source": None,
             "boundary_zones": [
                 {
                     "name": "farfield",

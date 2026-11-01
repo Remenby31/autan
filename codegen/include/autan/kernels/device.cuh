@@ -126,6 +126,10 @@ class DeviceMesh {
     /// Cells per slice of the sliced stencil layout (Topology::stencil_stride), 0 for CSR. Same
     /// results bit for bit; a warp then reads its cells' stencil entries contiguously.
     int stencil_slice = 0;
+    /// The partition's global numbering (incidences by global face id, reversed faces evaluated
+    /// in their global orientation), for results that do not depend on the partition; the
+    /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
+    const GlobalKeys* global = nullptr;
   };
 
   /// `stencil` may be null (no stencil reductions); it is copied.
@@ -133,7 +137,14 @@ class DeviceMesh {
              Options options)
       : geometry_(geometry), stream_(options.stream) {
     Topology host = kernels::topology(mesh.view());
-    const auto twins = incidence_twins(mesh);
+    GlobalOrder order;
+    if (options.global != nullptr) {
+      order = global_order(mesh, *options.global);
+      host.cell_faces = order.cell_faces.data();
+    } else {
+      order.twin = incidence_twins(mesh);
+    }
+    const auto& twins = order.twin;
     host.incidence_twin = twins.data();
     if (stencil != nullptr) {
       csr_entries_ = stencil->entries.size();
@@ -169,6 +180,11 @@ class DeviceMesh {
     topo_.cell_face_offsets = offsets_.get();
     topo_.cell_faces = cell_faces_.get();
     topo_.incidence_twin = twin_.get();
+    if (options.global != nullptr && !options.global->reversed.empty()) {
+      reversed_ = copy(options.global->reversed);
+      topo_.face_reversed = reversed_.get();
+    }
+    topo_.rank_independent = options.global != nullptr;
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
       stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));
@@ -288,6 +304,7 @@ class DeviceMesh {
   stream_t stream_;
   DeviceArray<index_t> owner_, neighbour_, cell_faces_, interior_faces_, boundary_faces_;
   DeviceArray<offset_t> offsets_, twin_;
+  DeviceArray<std::uint8_t> reversed_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
   DeviceArray<index_t> stencil_entries_, stencil_length_;
   HostColouring interior_, boundary_;

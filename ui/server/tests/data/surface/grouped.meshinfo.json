@@ -1,0 +1,127 @@
+{
+  "schema": "autan.mesh-info/1",
+  "source": {
+    "path": "grouped",
+    "format": "polymesh",
+    "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6"
+  },
+  "counts": {
+    "cells": 216,
+    "faces": 564,
+    "nodes": 133,
+    "cells_by_type": {
+      "tetra": 96,
+      "pyramid": 48,
+      "prism": 64,
+      "hexa": 8,
+      "polyhedron": 0
+    }
+  },
+  "bounds": {
+    "min": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "boundary_zones": [
+    {
+      "name": "xmin",
+      "type": null,
+      "native_type": "patch",
+      "faces": 24
+    },
+    {
+      "name": "xmax",
+      "type": null,
+      "native_type": "patch",
+      "faces": 24
+    },
+    {
+      "name": "ymin",
+      "type": "wall",
+      "native_type": "wall",
+      "faces": 20
+    },
+    {
+      "name": "ymax",
+      "type": null,
+      "native_type": "patch",
+      "faces": 20
+    },
+    {
+      "name": "zmin",
+      "type": null,
+      "native_type": "patch",
+      "faces": 24
+    },
+    {
+      "name": "zmax",
+      "type": "symmetry",
+      "native_type": "symmetryPlane",
+      "faces": 24
+    }
+  ],
+  "cell_zones": [
+    {
+      "name": "upper",
+      "type": null,
+      "native_type": null,
+      "cells": 128
+    },
+    {
+      "name": "lower",
+      "type": null,
+      "native_type": null,
+      "cells": 88
+    }
+  ],
+  "interfaces": [
+    {
+      "zones": [
+        "lower",
+        "upper"
+      ],
+      "faces": 24
+    }
+  ],
+  "periodic": [],
+  "groups": [
+    {
+      "name": "box.x",
+      "zones": [
+        "xmin",
+        "xmax"
+      ]
+    },
+    {
+      "name": "plates",
+      "zones": [
+        "ymin",
+        "ymax"
+      ]
+    },
+    {
+      "name": "walls",
+      "zones": [
+        "ymin"
+      ]
+    }
+  ],
+  "groups_source": {
+    "path": "grouped.zones.json",
+    "sha256": "afdab87c25136e5eaea07f55f30e52446b77564a0897af0a757a146c5df46741",
+    "provenance": {
+      "note": "ui/scripts/surface-fixtures.sh"
+    }
+  },
+  "quality": {
+    "max_non_orthogonality_deg": 36.6992252004899,
+    "max_faces_per_cell": 6
+  }
+}

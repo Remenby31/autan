@@ -109,10 +109,21 @@ def _mutated(change: str) -> bytes:
         header["buffers"].append(dict(header["buffers"][0]))
     elif change == "null source":
         header["source"] = None
+    elif change == "another mesh's hash":
+        header["source"]["sha256"] = "0" * 64
     elif change == "null zone":
         header["zones"][0] = None
     elif change == "zone type":
         header["zones"][0]["type"] = "inlet"
+    elif change == "collinear face":
+        # Three nodes of one face on a line, off the origin by 2**-18 steps: exactly no area.
+        positions = arrays["positions"].reshape(-1, 3)
+        for t, node in zip((0, 1, 3), (13, 14, 8), strict=True):
+            positions[node] = (0, 0.1 + t * 2**-18, 0.3 + t * 2**-18)
+    elif change == "overflowing positions":
+        arrays["positions"] *= 1e200
+    elif change == "positions beyond single precision":
+        arrays["positions"] *= 1e40
     elif change == "infinite position":
         arrays["positions"][0] = np.inf
     elif change == "repeated node":
@@ -144,9 +155,13 @@ def _mutated(change: str) -> bytes:
         "wrong dtype",
         "duplicate buffer",
         "null source",
+        "another mesh's hash",
         "null zone",
         "zone type",
         "infinite position",
+        "overflowing positions",
+        "positions beyond single precision",
+        "collinear face",
         "repeated node",
         "reversed face",
         "retraced node",
@@ -175,14 +190,17 @@ def test_a_surface_beside_an_invalid_meshinfo_is_refused(tmp_path: Path) -> None
     assert client.get("/api/meshes/polyMesh/surface").status_code in (404, 422)
 
 
-def test_a_surface_of_another_mesh_is_refused(tmp_path: Path) -> None:
-    other = (DATA / "polyMesh.surface").read_bytes()
-    mesh_info = json.loads((DATA / "hybrid-cgns.meshinfo.json").read_text())
-    assert mesh_info["source"]["sha256"] not in other.decode(errors="ignore")
+def test_a_thin_mesh_keeps_its_small_faces(tmp_path: Path) -> None:
+    # The unit cube scaled by (1e-6, 1e-6, 1): every face keeps an area and the boundary
+    # its orientation, though the smallest faces are 1e-12 of the largest.
+    header, arrays = _parts("polyMesh")
+    positions = arrays["positions"].reshape(-1, 3) * [1e-6, 1e-6, 1]
 
-    response = _client(tmp_path, "hybrid-cgns", other).get("/api/meshes/hybrid-cgns/surface")
+    response = _client(
+        tmp_path, "polyMesh", _pack(header, {**arrays, "positions": positions.ravel()})
+    ).get("/api/meshes/polyMesh/surface")
 
-    assert response.status_code == 422
+    assert response.status_code == 200
 
 
 def test_a_truncated_surface_is_refused(tmp_path: Path) -> None:

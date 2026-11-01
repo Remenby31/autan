@@ -12,7 +12,7 @@ import rfc8785
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
-from autan.units import K, deg, fail, m, quantity, si, validate_number
+from autan.units import K, UnitOfLength, deg, fail, m, quantity, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
 # Largest integer RFC 8785 canonicalizes exactly (IEEE 754 double, 2**53 - 1).
@@ -315,12 +315,25 @@ class Symmetry(Spec):
     kind: Literal["symmetry"] = "symmetry"
 
 
+def one_selector(zones: str | None, group: str | None, key: str) -> None:
+    """A zone selection gives exactly one of a glob over zone names (``key``) and ``group``."""
+    if (zones is None) == (group is None):
+        fail("E0003", "give exactly one of {key} or group", key=key)
+
+
 class PointVortex(Spec):
     """The point-vortex correction of a 2D farfield: the far field of a vortex at ``center``
-    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``."""
+    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``
+    (or the zones of the groups matching ``group``)."""
 
-    surfaces: Pattern
+    surfaces: Pattern | None = None
+    group: Pattern | None = None
     center: tuple[Coordinate, Coordinate, Coordinate]
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.surfaces, self.group, "surfaces")
+        return self
 
 
 class Farfield(Spec):
@@ -360,8 +373,14 @@ Condition = Annotated[
 
 
 class BoundaryRule(Spec):
-    zones: Pattern
+    zones: Pattern | None = None
+    group: Pattern | None = None
     condition: Condition
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.zones, self.group, "zones")
+        return self
 
 
 class State(Spec):
@@ -393,16 +412,23 @@ class CellZoneRule(Spec):
 
 
 class Forces(Spec):
-    """Integrated forces and moments over the boundary zones matching ``surfaces``."""
+    """Integrated forces and moments over the boundary zones matching ``surfaces`` (or the
+    zones of the groups matching ``group``)."""
 
     kind: Literal["forces"] = "forces"
     name: Name = "forces"
-    surfaces: Pattern
+    surfaces: Pattern | None = None
+    group: Pattern | None = None
     every: Count = 1
     ref_area: Area | None = None
     moment_center: tuple[Coordinate, Coordinate, Coordinate] = Field(
         default_factory=lambda: (0.0 * m, 0.0 * m, 0.0 * m)
     )
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.surfaces, self.group, "surfaces")
+        return self
 
 
 Monitor = Annotated[Forces, Field(discriminator="kind")]
@@ -440,6 +466,7 @@ class CaseSpec(Spec):
     schema_: Literal["autan.case/1"] = Field(default="autan.case/1", alias="schema")
     name: Name
     mesh: Name
+    mesh_unit: Annotated[pint.Unit, UnitOfLength] = Field(default_factory=lambda: m)
     physics: Physics
     freestream: Freestream
     time: Time = Field(default_factory=Steady)

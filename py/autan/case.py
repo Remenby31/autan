@@ -8,9 +8,11 @@ import tomllib
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+import pint
 import tomli_w
+from pydantic import TypeAdapter, ValidationError
 
 from autan.errors import CaseError, Location, diagnostic
 from autan.plan import Plan, plan
@@ -44,12 +46,12 @@ from autan.schema import (
     Verification,
     Wall,
     _caller_location,
+    diagnostics_from,
 )
+from autan.units import UnitOfLength
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-    import pint
 
     from autan.fake import FakeBackend
 
@@ -59,21 +61,30 @@ if TYPE_CHECKING:
     from autan.results import Results
     from autan.solver_backend import SolverBackend
 
+_MESH_UNIT = TypeAdapter(Annotated[pint.Unit, UnitOfLength])
 _collectors: list[list[Case]] = []
 
 
 class Case:
     """A case under construction: ``autan.Case("crm-hl", mesh="crm-hl.cgns")``.
 
+    ``mesh_unit`` is the length unit of the mesh file's coordinates (``"in"``, ``"mm"``, or
+    a Pint unit; default ``"m"``); every other length of the case carries its own unit.
+
     Builder methods validate their arguments immediately and raise ``autan.CaseError``
     with a coded diagnostic that points at the calling line. ``spec`` returns the
     complete, validated document (``autan.case/1``).
     """
 
-    def __init__(self, name: str, mesh: str | Path) -> None:
+    def __init__(self, name: str, mesh: str | Path, *, mesh_unit: str | pint.Unit = "m") -> None:
         self._origin = _caller_location()
         self._name = name
         self._mesh = str(mesh)
+        try:
+            self._mesh_unit = _MESH_UNIT.validate_python(mesh_unit)
+        except ValidationError as error:
+            located = self._origin.model_copy(update={"path": "mesh_unit"})
+            raise CaseError(diagnostics_from(error, located, {})) from None
         self._physics: Compressible | Incompressible | None = None
         self._freestream: Freestream | None = None
         self._time: Steady | Unsteady = Steady()
@@ -205,9 +216,10 @@ class Case:
         self._freestream = Freestream(**given)
         self._locations["freestream"] = _caller_location()
 
-    def boundary(self, zones: str) -> BoundarySelector:
-        """Select boundary zones by glob pattern; call a condition method on the result."""
-        return BoundarySelector(self, zones)
+    def boundary(self, zones: str | None = None, *, group: str | None = None) -> BoundarySelector:
+        """Select boundary zones by a glob over their names, or by ``group``, a glob over the
+        mesh's zone group names; call a condition method on the result."""
+        return BoundarySelector(self, zones, group)
 
     def cell_zone(self, zones: str) -> CellZoneSelector:
         """Select cell zones by glob pattern; call ``fluid`` or ``solid`` on the result."""
@@ -264,6 +276,7 @@ class Case:
             return CaseSpec(
                 name=self._name,
                 mesh=self._mesh,
+                mesh_unit=self._mesh_unit,
                 physics=self._physics,
                 freestream=self._freestream,
                 time=self._time,
@@ -297,7 +310,7 @@ class Case:
         """A case holding ``spec``; diagnostics point at ``file`` and document paths."""
         case = cls.__new__(cls)
         case._origin = Location(file=file)
-        case._name, case._mesh = spec.name, spec.mesh
+        case._name, case._mesh, case._mesh_unit = spec.name, spec.mesh, spec.mesh_unit
         case._physics, case._freestream, case._time = spec.physics, spec.freestream, spec.time
         case._boundaries = list(spec.boundaries)
         case._cell_zones = list(spec.cell_zones)
@@ -354,11 +367,13 @@ class Case:
 class BoundarySelector:
     """The boundary zones matching a pattern; each method adds one rule to the case."""
 
-    def __init__(self, case: Case, zones: str) -> None:
-        self._case, self._zones = case, zones
+    def __init__(self, case: Case, zones: str | None, group: str | None) -> None:
+        self._case, self._zones, self._group = case, zones, group
 
     def _add(self, condition: Any) -> None:
-        self._case._add_boundary(BoundaryRule(zones=self._zones, condition=condition))
+        self._case._add_boundary(
+            BoundaryRule(zones=self._zones, group=self._group, condition=condition)
+        )
 
     def wall(self, *, temperature: QuantityLike | None = None) -> None:
         """No-slip wall, adiabatic unless ``temperature`` is given."""
@@ -417,14 +432,16 @@ class CellZoneSelector:
 
 
 def forces(
-    surfaces: str,
+    surfaces: str | None = None,
     *,
+    group: str | None = None,
     name: str = "forces",
     ref_area: QuantityLike | None = None,
     moment_center: tuple[QuantityLike, QuantityLike, QuantityLike] | None = None,
 ) -> Forces:
-    """A forces monitor over the boundary zones matching ``surfaces``."""
-    given: dict[str, Any] = {"surfaces": surfaces, "name": name}
+    """A forces monitor over the boundary zones matching ``surfaces``, or the zones of the
+    groups matching ``group``."""
+    given: dict[str, Any] = {"surfaces": surfaces, "group": group, "name": name}
     if ref_area is not None:
         given["ref_area"] = ref_area
     if moment_center is not None:
