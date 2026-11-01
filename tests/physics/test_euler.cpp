@@ -556,7 +556,8 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
     const auto uc = conserved(flow(c.geometry.cell_centroid_x[i], c.geometry.cell_centroid_z[i]));
     for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
   }
-  const std::vector<typename P::state> st(u.begin(), u.end());
+  std::vector<typename P::state> st(5 * nc);
+  e.state(u, st);
   std::vector<typename P::residual> r(5 * nc);
   e.residual(st, r);
   const auto surface = c.cell_surface();
