@@ -48,7 +48,10 @@ gpu_args=""
 command=$(printf '%q ' "$*")
 # The lock's directory is read-only in the container; only the holders log is writable, and a
 # missing source would make docker create a directory in its place.
-ssh "$host" "log=/home/admin/autan-gpu/holders.log; [ -e \$log ] || install -m 0666 /dev/null \$log
+# noclobber creates it atomically, never replacing a log another launch just created and mounted.
+ssh "$host" "log=/home/admin/autan-gpu/holders.log
+  [ -f \$log ] || { (set -C; : >\$log) 2>/dev/null && chmod 0666 \$log; }
+  [ -f \$log ] || { echo \"spark.sh: \$log is not a regular file\" >&2; exit 1; }
   docker run --rm --name autan-work-$name-\$\$ $gpu_args \
   --cpus 12 --memory 48g --user \"\$(id -u):\$(id -g)\" -e HOME=/tmp \
   -e AUTAN_CONTAINER=autan-work-$name -v /home/admin/autan-gpu:/home/admin/autan-gpu:ro -v \$log:\$log \

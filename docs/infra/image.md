@@ -33,7 +33,7 @@ docker run --rm -it --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$PWD:/src" -w /src "$image" bash
 ```
 
-Mount the GPU lock's directory and its holders log ([bench.md](bench.md#the-gpu-lock)): GPU work in every container then queues on the same lock with `bench/lock/autan-gpu-lock -m "AGENT: what for" -- <cmd>`. `AUTAN_IMAGE` records the image digest in benchmark results (for a local build, use `{{.Id}}`). Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Run as your own user so `git` accepts the mounted checkout. Name your containers with an `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
+Mount the GPU lock's directory and its holders log ([bench.md](bench.md#the-gpu-lock)); `docker/runner/deploy.sh` creates the log, and mounting it where it is missing would make docker create a directory there: GPU work in every container then queues on the same lock with `bench/lock/autan-gpu-lock -m "AGENT: what for" -- <cmd>`. `AUTAN_IMAGE` records the image digest in benchmark results (for a local build, use `{{.Id}}`). Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Run as your own user so `git` accepts the mounted checkout. Name your containers with an `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
 
 ## Build and test on a Spark from your workstation
 

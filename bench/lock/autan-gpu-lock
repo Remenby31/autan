@@ -3,11 +3,14 @@
 # Usage: autan-gpu-lock -m WHY [-w WAIT_S] [-t HOLD_S] -- COMMAND...
 #   -m WHY     what the command is for (agent, task), written to the holders log; required
 #   -w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
-#   -t HOLD_S  stop the command and release the lock after this long (default and maximum 600)
-# Every wait, take, release, timeout and overrun goes to holders.log next to the lock, one
+#   -t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's process
+#              group gets TERM shortly before, KILL at the limit (exit 124)
+# Every wait, take, release, timeout, overrun and kill goes to holders.log next to the lock, one
 # tab-separated line: UTC time, event, who, where, seconds, exit status, why, command.
-# The command does not inherit the lock's descriptor: a process it leaves behind cannot keep
-# the lock. Do not nest autan-bench under it: autan-bench takes the lock itself.
+# The command runs in its own process group without the lock's descriptor; whatever is left of
+# that group is killed before the lock is released, so no worker outlives the hold (a process
+# that leaves the group, with setsid, escapes this). Do not nest autan-bench under it:
+# autan-bench takes the lock itself.
 set -euo pipefail
 
 lock=${AUTAN_GPU_LOCK:-/home/admin/autan-gpu/gpu.lock}
@@ -16,7 +19,7 @@ max_hold=600
 wait_s=3600
 hold_s=$max_hold
 why=
-usage() { sed -n '2,10p' "$0" >&2; exit 2; }
+usage() { sed -n '2,13p' "$0" >&2; exit 2; }
 while [[ $# -gt 0 ]]; do
   case $1 in
     -m) why=$2; shift 2 ;;
@@ -27,23 +30,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n $why && $# -gt 0 ]] || usage
-[[ $wait_s =~ ^[0-9]+$ && $hold_s =~ ^[0-9]+$ ]] || usage
-if ((hold_s > max_hold)); then
-  echo "autan-gpu-lock: -t $hold_s exceeds the ${max_hold} s limit on holding the GPU lock" >&2
+# Decimal only: a leading zero would be octal in bash arithmetic and decimal for sleep.
+[[ $wait_s =~ ^(0|[1-9][0-9]{0,5})$ ]] || usage
+if ! [[ $hold_s =~ ^[1-9][0-9]{0,2}$ ]] || ((hold_s > max_hold)); then
+  echo "autan-gpu-lock: -t must be 1 to $max_hold seconds" >&2
   exit 2
 fi
 
-who=${AUTAN_AGENT:-$(id -un 2>/dev/null || id -u)}
-where=${AUTAN_CONTAINER:-$(hostname)}
+field() { local v=${1//[$'\t\n\r']/ }; printf '%s' "$v"; }
+who=$(field "${AUTAN_AGENT:-$(id -un 2>/dev/null || id -u)}")
+where=$(field "${AUTAN_CONTAINER:-$(hostname)}")
+why=$(field "$why")
 command_text=$(printf '%q ' "$@")
-command_text=${command_text:0:300}
+command_text=$(field "${command_text:0:300}")
 command_text=${command_text% }
 warned=0
 record() {  # event seconds status
   local line
   line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
-    "$who" "$where" "$2" "$3" "${why//$'\t'/ }" "$command_text")
-  if ! { echo "$line" >>"$log"; } 2>/dev/null && ((warned == 0)); then
+    "$who" "$where" "$2" "$3" "$why" "$command_text")
+  if ! { [[ -f $log ]] && echo "$line" >>"$log"; } 2>/dev/null && ((warned == 0)); then
     echo "autan-gpu-lock: cannot write $log; this hold is not recorded" >&2
     warned=1
   fi
@@ -59,20 +65,42 @@ if ! flock -w "$wait_s" 9; then
 fi
 taken=$SECONDS
 record take $((taken - start)) -
-# In the background so that a signal to this script stops the command (timeout passes it on to
-# the command's process group) instead of leaving it running without the lock.
-timeout --kill-after=30 "$hold_s" "$@" 9<&- 0<&0 &
-child=$!
-trap 'kill -TERM "$child" 2>/dev/null; wait "$child" || true; record killed $((SECONDS - taken)) -; exit 143' TERM INT HUP
+
+cancel=0
+trap 'cancel=1' TERM INT HUP
+# Not a process group leader (no job control), so setsid execs in place: the child's pid is
+# also its process group id.
+setsid "$@" 9<&- 0<&0 &
+group=$!
+grace=$((hold_s >= 20 ? 10 : hold_s / 2))
+termed=0
+stop=
+while kill -0 "$group" 2>/dev/null; do
+  elapsed=$((SECONDS - taken))
+  if ((cancel)) && [[ -z $stop ]]; then stop=killed; fi
+  if [[ -z $stop ]] && ((elapsed >= hold_s - grace)); then stop=overrun; fi
+  if [[ -n $stop ]]; then
+    if ((termed == 0)); then
+      kill -TERM -- "-$group" 2>/dev/null || true
+      termed=$SECONDS
+    elif ((SECONDS - termed >= grace || elapsed >= hold_s)); then
+      kill -KILL -- "-$group" 2>/dev/null || true
+    fi
+  fi
+  sleep 0.2
+done
 status=0
-wait "$child" || status=$?
-trap - TERM INT HUP
+wait "$group" || status=$?
+# Workers the command left in its group would outlive the hold.
+kill -KILL -- "-$group" 2>/dev/null || true
+for _ in $(seq 50); do kill -0 -- "-$group" 2>/dev/null || break; sleep 0.1; done
 held=$((SECONDS - taken))
 flock -u 9
-if ((status == 124 || status == 137)) && ((held >= hold_s)); then
-  record overrun "$held" "$status"
-  echo "autan-gpu-lock: stopped after $hold_s s: split the work into shorter holds" >&2
-else
-  record release "$held" "$status"
-fi
-exit "$status"
+case $stop in
+  overrun)
+    record overrun "$held" 124
+    echo "autan-gpu-lock: stopped at the $hold_s s limit: split the work into shorter holds" >&2
+    exit 124 ;;
+  killed) record killed "$held" 143; exit 143 ;;
+  *) record release "$held" "$status"; exit "$status" ;;
+esac
