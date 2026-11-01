@@ -347,7 +347,13 @@ def main() -> None:
                 for lv, m in meshes:
                     t0 = time.perf_counter()
                     s = solve(
-                        m, policy, flux, a.limiter, 1e-10 if policy == "fp64" else 1e-5, a.stencil, a.venkat_k
+                        m,
+                        policy,
+                        flux,
+                        a.limiter,
+                        1e-10 if policy == "fp64" else 1e-5,
+                        a.stencil,
+                        a.venkat_k,
                     )
                     levels.append({
                         "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),

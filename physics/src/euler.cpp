@@ -73,12 +73,6 @@ struct Euler<P>::Impl {
     d.prim_b = prim_b.data();
     d.bc_kind = bc_kind.data();
     d.bc = bc.data();
-    face_jac.assign(50 * nf, typename P::jac(0));
-    bnd_jac.assign(25 * nf, typename P::jac(0));
-    dwdu.assign(25 * nc, typename P::jac(0));
-    d.face_jac = face_jac.data();
-    d.bnd_jac = bnd_jac.data();
-    d.dwdu = dwdu.data();
     d.face_normal = face_normal.data();
     d.face_area_magnitude = face_area_magnitude.data();
     d.face_centroid = face_centroid.data();
@@ -311,6 +305,17 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
 template <class P>
 void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
+  if (m.dwdu.empty()) {
+    // Allocated on first use: residual-only users (explicit, unsteady) carry no Jacobian.
+    const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+    const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+    m.face_jac.assign(50 * nf, typename P::jac(0));
+    m.bnd_jac.assign(25 * nf, typename P::jac(0));
+    m.dwdu.assign(25 * nc, typename P::jac(0));
+    m.d.face_jac = m.face_jac.data();
+    m.d.bnd_jac = m.bnd_jac.data();
+    m.d.dwdu = m.dwdu.data();
+  }
   m.d.u = const_cast<State*>(s.data());
   m.d.res = res.data();
   ek::cpu::primitives_jacobian(m.d);

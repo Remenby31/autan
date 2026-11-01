@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -50,11 +51,22 @@ TEST_CASE("the assembled Jacobian of the first-order residual matches its centra
   // Every condition, so that every boundary Jacobian is exercised.
   std::vector<BoundaryKind> kind(nb);
   std::vector<double> data(5 * nb);
-  const std::array<BoundaryKind, 4> kinds = {BoundaryKind::farfield, BoundaryKind::slip,
-                                             BoundaryKind::outlet, BoundaryKind::state};
+  const std::array<BoundaryKind, 5> kinds = {BoundaryKind::farfield, BoundaryKind::slip,
+                                             BoundaryKind::outlet, BoundaryKind::state,
+                                             BoundaryKind::inlet};
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
   for (std::size_t b = 0; b < nb; ++b) {
     kind[b] = kinds[b % kinds.size()];
-    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+    // An inlet where the flow enters: where it leaves, the inlet's normal velocity is clamped
+    // at zero and the fluxes switch upwind side there, a kink central differences straddle.
+    const auto f = ni + b;
+    const double vn = w[1] * geometry.face_area_x[f] + w[2] * geometry.face_area_y[f] +
+                      w[3] * geometry.face_area_z[f];
+    if (kind[b] == BoundaryKind::inlet && vn >= 0.0) kind[b] = BoundaryKind::state;
+    // Inlet data are total pressure and temperature, above the static ones of w.
+    const std::array<double, 5> v =
+        kind[b] == BoundaryKind::inlet ? std::array<double, 5>{1.3e5, 320.0, 0.0, 0.0, 0.0} : w;
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
   }
   autan::physics::Scheme s;
   s.flux = flux;
@@ -73,9 +85,12 @@ TEST_CASE("the assembled Jacobian of the first-order residual matches its centra
       v[k * nc + c] = uc[k] * std::cos(5.0 * x + 2.0 * y + static_cast<double>(k));
     }
   }
-  std::vector<double> state(5 * nc), res(5 * nc), av(5 * nc), rp(5 * nc), rm(5 * nc);
+  std::vector<double> state(5 * nc), res(5 * nc), plain(5 * nc), av(5 * nc), rp(5 * nc), rm(5 * nc);
   e.state(u, state);
+  e.residual(state, plain);
   e.residual_and_jacobian(state, res);
+  // The fused loops compute the same residual, operation for operation.
+  CHECK(res == plain);
   BlockMatrix m(mesh);
   e.assemble(std::vector<double>(nc, 0.0), m);
   m.multiply(v, av);
@@ -91,11 +106,33 @@ TEST_CASE("the assembled Jacobian of the first-order residual matches its centra
   e.residual(state, rm);
   double diff = 0.0, norm = 0.0;
   for (std::size_t i = 0; i < u.size(); ++i) {
+    REQUIRE(std::isfinite(av[i]));
+    REQUIRE(std::isfinite(rp[i] - rm[i]));
     diff = std::max(diff, std::abs((rp[i] - rm[i]) / (2.0 * h) - av[i]));
     norm = std::max(norm, std::abs(av[i]));
   }
   // Central differences: O(h^2) truncation and O(eps / h) round-off, relative.
   CHECK(diff <= 1e-6 * norm);
+
+  // The same blocks in fp32+acc64: FP32 Jacobians, so A v agrees with FP64's to FP32 rounding.
+  using Q = autan::kernels::fp32_acc64;
+  Euler<Q> e32(mesh, geometry, {1.4, 287.0}, s);
+  e32.set_boundary(kind, data);
+  std::vector<float> state32(5 * nc);
+  std::vector<double> res32(5 * nc), plain32(5 * nc), av32(5 * nc);
+  e32.state(u, state32);
+  e32.residual(state32, plain32);
+  e32.residual_and_jacobian(state32, res32);
+  CHECK(res32 == plain32);
+  BlockMatrix m32(mesh);
+  e32.assemble(std::vector<double>(nc, 0.0), m32);
+  m32.multiply(v, av32);
+  double diff32 = 0.0;
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    REQUIRE(std::isfinite(av32[i]));
+    diff32 = std::max(diff32, std::abs(av32[i] - av[i]));
+  }
+  CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * norm);
 }
 
 TEST_CASE("multicolour block Gauss-Seidel solves a block diagonally dominant system",
@@ -131,6 +168,7 @@ TEST_CASE("multicolour block Gauss-Seidel solves a block diagonally dominant sys
   m.multiply(x, ax);
   double err = 0.0, ref = 0.0;
   for (std::size_t i = 0; i < x.size(); ++i) {
+    REQUIRE(std::isfinite(x[i]));
     err = std::max(err, std::abs(x[i] - x_exact[i]));
     ref = std::max(ref, std::abs(x_exact[i]));
   }
