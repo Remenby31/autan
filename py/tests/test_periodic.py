@@ -10,7 +10,6 @@ import autan
 import autan.solver_input
 import jsonschema
 import pytest
-from autan import cgns
 from autan.cli import json_schema, main
 
 from tests.conftest import CRM_HL
@@ -93,13 +92,11 @@ def test_a_wildcard_skips_periodic_zones_and_a_name_is_e0424(
     assert [d.code for d in named.plan(info).diagnostics if d.severity == "error"] == ["E0424"]
 
 
-def test_a_periodic_zone_is_written_without_condition(
+def test_no_backend_runs_periodic_pairs_yet(
     write_case: Callable[..., Path], mesh: Path, tmp_path: Path
 ) -> None:
     case = autan.load(write_case(CRM_HL))
-    result = case.run(
-        autan.MeshInfo.load(mesh), backend=autan.FakeBackend(iterations=2), runs=tmp_path
-    )
-    zone_bc = cgns.read(result.path / "solution.cgns").child("Base").child("Zone").child("ZoneBC")
-    assert zone_bc.child("fuselage").text() == "UserDefined"
-    assert [p.zones for p in result.mesh_info.periodic] == [("fuselage", "empennage")]
+    with pytest.raises(autan.CaseError) as error:
+        case.run(autan.MeshInfo.load(mesh), backend=autan.FakeBackend(), runs=tmp_path)
+    assert error.value.codes == ["E0706"]
+    assert not list(tmp_path.glob("run-*"))
