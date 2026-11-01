@@ -181,10 +181,11 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
         assert (kind, [r["iteration"] for r in records]) == ("history", [31])
 
         run = json.loads((directory / "run.json").read_text())
-        run["status"] = "failed"
-        (directory / "run.json").write_text(json.dumps(run))
+        run["status"] = "stopped"  # A valid change: the final monitors still apply.
+        (directory / ".run.json").write_text(json.dumps(run))
+        (directory / ".run.json").replace(directory / "run.json")
         kind, data = next(events)
-        assert (kind, data["status"]) == ("run", "failed")
+        assert (kind, data["status"]) == ("run", "stopped")
 
 
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:
