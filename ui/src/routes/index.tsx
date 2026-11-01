@@ -490,7 +490,7 @@ function RunRow({
         className={cn(
           COLUMNS,
           isSelected && "bg-accent-soft hover:bg-accent-soft",
-          "h-12 pr-4 pl-10 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-1 focus-visible:bg-bg-1 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
+          "h-12 pr-4 pl-10 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-2 focus-visible:bg-bg-2 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
         )}
       >
         <span className="flex min-w-0 items-baseline gap-2">

@@ -226,7 +226,7 @@ export function LogView({
                 <div
                   key={item.key}
                   className={cn(
-                    "absolute inset-x-0 grid grid-cols-[112px_80px_88px_96px_1fr_72px] items-center gap-4 px-4 hover:bg-bg-1",
+                    "absolute inset-x-0 grid grid-cols-[112px_80px_88px_96px_1fr_72px] items-center gap-4 px-4 hover:bg-bg-2",
                     line.level === "error" && "bg-danger-soft",
                     line.level === "warning" && "bg-warning-soft",
                   )}

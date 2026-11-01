@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { PolarPoint, PolarSeries } from "../api/polars";
 import { coefficient } from "../api/units";
 
@@ -67,9 +67,11 @@ export function PolarChart({
   // Drawn at the size of its box, so that text keeps its size whatever the chart's width.
   const box = useRef<HTMLDivElement>(null);
   const [{ W, H }, setSize] = useState({ W: 480, H: 240 });
-  useEffect(() => {
+  // Measured before the first paint, then on every resize.
+  useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
+    setSize({ W: Math.max(240, el.clientWidth), H: Math.max(160, el.clientHeight) });
     const resize = new ResizeObserver(() =>
       setSize({ W: Math.max(240, el.clientWidth), H: Math.max(160, el.clientHeight) }),
     );
