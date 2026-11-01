@@ -327,7 +327,7 @@ bool is_run_id(std::string_view id) {
 Start parse_start(const Json& value, const SolverInput& in) {
   const Object o(value, "start",
                  {"run", "run_id", "identity", "mode", "iterations", "time", "solution_sha256",
-                  "residual_reference"});
+                  "residual_reference", "woken"});
   Start start;
   start.run = o.string("run");
   if (!std::filesystem::path(start.run).is_absolute())
@@ -348,6 +348,7 @@ Start parse_start(const Json& value, const SolverInput& in) {
   }
   if (o.is_null("residual_reference")) {
     if (continued && steady) invalid(o.at("residual_reference"), "must not be null here");
+    if (!o.is_null("woken")) invalid(o.at("woken"), "must be null here");
     return start;
   }
   if (!(continued && steady)) invalid(o.at("residual_reference"), "must be null here");
@@ -360,6 +361,18 @@ Start parse_start(const Json& value, const SolverInput& in) {
     reference.push_back(v);
   }
   start.residual_reference = std::move(reference);
+  if (o.is_null("woken")) invalid(o.at("woken"), "must not be null here");
+  const Json& woken = *array_at(o, "woken");
+  std::vector<std::string> names;
+  for (std::size_t i = 0; i < woken.size(); ++i) {
+    const std::string path = indexed(o.at("woken"), i);
+    if (!woken[i].is_string()) invalid(path, "expected an equation name");
+    names.push_back(woken[i].get<std::string>());
+    if (std::ranges::find(equations, names.back()) == equations.end())
+      invalid(path, "no equation '" + names.back() + "'");
+    if (i > 0 && !(names[i - 1] < names[i])) invalid(path, "names must be sorted and distinct");
+  }
+  start.woken = std::move(names);
   return start;
 }
 

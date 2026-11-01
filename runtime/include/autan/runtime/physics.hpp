@@ -2,6 +2,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -14,6 +15,7 @@
 #include "autan/io/cgns.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
+#include "autan/runtime/ranks.hpp"
 
 namespace autan::runtime {
 
@@ -59,8 +61,8 @@ struct StartState {
   std::vector<io::Field> restart_fields;
 };
 
-/// Fills the ghost cells of PhysicsContext::mesh from their owners: on one
-/// rank, the periodic images of owned cells. Each component holds n_cells
+/// Fills the ghost cells of PhysicsContext::mesh from their owners: the
+/// cells of other ranks' parts and periodic images. Each component holds n_cells
 /// values (owned then ghost) in `space`, at most 16 per call; `stream` is a
 /// cudaStream_t or null. Call it before any loop that reads ghost values.
 class GhostExchange {
@@ -78,7 +80,17 @@ struct PhysicsContext {
   Log& log;
   const StartState* start;  ///< null unless input.start
   GhostExchange& ghosts;
+  /// The ranks of the run; norms and loads reduce over them.
+  Ranks& ranks;
+  /// Per face zone (index into mesh.face_zones()) with an oracle-state condition, the states of
+  /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
+  /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
+  const std::map<index_t, std::vector<double>>& boundary_states;
 };
+
+// case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
+// measured on a NACA 0012 slice, manufactured solutions and Ni's transonic bump.
+inline constexpr double round_off_floor = 0.5 * 0x1p-23;
 
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
@@ -97,6 +109,11 @@ class Physics {
   /// Cell-centred fields with the SIDS names of results.md (field_names()),
   /// current state or time average.
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
+  /// A constant flux scale per equation of residual_names(input), in that
+  /// order, finite and >= 0; empty for none. Called once, after
+  /// construction: in fp32+acc64, an equation converges at a residual of
+  /// round_off_floor times its scale at the latest (docs/contracts/runtime.md).
+  [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;
@@ -137,8 +154,12 @@ class PhysicsRegistry {
   struct Entry {
     PhysicsFactory factory;
     PhysicsScope scope;  ///< empty: every input the key matches
+    /// Whether it runs on several ranks: its norms, loads and other sums
+    /// reduce over PhysicsContext::ranks (runtime.md, Ranks).
+    bool several_ranks = false;
   };
-  void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {});
+  void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
+           bool several_ranks = false);
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 

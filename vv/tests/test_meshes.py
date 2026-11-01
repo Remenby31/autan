@@ -216,3 +216,55 @@ def test_check_rejects_non_finite_geometry() -> None:
     with pytest.raises(VVError) as err:
         broken.check()
     assert err.value.code == "V0301"
+
+
+def test_ringleb_family_carries_the_exact_states_of_its_boundary(tmp_path: Path) -> None:
+    from autan import face_states  # noqa: PLC0415
+    from autan_vv.oracles.inviscid import RINGLEB_SPEED_MIN, ringleb_fields  # noqa: PLC0415
+
+    family, meshes = generate_family("ringleb", (4, 8), tmp_path)
+    for level, mesh in zip(family.levels, meshes, strict=True):
+        g = mesh.geometry
+        assert g.cell_volume.min() > 0.0
+        # The cells fill the C1.2 domain: the strict oracle accepts every cell centroid.
+        ringleb_fields(g.cell_centroid)
+        # The SDK reads the file as `autan plan` does: valid, and for this mesh file.
+        msh = tmp_path / level.file
+        doc = face_states.parse(msh.with_suffix(".states.json").read_bytes())
+        assert not isinstance(doc, str), doc
+        assert doc.mesh_sha256 == level.file_sha256
+        assert set(doc.zones) == {"k-min", "k-max", "inflow", "outflow"}
+        zones = {z.name: z for z in mesh.zones}
+        for name, states in doc.zones.items():
+            z = zones[name]
+            centroid = g.face_centroid[z.start : z.start + z.count]
+            np.testing.assert_array_equal(np.array(states.centroids), centroid)
+            # Nodes of a side lie on its curve of the hodograph: a streamline k = 0.7 or 1.5,
+            # or the iso-speed V = 0.5; the face states are the oracle there.
+            nodes = np.unique(
+                np.concatenate([mesh.face(f) for f in range(z.start, z.start + z.count)])
+            )
+            exact = ringleb_fields(mesh.points[nodes], extended=True)
+            speed = np.hypot(exact["VelocityX"], exact["VelocityY"])
+            if name in ("inflow", "outflow"):
+                np.testing.assert_allclose(speed, RINGLEB_SPEED_MIN, rtol=1e-12)
+            values = np.array(states.values)
+            rho, vel, p = values[:, 0], values[:, 1:4], values[:, 4]
+            # Independent of the oracle's inversion: isentropic flow in stagnation units
+            # (p = rho^gamma / gamma), and the speed or direction along the side's curve.
+            np.testing.assert_allclose(p, rho**1.4 / 1.4, rtol=1e-12)
+            np.testing.assert_array_equal(vel[:, 2], 0.0)
+            speed = np.linalg.norm(vel, axis=1)
+            normal = g.face_area[z.start : z.start + z.count]
+            normal = normal / np.linalg.norm(normal, axis=1, keepdims=True)
+            h = 1.0 / level.n
+            if name in ("inflow", "outflow"):
+                # Faces on the iso-speed V = 0.5, to the chord's O(h^2).
+                np.testing.assert_allclose(speed, RINGLEB_SPEED_MIN, atol=2.0 * h**2)
+                # The flow enters at y > 0 and leaves at y < 0.
+                flux = np.einsum("ij,ij->i", vel, normal)
+                assert np.all(flux < 0.0) if name == "inflow" else np.all(flux > 0.0)
+            else:
+                # Streamlines: the flow runs along the side, to the chord's O(h).
+                tangential = np.abs(np.einsum("ij,ij->i", vel, normal)) / speed
+                assert tangential.max() < 4.0 * h

@@ -187,7 +187,9 @@ export function LogView({
               "min-w-px flex-1 rounded-t-[1px] transition-opacity hover:opacity-70",
               BAR[b.level],
             )}
-            style={{ height: `${Math.max(4, (Math.max(0, b.orders) / peak) * 100)}%` }}
+            style={{
+              height: `${b.orders === Number.POSITIVE_INFINITY ? 100 : Math.max(4, (Math.max(0, b.orders) / peak) * 100)}%`,
+            }}
           />
         ))}
       </div>

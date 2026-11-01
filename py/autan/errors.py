@@ -256,6 +256,12 @@ _CODES = [
         "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
     ),
     Code(
+        "E0146",
+        "Several ranks without MPI",
+        "A launcher started several ranks of a build without MPI.",
+        "Run this build on one rank, or use a build with MPI, such as the dev image.",
+    ),
+    Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "
@@ -591,6 +597,16 @@ _CODES = [
         "The solution of the run to start from no longer has the SHA-256 the solver input "
         "records: the run directory changed after the input was written.",
         "Prepare the input again from the run as it is now.",
+    ),
+    Code(
+        "W0710",
+        "Exempt equation left its floor",
+        "An equation that was identically zero at iteration 1 (below 1e-12 times the largest "
+        "initial residual) rose above that floor, so it must now drop `residual_orders` like "
+        "the others (case-schema.md#time). `data` gives the equation, iteration, residual and "
+        "floor.",
+        "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry "
+        "breaks during the run usually means a boundary condition breaks it.",
     ),
     Code(
         "D0107",

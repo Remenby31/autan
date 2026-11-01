@@ -300,6 +300,14 @@ A halo exchange on device memory without CUDA support in the build or in MPI.
 
 Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
 
+## E0146
+
+**Several ranks without MPI** (error)
+
+A launcher started several ranks of a build without MPI.
+
+Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
+
 ## E0201
 
 **No mesh information** (error)
@@ -675,6 +683,14 @@ Fix: Change the case, or use `warm` to start a different case from that state.
 The solution of the run to start from no longer has the SHA-256 the solver input records: the run directory changed after the input was written.
 
 Fix: Prepare the input again from the run as it is now.
+
+## W0710
+
+**Exempt equation left its floor** (warning)
+
+An equation that was identically zero at iteration 1 (below 1e-12 times the largest initial residual) rose above that floor, so it must now drop `residual_orders` like the others (case-schema.md#time). `data` gives the equation, iteration, residual and floor.
+
+Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
 
 ## W0801
 

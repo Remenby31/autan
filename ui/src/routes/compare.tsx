@@ -9,6 +9,7 @@ import {
   type LiveRun,
   runQuery,
   runsQuery,
+  shownOrders,
   soleForces,
   useRunsHistory,
 } from "../api/runs";
@@ -72,7 +73,6 @@ function Compare() {
   const version = ids.map((id) => live.get(id)?.history.version ?? 0).join(",");
 
   // Histories grow in place: `version` is what changes when they do.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const charts = useMemo(() => {
     const drop: OverlaySeries[] = [];
     const cl: OverlaySeries[] = [];
@@ -82,15 +82,18 @@ function Compare() {
       if (!history) return;
       const label = id.slice(-8);
       const color = resolvedColor(k);
-      drop.push({ label, color, x: history.iteration, y: history.orders });
+      const target = registry.data?.summaries[id]?.target_orders ?? undefined;
+      const y = history.orders.map((o) => shownOrders(o, target));
+      drop.push({ label, color, x: history.iteration, y });
       const forces = soleForces(history);
       if (forces) {
         cl.push({ label, color, x: forces.iteration, y: forces.cl });
         cd.push({ label, color, x: forces.iteration, y: forces.cd });
       }
     });
-    return { drop, cl, cd };
-  }, [ids, live, version]);
+    const targets = ids.map((id) => registry.data?.summaries[id]?.target_orders ?? "").join(",");
+    return { drop, cl, cd, dropVersion: `${version}|${targets}` };
+  }, [ids, live, version, registry.data]);
 
   const cases = details.map((d) => d.data?.case);
   const loaded = details.map((d) => d.dataUpdatedAt).join(",");
@@ -182,7 +185,7 @@ function Compare() {
                     series={charts.drop}
                     xLabel="iteration"
                     sync="compare"
-                    version={version}
+                    version={charts.dropVersion}
                   />
                 </ChartCard>
                 <ChartCard title="CL" unit="iteration">

@@ -152,6 +152,31 @@ class EulerPhysics final : public runtime::Physics {
     return out;
   }
 
+  // Phi_k = f_k sqrt(sum_i A_i^2 / N), A_i the surface of cell i and f_k the face flux magnitude
+  // of the freestream with q = |v| + c: rho q, rho q^2 (each momentum) and rho H q
+  // (docs/design/euler.md, Precision).
+  [[nodiscard]] std::vector<double> residual_scales() const override {
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    std::vector<double> surface(n_, 0.0);
+    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+      surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
+      if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+        surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+      }
+    }
+    double sum = 0.0;
+    for (const double a : surface) sum += a * a;
+    const double area = std::sqrt(sum / static_cast<double>(n_));
+    const auto& fs = ctx_.input.freestream;
+    const double c = std::sqrt(gas_.gamma * fs.pressure / fs.density);
+    const double q = fs.speed + c;
+    const double h = c * c / (gas_.gamma - 1.0) + 0.5 * fs.speed * fs.speed;
+    const double mass = fs.density * q * area;
+    const double momentum = mass * q;
+    return {mass, momentum, momentum, momentum, mass * h};
+  }
+
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
     std::vector<io::Field> out;
     const auto f = primitive_fields();
@@ -338,6 +363,16 @@ class EulerPhysics final : public runtime::Physics {
         put(BoundaryKind::inlet, {*bc.total_pressure, *bc.total_temperature, 0.0, 0.0, 0.0});
       } else if (bc.kind == "outlet") {
         put(BoundaryKind::outlet, {0.0, 0.0, 0.0, 0.0, *bc.static_pressure});
+      } else if (bc.kind == "oracle-state") {
+        // The runtime paired the zone's faces with the file's rows (face-states.md).
+        const index_t z = mesh.face_zone()[face];
+        const auto& states = ctx_.boundary_states.at(z);
+        const auto off = mesh.boundary_zone_offsets();
+        const auto nz = static_cast<std::size_t>(off[static_cast<std::size_t>(z) + 1] -
+                                                 off[static_cast<std::size_t>(z)]);
+        const auto j = face - static_cast<std::size_t>(off[static_cast<std::size_t>(z)]);
+        put(BoundaryKind::state, {states[j], states[nz + j], states[2 * nz + j], states[3 * nz + j],
+                                  states[4 * nz + j]});
       } else if (bc.kind == "manufactured" && mms != nullptr) {
         kind[b] = BoundaryKind::state;
         manufactured_faces.push_back(
@@ -611,10 +646,10 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
     const auto& b = in.boundaries[i];
     if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
-        b.kind != "outlet" && b.kind != "manufactured") {
+        b.kind != "outlet" && b.kind != "manufactured" && b.kind != "oracle-state") {
       return runtime::PhysicsRefusal{
           .message = "the Euler physics has no '" + b.kind + "' condition; boundary zone '" +
-                     b.zone + "' needs slip, symmetry, farfield, inlet or outlet",
+                     b.zone + "' needs slip, symmetry, farfield, inlet, outlet or oracle-state",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from autan_vv.errors import VVError
+from autan_vv.meshes import ringleb
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from autan_vv.meshes.fluent import write_fluent
@@ -476,9 +477,12 @@ def generate_level(
     ASCII. The file holds exactly the in-memory mesh: coordinates are rounded to the 16 significant
     digits Gmsh writes.
     """
-    if kind not in KINDS:
-        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS}"
+    if kind not in (*KINDS, "ringleb"):
+        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS} or 'ringleb'"
         raise VVError(msg, code="V0304")
+    if kind == "ringleb" and perturbation > 0.0:
+        msg = "the Ringleb mesh follows the flow's streamlines and is not perturbed"
+        raise VVError(msg, code="V0309")
     if not (0.0 <= perturbation < 1.0) or n < 1:
         msg = f"need 0 <= perturbation < 1 and n >= 1, got {perturbation} and {n}"
         raise VVError(msg, code="V0309")
@@ -491,13 +495,16 @@ def generate_level(
         gmsh.option.setNumber("Mesh.Binary", 0)
         gmsh.option.setNumber("Mesh.SaveAll", 0)
         version = str(gmsh.__version__)
-        if kind == "hybrid":
-            points, cells = _structured_hybrid(n)
+        if kind == "ringleb":
+            points, cells, boundary = ringleb.grid(n)
         else:
-            points, cells = _gmsh_mesh(
-                gmsh, "tet" if kind in ("poly", "agglomerated") else kind, n, seed
-            )
-        boundary = _box_boundary(points, cells)
+            if kind == "hybrid":
+                points, cells = _structured_hybrid(n)
+            else:
+                points, cells = _gmsh_mesh(
+                    gmsh, "tet" if kind in ("poly", "agglomerated") else kind, n, seed
+                )
+            boundary = _box_boundary(points, cells)
         if perturbation > 0.0:
             ss = np.random.SeedSequence([seed, n, KINDS.index(kind)])
             points = perturb(points, cells, boundary, perturbation, int(ss.generate_state(1)[0]))
@@ -531,6 +538,8 @@ def generate_family(
         path = out_dir / name
         mesh, version = generate_level(kind, n, perturbation=perturbation, seed=seed, path=path)
         meshes.append(mesh)
+        if kind == "ringleb":
+            ringleb.write_face_states(mesh, path, path.with_suffix(".states.json"))
         records.append(level_record(n, path, mesh))
     family = Family(kind, perturbation, seed, version, tuple(records))
     write_manifest(family, out_dir)

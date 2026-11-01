@@ -1,6 +1,14 @@
 FetchContent_GetProperties(picosha2)
 
-add_library(autan_runtime src/input.cpp src/run_directory.cpp src/run.cpp src/main.cpp)
+add_library(
+  autan_runtime
+  src/comm.cpp
+  src/exact_sum.cpp
+  src/input.cpp
+  src/run_directory.cpp
+  src/run.cpp
+  src/main.cpp
+)
 add_library(autan::runtime ALIAS autan_runtime)
 target_include_directories(
   autan_runtime
@@ -13,6 +21,10 @@ target_link_libraries(
   PUBLIC autan::io autan::core autan::partition
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
+if(AUTAN_ENABLE_MPI)
+  target_link_libraries(autan_runtime PRIVATE autan::halo)
+  target_compile_definitions(autan_runtime PRIVATE AUTAN_HAVE_MPI)
+endif()
 
 # Version and commit of the build, refreshed at every build (run.json).
 set(build_info ${CMAKE_CURRENT_BINARY_DIR}/generated/autan_build_info.hpp)

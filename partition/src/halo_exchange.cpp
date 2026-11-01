@@ -132,7 +132,7 @@ struct HaloExchange::State {
 
   template <class T>
   void run(halo::Kernel kernel, halo::Components<T> c, void* buffer, std::size_t count,
-           void* stream) {
+           [[maybe_unused]] void* stream) {
     if (count == 0) return;
     T* b = static_cast<T*>(buffer);
     if (space == MemorySpace::cuda) {

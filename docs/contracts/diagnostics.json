@@ -223,6 +223,12 @@
       "fix": "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0145"
     },
+    "E0146": {
+      "severity": "error",
+      "title": "Several ranks without MPI",
+      "fix": "Run this build on one rank, or use a build with MPI, such as the dev image.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0146"
+    },
     "E0201": {
       "severity": "error",
       "title": "No mesh information",
@@ -504,6 +510,12 @@
       "title": "Start solution differs",
       "fix": "Prepare the input again from the run as it is now.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0709"
+    },
+    "W0710": {
+      "severity": "warning",
+      "title": "Exempt equation left its floor",
+      "fix": "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0710"
     },
     "W0801": {
       "severity": "warning",
