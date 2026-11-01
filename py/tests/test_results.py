@@ -843,7 +843,11 @@ def test_runs_of_one_study_differ_only_in_their_freestream(
         return autan.results.run_identity_parts(document, result.case)
 
     base = parts(CRM_HL, "base.py")
-    alpha = parts(CRM_HL.replace("19.57 * deg", "21.47 * deg"), "alpha.py")
+    # A sweep names each case after its state: the name is no part of the problem.
+    alpha = parts(
+        CRM_HL.replace("19.57 * deg", "21.47 * deg").replace('"crm-hl",', '"crm-hl-a2147",'),
+        "alpha.py",
+    )
     other = parts(CRM_HL.replace("autan.SA()", "autan.SST()"), "other.py")
     assert alpha.case_without_freestream == base.case_without_freestream
     assert alpha.fields["case.sha256"] != base.fields["case.sha256"]

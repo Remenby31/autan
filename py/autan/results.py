@@ -197,6 +197,10 @@ def run_identity(run: RunInfo | dict[str, Any]) -> str:
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
+# results.md#studies: what runs of one study may differ in, besides the freestream state.
+STUDY_EXCLUDED = ("name", "freestream")
+
+
 class IdentityParts(BaseModel):
     """What a run's identity is made of (results.md#studies)."""
 
@@ -209,7 +213,7 @@ class IdentityParts(BaseModel):
 def run_identity_parts(run: RunInfo | dict[str, Any], case: CaseSpec) -> IdentityParts:
     """The fields of ``run``'s identity one by one, in the order of results.md#identity (the
     ``start.`` fields only for a run with a start), the SHA-256 of ``case`` without its
-    freestream, and that freestream as the case document writes it (results.md#studies).
+    name and freestream, and that freestream as the case document writes it (results.md#studies).
     ``case`` is the run's ``case.toml``; ``run`` a ``RunInfo`` or a ``run.json`` document."""
     if not isinstance(run, RunInfo):
         run = RunInfo.model_validate({**run, "identity": "0" * 64})
@@ -222,7 +226,7 @@ def run_identity_parts(run: RunInfo | dict[str, Any], case: CaseSpec) -> Identit
         for key in path.split("."):
             value = value[key]
         fields[path] = value
-    rest = {key: value for key, value in case.document().items() if key != "freestream"}
+    rest = {key: value for key, value in case.document().items() if key not in STUDY_EXCLUDED}
     return IdentityParts(
         fields=fields,
         case_without_freestream=hashlib.sha256(rfc8785.dumps(rest)).hexdigest(),
