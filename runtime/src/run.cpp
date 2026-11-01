@@ -115,7 +115,67 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
+  std::optional<StartState> start;  // input.start, read and checked
+  Json start_averaging;             // `continue`: the previous run's averaging
 };
+
+[[noreturn]] void start_mismatch(const std::string& code, const std::string& message,
+                                 const std::string& path, const nlohmann::json& data = {}) {
+  throw InputError(Diagnostic{.code = code,
+                              .message = message,
+                              .path = path,
+                              .data_json = data.is_null() ? "{}" : data.dump()});
+}
+
+// solver-input.md, `start`: the runtime checks the previous solution's hash,
+// mesh, physics and precision, and reads its state.
+void load_start(Prepared& p) {
+  const Start& start = *p.input.start;
+  const fs::path file = fs::path(start.run) / "solution.cgns";
+  std::string hash;
+  io::StoredSolution stored;
+  try {
+    hash = io::mesh_hash(file);
+    if (hash == start.solution_sha256) stored = io::read_solution(file, p.mesh.n_cells());
+  } catch (const Error& e) {
+    start_mismatch("E0707", file.string() + ": " + e.what(), "start.run");
+  }
+  if (hash != start.solution_sha256) {
+    start_mismatch("E0709", "the previous solution's SHA-256 differs from start.solution_sha256",
+                   "start.solution_sha256", {{"expected", start.solution_sha256}, {"found", hash}});
+  }
+  Json metadata;
+  try {
+    metadata = Json::parse(stored.run_metadata);
+  } catch (const Json::exception& e) {
+    start_mismatch("E0707", file.string() + ": RunMetadata is not JSON", "start.run");
+  }
+  const auto text = [&](const char* a, const char* b = nullptr) {
+    const Json* v = metadata.contains(a) ? &metadata[a] : nullptr;
+    if (v != nullptr && b != nullptr) v = v->contains(b) ? &(*v)[b] : nullptr;
+    return v != nullptr && v->is_string() ? v->get<std::string>() : std::string();
+  };
+  if (text("mesh", "sha256") != p.mesh_hash) {
+    start_mismatch("E0203", "the previous run was computed on another mesh", "start.run",
+                   {{"expected", p.mesh_hash}, {"found", text("mesh", "sha256")}});
+  }
+  if (text("precision") != p.input.precision) {
+    start_mismatch("E0708", "the previous run used precision '" + text("precision") + "'",
+                   "start.run");
+  }
+  std::vector<std::string> names;
+  for (const auto& f : stored.fields) names.push_back(f.name);
+  if (names != field_names(p.input)) {
+    start_mismatch("E0708", "the previous run solved other variables", "start.run");
+  }
+  StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
+  if (start.mode == "continue") {
+    state.mean_fields = std::move(stored.mean_fields);
+    state.restart_fields = std::move(stored.restart_fields);
+    p.start_averaging = metadata.contains("averaging") ? metadata["averaging"] : Json();
+  }
+  p.start = std::move(state);
+}
 
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
@@ -141,6 +201,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
         .data_json =
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
+  if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
@@ -261,9 +322,30 @@ class Run final : public Log {
     std::snprintf(suffix, sizeof suffix, "%08x", static_cast<unsigned>(random()));
     const auto& in = p_.input;
     const std::string backend = in.device_kind;
-    const std::string identity = sha256_hex(
-        in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" + in.precision + "\n" +
-        backend + "\n" + in.device_kind + "\n" + std::to_string(in.device_count));
+    std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" +
+                        in.precision + "\n" + backend + "\n" + in.device_kind + "\n" +
+                        std::to_string(in.device_count);
+    Json start = nullptr;
+    if (in.start) {
+      const Start& s = *in.start;
+      parts += "\n" + s.identity + "\n" + s.mode + "\n" + std::to_string(s.iterations) + "\n" +
+               s.solution_sha256;
+      Json reference = nullptr;
+      if (s.residual_reference) {
+        const auto equations = residual_names(in);
+        reference = Json::object();
+        for (std::size_t e = 0; e < equations.size(); ++e)
+          reference[equations[e]] = (*s.residual_reference)[e];
+      }
+      start = Json{{"run_id", s.run_id},
+                   {"identity", s.identity},
+                   {"mode", s.mode},
+                   {"iterations", s.iterations},
+                   {"time", s.time ? Json(*s.time) : Json(nullptr)},
+                   {"solution_sha256", s.solution_sha256},
+                   {"residual_reference", reference}};
+    }
+    const std::string identity = sha256_hex(parts);
     info_ = Json{
         {"schema", "autan.results/1"},
         {"run_id", "run-" + utc(started, "%Y%m%dT%H%M%SZ") + "-" + suffix},
@@ -282,7 +364,13 @@ class Run final : public Log {
         {"iterations", 0},
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
+        {"start", start},
         {"diagnostics", Json::array()}};
+    if (continued()) {
+      info_["iterations"] = in.start->iterations;
+      if (in.time.kind == "unsteady") info_["time"] = *in.start->time;
+      info_["averaging"] = p_.start_averaging;
+    }
   }
 
   void open(const fs::path& runs) {
@@ -297,10 +385,13 @@ class Run final : public Log {
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 
   ExitStatus execute() {
-    const PhysicsContext context{
-        .mesh = p_.mesh, .geometry = geometry_, .input = p_.input, .log = *this};
+    const PhysicsContext context{.mesh = p_.mesh,
+                                 .geometry = geometry_,
+                                 .input = p_.input,
+                                 .log = *this,
+                                 .start = p_.start ? &*p_.start : nullptr};
     std::string status = "running";
-    std::int64_t done = 0;
+    std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
       status = std::string(iterate(done));
@@ -312,6 +403,10 @@ class Run final : public Log {
   }
 
  private:
+  [[nodiscard]] bool continued() const {
+    return p_.input.start && p_.input.start->mode == "continue";
+  }
+
   // Thrown by the solution writer when a physics member fails: unlike a
   // write failure, it fails even a diverged run (runtime.md).
   struct PhysicsFailure : std::runtime_error {
@@ -364,9 +459,19 @@ class Run final : public Log {
     const bool steady = in.time.kind == "steady";
     const std::int64_t budget = steady ? in.time.max_iterations : in.time.steps;
     const auto equations = residual_names(in);
+    // Steady convergence is measured against iteration 1 of the original run
+    // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
     double time = 0.0, average_start = 0.0;
-    for (std::int64_t it = 1; it <= budget; ++it) {
+    std::int64_t from = 1;
+    if (continued()) {
+      const Start& s = *in.start;
+      if (s.residual_reference) first = *s.residual_reference;
+      if (s.time) time = *s.time;
+      from = s.iterations + 1;
+      if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
+    }
+    for (std::int64_t it = from; it <= budget; ++it) {
       if (stop_requested != 0) {
         stopped_by_signal_ = true;
         return "stopped";
@@ -422,7 +527,7 @@ class Run final : public Log {
         info_["averaging"] = averaging;
       }
       if (steady) {
-        if (it == 1) first = report.residuals;
+        if (first.empty()) first = report.residuals;
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
         for (std::size_t e = 0; e < equations.size(); ++e) {
@@ -473,6 +578,7 @@ class Run final : public Log {
     try {
       s.fields = physics_->fields(false);
       if (!info_["averaging"].is_null()) s.mean_fields = physics_->fields(true);
+      s.restart_fields = physics_->restart_fields();
       if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(s.wall_faces);
     } catch (const std::exception& e) {
       throw PhysicsFailure(e.what());
