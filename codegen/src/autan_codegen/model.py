@@ -204,9 +204,10 @@ def _jacobian_fn(where: str, lm: LoopModel, j: dsl.Jacobian) -> Function:
             isinstance(b.dataset, dsl.Dataset)
             and b.dataset.set is dsl.MeshSet.CELLS
             and not b.dataset.geometry
+            and b.dataset.type.role not in dsl.PASSIVE_ROLES
         ):
             raise CodegenError(
-                Code.INVALID_BINDING, f"Jacobian wrt {name!r}: not a cell dataset", where
+                Code.INVALID_BINDING, f"Jacobian wrt {name!r}: not an active cell dataset", where
             )
         idx.append(lm.sig.names.index(name))
     sizes = {lm.sig.types[k].size for k in idx}

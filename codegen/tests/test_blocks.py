@@ -9,24 +9,24 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from autan_codegen.generate import generate
 
 ROOT = Path(__file__).resolve().parents[2]
 
-MODULE = '''
+MODULE = """
 from autan_codegen.dsl import Inc, Jac, JacAccum, Residual, State, Write, cell_loop, cells, faces
 from autan_codegen.dsl import face_loop, pointwise
 
 x = cells.field("x", State.Vec5)
 diag = cells.field("diag", JacAccum.Mat5)
+shift = cells.field("shift", Jac.Mat5)
 off = faces.field("off", Jac.Mat5)
 y = cells.field("y", Residual.Vec5)
 
 
 @pointwise
-def apply(a: JacAccum.Mat5, v: State.Vec5) -> Residual.Vec5:
-    return a @ v
+def apply(a: JacAccum.Mat5, s: Jac.Mat5, v: State.Vec5) -> Residual.Vec5:
+    return a @ v + s @ v
 
 
 @pointwise
@@ -34,9 +34,9 @@ def couple(b: Jac.Mat5, vl: State.Vec5, vr: State.Vec5) -> Residual.Vec5:
     return b @ (vr - vl)
 
 
-diagonal = cell_loop(apply, a=diag, v=x, out=Write(y))
+diagonal = cell_loop(apply, a=diag, s=shift, v=x, out=Write(y))
 coupling = face_loop(couple, b=off, vl=x.left, vr=x.right, out=Inc(y, left=+1, right=-1))
-'''
+"""
 
 # Three cells in a chain, faces 0 (0-1) and 1 (1-2), no boundary face: y_c = D_c x_c, then
 # face f adds B_f (x_r - x_l) to its left cell and subtracts it from its right one. A shared
@@ -48,7 +48,8 @@ using namespace autan::kernels;
 extern "C" void run(const double* in, double* out) {
   constexpr index_t nc = 3, nf = 2;
   std::vector<double> x(in, in + 5 * nc), diag(in + 5 * nc, in + 30 * nc),
-      off(in + 30 * nc, in + 30 * nc + 25 * nf), y(5 * nc, 0.0);
+      shift(in + 30 * nc, in + 55 * nc), off(in + 55 * nc, in + 55 * nc + 25 * nf),
+      y(5 * nc, 0.0);
   std::vector<index_t> owner{0, 1}, neighbour{1, 2}, cell_faces{0, 0, 1, 1};
   std::vector<offset_t> offsets{0, 1, 3, 4};
   Topology t{};
@@ -63,6 +64,7 @@ extern "C" void run(const double* in, double* out) {
   d.topo = t;
   d.x = x.data();
   d.diag = diag.data();
+  d.shift = shift.data();
   d.off = off.data();
   d.y = y.data();
   blocks::cpu::diagonal(d);
@@ -79,8 +81,8 @@ def test_blocks_are_passive_inputs_of_a_block_operator(tmp_path: Path) -> None:
     out = tmp_path / "gen"
     generate(src, out, ["cpu"])
     header = (out / "blocks.hpp").read_text()
-    # Blocks are never differentiated: no tangent or adjoint of diag or off.
-    for name in ("diag_tan", "diag_adj", "off_tan", "off_adj"):
+    # Blocks are never differentiated, cell blocks included: no tangent or adjoint of them.
+    for name in ("diag_tan", "diag_adj", "shift_tan", "shift_adj", "off_tan", "off_adj"):
         assert name not in header, name
     assert "typename P::accum* diag;" in header  # JacAccum: accumulation precision
     assert "typename P::jac* off;" in header
@@ -93,16 +95,22 @@ def test_blocks_are_passive_inputs_of_a_block_operator(tmp_path: Path) -> None:
     )  # fmt: skip
     rng = np.random.default_rng(3)
     x = rng.standard_normal((3, 5))
-    diag, off = rng.standard_normal((3, 5, 5)), rng.standard_normal((2, 5, 5))
+    diag, shift = rng.standard_normal((3, 5, 5)), rng.standard_normal((3, 5, 5))
+    off = rng.standard_normal((2, 5, 5))
     # Generated datasets are component-major: component k of entity i at k * n + i.
     inputs = np.concatenate(
-        [x.T.ravel(), diag.reshape(3, 25).T.ravel(), off.reshape(2, 25).T.ravel()]
+        [
+            x.T.ravel(),
+            diag.reshape(3, 25).T.ravel(),
+            shift.reshape(3, 25).T.ravel(),
+            off.reshape(2, 25).T.ravel(),
+        ]
     )
     y = np.zeros(15)
     ctypes.CDLL(str(lib)).run(
         inputs.ctypes.data_as(ctypes.c_void_p), y.ctypes.data_as(ctypes.c_void_p)
     )
-    expect = np.einsum("cij,cj->ci", diag, x)
+    expect = np.einsum("cij,cj->ci", diag, x) + np.einsum("cij,cj->ci", shift, x)
     for f, (left, right) in enumerate(((0, 1), (1, 2))):
         flow = off[f] @ (x[right] - x[left])
         expect[left] += flow
