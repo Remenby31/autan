@@ -82,7 +82,18 @@ std::vector<autan::LocalPartition> check_split(const autan::Mesh& global,
     }
     for (index_t f = 0; f < m.n_faces(); ++f) {
       const auto source = at(lp.face_global_id[at(f)]);
-      const bool same_orientation = gid[at(m.owner()[at(f)])] == global.owner()[source];
+      // The local owner is the global owner's copy at the face's home iff it
+      // is that cell and, moved by its own translation, puts the global
+      // centroid where the local face is: an image of the same cell across
+      // the pair moves it elsewhere.
+      const index_t owner = m.owner()[at(f)];
+      std::array<double, 3> t{};
+      if (owner >= m.n_owned_cells()) t = m.ghost_translation()[at(owner - m.n_owned_cells())];
+      const bool same_orientation =
+          gid[at(owner)] == global.owner()[source] &&
+          same_bits(lp.geometry.face_centroid_x[at(f)], gg.face_centroid_x[source] + t[0]) &&
+          same_bits(lp.geometry.face_centroid_y[at(f)], gg.face_centroid_y[source] + t[1]) &&
+          same_bits(lp.geometry.face_centroid_z[at(f)], gg.face_centroid_z[source] + t[2]);
       const double sign = same_orientation ? 1.0 : -1.0;
       CHECK(lp.face_reversed[at(f)] == (same_orientation ? 0 : 1));
       if (f >= m.n_interior_faces()) CHECK(lp.face_reversed[at(f)] == 0);
@@ -413,6 +424,21 @@ TEST_CASE("Periodic sides split into several pairs share their direction",
       CHECK(std::hypot(dx, dy) < 0.75);
     }
   }
+}
+
+TEST_CASE("A cell periodic with itself marks the faces it reverses", "[partition][periodic]") {
+  // One hexahedron periodic in x: across x = 1 the cell meets its own image,
+  // so the local face there runs from the image to the cell, opposite to its
+  // global face, whatever the number of layers.
+  const int layers = GENERATE(1, 2);
+  autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa, 0.0);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const auto locals = check_split(global, std::vector<std::int32_t>(1, 0), 1, layers);
+  const auto& reversed = locals[0].face_reversed;
+  CHECK(std::ranges::count(reversed, std::uint8_t{1}) > 0);
 }
 
 TEST_CASE("One part fills its periodic images alone", "[partition][periodic]") {
