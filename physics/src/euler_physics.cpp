@@ -54,8 +54,6 @@ constexpr int linear_max_cycles = 10;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
 constexpr double linear_failure = 0.9;
-// The loosely coupled SA equation's scalar system: symmetric Gauss-Seidel sweeps.
-constexpr int gauss_seidel_sweeps = 4;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
@@ -605,7 +603,7 @@ class EulerPhysics final : public runtime::Physics {
     euler_.assemble(shift, *matrix_);
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    solvers::Multigrid::Report linear;
+    solvers::Multigrid<5>::Report linear;
     try {
       multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
       linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
@@ -649,8 +647,29 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, gauss_seidel_sweeps);
-        for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
+        // The scalar system on the mean flow's agglomeration hierarchy.
+        if (!sa_multigrid_) sa_multigrid_.emplace(multigrid_->hierarchy());
+        solvers::Multigrid<1>::Report linear_sa;
+        try {
+          sa_multigrid_->set_operator(t.diag, t.upper, t.lower);
+          linear_sa = sa_multigrid_->solve(t.rhs, t.dx, linear_max_cycles, linear_tolerance);
+        } catch (const std::domain_error&) {
+          linear_sa = {};
+        }
+        if (linear_sa.residual_drop <= linear_failure) {
+          for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
+        } else {
+          // nu-tilde keeps its value and the next CFL number is half this one.
+          std::array<char, 32> text{};
+          std::snprintf(text.data(), text.size(), "%.6g", linear_sa.residual_drop);
+          ctx_.log.write("warning", "linear",
+                         "the SA equation's linear solve failed: nu-tilde not updated", {},
+                         std::string("{\"cycles\": ") + std::to_string(linear_sa.cycles) +
+                             ", \"residual_drop\": " +
+                             (std::isfinite(linear_sa.residual_drop) ? text.data() : "null") + "}");
+          if (drop > 0.0) penalty_ = cfl_ * drop / cfl_start;
+          shortened_ = true;
+        }
       }
       t.model.eddy_viscosity(t.stored(t.rnu));
     }
@@ -775,7 +794,8 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<SaState<P>> sa_;  // SA-neg runs only
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;
+  std::optional<solvers::Multigrid<5>> multigrid_;
+  std::optional<solvers::Multigrid<1>> sa_multigrid_;  // SA runs, on multigrid_'s hierarchy
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;

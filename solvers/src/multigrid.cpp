@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -11,62 +12,73 @@ namespace autan::solvers {
 
 namespace {
 
-constexpr std::size_t b2 = 25;
 // The coarsest level is factored densely up to this many unknowns.
 constexpr std::size_t dense_unknowns = 1000;
 
-// Inverse of a 5 x 5 row-major block by Gauss-Jordan elimination with partial pivoting.
-void invert5(const double* a, double* inv) {
-  std::array<double, 50> m{};
-  for (std::size_t i = 0; i < 5; ++i) {
-    for (std::size_t j = 0; j < 5; ++j) {
-      m[10 * i + j] = a[5 * i + j];
-      m[10 * i + 5 + j] = i == j ? 1.0 : 0.0;
+// Inverse of a B x B row-major block by Gauss-Jordan elimination with partial pivoting.
+template <std::size_t B>
+void invert(const double* a, double* inv) {
+  constexpr std::size_t w = 2 * B;
+  std::array<double, w * B> m{};
+  for (std::size_t i = 0; i < B; ++i) {
+    for (std::size_t j = 0; j < B; ++j) {
+      m[w * i + j] = a[B * i + j];
+      m[w * i + B + j] = i == j ? 1.0 : 0.0;
     }
   }
-  for (std::size_t k = 0; k < 5; ++k) {
+  for (std::size_t k = 0; k < B; ++k) {
     std::size_t p = k;
-    for (std::size_t i = k + 1; i < 5; ++i) {
-      if (std::abs(m[10 * i + k]) > std::abs(m[10 * p + k])) p = i;
+    for (std::size_t i = k + 1; i < B; ++i) {
+      if (std::abs(m[w * i + k]) > std::abs(m[w * p + k])) p = i;
     }
-    if (m[10 * p + k] == 0.0 || !std::isfinite(m[10 * p + k])) {
+    if (m[w * p + k] == 0.0 || !std::isfinite(m[w * p + k])) {
       throw std::domain_error("singular diagonal block");
     }
     if (p != k) {
-      for (std::size_t j = 0; j < 10; ++j) std::swap(m[10 * k + j], m[10 * p + j]);
+      for (std::size_t j = 0; j < w; ++j) std::swap(m[w * k + j], m[w * p + j]);
     }
-    const double d = 1.0 / m[10 * k + k];
-    for (std::size_t j = 0; j < 10; ++j) m[10 * k + j] *= d;
-    for (std::size_t i = 0; i < 5; ++i) {
+    const double d = 1.0 / m[w * k + k];
+    for (std::size_t j = 0; j < w; ++j) m[w * k + j] *= d;
+    for (std::size_t i = 0; i < B; ++i) {
       if (i == k) continue;
-      const double f = m[10 * i + k];
-      for (std::size_t j = 0; j < 10; ++j) m[10 * i + j] -= f * m[10 * k + j];
+      const double f = m[w * i + k];
+      for (std::size_t j = 0; j < w; ++j) m[w * i + j] -= f * m[w * k + j];
     }
   }
-  for (std::size_t i = 0; i < 5; ++i) {
-    for (std::size_t j = 0; j < 5; ++j) inv[5 * i + j] = m[10 * i + 5 + j];
+  for (std::size_t i = 0; i < B; ++i) {
+    for (std::size_t j = 0; j < B; ++j) inv[B * i + j] = m[w * i + B + j];
   }
 }
 
-// c = a b, 5 x 5 row-major.
-void multiply5(const double* a, const double* b, double* c) {
-  for (std::size_t i = 0; i < 5; ++i) {
-    for (std::size_t j = 0; j < 5; ++j) {
+// c = a b, B x B row-major.
+template <std::size_t B>
+void multiply(const double* a, const double* b, double* c) {
+  for (std::size_t i = 0; i < B; ++i) {
+    for (std::size_t j = 0; j < B; ++j) {
       double s = 0.0;
-      for (std::size_t k = 0; k < 5; ++k) s += a[5 * i + k] * b[5 * k + j];
-      c[5 * i + j] = s;
+      for (std::size_t k = 0; k < B; ++k) s += a[B * i + k] * b[B * k + j];
+      c[B * i + j] = s;
     }
   }
 }
 
-void add5(double* a, const double* b) {
-  for (std::size_t k = 0; k < b2; ++k) a[k] += b[k];
+template <std::size_t B>
+void add(double* a, const double* b) {
+  for (std::size_t k = 0; k < B * B; ++k) a[k] += b[k];
+}
+
+double dot(std::span<const double> a, std::span<const double> b) {
+  double s = 0.0;
+  for (std::size_t k = 0; k < a.size(); ++k) s += a[k] * b[k];
+  return s;
 }
 
 }  // namespace
 
 // A level's operator: blocks and the node -> edges adjacency.
-struct Multigrid::Operator {
+template <std::size_t B>
+struct Multigrid<B>::Operator {
+  static constexpr std::size_t bb = B * B;
   std::size_t n = 0;
   const Level* level = nullptr;
   std::vector<offset_t> node_offsets;
@@ -94,7 +106,7 @@ struct Multigrid::Operator {
   // Block A(i, j) of edge e seen from node i, and j.
   [[nodiscard]] std::pair<const double*, std::size_t> off(std::size_t e, std::size_t i) const {
     const bool owned = static_cast<std::size_t>(level->owner[e]) == i;
-    return {owned ? &upper[b2 * e] : &lower[b2 * e],
+    return {owned ? &upper[bb * e] : &lower[bb * e],
             static_cast<std::size_t>(owned ? level->neighbour[e] : level->owner[e])};
   }
 
@@ -102,23 +114,23 @@ struct Multigrid::Operator {
   template <class Skip>
   void off_residual(std::size_t i, std::span<const double> b, std::span<const double> x,
                     Skip&& skip, double* r) const {
-    for (std::size_t c = 0; c < 5; ++c) r[c] = b[c * n + i];
+    for (std::size_t c = 0; c < B; ++c) r[c] = b[c * n + i];
     for (auto k = node_offsets[i]; k < node_offsets[i + 1]; ++k) {
       const auto [a, j] = off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
       if (skip(j)) continue;
-      for (std::size_t p = 0; p < 5; ++p) {
-        for (std::size_t q = 0; q < 5; ++q) r[p] -= a[5 * p + q] * x[q * n + j];
+      for (std::size_t p = 0; p < B; ++p) {
+        for (std::size_t q = 0; q < B; ++q) r[p] -= a[B * p + q] * x[q * n + j];
       }
     }
   }
 
   void residual(std::span<const double> b, std::span<const double> x, std::span<double> r) const {
-    std::array<double, 5> s{};
+    std::array<double, B> s{};
     for (std::size_t i = 0; i < n; ++i) {
       off_residual(i, b, x, [](std::size_t) { return false; }, s.data());
-      const double* d = &diag[b2 * i];
-      for (std::size_t p = 0; p < 5; ++p) {
-        for (std::size_t q = 0; q < 5; ++q) s[p] -= d[5 * p + q] * x[q * n + i];
+      const double* d = &diag[bb * i];
+      for (std::size_t p = 0; p < B; ++p) {
+        for (std::size_t q = 0; q < B; ++q) s[p] -= d[B * p + q] * x[q * n + i];
         r[p * n + i] = s[p];
       }
     }
@@ -126,29 +138,29 @@ struct Multigrid::Operator {
 
   void multiply(std::span<const double> x, std::span<double> y) const {
     for (std::size_t i = 0; i < n; ++i) {
-      std::array<double, 5> s{};
-      const double* d = &diag[b2 * i];
-      for (std::size_t p = 0; p < 5; ++p) {
-        for (std::size_t q = 0; q < 5; ++q) s[p] += d[5 * p + q] * x[q * n + i];
+      std::array<double, B> s{};
+      const double* d = &diag[bb * i];
+      for (std::size_t p = 0; p < B; ++p) {
+        for (std::size_t q = 0; q < B; ++q) s[p] += d[B * p + q] * x[q * n + i];
       }
       for (auto k = node_offsets[i]; k < node_offsets[i + 1]; ++k) {
         const auto [a, j] =
             off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
-        for (std::size_t p = 0; p < 5; ++p) {
-          for (std::size_t q = 0; q < 5; ++q) s[p] += a[5 * p + q] * x[q * n + j];
+        for (std::size_t p = 0; p < B; ++p) {
+          for (std::size_t q = 0; q < B; ++q) s[p] += a[B * p + q] * x[q * n + j];
         }
       }
-      for (std::size_t p = 0; p < 5; ++p) y[p * n + i] = s[p];
+      for (std::size_t p = 0; p < B; ++p) y[p * n + i] = s[p];
     }
   }
 
   // Block sum of the coupling between nodes i and j (every edge joining them).
   void coupling(std::size_t i, std::size_t j, double* a) const {
-    std::fill(a, a + b2, 0.0);
+    std::fill(a, a + bb, 0.0);
     for (auto k = node_offsets[i]; k < node_offsets[i + 1]; ++k) {
       const auto [blk, o] =
           off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
-      if (o == j) add5(a, blk);
+      if (o == j) add<B>(a, blk);
     }
   }
 };
@@ -157,7 +169,9 @@ struct Multigrid::Operator {
 // its couplings to other lines lagged; lines of one colour share no edge, so their solves are
 // independent, and a sweep visits the colours forwards then backwards. A line of one node is
 // point block Gauss-Seidel.
-struct Multigrid::Smoother {
+template <std::size_t B>
+struct Multigrid<B>::Smoother {
+  static constexpr std::size_t bb = B * B;
   const Level* level = nullptr;
   std::vector<std::vector<std::size_t>> colours;  // lines per colour
   std::vector<index_t> prev, next;                // line neighbours, -1 at the ends
@@ -187,10 +201,10 @@ struct Multigrid::Smoother {
         if (e - b > 1) slot[i] = n_slots++;
       }
     }
-    lower.assign(b2 * n_slots, 0.0);
-    gain.assign(b2 * n_slots, 0.0);
-    dinv.assign(b2 * n, 0.0);
-    work.assign(5 * longest, 0.0);
+    lower.assign(bb * n_slots, 0.0);
+    gain.assign(bb * n_slots, 0.0);
+    dinv.assign(bb * n, 0.0);
+    work.assign(B * longest, 0.0);
     // Greedy colouring of the lines in line order: lines of a colour share no edge.
     std::vector<std::vector<std::size_t>> adjacent(l.n_lines());
     for (std::size_t e = 0; e < l.owner.size(); ++e) {
@@ -221,22 +235,22 @@ struct Multigrid::Smoother {
 
   // Block LU of every line: D'_0 = D_0, D'_k = D_k - A(k, k-1) D'_{k-1}^-1 A(k-1, k).
   void factor(const Operator& op) {
-    std::array<double, b2> d{}, t{}, u{};
+    std::array<double, bb> d{}, t{}, u{};
     for (std::size_t li = 0; li < level->n_lines(); ++li) {
       for (auto k = level->line_offsets[li]; k < level->line_offsets[li + 1]; ++k) {
         const auto i = static_cast<std::size_t>(level->line_nodes[static_cast<std::size_t>(k)]);
-        std::copy_n(&op.diag[b2 * i], b2, d.data());
+        std::copy_n(&op.diag[bb * i], bb, d.data());
         if (prev[i] >= 0) {
           const auto p = static_cast<std::size_t>(prev[i]);
-          double* lo = &lower[b2 * slot[i]];
+          double* lo = &lower[bb * slot[i]];
           op.coupling(i, p, lo);
-          multiply5(lo, &gain[b2 * slot[p]], t.data());
-          for (std::size_t m = 0; m < b2; ++m) d[m] -= t[m];
+          multiply<B>(lo, &gain[bb * slot[p]], t.data());
+          for (std::size_t m = 0; m < bb; ++m) d[m] -= t[m];
         }
-        invert5(d.data(), &dinv[b2 * i]);
+        invert<B>(d.data(), &dinv[bb * i]);
         if (next[i] >= 0) {
           op.coupling(i, static_cast<std::size_t>(next[i]), u.data());
-          multiply5(&dinv[b2 * i], u.data(), &gain[b2 * slot[i]]);
+          multiply<B>(&dinv[bb * i], u.data(), &gain[bb * slot[i]]);
         }
       }
     }
@@ -255,39 +269,39 @@ struct Multigrid::Smoother {
           [&](std::size_t j) {
             return static_cast<index_t>(j) == p || static_cast<index_t>(j) == q;
           },
-          &work[5 * (k - first)]);
+          &work[B * (k - first)]);
     }
     // Forward elimination y_k = D'_k^-1 (r_k - A(k, k-1) y_{k-1}), into work.
-    std::array<double, 5> s{};
+    std::array<double, B> s{};
     for (std::size_t k = first; k < last; ++k) {
       const auto i = static_cast<std::size_t>(level->line_nodes[k]);
-      double* r = &work[5 * (k - first)];
+      double* r = &work[B * (k - first)];
       if (k > first) {
-        const double* lo = &lower[b2 * slot[i]];
-        const double* y = &work[5 * (k - 1 - first)];
-        for (std::size_t a = 0; a < 5; ++a) {
-          for (std::size_t c = 0; c < 5; ++c) r[a] -= lo[5 * a + c] * y[c];
+        const double* lo = &lower[bb * slot[i]];
+        const double* y = &work[B * (k - 1 - first)];
+        for (std::size_t a = 0; a < B; ++a) {
+          for (std::size_t c = 0; c < B; ++c) r[a] -= lo[B * a + c] * y[c];
         }
       }
-      const double* inv = &dinv[b2 * i];
-      for (std::size_t a = 0; a < 5; ++a) {
+      const double* inv = &dinv[bb * i];
+      for (std::size_t a = 0; a < B; ++a) {
         s[a] = 0.0;
-        for (std::size_t c = 0; c < 5; ++c) s[a] += inv[5 * a + c] * r[c];
+        for (std::size_t c = 0; c < B; ++c) s[a] += inv[B * a + c] * r[c];
       }
-      std::copy_n(s.data(), 5, r);
+      std::copy_n(s.data(), B, r);
     }
     // Back substitution x_k = y_k - D'_k^-1 A(k, k+1) x_{k+1}.
     for (std::size_t k = last; k-- > first;) {
       const auto i = static_cast<std::size_t>(level->line_nodes[k]);
-      double* y = &work[5 * (k - first)];
+      double* y = &work[B * (k - first)];
       if (k + 1 < last) {
-        const double* g = &gain[b2 * slot[i]];
-        const double* xn = &work[5 * (k + 1 - first)];
-        for (std::size_t a = 0; a < 5; ++a) {
-          for (std::size_t c = 0; c < 5; ++c) y[a] -= g[5 * a + c] * xn[c];
+        const double* g = &gain[bb * slot[i]];
+        const double* xn = &work[B * (k + 1 - first)];
+        for (std::size_t a = 0; a < B; ++a) {
+          for (std::size_t c = 0; c < B; ++c) y[a] -= g[B * a + c] * xn[c];
         }
       }
-      for (std::size_t a = 0; a < 5; ++a) x[a * n + i] = y[a];
+      for (std::size_t a = 0; a < B; ++a) x[a * n + i] = y[a];
     }
   }
 
@@ -304,15 +318,15 @@ struct Multigrid::Smoother {
 
   // Dense LU with partial pivoting of the whole level, unknown c of node i at c * n + i.
   void factor_dense(const Operator& op) {
-    const std::size_t n = op.n, m = 5 * n;
+    const std::size_t n = op.n, m = B * n;
     dense.assign(m * m, 0.0);
     auto put = [&](std::size_t i, std::size_t j, const double* a) {
-      for (std::size_t p = 0; p < 5; ++p) {
-        for (std::size_t q = 0; q < 5; ++q) dense[(p * n + i) * m + q * n + j] += a[5 * p + q];
+      for (std::size_t p = 0; p < B; ++p) {
+        for (std::size_t q = 0; q < B; ++q) dense[(p * n + i) * m + q * n + j] += a[B * p + q];
       }
     };
     for (std::size_t i = 0; i < n; ++i) {
-      put(i, i, &op.diag[b2 * i]);
+      put(i, i, &op.diag[bb * i]);
       for (auto k = op.node_offsets[i]; k < op.node_offsets[i + 1]; ++k) {
         const auto [a, j] =
             op.off(static_cast<std::size_t>(op.node_edges[static_cast<std::size_t>(k)]), i);
@@ -352,14 +366,22 @@ struct Multigrid::Smoother {
   }
 };
 
-Multigrid::Multigrid(const Mesh& mesh, const Geometry& geometry, const MultigridOptions& options)
-    : options_(options), levels_(agglomerate(mesh, geometry, options.agglomeration)) {
+template <std::size_t B>
+Multigrid<B>::Multigrid(const Mesh& mesh, const Geometry& geometry, const MultigridOptions& options)
+    : Multigrid(std::make_shared<const std::vector<Level>>(
+                    agglomerate(mesh, geometry, options.agglomeration)),
+                options) {}
+
+template <std::size_t B>
+Multigrid<B>::Multigrid(std::shared_ptr<const std::vector<Level>> hierarchy,
+                        const MultigridOptions& options)
+    : options_(options), hierarchy_(std::move(hierarchy)), levels_(*hierarchy_) {
   // Work vectors only where the cycle uses them: residual and correction above the coarsest
   // level, right-hand side, solution and Krylov vectors below the finest.
   for (std::size_t i = 0; i < levels_.size(); ++i) {
     const Level& l = levels_[i];
-    const std::size_t above = i + 1 < levels_.size() ? 5 * l.n_nodes : 0;
-    const std::size_t below = i > 0 ? 5 * l.n_nodes : 0;
+    const std::size_t above = i + 1 < levels_.size() ? B * l.n_nodes : 0;
+    const std::size_t below = i > 0 ? B * l.n_nodes : 0;
     ops_.emplace_back(l);
     smoothers_.emplace_back(l);
     r_.emplace_back(above);
@@ -370,13 +392,15 @@ Multigrid::Multigrid(const Mesh& mesh, const Geometry& geometry, const Multigrid
     krylov_.emplace_back(options_.cycle == Cycle::k && i + 1 < levels_.size() ? 5 : 0,
                          std::vector<double>(below));
   }
-  direct_ = 5 * levels_.back().n_nodes <= dense_unknowns;
+  direct_ = B * levels_.back().n_nodes <= dense_unknowns;
 }
 
-Multigrid::~Multigrid() = default;
+template <std::size_t B>
+Multigrid<B>::~Multigrid() = default;
 
-void Multigrid::set_operator(std::span<const double> diagonal, std::span<const double> upper,
-                             std::span<const double> lower) {
+template <std::size_t B>
+void Multigrid<B>::set_operator(std::span<const double> diagonal, std::span<const double> upper,
+                                std::span<const double> lower) {
   ops_[0].diag = diagonal;
   ops_[0].upper = upper;
   ops_[0].lower = lower;
@@ -385,25 +409,25 @@ void Multigrid::set_operator(std::span<const double> diagonal, std::span<const d
     const Level& f = levels_[l];
     const Operator& a = ops_[l];
     Operator& c = ops_[l + 1];
-    c.diag_store.assign(b2 * c.n, 0.0);
-    c.upper_store.assign(b2 * levels_[l + 1].owner.size(), 0.0);
-    c.lower_store.assign(b2 * levels_[l + 1].owner.size(), 0.0);
+    c.diag_store.assign(bb * c.n, 0.0);
+    c.upper_store.assign(bb * levels_[l + 1].owner.size(), 0.0);
+    c.lower_store.assign(bb * levels_[l + 1].owner.size(), 0.0);
     for (std::size_t i = 0; i < f.n_nodes; ++i) {
-      add5(&c.diag_store[b2 * static_cast<std::size_t>(f.coarse_node[i])], &a.diag[b2 * i]);
+      add<B>(&c.diag_store[bb * static_cast<std::size_t>(f.coarse_node[i])], &a.diag[bb * i]);
     }
     for (std::size_t e = 0; e < f.owner.size(); ++e) {
       const index_t ce = f.coarse_edge[e];
       if (ce < 0) {
-        double* d = &c.diag_store[b2 * static_cast<std::size_t>(
+        double* d = &c.diag_store[bb * static_cast<std::size_t>(
                                            f.coarse_node[static_cast<std::size_t>(f.owner[e])])];
-        add5(d, &a.upper[b2 * e]);
-        add5(d, &a.lower[b2 * e]);
+        add<B>(d, &a.upper[bb * e]);
+        add<B>(d, &a.lower[bb * e]);
         continue;
       }
       const auto E = static_cast<std::size_t>(ce);
       const bool flip = f.coarse_flipped[e] != 0;
-      add5(&c.upper_store[b2 * E], flip ? &a.lower[b2 * e] : &a.upper[b2 * e]);
-      add5(&c.lower_store[b2 * E], flip ? &a.upper[b2 * e] : &a.lower[b2 * e]);
+      add<B>(&c.upper_store[bb * E], flip ? &a.lower[bb * e] : &a.upper[bb * e]);
+      add<B>(&c.lower_store[bb * E], flip ? &a.upper[bb * e] : &a.lower[bb * e]);
     }
     c.diag = c.diag_store;
     c.upper = c.upper_store;
@@ -417,23 +441,23 @@ void Multigrid::set_operator(std::span<const double> diagonal, std::span<const d
   }
 }
 
-void Multigrid::smooth(std::span<const double> b, std::span<double> x, int sweeps) {
+template <std::size_t B>
+void Multigrid<B>::smooth(std::span<const double> b, std::span<double> x, int sweeps) {
   smoothers_[0].sweep(ops_[0], b, x, sweeps);
 }
 
-void Multigrid::cycle(std::span<const double> b, std::span<double> x) { cycle_level(0, b, x); }
+template <std::size_t B>
+void Multigrid<B>::cycle(std::span<const double> b, std::span<double> x) {
+  cycle_level(0, b, x);
+}
 
-Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> x, int max_cycles,
-                                   double tolerance) {
+template <std::size_t B>
+typename Multigrid<B>::Report Multigrid<B>::solve(std::span<const double> b, std::span<double> x,
+                                                  int max_cycles, double tolerance) {
   const Operator& a = ops_[0];
-  const std::size_t m = 5 * a.n;
+  const std::size_t m = B * a.n;
   residual_.resize(m);
   a.residual(b, x, residual_);
-  auto dot = [](std::span<const double> u, std::span<const double> v) {
-    double s = 0.0;
-    for (std::size_t k = 0; k < u.size(); ++k) s += u[k] * v[k];
-    return s;
-  };
   // The iteration runs on the residual scaled by its largest entry, so that no norm underflows.
   double scale = 0.0;
   for (const double v : residual_) scale = std::max(scale, std::abs(v));
@@ -485,7 +509,8 @@ Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> 
   return report;
 }
 
-void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<double> x) {
+template <std::size_t B>
+void Multigrid<B>::cycle_level(std::size_t l, std::span<const double> b, std::span<double> x) {
   Smoother& s = smoothers_[l];
   const Operator& a = ops_[l];
   if (l + 1 == levels_.size()) {
@@ -504,14 +529,14 @@ void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<
   std::vector<double>& xc = xc_[l + 1];
   a.residual(b, x, r);
   std::fill(bc.begin(), bc.end(), 0.0);
-  for (std::size_t c = 0; c < 5; ++c) {
+  for (std::size_t c = 0; c < B; ++c) {
     for (std::size_t i = 0; i < n; ++i) {
       bc[c * nc + static_cast<std::size_t>(f.coarse_node[i])] += r[c * n + i];
     }
   }
   coarse_solve(l + 1, bc, xc);
   std::vector<double>& e = e_[l];
-  for (std::size_t c = 0; c < 5; ++c) {
+  for (std::size_t c = 0; c < B; ++c) {
     for (std::size_t i = 0; i < n; ++i) {
       e[c * n + i] = xc[c * nc + static_cast<std::size_t>(f.coarse_node[i])];
     }
@@ -521,7 +546,7 @@ void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<
     std::vector<double>& q = q_[l];
     a.multiply(e, q);
     double num = 0.0, den = 0.0;
-    for (std::size_t k = 0; k < 5 * n; ++k) {
+    for (std::size_t k = 0; k < B * n; ++k) {
       if (options_.scaling == Scaling::residual) {
         num += r[k] * q[k];
         den += q[k] * q[k];
@@ -532,25 +557,16 @@ void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<
     }
     if (den > 0.0) alpha = num / den;
   }
-  for (std::size_t k = 0; k < 5 * n; ++k) x[k] += alpha * e[k];
+  for (std::size_t k = 0; k < B * n; ++k) x[k] += alpha * e[k];
   s.sweep(a, b, x, options_.post_sweeps);
 }
-
-namespace {
-
-double dot(std::span<const double> a, std::span<const double> b) {
-  double s = 0.0;
-  for (std::size_t k = 0; k < a.size(); ++k) s += a[k] * b[k];
-  return s;
-}
-
-}  // namespace
 
 // Approximate solve of level m's A x = b from x = 0: one (V) or two (W) cycles, or (K) two
 // steps of the generalised conjugate residual method preconditioned by one cycle each, the
 // second only when the first left more than a quarter of the residual (Notay and Vassilevski
 // 2008, Numer. Linear Algebra Appl. 15:123-145, algorithm 3.1).
-void Multigrid::coarse_solve(std::size_t m, std::span<const double> b, std::span<double> x) {
+template <std::size_t B>
+void Multigrid<B>::coarse_solve(std::size_t m, std::span<const double> b, std::span<double> x) {
   std::fill(x.begin(), x.end(), 0.0);
   const bool coarsest = m + 1 == levels_.size();
   if (options_.cycle != Cycle::k || coarsest) {
@@ -585,5 +601,8 @@ void Multigrid::coarse_solve(std::size_t m, std::span<const double> b, std::span
   const double a2 = dot(w2, r1) / rho2;
   for (std::size_t k = 0; k < x.size(); ++k) x[k] += a2 * v2[k];
 }
+
+template class Multigrid<1>;
+template class Multigrid<5>;
 
 }  // namespace autan::solvers

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -28,21 +29,29 @@ struct MultigridOptions {
   AgglomerationOptions agglomeration;
 };
 
-/// Agglomeration multigrid for systems of 5 x 5 blocks on a mesh's cell adjacency: line-implicit
-/// block Gauss-Seidel smoothing, piecewise-constant transfers, Galerkin coarse operators
-/// (docs/design/multigrid.md). The operator has one diagonal block per cell and, per interior
-/// face f (owner o, neighbour n), the blocks A(o, n) (`upper`) and A(n, o) (`lower`), row-major;
-/// vectors are structure of arrays, component c of cell i at c * n_cells + i. FP64 throughout;
-/// every loop runs in a fixed order, so results are bitwise reproducible.
+/// Agglomeration multigrid for systems of B x B blocks (B = 1 or 5) on a mesh's cell adjacency:
+/// line-implicit block Gauss-Seidel smoothing, piecewise-constant transfers, Galerkin coarse
+/// operators (docs/design/multigrid.md). The operator has one diagonal block per cell and, per
+/// interior face f (owner o, neighbour n), the blocks A(o, n) (`upper`) and A(n, o) (`lower`),
+/// row-major; vectors are structure of arrays, component c of cell i at c * n_cells + i. FP64
+/// throughout; every loop runs in a fixed order, so results are bitwise reproducible.
+template <std::size_t B>
 class Multigrid {
  public:
   /// Builds the hierarchy of `mesh` (no ghost cells; std::invalid_argument otherwise).
   Multigrid(const Mesh& mesh, const Geometry& geometry, const MultigridOptions& options = {});
+  /// Uses the hierarchy of another multigrid (`hierarchy()`) of the same mesh; its
+  /// agglomeration options are ignored.
+  Multigrid(std::shared_ptr<const std::vector<Level>> hierarchy,
+            const MultigridOptions& options = {});
   ~Multigrid();
   Multigrid(const Multigrid&) = delete;
   Multigrid& operator=(const Multigrid&) = delete;
 
   [[nodiscard]] const std::vector<Level>& levels() const noexcept { return levels_; }
+  [[nodiscard]] std::shared_ptr<const std::vector<Level>> hierarchy() const noexcept {
+    return hierarchy_;
+  }
   /// Whether the coarsest level is solved by dense LU; otherwise by `coarsest_sweeps` sweeps.
   [[nodiscard]] bool direct_coarsest() const noexcept { return direct_; }
 
@@ -72,7 +81,8 @@ class Multigrid {
   void coarse_solve(std::size_t m, std::span<const double> b, std::span<double> x);
 
   MultigridOptions options_;
-  std::vector<Level> levels_;
+  std::shared_ptr<const std::vector<Level>> hierarchy_;
+  const std::vector<Level>& levels_;
   std::vector<Operator> ops_;
   std::vector<Smoother> smoothers_;
   // Per level: residual, restricted right-hand side and correction of the next level.
