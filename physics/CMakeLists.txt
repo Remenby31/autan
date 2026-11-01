@@ -90,21 +90,31 @@ if(AUTAN_ENABLE_CGNS)
     PRIVATE autan::physics autan::solvers autan_compile_options nlohmann_json::nlohmann_json
   )
   if(AUTAN_ENABLE_CUDA)
-    # The device step (euler_device.cu) and the generated GPU loops it launches.
-    target_sources(
-      autan_physics_runtime
-      PRIVATE src/euler_device.cu ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
+    # The device step and the generated GPU loops it launches, compiled by nvcc without the host
+    # warning flags.
+    find_package(CUDAToolkit REQUIRED)
+    add_library(
+      autan_physics_device
+      OBJECT
+      src/euler_device.cu
+      ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
     )
-    target_include_directories(autan_physics_runtime PRIVATE ${AUTAN_PHYSICS_GENERATED})
-    target_compile_definitions(autan_physics_runtime PRIVATE AUTAN_PHYSICS_CUDA)
+    target_include_directories(autan_physics_device PRIVATE ${AUTAN_PHYSICS_GENERATED})
+    target_link_libraries(
+      autan_physics_device
+      PRIVATE autan::physics autan::runtime CUDA::cudart
+    )
     set_target_properties(
-      autan_physics_runtime
-      PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+      autan_physics_device
+      PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
     )
     target_compile_options(
-      autan_physics_runtime
+      autan_physics_device
       PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
     )
+    target_sources(autan_physics_runtime PRIVATE $<TARGET_OBJECTS:autan_physics_device>)
+    target_link_libraries(autan_physics_runtime PUBLIC CUDA::cudart)
+    target_compile_definitions(autan_physics_runtime PUBLIC AUTAN_PHYSICS_CUDA)
   endif()
 endif()
 

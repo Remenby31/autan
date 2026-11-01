@@ -10,7 +10,7 @@
 
 #include "autan/kernels/device.cuh"
 #include "autan/runtime/exact_sum.cuh"
-#include "euler_device.hpp"
+#include "autan/physics/euler_device.hpp"
 #include "euler_gpu.cuh"
 
 namespace autan::physics {
@@ -274,6 +274,13 @@ class CudaStepper final : public DeviceStepper<P> {
     out.residuals = norms();
     out.invalid = invalid();
     return out;
+  }
+
+  void residual(std::span<const double> u, std::span<double> res) override {
+    stage_.upload(u, stream_);
+    residual(stage_.get());
+    const auto r = res_.download(stream_);
+    for (std::size_t i = 0; i < r.size(); ++i) res[i] = static_cast<double>(r[i]);
   }
 
   void upload(std::span<const double> u) override { u_.upload(u, stream_); }

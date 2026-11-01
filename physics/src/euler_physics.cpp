@@ -19,7 +19,7 @@
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/solvers/multigrid.hpp"
-#include "euler_device.hpp"
+#include "autan/physics/euler_device.hpp"
 
 namespace autan::physics {
 
