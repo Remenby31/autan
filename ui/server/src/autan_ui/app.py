@@ -16,13 +16,14 @@ import autan
 import uvicorn
 from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
 from watchfiles import Change, awatch
 
+from autan_ui.cases import Meshes, render
 from autan_ui.confine import Folder, is_link
 from autan_ui.history import read_lines
 from autan_ui.registry import (
@@ -186,9 +187,14 @@ def _list_build(build: Folder) -> set[str]:
 
 
 def create_app(
-    runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
+    runs_root: Path,
+    static: Path | None = STATIC,
+    *,
+    hosts: tuple[str, ...] = LOOPBACK,
+    meshes_root: Path | None = None,
 ) -> FastAPI:
     registry = Registry(runs_root)
+    meshes = Meshes(meshes_root)
     # The last surface built: reopening a run in the viewer needs no new extraction.
     surfaces: dict[tuple[str, int, int], bytes] = {}
     build = _open_build(static)
@@ -430,6 +436,23 @@ def create_app(
                 surfaces[key] = message
         return Response(message, media_type="application/octet-stream")
 
+    @app.get("/api/meshes")
+    def list_meshes() -> list[dict[str, Any]]:
+        """The MeshInfo files a case can be planned against."""
+        return meshes.summaries()
+
+    @app.post("/api/cases/render")
+    def render_case(
+        case: Annotated[dict[str, Any], Body()], mesh: Annotated[str | None, Body()] = None
+    ) -> dict[str, Any]:
+        """A case document as the SDK reads it (its SDK code, its case.toml and its plan against
+        `mesh`), or the SDK's coded diagnostics. 404 for a mesh not listed by /api/meshes."""
+        try:
+            mesh_info = meshes.read(mesh) if mesh is not None else None
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        return render(case, mesh_info)
+
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(
         triangles: Annotated[int, Query(ge=128, le=MAX_SYNTHETIC_TRIANGLES)] = 200_000,
@@ -466,13 +489,18 @@ def create_app(
 
 
 def serve(
-    runs: Path, host: str = "127.0.0.1", port: int = 8765, *, open_browser: bool = True
+    runs: Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    open_browser: bool = True,
+    meshes: Path | None = None,
 ) -> None:
     """Serve the UI for the run directories under `runs` until interrupted."""
     if not runs.is_dir():
         log.info("creating the runs directory %s", runs)
         runs.mkdir(parents=True)
-    app = create_app(runs, hosts=tuple({*LOOPBACK, host}))
+    app = create_app(runs, hosts=tuple({*LOOPBACK, host}), meshes_root=meshes)
     if open_browser:
         webbrowser.open(f"http://{host}:{port}/")
     uvicorn.run(app, host=host, port=port, log_level="info")

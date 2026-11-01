@@ -13,7 +13,7 @@ bandwidth a measurement sees. The watcher publishes each campaign's state next t
 (campaigns/NAME.state: "running" before any start or thaw, "frozen" once frozen, and a heartbeat
 touched at every poll), and autan-bench measures only once every live campaign reads frozen. The container stops by itself when the watcher's
 heartbeat is a minute old, so a campaign never outlives its watcher. The watcher removes the
-campaign if more than 6 threads outside it stay runnable for a minute. See docs/infra/bench.md.
+campaign if more than 6 threads outside every campaign stay runnable for a minute. See docs/infra/bench.md.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from pathlib import Path
 
 LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
 STATES = LOCK.parent / "campaigns"
+CGROUPS = Path("/sys/fs/cgroup")
 PREFIX = "autan-campaign-"
 STATE = Path.home() / "autan-campaigns"
 POLL_S = 0.1
@@ -73,16 +74,28 @@ def _state_of(stat_file: Path) -> bytes | None:
         return None
 
 
-def other_runnable(cgroup: Path) -> int:
-    """Threads in state R outside the campaign's cgroup, this watcher excluded. Both counts come
-    from the threads' own states, so CPU-quota throttling does not skew the difference."""
+def other_runnable() -> int:
+    """Threads in state R outside every campaign (each watcher publishes its campaign's cgroup
+    in campaigns/NAME.cgroup), this watcher excluded: campaigns are not another project's load.
+    Both counts come from the threads' own states, so CPU-quota throttling does not skew them."""
     total = sum(1 for t in Path("/proc").glob("[0-9]*/task/[0-9]*/stat") if _state_of(t) == b"R")
-    try:
-        tids = (cgroup / "cgroup.threads").read_text().split()
-    except OSError:
-        tids = []
-    mine = sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
-    return max(0, total - mine - 1)
+    return max(0, total - campaigns_running() - 1)
+
+
+def campaigns_running() -> int:
+    """Threads in state R in the cgroups that live campaigns' watchers published: a publication
+    counts only under CGROUPS and with a fresh heartbeat, each thread once."""
+    tids: set[str] = set()
+    for published in STATES.glob("*.cgroup"):
+        try:
+            fresh = time.time() - published.with_suffix(".heartbeat").stat().st_mtime
+            cgroup = Path(published.read_text().strip()).resolve()
+            if fresh > HEARTBEAT_MAX_AGE_S or not cgroup.is_relative_to(CGROUPS):
+                continue
+            tids.update((cgroup / "cgroup.threads").read_text().split())
+        except (OSError, ValueError):
+            continue
+    return sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
 
 
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -177,6 +190,7 @@ def watch(name: str) -> int:
         heartbeat.touch()
         docker("start", container)
         cgroup = cgroup_of(container)
+        (STATES / f"{name}.cgroup").write_text(f"{cgroup}\n")
         log(name, "started")
         frozen = False
         # No docker call in the steady state: the CLI would load the CPU at every poll,
@@ -205,7 +219,7 @@ def watch(name: str) -> int:
                 samples.clear()
                 busy_since = None
             elif time.monotonic() >= next_sample:
-                samples.append(other_runnable(cgroup))
+                samples.append(other_runnable())
                 next_sample = time.monotonic() + LOAD_EVERY_S
             if len(samples) >= LOAD_SAMPLES:
                 load = sorted(samples)[len(samples) // 2]
@@ -231,6 +245,7 @@ def watch(name: str) -> int:
             log(name, "container removed")
         (STATES / f"{name}.state").unlink(missing_ok=True)
         (STATES / f"{name}.heartbeat").unlink(missing_ok=True)
+        (STATES / f"{name}.cgroup").unlink(missing_ok=True)
         (STATE / f"{name}.pid").unlink(missing_ok=True)
 
 
@@ -297,6 +312,7 @@ def stop_campaign(args: argparse.Namespace) -> int:
         sys.exit(f"autan-campaign: could not remove {PREFIX + args.name}")
     (STATES / f"{args.name}.state").unlink(missing_ok=True)
     (STATES / f"{args.name}.heartbeat").unlink(missing_ok=True)
+    (STATES / f"{args.name}.cgroup").unlink(missing_ok=True)
     _say(f"removed {PREFIX + args.name}")
     return 0
 

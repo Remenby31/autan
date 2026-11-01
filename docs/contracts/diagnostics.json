@@ -732,6 +732,12 @@
       "title": "Strategy not available",
       "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
+    },
+    "E1109": {
+      "severity": "error",
+      "title": "Strategy not rank-independent",
+      "fix": "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1109"
     }
   }
 }
