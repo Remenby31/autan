@@ -358,6 +358,7 @@ Multigrid::Multigrid(const Mesh& mesh, const Geometry& geometry, const Multigrid
     xc_.emplace_back(5 * l.n_nodes);
     e_.emplace_back(5 * l.n_nodes);
     q_.emplace_back(5 * l.n_nodes);
+    krylov_.emplace_back(5, std::vector<double>(5 * l.n_nodes));
   }
 }
 
@@ -411,11 +412,61 @@ void Multigrid::smooth(std::span<const double> b, std::span<double> x, int sweep
   smoothers_[0].sweep(ops_[0], b, x, sweeps);
 }
 
-void Multigrid::solve(std::span<const double> b, std::span<double> x, int cycles) {
-  for (int k = 0; k < cycles; ++k) cycle(0, b, x);
+void Multigrid::cycle(std::span<const double> b, std::span<double> x) { cycle_level(0, b, x); }
+
+Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> x, int max_cycles,
+                                   double tolerance) {
+  const Operator& a = ops_[0];
+  const std::size_t m = 5 * a.n;
+  residual_.resize(m);
+  a.residual(b, x, residual_);
+  auto dot = [](std::span<const double> u, std::span<const double> v) {
+    double s = 0.0;
+    for (std::size_t k = 0; k < u.size(); ++k) s += u[k] * v[k];
+    return s;
+  };
+  const double r0 = std::sqrt(dot(residual_, residual_));
+  Report report;
+  if (!(r0 > 0.0)) {
+    report.residual_drop = 0.0;
+    return report;
+  }
+  const auto kmax = static_cast<std::size_t>(std::max(max_cycles, 0));
+  if (directions_.size() < kmax) {
+    directions_.resize(kmax);
+    images_.resize(kmax);
+  }
+  double rr = r0 * r0;
+  for (std::size_t k = 0; k < kmax; ++k) {
+    std::vector<double>& z = directions_[k];
+    std::vector<double>& w = images_[k];
+    z.assign(m, 0.0);
+    w.resize(m);
+    cycle_level(0, residual_, z);
+    a.multiply(z, w);
+    for (std::size_t j = 0; j < k; ++j) {
+      const double beta = dot(w, images_[j]) / dot(images_[j], images_[j]);
+      for (std::size_t i = 0; i < m; ++i) {
+        z[i] -= beta * directions_[j][i];
+        w[i] -= beta * images_[j][i];
+      }
+    }
+    const double ww = dot(w, w);
+    report.cycles = static_cast<int>(k) + 1;
+    if (!(ww > 0.0)) break;
+    const double alpha = dot(residual_, w) / ww;
+    for (std::size_t i = 0; i < m; ++i) {
+      x[i] += alpha * z[i];
+      residual_[i] -= alpha * w[i];
+    }
+    rr = dot(residual_, residual_);
+    if (std::sqrt(rr) <= tolerance * r0) break;
+  }
+  report.residual_drop = std::sqrt(rr) / r0;
+  return report;
 }
 
-void Multigrid::cycle(std::size_t l, std::span<const double> b, std::span<double> x) {
+void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<double> x) {
   Smoother& s = smoothers_[l];
   const Operator& a = ops_[l];
   if (l + 1 == levels_.size()) {
@@ -439,9 +490,7 @@ void Multigrid::cycle(std::size_t l, std::span<const double> b, std::span<double
       bc[c * nc + static_cast<std::size_t>(f.coarse_node[i])] += r[c * n + i];
     }
   }
-  std::fill(xc.begin(), xc.end(), 0.0);
-  const int visits = options_.cycle == Cycle::w && l + 2 < levels_.size() ? 2 : 1;
-  for (int k = 0; k < visits; ++k) cycle(l + 1, bc, xc);
+  coarse_solve(l + 1, bc, xc);
   std::vector<double>& e = e_[l];
   for (std::size_t c = 0; c < 5; ++c) {
     for (std::size_t i = 0; i < n; ++i) {
@@ -449,19 +498,73 @@ void Multigrid::cycle(std::size_t l, std::span<const double> b, std::span<double
     }
   }
   double alpha = 1.0;
-  if (options_.scale_correction) {
-    // alpha = (r, A e) / (A e, A e).
+  if (options_.scaling != Scaling::none) {
     std::vector<double>& q = q_[l];
     a.multiply(e, q);
-    double rq = 0.0, qq = 0.0;
+    double num = 0.0, den = 0.0;
     for (std::size_t k = 0; k < 5 * n; ++k) {
-      rq += r[k] * q[k];
-      qq += q[k] * q[k];
+      if (options_.scaling == Scaling::residual) {
+        num += r[k] * q[k];
+        den += q[k] * q[k];
+      } else {
+        num += r[k] * e[k];
+        den += q[k] * e[k];
+      }
     }
-    if (qq > 0.0) alpha = rq / qq;
+    if (den > 0.0) alpha = num / den;
   }
   for (std::size_t k = 0; k < 5 * n; ++k) x[k] += alpha * e[k];
   s.sweep(a, b, x, options_.post_sweeps);
+}
+
+namespace {
+
+double dot(std::span<const double> a, std::span<const double> b) {
+  double s = 0.0;
+  for (std::size_t k = 0; k < a.size(); ++k) s += a[k] * b[k];
+  return s;
+}
+
+}  // namespace
+
+// Approximate solve of level m's A x = b from x = 0: one (V) or two (W) cycles, or (K) two
+// steps of the generalised conjugate residual method preconditioned by one cycle each, the
+// second only when the first left more than a quarter of the residual (Notay and Vassilevski
+// 2008, Numer. Linear Algebra Appl. 15:123-145, algorithm 3.1).
+void Multigrid::coarse_solve(std::size_t m, std::span<const double> b, std::span<double> x) {
+  std::fill(x.begin(), x.end(), 0.0);
+  const bool coarsest = m + 1 == levels_.size();
+  if (options_.cycle != Cycle::k || coarsest) {
+    const int visits = options_.cycle != Cycle::v && !coarsest ? 2 : 1;
+    for (int k = 0; k < visits; ++k) cycle_level(m, b, x);
+    return;
+  }
+  const Operator& a = ops_[m];
+  auto& kv = krylov_[m];
+  std::vector<double>&v1 = kv[0], &w1 = kv[1], &v2 = kv[2], &w2 = kv[3], &r1 = kv[4];
+  std::fill(v1.begin(), v1.end(), 0.0);
+  cycle_level(m, b, v1);
+  a.multiply(v1, w1);
+  const double rho1 = dot(w1, w1);
+  if (!(rho1 > 0.0)) return;
+  const double a1 = dot(w1, b) / rho1;
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    x[k] = a1 * v1[k];
+    r1[k] = b[k] - a1 * w1[k];
+  }
+  if (dot(r1, r1) <= 0.0625 * dot(b, b)) return;
+  std::fill(v2.begin(), v2.end(), 0.0);
+  cycle_level(m, r1, v2);
+  a.multiply(v2, w2);
+  const double beta = dot(w2, w1) / rho1;
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    v2[k] -= beta * v1[k];
+    w2[k] -= beta * w1[k];
+  }
+  const double rho2 = dot(w2, w2);
+  if (!(rho2 > 0.0)) return;
+  const double a2 = dot(w2, r1) / rho2;
+  for (std::size_t k = 0; k < x.size(); ++k) x[k] += a2 * v2[k];
 }
 
 }  // namespace autan::solvers

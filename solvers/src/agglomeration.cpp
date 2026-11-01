@@ -26,6 +26,11 @@ struct Graph {
   std::vector<index_t> zone;
   std::vector<std::vector<index_t>> boundary;  // sorted boundary zones touched
   std::vector<Normal> normal;                  // sum of the boundary faces' area vectors
+  std::vector<Normal> centroid;
+  std::vector<double> volume;
+  // Level 0: weakest and strongest coupling of each cell through its faces, boundary faces
+  // included (A_f over twice the distance to the face: the distance to the mirror cell).
+  std::vector<double> weakest, strongest;
   std::vector<offset_t> line_offsets{0};
   std::vector<index_t> line_nodes;
 
@@ -90,6 +95,11 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
     g.weight[f] = gm.face_area[f] / std::sqrt(dx * dx + dy * dy + dz * dz);
   }
   g.zone.assign(mesh.cell_zone().begin(), mesh.cell_zone().end());
+  g.volume = gm.cell_volume;
+  g.centroid.resize(g.n);
+  for (std::size_t c = 0; c < g.n; ++c) {
+    g.centroid[c] = {gm.cell_centroid_x[c], gm.cell_centroid_y[c], gm.cell_centroid_z[c]};
+  }
   g.boundary.assign(g.n, {});
   g.normal.assign(g.n, Normal{0.0, 0.0, 0.0});
   const auto nf = static_cast<std::size_t>(mesh.n_faces());
@@ -103,6 +113,23 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
     g.normal[c][2] += gm.face_area_z[f];
   }
   for (auto& zones : g.boundary) std::sort(zones.begin(), zones.end());
+  g.weakest.assign(g.n, std::numeric_limits<double>::infinity());
+  g.strongest.assign(g.n, 0.0);
+  auto couple = [&](std::size_t c, double w) {
+    g.weakest[c] = std::min(g.weakest[c], w);
+    g.strongest[c] = std::max(g.strongest[c], w);
+  };
+  for (std::size_t f = 0; f < ni; ++f) {
+    couple(static_cast<std::size_t>(g.owner[f]), g.weight[f]);
+    couple(static_cast<std::size_t>(g.neighbour[f]), g.weight[f]);
+  }
+  for (std::size_t f = ni; f < nf; ++f) {
+    const auto c = static_cast<std::size_t>(mesh.owner()[f]);
+    const double dx = gm.face_centroid_x[f] - gm.cell_centroid_x[c];
+    const double dy = gm.face_centroid_y[f] - gm.cell_centroid_y[c];
+    const double dz = gm.face_centroid_z[f] - gm.cell_centroid_z[c];
+    couple(c, gm.face_area[f] / (2.0 * std::sqrt(dx * dx + dy * dy + dz * dz)));
+  }
   g.build_adjacency();
   return g;
 }
@@ -112,15 +139,8 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
 // grows from its seed through the strongest face whose coupling is at least `ratio` times the
 // weakest coupling of both cells, in both directions.
 void make_lines(Graph& g, double ratio) {
-  std::vector<double> weakest(g.n, std::numeric_limits<double>::infinity());
-  std::vector<double> strongest(g.n, 0.0);
-  for (std::size_t e = 0; e < g.owner.size(); ++e) {
-    for (const auto c : {static_cast<std::size_t>(g.owner[e]),
-                         static_cast<std::size_t>(g.neighbour[e])}) {
-      weakest[c] = std::min(weakest[c], g.weight[e]);
-      strongest[c] = std::max(strongest[c], g.weight[e]);
-    }
-  }
+  const std::vector<double>& weakest = g.weakest;
+  const std::vector<double>& strongest = g.strongest;
   std::vector<std::size_t> seeds;
   for (std::size_t c = 0; c < g.n; ++c) {
     if (strongest[c] >= ratio * weakest[c]) seeds.push_back(c);
@@ -182,8 +202,8 @@ void make_lines(Graph& g, double ratio) {
 
 // One coarsening step. Lines are agglomerated with their neighbouring lines layer by layer, so
 // that anisotropic layers coarsen in the wall plane and coarse lines stay lines; the other nodes
-// form isotropic agglomerates of a seed and its strongest neighbours, seeds taken on an advancing
-// front from the boundary corners inwards (Mavriplis and Venkatakrishnan 1996, Comput. Fluids
+// form compact isotropic agglomerates grown from a seed, seeds taken on an advancing front from
+// the boundary corners inwards (Mavriplis and Venkatakrishnan 1996, Comput. Fluids
 // 25(4):361-378). Fills the level's maps to the coarse graph and returns it.
 Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
   const std::size_t n_lines = g.line_offsets.size() - 1;
@@ -296,27 +316,45 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       ++next;
     }
     if (seed == none) break;
-    std::vector<std::pair<double, std::size_t>> candidates;  // (coupling, node)
-    g.for_edges(seed, [&](std::size_t e, std::size_t m) {
-      if (agg[m] != none || !is_point(m) || !compatible(g, seed, m)) return;
-      auto it = std::find_if(candidates.begin(), candidates.end(),
-                             [&](const auto& c) { return c.second == m; });
-      if (it == candidates.end()) {
-        candidates.emplace_back(g.weight[e], m);
-      } else {
-        it->first += g.weight[e];
-      }
-    });
-    std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
-      return a.first != b.first ? a.first > b.first : a.second < b.second;
-    });
-    if (candidates.size() + 1 > opt.max_agglomerate) candidates.resize(opt.max_agglomerate - 1);
     const std::size_t c = members.size();
     members.push_back({static_cast<index_t>(seed)});
     agg[seed] = c;
-    for (const auto& cand : candidates) {
-      members[c].push_back(static_cast<index_t>(cand.second));
-      agg[cand.second] = c;
+    // Grow the agglomerate by the free neighbour with the most faces on it, the nearest to the
+    // seed among equals: compact agglomerates (2 x 2 x 2 blocks of hexahedra).
+    std::vector<std::pair<std::size_t, int>> inside;  // candidate, faces on the agglomerate
+    auto admit = [&](std::size_t node) {
+      g.for_edges(node, [&](std::size_t, std::size_t m) {
+        if (agg[m] != none || !is_point(m) || !compatible(g, seed, m)) return;
+        auto it = std::find_if(inside.begin(), inside.end(),
+                               [&](const auto& x) { return x.first == m; });
+        if (it == inside.end()) {
+          inside.emplace_back(m, 1);
+        } else {
+          ++it->second;
+        }
+      });
+    };
+    auto distance = [&](std::size_t m) {
+      double d = 0.0;
+      for (std::size_t k = 0; k < 3; ++k) {
+        d += (g.centroid[m][k] - g.centroid[seed][k]) * (g.centroid[m][k] - g.centroid[seed][k]);
+      }
+      return d;
+    };
+    admit(seed);
+    while (members[c].size() < opt.max_agglomerate && !inside.empty()) {
+      std::size_t best = 0;
+      for (std::size_t k = 1; k < inside.size(); ++k) {
+        const auto& [m, faces] = inside[k];
+        const auto& [mb, fb] = inside[best];
+        const double d = distance(m), db = distance(mb);
+        if (faces > fb || (faces == fb && (d < db || (d == db && m < mb)))) best = k;
+      }
+      const std::size_t m = inside[best].first;
+      inside.erase(inside.begin() + static_cast<std::ptrdiff_t>(best));
+      members[c].push_back(static_cast<index_t>(m));
+      agg[m] = c;
+      admit(m);
     }
     for (const index_t f : members[c]) {
       g.for_edges(static_cast<std::size_t>(f), [&](std::size_t, std::size_t m) {
@@ -371,6 +409,8 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
   coarse.zone.assign(nc, 0);
   coarse.boundary.assign(nc, {});
   coarse.normal.assign(nc, Normal{0.0, 0.0, 0.0});
+  coarse.centroid.assign(nc, Normal{0.0, 0.0, 0.0});
+  coarse.volume.assign(nc, 0.0);
   level.coarse_node.assign(g.n, 0);
   for (std::size_t c = 0; c < members.size(); ++c) {
     if (members[c].empty()) continue;
@@ -384,8 +424,13 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       std::set_union(zones.begin(), zones.end(), g.boundary[fu].begin(), g.boundary[fu].end(),
                      std::back_inserter(merged));
       zones = std::move(merged);
-      for (std::size_t d = 0; d < 3; ++d) coarse.normal[C][d] += g.normal[fu][d];
+      coarse.volume[C] += g.volume[fu];
+      for (std::size_t d = 0; d < 3; ++d) {
+        coarse.normal[C][d] += g.normal[fu][d];
+        coarse.centroid[C][d] += g.volume[fu] * g.centroid[fu][d];
+      }
     }
+    for (std::size_t d = 0; d < 3; ++d) coarse.centroid[C][d] /= coarse.volume[C];
     coarse.boundary[C] = std::move(zones);
   }
   for (const auto& line : clines) {

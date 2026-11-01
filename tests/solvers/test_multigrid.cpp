@@ -36,19 +36,27 @@ const std::array<const char*, 4> meshes = {"tet-gmsh/tet-gmsh.ascii.msh", "hex/h
 enum class Fill { hexa, prism };
 
 // Box [0,1]^2 x [0,h] of nx x nx x nz cells: hexahedra, or prisms extruded along z. The
-// spacing in z grows geometrically from `first` at the wall z = 0 (zone "wall") up to the
-// in-plane spacing, then stays uniform. Cells with x < 1/2 are in a second cell zone when
-// `two_zones`.
-Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false) {
+// spacing in z grows geometrically from `first` at the wall z = 0 (zone "wall") up to
+// `largest` (the in-plane spacing by default), then stays uniform up to z = 1/2. Cells with
+// x < 1/2 are in a second cell zone when `two_zones`.
+Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double largest = 0.0) {
   autan::CellwiseMesh m;
-  m.cell_zones.push_back({.name = "a", .type = "fluid", .kind = autan::CellKind::fluid});
-  m.cell_zones.push_back({.name = "b", .type = "fluid", .kind = autan::CellKind::fluid});
-  m.face_zones.push_back({.name = "wall", .kind = autan::BcKind::wall});
+  for (const char* name : {"a", "b"}) {
+    autan::CellZone z;
+    z.name = name;
+    z.kind = autan::CellKind::fluid;
+    m.cell_zones.push_back(z);
+  }
+  autan::FaceZone wall;
+  wall.name = "wall";
+  wall.kind = autan::BcKind::wall;
+  m.face_zones.push_back(wall);
   const double dx = 1.0 / nx;
+  const double top = largest > 0.0 ? largest : dx;
   std::vector<double> z{0.0};
-  for (double d = first; z.size() < 400; d = std::min(dx, 1.2 * d)) {
+  for (double d = first; z.size() < 400; d = std::min(top, 1.2 * d)) {
     z.push_back(z.back() + d);
-    if (d == dx && z.back() >= 0.5) break;
+    if (d == top && z.back() >= 0.5) break;
   }
   const int nz = static_cast<int>(z.size()) - 1;
   const int p = nx + 1;
@@ -180,25 +188,6 @@ double norm(const std::vector<double>& v) {
   return std::sqrt(s);
 }
 
-// Residual reduction per cycle, geometric mean over the cycles after the first two.
-double convergence_factor(const Mesh& mesh, const System& s, Multigrid& mg, int cycles) {
-  const auto n = static_cast<std::size_t>(mesh.n_cells());
-  std::mt19937 rng(3);
-  std::uniform_real_distribution<double> u(-1.0, 1.0);
-  std::vector<double> b(5 * n), x(5 * n, 0.0);
-  for (double& v : b) v = u(rng);
-  mg.set_operator(s.diag, s.upper, s.lower);
-  auto residual = [&]() {
-    auto r = apply(mesh, s, x);
-    for (std::size_t k = 0; k < r.size(); ++k) r[k] = b[k] - r[k];
-    return norm(r);
-  };
-  mg.solve(b, x, 2);
-  const double r0 = residual();
-  mg.solve(b, x, cycles);
-  return std::pow(residual() / r0, 1.0 / cycles);
-}
-
 void check_hierarchy(const Mesh& mesh, const std::vector<Level>& levels) {
   REQUIRE(!levels.empty());
   REQUIRE(levels[0].n_nodes == static_cast<std::size_t>(mesh.n_cells()));
@@ -282,7 +271,9 @@ TEST_CASE("agglomerates are connected, stay in one cell zone and lines join adja
     INFO(file);
     const auto mesh = autan::io::read_mesh(mesh_dir / file);
     const auto g = autan::compute_geometry(mesh);
-    const auto levels = autan::solvers::agglomerate(mesh, g, {.coarsest_nodes = 4});
+    autan::solvers::AgglomerationOptions opt;
+    opt.coarsest_nodes = 4;
+    const auto levels = autan::solvers::agglomerate(mesh, g, opt);
     CHECK(levels.size() >= 2);
     check_hierarchy(mesh, levels);
   }
@@ -310,12 +301,13 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
     ++lines;
     const auto c = static_cast<std::size_t>(
         levels[0].line_nodes[static_cast<std::size_t>(levels[0].line_offsets[li])]);
-    const double z = g.cell_centroid_z[c];
-    if (z < 1e-4) ++first_layer;
-    CHECK(len >= 20);
+    if (g.cell_centroid_z[c] < 1e-4) {
+      ++first_layer;
+      CHECK(len >= 20);
+    }
   }
-  CHECK(lines == wall_cells);
   CHECK(first_layer == wall_cells);
+  CHECK(lines >= wall_cells);
   // The coarse levels agglomerate in the wall plane: the line length is kept.
   REQUIRE(levels.size() >= 3);
   for (std::size_t l = 1; l < levels.size(); ++l) {
@@ -329,8 +321,8 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
 }
 
 TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigrid]") {
-  // One column of wall cells: a single line holding every cell.
-  const auto mesh = layered_box(1, 1e-5, Fill::hexa);
+  // One column of cells of aspect ratio 4 and more: a single line holding every cell.
+  const auto mesh = layered_box(1, 1e-5, Fill::hexa, false, 0.25);
   const auto g = autan::compute_geometry(mesh);
   Multigrid mg(mesh, g);
   REQUIRE(mg.levels()[0].n_lines() == 1);
@@ -357,8 +349,11 @@ TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^
   const auto mesh = autan::io::read_mesh(mesh_dir / file);
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
-  MultigridOptions opt{.pre_sweeps = 0, .post_sweeps = 0, .scale_correction = false};
-  opt.agglomeration.coarsest_nodes = 200;
+  MultigridOptions opt;
+  opt.pre_sweeps = 0;
+  opt.post_sweeps = 0;
+  opt.scaling = autan::solvers::Scaling::none;
+  opt.agglomeration.coarsest_nodes = n - 1;
   Multigrid mg(mesh, g, opt);
   REQUIRE(mg.levels().size() == 2);
   const std::size_t nc = mg.levels()[1].n_nodes;
@@ -368,7 +363,7 @@ TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^
   std::vector<double> b(5 * n);
   for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::cos(0.11 * static_cast<double>(k));
   std::vector<double> x(5 * n, 0.0);
-  mg.solve(b, x, 1);
+  mg.cycle(b, x);
   // Dense P^T A P from the columns A P e_j, then x = P (P^T A P)^-1 P^T b by elimination.
   const auto& parent = mg.levels()[0].coarse_node;
   const std::size_t m = 5 * nc;
@@ -416,38 +411,50 @@ TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^
   CHECK(err <= 1e6 * std::numeric_limits<double>::epsilon() * scale);
 }
 
-TEST_CASE("the multigrid convergence factor does not grow with refinement", "[multigrid]") {
-  // Diffusion (the stiff part of the viscous Jacobian) with a small pseudo-time shift. Isotropic
-  // boxes of 6^3, 12^3 and 24^3 hexahedra and tetrahedra; the factor of point Gauss-Seidel alone
-  // tends to 1 as h -> 0, the multigrid factor stays bounded.
-  const Fill fill = Fill::hexa;
-  std::vector<double> factors;
-  for (const int nx : {8, 16, 32}) {
-    // A wall spacing equal to the in-plane spacing: isotropic cells, no lines.
-    const auto mesh = layered_box(nx, 1.0 / nx, fill);
-    const auto g = autan::compute_geometry(mesh);
-    Multigrid mg(mesh, g);
-    const auto s = diffusion(mesh, g, 1e-3, 0.1);
-    factors.push_back(convergence_factor(mesh, s, mg, 6));
-    INFO("nx " << nx << " factor " << factors.back());
-    CHECK(factors.back() < 0.35);
-  }
-  CHECK(factors[2] < factors[0] + 0.1);
+// Iterations of the multigrid-preconditioned solve to a 1e-6 residual drop.
+int iterations(const Mesh& mesh, const autan::Geometry& g, const MultigridOptions& options) {
+  const auto s = diffusion(mesh, g, 1e-3, 0.1);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> b(5 * n), x(5 * n, 0.0);
+  for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::sin(0.7 * static_cast<double>(k));
+  Multigrid mg(mesh, g, options);
+  mg.set_operator(s.diag, s.upper, s.lower);
+  const auto report = mg.solve(b, x, 60, 1e-6);
+  CHECK(report.residual_drop <= 1e-6);
+  const auto r = apply(mesh, s, x);
+  double rr = 0.0;
+  for (std::size_t k = 0; k < r.size(); ++k) rr += (b[k] - r[k]) * (b[k] - r[k]);
+  CHECK(std::sqrt(rr) <= 1.01e-6 * norm(b));
+  return report.cycles;
 }
 
-TEST_CASE("line smoothing keeps the factor bounded on wall layers of aspect ratio 1e4",
+TEST_CASE("multigrid iterations do not grow with refinement", "[multigrid]") {
+  // Diffusion, the stiff part of the viscous Jacobian, with a small pseudo-time shift on
+  // isotropic cells; Gauss-Seidel alone needs O(n^2) sweeps for the same drop.
+  const Fill fill = GENERATE(Fill::hexa, Fill::prism);
+  std::vector<int> counts;
+  for (const int nx : {8, 16, 32}) {
+    const auto mesh = layered_box(nx, 1.0 / nx, fill);
+    const auto g = autan::compute_geometry(mesh);
+    counts.push_back(iterations(mesh, g, {}));
+    INFO("nx " << nx << ": " << counts.back() << " iterations");
+    CHECK(counts.back() <= 9);
+  }
+  CHECK(counts[2] <= counts[0] + 2);
+}
+
+TEST_CASE("line smoothing keeps the iterations bounded on wall layers of aspect ratio 1e4",
           "[multigrid]") {
   const Fill fill = GENERATE(Fill::hexa, Fill::prism);
-  const auto mesh = layered_box(8, 1e-5, fill);
-  const auto g = autan::compute_geometry(mesh);
-  const auto s = diffusion(mesh, g, 1e-3, 0.1);
-  Multigrid lines(mesh, g);
-  const double with_lines = convergence_factor(mesh, s, lines, 6);
-  MultigridOptions point;
-  point.agglomeration.line_ratio = std::numeric_limits<double>::infinity();
-  Multigrid points(mesh, g, point);
-  const double without = convergence_factor(mesh, s, points, 6);
-  INFO("lines " << with_lines << ", points " << without);
-  CHECK(with_lines < 0.35);
-  CHECK(without > 0.8);
+  for (const int nx : {8, 16}) {
+    const auto mesh = layered_box(nx, 1e-5, fill);
+    const auto g = autan::compute_geometry(mesh);
+    const int with_lines = iterations(mesh, g, {});
+    MultigridOptions point;
+    point.agglomeration.line_ratio = std::numeric_limits<double>::infinity();
+    const int without = iterations(mesh, g, point);
+    INFO("nx " << nx << ": " << with_lines << " iterations with lines, " << without << " without");
+    CHECK(with_lines <= 9);
+    CHECK(without >= 2 * with_lines);
+  }
 }

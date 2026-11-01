@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -18,6 +19,7 @@
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
 
@@ -41,7 +43,10 @@ constexpr double cfl_min = 1.0;
 constexpr double first_order_drop = 1e-3;
 constexpr int first_order_max_steps = 200;
 constexpr double cfl_max = 1e6;
-constexpr int gauss_seidel_sweeps = 4;
+// Each step's linear system is solved to this relative residual (inexact Newton), with at most
+// this many multigrid-preconditioned iterations.
+constexpr double linear_tolerance = 0.1;
+constexpr int linear_max_cycles = 10;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
@@ -105,6 +110,7 @@ class EulerPhysics final : public runtime::Physics {
     set_boundaries(mms ? &*mms : nullptr);
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
+      multigrid_.emplace(mesh, ctx.geometry);
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -480,10 +486,19 @@ class EulerPhysics final : public runtime::Physics {
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
-    matrix_->factor();
+    multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
+    const auto linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+    if (!(linear.residual_drop <= linear_tolerance)) {
+      std::array<char, 32> text{};
+      std::snprintf(text.data(), text.size(), "%.6g", linear.residual_drop);
+      ctx_.log.write("warning", "linear",
+                     "the implicit step's linear solve stopped above its tolerance", {},
+                     std::string("{\"cycles\": ") + std::to_string(linear.cycles) +
+                         ", \"residual_drop\": " +
+                         (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
+    }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
     if (alpha < min_step) {
@@ -613,6 +628,7 @@ class EulerPhysics final : public runtime::Physics {
   Flow euler_;
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;

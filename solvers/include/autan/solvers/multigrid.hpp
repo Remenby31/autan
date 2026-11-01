@@ -11,16 +11,20 @@
 
 namespace autan::solvers {
 
-enum class Cycle : std::uint8_t { v, w };
+/// V, W, or K: Krylov-accelerated coarse solves (Notay and Vassilevski 2008).
+enum class Cycle : std::uint8_t { v, w, k };
+
+/// Factor alpha of each coarse correction e: none (1), residual (minimises |r - alpha A e|) or
+/// galerkin (r - alpha A e orthogonal to e).
+enum class Scaling : std::uint8_t { none, residual, galerkin };
 
 struct MultigridOptions {
-  Cycle cycle = Cycle::w;
+  Cycle cycle = Cycle::k;
   int pre_sweeps = 1;   ///< symmetric smoothing sweeps before the coarse correction
   int post_sweeps = 1;  ///< and after it
   /// Sweeps on the coarsest level when it is too large for its dense factorisation.
   int coarsest_sweeps = 10;
-  /// Scales each coarse correction e by the alpha minimising |r - alpha A e|.
-  bool scale_correction = true;
+  Scaling scaling = Scaling::galerkin;
   AgglomerationOptions agglomeration;
 };
 
@@ -45,8 +49,16 @@ class Multigrid {
   /// until the next set_operator. Throws std::domain_error on a singular block.
   void set_operator(std::span<const double> diagonal, std::span<const double> upper,
                     std::span<const double> lower);
-  /// `cycles` multigrid cycles on A x = b from x.
-  void solve(std::span<const double> b, std::span<double> x, int cycles);
+  /// One multigrid cycle on A x = b from x.
+  void cycle(std::span<const double> b, std::span<double> x);
+  struct Report {
+    int cycles = 0;               ///< multigrid cycles applied
+    double residual_drop = 1.0;   ///< |b - A x| / |b - A x0|
+  };
+  /// Solves A x = b from x by the generalised conjugate residual method preconditioned by one
+  /// multigrid cycle per iteration, until |b - A x| <= tolerance |b - A x0| or `max_cycles`
+  /// iterations.
+  Report solve(std::span<const double> b, std::span<double> x, int max_cycles, double tolerance);
   /// `sweeps` symmetric line Gauss-Seidel sweeps of the finest level alone on A x = b from x.
   void smooth(std::span<const double> b, std::span<double> x, int sweeps);
 
@@ -54,7 +66,8 @@ class Multigrid {
   struct Operator;
   struct Smoother;
 
-  void cycle(std::size_t l, std::span<const double> b, std::span<double> x);
+  void cycle_level(std::size_t l, std::span<const double> b, std::span<double> x);
+  void coarse_solve(std::size_t m, std::span<const double> b, std::span<double> x);
 
   MultigridOptions options_;
   std::vector<Level> levels_;
@@ -62,6 +75,9 @@ class Multigrid {
   std::vector<Smoother> smoothers_;
   // Per level: residual, restricted right-hand side and correction of the next level.
   std::vector<std::vector<double>> r_, bc_, xc_, e_, q_;
+  std::vector<std::vector<std::vector<double>>> krylov_;  // per level: v1, w1, v2, w2, r1
+  std::vector<std::vector<double>> directions_, images_;  // outer iteration: z_k, A z_k
+  std::vector<double> residual_;
 };
 
 }  // namespace autan::solvers

@@ -100,7 +100,7 @@ if(AUTAN_ENABLE_CGNS)
   target_link_libraries(
     autan_physics_runtime
     PUBLIC autan::runtime
-    PRIVATE autan::physics autan_compile_options
+    PRIVATE autan::physics autan::solvers autan_compile_options
   )
 endif()
 
