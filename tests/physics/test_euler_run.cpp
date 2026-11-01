@@ -319,10 +319,11 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
   }
 }
 
-TEST_CASE("a run continued right after a shortened step reproduces the uninterrupted one",
-          "[euler]") {
-  // A shortened step caps the next CFL number; the cap is solver state and must cross a restart.
-  // Two zones at very different states make the first steps shorten.
+TEST_CASE(
+    "a run continued right after a rejected or line-searched step reproduces the uninterrupted one",
+    "[euler]") {
+  // Such a step sets the next CFL number; the CFL number is solver state and must cross a
+  // restart. Two zones at very different states make the first steps fail or line-search.
   auto doc = [&](int budget) {
     return input("hybrid.solver-input.json", [&](Json& d) {
       inviscid_along_x(d, "fp64");
@@ -345,12 +346,13 @@ TEST_CASE("a run continued right after a shortened step reproduces the uninterru
   int shortened = 0;
   for (const auto& l : lines(whole.run / "log.jsonl")) {
     const auto e = Json::parse(l);
-    if (e["source"] == "solver" && e["data"].contains("alpha") && e["iteration"].is_number()) {
+    if (e["source"] == "solver" && (e["code"] == "W0711" || e["data"].contains("omega")) &&
+        e["iteration"].is_number()) {
       shortened = e["iteration"].get<int>();
       break;
     }
   }
-  INFO("first shortened step " << shortened);
+  INFO("first rejected or line-searched step " << shortened);
   REQUIRE(shortened > 0);
   REQUIRE(shortened < budget);
   const auto first = run(doc(shortened));

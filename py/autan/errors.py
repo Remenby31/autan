@@ -611,12 +611,14 @@ _CODES = [
     Code(
         "W0711",
         "Implicit step rejected",
-        "A steady run's implicit step was rejected: no step length kept density and pressure "
-        "admissible, or the step's linear solve failed (it left more than 0.9 of its residual, "
-        "or met a singular block). The state is kept and the next step's CFL number is at most "
-        "half the rejected one. Logged at each rejection; recorded once in run.json. `data` "
-        "gives the iteration, the reason (`admissible` or `linear`), the CFL number of the "
-        "rejected step and, for `linear`, the residual drop of the solve (null otherwise).",
+        "A steady run's implicit step was rejected (HANIM's controls, docs/design/euler.md): its "
+        "linear solve failed (it left more than 0.9 of its residual) or met a singular block "
+        "(`linear`), the update was "
+        "not realisable (`admissible`), or it reduced the pseudo-time residual too little even "
+        "after a line search (`nonlinear`). The state is kept and the CFL number divided by 10. "
+        "Logged at each rejection; recorded once in run.json. `data` gives the iteration, the "
+        "reason, the CFL number of the rejected step and the linear solve's residual drop (null "
+        "for `admissible`).",
         "A few rejections are part of the start of a run. Many of them slow the convergence: "
         "check the boundary conditions and the initial state.",
     ),
