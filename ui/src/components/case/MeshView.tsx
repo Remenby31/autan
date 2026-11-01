@@ -78,7 +78,10 @@ export function MeshView({
       .catch((e: unknown) => {
         if (!abort.signal.aborted) setError(e instanceof Error ? e.message : String(e));
       });
-    return () => abort.abort();
+    return () => {
+      abort.abort();
+      picks.current++;
+    };
   }, [mesh, ready]);
 
   useEffect(() => {

@@ -59,6 +59,10 @@ def mesh_surface(data: bytes, mesh_info: dict[str, Any]) -> bytes:
     with np.errstate(over="ignore", invalid="ignore"):  # Overflow is checked, not warned.
         _check_polygons(offsets, nodes, positions)
     origin = (positions.min(axis=0) + positions.max(axis=0)) / 2 if len(positions) else np.zeros(3)
+    with np.errstate(over="ignore"):
+        if not np.isfinite((positions - origin).astype(np.float32)).all():
+            msg = "a node lies beyond single precision from the surface's centre"
+            raise _broken(msg)
     return encode(
         [
             polygon_zone(
