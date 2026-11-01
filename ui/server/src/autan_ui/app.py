@@ -324,29 +324,35 @@ def create_app(
             # The stored case is planned from a scratch copy built from the pinned folder, so
             # the SDK reads no file of the run directory, nor any file the case names: the mesh
             # path is cut to its name (plan reads only the MeshInfo), a verification case points
-            # at the archived manufactured solution and an oracle-state rule at its archived
-            # face states (results.md, `states/<sha256>.json`).
+            # at the archived manufactured solution, and an oracle-state rule and the initial
+            # state at their archived copies (results.md, `states/<sha256>.json`).
             try:
                 document = tomllib.loads(case_toml.decode())
             except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
                 raise HTTPException(422, f"case.toml: {error}") from error
             states: dict[str, bytes] = {}
-            for rule in document.get("boundaries", []):
-                condition = rule.get("condition") if isinstance(rule, dict) else None
-                if not isinstance(condition, dict) or condition.get("kind") != "oracle-state":
-                    continue
-                sha256 = condition.get("sha256")
+
+            def stage(spec: object) -> None:
+                if not isinstance(spec, dict):
+                    return
+                sha256 = spec.get("sha256")
                 if not isinstance(sha256, str) or SHA256.fullmatch(sha256) is None:
-                    condition["path"] = "states.json"  # Never the source: plan reports the case.
-                    continue
+                    spec["path"] = "states.json"  # Never the source: plan reports the case.
+                    return
                 # Repointed first, whatever follows: the source the case names is never read.
-                condition["path"] = f"{sha256}.json"
+                spec["path"] = f"{sha256}.json"
                 if sha256 in states:
-                    continue
+                    return
                 try:
                     states[sha256] = folder.read(f"states/{sha256}.json")
                 except OSError:
-                    continue  # Missing or not a regular file: plan reports it cannot read it.
+                    return  # Missing or not a regular file: plan reports it cannot read it.
+
+            for rule in document.get("boundaries", []):
+                condition = rule.get("condition") if isinstance(rule, dict) else None
+                if isinstance(condition, dict) and condition.get("kind") == "oracle-state":
+                    stage(condition)
+            stage(document.get("initial_state"))
         document["mesh"] = PurePosixPath(str(document.get("mesh", ""))).name or "mesh"
         verification = document.get("verification")
         if isinstance(verification, dict) and isinstance(verification.get("manufactured"), dict):
