@@ -15,6 +15,12 @@ case ${1:-run} in
     cp "${files[@]}" /state/
     ;;
   run)
+    lock=/home/admin/autan-gpu/gpu.lock
+    if ! { exec 9<"$lock"; } 2>/dev/null; then
+      echo "error[RUNNER_LOCK_UNAVAILABLE]: cannot open $lock; run deploy.sh start" >&2
+      exit 1
+    fi
+    exec 9<&-
     for f in "${files[@]}"; do
       [[ -f /state/$f ]] || { echo "error[RUNNER_NOT_REGISTERED]: /state/$f missing; run deploy.sh register" >&2; exit 1; }
       cp "/state/$f" .
