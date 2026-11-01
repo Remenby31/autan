@@ -11,10 +11,12 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 #include <cgnslib.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
@@ -707,11 +709,24 @@ TEST_CASE("a steady case on several ranks is refused before any directory exists
 
 TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
   // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from
-  // the freestream that rounds to zero density, so the residual is not finite and the run
-  // diverges; D0107 must name a cell of that zone. In FP64 the state is representable; whatever
-  // happens, a divergence names its cell.
-  const char* precision = GENERATE("fp64", "fp32+acc64");
-  INFO(precision);
+  // the freestream that rounds to zero density, so the run diverges at once; D0107 must name the
+  // least cell of that zone in the mesh file, in RCM order as in the file's own order, and on four
+  // ranks (unsteady, at a fixed time step: the ranks without an invalid cell must stop too). In
+  // FP64 the state is representable and the steady run goes on.
+  const std::vector<std::pair<const char*, int>> variants{
+      {"fp64", 1},
+      {"fp32+acc64", 1},
+#ifdef AUTAN_MPIEXEC
+      {"fp32+acc64", 4},
+#endif
+  };
+  const auto [precision, ranks] = GENERATE_REF(from_range(variants));
+  const char* order = GENERATE("rcm", "input");
+  INFO(precision << ", cell order " << order << ", " << ranks << " rank(s)");
+  if (std::string(order) == "input") REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
+  struct Unset {
+    ~Unset() { unsetenv("AUTAN_CELL_ORDER"); }
+  } unset;
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
     for (auto& z : d["cell_zones"]) {
@@ -719,11 +734,25 @@ TEST_CASE("a diverged run names the cell whose stored state is not physical", "[
         z["initial"]["density"] = 1e-9 * d["freestream"]["density"].get<double>();
     }
     d["time"]["max_iterations"] = 5;
+    if (ranks > 1) {
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", 5},
+                   {"dt", 1e-6},
+                   {"cfl", nullptr},
+                   {"average_from", nullptr}};
+    }
   });
-  const auto out = run(doc);
-  INFO(out.err);
-  REQUIRE(!out.run.empty());  // a run directory, whatever the exit status
-  const Json info = Json::parse(read(out.run / "run.json"));
+  fs::path dir;
+#ifdef AUTAN_MPIEXEC
+  if (ranks > 1) dir = run_on_ranks(doc, ranks);
+#endif
+  if (ranks == 1) {
+    const auto out = run(doc);
+    INFO(out.err);
+    dir = out.run;
+  }
+  REQUIRE(!dir.empty());  // a run directory, whatever the exit status
+  const Json info = Json::parse(read(dir / "run.json"));
   INFO(info["diagnostics"].dump());
   if (std::string(precision) == "fp32+acc64") {
     CHECK(info["status"] == "diverged");
@@ -735,7 +764,14 @@ TEST_CASE("a diverged run names the cell whose stored state is not physical", "[
     const auto d107 = std::find_if(diagnostics.begin(), diagnostics.end(),
                                    [](const Json& g) { return g["code"] == "D0107"; });
     REQUIRE(d107 != diagnostics.end());
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+    const auto zones = mesh.cell_zones();
+    const auto lower = static_cast<autan::index_t>(
+        std::ranges::find_if(zones, [](const auto& z) { return z.name == "lower"; }) -
+        zones.begin());
+    const auto first = std::ranges::find(mesh.cell_zone(), lower) - mesh.cell_zone().begin();
     CHECK((*d107)["data"]["zone"] == "lower");
+    CHECK((*d107)["data"]["cell"] == first);
   }
 }
 

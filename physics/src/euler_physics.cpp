@@ -133,8 +133,9 @@ class EulerPhysics final : public runtime::Physics {
   StepReport step(std::int64_t /*iteration*/) override {
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
-    // before a solve turns it into an exception.
-    if (const auto bad = first_invalid_cell()) {
+    // before a solve turns it into an exception; on every rank, also those that own no such cell.
+    const auto bad = first_invalid_cell();
+    if (ctx_.ranks.max(bad ? 1.0 : 0.0) > 0.0) {
       residual_of(u_);
       record_norms(report);
       report.diverged_cell = bad;
@@ -745,10 +746,11 @@ class EulerPhysics final : public runtime::Physics {
     report.time_step = dt;
   }
 
-  // The first cell whose state, as the kernels read it, has a non-finite or non-positive
-  // density or pressure (to_primitive of kernels/euler.py: P::state differences from the
-  // reference, the gauge pressure from the differences, all in P::compute, FP32 in
-  // fp32+acc64); else the first cell whose residual is not finite.
+  // Over every rank, the cell with the least global id whose state, as the kernels read it, has
+  // a non-finite or non-positive density or pressure (to_primitive of kernels/euler.py: P::state
+  // differences from the reference, the gauge pressure from the differences, all in P::compute,
+  // FP32 in fp32+acc64); if there is none, the one whose residual is not finite. Reported by the
+  // rank that owns it, so that the cell is the same in every cell order and on any ranks.
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
     using C = typename P::compute;
     const auto& r = reference_;
@@ -757,7 +759,7 @@ class EulerPhysics final : public runtime::Physics {
     const std::array<C, 3> mr{static_cast<C>(r[1]), static_cast<C>(r[2]), static_cast<C>(r[3])};
     const C p_ref = static_cast<C>((gas_.gamma - 1.0) *
                                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
-    for (std::size_t c = 0; c < owned_; ++c) {
+    auto state_invalid = [&](std::size_t c) {
       std::array<C, 5> dq{};
       for (std::size_t k = 0; k < 5; ++k) {
         dq[k] = static_cast<C>(State(u_[k * n_ + c] - r[k]));
@@ -770,17 +772,28 @@ class EulerPhysics final : public runtime::Physics {
       }
       const C dk = (dm_m * r0 - mr_mr * dq[0]) / (rho * r0);
       const C p = (g - C(1)) * (dq[4] - C(0.5) * dk) + p_ref;
-      if (!std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
-          !(rho > C(0)) || !(p > C(0))) {
-        return static_cast<index_t>(c);
-      }
-    }
-    for (std::size_t c = 0; c < n_; ++c) {
+      return !std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
+             !(rho > C(0)) || !(p > C(0));
+    };
+    auto residual_invalid = [&](std::size_t c) {
       for (std::size_t k = 0; k < 5; ++k) {
-        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return static_cast<index_t>(c);
+        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return true;
       }
-    }
-    return std::nullopt;
+      return false;
+    };
+    const auto ids = ctx_.mesh.cell_global_id();
+    auto id = [&](std::size_t c) { return ids.empty() ? static_cast<std::int64_t>(c) : ids[c]; };
+    auto least = [&](const auto& invalid) -> std::optional<std::size_t> {
+      std::optional<std::size_t> found;
+      for (std::size_t c = 0; c < owned_; ++c) {
+        if (invalid(c) && (!found || id(c) < id(*found))) found = c;
+      }
+      return found;
+    };
+    auto found = least(state_invalid);
+    if (ctx_.ranks.max(found ? 1.0 : 0.0) == 0.0) found = least(residual_invalid);
+    if (!found) return std::nullopt;
+    return static_cast<index_t>(*found);
   }
 
   [[nodiscard]] std::array<std::vector<double>, 6> primitive_fields() const {
