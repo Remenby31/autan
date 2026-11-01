@@ -17,8 +17,10 @@ To browse runs, `autan ui [--runs DIR] [--port N] [--no-open]` serves the web UI
 
 ## Solver input: `autan prepare`
 
+`autan prepare` writes the document the solver runtime `autan-run` reads: the case planned against its mesh, every zone resolved and every value in SI ([solver-input.md](../contracts/solver-input.md)). It refuses a case whose plan has errors, with the plan's diagnostics and exit status 1, and reports the plan's warnings on stderr.
+
 ```text
 autan prepare CASE --mesh-info MESHINFO [--device-kind cpu|cuda|hip] [--device-count N] [--deterministic] [-o FILE]
 ```
 
-`autan prepare` writes the document the solver runtime `autan-run` reads: the case planned against its mesh, every zone resolved and every value in SI ([solver-input.md](../contracts/solver-input.md)). It refuses a case whose plan has errors, with the plan's diagnostics and exit status 1, and reports the plan's warnings on stderr. You rarely call it yourself: a run with the real solver prepares its input this way.
+Without `-o`, it prints the document to stdout. `autan-run` is not on `main` yet; until then, `prepare` shows what the solver will receive.
