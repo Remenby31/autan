@@ -53,7 +53,7 @@ Results follow `bench/src/autan_bench/result.schema.json` (`autan.bench-result/1
 
 ### When `gpu-bench` runs
 
-The workflow starts for every pull request and every push to `main`, but its `mesh` and `bench` jobs run only when something that is measured, or builds what is measured, changed: `runtime/`, `codegen/`, `kernels/`, `physics/`, `solvers/`, `core/`, `bench/`, `docker/`, any `CMakeLists.txt` or `.cmake` file, the mesh generator (`vv/src/autan_vv/meshes/`) or the workflow itself. Otherwise they are reported as skipped, which satisfies the required check, so a Python, documentation or UI change never waits for the GPU. `workflow_dispatch` always measures.
+The workflow starts for every pull request and every push to `main`, but its `mesh` and `bench` jobs run only when something that is measured, or builds what is measured, changed: `runtime/`, `codegen/`, `kernels/`, `physics/`, `solvers/`, `core/`, `io/` (readers fix the face and cell order of the measured mesh), `bench/`, `docker/`, any `CMakeLists.txt` or `.cmake` file, the mesh generator (`vv/src/autan_vv/meshes/`) or the workflow itself. Otherwise they are reported as skipped, which satisfies the required check, so a Python, documentation or UI change never waits for the GPU. `workflow_dispatch` always measures.
 
 ### Tracked generated loops
 

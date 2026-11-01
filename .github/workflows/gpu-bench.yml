@@ -42,8 +42,9 @@ jobs:
           fi
           changed=$(git diff --name-only "$BASE" "$GITHUB_SHA")
           echo "changed files:"; echo "$changed"
-          # Code that is timed or builds what is timed; the mesh generator feeds the loop benchmark.
-          pattern='^(runtime|codegen|kernels|physics|solvers|core|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
+          # Code that is timed or builds what is timed; readers (io/) fix the face and cell order of
+          # the measured mesh; the mesh generator feeds the loop benchmark.
+          pattern='^(runtime|codegen|kernels|physics|solvers|core|io|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
           if echo "$changed" | grep -q -E "$pattern"; then bench=true; else bench=false; fi
           echo "bench=$bench" >> "$GITHUB_OUTPUT"; echo "bench: $bench"
 
