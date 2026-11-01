@@ -87,6 +87,10 @@ On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Gree
 
 `autan::cell_closure_error(mesh, geometry)` returns ‖Σ_f ±S_f‖ / Σ_f ‖S_f‖ for each owned cell; it is below 1e-12 on every valid cell. Geometry is FP64 by design; kernels that compute in FP32 convert their own copies.
 
+## Wall distance
+
+`autan::WallSurface(mesh, wall_zones)` (`core/include/autan/core/wall_distance.hpp`) holds the fan triangles of the zones' boundary faces, as `compute_geometry` splits them, plus their copies shifted by −1, 0 or +1 times each periodic translation; `distance(p)` is the exact distance from `p` to the nearest of them, FP64, through a bounding-volume tree. `autan::wall_distance(mesh, geometry, wall_zones)` gives it for every cell centroid. On a partition, build the surface from the global mesh: a part's nearest wall may lie in another. A zone out of range or holding interior faces is E0102.
+
 ## Quality and ordering
 
 `autan::compute_quality(mesh, geometry)` (`core/include/autan/core/quality.hpp`) returns the checkMesh metrics of OpenFOAM: per-face non-orthogonality (degrees) and skewness, per-interior-face volume ratio, per-owned-cell aspect ratio; the header gives each definition.
