@@ -65,6 +65,15 @@ A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges bet
 - **Edges:** those with an end owned or a remote child, each owned by the part of its owner node, in global orientation flagged by `edge_reversed`.
 - **Halos:** `node_halo` and `edge_halo` are HaloPatterns, so `HaloExchange` moves per-node and per-edge data. A coarse owner then restricts and assembles from all its children's values, summed in global id order: the same bits on any number of ranks, with no reverse sum (#259).
 
+## Groups and graph levels
+
+`PartitionOptions::group_offsets` and `group_cells` name groups of cells that must share a part, a smoother's lines for instance. `partition_cells` contracts each group into one node of the graph its method partitions, weighing the sum of its cells, then gives every cell its group's part.
+
+A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges between them. `coarse_parts` gives each coarse node the part of its child with the least global id; every rank holds the same hierarchy, so all agree. `extract_graph` builds a rank's share of a level, `LocalGraph`:
+- **Nodes:** owned nodes in increasing global id, then ghost nodes ordered by owning part and global id. The ghosts are the edge neighbours of the owned nodes and, with coarse parts given, the remote children (`remote_children`: children, owned elsewhere, of the coarse nodes this rank owns) and their neighbours.
+- **Edges:** those with an end owned or a remote child, each owned by the part of its owner node, in global orientation flagged by `edge_reversed`.
+- **Halos:** `node_halo` and `edge_halo` are HaloPatterns, so `HaloExchange` moves per-node and per-edge data. A coarse owner then restricts and assembles from all its children's values, summed in global id order: the same bits on any number of ranks, with no reverse sum (#259).
+
 ## Tests
 
 `tests/partition/`: analytic halo sizes of slab partitions, valid extraction for every cell type and a 105-face polyhedron, balance and reproducibility of METIS and Scotch, and error codes. `autan_halo_tests` runs on 1, 2, 4 and 8 ranks, on the host and on the GPU: ghost geometry and a Green–Gauss gradient match the single-rank values bit for bit in FP32 and FP64, reverse passes the dot-product test against forward, and reverse counts the ranks that hold each cell as a ghost.
