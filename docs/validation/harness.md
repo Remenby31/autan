@@ -24,7 +24,7 @@ The command prints the worst error of each run, the L2 order of each field and t
 
 `oracle` (name, physics, `reference_only`, parameters); `runs` (path, run id, identity, status, backend, solver commit, precision, case and mesh hashes, physical time, cell count, volume, h, and per field `L1`, `L2`, `Linf`, `scale`); `fits` (per field and norm: order, pairwise orders, R²); `verdict` (gate, milestone, checks with measured values and bounds, `pass`, `evidence`, `not_evidence_because`).
 
-**Evidence.** `evidence` is false whenever a run comes from the `fake` backend or the oracle is a numerical reference (`shu-osher`): the verdict is then computed but proves nothing. A PR quotes a verdict as evidence only when `evidence` is true.
+**Evidence.** `evidence` is false whenever a run comes from the `fake` backend or the oracle is a numerical reference (`reference_only`; none is registered today): the verdict is then computed but proves nothing. A PR quotes a verdict as evidence only when `evidence` is true.
 
 ## How it is tested
 
