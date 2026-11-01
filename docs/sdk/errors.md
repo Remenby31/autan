@@ -332,6 +332,22 @@ The case's mesh file does not exist where the case says, so `plan` cannot check 
 
 Fix: Put the mesh at the path the case gives, relative to the case file.
 
+## E0206
+
+**Manufactured solution differs from its hash** (error)
+
+The SHA-256 of the manufactured-solution file named by `verification.manufactured` differs from the `sha256` the case records, so the case would verify against another solution.
+
+Fix: Regenerate the file, or update the case's sha256 to the file the study uses.
+
+## E0207
+
+**Manufactured solution not found** (error)
+
+The file named by `verification.manufactured.path` does not exist, relative to the case file.
+
+Fix: Export the manufactured solution with autan-vv and give its path.
+
 ## E0301
 
 **Quantity of the wrong dimension** (error)
@@ -427,6 +443,14 @@ Fix: Use the condition matching the physics: `slip()` for inviscid walls, `inlet
 The case applies a condition of another kind than the type stored in the mesh file. This is allowed; the warning makes the override visible.
 
 Fix: Check that the override is intended.
+
+## E0416
+
+**Boundary rules with a manufactured solution** (error)
+
+A case verified against a manufactured solution takes the data of every boundary zone from the exact solution; a `case.boundary(...)` rule would contradict it.
+
+Fix: Remove the boundary rules from the verification case.
 
 ## E0501
 

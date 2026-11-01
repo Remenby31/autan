@@ -247,6 +247,18 @@
       "fix": "Put the mesh at the path the case gives, relative to the case file.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0205"
     },
+    "E0206": {
+      "severity": "error",
+      "title": "Manufactured solution differs from its hash",
+      "fix": "Regenerate the file, or update the case's sha256 to the file the study uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0206"
+    },
+    "E0207": {
+      "severity": "error",
+      "title": "Manufactured solution not found",
+      "fix": "Export the manufactured solution with autan-vv and give its path.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0207"
+    },
     "E0301": {
       "severity": "error",
       "title": "Quantity of the wrong dimension",
@@ -318,6 +330,12 @@
       "title": "Case overrides the mesh boundary type",
       "fix": "Check that the override is intended.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0415"
+    },
+    "E0416": {
+      "severity": "error",
+      "title": "Boundary rules with a manufactured solution",
+      "fix": "Remove the boundary rules from the verification case.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0416"
     },
     "E0501": {
       "severity": "error",

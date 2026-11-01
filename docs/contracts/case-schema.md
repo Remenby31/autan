@@ -81,6 +81,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `boundaries` | list of [BoundaryRule](#boundaries) | `[]` |
 | `cell_zones` | list of [CellZoneRule](#cell-zones) | `[]` |
 | `monitors` | list of [Monitor](#monitors) | `[]` |
+| `verification` | [Verification](#verification) | absent |
 
 ### Physics
 
@@ -192,9 +193,15 @@ Materials are stored in full, never by reference to a library entry, so the case
 
 Coefficients are reported only when `ref_area` is set; moment coefficients also need `freestream.ref_length`. The force definition and the recorded quantities are in [results.md](results.md#history).
 
+### Verification
+
+`verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`. In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
+
 ## Boundary resolution
 
 The solver needs one condition per boundary zone of the mesh. The SDK resolves them from the case and the mesh's [MeshInfo](mesh-info.md), and records where each comes from (its **provenance**):
+
+With `verification`, every boundary zone takes the manufactured solution's data, provenance `verification`, and the steps below do not apply.
 
 1. Each rule must match at least one zone (`E0410`). A zone matched by two rules is ambiguous (`E0411`): narrow the patterns.
 2. A zone matched by a rule takes the rule's condition. Provenance `code`. If the mesh typed the zone with a different kind, the override is reported (`W0415`).

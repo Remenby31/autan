@@ -274,6 +274,21 @@ _CODES = [
         "Put the mesh at the path the case gives, relative to the case file.",
     ),
     Code(
+        "E0206",
+        "Manufactured solution differs from its hash",
+        "The SHA-256 of the manufactured-solution file named by `verification.manufactured` "
+        "differs from the `sha256` the case records, so the case would verify against "
+        "another solution.",
+        "Regenerate the file, or update the case's sha256 to the file the study uses.",
+    ),
+    Code(
+        "E0207",
+        "Manufactured solution not found",
+        "The file named by `verification.manufactured.path` does not exist, relative to the "
+        "case file.",
+        "Export the manufactured solution with autan-vv and give its path.",
+    ),
+    Code(
         "W0204",
         "Highly non-orthogonal cells",
         "The maximum face non-orthogonality exceeds 70°, the threshold above which "
@@ -362,6 +377,13 @@ _CODES = [
         "The case applies a condition of another kind than the type stored in the mesh file. "
         "This is allowed; the warning makes the override visible.",
         "Check that the override is intended.",
+    ),
+    Code(
+        "E0416",
+        "Boundary rules with a manufactured solution",
+        "A case verified against a manufactured solution takes the data of every boundary zone "
+        "from the exact solution; a `case.boundary(...)` rule would contradict it.",
+        "Remove the boundary rules from the verification case.",
     ),
     Code(
         "E0501",

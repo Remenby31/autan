@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
 
-Provenance = Literal["code", "mesh", "default"]
+Provenance = Literal["code", "mesh", "default", "verification"]
 NON_ORTHOGONALITY_WARNING_DEG = 70.0
 
 _COMPATIBLE_MESH_TYPE = {
@@ -177,7 +177,13 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
             )
         )
 
-    boundaries = _resolve_boundaries(case, spec, mesh, found)
+    if spec.verification is not None:
+        _check_manufactured(
+            case, spec.verification.manufactured.path, spec.verification.manufactured.sha256, found
+        )
+        boundaries = _manufactured_boundaries(mesh)
+    else:
+        boundaries = _resolve_boundaries(case, spec, mesh, found)
     cell_zones = _resolve_cell_zones(case, spec, mesh, found)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
@@ -201,6 +207,44 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
 
 def _matches(pattern: str, names: list[str]) -> list[str]:
     return [name for name in names if fnmatchcase(name, pattern)]
+
+
+def _check_manufactured(case: Case, path: str, expected: str, found: list[Diagnostic]) -> None:
+    source = case.resolve(path)
+    where = case.locate("verification.manufactured")
+    if not source.is_file():
+        found.append(
+            diagnostic(
+                "E0207",
+                f"manufactured solution {str(source)!r} not found",
+                location=where,
+                path=str(source),
+            )
+        )
+    elif mesh_sha256(source) != expected:
+        found.append(
+            diagnostic(
+                "E0206",
+                f"the SHA-256 of {str(source)!r} differs from the case's sha256",
+                location=where,
+                path=str(source),
+            )
+        )
+
+
+def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
+    """Every boundary zone takes the exact data of the manufactured solution."""
+    return [
+        BoundaryResolution(
+            zone=zone.name,
+            faces=zone.faces,
+            mesh_type=zone.type,
+            condition={"kind": "manufactured"},
+            provenance="verification",
+            rule=None,
+        )
+        for zone in mesh.boundary_zones
+    ]
 
 
 def _resolve_boundaries(

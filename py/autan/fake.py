@@ -72,6 +72,7 @@ BC_TYPES = {
     "inlet": "BCInflowSubsonic",
     "velocity-inlet": "BCInflowSubsonic",
     "outlet": "BCOutflowSubsonic",
+    "manufactured": "BCTypeUserDefined",
 }
 BASE_CHILDREN = frozenset({"Zone", "ZoneNames", "RunMetadata", "DataClass", "DimensionalUnits"})
 ZONE_CHILDREN = frozenset(

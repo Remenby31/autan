@@ -61,6 +61,7 @@ BOUNDARY_VALUES: dict[str, frozenset[str]] = {
     "inlet": frozenset({"total_pressure", "total_temperature"}),
     "velocity-inlet": frozenset({"velocity"}),
     "outlet": frozenset({"static_pressure"}),
+    "manufactured": frozenset(),
 }
 BOUNDARY_KEYS = (
     "temperature",
@@ -174,7 +175,9 @@ class FreestreamInput(_Strict):
 
 class BoundaryInput(_Strict):
     zone: str
-    kind: Literal["wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet", "outlet"]
+    kind: Literal[
+        "wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet", "outlet", "manufactured"
+    ]
     temperature: Positive | None
     total_pressure: Positive | None
     total_temperature: Positive | None
@@ -255,6 +258,11 @@ class ForcesInput(_Strict):
     moment_center: Vector
 
 
+class VerificationInput(_Strict):
+    path: str
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
@@ -270,6 +278,7 @@ class SolverInput(_Strict):
     cell_zones: tuple[CellZoneInput, ...]
     time: Annotated[SteadyInput | UnsteadyInput, Field(discriminator="kind")]
     monitors: tuple[ForcesInput, ...]
+    verification: VerificationInput | None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -286,6 +295,10 @@ class SolverInput(_Strict):
             sst,
         ):
             message = "freestream turbulence values do not match the turbulence model"
+            raise ValueError(message)
+        manufactured = {b.kind == "manufactured" for b in self.boundaries}
+        if manufactured and manufactured != {self.verification is not None}:
+            message = "with verification every boundary is manufactured; without, none is"
             raise ValueError(message)
         compressible = self.physics.kind == "compressible"
         if (fs.temperature is not None) != compressible:
@@ -559,6 +572,14 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
         cell_zones=cell_zones,
         time=time,
         monitors=monitors,
+        verification=(
+            VerificationInput(
+                path=str(case.resolve(spec.verification.manufactured.path)),
+                sha256=spec.verification.manufactured.sha256,
+            )
+            if spec.verification is not None
+            else None
+        ),
     )
 
 
@@ -603,7 +624,19 @@ def json_schema() -> dict[str, Any]:
         {"properties": {"dt": {"type": "number"}, "cfl": {"type": "null"}}},
         {"properties": {"dt": {"type": "null"}, "cfl": {"type": "number"}}},
     ]
+
+    def boundary_kinds(rule: dict[str, Any]) -> dict[str, Any]:
+        return {"properties": {"boundaries": {"items": {"properties": {"kind": rule}}}}}
+
     schema["allOf"] = [
+        {
+            "if": {"properties": {"verification": {"type": "object"}}},
+            "then": boundary_kinds({"const": "manufactured"}),
+        },
+        {
+            "if": {"properties": {"verification": {"type": "null"}}},
+            "then": boundary_kinds({"not": {"const": "manufactured"}}),
+        },
         {
             "if": {
                 "properties": {
@@ -615,6 +648,6 @@ def json_schema() -> dict[str, Any]:
                 }
             },
             "then": {"properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}}},
-        }
+        },
     ]
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}
