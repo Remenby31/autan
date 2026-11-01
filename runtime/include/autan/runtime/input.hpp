@@ -94,6 +94,19 @@ struct Verification {
   std::string text;    ///< its bytes, read and checked by autan-run
 };
 
+/// The previous run a run starts from (solver-input.md, `start`).
+struct Start {
+  std::string run;  ///< absolute directory of the previous run
+  std::string run_id, identity;
+  std::string mode;  ///< "continue" or "warm"
+  std::int64_t iterations = 0;
+  std::optional<double> time;
+  std::string solution_sha256;
+  /// Residuals at iteration 1 of the original run, in residual_names order;
+  /// set exactly for a steady `continue`.
+  std::optional<std::vector<double>> residual_reference;
+};
+
 struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
@@ -110,6 +123,7 @@ struct SolverInput {
   std::vector<ForcesMonitor> monitors;
   /// Present for verification cases: every boundary is then "manufactured".
   std::optional<Verification> verification;
+  std::optional<Start> start;
 };
 
 /// Parses and checks a solver input: every key present, no unknown key,
