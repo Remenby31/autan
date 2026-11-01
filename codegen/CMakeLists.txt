@@ -5,12 +5,20 @@ set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients roe)
 # AUTAN_ENABLE_CUDA (root) adds the GPU loops, the GPU spike driver and the loop benchmark.
 # AUTAN_ENABLE_HIP compiles the same generated GPU loops with HIP (no AMD device: compile only).
 option(AUTAN_ENABLE_HIP "Compile the generated GPU loops with HIP" OFF)
+# AUTAN_ENABLE_METAL adds the Metal loops (Apple GPUs), compiled from source at first use.
+option(AUTAN_ENABLE_METAL "Build the Metal loops and runtime (macOS)" OFF)
+if(AUTAN_ENABLE_METAL AND NOT APPLE)
+  message(FATAL_ERROR "AUTAN_ENABLE_METAL needs macOS")
+endif()
 if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_HIP)
   message(FATAL_ERROR "AUTAN_ENABLE_CUDA and AUTAN_ENABLE_HIP are exclusive")
 endif()
 set(AUTAN_KERNEL_BACKENDS cpu)
 if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_HIP)
   list(APPEND AUTAN_KERNEL_BACKENDS gpu)
+endif()
+if(AUTAN_ENABLE_METAL)
+  list(APPEND AUTAN_KERNEL_BACKENDS metal)
 endif()
 
 file(
@@ -33,6 +41,9 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES)
     )
     list(APPEND AUTAN_GENERATED_GPU_UNITS ${AUTAN_GENERATED_DIR}/${module}_gpu.cu)
   endif()
+  if(AUTAN_ENABLE_METAL)
+    list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_metal.hpp)
+  endif()
   list(JOIN AUTAN_KERNEL_BACKENDS "," backends)
   add_custom_command(
     OUTPUT ${outputs}
@@ -40,7 +51,10 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES)
       ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/src ${Python3_EXECUTABLE} -m
       autan_codegen ${PROJECT_SOURCE_DIR}/kernels/${module}.py --out ${AUTAN_GENERATED_DIR}
       --backends ${backends}
-    DEPENDS ${PROJECT_SOURCE_DIR}/kernels/${module}.py ${AUTAN_CODEGEN_SOURCES}
+    DEPENDS
+      ${PROJECT_SOURCE_DIR}/kernels/${module}.py
+      ${AUTAN_CODEGEN_SOURCES}
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/autan_codegen/metal_prelude.metal
     COMMENT "Generating kernels from kernels/${module}.py"
     VERBATIM
   )
@@ -116,4 +130,30 @@ if(AUTAN_ENABLE_HIP)
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${AUTAN_GENERATED_DIR}
   )
   set_target_properties(autan_kernels_gpu PROPERTIES HIP_STANDARD 20 HIP_STANDARD_REQUIRED ON)
+endif()
+
+if(AUTAN_ENABLE_METAL)
+  enable_language(OBJCXX)
+  add_library(autan_metal cpp/metal.mm)
+  target_include_directories(
+    autan_metal
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_compile_options(autan_metal PRIVATE -fobjc-arc)
+  target_compile_features(autan_metal PUBLIC cxx_std_20)
+  target_link_libraries(
+    autan_metal
+    PUBLIC "-framework Metal" "-framework Foundation"
+    PRIVATE autan_compile_options
+  )
+  set_target_properties(autan_metal PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+  # Metal spike driver: the C ABI of the CUDA driver on the generated Metal loops.
+  add_library(autan_spike_metal SHARED spike/capi.cpp spike/capi_metal.mm)
+  target_compile_options(autan_spike_metal PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+  target_include_directories(autan_spike_metal PRIVATE spike)
+  target_link_libraries(
+    autan_spike_metal
+    PRIVATE autan::kernels autan::io autan_metal autan_compile_options
+  )
 endif()
