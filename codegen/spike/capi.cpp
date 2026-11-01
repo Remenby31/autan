@@ -225,7 +225,8 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
 /// Roe flux loop: mode 0 residual of U, 1 tangent (seed dU -> dR), 2 adjoint (seed R-bar -> U-bar).
 /// Arrays are 5 x n_cells, structure of arrays.
 template <class P>
-void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, double* out) {
+void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, double* out,
+         double* jac = nullptr) {
   namespace rf = autan::kernels::roe;
   using S = typename P::state;
   using R = typename P::residual;
@@ -234,8 +235,10 @@ void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, doub
   auto us = copy_in<S>(u, 5 * nc);
   std::vector<S> u_tan(5 * nc, S(0));
   std::vector<R> rs(5 * nc, R(0)), r_tan(5 * nc, R(0)), r_adj(5 * nc, R(0)), u_adj(5 * nc, R(0));
+  std::vector<typename P::jac> js(50 * static_cast<std::size_t>(m.topo.n_faces));
   rf::Data<P> d{};
   d.topo = m.topo;
+  d.face_jac = js.data();
   d.u_cons = us.data();
   d.res = rs.data();
   d.face_normal = g.face_normal.data();
@@ -247,6 +250,10 @@ void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, doub
   if (mode == 0) {
     rf::cpu::flux(d);
     copy_out(rs, out);
+  } else if (mode == 3) {
+    rf::cpu::flux_and_jacobian(d);
+    copy_out(rs, out);
+    copy_out(js, jac);
   } else if (mode == 1) {
     for (std::size_t i = 0; i < 5 * nc; ++i) u_tan[i] = S(seed[i]);
     rf::cpu::flux_tangent(d);
@@ -634,6 +641,15 @@ int autan_spike_roe(const void* mesh, const char* policy, int mode, const double
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len,
                   [&](auto p) { autan::spike::roe<decltype(p)>(*m, mode, u, seed, out); });
+}
+
+/// Roe residual and its face Jacobians (50 x n_faces, structure of arrays; component
+/// (side * 5 + i) * 5 + j is dF_i / dU_side,j) from the fused loop flux_and_jacobian.
+int autan_spike_roe_jacobian(const void* mesh, const char* policy, const double* u, double* res,
+                             double* jac, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len,
+                  [&](auto p) { autan::spike::roe<decltype(p)>(*m, 3, u, u, res, jac); });
 }
 
 int autan_spike_roe_complex_step(const void* mesh, const double* u, const double* du, double h,

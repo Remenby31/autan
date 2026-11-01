@@ -170,7 +170,7 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
 
 template <class P>
 void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const double* u,
-         const double* seed, double* out) {
+         const double* seed, double* out, double* jac = nullptr) {
   namespace rf = autan::kernels::roe;
   using S = typename P::state;
   using R = typename P::residual;
@@ -182,8 +182,10 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   DeviceArray<S> u_tan(converted_in<S>(seed, 5 * nc));
   DeviceArray<R> r_adj(converted_in<R>(seed, 5 * nc));
   DeviceArray<R> rs(5 * nc), r_tan(5 * nc), u_adj(5 * nc);
+  DeviceArray<typename P::jac> js(50 * static_cast<std::size_t>(m.topo.n_faces));
   rf::Data<P> d{};
   d.topo = dm.topo;
+  d.face_jac = js.get();
   d.u_cons = us.get();
   d.res = rs.get();
   d.face_normal = g.face_normal.get();
@@ -194,13 +196,18 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   d.u_cons_adj = u_adj.get();
   if (mode == 0) {
     rf::gpu_loops::flux(d, strategy, dm.schedule);
+  } else if (mode == 3) {
+    rf::gpu_loops::flux_and_jacobian(d, strategy, dm.schedule);
   } else if (mode == 1) {
     rf::gpu_loops::flux_tangent(d, strategy, dm.schedule);
   } else {
     rf::gpu_loops::flux_adjoint(d, strategy, dm.schedule);
   }
   synchronise();
-  copy_out((mode == 0 ? rs : mode == 1 ? r_tan : u_adj).download(), out);
+  copy_out((mode == 0 || mode == 3 ? rs : mode == 1 ? r_tan : u_adj).download(), out);
+  if (jac != nullptr) {
+    copy_out(js.download(), jac);
+  }
 }
 
 /// Adjoint of the composed advection-diffusion residual on the device (seed R-bar -> q-bar).
@@ -321,6 +328,17 @@ int autan_spike_gpu_sum_of_squares(const double* x, std::int64_t n, double* out,
     gpu::sum_of_squares(dx.get(), n, partials.get(), sum.get(), nullptr);
     synchronise();
     *out = sum.download()[0];
+  });
+}
+
+int autan_spike_gpu_roe_jacobian(const void* mesh, const char* policy, const char* strategy,
+                                 int block, const double* u, double* res, double* jac, char* err,
+                                 std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::with_policy(policy,
+                              [&](auto p) { roe<decltype(p)>(*m, s, block, 3, u, u, res, jac); });
   });
 }
 

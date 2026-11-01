@@ -26,6 +26,7 @@ class Role(enum.Enum):
     RESIDUAL = "residual"
     GEOM = "geom"
     PARAM = "param"
+    JAC = "jac"  # blocks of Jacobians, written for preconditioners (not differentiated)
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class RoleAnnotation:
     """Annotation object: `State` is a scalar, `State.Vec3` a 3-vector, `Geom.Mat3` a 3x3 matrix."""
 
     def __init__(self, role: Role) -> None:
+        self.role = role
         self.scalar = Type(role)
         self.Vec3 = Type(role, (3,))
         self.Vec5 = Type(role, (5,))
@@ -60,6 +62,15 @@ Grad = RoleAnnotation(Role.GRAD)
 Residual = RoleAnnotation(Role.RESIDUAL)
 Geom = RoleAnnotation(Role.GEOM)
 Param = RoleAnnotation(Role.PARAM)
+
+
+class _JacAnnotation(RoleAnnotation):
+    def shape(self, *dims: int) -> Type:
+        """`Jac.shape(2, 5, 5)`: a block shape for Jacobian datasets."""
+        return Type(Role.JAC, tuple(dims))
+
+
+Jac = _JacAnnotation(Role.JAC)
 
 
 def as_type(annotation: object) -> Type:
@@ -208,6 +219,21 @@ class Write:
 
 
 @dataclass(frozen=True, eq=False)
+class Jacobian:
+    """Write, per face (face and boundary loops) or per cell (cell loops), the derivative of
+    the body's outputs with respect to the arguments `wrt`, the other arguments held fixed:
+    shape (n_outputs, n_inputs) for one argument, (len(wrt), n_outputs, n_inputs) for several,
+    row-major. Computed by a forward derivative of the body alongside it; not differentiated."""
+
+    dataset: Dataset
+    wrt: tuple[str, ...]
+
+    def __init__(self, dataset: Dataset, wrt: str | tuple[str, ...]) -> None:
+        object.__setattr__(self, "dataset", dataset)
+        object.__setattr__(self, "wrt", (wrt,) if isinstance(wrt, str) else tuple(wrt))
+
+
+@dataclass(frozen=True, eq=False)
 class Sum:
     dataset: Dataset
     write: bool = True
@@ -248,6 +274,7 @@ class Loop:
     finalise_bindings: dict[str, Binding] = field(default_factory=dict)
     name: str = ""
     over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
+    jacobians: list[Jacobian] = field(default_factory=list)
     frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
 
 
@@ -269,15 +296,23 @@ def _outs(out: object) -> list[Any]:
     return list(out) if isinstance(out, list | tuple) else [out]
 
 
-def face_loop(body: Body, *, out: object, **args: object) -> Loop:
-    """Loop over interior faces; `out` increments owner and neighbour cells."""
+def _split(out: object) -> tuple[list[Any], list[Jacobian]]:
     outs = _outs(out)
+    return [o for o in outs if not isinstance(o, Jacobian)], [
+        o for o in outs if isinstance(o, Jacobian)
+    ]
+
+
+def face_loop(body: Body, *, out: object, **args: object) -> Loop:
+    """Loop over interior faces; `out` increments owner and neighbour cells, and may add
+    Jacobian blocks per face."""
+    outs, jacs = _split(out)
     for o in outs:
         if not isinstance(o, Inc) or o.right is None:
             raise CodegenError(
                 Code.INVALID_LOOP_OUTPUT, "interior face loop outputs are Inc with both signs"
             )
-    return Loop("face", body, _bindings(args), outs)
+    return Loop("face", body, _bindings(args), outs, jacobians=jacs)
 
 
 def boundary_loop(body: Body, *, out: object, frozen: bool = False, **args: object) -> Loop:
@@ -286,7 +321,7 @@ def boundary_loop(body: Body, *, out: object, frozen: bool = False, **args: obje
     tangent or adjoint: if it reads active cell data, declare `frozen=True` to accept that the
     derivatives of what it writes are dropped (the generated module lists it in
     `frozen_loops`, so runs can label their adjoints approximate)."""
-    outs = _outs(out)
+    outs, jacs = _split(out)
     if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
         return Loop("boundary_write", body, _bindings(args), outs, frozen=frozen)
     for o in outs:
@@ -295,16 +330,16 @@ def boundary_loop(body: Body, *, out: object, frozen: bool = False, **args: obje
                 Code.INVALID_LOOP_OUTPUT,
                 "boundary loop outputs are Inc of the owner only, or Write of face datasets only",
             )
-    return Loop("boundary", body, _bindings(args), outs)
+    return Loop("boundary", body, _bindings(args), outs, jacobians=jacs)
 
 
 def cell_loop(body: Body, *, out: object, **args: object) -> Loop:
-    """Loop over owned cells; `out` writes cell datasets."""
-    outs = _outs(out)
+    """Loop over owned cells; `out` writes cell datasets, and may add Jacobian blocks per cell."""
+    outs, jacs = _split(out)
     for o in outs:
         if not isinstance(o, Write):
             raise CodegenError(Code.INVALID_LOOP_OUTPUT, "cell loop outputs are Write")
-    return Loop("cell", body, _bindings(args), outs)
+    return Loop("cell", body, _bindings(args), outs, jacobians=jacs)
 
 
 INCIDENCES = "incidences"

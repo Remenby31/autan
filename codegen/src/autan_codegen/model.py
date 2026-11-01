@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
+from autan_codegen.ad import jacobian
 from autan_codegen.errors import Code, CodegenError
 from autan_codegen.frontend import Signature, parse
 
@@ -22,6 +23,7 @@ ROLE_TYPE = {
     dsl.Role.RESIDUAL: "residual",
     dsl.Role.GEOM: "geom",
     dsl.Role.PARAM: "param",
+    dsl.Role.JAC: "jac",
 }
 
 
@@ -37,6 +39,8 @@ class LoopModel:
     fin_args: list[tuple[str, int | str]] | None = None
     # Adjoint of a cell reduction (kind "reduce_adjoint"): see derive.reduce_adjoint.
     radj: object = None
+    # Jacobian outputs: each with its forward-derivative function (ad.jacobian).
+    jac_fns: list[tuple[dsl.Jacobian, Function]] = field(default_factory=list)
 
     @property
     def kind(self) -> str:
@@ -51,7 +55,7 @@ class LoopModel:
         return out
 
     def writes(self) -> list[dsl.Dataset]:
-        return [o.dataset for o in self.loop.outputs]
+        return [o.dataset for o in self.loop.outputs] + [j.dataset for j in self.loop.jacobians]
 
 
 @dataclass
@@ -179,6 +183,51 @@ def _check_outputs(where: str, lm: LoopModel) -> None:
                 )
 
 
+def _jacobian_fn(where: str, lm: LoopModel, j: dsl.Jacobian) -> Function:
+    """Check a Jacobian output against its loop and body; return its derivative function."""
+    loop = lm.loop
+    if loop.kind not in ("face", "boundary", "cell"):
+        raise CodegenError(
+            Code.INVALID_LOOP_OUTPUT,
+            "Jacobian outputs belong to face, boundary or cell loops",
+            where,
+        )
+    idx = []
+    for name in j.wrt:
+        if name not in lm.sig.names:
+            raise CodegenError(
+                Code.INVALID_BINDING, f"Jacobian wrt {name!r}: not an argument", where
+            )
+        b = loop.bindings[name]
+        if not (
+            isinstance(b.dataset, dsl.Dataset)
+            and b.dataset.set is dsl.MeshSet.CELLS
+            and not b.dataset.geometry
+        ):
+            raise CodegenError(
+                Code.INVALID_BINDING, f"Jacobian wrt {name!r}: not a cell dataset", where
+            )
+        idx.append(lm.sig.names.index(name))
+    sizes = {lm.sig.types[k].size for k in idx}
+    if len(sizes) != 1:
+        raise CodegenError(Code.TYPE_MISMATCH, "Jacobian wrt arguments of different sizes", where)
+    n_in = sizes.pop()
+    n_out = len(lm.fn.outputs)
+    shape = (n_out, n_in) if len(idx) == 1 else (len(idx), n_out, n_in)
+    ds = j.dataset
+    wanted = dsl.MeshSet.CELLS if loop.kind == "cell" else dsl.MeshSet.FACES
+    if ds.set is not wanted or ds.type.role is not dsl.Role.JAC or ds.type.shape != shape:
+        raise CodegenError(
+            Code.INVALID_LOOP_OUTPUT,
+            f"Jacobian dataset {ds.name} must be Jac{shape} on {wanted.value}, is "
+            f"{ds.type.role.value}{ds.type.shape} on {ds.set.value}",
+            where,
+        )
+    jfn = jacobian(lm.fn, idx)
+    jfn.name = f"{lm.name}_jacobian_{ds.name}"
+    return jfn
+
+
 def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
     where = f"{loop.body.source_file}: loop {name}"
     fn, sig = parse(loop.body)
@@ -190,6 +239,7 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         n_acc = len(loop.outputs)
         _check_bindings(where, "cell", fin_sig, loop.finalise_bindings, skip=n_acc)
     lm = LoopModel(name, loop, fn, sig, fin_fn, fin_sig)
+    lm.jac_fns = [(j, _jacobian_fn(where, lm, j)) for j in loop.jacobians]
     _check_outputs(where, lm)
     if loop.kind == "boundary_write" and not loop.frozen:
         active = [
@@ -244,6 +294,7 @@ def load(path: Path) -> Module:
     bodies: list[tuple[Function, Signature]] = []
     for lm in loops:
         bodies.append((lm.fn, lm.sig))
+        bodies += [(jfn, lm.sig) for _, jfn in lm.jac_fns]
         if lm.fin_fn is not None and lm.fin_sig is not None:
             bodies.append((lm.fin_fn, lm.fin_sig))
     return Module(name, path, loops, datasets, params, bodies)
