@@ -29,6 +29,9 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
         ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:autan_halo_tests> ${MPIEXEC_POSTFLAGS}
     )
-    set_tests_properties(autan_halo_tests_${ranks}_ranks PROPERTIES PROCESSORS ${ranks} TIMEOUT 600)
+    set_tests_properties(
+      autan_halo_tests_${ranks}_ranks
+      PROPERTIES PROCESSORS ${ranks} TIMEOUT 600 LABELS mpi
+    )
   endforeach()
 endif()

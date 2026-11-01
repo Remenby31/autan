@@ -10,13 +10,17 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions: {}
 
+# A new push to a pull request cancels its older run. Runs on main queue instead: each one measures
+# a merged commit, and a later push, even one whose jobs are skipped, must not cancel it.
 concurrency:
   group: gpu-bench-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -36,7 +40,11 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
+          if [ "$DRAFT" = true ]; then
+            echo "bench=false" >> "$GITHUB_OUTPUT"; echo "bench: skipped, the pull request is a draft"; exit 0
+          fi
           if [ "$EVENT" = workflow_dispatch ] || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "bench=true" >> "$GITHUB_OUTPUT"; echo "bench: forced ($EVENT)"; exit 0
           fi

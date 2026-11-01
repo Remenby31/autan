@@ -270,7 +270,13 @@ def write_run(
         averaging=None,
         diagnostics=(),
     )
-    writer = RunWriter(runs, run, spec, info)
+    # oracle-state conditions: the face-state files, archived as results.md#run-directory says.
+    states = {
+        rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()
+        for rule in spec.boundaries
+        if rule.condition.kind == "oracle-state"
+    }
+    writer = RunWriter(runs, run, spec, info, states=states)
     writer.append(
         {
             "iteration": 1,

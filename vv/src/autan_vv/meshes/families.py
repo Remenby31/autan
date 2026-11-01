@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from autan_vv.errors import VVError
+from autan_vv.meshes import ringleb
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from autan_vv.meshes.fluent import write_fluent
@@ -223,14 +224,14 @@ def _to_facemesh(
     single_key = {tuple(key[i]): i for i in single}
     zones: dict[str, tuple[str, IntArray, IntArray]] = {}
     used = np.zeros(poly.shape[0], dtype=bool)
-    for name in BOX_ZONES:
-        bkey = np.sort(np.where(boundary[name] < 0, np.iinfo(np.int64).max, boundary[name]), axis=1)
+    for name, faces in boundary.items():
+        bkey = np.sort(np.where(faces < 0, np.iinfo(np.int64).max, faces), axis=1)
         idx = np.array([single_key.get(tuple(k), -1) for k in bkey], dtype=np.int64)
         if np.any(idx < 0):
             msg = f"zone {name} has a face that is not a cell boundary face"
             raise VVError(msg, code="V0302")
         used[idx] = True
-        zones[name] = (BC_TYPES[name], poly[idx], owner[idx])
+        zones[name] = (BC_TYPES.get(name, "pressure-far-field"), poly[idx], owner[idx])
     if not np.all(used[single]):
         msg = "boundary faces without a zone"
         raise VVError(msg, code="V0302")
@@ -410,9 +411,8 @@ def _write_msh(
                 (conn + 1).ravel().tolist(),
             )
             tag += conn.shape[0]
-    for name in BOX_ZONES:
+    for name, faces in boundary.items():
         surface = gmsh.model.addDiscreteEntity(2)
-        faces = boundary[name]
         for k, gmsh_type in ((3, 2), (4, 3)):
             rows = faces[(faces >= 0).sum(axis=1) == k][:, :k]
             if rows.size:
@@ -450,9 +450,12 @@ def generate_level(
     ASCII. The file holds exactly the in-memory mesh: coordinates are rounded to the 16 significant
     digits Gmsh writes.
     """
-    if kind not in KINDS:
-        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS}"
+    if kind not in (*KINDS, "ringleb"):
+        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS} or 'ringleb'"
         raise VVError(msg, code="V0304")
+    if kind == "ringleb" and perturbation > 0.0:
+        msg = "the Ringleb mesh follows the flow's streamlines and is not perturbed"
+        raise VVError(msg, code="V0309")
     if not (0.0 <= perturbation < 1.0) or n < 1:
         msg = f"need 0 <= perturbation < 1 and n >= 1, got {perturbation} and {n}"
         raise VVError(msg, code="V0309")
@@ -465,13 +468,16 @@ def generate_level(
         gmsh.option.setNumber("Mesh.Binary", 0)
         gmsh.option.setNumber("Mesh.SaveAll", 0)
         version = str(gmsh.__version__)
-        if kind == "hybrid":
-            points, cells = _structured_hybrid(n)
+        if kind == "ringleb":
+            points, cells, boundary = ringleb.grid(n)
         else:
-            points, cells = _gmsh_mesh(
-                gmsh, "tet" if kind in ("poly", "agglomerated") else kind, n, seed
-            )
-        boundary = _box_boundary(points, cells)
+            if kind == "hybrid":
+                points, cells = _structured_hybrid(n)
+            else:
+                points, cells = _gmsh_mesh(
+                    gmsh, "tet" if kind in ("poly", "agglomerated") else kind, n, seed
+                )
+            boundary = _box_boundary(points, cells)
         if perturbation > 0.0:
             ss = np.random.SeedSequence([seed, n, KINDS.index(kind)])
             points = perturb(points, cells, boundary, perturbation, int(ss.generate_state(1)[0]))
@@ -505,6 +511,8 @@ def generate_family(
         path = out_dir / name
         mesh, version = generate_level(kind, n, perturbation=perturbation, seed=seed, path=path)
         meshes.append(mesh)
+        if kind == "ringleb":
+            ringleb.write_face_states(mesh, path, path.with_suffix(".states.json"))
         g = mesh.geometry
         volume = float(g.cell_volume.sum())
         counts: dict[str, int] = {}

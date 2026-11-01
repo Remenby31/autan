@@ -491,3 +491,64 @@ def test_freestream_refuses_cell_zone_gas_overrides(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         verify([results.path], "freestream", "freestream-preservation")
     assert err.value.code == "V0724"
+
+
+def test_ringleb_family_with_its_face_states_meets_the_gate(tmp_path: Path) -> None:
+    # Each level imposes its own face-state file (another path and hash per level) on a curved
+    # domain whose polygonal bounds move with refinement: still one problem and one domain.
+    import hashlib  # noqa: PLC0415
+
+    family, meshes = generate_family("ringleb", (6, 8, 12, 16), tmp_path / "ringleb")
+    oracle = get_oracle("ringleb")
+    paths = []
+    for lv, mesh in zip(family.levels, meshes, strict=True):
+        path = tmp_path / "ringleb" / lv.file
+        states = path.with_suffix(".states.json")
+        sha = hashlib.sha256(states.read_bytes()).hexdigest()
+
+        case = autan.Case("verify-ringleb", mesh=path)
+        case.physics = autan.Compressible(
+            turbulence=autan.Inviscid(), gas=_gas(oracle.gas_constant)
+        )
+        case.freestream(mach=0.3, pressure=1e5 * Pa, temperature=300 * K)
+        for zone in ("k-min", "k-max", "inflow", "outflow"):
+            case.boundary(zone).oracle_state(path=str(states), sha256=sha)
+        for zone in ("back", "front"):
+            case.boundary(zone).symmetry()
+        x = mesh.geometry.cell_centroid
+        exact = oracle.fields(x, None)
+        h = _h(mesh, oracle.axes)
+        g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1])
+        fields = {k: exact[k] * (1.0 + 0.05 * h**2.0 * g) for k in field_names(case.spec)}
+        paths.append(
+            write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, "gmsh"), fields).path
+        )
+    verdict = verify(paths, "ringleb", "ringleb-order")["verdict"]
+    assert verdict["pass"], verdict["checks"]
+
+
+def test_fp32_agreement_measures_the_relative_difference_in_units_of_eps32(tmp_path: Path) -> None:
+    # The fp32 runs hold the fp64 density times (1 + delta): its relative L2 difference is delta
+    # whatever the mesh, so the reported value is delta / 2^-23, compared with k.
+    from autan_vv.agreement import EPS32, agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    for delta in (100.0 * EPS32, 600.0 * EPS32):
+        out = tmp_path / f"d{delta:.3g}"
+        double = _runs(out, meshes, "mms-euler", 2.0)
+        single = []
+        for mesh, path, fmt in meshes:
+            case = _case(path, "mms-euler", precision="fp32+acc64")
+            x = mesh.geometry.cell_centroid
+            exact = get_oracle("mms-euler").fields(x, None)
+            h = _h(mesh, (0, 1, 2))
+            g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1]) * np.cos(x[:, 2])
+            fields = {k: exact[k] * (1.0 + 0.05 * h**2.0 * g) for k in field_names(case.spec)}
+            fields["Density"] = fields["Density"] * (1.0 + delta)
+            info = mesh_info(mesh, path, fmt)
+            single.append(write_run(out / "single", case, mesh, info, fields).path)
+        report = agreement(double, single)
+        for pair in report["pairs"]:
+            assert pair["fields"]["Density"] == pytest.approx(delta / EPS32, rel=1e-9)
+            assert pair["fields"]["Pressure"] == 0.0
+        assert report["pass"] is (delta / EPS32 <= 500.0)
