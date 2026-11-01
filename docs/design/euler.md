@@ -62,7 +62,7 @@ Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R
 - CFL = 10 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
 - A step is shortened so that no cell loses more than half its density or pressure.
 
-On the MMS (`autan-run`, `fp64`, ten orders from the freestream): hex 42–158 steps, poly 46–70, hybrid 64–192, tet 126–233. A Newton-Krylov variant (FGMRES on finite differences of the full residual, with these Gauss-Seidel sweeps as preconditioner) was less robust far from the solution, where its larger steps were shortened repeatedly; it is not used.
+On the MMS (`autan-run`, `fp64`, ten orders from the freestream): hex 42–158 steps, poly 46–70, hybrid 64–192, tet 126–233. A Newton-Krylov variant (FGMRES on finite differences of the full residual, the limiter frozen, these Gauss-Seidel sweeps as preconditioner) was less robust far from the solution: on the MMS from the freestream (hex, n = 16) its steps were shortened at almost every iteration and the run stalled after 1.3 orders, where the defect correction above converges ten orders in 177 steps. It is left for M3 as an end phase, switched on once the residual has dropped.
 
 Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `dt` or `cfl`.
 
