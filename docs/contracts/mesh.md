@@ -69,7 +69,7 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 - each node of zone a, translated, coincides with exactly one node of zone b: closer than 1e-4 of the shortest edge of zone a's faces at that node, far below any spacing and far above single-precision coordinates;
 - each face of zone a, so mapped, has the node set of exactly one face of zone b, the two zones have as many faces, and partners run through their nodes in opposite directions (both point out of the domain).
 
-`renumber_cells` keeps the pairs. A partition carries none: `extract_partition` rejects a mesh with periodic pairs (E0140), and `write_solution` rejects one (E0133), until periodic faces become interior faces to image ghost cells in a partition and pairs are written to CGNS. Rotations are reserved.
+`renumber_cells` keeps the pairs. A partition carries none: there each periodic face is an interior face to an image ghost cell, the cell across it translated (`ghost_translation`), and the pair's zones hold interior faces ([partitioning.md](../design/partitioning.md#periodic-images)). `write_solution` rejects a mesh with pairs (E0133) until pairs are written to CGNS. Rotations are reserved.
 
 ## Geometry
 
