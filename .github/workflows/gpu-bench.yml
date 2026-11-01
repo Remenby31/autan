@@ -89,9 +89,11 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository)
     # `bench`: runners whose GPU is not shared with another team's long-running process.
     runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
-    timeout-minutes: 90
+    # A bisection on main measures up to 8 commits in this job (bench/ci/bisect.py).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 90 || 240 }}
     permissions:
       contents: read
+      actions: read
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
       # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
@@ -101,6 +103,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A bisection on main checks out earlier commits of main.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
       - name: Build the benchmarks
         run: cmake -S bench -B build/bench && cmake --build build/bench
       - name: Install the harness
@@ -117,6 +121,7 @@ jobs:
       - name: STREAM bandwidth
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)
+        id: stream-gate
         run: >-
           bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
           uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
@@ -135,15 +140,65 @@ jobs:
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
       - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
+        id: loops-gate
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
+      # A regression of main confirmed by the gate, on a machine that passed STREAM: find its
+      # commit here, on this Spark and with this protocol, before the runner takes other jobs.
+      - name: Find the last commit of main that passed the gate
+        id: good
+        if: >-
+          failure() && github.event_name != 'pull_request' &&
+          steps.stream-gate.outcome == 'success' && steps.loops-gate.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bench/ci/last-measured.sh)" >> "$GITHUB_OUTPUT"
+      - name: Bisect the regression
+        if: failure() && steps.good.outputs.sha != ''
+        env:
+          GOOD: ${{ steps.good.outputs.sha }}
+        run: >-
+          mkdir -p "results/bisect/$GITHUB_SHA" &&
+          cp results/stream.json results/codegen-hex-n128-fp32.json "results/bisect/$GITHUB_SHA/" &&
+          python3 bench/ci/bisect.py --good "$GOOD" --bad "$GITHUB_SHA" --out results/bisect
+          --compare bench/ci/compare-points.sh
+          -- bench/ci/measure-point.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: gpu-bench-${{ github.sha }}
           path: results/
           if-no-files-found: error
+
+  report-regression:
+    needs: bench
+    # Write access only here, on a GitHub-hosted runner and for main, never on the Spark.
+    if: always() && needs.bench.result == 'failure' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-bench-${{ github.sha }}
+          path: results
+      - name: Open an issue, and comment on the culprit's pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -f results/bisect/summary.json ]; then
+            python3 bench/ci/report_regression.py results/bisect bench/baselines/gb10-codegen-hex-n128-fp32.json "$RUN_URL"
+          else
+            echo "No bisection: the failure was not a confirmed regression of the tracked loops."
+          fi
