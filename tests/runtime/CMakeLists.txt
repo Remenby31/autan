@@ -24,6 +24,11 @@ add_dependencies(autan_runtime_tests autan-run-relaxation)
 catch_discover_tests(autan_runtime_tests)
 
 # autan-run as shipped, through its output and exit status: no physics yet.
+set_property(
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/tests/data/runtime/hybrid.solver-input.json
+)
 file(READ ${PROJECT_SOURCE_DIR}/tests/data/runtime/hybrid.solver-input.json shipped_input)
 string(
   REPLACE "@MESH@"
