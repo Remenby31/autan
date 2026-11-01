@@ -206,7 +206,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
                  face_area = conv(packed.face_area_magnitude),
                  face_centroid = conv(packed.face_centroid), face_moment = conv(packed.face_moment),
                  cell_centroid = conv(packed.cell_centroid), cell_volume = conv(packed.cell_volume),
-                 st_weight = conv(stencil.lsq_weight);
+                 st_weight = conv(host.gradient_weights());
   std::vector<double> bc_kind(nf, 0.0);
   std::vector<S> bc(5 * nf, S(0));
   for (std::size_t b = 0; b < nb; ++b) {

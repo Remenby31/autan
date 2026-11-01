@@ -73,6 +73,11 @@ class Euler {
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
+  /// The least-squares weights of the gradient over its stencil (layout of
+  /// kernels::CellStencil::lsq_weight). They depend on set_boundary: boundary faces take part
+  /// where their condition gives the state there, and in the cells whose interior stencil alone
+  /// cannot determine a gradient.
+  [[nodiscard]] std::vector<double> gradient_weights() const;
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 

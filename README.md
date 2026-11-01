@@ -26,7 +26,7 @@
 
 Autan is a GPU-native finite-volume solver for compressible flow on unstructured meshes of arbitrary polyhedra, with a discrete adjoint on the GPU and a typed Python SDK.
 
-> **Status: pre-alpha. The solver does not compute a flow yet.** The repository holds the plan, the research behind it, the contracts between components and the first foundations of milestone M0: the polyhedral mesh core, the Gmsh, Fluent and OpenFOAM readers, and the SDK's case schema and CLI skeleton. There is no release and no stable API. Do not use it for engineering work.
+> **Status: pre-alpha.** The solver runs inviscid compressible flow on the CPU, in `fp64` and `fp32+acc64`; viscous flow, turbulence models and GPU runs are not wired in yet. There is no release and no stable API: [build it from source](docs/getting-started/build.md). Do not use it for engineering work.
 
 **Documentation: [remenby31.github.io/autan](https://remenby31.github.io/autan/)**
 
@@ -49,11 +49,12 @@ This project sets out to:
 
 | Milestone | Content | State |
 |---|---|---|
-| M0 Foundations | Face-based polyhedral mesh, Gmsh, Fluent and CGNS readers, partitioning, CI, benchmark harness, V&V framework | In progress |
-| M1 Generator spike | Kernel DSL to CUDA, HIP and CPU; gradients; scalar advection-diffusion; adjoint of one kernel | Planned |
-| M2 Compressible Euler | Roe, HLLC and AUSM+-up fluxes; explicit then implicit solver | Planned |
+| M0 Foundations | Face-based polyhedral mesh, Gmsh, Fluent and CGNS readers, partitioning, CI, benchmark harness, V&V framework | Done |
+| M1 Generator spike | Kernel DSL to CUDA, HIP and CPU; gradients; scalar advection-diffusion; adjoint of one kernel | Done, except execution on AMD hardware, hierarchical (OP2) colouring, shared-memory transposition and the ARM NEON CPU backend ([open items](docs/design/kernel-generator-spike.md#open-items)) |
+| M1b Metal backend | The generator's loops on Apple GPUs | Done, except the bandwidth gate of the least-squares gradient on hexahedra in `fp32+acc64` ([open items](docs/design/metal-backend.md#open-items)) |
+| M2 Compressible Euler | Roe, HLLC and AUSM+-up fluxes; explicit then implicit solver | In progress: explicit solver on the CPU; implicit solver and verification gates in review |
 | M3 Navier-Stokes + SA | Viscous fluxes, Spalart-Allmaras, agglomeration multigrid | Planned |
-| M4 SDK + CLI v0 | Typed case schema with units, `autan plan`, `run`, `logs`, `diff`, coded errors | Planned |
+| M4 SDK + CLI v0 | Typed case schema with units, `autan plan`, `run`, `logs`, `diff`, coded errors | In progress: schema, `plan`, `run`, `prepare` and coded errors exist |
 | M5 Multi-GPU and precision | GPU-aware MPI, FP32 versus FP64 study | Planned |
 | M6 GPU discrete adjoint | Adjoint of the generated kernels, shape optimisation | Planned |
 | M7–M11 | SST, DDES, WMLES; pressure-based solver; multi-gas and conjugate heat transfer; web UI; AI-native workflows | Planned |
@@ -62,7 +63,7 @@ Each milestone closes on numbered exit criteria. They are in [the plan](docs/PLA
 
 ## Architecture
 
-Three parts: a C++ core that reads and partitions meshes, a Python SDK that checks cases and reads results, and, from M1, a kernel generator that emits CUDA, HIP and CPU code with its tangent and adjoint. They exchange four documents: the [case](docs/contracts/case-schema.md), the [MeshInfo summary](docs/contracts/mesh-info.md), the [solver input](docs/contracts/solver-input.md) and the [run directory](docs/contracts/results.md). [Architecture](docs/concepts/architecture.md) shows the components and the milestone of each.
+Three parts: a C++ core that reads and partitions meshes and runs cases (`autan-run`), a Python SDK that checks cases and reads results, and a kernel generator that emits CUDA, HIP, CPU and Metal code with its tangent and adjoint. They exchange four documents: the [case](docs/contracts/case-schema.md), the [MeshInfo summary](docs/contracts/mesh-info.md), the [solver input](docs/contracts/solver-input.md) and the [run directory](docs/contracts/results.md). [Architecture](docs/concepts/architecture.md) shows the components and the milestone of each.
 
 ## How correctness and speed are proven
 
