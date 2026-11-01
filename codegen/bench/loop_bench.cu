@@ -26,6 +26,7 @@
 #include "blocks_cpu.hpp"
 #include "blocks_gpu.cuh"
 #include "device.cuh"
+#include "diagonal_only_gpu.cuh"
 #include "gradients_cpu.hpp"
 #include "gradients_gpu.cuh"
 #include "revision.h"
@@ -470,6 +471,19 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                    time_it(o, [&] { bk::gpu_loops::assemble(dd, dl.schedule); })});
     out.push_back({"block_multiply" + layout, mul_bytes, "gather",
                    time_it(o, [&] { bk::gpu_loops::multiply(dd, dl.schedule); })});
+    // The same assembly without the off-diagonal blocks (codegen/tests/kernels): their cost.
+    namespace dgo = autan::kernels::diagonal_only;
+    DeviceArray<A> ddiag3(25 * nc);
+    dgo::Data<P> dq{};
+    dl.bind(dq);
+    dq.face_jac = djac.get();
+    dq.bnd_jac = dbnd.get();
+    dq.shift = dshift.get();
+    dq.diag = ddiag3.get();
+    dgo::gpu_loops::assemble(dq, dl.schedule);
+    if (max_rel_diff(as_double(ddiag3.download()), as_double(hdiag2)) > tolerance) verified = false;
+    out.push_back({"block_diagonal" + layout, asm_bytes - inc * 25.0 * sizeof(J), "gather",
+                   time_it(o, [&] { dgo::gpu_loops::assemble(dq, dl.schedule); })});
   }
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.schedule.interior.offsets.size() - 1,
