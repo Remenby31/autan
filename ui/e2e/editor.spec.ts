@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
@@ -304,25 +304,60 @@ test("a copy of every sample run's case writes that case's SDK code", async ({ p
   }
 });
 
-test("a copy of a case the form cannot say lists what it leaves out", async ({ page }) => {
-  // A real run of a case with an unsteady time, which the editor does not offer yet.
+test("a copy of a case the form cannot say lists what it changes", async ({ page }) => {
+  // A real run of a case with an unsteady time, which the editor does not offer yet, found by
+  // its own case name and removed afterwards.
   const dir = mkdtempSync(join(tmpdir(), "autan-unsteady-"));
+  const name = `unsteady-${Date.now()}`;
   writeFileSync(
     join(dir, "case.py"),
-    readFileSync("../py/examples/crm_hl.py", "utf8") +
+    readFileSync("../py/examples/crm_hl.py", "utf8").replace('"crm-hl"', `"${name}"`) +
       "case.time = autan.Unsteady(steps=3, dt=1e-3 * autan.units.s)\n",
   );
   execFileSync("uv", [
     ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
     ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
   ]);
-  const listed: { run_id: string; started: string }[] = (
+  const listed: { run_id: string; case: { name: string } }[] = (
     await (await page.request.get("/api/runs")).json()
   ).runs;
-  const unsteady = [...listed].sort((a, b) => b.started.localeCompare(a.started))[0];
-  if (!unsteady) throw new Error("no run");
+  const run = listed.find((r) => r.case.name === name);
+  if (!run) throw new Error("the unsteady run is not listed");
+  try {
+    await page.goto(`/cases/new?run=${run.run_id}`);
 
-  await page.goto(`/cases/new?run=${unsteady.run_id}`);
+    await expect(page.getByTestId("dropped")).toContainText('time.kind: "unsteady" → "steady"');
+  } finally {
+    rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+  }
+});
 
-  await expect(page.getByTestId("dropped")).toContainText('kind = "unsteady"');
+test("the form waits for the copy, and a run it cannot read says so", async ({ page }) => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/materials", async (route) => {
+    await held;
+    await route.continue();
+  });
+  const listed: { run_id: string }[] = (await (await page.request.get("/api/runs")).json()).runs;
+  await page.goto(`/cases/new?run=${listed[0]?.run_id}`);
+  // The case's own name, not a monitor's.
+  const caseName = page
+    .getByRole("group")
+    .filter({ hasNotText: "Forces monitor" })
+    .getByLabel("Name")
+    .first();
+  await expect(caseName).toBeDisabled();
+  release();
+  await expect(caseName).toBeEnabled();
+  await expect(caseName).not.toHaveValue("");
+
+  await page.goto("/cases/new?run=run-20000101T000000Z-00000000");
+  await expect(
+    page.getByText("The run run-20000101T000000Z-00000000 could not be read"),
+  ).toBeVisible({
+    timeout: 15_000,
+  });
 });

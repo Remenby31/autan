@@ -89,6 +89,10 @@ Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench
 
 There is no study entity in `autan.results/1` yet: Home groups runs by case name and calls a group a study when its runs differ in the swept settings of their summaries, labelled with the range (`α 7.05–21.47 deg`). On Home, `x` selects the focused row, `Space` previews it, `c` compares the selection (also from a group header). `/compare?runs=[…]` (≤ 8, in selection order, A first) overlays residual drop, CL and CD against iteration with a shared cursor, draws the lift and drag polars from converged runs when the angle of attack varies, and lists the case settings that differ, with where each run ran from run.json (`run.devices`, `run.backend`, `run.solver` commit, `run.deterministic`).
 
+### Case editor
+
+`/cases/new` builds a case field by field against a MeshInfo of `--meshes`; beside it, the SDK's own `case.py` (`Case.to_python`) and `case.toml` of the case as typed, and its plan. The editor never writes code: the case document holds only what was set and the SDK fills its defaults, so its code is the SDK's by construction. The mesh's boundary is drawn when its `autan.surface/1` file is listed; a zone clicked gets the boundary rule whose pattern covers it, or a new one. *Edit a copy* on a run page reads that run's case into the form; the SDK's documents of the run's case and of the form's are compared path by path, and what the form cannot say yet (an unsteady time, a custom material) is listed as what the copy changes.
+
 ### Component library
 
 `ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition.
