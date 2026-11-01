@@ -32,7 +32,8 @@ Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
   for (const auto& z : in.cell_zones) {
     if (z.medium.kind != "ideal-gas") {
-      throw std::invalid_argument("cell zone '" + z.zone + "': the Euler physics takes ideal gases only");
+      throw std::invalid_argument("cell zone '" + z.zone +
+                                  "': the Euler physics takes ideal gases only");
     }
     const Gas g{*z.medium.gamma, *z.medium.gas_constant};
     if (gas && (gas->gamma != g.gamma || gas->gas_constant != g.gas_constant)) {
@@ -110,8 +111,7 @@ class EulerPhysics final : public runtime::Physics {
     return out;
   }
 
-  [[nodiscard]] std::vector<io::Field> wall_fields(
-      std::span<const index_t> faces) const override {
+  [[nodiscard]] std::vector<io::Field> wall_fields(std::span<const index_t> faces) const override {
     const auto p = face_pressure();
     const auto ni = static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
     std::vector<io::Field> out{{.name = "Pressure", .values = {}},
@@ -191,8 +191,7 @@ class EulerPhysics final : public runtime::Physics {
                                            f.pressure};
     for (std::size_t b = 0; b < nb; ++b) {
       const auto face = ni + b;
-      const auto& zone =
-          mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[face])].name;
+      const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[face])].name;
       const auto it = conditions.find(zone);
       if (it == conditions.end()) {
         throw std::invalid_argument("boundary zone '" + zone + "' has no condition");
@@ -212,8 +211,8 @@ class EulerPhysics final : public runtime::Physics {
         put(BoundaryKind::outlet, {0.0, 0.0, 0.0, 0.0, *bc.static_pressure});
       } else if (bc.kind == "manufactured" && mms != nullptr) {
         kind[b] = BoundaryKind::state;
-        manufactured_faces.push_back({g.face_centroid_x[face], g.face_centroid_y[face],
-                                      g.face_centroid_z[face]});
+        manufactured_faces.push_back(
+            {g.face_centroid_x[face], g.face_centroid_y[face], g.face_centroid_z[face]});
         manufactured_index.push_back(b);
       } else {
         throw std::invalid_argument("boundary zone '" + zone + "': condition '" + bc.kind +
@@ -276,8 +275,8 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) {
         for (std::size_t c = 0; c < n_; ++c) {
           const auto i = k * n_ + c;
-          stage_[i] = u_[i] - steady_stages[s] * steady_cfl /
-                                  static_cast<double>(lambda_[c]) * static_cast<double>(res_[i]);
+          stage_[i] = u_[i] - steady_stages[s] * steady_cfl / static_cast<double>(lambda_[c]) *
+                                  static_cast<double>(res_[i]);
         }
       }
     }
@@ -299,7 +298,8 @@ class EulerPhysics final : public runtime::Physics {
         dt = std::min(dt, *t.cfl * g.cell_volume[c] / static_cast<double>(lambda_[c]));
       }
     }
-    const std::array<std::array<double, 2>, 3> weights{{{0.0, 1.0}, {0.75, 0.25}, {1.0 / 3.0, 2.0 / 3.0}}};
+    const std::array<std::array<double, 2>, 3> weights{
+        {{0.0, 1.0}, {0.75, 0.25}, {1.0 / 3.0, 2.0 / 3.0}}};
     stage_ = u_;
     for (std::size_t s = 0; s < 3; ++s) {
       if (s > 0) residual_of(stage_);

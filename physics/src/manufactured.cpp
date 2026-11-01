@@ -55,8 +55,7 @@ class Parser {
  private:
   [[noreturn]] void fail(const char* what) const {
     throw std::invalid_argument(std::string("manufactured solution expression: ") + what +
-                                " at position " + std::to_string(i_) + " of '" + s_ +
-                                "'");
+                                " at position " + std::to_string(i_) + " of '" + s_ + "'");
   }
   void skip() {
     while (i_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[i_])) != 0) ++i_;
@@ -108,11 +107,12 @@ class Parser {
       if (!eat(')')) fail("expected ')'");
       return e;
     }
-    if (i_ < s_.size() && (std::isdigit(static_cast<unsigned char>(s_[i_])) != 0 || s_[i_] == '.')) {
+    if (i_ < s_.size() &&
+        (std::isdigit(static_cast<unsigned char>(s_[i_])) != 0 || s_[i_] == '.')) {
       std::size_t j = i_;
       while (j < s_.size() &&
-             (std::isdigit(static_cast<unsigned char>(s_[j])) != 0 || s_[j] == '.' || s_[j] == 'e' ||
-              s_[j] == 'E' ||
+             (std::isdigit(static_cast<unsigned char>(s_[j])) != 0 || s_[j] == '.' ||
+              s_[j] == 'e' || s_[j] == 'E' ||
               ((s_[j] == '+' || s_[j] == '-') && j > i_ && (s_[j - 1] == 'e' || s_[j - 1] == 'E'))))
         ++j;
       const std::string literal(s_.substr(i_, j - i_));
@@ -128,9 +128,9 @@ class Parser {
     if (j == i_) fail("expected a number, a name or '('");
     const std::string name(s_.substr(i_, j - i_));
     i_ = j;
-    static const std::map<std::string, Op> functions = {
-        {"pow", Op::pow}, {"sqrt", Op::sqrt}, {"sin", Op::sin},
-        {"cos", Op::cos}, {"exp", Op::exp},   {"log", Op::log}};
+    static const std::map<std::string, Op> functions = {{"pow", Op::pow}, {"sqrt", Op::sqrt},
+                                                        {"sin", Op::sin}, {"cos", Op::cos},
+                                                        {"exp", Op::exp}, {"log", Op::log}};
     if (const auto f = functions.find(name); f != functions.end()) {
       if (!eat('(')) fail("expected '(' after a function");
       Node n{.op = f->second, .a = sum()};
