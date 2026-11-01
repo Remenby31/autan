@@ -858,10 +858,11 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
 
   require_error(run(with_pairs(2.0)), "E0705");
   // A periodic zone takes no condition.
-  require_error(run(with_pairs(1.0, [](Json& d) {
-                  Json b = d["boundaries"][0];
-                  b["zone"] = "xmin";
-                  d["boundaries"].push_back(b);
-                })),
+  require_error(run(with_pairs(1.0,
+                               [](Json& d) {
+                                 Json b = d["boundaries"][0];
+                                 b["zone"] = "xmin";
+                                 d["boundaries"].push_back(b);
+                               })),
                 "E0705");
 }

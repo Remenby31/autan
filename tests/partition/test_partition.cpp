@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <set>
+#include <span>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -410,4 +411,48 @@ TEST_CASE("Periodic sides split into several pairs share their direction",
       CHECK(std::hypot(dx, dy) < 0.75);
     }
   }
+}
+
+TEST_CASE("One part fills its periodic images alone", "[partition][periodic]") {
+  // The unit box of 3^3 tetrahedra cubes, periodic in x and y, as one part:
+  // every ghost is an image of an owned cell. forward_self copies the owner's
+  // value; fill_ghost_geometry its volume and its centroid moved by the
+  // image's translation, bit for bit.
+  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::tetra, 0.2);
+  for (int k = 0; k < 2; ++k) {
+    cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+    cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+    std::array<double, 3> t{};
+    t[at(k)] = 1.0;
+    cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+  }
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  autan::LocalPartition part = autan::extract_partition(
+      global, gg, std::vector<std::int32_t>(at(global.n_cells()), 0), 1, 0);
+  const auto& m = part.mesh;
+  REQUIRE(m.n_cells() > m.n_owned_cells());
+
+  std::vector<double> id(at(m.n_cells()), -1.0);
+  for (index_t c = 0; c < m.n_owned_cells(); ++c)
+    id[at(c)] = static_cast<double>(m.cell_global_id()[at(c)]);
+  double* const component = id.data();
+  autan::forward_self(part.halo, m.n_owned_cells(), std::span<double* const>(&component, 1));
+  for (index_t c = 0; c < m.n_cells(); ++c)
+    CHECK(id[at(c)] == static_cast<double>(m.cell_global_id()[at(c)]));
+
+  autan::fill_ghost_geometry(part);
+  for (index_t c = m.n_owned_cells(); c < m.n_cells(); ++c) {
+    const auto source = at(m.cell_global_id()[at(c)]);
+    const auto& t = m.ghost_translation()[at(c - m.n_owned_cells())];
+    CHECK(same_bits(part.geometry.cell_volume[at(c)], gg.cell_volume[source]));
+    CHECK(same_bits(part.geometry.cell_centroid_x[at(c)], gg.cell_centroid_x[source] + t[0]));
+    CHECK(same_bits(part.geometry.cell_centroid_y[at(c)], gg.cell_centroid_y[source] + t[1]));
+    CHECK(same_bits(part.geometry.cell_centroid_z[at(c)], gg.cell_centroid_z[source] + t[2]));
+  }
+
+  // On one of several parts the exchange fills the geometry, not this.
+  autan::LocalPartition half = autan::extract_partition(global, gg, slabs(gg, 2, 1.0), 2, 0);
+  require_error(autan::ErrorCode::partition_invalid_request,
+                [&] { autan::fill_ghost_geometry(half); });
 }

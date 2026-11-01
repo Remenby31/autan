@@ -6,11 +6,11 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
-#include <span>
 
 #include "autan/runtime/physics.hpp"
 
@@ -122,8 +122,8 @@ class Relaxation final : public autan::runtime::Physics {
     for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c)
       id[c] = static_cast<double>(mesh.cell_global_id()[c]);
     double* const component = id.data();
-    context_.ghosts.forward(std::span<double* const>(&component, 1),
-                            autan::MemorySpace::host, nullptr);
+    context_.ghosts.forward(std::span<double* const>(&component, 1), autan::MemorySpace::host,
+                            nullptr);
     for (std::size_t c = 0; c < n; ++c) {
       if (id[c] != static_cast<double>(mesh.cell_global_id()[c]))
         throw std::runtime_error("relaxation: a ghost did not receive its owner's value");

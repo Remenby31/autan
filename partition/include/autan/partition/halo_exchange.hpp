@@ -12,7 +12,6 @@
 
 namespace autan {
 
-
 /// Halo exchange of cell fields between the ranks of a partition, one rank
 /// per part. A field is a list of components, each an array of n_cells values
 /// (owned then ghost) in `space`; one call moves at most max_components of
