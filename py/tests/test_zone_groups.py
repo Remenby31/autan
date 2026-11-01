@@ -206,11 +206,15 @@ def test_continue_needs_the_groups_of_the_previous_run(
     assert "E0708" in [d.code for d in problems]
 
 
+@pytest.mark.parametrize(
+    "unreadable",
+    [Path.mkdir, lambda p: p.symlink_to(p.with_name("gone")), lambda p: p.symlink_to(p)],
+)
 def test_an_unreadable_groups_file_is_e0210(
-    grouped: autan.MeshInfo, write_case: Callable[..., Path]
+    unreadable: Callable[[Path], object], grouped: autan.MeshInfo, write_case: Callable[..., Path]
 ) -> None:
     path = write_case(BODY)
     sidecar = path.parent / "crm-hl.cgns.zones.json"
     sidecar.unlink()
-    sidecar.mkdir()
+    unreadable(sidecar)
     assert "E0210" in [d.code for d in autan.load(path).plan(grouped).diagnostics]

@@ -166,7 +166,8 @@ def test_oracle_states_need_compressible_physics_without_turbulence_model(
 
 def _boundary(document: dict[str, Any], name: str) -> dict[str, Any]:
     [boundary] = [b for b in document["boundaries"] if b["zone"] == name]
-    return boundary
+    found: dict[str, Any] = boundary
+    return found
 
 
 def _borrow_states(document: dict[str, Any]) -> None:
