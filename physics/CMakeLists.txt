@@ -112,6 +112,12 @@ if(AUTAN_ENABLE_CGNS)
     target_sources(autan_physics_runtime PRIVATE $<TARGET_OBJECTS:autan_physics_device>)
     target_link_libraries(autan_physics_runtime PUBLIC CUDA::cudart)
     target_compile_definitions(autan_physics_runtime PUBLIC AUTAN_PHYSICS_CUDA)
+    # The device RK3 step against the host residual, per cell (docs/infra/bench.md).
+    add_executable(autan_euler_step_bench bench/euler_step_bench.cpp)
+    target_link_libraries(
+      autan_euler_step_bench
+      PRIVATE autan::physics_runtime autan::physics autan::io autan_compile_options
+    )
   endif()
 endif()
 
