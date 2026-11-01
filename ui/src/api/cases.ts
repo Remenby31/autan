@@ -164,7 +164,9 @@ function sparse(entries: Record<string, unknown>): Record<string, unknown> {
 /** The case document the form describes: only what was set, the SDK fills its defaults. A
  * material is the library document `materials` lists under its name. */
 export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDocument {
-  const material = (name: string) => materials.find((m) => m.name === name)?.document;
+  // A name the library does not list (not loaded yet) goes as typed: the SDK refuses it with its
+  // code rather than taking a default for it.
+  const material = (name: string) => materials.find((m) => m.name === name)?.document ?? name;
   const fs = form.freestream;
   const time = sparse({
     max_iterations: number(form.time.max_iterations),

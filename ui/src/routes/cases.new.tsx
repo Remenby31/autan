@@ -139,6 +139,19 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
+          {materials.isError && (
+            <Note
+              tone="error"
+              title="The material libraries could not be listed"
+              action={
+                <Button size="sm" onClick={() => materials.refetch()}>
+                  Retry
+                </Button>
+              }
+            >
+              Gases and solids come from the SDK: {materials.error.message}
+            </Note>
+          )}
           {meshes.isError && (
             <Note tone="error" title="The meshes could not be listed">
               {meshes.error.message}

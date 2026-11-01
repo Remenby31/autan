@@ -244,3 +244,37 @@ test("the heat exchanger built in the editor writes py/examples/heat_exchanger.p
   await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(HEAT_EXCHANGER);
   await expect(page.getByTestId("plan")).toContainText("ready");
 });
+
+test("gas and medium choices change the case and can be undone", async ({ page }) => {
+  await page.goto("/cases/new");
+  await crmHl(page);
+  await page.getByLabel("Gas").selectOption("CO2");
+  await expect(page.getByTestId("case-py")).toContainText("gas=autan.gases.CO2");
+  await page.getByLabel("Gas").selectOption("");
+  await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(CRM_HL);
+
+  await cellZone(page, 1, "fluid", "fluid", "CO2");
+  const zone = page.getByRole("group", { name: "Cell zone 1" });
+  await zone.getByLabel("Medium").selectOption("solid");
+  await expect(zone.getByLabel("Material")).toHaveValue("");
+  await zone.getByLabel("Material").selectOption("COPPER");
+  await expect(page.getByTestId("case-py")).toContainText(
+    'case.cell_zone("fluid").solid(autan.materials.COPPER)',
+  );
+});
+
+test("material libraries that fail to load say so and can be retried", async ({ page }) => {
+  let fail = true;
+  await page.route("**/api/materials", (route) =>
+    fail ? route.fulfill({ status: 503, body: "" }) : route.continue(),
+  );
+  await page.goto("/cases/new");
+  await expect(page.getByText("The material libraries could not be listed")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  fail = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByText("The material libraries could not be listed")).toHaveCount(0);
+  await expect(page.getByLabel("Gas").locator("option", { hasText: "co2" })).toHaveCount(1);
+});
