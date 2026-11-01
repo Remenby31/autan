@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
@@ -435,11 +437,38 @@ runtime::PhysicsFactory factory() {
   };
 }
 
+// What the Euler physics runs beyond its key: every cell zone of one ideal gas.
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+  const runtime::Medium* first = nullptr;
+  for (std::size_t i = 0; i < in.cell_zones.size(); ++i) {
+    const auto& z = in.cell_zones[i];
+    const std::string path = "cell_zones[" + std::to_string(i) + "].medium";
+    if (z.medium.kind != "ideal-gas") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes ideal gases only; cell zone '" + z.zone + "' is " +
+                     z.medium.kind + " '" + z.medium.name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.kind}}.dump()};
+    }
+    if (first == nullptr) {
+      first = &z.medium;
+    } else if (*z.medium.gamma != *first->gamma || *z.medium.gas_constant != *first->gas_constant) {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes one gas in every cell zone; cell zone '" + z.zone +
+                     "' is '" + z.medium.name + "', not '" + first->name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.name}}.dump()};
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>());
-  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>());
+  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
+               euler_scope);
 }
 
 }  // namespace autan::physics

@@ -50,6 +50,7 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
 struct Outcome {
   ExitStatus status;
   fs::path run;
+  fs::path runs;  // the runs directory passed to run_case
   std::string err;
 };
 
@@ -73,7 +74,7 @@ Outcome run(const Json& doc) {
   };
   std::string printed = text(out);
   if (!printed.empty() && printed.back() == '\n') printed.pop_back();
-  return Outcome{.status = status, .run = printed, .err = text(err)};
+  return Outcome{.status = status, .run = printed, .runs = dir / "runs", .err = text(err)};
 }
 
 std::vector<Json> history(const fs::path& run) {
@@ -253,4 +254,34 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
     CHECK(field(second.run, "AverageWeight", "RestartState") ==
           field(whole.run, "AverageWeight", "RestartState"));
   }
+}
+
+TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
+  // Two gases, or a solid zone: E0706 on stderr, exit 2, no run directory.
+  const bool solid = GENERATE(false, true);
+  INFO((solid ? "solid zone" : "two gases"));
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    auto& z = d["cell_zones"].back();
+    if (solid) {
+      z["medium"] = {{"kind", "solid"},
+                     {"name", "steel"},
+                     {"density", 7800.0},
+                     {"specific_heat", 500.0},
+                     {"conductivity", 40.0}};
+      z["initial"] = {{"kind", "solid"}, {"temperature", 300.0}};
+    } else {
+      z["medium"]["name"] = "helium";
+      z["medium"]["gas_constant"] = 2077.1;
+      z["medium"]["gamma"] = 5.0 / 3.0;
+    }
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(out.run.empty());
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["data"]["zone"] == doc["cell_zones"].back()["zone"]);
 }
