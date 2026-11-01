@@ -179,7 +179,7 @@ def test_a_surface_beside_an_invalid_meshinfo_is_refused(tmp_path: Path) -> None
 
 
 def test_a_thin_mesh_keeps_its_small_faces(tmp_path: Path) -> None:
-    # The unit cube flattened to 1e-6 × 1e-6 × 1: every face keeps an area and the boundary
+    # The unit cube scaled by (1e-6, 1e-6, 1): every face keeps an area and the boundary
     # its orientation, though the smallest faces are 1e-12 of the largest.
     header, arrays = _parts("polyMesh")
     positions = arrays["positions"].reshape(-1, 3) * [1e-6, 1e-6, 1]
