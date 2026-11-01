@@ -295,11 +295,20 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
       }
     });
   };
-  const auto whole = run(doc(12));
-  REQUIRE(whole.status == ExitStatus::finished);
-  const auto first = run(doc(6));
+  // Steady: the first stop that falls between two builds of the multigrid preconditioner (its
+  // record has served more than one step), which the continued run must rebuild from the record;
+  // the switched-evolution CFL number first doubles at every step, so that comes once it settles.
+  int stop = 6;
+  auto first = run(doc(stop));
+  while (steady && stop < 60 && field(first.run, "PrecondSteps", "RestartState").front() <= 1.0) {
+    first = run(doc(++stop));
+  }
   REQUIRE(first.status == ExitStatus::finished);
-  auto next = doc(12);
+  INFO("stopped at " << stop);
+  const int budget = stop + 6;
+  const auto whole = run(doc(budget));
+  REQUIRE(whole.status == ExitStatus::finished);
+  auto next = doc(budget);
   next["start"] = continue_from(first.run);
   const auto second = run(next);
   INFO(second.err);
@@ -327,6 +336,14 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
   if (!steady) {
     CHECK(field(second.run, "AverageWeight", "RestartState") ==
           field(whole.run, "AverageWeight", "RestartState"));
+  } else {
+    // The stop fell between two builds of the multigrid preconditioner, which the continued run
+    // rebuilt from the record: the same record at the end as the uninterrupted run.
+    CHECK(field(first.run, "PrecondSteps", "RestartState").front() > 1.0);
+    for (const char* name :
+         {"PrecondSteps", "PrecondCfl", "PrecondDensity", "PrecondEnergyStagnationDensity"}) {
+      CHECK(field(second.run, name, "RestartState") == field(whole.run, name, "RestartState"));
+    }
   }
 }
 

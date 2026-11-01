@@ -51,6 +51,12 @@ constexpr double cfl_max = 1e6;
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
 constexpr int linear_max_cycles = 10;
+// The multigrid preconditioner (coarse operators, factorisations) is built at the first step of
+// each order, then kept for this many steps or until the CFL number moves by more than this
+// factor either way; meanwhile the GCR applies each step's Jacobian (lagged preconditioner, as
+// FUN3D and NSU3D do; #287).
+constexpr int preconditioner_steps = 5;
+constexpr double preconditioner_cfl_factor = 2.0;
 // linear_solver = "gauss-seidel": symmetric sweeps over the global colours per implicit step.
 constexpr int gauss_seidel_sweeps = 4;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
@@ -228,6 +234,23 @@ class EulerPhysics final : public runtime::Physics {
       out.push_back({.name = "VortexCirculation" + std::to_string(i),
                      .values = std::vector<double>(n_, vortices_[i].circulation)});
     }
+    // The state the multigrid preconditioner was last built at, so that a continued run builds
+    // the same one (runtime.md, restart).
+    if (multigrid_ && build_.steps > 0) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        out.push_back(
+            {.name = std::string("Precond") + conserved_names[k], .values = owned(build_.u, k)});
+      }
+      auto uniform = [&](const std::string& name, double value) {
+        out.push_back({.name = name, .values = std::vector<double>(owned_, value)});
+      };
+      uniform("PrecondSteps", build_.steps);
+      uniform("PrecondCfl", build_.cfl);
+      uniform("PrecondSecondOrder", build_.second_order ? 1.0 : 0.0);
+      for (std::size_t i = 0; i < build_.circulation.size(); ++i) {
+        uniform("PrecondCirculation" + std::to_string(i), build_.circulation[i]);
+      }
+    }
     return out;
   }
 
@@ -382,6 +405,32 @@ class EulerPhysics final : public runtime::Physics {
         auto state = solver_state();
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
+      }
+      if (multigrid_) {
+        // A run continued between two builds rebuilds the preconditioner of the uninterrupted
+        // run from the recorded state; a restart without that record cannot continue bit for bit.
+        const bool recorded = std::ranges::any_of(
+            start.restart_fields, [](const auto& f) { return f.name == "PrecondSteps"; });
+        if (!recorded) {
+          throw std::invalid_argument(
+              "the restart holds no multigrid preconditioner state (it was written before the "
+              "preconditioner was kept over several steps): continue from a run of this version, "
+              "or start warm");
+        }
+        build_.u.assign(5 * n_, 0.0);
+        for (std::size_t k = 0; k < 5; ++k) {
+          const auto& v = *find(start.restart_fields, std::string("Precond") + conserved_names[k]);
+          std::copy(v.begin(), v.end(), build_.u.begin() + static_cast<std::ptrdiff_t>(k * n_));
+        }
+        build_.steps = static_cast<int>(find(start.restart_fields, "PrecondSteps")->front());
+        build_.cfl = find(start.restart_fields, "PrecondCfl")->front();
+        build_.second_order = find(start.restart_fields, "PrecondSecondOrder")->front() != 0.0;
+        build_.circulation.clear();
+        for (std::size_t i = 0; i < vortices_.size(); ++i) {
+          build_.circulation.push_back(
+              find(start.restart_fields, "PrecondCirculation" + std::to_string(i))->front());
+        }
+        build_.pending = true;
       }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
@@ -639,6 +688,8 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void steady_step(StepReport& report) {
+    if (build_.pending) rebuild_recorded_preconditioner();
+    const bool jacobian_order = second_order_;  // the order this step's Jacobian is assembled at
     euler_.state(u_, state_);
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
@@ -671,7 +722,23 @@ class EulerPhysics final : public runtime::Physics {
     solvers::Multigrid::Report linear;
     try {
       if (multigrid_) {
-        multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        const bool rebuild = build_.steps == 0 || jacobian_order != build_.second_order ||
+                             build_.steps >= preconditioner_steps ||
+                             cfl_ > preconditioner_cfl_factor * build_.cfl ||
+                             preconditioner_cfl_factor * cfl_ < build_.cfl;
+        if (rebuild) {
+          multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+          build_.u = u_;
+          build_.cfl = cfl_;
+          build_.second_order = jacobian_order;
+          build_.circulation.clear();
+          for (const auto& v : vortices_) build_.circulation.push_back(v.circulation);
+          build_.steps = 1;
+        } else {
+          multigrid_->reference_operator(matrix_->diagonals(), matrix_->uppers(),
+                                         matrix_->lowers());
+          ++build_.steps;
+        }
         linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
       } else {
         // Every rank sweeps, exchanging after each colour, or none does.
@@ -904,6 +971,29 @@ class EulerPhysics final : public runtime::Physics {
     return drop;
   }
 
+  // A continued run: the preconditioner the uninterrupted run holds, built from the Jacobian at the
+  // recorded state, CFL number, order and circulations, as that run assembled it.
+  void rebuild_recorded_preconditioner() {
+    build_.pending = false;
+    std::vector<double> circulation;
+    for (std::size_t i = 0; i < vortices_.size(); ++i) {
+      circulation.push_back(vortices_[i].circulation);
+      vortices_[i].circulation = build_.circulation[i];
+    }
+    apply_vortices();
+    euler_.set_second_order(build_.second_order);
+    euler_.state(build_.u, state_);
+    euler_.residual_and_jacobian(state_, res_);
+    euler_.spectral_radius(lambda_);
+    std::vector<double> shift(n_);
+    for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / build_.cfl;
+    euler_.assemble(shift, *matrix_);
+    multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+    euler_.set_second_order(second_order_);
+    for (std::size_t i = 0; i < vortices_.size(); ++i) vortices_[i].circulation = circulation[i];
+    apply_vortices();
+  }
+
   // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
   // solution; second order from the step after the first-order residual has dropped. The device
   // starts the same way, so that both solve the same sequence of problems.
@@ -1003,6 +1093,15 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<Res> res_;
   std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
   std::vector<Vortex> vortices_;
+  // The multigrid preconditioner's last build: steps it has served (0: none yet), and the state,
+  // CFL number, Jacobian order and circulations it was built at.
+  struct Build {
+    int steps = 0;
+    double cfl = 0.0;
+    bool second_order = false;
+    bool pending = false;  // a continued run: rebuild from the record before the first step
+    std::vector<double> u, circulation;
+  } build_;
 };
 
 template <class P>
