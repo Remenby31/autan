@@ -525,42 +525,46 @@ class Reader {
     }
   }
 
-  // A declared pair of faces must coincide under the translation: their node
-  // means differ by it, to 1e-4 of the shortest edge of the face (the core's
-  // matching tolerance), so the file's correspondence is checked, not
-  // replaced by the one the core finds.
-  template <typename Side>
-  void check_periodic_faces(const Side& side) const {
-    const auto mean = [&](cgsize_t id) {
-      const auto& nodes = element(id)->connectivity;
-      std::array<double, 3> m{};
-      for (const cgsize_t p : nodes) {
-        const auto n = at(node(p));
-        m[0] += x_[n] / static_cast<double>(nodes.size());
-        m[1] += y_[n] / static_cast<double>(nodes.size());
-        m[2] += z_[n] / static_cast<double>(nodes.size());
-      }
-      return m;
+ public:
+  // After assembly: the core matched the faces geometrically, and the pairs
+  // the file declares must be the ones it found, face for face (compared by
+  // their node sets), not replaced by them.
+  void check_declared_pairs(const Mesh& mesh, const AssemblyMap& map) const {
+    const auto key = [](std::vector<index_t> nodes) {
+      std::ranges::sort(nodes);
+      return nodes;
     };
-    for (std::size_t k = 0; k < side.faces.size(); ++k) {
-      const auto& nodes = element(side.faces[k])->connectivity;
-      double shortest = std::numeric_limits<double>::infinity();
-      for (std::size_t q = 0; q < nodes.size(); ++q) {
-        const auto u = at(node(nodes[q])), v = at(node(nodes[(q + 1) % nodes.size()]));
-        shortest = std::min(shortest, std::hypot(x_[u] - x_[v], y_[u] - y_[v], z_[u] - z_[v]));
+    const auto mesh_face = [&](index_t f) {
+      std::vector<index_t> nodes;
+      for (const index_t p : mesh.face_nodes(f)) nodes.push_back(map.point_source[at(p)]);
+      return key(std::move(nodes));
+    };
+    std::map<std::vector<index_t>, std::vector<index_t>> partner;
+    const auto off = mesh.boundary_zone_offsets();
+    for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+      const auto partners = mesh.periodic_partners(p);
+      for (std::size_t k = 0; k < partners.size(); ++k) {
+        partner[mesh_face(off[at(mesh.periodic_pairs()[p].zone_a)] + static_cast<index_t>(k))] =
+            mesh_face(partners[k]);
       }
-      const auto a = mean(side.faces[k]), b = mean(side.donor[k]);
-      const double gap =
-          std::hypot(b[0] - a[0] - side.translation[0], b[1] - a[1] - side.translation[1],
-                     b[2] - a[2] - side.translation[2]);
-      if (!(gap <= 1e-4 * shortest)) {
-        malformed(path_, "periodic connectivity '" + side.name + "' pairs face " +
-                             std::to_string(side.faces[k]) +
-                             " with a face it does not translate onto");
+    }
+    const auto element_face = [&](cgsize_t id) {
+      std::vector<index_t> nodes;
+      for (const cgsize_t q : element(id)->connectivity) nodes.push_back(node(q));
+      return key(std::move(nodes));
+    };
+    for (const auto& [faces, donor] : declared_) {
+      for (std::size_t k = 0; k < faces.size(); ++k) {
+        const auto it = partner.find(element_face(faces[k]));
+        if (it == partner.end() || it->second != element_face(donor[k])) {
+          malformed(path_, "a periodic connectivity pairs face " + std::to_string(faces[k]) +
+                               " with a face it does not translate onto");
+        }
       }
     }
   }
 
+ private:
   // Periodic pairs: 1-to-1 connections of the zone with itself carrying a
   // Periodic_t translation (SIDS GridConnectivity_t), as two reciprocal
   // connections, each naming the zone of its own faces. The first of a
@@ -692,7 +696,7 @@ class Reader {
         malformed(path_, "periodic connectivity '" + s.name + "' has no reciprocal connection");
       }
       used[i] = used[j] = 1;
-      check_periodic_faces(s);
+      declared_.emplace_back(s.faces, s.donor);
       const index_t a = add_face_zone(s.name, "", s.faces, -1, s.name.c_str(), BcKind::periodic);
       const index_t b = add_face_zone(sides[j].name, "", sides[j].faces, -1, sides[j].name.c_str(),
                                       BcKind::periodic);
@@ -920,6 +924,7 @@ class Reader {
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;
   std::vector<PeriodicPair> periodic_;
+  std::vector<std::pair<std::vector<cgsize_t>, std::vector<cgsize_t>>> declared_;  // zone a -> b
   std::map<cgsize_t, index_t> face_label_;
   std::vector<CellZone> cell_zones_;
   std::map<std::string, index_t> cell_zone_index_;
@@ -933,7 +938,10 @@ Mesh read_cgns(const fs::path& file) {
   if (!fs::exists(file, ec))
     throw Error(ErrorCode::io_cannot_open, "'" + file.string() + "' does not exist");
   Reader reader(file);
-  return assemble(reader.read());
+  AssemblyMap map;
+  Mesh mesh = assemble(reader.read(), &map);
+  reader.check_declared_pairs(mesh, map);
+  return mesh;
 }
 
 }  // namespace autan::io
