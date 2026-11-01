@@ -50,6 +50,7 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
 struct Outcome {
   ExitStatus status;
   fs::path run;
+  fs::path runs;  // the runs directory passed to run_case
   std::string err;
 };
 
@@ -73,7 +74,7 @@ Outcome run(const Json& doc) {
   };
   std::string printed = text(out);
   if (!printed.empty() && printed.back() == '\n') printed.pop_back();
-  return Outcome{.status = status, .run = printed, .err = text(err)};
+  return Outcome{.status = status, .run = printed, .runs = dir / "runs", .err = text(err)};
 }
 
 std::vector<Json> history(const fs::path& run) {
@@ -286,4 +287,50 @@ TEST_CASE("a steady run reports the residual of its second-order scheme from the
   REQUIRE(steady.status == ExitStatus::finished);
   REQUIRE(unsteady.status == ExitStatus::finished);
   CHECK(history(steady.run).front()["residuals"] == history(unsteady.run).front()["residuals"]);
+}
+
+TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
+  // E0706 on stderr, exit 2, no run directory; data names the zone and what it holds.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const std::string refused = GENERATE("solid", "second gas", "transport", "wall");
+  INFO(precision << " " << refused);
+  std::string path = "cell_zones[1].medium";
+  std::string field = "medium";
+  std::string value = "helium";
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    auto& z = d["cell_zones"][1];
+    if (refused == "solid") {
+      z["medium"] = {{"kind", "solid"},
+                     {"name", "steel"},
+                     {"density", 7800.0},
+                     {"specific_heat", 500.0},
+                     {"conductivity", 40.0}};
+      z["initial"] = {{"kind", "solid"}, {"temperature", 300.0}};
+      value = "solid";
+    } else if (refused == "second gas") {
+      z["medium"]["name"] = "helium";
+      z["medium"]["gas_constant"] = 2077.1;
+      z["medium"]["gamma"] = 5.0 / 3.0;
+    } else if (refused == "transport") {
+      z["medium"]["name"] = "helium";
+      z["medium"]["prandtl"] = 0.67;
+    } else {
+      d["boundaries"][2]["kind"] = "wall";
+      path = "boundaries[2].kind";
+      field = "condition";
+      value = "wall";
+    }
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(out.run.empty());
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["data"]["path"] == path);
+  CHECK(diagnostic["data"][field] == value);
+  CHECK(diagnostic["data"]["zone"] ==
+        (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][2]["zone"]));
 }

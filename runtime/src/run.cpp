@@ -104,6 +104,7 @@ std::string_view bc_type(const BoundaryInput& b) {
   if (b.kind == "farfield") return "BCFarfield";
   if (b.kind == "outlet") return "BCOutflowSubsonic";
   if (b.kind == "manufactured") return "UserDefined";
+  if (b.kind == "oracle-state") return "BCDirichlet";
   return "BCInflowSubsonic";  // inlet, velocity-inlet
 }
 
@@ -353,7 +354,18 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     }
     p.monitor_zones.push_back(std::move(ids));
   }
-  p.factory = registry.find(p.input);
+  const auto* entry = registry.find(p.input);
+  p.factory = entry != nullptr ? &entry->factory : nullptr;
+  if (entry != nullptr && entry->scope) {
+    if (auto refusal = entry->scope(p.input)) {
+      auto data = nlohmann::json::parse(refusal->data_json);
+      data["path"] = refusal->path;
+      throw InputError(Diagnostic{.code = "E0706",
+                                  .message = std::move(refusal->message),
+                                  .path = std::move(refusal->path),
+                                  .data_json = data.dump()});
+    }
+  }
   if (p.factory == nullptr) {
     const auto& in = p.input;
     throw InputError(Diagnostic{.code = "E0706",
@@ -723,18 +735,18 @@ class Run final : public Log {
 
 }  // namespace
 
-void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory) {
-  entries_.emplace_back(std::move(key), std::move(factory));
+void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope) {
+  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope)});
 }
 
-const PhysicsFactory* PhysicsRegistry::find(const SolverInput& in) const {
+const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
   const auto matches = [](const std::string& pattern, const std::string& value) {
     return pattern == "*" || pattern == value;
   };
-  for (const auto& [key, factory] : entries_) {
+  for (const auto& [key, entry] : entries_) {
     if (matches(key.kind, in.physics_kind) && matches(key.turbulence, in.turbulence.model) &&
         matches(key.precision, in.precision) && matches(key.device, in.device_kind)) {
-      return &factory;
+      return &entry;
     }
   }
   return nullptr;

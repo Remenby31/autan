@@ -8,6 +8,7 @@ this backend must never be used as reference data.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -39,6 +40,7 @@ from autan.schema import (
     CaseSpec,
     Fluid,
     Medium,
+    OracleState,
     SolidZone,
     Steady,
     Unsteady,
@@ -61,7 +63,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from autan.case import Case
-    from autan.meshinfo import MeshInfo
+    from autan.meshinfo import MeshInfo, PeriodicPair
     from autan.plan import Plan
     from autan.restart import Start
 
@@ -75,6 +77,7 @@ BC_TYPES = {
     "velocity-inlet": "BCInflowSubsonic",
     "outlet": "BCOutflowSubsonic",
     "manufactured": "UserDefined",
+    "oracle-state": "BCDirichlet",
 }
 BASE_CHILDREN = frozenset({"Zone", "ZoneNames", "RunMetadata", "DataClass", "DimensionalUnits"})
 ZONE_CHILDREN = frozenset(
@@ -84,6 +87,7 @@ ZONE_CHILDREN = frozenset(
         "NGonElements",
         "NFaceElements",
         "ZoneBC",
+        "ZoneGridConnectivity",
         "FlowSolution",
         "FlowSolutionMean",
         "WallSolution",
@@ -230,11 +234,6 @@ class FakeBackend:
         result = case.plan(mesh_info)
         if not result.ok:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
-        if mesh_info.periodic:
-            message = "the fake backend, like autan-run, does not implement periodic boundaries"
-            raise CaseError(
-                [diagnostic("E0706", message, path="periodic", pairs=len(mesh_info.periodic))]
-            )
         spec = case.spec
         started = utc_now()
         solver = Solver(version=__version__, commit=COMMIT, backend="fake")
@@ -269,7 +268,14 @@ class FakeBackend:
             if spec.verification is not None
             else None
         )
-        writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake")
+        states = {
+            rule.condition.sha256: _archived(
+                case.resolve(rule.condition.path), rule.condition.sha256
+            )
+            for rule in spec.boundaries
+            if isinstance(rule.condition, OracleState)
+        }
+        writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake", states=states)
         for warning in result.diagnostics:
             writer.diagnose(warning)
         history = _History(spec, freestream_state(spec))
@@ -370,7 +376,7 @@ class FakeBackend:
                 )
         info = writer.info.model_copy(update=changes)
         staging = writer.path / ".solution.cgns.tmp"
-        _write_solution(staging, spec, plan, box, layout, info, inherited)
+        _write_solution(staging, spec, plan, mesh_info.periodic, box, layout, info, inherited)
         staging.rename(writer.path / "solution.cgns")
         writer.finish(**changes)
 
@@ -453,6 +459,7 @@ def _write_solution(
     path: Path,
     spec: CaseSpec,
     plan: Plan,
+    periodic: tuple[PeriodicPair, ...],
     box: Box,
     layout: list[str],
     info: RunInfo,
@@ -465,8 +472,13 @@ def _write_solution(
     boundary_names = [b.zone for b in plan.boundaries]
     cell_names = [z.zone for z in plan.cell_zones]
     boundary_nodes, cell_nodes = node_names(boundary_names, cell_names)
-    chunks = np.array_split(np.array(boundary_faces), len(boundary_zones))
-    owned = dict(zip((b.zone for b in boundary_zones), chunks, strict=True))
+    pairs = [p.zones for p in periodic]
+    sizes = _sizes(len(boundary_faces), [b.zone for b in boundary_zones], pairs)
+    bounds = np.cumsum([0, *(sizes[b.zone] for b in boundary_zones)])
+    owned = {
+        b.zone: np.array(boundary_faces[bounds[i] : bounds[i + 1]])
+        for i, b in enumerate(boundary_zones)
+    }
     n_faces = len(faces)
 
     with cgns.create(path) as handle:
@@ -508,7 +520,7 @@ def _write_solution(
             family = cgns.node(base, name, "Family_t")
             condition = conditions[zone]
             assert condition is not None or zone not in owned
-            if condition is not None:
+            if condition is not None and condition["kind"] != "periodic":
                 cgns.node(family, "FamilyBC", "FamilyBC_t", bc_type(condition))
         for name in cell_nodes:
             cgns.node(base, name, "Family_t")
@@ -526,16 +538,23 @@ def _write_solution(
         _elements(zone, "NGonElements", 22, 1, [[v + 1 for v in f] for f in faces])
         _elements(zone, "NFaceElements", 23, n_faces + 1, cells)
 
-        zone_bc = cgns.node(zone, "ZoneBC", "ZoneBC_t")
+        node_of = dict(zip(boundary_names, boundary_nodes, strict=True))
+        if any(
+            c is not None and c["kind"] != "periodic" for z, c in conditions.items() if z in owned
+        ):
+            zone_bc = cgns.node(zone, "ZoneBC", "ZoneBC_t")
         for zone_name, name in zip(boundary_names, boundary_nodes, strict=True):
-            if zone_name not in owned:
-                continue
             condition = conditions[zone_name]
+            if zone_name not in owned or (condition and condition["kind"] == "periodic"):
+                continue
             assert condition is not None
             bc = cgns.node(zone_bc, name, "BC_t", bc_type(condition))
             _point_list(bc, owned[zone_name] + 1)
             cgns.node(bc, "GridLocation", "GridLocation_t", "FaceCenter")
             cgns.node(bc, "FamilyName", "FamilyName_t", name)
+
+        if periodic:
+            _write_periodic(zone, periodic, owned, node_of)
 
         for zone_name, name in zip(cell_names, cell_nodes, strict=True):
             members = [c for c, owner in enumerate(layout) if owner == zone_name]
@@ -572,6 +591,60 @@ def _write_solution(
             cgns.data_array(region, "Pressure", fields["Pressure"][cells_of_walls])
             for axis in "XYZ":
                 cgns.data_array(region, f"WallShearStress{axis}", np.zeros(walls.size))
+
+
+def _sizes(total: int, zones: list[str], pairs: list[tuple[str, str]]) -> dict[str, int]:
+    """Boundary faces per zone of the synthetic box, equal on both sides of a periodic pair
+    (the box has 6 n^2 boundary faces, an even number)."""
+    paired = {zone for pair in pairs for zone in pair}
+    share = total // len(zones)
+    sizes = dict.fromkeys(paired, share)
+    rest = total - share * len(paired)
+    others = [zone for zone in zones if zone not in paired]
+    if others:
+        sizes |= {
+            z: len(c)
+            for z, c in zip(others, np.array_split(np.arange(rest), len(others)), strict=True)
+        }
+    else:
+        for a, b in pairs[: rest // 2]:
+            sizes[a] += 1
+            sizes[b] += 1
+    return sizes
+
+
+def _write_periodic(
+    zone: Any,
+    periodic: tuple[PeriodicPair, ...],
+    owned: dict[str, NDArray[Any]],
+    node_of: dict[str, str],
+) -> None:
+    """Each periodic pair as two reciprocal GridConnectivity_t (results.md#solutioncgns); the
+    synthetic box pairs the faces of the two zones in order."""
+    connectivity = cgns.node(zone, "ZoneGridConnectivity", "ZoneGridConnectivity_t")
+    for pair in periodic:
+        a, b = pair.zones
+        vector = np.array(pair.transform.vector)
+        for side, other, shift in ((a, b, vector), (b, a, -vector)):
+            gc = cgns.node(connectivity, node_of[side], "GridConnectivity_t", "Zone")
+            cgns.node(gc, "GridConnectivityType", "GridConnectivityType_t", "Abutting1to1")
+            cgns.node(gc, "GridLocation", "GridLocation_t", "FaceCenter")
+            _point_list(gc, owned[side] + 1)
+            cgns.node(
+                gc,
+                "PointListDonor",
+                "IndexArray_t",
+                (owned[other] + 1).astype(np.int64).reshape(1, -1),
+            )
+            properties = cgns.node(gc, "GridConnectivityProperty", "GridConnectivityProperty_t")
+            periodic = cgns.node(properties, "Periodic", "Periodic_t")
+            zero = np.zeros(3, dtype=np.float32)
+            cgns.data_array(periodic, "RotationCenter", zero)
+            cgns.data_array(periodic, "RotationAngle", zero)
+            cgns.data_array(periodic, "Translation", shift.astype(np.float32))
+            cgns.node(
+                gc, "PeriodicTranslation", "Descriptor_t", json.dumps([float(v) for v in shift])
+            )
 
 
 def _point_list(parent: Any, ids: NDArray[Any]) -> None:
@@ -636,3 +709,12 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
         for name in names:
             fields[name][cell] = values[name]
     return fields
+
+
+def _archived(path: Path, sha256: str) -> bytes:
+    """The bytes of a face-state file, which must still be those the plan checked."""
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != sha256:
+        message = f"{path} changed after it was checked: its SHA-256 differs from the case's"
+        raise CaseError([diagnostic("E0420", message, path=str(path))])
+    return data

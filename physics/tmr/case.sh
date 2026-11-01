@@ -32,7 +32,7 @@ print(repr(p * f ** (g / (g - 1))), repr(T * f), repr(p))")"
 rule() { printf '[[boundaries]]\nzones = "%s"\ncondition = %s\n\n' "$1" "$2"; }
 boundaries() {
   rule sides '{ kind = "symmetry" }'
-  rule "$wall" '{ kind = "wall" }'
+  rule "$wall" "{ kind = \"${WALL_KIND:-wall}\" }"
   case $kind in
     naca0012) rule farfield '{ kind = "farfield" }' ;;
     *)

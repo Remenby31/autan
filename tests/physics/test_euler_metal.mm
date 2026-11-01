@@ -1,7 +1,8 @@
 // The Euler residual of kernels/euler.py evaluated by the generated Metal loops equals the CPU
 // physics, autan::physics::Euler<fp32_acc64>, to rounding: three fluxes, first and second order,
-// both Metal policies, every face-loop strategy each policy has. The loop sequence is the one of
-// Euler<P>::residual (physics/src/euler.cpp).
+// both Metal policies, every face-loop strategy each policy has, all five boundary kinds. The loop
+// sequence is the one of Euler<P>::residual (physics/src/euler.cpp); the gradient weights are the
+// physics' own (Euler<P>::gradient_weights), which depend on the boundary kinds.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -58,14 +59,13 @@ struct Boundaries {
   std::vector<double> data;
 };
 
-// Every boundary kind in turn (first order), or given states only (second order: Euler<P> then
-// keeps the stencil's least-squares weights, which this test reproduces).
-Boundaries boundaries(const Case& c, bool all_kinds, std::mt19937_64& rng) {
+// Every boundary kind in turn.
+Boundaries boundaries(const Case& c, std::mt19937_64& rng) {
   std::uniform_real_distribution<double> jitter(-1.0, 1.0);
   const std::size_t nb = c.n_faces() - c.n_interior();
   Boundaries b{std::vector<BoundaryKind>(nb), std::vector<double>(5 * nb, 0.0)};
   for (std::size_t i = 0; i < nb; ++i) {
-    const auto kind = all_kinds ? static_cast<BoundaryKind>(i % 5) : BoundaryKind::state;
+    const auto kind = static_cast<BoundaryKind>(i % 5);
     b.kind[i] = kind;
     std::array<double, 5> v{};
     switch (kind) {
@@ -115,8 +115,14 @@ Scheme scheme(Flux flux, bool second_order) {
   return s;
 }
 
-std::vector<double> cpu_residual(const Case& c, const Scheme& s, const Boundaries& b,
-                                 const std::vector<double>& u) {
+/// The CPU physics' residual, and the gradient weights it uses for these boundaries.
+struct Cpu {
+  std::vector<double> residual;
+  std::vector<double> weights;
+};
+
+Cpu cpu_residual(const Case& c, const Scheme& s, const Boundaries& b,
+                 const std::vector<double>& u) {
   using P = autan::kernels::fp32_acc64;
   autan::physics::Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(b.kind, b.data);
@@ -124,7 +130,7 @@ std::vector<double> cpu_residual(const Case& c, const Scheme& s, const Boundarie
   e.state(u, us);
   std::vector<typename P::residual> r(us.size());
   e.residual(us, r);
-  return {r.begin(), r.end()};
+  return {{r.begin(), r.end()}, e.gradient_weights()};
 }
 
 /// Shared buffers kept alive while the context runs.
@@ -156,13 +162,23 @@ class Buffers {
   std::vector<mtl::Buffer> keep_;
 };
 
+/// Points `member` at a device copy of `v` in the member's stored type (geometry no body reads
+/// through rel() is stored in the compute type: kernel-generator.md, Precision).
+template <class T, class V>
+void put(Buffers& buf, const T*& member, const std::vector<V>& v) {
+  member = buf.put<T>(v);
+}
+template <class T, class V>
+void put(Buffers& buf, T*& member, const std::vector<V>& v) {
+  member = buf.put<T>(v);
+}
+
 /// The sequence of Euler<P>::residual on the Metal loops, in Metal policy M.
 template <class M>
 std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Scheme& s,
-                                   const Boundaries& b, const std::vector<double>& u,
-                                   Strategy strategy) {
+                                   const Boundaries& b, const std::vector<double>& weights,
+                                   const std::vector<double>& u, Strategy strategy) {
   using S = typename M::state;
-  using G = typename M::geom;
   using R = typename M::residual;
   const auto packed = autan::kernels::pack_geometry(c.mesh, c.geometry);
   const auto stencil =
@@ -189,7 +205,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   sched.block = 128;
   sched.interior = {buf.put<index_t>(interior.faces), interior.offsets};
   sched.boundary = {buf.put<index_t>(boundary.faces), boundary.offsets};
-  sched.face_scratch = buf.zeros<typename M::accum>(5 * nf);
+  sched.face_scratch = buf.zeros<typename M::compute>(5 * nf);
   sched.face_scratch_width = 5;
 
   std::vector<double> kind(nf, 0.0), bc(5 * nf, 0.0);
@@ -206,7 +222,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   }
   d.u = buf.put<S>(stored);
   d.prim = buf.zeros<S>(5 * nc);
-  d.bc_kind = buf.put<G>(kind);
+  put(buf, d.bc_kind, kind);
   d.bc = buf.put<S>(bc);
   d.prim_b = buf.zeros<S>(5 * nf);
   d.grad = buf.zeros<typename M::grad>(15 * nc);
@@ -215,13 +231,13 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   d.phi = buf.put<S>(std::vector<double>(5 * nc, s.second_order && !s.limiter ? 1.0 : 0.0));
   d.source = buf.zeros<S>(5 * nc);
   d.res = buf.zeros<R>(5 * nc);
-  d.face_normal = buf.put<G>(packed.face_normal);
-  d.face_area_magnitude = buf.put<G>(packed.face_area_magnitude);
-  d.face_centroid = buf.put<G>(packed.face_centroid);
-  d.face_moment = buf.put<G>(packed.face_moment);
-  d.cell_centroid = buf.put<G>(packed.cell_centroid);
-  d.cell_volume = buf.put<G>(packed.cell_volume);
-  d.stencil_lsq_weight = buf.put<G>(stencil.lsq_weight);
+  put(buf, d.face_normal, packed.face_normal);
+  put(buf, d.face_area_magnitude, packed.face_area_magnitude);
+  put(buf, d.face_centroid, packed.face_centroid);
+  put(buf, d.face_moment, packed.face_moment);
+  put(buf, d.cell_centroid, packed.cell_centroid);
+  put(buf, d.cell_volume, packed.cell_volume);
+  put(buf, d.stencil_lsq_weight, weights);
   d.gamma[0] = typename M::param(air.gamma);
   d.gas_constant[0] = typename M::param(air.gas_constant);
   d.mach_ref[0] = typename M::param(s.mach_ref);
@@ -284,11 +300,11 @@ TEMPLATE_TEST_CASE("the Euler residual on Metal equals the CPU physics to roundi
   const Strategy strategy = GENERATE_COPY(from_range(strategies));
   const Case c("hybrid/hybrid.ascii.msh");
   std::mt19937_64 rng(7);
-  const auto b = boundaries(c, !second_order, rng);
+  const auto b = boundaries(c, rng);
   const auto u = states(c, rng);
   const auto s = scheme(flux, second_order);
-  const auto host = cpu_residual(c, s, b, u);
-  const auto dev = metal_residual<M>(context(), c, s, b, u, strategy);
+  const auto [host, weights] = cpu_residual(c, s, b, u);
+  const auto dev = metal_residual<M>(context(), c, s, b, weights, u, strategy);
   double scale = 0.0, diff = 0.0;
   for (std::size_t i = 0; i < host.size(); ++i) {
     REQUIRE(std::isfinite(dev[i]));

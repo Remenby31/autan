@@ -163,7 +163,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
     _kernel_head(
         e,
         f"{lm.name}_store",
-        ", const index_t lo, const index_t hi, typename P::accum* __restrict__ scratch",
+        ", const index_t lo, const index_t hi, typename P::compute* __restrict__ scratch",
     )
     e.w(f"  const index_t f = lo + {tid};")
     e.w("  if (f >= hi) {")
@@ -174,16 +174,16 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         e.w(s)
     for k in range(n):
         e.w(
-            f"  scratch[offset_t({k}) * d.topo.n_faces + f] = A(out[{k}]);"
+            f"  scratch[offset_t({k}) * d.topo.n_faces + f] = out[{k}];"
             if k
-            else "  scratch[f] = A(out[0]);"
+            else "  scratch[f] = out[0];"
         )
     e.w("}")
     e.w()
     # store-gather pass 2 and gather-recompute: one thread per cell, incidence order. Ghost cells
     # too: their sums are the partial contributions a reverse halo exchange sends to their owner.
     for variant in ("gather", "gather_recompute"):
-        extra = ", const typename P::accum* __restrict__ scratch" if variant == "gather" else ""
+        extra = ", const typename P::compute* __restrict__ scratch" if variant == "gather" else ""
         _kernel_head(e, f"{lm.name}_{variant}", extra)
         e.w(f"  const index_t c = {tid};")
         e.w("  if (c >= d.topo.n_cells) {")
@@ -276,7 +276,7 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
         '        throw std::invalid_argument("E1104: face scratch narrower than the loop outputs");'
     )
     e.w("      }")
-    e.w("      auto* scratch = static_cast<typename P::accum*>(s.face_scratch);")
+    e.w("      auto* scratch = static_cast<typename P::compute*>(s.face_scratch);")
     e.w("      if (hi > lo) {")
     e.w(f"        {lm.name}_store<P><<<grid(hi - lo), block, 0, s.stream>>>(d, lo, hi, scratch);")
     e.w("      }")
