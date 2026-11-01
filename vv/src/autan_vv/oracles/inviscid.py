@@ -31,14 +31,17 @@ def _ringleb_state(speed: FloatArray) -> tuple[FloatArray, FloatArray, FloatArra
     return c, rho, p, j
 
 
-def ringleb_fields(points: FloatArray) -> dict[str, FloatArray]:
+def ringleb_fields(points: FloatArray, *, extended: bool = False) -> dict[str, FloatArray]:
     """Ringleb flow (gamma = 1.4) at points (x, y) of the HiOCFD1 C1.2 domain (z ignored).
 
     HiOCFD1 C1.2, eqs. 1-2: x = (2/k^2 - 1/V^2)/(2 rho) - J/2, y = +-sqrt(1 - V^2/k^2)/(k rho V), so that
     (x + J/2)^2 + y^2 = 1/(4 rho^2 V^4), solved for the speed V by bisection; then
     1/k^2 = (1/V^2 + 2 rho (x + J/2))/2 and, with sin(theta) = V/k, u = V cos(theta) sign(y),
     v = -V sin(theta): the flow enters at y > 0, turns around the origin and leaves at y < 0.
-    Points outside 0.7 <= k <= 1.5, V >= 0.5 raise V0706.
+    Points outside 0.7 <= k <= 1.5, V >= 0.5 raise V0706; with `extended`, the analytic
+    continuation beyond those bounds is evaluated too (boundary face centroids of a polygonal
+    mesh lie on chords, slightly outside the curved domain), and only points off the hodograph
+    (V > k) raise V0706.
     """
     x, y = points[:, 0], points[:, 1]
     # Bracket away from V = 0 (1 - c rounds to 0) and from the cavitation speed (c = 0).
@@ -59,13 +62,15 @@ def ringleb_fields(points: FloatArray) -> dict[str, FloatArray]:
     _, rho, p, j = _ringleb_state(speed)
     k = 1.0 / np.sqrt(0.5 * (1.0 / speed**2 + 2.0 * rho * (x + 0.5 * j)))
     tol = 1e-9
-    inside = (
-        (speed >= RINGLEB_SPEED_MIN * (1 - tol))
-        & (k >= RINGLEB_K[0] * (1 - tol))
-        & (k <= RINGLEB_K[1] * (1 + tol))
-        & (speed <= k * (1 + tol))
-        & (np.abs(residual(speed)) <= 1e-10 / (4.0 * rho**2 * speed**4))
+    inside = (speed <= k * (1 + tol)) & (
+        np.abs(residual(speed)) <= 1e-10 / (4.0 * rho**2 * speed**4)
     )
+    if not extended:
+        inside &= (
+            (speed >= RINGLEB_SPEED_MIN * (1 - tol))
+            & (k >= RINGLEB_K[0] * (1 - tol))
+            & (k <= RINGLEB_K[1] * (1 + tol))
+        )
     if not np.all(inside):
         i = int(np.argmin(inside))
         msg = f"point ({x[i]:.6g}, {y[i]:.6g}) is outside the Ringleb domain (V = {speed[i]:.4g}, k = {k[i]:.4g})"
