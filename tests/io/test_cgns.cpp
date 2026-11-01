@@ -124,7 +124,8 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
     CHECK(read_field(file, field.name.c_str(), mesh.n_cells()) == field.values);
   }
 
-  const auto stored = autan::io::read_solution(file, mesh.n_cells());
+  const auto stored = autan::io::read_solution(file);
+  CHECK(stored.cells == mesh.n_cells());
   CHECK(stored.run_metadata == solution.run_metadata);
   const auto same = [](const std::vector<autan::io::Field>& a,
                        const std::vector<autan::io::Field>& b) {
@@ -137,12 +138,6 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   same(stored.fields, solution.fields);
   same(stored.mean_fields, solution.mean_fields);
   same(stored.restart_fields, solution.restart_fields);
-  try {
-    (void)autan::io::read_solution(file, mesh.n_cells() + 1);
-    FAIL("expected E0132");
-  } catch (const autan::Error& e) {
-    CHECK(e.code() == autan::ErrorCode::io_malformed);
-  }
 }
 
 TEST_CASE("Zone node names follow the results.md rule", "[cgns]") {
@@ -166,13 +161,19 @@ TEST_CASE("CGNS files outside the supported layout are coded errors", "[cgns]") 
                     unstructured_tet(fn, base, "B");
                   }));
   }
-  SECTION("structured zone") {
-    require_error(
-        ErrorCode::io_unsupported, cgns_file("structured.cgns", [](int fn, int base) {
-          cgsize_t size[9] = {2, 2, 2, 1, 1, 1, 0, 0, 0};
-          int zone = 0;
-          REQUIRE(cg_zone_write(fn, base, "Block", size, CGNS_ENUMV(Structured), &zone) == CG_OK);
-        }));
+  SECTION("structured zone, as a mesh and as a solution") {
+    const auto file = cgns_file("structured.cgns", [](int fn, int base) {
+      cgsize_t size[9] = {2, 2, 2, 1, 1, 1, 0, 0, 0};
+      int zone = 0;
+      REQUIRE(cg_zone_write(fn, base, "Block", size, CGNS_ENUMV(Structured), &zone) == CG_OK);
+    });
+    require_error(ErrorCode::io_unsupported, file);
+    try {
+      (void)autan::io::read_solution(file);
+      FAIL("expected E0133");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == ErrorCode::io_unsupported);
+    }
   }
   SECTION("link to another file") {
     require_error(ErrorCode::io_external_reference, cgns_file("linked.cgns", [](int fn, int base) {

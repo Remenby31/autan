@@ -24,8 +24,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
 
@@ -121,7 +123,7 @@ std::vector<double> solution_field(const fs::path& file, const char* solution, c
     REQUIRE(cg_sol_info(fn, 1, 1, s, sol_name, &location) == CG_OK);
     if (std::string(sol_name) != solution) continue;
     char zone_name[33];
-    cgsize_t size[3];
+    cgsize_t size[9];
     REQUIRE(cg_zone_read(fn, 1, 1, zone_name, size) == CG_OK);
     values.resize(static_cast<std::size_t>(size[1]));
     const cgsize_t first = 1;
@@ -165,11 +167,14 @@ std::string file_sha256(const fs::path& file) {
 
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
-// steady `continue`, the residuals of its first history line.
+// steady `continue`, the residuals at iteration 1 of the chain's first run.
 Json start_from(const fs::path& previous, const std::string& mode) {
   const Json info = Json::parse(read(previous / "run.json"));
   Json reference = nullptr;
-  if (mode == "continue" && info["time"].is_null()) reference = history(previous)[0]["residuals"];
+  if (mode == "continue" && info["time"].is_null()) {
+    const bool chained = !info["start"].is_null() && info["start"]["mode"] == "continue";
+    reference = chained ? info["start"]["residual_reference"] : history(previous)[0]["residuals"];
+  }
   return Json{{"run", previous.string()},
               {"run_id", info["run_id"]},
               {"identity", info["identity"]},
@@ -572,23 +577,32 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   const auto doc = [&](std::int64_t n) {
     return steady ? input(budget(n)) : input(budget(n), "hybrid-unsteady.solver-input.json");
   };
-  // Steady: converges at 28 (see above); stopping at 10 and measuring from
-  // iteration 11 instead of 1 would converge at 38. Unsteady: averaging
-  // starts after step 3, so it spans both runs.
-  const std::int64_t total = steady ? 10000 : 6;
+  // A chain of three runs. Steady: converges at 28 (see above); measuring
+  // from the first iteration of either continuation instead would converge at
+  // 38 or later. Unsteady: averaging starts after step 3, in the first run,
+  // and goes on through the other two.
+  const std::int64_t total = steady ? 10000 : 8;
   const std::int64_t first = steady ? 10 : 4;
+  const std::int64_t middle = steady ? 20 : 6;
   const Outcome whole = run(doc(total), options);
   const Outcome a = run(doc(first), options);
   REQUIRE(Json::parse(read(a.run / "run.json"))["status"] == "completed");
+  Json next = doc(middle);
+  next["start"] = start_from(a.run, "continue");
+  const Outcome m = run(next, options);
+  REQUIRE(Json::parse(read(m.run / "run.json"))["status"] == "completed");
   Json second = doc(total);
-  second["start"] = start_from(a.run, "continue");
+  second["start"] = start_from(m.run, "continue");
   const Outcome b = run(second, options);
   REQUIRE(b.status == ExitStatus::finished);
 
   const auto all = lines_of(whole.run / "history.jsonl");
-  const auto rest = lines_of(b.run / "history.jsonl");
-  REQUIRE(all.size() > static_cast<std::size_t>(first));
-  CHECK(rest == std::vector<std::string>(all.begin() + first, all.end()));
+  auto chain = lines_of(a.run / "history.jsonl");
+  for (const auto& run_dir : {m.run, b.run}) {
+    const auto more = lines_of(run_dir / "history.jsonl");
+    chain.insert(chain.end(), more.begin(), more.end());
+  }
+  CHECK(chain == all);
   const Json w = Json::parse(read(whole.run / "run.json"));
   const Json info = Json::parse(read(b.run / "run.json"));
   for (const char* key : {"status", "iterations", "time", "averaging"}) {
@@ -670,6 +684,38 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
                     d["freestream"]["nu_tilde"] = nullptr;
                   }),
                   "E0708");
+  }
+  SECTION("the previous run was computed on a mesh of other cells") {
+    const fs::path hex = data_dir / "mesh" / "hex" / "polyMesh";
+    Json doc = input([&](Json& d) {
+      d["mesh"]["path"] = fs::absolute(hex).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(hex);
+    });
+    doc["start"] = start_from(a.run, "continue");
+    require_error(run(doc), "E0203");
+  }
+  SECTION("the previous solution lacks run metadata the continuation needs") {
+    // A solution.cgns whose RunMetadata has no `averaging`, with its hash.
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+    Json metadata = Json::parse(read(a.run / "run.json"));
+    metadata.erase("averaging");
+    autan::io::Solution solution;
+    solution.run_metadata = metadata.dump();
+    solution.boundary_bc_types.assign(autan::io::meshinfo_zones(mesh).boundary.size(),
+                                      "BCFarfield");
+    for (const auto& name :
+         autan::runtime::field_names(autan::runtime::parse_solver_input(input().dump()))) {
+      solution.fields.push_back(
+          {.name = name,
+           .values = solution_field(a.run / "solution.cgns", "FlowSolution", name.c_str())});
+    }
+    const fs::path previous = fresh_dir();
+    autan::io::write_solution(previous / "solution.cgns", mesh, solution);
+    require_error(from([&](Json& d) {
+                    d["start"]["run"] = previous.string();
+                    d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
+                  }),
+                  "E0707");
   }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.

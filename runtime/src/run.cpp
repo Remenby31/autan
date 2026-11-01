@@ -127,41 +127,102 @@ struct Prepared {
                               .data_json = data.is_null() ? "{}" : data.dump()});
 }
 
+// A private copy of a file and the SHA-256 of the bytes copied: what is
+// hashed is what is read, whatever happens to the original meanwhile.
+class SnapshotFile {
+ public:
+  explicit SnapshotFile(const fs::path& from) {
+    std::random_device random;
+    path_ = fs::temp_directory_path() /
+            ("autan-start-" + std::to_string(random()) + "-" + std::to_string(random()) + ".cgns");
+    std::ifstream in(from, std::ios::binary);
+    std::ofstream out(path_, std::ios::binary | std::ios::trunc);
+    if (!in || !out) throw Error(ErrorCode::io_cannot_open, "cannot read '" + from.string() + "'");
+    picosha2::hash256_one_by_one hasher;
+    std::vector<char> buffer(1 << 20);
+    while (in) {
+      in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+      const auto n = static_cast<std::size_t>(in.gcount());
+      hasher.process(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(n));
+      out.write(buffer.data(), static_cast<std::streamsize>(n));
+    }
+    if (in.bad() || !out.flush()) {
+      throw Error(ErrorCode::io_cannot_open, "cannot copy '" + from.string() + "'");
+    }
+    hasher.finish();
+    sha256_ = picosha2::get_hash_hex_string(hasher);
+  }
+  SnapshotFile(const SnapshotFile&) = delete;
+  SnapshotFile& operator=(const SnapshotFile&) = delete;
+  ~SnapshotFile() {
+    std::error_code ec;
+    fs::remove(path_, ec);
+  }
+  [[nodiscard]] const fs::path& path() const { return path_; }
+  [[nodiscard]] const std::string& sha256() const { return sha256_; }
+
+ private:
+  fs::path path_;
+  std::string sha256_;
+};
+
+// results.md, run.json `averaging`: null or the four bounds of the interval.
+bool is_averaging(const Json& a) {
+  if (a.is_null()) return true;
+  return a.is_object() && a.size() == 4 && a.contains("from_step") &&
+         a["from_step"].is_number_integer() && a.contains("to_step") &&
+         a["to_step"].is_number_integer() && a.contains("from_time") &&
+         a["from_time"].is_number() && a.contains("to_time") && a["to_time"].is_number();
+}
+
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
-// mesh, physics and precision, and reads its state.
+// mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
   const Start& start = *p.input.start;
   const fs::path file = fs::path(start.run) / "solution.cgns";
-  std::string hash;
+  const auto unusable = [&](const std::string& why) {
+    start_mismatch("E0707", file.string() + ": " + why, "start.run");
+  };
+  std::optional<SnapshotFile> snapshot;
+  try {
+    snapshot.emplace(file);
+  } catch (const Error& e) {
+    unusable(e.what());
+  }
+  if (snapshot->sha256() != start.solution_sha256) {
+    start_mismatch("E0709", "the previous solution's SHA-256 differs from start.solution_sha256",
+                   "start.solution_sha256",
+                   {{"expected", start.solution_sha256}, {"found", snapshot->sha256()}});
+  }
   io::StoredSolution stored;
   try {
-    hash = io::mesh_hash(file);
-    if (hash == start.solution_sha256) stored = io::read_solution(file, p.mesh.n_cells());
+    stored = io::read_solution(snapshot->path());
   } catch (const Error& e) {
-    start_mismatch("E0707", file.string() + ": " + e.what(), "start.run");
-  }
-  if (hash != start.solution_sha256) {
-    start_mismatch("E0709", "the previous solution's SHA-256 differs from start.solution_sha256",
-                   "start.solution_sha256", {{"expected", start.solution_sha256}, {"found", hash}});
+    unusable(e.what());
   }
   Json metadata;
   try {
     metadata = Json::parse(stored.run_metadata);
-  } catch (const Json::exception& e) {
-    start_mismatch("E0707", file.string() + ": RunMetadata is not JSON", "start.run");
+  } catch (const Json::exception&) {
+    unusable("RunMetadata is not JSON");
   }
-  const auto text = [&](const char* a, const char* b = nullptr) {
-    const Json* v = metadata.contains(a) ? &metadata[a] : nullptr;
-    if (v != nullptr && b != nullptr) v = v->contains(b) ? &(*v)[b] : nullptr;
-    return v != nullptr && v->is_string() ? v->get<std::string>() : std::string();
+  const auto text = [&](const Json& object, const char* key) {
+    if (!object.is_object() || !object.contains(key) || !object[key].is_string())
+      unusable(std::string("RunMetadata has no ") + key);
+    return object[key].get<std::string>();
   };
-  if (text("mesh", "sha256") != p.mesh_hash) {
+  const std::string mesh =
+      text(metadata.contains("mesh") ? metadata["mesh"] : Json::object(), "sha256");
+  if (mesh != p.mesh_hash) {
     start_mismatch("E0203", "the previous run was computed on another mesh", "start.run",
-                   {{"expected", p.mesh_hash}, {"found", text("mesh", "sha256")}});
+                   {{"expected", p.mesh_hash}, {"found", mesh}});
   }
-  if (text("precision") != p.input.precision) {
-    start_mismatch("E0708", "the previous run used precision '" + text("precision") + "'",
-                   "start.run");
+  if (stored.cells != p.mesh.n_cells()) {
+    unusable(std::to_string(stored.cells) + " cells, the mesh " + std::to_string(p.mesh.n_cells()));
+  }
+  const std::string precision = text(metadata, "precision");
+  if (precision != p.input.precision) {
+    start_mismatch("E0708", "the previous run used precision '" + precision + "'", "start.run");
   }
   std::vector<std::string> names;
   for (const auto& f : stored.fields) names.push_back(f.name);
@@ -170,9 +231,11 @@ void load_start(Prepared& p) {
   }
   StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
   if (start.mode == "continue") {
+    if (!metadata.contains("averaging") || !is_averaging(metadata["averaging"]))
+      unusable("RunMetadata has no valid averaging");
+    p.start_averaging = metadata["averaging"];
     state.mean_fields = std::move(stored.mean_fields);
     state.restart_fields = std::move(stored.restart_fields);
-    p.start_averaging = metadata.contains("averaging") ? metadata["averaging"] : Json();
   }
   p.start = std::move(state);
 }
