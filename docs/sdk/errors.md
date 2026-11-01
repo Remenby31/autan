@@ -976,6 +976,6 @@ Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or 
 
 **Strategy not rank-independent** (error)
 
-A face or boundary loop runs on a topology ordered for results independent of the partition (rank_independent) with a strategy whose summation order follows the local numbering: the scatter loop, atomic, warp-aggregated or coloured.
+A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).
 
 Fix: Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.
