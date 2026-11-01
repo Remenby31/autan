@@ -10,6 +10,12 @@ uv run --project "$here" --locked python "$here/generate.py" "$work/gmsh"
 cp "$here/convert.sh" "$work/"
 docker run --rm -v "$work:/work" opencfd/openfoam-default:2506 \
   bash -l /work/convert.sh /work/gmsh /work/out
+# Gmsh-only meshes (no OpenFOAM or Fluent form) are copied as Gmsh wrote them.
+for name in periodic-box; do
+  rm -rf "${data:?}/$name"
+  mkdir -p "$data/$name"
+  cp "$work/gmsh/$name.ascii.msh" "$work/gmsh/$name.binary.msh" "$data/$name/"
+done
 for dir in "$work"/out/*/; do
   name=$(basename "$dir")
   uv run --project "$here" --locked python "$here/fluent_binary.py" \

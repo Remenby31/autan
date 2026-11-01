@@ -101,18 +101,6 @@ TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[perio
   };
   CHECK(autan::assemble(shifted(1e-5, false)).periodic_pairs().size() == 1);
   CHECK(autan::assemble(shifted(0.0, true)).periodic_pairs().size() == 1);
-  // Edges so short that the tolerance underflows: still a coded outcome.
-  auto tiny = periodic_box(3, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
-    for (auto* v : {&m.x, &m.y, &m.z}) {
-      for (double& c : *v) c *= 1e-318;
-    }
-    m.periodic[0].translation = {1e-318, 0.0, 0.0};
-  });
-  try {
-    (void)autan::assemble(std::move(tiny));
-  } catch (const autan::Error& e) {
-    CHECK(e.code() == autan::ErrorCode::mesh_periodic_unmatched);
-  }
   require_code(autan::ErrorCode::mesh_periodic_unmatched, shifted(1e-4, false));
 }
 

@@ -163,6 +163,21 @@ _CODES = [
         "Regenerate the partition; global cell ids must be unique and non-negative.",
     ),
     Code(
+        "E0118",
+        "Invalid periodic pair",
+        "A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind "
+        "periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a "
+        "translation that is zero or not finite.",
+        "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one "
+        "pair, with a non-zero translation.",
+    ),
+    Code(
+        "E0119",
+        "Periodic faces do not match",
+        "The faces of a periodic pair do not match one to one under its translation.",
+        "Regenerate the mesh with conforming periodic faces, and check the translation.",
+    ),
+    Code(
         "E0120",
         "Degenerate face",
         "A face has zero or non-finite area.",
@@ -410,6 +425,13 @@ _CODES = [
         "Set `case.time = autan.Steady(...)` in the verification case.",
     ),
     Code(
+        "E0424",
+        "Condition on a periodic zone",
+        "A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those "
+        "of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.",
+        "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
+    ),
+    Code(
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",
@@ -617,6 +639,12 @@ _CODES = [
         "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
     ),
     Code(
+        "E1013",
+        "Policy not available on the backend",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+    ),
+    Code(
         "E1100",
         "Generated loop failed",
         "A generated loop or the spike driver fails without a more specific code.",
@@ -657,6 +685,18 @@ _CODES = [
         "Incidence twins missing",
         "The deterministic adjoint of a cell reduction runs on a topology without incidence twins.",
         "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
+    ),
+    Code(
+        "E1107",
+        "Metal runtime error",
+        "A Metal call, library compilation or command buffer fails.",
+        "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+    ),
+    Code(
+        "E1108",
+        "Strategy not available",
+        "A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.",
+        "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
         "W0801",
