@@ -127,6 +127,16 @@ class FinalMonitor(BaseModel):
     __pydantic_extra__: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
 
 
+class Timing(_Strict):
+    """Wall and solve time of a run (results.md#runjson, ``timing``): information, not a
+    benchmark."""
+
+    wall_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    solve_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    iterations: Annotated[int, Field(strict=True, ge=1)]
+    ns_per_cell_iteration: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
 class RunInfo(_Strict):
     """The content of ``run.json``."""
 
@@ -148,6 +158,7 @@ class RunInfo(_Strict):
     start: StartInfo | None = None
     convergence: Convergence | None = None
     monitors: dict[str, FinalMonitor] | None = None
+    timing: Timing | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -440,7 +451,7 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        for key in ("start", "convergence", "monitors"):
+        for key in RUN_KEYS:
             if key not in document:
                 broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
@@ -460,15 +471,6 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
-        if run.convergence is not None and (
-            run.precision != "fp32+acc64"
-            or not isinstance(case.time, Steady)
-            or set(run.convergence.floor) != set(residual_names(case))
-        ):
-            broken(
-                "convergence floors exist only for a steady fp32+acc64 run, one per equation",
-                "run.json",
-            )
         digests = [
             r.condition.sha256 for r in case.boundaries if r.condition.kind == "oracle-state"
         ]
@@ -489,7 +491,9 @@ class Results:
                 != case.verification.manufactured.sha256
             ):
                 broken("manufactured.json is missing or differs from the case", "manufactured.json")
-        for problem in run_problems(path, run, case, mesh_info):
+        if path.name != run.run_id:
+            broken(f"directory {path.name!r} is not named after run_id {run.run_id!r}", "run.json")
+        for problem in run_problems(run, case, mesh_info):
             broken(problem, "run.json")
         records = _read_history(path / "history.jsonl", run.status == "running", broken)
         if not (path / "log.jsonl").is_file():
@@ -499,7 +503,7 @@ class Results:
             broken(problem, "log.jsonl")
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
-        for problem in final_monitor_problems(records, run, case):
+        for problem in final_monitor_history_problems(records, run):
             broken(problem, "run.json")
         results = cls(
             path,
@@ -632,11 +636,29 @@ def _base(spec: CaseSpec) -> object:
 _TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
 
-def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
-    """Invariants of run.json against its directory, case and MeshInfo."""
+RUN_KEYS = ("start", "convergence", "monitors", "timing")
+
+
+def check_run_json(document: object, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
+    """Why a run.json document is not valid for its case and MeshInfo: the checks of
+    ``Results.open`` on run.json, without its directory, history, log or solution
+    (results.md#runjson). Empty when it is valid."""
+    if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
+        return [f"run.json schema is not {SCHEMA_ID!r}"]
+    missing = [key for key in RUN_KEYS if key not in document]
+    if missing:
+        return [f"run.json has no {', '.join(missing)} key (null when it does not apply)"]
+    try:
+        run = RunInfo.model_validate(document)
+    except ValidationError as error:
+        first = error.errors(include_url=False)[0]
+        return [f"run.json: {first['msg']} at {first['loc']}"]
+    return run_problems(run, case, mesh_info)
+
+
+def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
+    """Invariants of run.json against its case and MeshInfo."""
     found = []
-    if path.name != run.run_id:
-        found.append(f"directory {path.name!r} is not named after run_id {run.run_id!r}")
     if not _TIMESTAMP.fullmatch(run.started):
         found.append(f"started {run.started!r} is not a UTC ISO 8601 timestamp")
     elif run.run_id[4:20] != run.started.replace("-", "").replace(":", ""):
@@ -674,6 +696,9 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
         found.append("averaging is only for unsteady runs")
     if run.status == "diverged" and not any(d.code.startswith("D") for d in run.diagnostics):
         found.append("a diverged run must carry a D diagnostic")
+    found += convergence_problems(run, case)
+    found += final_monitor_problems(run, case)
+    found += timing_problems(run, mesh_info)
     return found
 
 
@@ -774,7 +799,7 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
 FINAL = frozenset({"converged", "completed", "stopped"})
 # run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
 # after the solution is written, or name its final state.
-NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "diagnostics")
+NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "timing", "diagnostics")
 
 
 def run_metadata(info: RunInfo) -> dict[str, Any]:
@@ -782,11 +807,9 @@ def run_metadata(info: RunInfo) -> dict[str, Any]:
     return {k: v for k, v in info.document().items() if k not in NOT_IN_METADATA}
 
 
-def final_monitor_problems(
-    records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
-) -> list[str]:
-    """run.json ``monitors``: each monitor on the final state of a finished run, equal to the
-    last history line when that line carries it (results.md#runjson)."""
+def final_monitor_problems(run: RunInfo, case: CaseSpec) -> list[str]:
+    """run.json ``monitors``: each monitor of the case on the final state of a finished run
+    (results.md#runjson)."""
     final = run.monitors
     if (final is None) != (run.status not in FINAL):
         return ["monitors must be given exactly for converged, completed and stopped runs"]
@@ -796,18 +819,64 @@ def final_monitor_problems(
     if set(final) != set(monitors):
         return [f"monitors must be exactly {sorted(monitors)}"]
     found = []
-    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
     for name, monitor in final.items():
         values = dict(monitor.model_extra or {})
-        iteration = monitor.iteration
-        if iteration != run.iterations:
+        if monitor.iteration != run.iterations:
             found.append(f"monitor {name!r}: iteration must be {run.iterations}")
         elif set(values) != force_keys(monitors[name], case) or not all(
             _finite(v) for v in values.values()
         ):
             found.append(f"monitor {name!r} has the wrong or non-finite quantities")
-        elif last is not None and name in last["monitors"] and last["monitors"][name] != values:
-            found.append(f"monitor {name!r} differs from the last history line")
+    return found
+
+
+def final_monitor_history_problems(records: list[dict[str, Any]], run: RunInfo) -> list[str]:
+    """The final monitors equal the last history line when that line carries them."""
+    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
+    if last is None or run.monitors is None:
+        return []
+    return [
+        f"monitor {name!r} differs from the last history line"
+        for name, monitor in run.monitors.items()
+        if name in last["monitors"] and last["monitors"][name] != dict(monitor.model_extra or {})
+    ]
+
+
+def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
+    """run.json ``convergence``: the floors of a steady fp32+acc64 run, one per equation."""
+    if run.convergence is not None and (
+        run.precision != "fp32+acc64"
+        or not isinstance(case.time, Steady)
+        or set(run.convergence.floor) != set(residual_names(case))
+    ):
+        return ["convergence floors exist only for a steady fp32+acc64 run, one per equation"]
+    return []
+
+
+def timing_problems(run: RunInfo, mesh_info: MeshInfo) -> list[str]:
+    """run.json ``timing``: given exactly when the run measured one, consistent with it."""
+    timing = run.timing
+    continued = run.start is not None and run.start.mode == "continue"
+    done = run.iterations - (run.start.iterations if run.start is not None and continued else 0)
+    measured = run.solver.backend != "fake" and run.status not in ("running", "failed") and done > 0
+    if (timing is not None) != measured:
+        message = (
+            "timing is given exactly for a run of the solver that ended other than failed, "
+            "after at least one iteration of its own"
+        )
+        return [message]
+    if timing is None:
+        return []
+    found = []
+    if timing.iterations != done:
+        found.append(f"timing.iterations must be the {done} iterations of this run")
+    expected = timing.solve_seconds * 1e9 / (mesh_info.counts.cells * timing.iterations)
+    if not math.isclose(timing.ns_per_cell_iteration, expected, rel_tol=1e-9, abs_tol=0.0):
+        found.append(
+            "timing.ns_per_cell_iteration must be solve_seconds * 1e9 / (cells * iterations)"
+        )
+    if timing.solve_seconds > timing.wall_seconds:
+        found.append("timing.solve_seconds cannot exceed wall_seconds")
     return found
 
 
