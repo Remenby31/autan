@@ -20,6 +20,8 @@ from autan_codegen.dsl import (
     Geom,
     Grad,
     Inc,
+    Jac,
+    Jacobian,
     Max,
     Min,
     Param,
@@ -77,16 +79,26 @@ gamma = param("gamma", Param)
 gas_constant = param("gas_constant", Param)
 mach_ref = param("mach_ref", Param)
 limiter_scale = param("limiter_scale", Param.Vec5)
+# Reference state: cells store u - u_ref and the primitive pressure is p - p_ref (gauge), so that
+# FP32 states and momentum fluxes keep the resolution of the variations (docs/design/euler.md).
+u_ref = param("u_ref", Param.Vec5)
+p_ref = param("p_ref", Param)
 
 
 # ---------------------------------------------------------------------------- thermodynamics
 
 
 @pointwise
-def to_primitive(q: State.Vec5, g: Param) -> State.Vec5:
-    rho = q[0]
-    vel = Vec3(q[1] / rho, q[2] / rho, q[3] / rho)
-    return Vec5(rho, vel[0], vel[1], vel[2], (g - 1.0) * (q[4] - 0.5 * rho * dot(vel, vel)))
+def to_primitive(dq: State.Vec5, ur: Param.Vec5, g: Param) -> State.Vec5:
+    # From dq = u - u_ref: rho, velocity and the gauge pressure
+    # p - p_ref = (g - 1) (dE - (|m|^2 / rho - |m_ref|^2 / rho_ref) / 2), the kinetic term written
+    # with the small differences only.
+    rho = ur[0] + dq[0]
+    mr = Vec3(ur[1], ur[2], ur[3])
+    dm = Vec3(dq[1], dq[2], dq[3])
+    m = mr + dm
+    dk = (dot(dm, 2.0 * mr + dm) * ur[0] - dot(mr, mr) * dq[0]) / (rho * ur[0])
+    return Vec5(rho, m[0] / rho, m[1] / rho, m[2] / rho, (g - 1.0) * (dq[4] - 0.5 * dk))
 
 
 @pointwise
@@ -95,13 +107,14 @@ def velocity(w: State.Vec5) -> State.Vec3:
 
 
 @pointwise
-def total_enthalpy(w: State.Vec5, g: Param) -> State:
+def total_enthalpy(w: State.Vec5, g: Param, pr: Param) -> State:
     v = velocity(w)
-    return g / (g - 1.0) * w[4] / w[0] + 0.5 * dot(v, v)
+    return g / (g - 1.0) * (w[4] + pr) / w[0] + 0.5 * dot(v, v)
 
 
 @pointwise
-def physical_flux(w: State.Vec5, n: Geom.Vec3, g: Param) -> State.Vec5:
+def physical_flux(w: State.Vec5, n: Geom.Vec3, g: Param, pr: Param) -> State.Vec5:
+    # Momentum takes the gauge pressure: p_ref sums to zero over a closed cell.
     v = velocity(w)
     vn = dot(v, n)
     m = w[0] * vn
@@ -110,7 +123,7 @@ def physical_flux(w: State.Vec5, n: Geom.Vec3, g: Param) -> State.Vec5:
         m * v[0] + w[4] * n[0],
         m * v[1] + w[4] * n[1],
         m * v[2] + w[4] * n[2],
-        m * total_enthalpy(w, g),
+        m * total_enthalpy(w, g, pr),
     )
 
 
@@ -126,13 +139,13 @@ def harten(lam: State, delta: State) -> State:
 
 
 @pointwise
-def roe(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param) -> State.Vec5:
+def roe(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param, pr: Param) -> State.Vec5:
     # Roe (1981), J. Comput. Phys. 43:357-372, in the wave-strength form of Blazek (2015),
     # eqs. 4.89-4.91; Harten (1983), J. Comput. Phys. 49:357-393, eq. 4.5, on the acoustic
     # eigenvalues only, so that stationary contacts and shear layers stay exact.
     rl, rr = wl[0], wr[0]
     vl, vr = velocity(wl), velocity(wr)
-    hl, hr = total_enthalpy(wl, g), total_enthalpy(wr, g)
+    hl, hr = total_enthalpy(wl, g, pr), total_enthalpy(wr, g, pr)
     s = sqrt(rr / rl)
     rho = s * rl
     v = (vl + s * vr) / (1.0 + s)
@@ -155,47 +168,48 @@ def roe(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param) -> State.Vec5:
     d0 = a1 + a2 + a5
     dm = a1 * (v - c * n) + a2 * v + l2 * rho * shear + a5 * (v + c * n)
     de = a1 * (h - c * vn) + a2 * 0.5 * q2 + l2 * rho * (dot(v, dv) - vn * dvn) + a5 * (h + c * vn)
-    central = 0.5 * (physical_flux(wl, n, g) + physical_flux(wr, n, g))
+    central = 0.5 * (physical_flux(wl, n, g, pr) + physical_flux(wr, n, g, pr))
     return central - 0.5 * Vec5(d0, dm[0], dm[1], dm[2], de)
 
 
 @pointwise
-def hllc_star(w: State.Vec5, n: Geom.Vec3, sk: State, sm: State, g: Param) -> State.Vec5:
+def hllc_star(w: State.Vec5, n: Geom.Vec3, sk: State, sm: State, g: Param, pr: Param) -> State.Vec5:
     # Toro (2009), Riemann Solvers and Numerical Methods for Fluid Dynamics, 3rd ed., eq. 10.39,
     # in the face-normal frame: the star state on the side of wave speed sk.
     v = velocity(w)
     vn = dot(v, n)
     rs = w[0] * (sk - vn) / (sk - sm)
-    e = w[4] / ((g - 1.0) * w[0]) + 0.5 * dot(v, v)
+    p = w[4] + pr
+    e = p / ((g - 1.0) * w[0]) + 0.5 * dot(v, v)
     ms = rs * (v + (sm - vn) * n)
-    es = rs * (e + (sm - vn) * (sm + w[4] / (w[0] * (sk - vn))))
+    es = rs * (e + (sm - vn) * (sm + p / (w[0] * (sk - vn))))
     return Vec5(rs, ms[0], ms[1], ms[2], es)
 
 
 @pointwise
-def conserved(w: State.Vec5, g: Param) -> State.Vec5:
+def conserved(w: State.Vec5, g: Param, pr: Param) -> State.Vec5:
     v = velocity(w)
     return Vec5(
         w[0],
         w[0] * v[0],
         w[0] * v[1],
         w[0] * v[2],
-        w[4] / (g - 1.0) + 0.5 * w[0] * dot(v, v),
+        (w[4] + pr) / (g - 1.0) + 0.5 * w[0] * dot(v, v),
     )
 
 
 @pointwise
-def hllc(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param) -> State.Vec5:
+def hllc(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param, pr: Param) -> State.Vec5:
     # Toro, Spruce and Speares (1994), Shock Waves 4:25-34; wave speeds of Einfeldt (1988) as in
     # Batten et al. (1997), SIAM J. Sci. Comput. 18:1553-1570, eqs. 15 (S_M) and 13 (S_L, S_R).
     rl, rr = wl[0], wr[0]
     vl, vr = velocity(wl), velocity(wr)
     vnl, vnr = dot(vl, n), dot(vr, n)
-    cl = sqrt(g * wl[4] / rl)
-    cr = sqrt(g * wr[4] / rr)
+    cl = sqrt(g * (wl[4] + pr) / rl)
+    cr = sqrt(g * (wr[4] + pr) / rr)
     s = sqrt(rr / rl)
     v = (vl + s * vr) / (1.0 + s)
-    h = (total_enthalpy(wl, g) + s * total_enthalpy(wr, g)) / (1.0 + s)
+    h = (total_enthalpy(wl, g, pr) + s * total_enthalpy(wr, g, pr)) / (1.0 + s)
     c = sqrt((g - 1.0) * (h - 0.5 * dot(v, v)))
     vn = dot(v, n)
     sl = min(vnl - cl, vn - c)
@@ -203,14 +217,14 @@ def hllc(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param) -> State.Vec5:
     sm = (wr[4] - wl[4] + rl * vnl * (sl - vnl) - rr * vnr * (sr - vnr)) / (
         rl * (sl - vnl) - rr * (sr - vnr)
     )
-    fl = physical_flux(wl, n, g)
-    fr = physical_flux(wr, n, g)
+    fl = physical_flux(wl, n, g, pr)
+    fr = physical_flux(wr, n, g, pr)
     if sl >= 0.0:
         f = fl
     elif sm >= 0.0:
-        f = fl + sl * (hllc_star(wl, n, sl, sm, g) - conserved(wl, g))
+        f = fl + sl * (hllc_star(wl, n, sl, sm, g, pr) - conserved(wl, g, pr))
     elif sr > 0.0:
-        f = fr + sr * (hllc_star(wr, n, sr, sm, g) - conserved(wr, g))
+        f = fr + sr * (hllc_star(wr, n, sr, sm, g, pr) - conserved(wr, g, pr))
     else:
         f = fr
     return f
@@ -249,13 +263,15 @@ def p5_minus(m: State, alpha: State) -> State:
 
 
 @pointwise
-def ausm_up(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param, minf: Param) -> State.Vec5:
+def ausm_up(
+    wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param, minf: Param, pr: Param
+) -> State.Vec5:
     # Liou (2006): AUSM+-up with the interface sound speed from the critical speed of sound
     # (Liou 1996, J. Comput. Phys. 129:364-382) and the low-Mach scaling fa(M_o), M_co = minf.
     rl, rr = wl[0], wr[0]
     vl, vr = velocity(wl), velocity(wr)
     vnl, vnr = dot(vl, n), dot(vr, n)
-    hl, hr = total_enthalpy(wl, g), total_enthalpy(wr, g)
+    hl, hr = total_enthalpy(wl, g, pr), total_enthalpy(wr, g, pr)
     csl = sqrt(2.0 * (g - 1.0) / (g + 1.0) * hl)
     csr = sqrt(2.0 * (g - 1.0) / (g + 1.0) * hr)
     al = csl * csl / max(csl, vnl)
@@ -272,7 +288,10 @@ def ausm_up(wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param, minf: Param)
     mp = -AUSM_KP / fa * max(1.0 - AUSM_SIGMA * mbar2, 0.0) * (wr[4] - wl[4]) / (rho * a * a)
     m = m4_plus(ml) + m4_minus(mr) + mp
     pu = -AUSM_KU * p5_plus(ml, alpha) * p5_minus(mr, alpha) * (rl + rr) * fa * a * (vnr - vnl)
-    p = p5_plus(ml, alpha) * wl[4] + p5_minus(mr, alpha) * wr[4] + pu
+    # Gauge interface pressure: p_1/2 - p_ref, exactly, although P+ + P- differs from 1.
+    pp = p5_plus(ml, alpha)
+    pm = p5_minus(mr, alpha)
+    p = pp * wl[4] + pm * wr[4] + pu + (pp + pm - 1.0) * pr
     mdot = a * m * rl if m > 0.0 else a * m * rr
     vu = vl if m > 0.0 else vr
     hu = hl if m > 0.0 else hr
@@ -360,38 +379,62 @@ def mirror_state(wi: State.Vec5, n: Geom.Vec3) -> State.Vec5:
 
 @pointwise
 def boundary_value(
-    wi: State.Vec5, kind: Geom, data: State.Vec5, n: Geom.Vec3, g: Param, rgas: Param
+    wg: State.Vec5,
+    kind: Geom,
+    data: State.Vec5,
+    n: Geom.Vec3,
+    g: Param,
+    rgas: Param,
+    pr: Param,
 ) -> State.Vec5:
-    # Codes are whole numbers stored in FP64: compare with the midpoints.
+    # Gauge interior state in, gauge boundary state out; the conditions and their data use the
+    # absolute pressure, except the mirror, which keeps the gauge pressure: a round trip through
+    # p_ref would round away the variations FP32 stores. Codes are whole numbers stored in FP64:
+    # compare with the midpoints.
+    wi = Vec5(wg[0], wg[1], wg[2], wg[3], wg[4] + pr)
+    shift = pr
     if kind < BC_FARFIELD - 0.5:
         w = data
     elif kind < BC_SLIP - 0.5:
         w = farfield_state(wi, data, n, g)
     elif kind < BC_INLET - 0.5:
-        w = mirror_state(wi, n)
+        w = mirror_state(wg, n)
+        shift = 0.0 * pr
     elif kind < BC_OUTLET - 0.5:
         w = inlet_state(wi, data, n, g, rgas)
     else:
         w = outlet_state(wi, data, n, g)
-    return w
+    return Vec5(w[0], w[1], w[2], w[3], w[4] - shift)
 
 
 # ---------------------------------------------------------------------------- loops
 
 
 @pointwise
-def primitive(q: State.Vec5, g: Param) -> State.Vec5:
-    return to_primitive(q, g)
+def primitive(q: State.Vec5, ur: Param.Vec5, g: Param) -> State.Vec5:
+    return to_primitive(q, ur, g)
 
 
-primitives = cell_loop(primitive, q=u, g=gamma, out=Write(prim))
+primitives = cell_loop(primitive, q=u, ur=u_ref, g=gamma, out=Write(prim))
+
+# For the implicit solvers: dW/dU of every cell, written with the primitives.
+dwdu = cells.field("dwdu", Jac.shape(5, 5))
+primitives_jacobian = cell_loop(
+    primitive, q=u, ur=u_ref, g=gamma, out=[Write(prim), Jacobian(dwdu, wrt="q")]
+)
 
 
 @pointwise
 def boundary_primitive(
-    wi: State.Vec5, kind: Geom, data: State.Vec5, n: Geom.Vec3, g: Param, rgas: Param
+    wi: State.Vec5,
+    kind: Geom,
+    data: State.Vec5,
+    n: Geom.Vec3,
+    g: Param,
+    rgas: Param,
+    pr: Param,
 ) -> State.Vec5:
-    return boundary_value(wi, kind, data, n, g, rgas)
+    return boundary_value(wi, kind, data, n, g, rgas, pr)
 
 
 boundary_states = boundary_loop(
@@ -402,6 +445,7 @@ boundary_states = boundary_loop(
     n=geometry.face_normal,
     g=gamma,
     rgas=gas_constant,
+    pr=p_ref,
     out=Write(prim_b),
     frozen=True,
 )
@@ -493,12 +537,14 @@ sources = cell_loop(volume_source, s=source, vol=geometry.cell_volume, out=Write
 
 
 @pointwise
-def reconstruct(w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3) -> State.Vec5:
+def reconstruct(
+    w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, pref: Param
+) -> State.Vec5:
     # Falls back to the cell value where the linear reconstruction would make the density or the
-    # pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
+    # (absolute) pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
     d = gw @ r
     wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
-    return wf if wf[0] > 0.0 and wf[4] > 0.0 else w
+    return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
 
 
 @pointwise
@@ -507,13 +553,15 @@ def times(a: State.Vec5, b: State.Vec5) -> State.Vec5:
 
 
 @pointwise
-def flux_increment(w: State.Vec5, dw: State.Vec5, e: Geom.Vec3, g: Param) -> State.Vec5:
+def flux_increment(
+    w: State.Vec5, dw: State.Vec5, e: Geom.Vec3, g: Param, pref: Param
+) -> State.Vec5:
     # Linearisation of the physical flux through direction e, in primitive variables.
     v = velocity(w)
     dv = velocity(dw)
     ve = dot(v, e)
     dve = dot(dv, e)
-    rh = g / (g - 1.0) * w[4] + 0.5 * w[0] * dot(v, v)
+    rh = g / (g - 1.0) * (w[4] + pref) + 0.5 * w[0] * dot(v, v)
     drh = g / (g - 1.0) * dw[4] + 0.5 * dw[0] * dot(v, v) + w[0] * dot(v, dv)
     dm = dw[0] * ve + w[0] * dve
     mom = dm * v + (w[0] * ve) * dv + dw[4] * e
@@ -529,6 +577,7 @@ def warp(
     pr: State.Vec5,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
 ) -> State.Vec5:
     # Flux of the linear reconstruction through the fan triangles t of a warped face beyond its
     # centroid value: sum_j dF_j[W; grad W . M[:, j]], M = sum_t (c_t - x_f) (x) S_t, zero on a
@@ -540,9 +589,9 @@ def warp(
     d1 = 0.5 * (times(pl, gl @ m1) + times(pr, gr @ m1))
     d2 = 0.5 * (times(pl, gl @ m2) + times(pr, gr @ m2))
     return (
-        flux_increment(w, d0, Vec3(1.0, 0.0, 0.0), g)
-        + flux_increment(w, d1, Vec3(0.0, 1.0, 0.0), g)
-        + flux_increment(w, d2, Vec3(0.0, 0.0, 1.0), g)
+        flux_increment(w, d0, Vec3(1.0, 0.0, 0.0), g, pref)
+        + flux_increment(w, d1, Vec3(0.0, 1.0, 0.0), g, pref)
+        + flux_increment(w, d2, Vec3(0.0, 0.0, 1.0), g, pref)
     )
 
 
@@ -570,10 +619,11 @@ def roe_face(
     area: Geom,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
 ) -> Residual.Vec5:
-    fl = reconstruct(wl, gl, pl, rel(xf, xl))
-    fr = reconstruct(wr, gr, pr, rel(xf, xr))
-    return area * roe(fl, fr, n, g) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g)
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    return area * roe(fl, fr, n, g, pref) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
 
 
 @pointwise
@@ -591,10 +641,11 @@ def hllc_face(
     area: Geom,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
 ) -> Residual.Vec5:
-    fl = reconstruct(wl, gl, pl, rel(xf, xl))
-    fr = reconstruct(wr, gr, pr, rel(xf, xr))
-    return area * hllc(fl, fr, n, g) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g)
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    return area * hllc(fl, fr, n, g, pref) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
 
 
 @pointwise
@@ -612,11 +663,14 @@ def ausm_face(
     area: Geom,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
     minf: Param,
 ) -> Residual.Vec5:
-    fl = reconstruct(wl, gl, pl, rel(xf, xl))
-    fr = reconstruct(wr, gr, pr, rel(xf, xr))
-    return area * ausm_up(fl, fr, n, g, minf) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g)
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    return area * ausm_up(fl, fr, n, g, minf, pref) + warp(
+        0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref
+    )
 
 
 FACE_ARGS = {
@@ -633,11 +687,20 @@ FACE_ARGS = {
     "area": geometry.face_area_magnitude,
     "m": geometry.face_moment,
     "g": gamma,
+    "pref": p_ref,
 }
 
 roe_faces = face_loop(roe_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 hllc_faces = face_loop(hllc_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 ausm_faces = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=Inc(res, left=+1, right=-1))
+
+# The same fluxes with their face Jacobians dF/dW_L and dF/dW_R, the reconstruction's gradients
+# and limiter held fixed: the approximate Jacobian of the implicit solvers, fused with the residual.
+face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
+FACE_JAC = [Inc(res, left=+1, right=-1), Jacobian(face_jac, wrt=("wl", "wr"))]
+roe_faces_jacobian = face_loop(roe_face, **FACE_ARGS, out=FACE_JAC)
+hllc_faces_jacobian = face_loop(hllc_face, **FACE_ARGS, out=FACE_JAC)
+ausm_faces_jacobian = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=FACE_JAC)
 
 
 @pointwise
@@ -658,14 +721,15 @@ def roe_boundary(
     area: Geom,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
     rgas: Param,
 ) -> Residual.Vec5:
-    wf = reconstruct(wl, gl, pl, rel(xf, xl))
-    wb = boundary_value(wf, kind, data, n, g, rgas)
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * roe(wf, wb, n, g)
+        f = area * roe(wf, wb, n, g, pref)
     return f
 
 
@@ -682,14 +746,15 @@ def hllc_boundary(
     area: Geom,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
     rgas: Param,
 ) -> Residual.Vec5:
-    wf = reconstruct(wl, gl, pl, rel(xf, xl))
-    wb = boundary_value(wf, kind, data, n, g, rgas)
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * hllc(wf, wb, n, g)
+        f = area * hllc(wf, wb, n, g, pref)
     return f
 
 
@@ -706,15 +771,16 @@ def ausm_boundary(
     area: Geom,
     m: Geom.Mat3,
     g: Param,
+    pref: Param,
     rgas: Param,
     minf: Param,
 ) -> Residual.Vec5:
-    wf = reconstruct(wl, gl, pl, rel(xf, xl))
-    wb = boundary_value(wf, kind, data, n, g, rgas)
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * ausm_up(wf, wb, n, g, minf)
+        f = area * ausm_up(wf, wb, n, g, minf, pref)
     return f
 
 
@@ -730,6 +796,7 @@ BOUNDARY_ARGS = {
     "area": geometry.face_area_magnitude,
     "m": geometry.face_moment,
     "g": gamma,
+    "pref": p_ref,
     "rgas": gas_constant,
 }
 
@@ -739,17 +806,27 @@ ausm_boundaries = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
 )
 
+bnd_jac = faces.field("bnd_jac", Jac.shape(5, 5))
+BOUNDARY_JAC = [Inc(res, left=+1), Jacobian(bnd_jac, wrt="wl")]
+roe_boundaries_jacobian = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
+hllc_boundaries_jacobian = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
+ausm_boundaries_jacobian = boundary_loop(
+    ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=BOUNDARY_JAC
+)
+
 
 lam = cells.field("lam", State)
 
 
 @pointwise
-def wave_speed(wc: State.Vec5, wn: State.Vec5, n: Geom.Vec3, area: Geom, g: Param) -> State:
+def wave_speed(
+    wc: State.Vec5, wn: State.Vec5, n: Geom.Vec3, area: Geom, g: Param, pref: Param
+) -> State:
     # Convective spectral radius of a face, (|v . n| + c) A, the larger of the two sides' so that
     # opposing flows do not cancel (Blazek 2015, chapter 6): its sum over a cell's faces bounds
     # the local time step.
-    lc = abs(dot(velocity(wc), n)) + sqrt(g * wc[4] / wc[0])
-    ln = abs(dot(velocity(wn), n)) + sqrt(g * wn[4] / wn[0])
+    lc = abs(dot(velocity(wc), n)) + sqrt(g * (wc[4] + pref) / wc[0])
+    ln = abs(dot(velocity(wn), n)) + sqrt(g * (wn[4] + pref) / wn[0])
     return max(lc, ln) * area
 
 
@@ -760,5 +837,6 @@ spectral_radius = cell_reduce(
     n=geometry.face_normal,
     area=geometry.face_area_magnitude,
     g=gamma,
+    pref=p_ref,
     acc=Sum(lam),
 )

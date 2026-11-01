@@ -50,8 +50,12 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
 
 def _cmd_m2_cases(args: argparse.Namespace) -> None:
     from autan_vv.cases import naca0012  # noqa: PLC0415
+    from autan_vv.meshes.families import MANIFEST_SCHEMA  # noqa: PLC0415
 
     manifest = json.loads((args.family / "manifest.json").read_text())
+    if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("kind") != "naca0012":
+        msg = f"{args.family} is not a naca0012 mesh family ({MANIFEST_SCHEMA})"
+        raise VVError(msg, code="V0805")
     for condition in naca0012.CONDITIONS:
         out = args.out / condition
         out.mkdir(parents=True, exist_ok=True)
@@ -86,7 +90,11 @@ def _cmd_forces(args: argparse.Namespace) -> None:
             _say(
                 f"{name}: continuum {est['estimate']:.9f}, p = {est['order']:.3f}, GCI {est['gci']:.3g}"
             )
-    note = "" if report["evidence"] else " (not evidence: fake backend)"
+    note = (
+        ""
+        if report["evidence"]
+        else f" (not evidence: {'; '.join(report['not_evidence_because'])})"
+    )
     for verdict in report["verdicts"]:
         _say(f"gate {verdict['gate']}: {'PASS' if verdict['pass'] else 'FAIL'}{note}")
     if not report["pass"]:

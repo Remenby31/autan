@@ -55,13 +55,15 @@ int guarded(char* err, std::size_t len, F&& body) {
   }
 }
 
-/// Converts FP64 arrays to the policy's state type, runs f, converts the result back.
+/// Converts the conserved variables `a` to the stored state and `b` (a direction) to the state
+/// type, runs f, converts the result back to FP64.
 template <class E, class F>
 void in_policy(E& e, const double* a, const double* b, double* out, F&& f) {
   using S = typename std::remove_reference_t<decltype(*e)>::State;
   using R = typename std::remove_reference_t<decltype(*e)>::Res;
   const auto n = 5 * static_cast<std::size_t>(e->n_cells());
-  std::vector<S> sa(a, a + n);
+  std::vector<S> sa(n);
+  e->state(std::span<const double>(a, n), sa);
   std::vector<S> sb(b != nullptr ? b : a, (b != nullptr ? b : a) + n);
   std::vector<R> r(n, R(0));
   f(*e, std::span<const S>(sa), std::span<const S>(sb), std::span<R>(r));
@@ -126,7 +128,8 @@ void autan_mms_mesh_arrays(const void* mesh, std::int32_t* owner, std::int32_t* 
 
 /// scheme = {flux (0 Roe, 1 HLLC, 2 AUSM+-up), second_order, limiter, gradient stencil (0 face2,
 /// 1 vertex)}; real = {gamma,
-/// gas_constant, venkat_k, length, mach_ref, scale[5]}; policy "fp64" or "fp32+acc64".
+/// gas_constant, venkat_k, length, mach_ref, scale[5], reference[5]} (reference: the conserved
+/// state the cells store differences from); policy "fp64" or "fp32+acc64".
 int autan_mms_euler_create(const void* mesh, const char* policy, const std::int32_t* scheme,
                            const double* real, void** out, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
@@ -142,6 +145,7 @@ int autan_mms_euler_create(const void* mesh, const char* policy, const std::int3
     s.mach_ref = real[4];
     for (std::size_t c = 0; c < 5; ++c) {
       s.scale[c] = real[5 + c];
+      s.reference[c] = real[10 + c];
     }
     auto h = std::make_unique<EulerHandle>();
     const std::string_view p(policy);

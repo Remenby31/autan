@@ -175,9 +175,12 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
                                       : autan::physics::Flux::roe;
   scheme.mach_ref = 0.5;
   scheme.scale = {rho, a, a, a, p};
+  const double q2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+  scheme.reference = {rho, rho * v[0], rho * v[1], rho * v[2], p / (gamma - 1.0) + 0.5 * rho * q2};
   autan::physics::Euler<P> host(mesh, geometry, {gamma, 287.0}, scheme);
   host.set_boundary(kind, data);
-  std::vector<S> us(u.begin(), u.end());
+  std::vector<S> us(u.size());
+  host.state(u, us);
   std::vector<R> reference(5 * nc);
   host.residual(us, reference);
 
@@ -221,6 +224,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
       d_wmax(5 * nc), d_phi(5 * nc), d_source(5 * nc);
   DeviceArray<Gr> d_grad(15 * nc);
   DeviceArray<R> d_res(5 * nc);
+  using J = typename P::jac;
+  DeviceArray<J> d_face_jac(50 * nf), d_bnd_jac(25 * nf), d_dwdu(25 * nc);
 
   topo.owner = owner.get();
   topo.neighbour = neighbour.get();
@@ -241,6 +246,9 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   d.phi = d_phi.get();
   d.source = d_source.get();
   d.res = d_res.get();
+  d.face_jac = d_face_jac.get();
+  d.bnd_jac = d_bnd_jac.get();
+  d.dwdu = d_dwdu.get();
   d.bc_kind = d_kind.get();
   d.bc = d_bc.get();
   d.face_normal = face_normal.get();
@@ -253,6 +261,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   d.gamma[0] = typename P::param(gamma);
   d.gas_constant[0] = typename P::param(287.0);
   d.mach_ref[0] = typename P::param(0.5);
+  for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(scheme.reference[c]);
+  d.p_ref[0] = typename P::param(p);
   const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
   for (std::size_t c = 0; c < 5; ++c)
     d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);
@@ -320,6 +330,32 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   };
   double bytes = 0.0;
   for (const auto& l : loops) bytes += l.bytes;
+  // The implicit solver's loops: the same work plus their Jacobian blocks, written once.
+  const double sJ = sizeof(J);
+  const std::vector<Loop> jacobian_loops = {
+      {"primitives_jacobian", cs * (10 * sS + 25 * sJ),
+       [&](gpu::Strategy) { ek::gpu_loops::primitives_jacobian(d, sched); }},
+      {"faces_jacobian", loops[5].bytes + is * 50 * sJ,
+       [&](gpu::Strategy s) {
+         if (scheme.flux == autan::physics::Flux::hllc) {
+           ek::gpu_loops::hllc_faces_jacobian(d, s, sched);
+         } else if (scheme.flux == autan::physics::Flux::ausm_up) {
+           ek::gpu_loops::ausm_faces_jacobian(d, s, sched);
+         } else {
+           ek::gpu_loops::roe_faces_jacobian(d, s, sched);
+         }
+       }},
+      {"boundaries_jacobian", loops[6].bytes + bs * 25 * sJ,
+       [&](gpu::Strategy s) {
+         if (scheme.flux == autan::physics::Flux::hllc) {
+           ek::gpu_loops::hllc_boundaries_jacobian(d, s, sched);
+         } else if (scheme.flux == autan::physics::Flux::ausm_up) {
+           ek::gpu_loops::ausm_boundaries_jacobian(d, s, sched);
+         } else {
+           ek::gpu_loops::roe_boundaries_jacobian(d, s, sched);
+         }
+       }},
+  };
   auto residual = [&](gpu::Strategy s) {
     for (const auto& l : loops) l.launch(s);
   };
@@ -351,6 +387,12 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     std::replace(tag.begin(), tag.end(), '-', '_');
     out.timed.push_back(
         {"residual_" + o.flux + "_" + tag, gpu::name(s), bytes, time_it(o, [&] { residual(s); })});
+    for (const auto& l : jacobian_loops) {
+      const bool by_strategy = std::string_view(l.name) != "primitives_jacobian";
+      if (!by_strategy && s != gpu::Strategy::atomic) continue;
+      out.timed.push_back({std::string(l.name) + (by_strategy ? "_" + o.flux + "_" + tag : ""),
+                           gpu::name(s), l.bytes, time_it(o, [&] { l.launch(s); })});
+    }
     for (const auto& l : loops) {
       const bool by_strategy =
           std::string_view(l.name) == "faces" || std::string_view(l.name) == "boundaries";
