@@ -14,7 +14,7 @@ SU2 is LGPL-2.1. It is built and run apart, never vendored in this repository an
 | Image | `vv/su2/Dockerfile`: Ubuntu 24.04 (pinned digest), GCC 13.3; `meson --buildtype=release -Dwith-mpi=disabled -Dwith-omp=true`, no AD, no Python wrapper, no CGNS or TecIO |
 | No MPI | SU2's MPI build compiles and links its bundled ParMETIS, whose licence is non-commercial (AGENTS.md); SU2 runs as one process with OpenMP threads (`SU2_CFD -t N`) |
 | Build | `docker build -t autan-su2:v8.6.0-omp vv/su2` on the DGX Spark (aarch64); every run records the image id |
-| Run | `vv/su2/run.sh ROOT CASE THREADS`: `SU2_CFD -t THREADS` in the image, `nice -n 10`, writes `log.txt` and `provenance.json` (`autan.su2-run/1`: image id, SU2 version, threads, SHA-256 of the configuration and mesh it ran, CPU model, wall time, exit status) |
+| Run | `vv/su2/campaign.sh THREADS IMAGE_ID CASE...` inside the image (the spark-5359 campaign lane, `autan-campaign start NAME --cpus 4 --dir ROOT --image autan-su2:v8.6.0-omp`), or `vv/su2/run.sh ROOT CASE THREADS` on a host with Docker; both: `SU2_CFD -t THREADS`, `nice -n 10`, the stop rules below, write `log.txt` and `provenance.json` (`autan.su2-run/1`: image id, SU2 version, threads, SHA-256 of the configuration and mesh it ran, CPU model, wall time, exit status) |
 
 ## Fairness protocol
 
