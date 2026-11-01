@@ -5,6 +5,7 @@
 #include <functional>
 #include <limits>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -216,6 +217,15 @@ TEST_CASE("Wall distance holds at any scale and position", "[wall]") {
                                   [](const Vec& q) { return Vec{q[0], 2e-9 * q[1], 1e-8 * q[2]}; });
   const autan::WallSurface surface(thin, std::array<index_t, 1>{zone(thin, "ymin")});
   CHECK_THAT(surface.distance({0.4, 1e-9, 3e-9}), WithinAbs(1e-9, 1e-21));
+  // A tiny wall seen from far away, a huge one from very close.
+  for (const auto& [length, height] : {std::pair{1e-80, 1e80}, std::pair{1e80, 1e-100}}) {
+    const autan::Mesh box =
+        mapped(autan::test::box(1, autan::test::BoxFill::hexa),
+               [&](const Vec& q) { return Vec{length * q[0], length * q[1], length * q[2]}; });
+    const autan::WallSurface wall(box, std::array<index_t, 1>{zone(box, "ymin")});
+    CHECK_THAT(wall.distance({0.4 * length, height, 0.3 * length}),
+               Catch::Matchers::WithinRel(height, 1e-12));
+  }
 }
 
 TEST_CASE("Wall faces with hanging nodes have degenerate fan triangles", "[wall]") {
@@ -246,6 +256,21 @@ TEST_CASE("A periodic wall is found however far the domain shears", "[wall][peri
     CHECK_THAT(d[i], WithinAbs(g.cell_centroid_y[i], 1e-14));
 }
 
+TEST_CASE("A periodic wall is found along oblique periodic directions", "[wall][periodic]") {
+  // One hexahedron mapped by (x + y, 0.01 y + z, z): periodic by (1, 0, 0)
+  // and (1, 0.01, 0), whose copies of the zmin wall tile the plane z = 0.
+  // Reaching it from the centroid takes about 50 of each period.
+  autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa);
+  for (const int z : {0, 1, 2, 3}) cells.face_zones[at(z)].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  cells.periodic.push_back({.zone_a = 2, .zone_b = 3, .translation = {1.0, 0.01, 0.0}});
+  const autan::Mesh mesh = mapped(
+      std::move(cells), [](const Vec& q) { return Vec{q[0] + q[1], 0.01 * q[1] + q[2], q[2]}; });
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "zmin")});
+  CHECK_THAT(d[0], WithinAbs(g.cell_centroid_z[0], 1e-14));
+}
+
 TEST_CASE("Wall inputs the surface cannot use are coded errors", "[wall]") {
   autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(cells));
@@ -268,4 +293,9 @@ TEST_CASE("Wall inputs the surface cannot use are coded errors", "[wall]") {
   require_code(autan::ErrorCode::geometry_degenerate_face, [&] {
     (void)autan::WallSurface(broken, std::array<index_t, 1>{zone(broken, "ymin")});
   });
+  // A wall so wide that its node mean overflows.
+  const autan::Mesh wide = mapped(autan::test::box(1, autan::test::BoxFill::hexa),
+                                  [](const Vec& q) { return Vec{1e308 * q[0], q[1], q[2]}; });
+  require_code(autan::ErrorCode::geometry_degenerate_face,
+               [&] { (void)autan::WallSurface(wide, std::array<index_t, 1>{zone(wide, "ymin")}); });
 }

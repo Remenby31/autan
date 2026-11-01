@@ -25,72 +25,106 @@ Vec cross(const Vec& a, const Vec& b) {
 }
 double norm(const Vec& a) { return std::hypot(a[0], a[1], a[2]); }
 
-double segment_distance2(const Vec& p, const Vec& u, const Vec& v) {
+// For O(1) coordinates: plain products cannot overflow there.
+double segment_distance(const Vec& p, const Vec& u, const Vec& v) {
   const Vec d = v - u;
   const double dd = dot(d, d);
   const double t = dd > 0.0 ? std::clamp(dot(p - u, d) / dd, 0.0, 1.0) : 0.0;
   const Vec e = p - (u + t * d);
-  return dot(e, e);
+  return std::sqrt(dot(e, e));
 }
 
-// Squared distance from p to triangle abc. In coordinates relative to a and
-// scaled by the longest edge, so that every term is O(1) whatever the size
-// of the triangle: the nearest of the three edges, or the plane when p
-// projects inside (sign of each edge's cross product along the normal). A
-// triangle of zero area reduces to its edges.
-double triangle_distance2(const Vec& p, const Vec& a, const Vec& b, const Vec& c) {
-  const double length = std::max({norm(b - a), norm(c - a), norm(c - b)});
-  if (!(length > 0.0)) {
-    const Vec e = p - a;
-    return dot(e, e);
-  }
-  const double s = 1.0 / length;
+double max_abs(const Vec& a) { return std::max({std::abs(a[0]), std::abs(a[1]), std::abs(a[2])}); }
+
+// Distance from p to triangle abc. In coordinates relative to a and scaled
+// by the largest component of the edges and of p - a, so that every term is
+// O(1) and no intermediate overflows or underflows whatever the sizes: the
+// plane distance when p projects inside (sign of each edge's cross product
+// along the normal), else the nearest of the three edges. A triangle of zero
+// area reduces to its edges.
+double triangle_distance(const Vec& p, const Vec& a, const Vec& b, const Vec& c) {
+  const double scale = std::max({max_abs(b - a), max_abs(c - a), max_abs(c - b), max_abs(p - a)});
+  if (!(scale > 0.0)) return 0.0;
+  const double s = 1.0 / scale;
   const Vec B = s * (b - a), C = s * (c - a), P = s * (p - a);
   const Vec A{};
-  double best = std::min(
-      {segment_distance2(P, A, B), segment_distance2(P, B, C), segment_distance2(P, C, A)});
   const Vec n = cross(B, C);
-  const double nn = dot(n, n);
-  if (nn > 0.0 && dot(cross(B, P), n) >= 0.0 && dot(cross(C - B, P - B), n) >= 0.0 &&
+  const double length = std::sqrt(dot(n, n));
+  // A projection inside the triangle is the nearest point.
+  if (length > 0.0 && dot(cross(B, P), n) >= 0.0 && dot(cross(C - B, P - B), n) >= 0.0 &&
       dot(cross(A - C, P - C), n) >= 0.0) {
-    const double h = dot(P, n);
-    best = std::min(best, h * h / nn);
+    return std::abs(dot(P, n)) / length * scale;
   }
-  return best * length * length;
+  return std::min(
+             {segment_distance(P, A, B), segment_distance(P, B, C), segment_distance(P, C, A)}) *
+         scale;
 }
 
-double box_distance2(const Vec& p, const Vec& lo, const Vec& hi) {
-  double d2 = 0.0;
-  for (std::size_t k = 0; k < 3; ++k) {
-    const double e = p[k] < lo[k] ? lo[k] - p[k] : (p[k] > hi[k] ? p[k] - hi[k] : 0.0);
-    d2 += e * e;
-  }
-  return d2;
+double box_distance(const Vec& p, const Vec& lo, const Vec& hi) {
+  Vec gap{};
+  for (std::size_t k = 0; k < 3; ++k)
+    gap[k] = p[k] < lo[k] ? lo[k] - p[k] : (p[k] > hi[k] ? p[k] - hi[k] : 0.0);
+  return norm(gap);
 }
 
 constexpr std::int64_t leaf_size = 4;
+constexpr double max_reach = 1e5;
+constexpr double max_combinations = 1e6;
+
+// Inverse of the leading n x n block of a symmetric positive definite matrix.
+std::array<std::array<double, 3>, 3> invert(const std::array<std::array<double, 3>, 3>& m,
+                                            std::size_t n) {
+  std::array<std::array<double, 3>, 3> inv{};
+  if (n == 1) {
+    inv[0][0] = 1.0 / m[0][0];
+  } else if (n == 2) {
+    const double det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    inv[0][0] = m[1][1] / det;
+    inv[1][1] = m[0][0] / det;
+    inv[0][1] = -m[0][1] / det;
+    inv[1][0] = -m[1][0] / det;
+  } else {
+    const Vec c0 = cross(Vec{m[1][0], m[1][1], m[1][2]}, Vec{m[2][0], m[2][1], m[2][2]});
+    const Vec c1 = cross(Vec{m[2][0], m[2][1], m[2][2]}, Vec{m[0][0], m[0][1], m[0][2]});
+    const Vec c2 = cross(Vec{m[0][0], m[0][1], m[0][2]}, Vec{m[1][0], m[1][1], m[1][2]});
+    const double det = dot(Vec{m[0][0], m[0][1], m[0][2]}, c0);
+    for (std::size_t j = 0; j < 3; ++j) {
+      inv[j][0] = c0[j] / det;
+      inv[j][1] = c1[j] / det;
+      inv[j][2] = c2[j] / det;
+    }
+  }
+  return inv;
+}
 
 // The lattice of periodic translations as at most three independent
 // directions: translations on one line reduce to the shortest, of which the
 // others must be integer multiples.
 std::vector<Vec> periodic_directions(const Mesh& mesh) {
-  std::vector<Vec> directions;
+  // Group the translations by line, keeping the shortest of each.
+  std::vector<std::vector<Vec>> lines;
   for (const auto& pair : mesh.periodic_pairs()) {
     const Vec& t = pair.translation;
-    bool placed = false;
-    for (Vec& d : directions) {
-      if (norm(cross(d, t)) > 1e-12 * norm(d) * norm(t)) continue;
-      const bool t_shorter = norm(t) < norm(d);
-      const double ratio = t_shorter ? norm(d) / norm(t) : norm(t) / norm(d);
+    const auto line = std::ranges::find_if(lines, [&](const std::vector<Vec>& l) {
+      return norm(cross(l[0], t)) <= 1e-12 * norm(l[0]) * norm(t);
+    });
+    if (line == lines.end())
+      lines.push_back({t});
+    else
+      line->push_back(t);
+  }
+  std::vector<Vec> directions;
+  for (const auto& line : lines) {
+    const Vec shortest = *std::ranges::min_element(
+        line, [](const Vec& l, const Vec& r) { return norm(l) < norm(r); });
+    for (const Vec& t : line) {
+      const double ratio = norm(t) / norm(shortest);
       if (std::abs(ratio - std::round(ratio)) > 1e-9 * ratio) {
         throw Error(ErrorCode::mesh_periodic_invalid,
-                    "periodic translations on one line that are not multiples of each other");
+                    "periodic translations on one line that are not multiples of the shortest");
       }
-      if (t_shorter) d = t;
-      placed = true;
-      break;
     }
-    if (!placed) directions.push_back(t);
+    directions.push_back(shortest);
   }
   if (directions.size() > 3) {
     throw Error(ErrorCode::mesh_periodic_invalid,
@@ -131,6 +165,10 @@ WallSurface::WallSurface(const Mesh& mesh, std::span<const index_t> wall_zones) 
         sum = sum + (q - origin);
       }
       const Vec m = origin + (1.0 / static_cast<double>(nodes.size())) * sum;
+      if (!std::isfinite(m[0]) || !std::isfinite(m[1]) || !std::isfinite(m[2])) {
+        throw Error(ErrorCode::geometry_degenerate_face,
+                    "the node mean of wall face " + std::to_string(f) + " is not finite");
+      }
       for (std::size_t i = 0; i < nodes.size(); ++i) {
         a_.push_back(m);
         b_.push_back(point(nodes[i]));
@@ -143,8 +181,7 @@ WallSurface::WallSurface(const Mesh& mesh, std::span<const index_t> wall_zones) 
   // The tree is built over a permutation of the triangles, applied once.
   std::vector<std::int64_t> order(a_.size());
   std::iota(order.begin(), order.end(), std::int64_t{0});
-  nodes_.push_back({});
-  build(order, 0, 0, static_cast<std::int64_t>(a_.size()));
+  build(order);
   std::vector<Vec> a(a_.size()), b(a_.size()), c(a_.size());
   for (std::size_t i = 0; i < order.size(); ++i) {
     a[i] = a_[at(order[i])];
@@ -168,74 +205,105 @@ WallSurface::WallSurface(const Mesh& mesh, std::span<const index_t> wall_zones) 
       hi[k] = std::max(hi[k], q[k]);
     }
   }
-  for (const Vec& d : directions_) {
-    const Vec unit = (1.0 / norm(d)) * d;
-    double extent = 0.0;
-    for (std::size_t k = 0; k < 3; ++k) extent += std::abs(unit[k]) * (hi[k] - lo[k]);
-    reach_.push_back(static_cast<std::int64_t>(std::ceil(extent / norm(d))) + 1);
+  // Coefficients of a displacement v within the box along the directions D
+  // (independent columns): k = (D^T D)^-1 D^T v, so |k_j| <= sum_i |row j|_i
+  // times the box extent along axis i.
+  const std::size_t n = directions_.size();
+  if (n > 0) {
+    std::array<std::array<double, 3>, 3> gram{};
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) gram[i][j] = dot(directions_[i], directions_[j]);
+    }
+    const auto inverse = invert(gram, n);
+    double combinations = 1.0;
+    for (std::size_t j = 0; j < n; ++j) {
+      double bound = 0.0;
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        double row = 0.0;  // ((D^T D)^-1 D^T)_{j, axis}
+        for (std::size_t i = 0; i < n; ++i) row += inverse[j][i] * directions_[i][axis];
+        bound += std::abs(row) * (hi[axis] - lo[axis]);
+      }
+      const double reach = std::ceil(bound) + 1.0;
+      combinations *= 2.0 * reach + 1.0;
+      if (!(reach <= max_reach) || !(combinations <= max_combinations)) {
+        throw Error(ErrorCode::mesh_periodic_invalid,
+                    "periodic translations too small or too oblique for the mesh extent");
+      }
+      reach_.push_back(static_cast<std::int64_t>(reach));
+    }
   }
 }
 
-// Builds node `self` over order[begin, end): a median split along the
-// longest axis of the triangle centroids, children appended to nodes_.
-void WallSurface::build(std::vector<std::int64_t>& order, std::int64_t self, std::int64_t begin,
-                        std::int64_t end) {
+// Builds the tree over `order`: each node splits its triangles at the
+// median along the longest axis of their centroids, children appended to
+// nodes_. Iterative: a work list of (node, begin, end).
+void WallSurface::build(std::vector<std::int64_t>& order) {
   constexpr double inf = std::numeric_limits<double>::infinity();
-  Node node{.lo = {inf, inf, inf}, .hi = {-inf, -inf, -inf}, .first = begin, .count = end - begin};
-  Vec clo = node.lo, chi = node.hi;
-  for (std::int64_t i = begin; i < end; ++i) {
-    const auto t = at(order[at(i)]);
-    for (const Vec* v : {&a_[t], &b_[t], &c_[t]}) {
+  struct Work {
+    std::int64_t self, begin, end;
+  };
+  nodes_.push_back({});
+  std::vector<Work> work{{0, 0, static_cast<std::int64_t>(order.size())}};
+  while (!work.empty()) {
+    const auto [self, begin, end] = work.back();
+    work.pop_back();
+    Node node{
+        .lo = {inf, inf, inf}, .hi = {-inf, -inf, -inf}, .first = begin, .count = end - begin};
+    Vec clo = node.lo, chi = node.hi;
+    for (std::int64_t i = begin; i < end; ++i) {
+      const auto t = at(order[at(i)]);
+      for (const Vec* v : {&a_[t], &b_[t], &c_[t]}) {
+        for (std::size_t k = 0; k < 3; ++k) {
+          node.lo[k] = std::min(node.lo[k], (*v)[k]);
+          node.hi[k] = std::max(node.hi[k], (*v)[k]);
+        }
+      }
+      const Vec centroid = (1.0 / 3.0) * (a_[t] + b_[t] + c_[t]);
       for (std::size_t k = 0; k < 3; ++k) {
-        node.lo[k] = std::min(node.lo[k], (*v)[k]);
-        node.hi[k] = std::max(node.hi[k], (*v)[k]);
+        clo[k] = std::min(clo[k], centroid[k]);
+        chi[k] = std::max(chi[k], centroid[k]);
       }
     }
-    const Vec centroid = (1.0 / 3.0) * (a_[t] + b_[t] + c_[t]);
-    for (std::size_t k = 0; k < 3; ++k) {
-      clo[k] = std::min(clo[k], centroid[k]);
-      chi[k] = std::max(chi[k], centroid[k]);
-    }
-  }
-  nodes_[at(self)] = node;
-  if (end - begin <= leaf_size) return;
+    nodes_[at(self)] = node;
+    if (end - begin <= leaf_size) continue;
 
-  std::size_t axis = 0;
-  for (std::size_t k = 1; k < 3; ++k) {
-    if (chi[k] - clo[k] > chi[axis] - clo[axis]) axis = k;
+    std::size_t axis = 0;
+    for (std::size_t k = 1; k < 3; ++k) {
+      if (chi[k] - clo[k] > chi[axis] - clo[axis]) axis = k;
+    }
+    const auto key = [&](std::int64_t t) {
+      return a_[at(t)][axis] + b_[at(t)][axis] + c_[at(t)][axis];
+    };
+    const std::int64_t mid = begin + (end - begin) / 2;
+    std::nth_element(
+        order.begin() + begin, order.begin() + mid, order.begin() + end,
+        [&](std::int64_t l, std::int64_t r) { return key(l) != key(r) ? key(l) < key(r) : l < r; });
+    const auto left = static_cast<std::int64_t>(nodes_.size());
+    nodes_.push_back({});
+    nodes_.push_back({});
+    nodes_[at(self)].first = left;
+    nodes_[at(self)].count = 0;
+    work.push_back({left + 1, mid, end});
+    work.push_back({left, begin, mid});
   }
-  const auto key = [&](std::int64_t t) {
-    return a_[at(t)][axis] + b_[at(t)][axis] + c_[at(t)][axis];
-  };
-  const std::int64_t mid = begin + (end - begin) / 2;
-  std::nth_element(
-      order.begin() + begin, order.begin() + mid, order.begin() + end,
-      [&](std::int64_t l, std::int64_t r) { return key(l) != key(r) ? key(l) < key(r) : l < r; });
-  const auto left = static_cast<std::int64_t>(nodes_.size());
-  nodes_.push_back({});
-  nodes_.push_back({});
-  nodes_[at(self)].first = left;
-  nodes_[at(self)].count = 0;
-  build(order, left, begin, mid);
-  build(order, left + 1, mid, end);
 }
 
-double WallSurface::nearest2(const std::array<double, 3>& p, double best) const {
+double WallSurface::nearest(const std::array<double, 3>& p, double best) const {
   // A median split halves every level: 128 entries cover any tree.
   std::array<std::int64_t, 128> stack{};
   std::size_t top = 0;
   stack[top++] = 0;
   while (top > 0) {
     const Node& node = nodes_[at(stack[--top])];
-    if (box_distance2(p, node.lo, node.hi) >= best) continue;
+    if (box_distance(p, node.lo, node.hi) >= best) continue;
     if (node.count > 0) {
       for (std::int64_t t = node.first; t < node.first + node.count; ++t)
-        best = std::min(best, triangle_distance2(p, a_[at(t)], b_[at(t)], c_[at(t)]));
+        best = std::min(best, triangle_distance(p, a_[at(t)], b_[at(t)], c_[at(t)]));
       continue;
     }
     const Node& l = nodes_[at(node.first)];
     const Node& r = nodes_[at(node.first + 1)];
-    const bool left_first = box_distance2(p, l.lo, l.hi) <= box_distance2(p, r.lo, r.hi);
+    const bool left_first = box_distance(p, l.lo, l.hi) <= box_distance(p, r.lo, r.hi);
     stack[top++] = left_first ? node.first + 1 : node.first;
     stack[top++] = left_first ? node.first : node.first + 1;
   }
@@ -248,7 +316,7 @@ double WallSurface::distance(const std::array<double, 3>& point) const {
   if (nodes_.empty()) return std::numeric_limits<double>::infinity();
   // The unshifted copy first, for a tight bound; then the others, skipped
   // when the shifted point is farther from the whole surface's box.
-  double best = nearest2(point, std::numeric_limits<double>::infinity());
+  double best = nearest(point, std::numeric_limits<double>::infinity());
   const std::size_t n = directions_.size();
   std::array<std::int64_t, 3> k{};
   for (std::size_t i = 0; i < n; ++i) k[i] = -reach_[i];
@@ -259,7 +327,7 @@ double WallSurface::distance(const std::array<double, 3>& point) const {
       zero = zero && k[i] == 0;
       q = q - static_cast<double>(k[i]) * directions_[i];
     }
-    if (!zero && box_distance2(q, nodes_[0].lo, nodes_[0].hi) < best) best = nearest2(q, best);
+    if (!zero && box_distance(q, nodes_[0].lo, nodes_[0].hi) < best) best = nearest(q, best);
     std::size_t i = 0;
     while (i < n && ++k[i] > reach_[i]) {
       k[i] = -reach_[i];
@@ -267,7 +335,7 @@ double WallSurface::distance(const std::array<double, 3>& point) const {
     }
     if (i == n) break;
   }
-  return std::sqrt(best);
+  return best;
 }
 
 std::vector<double> wall_distance(const Mesh& mesh, const Geometry& geometry,

@@ -18,7 +18,8 @@ namespace autan {
 /// far as the walls and cells span. Throws E0102 for a zone out of range or
 /// holding interior faces, E0120 for a wall node that is not finite, and
 /// E0118 for periodic translations that are not three independent
-/// directions (translations on one line must be multiples of each other).
+/// directions (translations on one line must be multiples of the shortest)
+/// or too small or oblique for the mesh extent.
 class WallSurface {
  public:
   WallSurface(const Mesh& mesh, std::span<const index_t> wall_zones);
@@ -36,9 +37,8 @@ class WallSurface {
     std::int64_t first;  ///< leaf: first triangle; inner: left child (right = first + 1)
     std::int64_t count;  ///< leaf: triangle count; inner: 0
   };
-  void build(std::vector<std::int64_t>& order, std::int64_t self, std::int64_t begin,
-             std::int64_t end);
-  [[nodiscard]] double nearest2(const std::array<double, 3>& point, double best) const;
+  void build(std::vector<std::int64_t>& order);
+  [[nodiscard]] double nearest(const std::array<double, 3>& point, double best) const;
 
   std::vector<std::array<double, 3>> a_, b_, c_;
   std::vector<Node> nodes_;
