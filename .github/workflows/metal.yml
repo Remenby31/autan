@@ -40,13 +40,14 @@ jobs:
       # CGNS is off: the spike driver builds its meshes from face arrays.
       - name: Configure
         run: >-
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=ON
           -DAUTAN_ENABLE_CGNS=OFF -DAUTAN_ENABLE_METAL=ON -DAUTAN_WARNINGS_AS_ERRORS=ON
           -DPython3_EXECUTABLE="${PYTHON}"
       - name: Build the Metal runtime, driver and benchmarks
         run: >-
           cmake --build build --parallel
           --target autan_spike_metal autan_metal_stream autan_metal_loop_bench
+          autan_physics_metal_tests
       - name: Look for a Metal device
         id: probe
         run: |
@@ -66,3 +67,6 @@ jobs:
         env:
           AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_metal.dylib
         run: uv run --locked pytest tests/test_gpu.py tests/test_metal.py --backend metal -m "not slow"
+      - name: Euler residual on Metal against the CPU physics
+        if: steps.probe.outputs.device == 'true'
+        run: build/tests/physics/autan_physics_metal_tests

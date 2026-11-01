@@ -20,6 +20,10 @@ if(AUTAN_ENABLE_CUDA)
     ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
   )
 endif()
+if(AUTAN_ENABLE_METAL)
+  string(APPEND backends ",metal")
+  list(APPEND AUTAN_PHYSICS_KERNELS ${AUTAN_PHYSICS_GENERATED}/euler_metal.hpp)
+endif()
 set(
   AUTAN_NS_KERNELS
   ${AUTAN_PHYSICS_GENERATED}/navier_stokes.hpp
@@ -44,7 +48,10 @@ add_custom_command(
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
     autan_codegen ${PROJECT_SOURCE_DIR}/kernels/euler.py --out ${AUTAN_PHYSICS_GENERATED} --backends
     ${backends}
-  DEPENDS ${PROJECT_SOURCE_DIR}/kernels/euler.py ${AUTAN_CODEGEN_SOURCES}
+  DEPENDS
+    ${PROJECT_SOURCE_DIR}/kernels/euler.py
+    ${AUTAN_CODEGEN_SOURCES}
+    ${PROJECT_SOURCE_DIR}/codegen/src/autan_codegen/metal_prelude.metal
   COMMENT "Generating kernels from kernels/euler.py"
   VERBATIM
 )

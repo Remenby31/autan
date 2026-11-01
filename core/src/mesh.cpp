@@ -1,6 +1,8 @@
 #include "autan/core/mesh.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <numeric>
@@ -55,6 +57,10 @@ void check_sizes(const MeshInput& in) {
   if (in.n_ghost_cells < 0 || to_size(in.n_ghost_cells) >= in.cell_zone.size()) {
     fail(ErrorCode::mesh_inconsistent_sizes, "n_ghost_cells must leave at least one owned cell");
   }
+  if (!in.ghost_translation.empty() && in.ghost_translation.size() != to_size(in.n_ghost_cells)) {
+    fail(ErrorCode::mesh_inconsistent_sizes,
+         "ghost_translation must be empty or have one translation per ghost cell");
+  }
 }
 
 template <typename Zone>
@@ -101,9 +107,6 @@ void check_entities(const MeshInput& in) {
       fail(ErrorCode::mesh_face_same_cell_both_sides,
            "face has the same cell on both sides" + where);
     }
-    if (c0 >= n_owned && (c1 == no_cell || c1 >= n_owned)) {
-      fail(ErrorCode::mesh_face_without_owned_cell, "face touches no owned cell" + where);
-    }
     if (in.face_zone[f] < 0 || in.face_zone[f] >= n_face_zones) {
       fail(ErrorCode::mesh_index_out_of_range, "face zone index out of range" + where);
     }
@@ -127,11 +130,25 @@ void check_entities(const MeshInput& in) {
     }
   }
 
+  for (const auto& t : in.ghost_translation) {
+    if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2])) {
+      fail(ErrorCode::mesh_inconsistent_sizes, "a ghost translation is not finite");
+    }
+  }
+  // A cell is its global id and its translation: a periodic image repeats
+  // the id of the cell it copies, elsewhere.
   if (!in.cell_global_id.empty()) {
-    std::vector<std::int64_t> ids(in.cell_global_id);
+    using Identity = std::pair<std::int64_t, std::array<double, 3>>;
+    std::vector<Identity> ids(in.cell_global_id.size());
+    for (std::size_t c = 0; c < ids.size(); ++c) {
+      ids[c].first = in.cell_global_id[c];
+      if (c >= to_size(n_owned) && !in.ghost_translation.empty())
+        ids[c].second = in.ghost_translation[c - to_size(n_owned)];
+    }
     std::ranges::sort(ids);
-    if (ids.front() < 0 || std::ranges::adjacent_find(ids) != ids.end()) {
-      fail(ErrorCode::mesh_duplicate_global_id, "cell global ids must be distinct and >= 0");
+    if (ids.front().first < 0 || std::ranges::adjacent_find(ids) != ids.end()) {
+      fail(ErrorCode::mesh_duplicate_global_id,
+           "cells must differ by global id or translation, and ids must be >= 0");
     }
   }
 }
@@ -199,6 +216,8 @@ MeshView Mesh::view() const noexcept {
       .n_owned_cells = n_owned_cells(),
       .n_faces = n_faces(),
       .n_interior_faces = n_interior_faces(),
+      .n_owned_interior_faces = n_owned_interior_faces_,
+      .n_owned_faces = n_owned_faces_,
       .n_face_zones = static_cast<index_t>(face_zones_.size()),
       .n_cell_zones = static_cast<index_t>(cell_zones_.size()),
       .x = x_.data(),
@@ -212,6 +231,7 @@ MeshView Mesh::view() const noexcept {
       .cell_zone = cell_zone_.data(),
       .cell_global_id = cell_global_id_.data(),
       .boundary_zone_offsets = boundary_zone_offsets_.data(),
+      .halo_boundary_zone_offsets = halo_boundary_zone_offsets_.data(),
       .cell_face_offsets = cell_face_offsets_.data(),
       .cell_faces = cell_faces_.data(),
   };
@@ -238,13 +258,18 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
 
   std::vector<index_t> order(n_faces);
   std::iota(order.begin(), order.end(), 0);
-  std::ranges::stable_sort(order, [&in](index_t a, index_t b) {
+  const index_t first_ghost = static_cast<index_t>(n_cells) - in.n_ghost_cells;
+  std::ranges::stable_sort(order, [&in, first_ghost](index_t a, index_t b) {
     const auto ia = to_size(a);
     const auto ib = to_size(b);
     const bool boundary_a = in.face_cell1[ia] == no_cell;
     const bool boundary_b = in.face_cell1[ib] == no_cell;
     if (boundary_a != boundary_b) return boundary_b;
     if (boundary_a) {
+      // Owned cells' boundary faces first, then the ghosts' (halo faces).
+      const bool halo_a = in.face_cell0[ia] >= first_ghost;
+      const bool halo_b = in.face_cell0[ib] >= first_ghost;
+      if (halo_a != halo_b) return halo_b;
       if (in.face_zone[ia] != in.face_zone[ib]) return in.face_zone[ia] < in.face_zone[ib];
       return in.face_cell0[ia] < in.face_cell0[ib];
     }
@@ -283,13 +308,25 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   }
 
   const std::size_t n_zones = in.face_zones.size();
-  mesh.boundary_zone_offsets_.assign(n_zones + 1, 0);
-  for (std::size_t f = mesh.neighbour_.size(); f < n_faces; ++f) {
-    ++mesh.boundary_zone_offsets_[to_size(mesh.face_zone_[f]) + 1];
-  }
-  mesh.boundary_zone_offsets_[0] = static_cast<index_t>(mesh.neighbour_.size());
-  std::partial_sum(mesh.boundary_zone_offsets_.begin(), mesh.boundary_zone_offsets_.end(),
-                   mesh.boundary_zone_offsets_.begin());
+  const std::size_t n_interior = mesh.neighbour_.size();
+  std::size_t n_owned_interior = 0;
+  while (n_owned_interior < n_interior && mesh.owner_[n_owned_interior] < first_ghost)
+    ++n_owned_interior;
+  std::size_t n_owned_faces = n_interior;
+  while (n_owned_faces < n_faces && mesh.owner_[n_owned_faces] < first_ghost) ++n_owned_faces;
+  mesh.n_owned_interior_faces_ = static_cast<index_t>(n_owned_interior);
+  mesh.n_owned_faces_ = static_cast<index_t>(n_owned_faces);
+  const auto zone_offsets = [&](std::size_t begin, std::size_t end) {
+    std::vector<index_t> off(n_zones + 1, 0);
+    for (std::size_t f = begin; f < end; ++f) ++off[to_size(mesh.face_zone_[f]) + 1];
+    off[0] = static_cast<index_t>(begin);
+    std::partial_sum(off.begin(), off.end(), off.begin());
+    return off;
+  };
+  mesh.boundary_zone_offsets_ = zone_offsets(n_interior, n_owned_faces);
+  mesh.halo_boundary_zone_offsets_ = zone_offsets(n_owned_faces, n_faces);
+  mesh.ghost_translation_ = std::move(in.ghost_translation);
+  if (mesh.ghost_translation_.empty()) mesh.ghost_translation_.resize(to_size(in.n_ghost_cells));
 
   mesh.cell_face_offsets_.assign(n_cells + 1, 0);
   for (std::size_t f = 0; f < n_faces; ++f) {

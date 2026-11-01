@@ -66,8 +66,9 @@ struct DeviceMesh {
         neighbour(ctx, m.topo.neighbour, static_cast<std::size_t>(m.topo.n_interior_faces)),
         cell_faces(ctx, m.topo.cell_faces, static_cast<std::size_t>(m.topo.n_incidences)),
         offsets(ctx, m.topo.cell_face_offsets, static_cast<std::size_t>(m.topo.n_cells) + 1),
-        int_colours(autan::kernels::colour_faces(m.topo, 0, m.topo.n_interior_faces)),
-        bnd_colours(autan::kernels::colour_faces(m.topo, m.topo.n_interior_faces, m.topo.n_faces)),
+        int_colours(autan::kernels::colour_faces(m.topo, 0, m.topo.n_owned_interior_faces)),
+        bnd_colours(
+            autan::kernels::colour_faces(m.topo, m.topo.n_interior_faces, m.topo.n_owned_faces)),
         int_faces(ctx, int_colours.faces),
         bnd_faces(ctx, bnd_colours.faces),
         scratch(ctx, kScratchWidth * static_cast<std::size_t>(m.topo.n_faces)),

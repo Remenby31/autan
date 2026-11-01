@@ -10,7 +10,7 @@ R_c = Σ_f F(W_L, W_R)·S_f − s_c V_c over the faces of cell c, in conserved v
 |---|---|---|
 | Variables reconstructed | primitive W = (ρ, u, v, w, p) | |
 | Gradients | weighted least squares (1/d²) over the **face2 stencil**: face neighbours, their face neighbours, and the boundary faces of both | [Stencil](#gradient-stencil) |
-| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 5, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
+| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 10, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
 | Face states | W_f = W_c + φ ∘ (∇W · (x_f − x_c)) | |
 | Warped faces | flux of the linear reconstruction through the fan triangles: Σ_j dF_j[W; ∇W · M_{:,j}], M = Σ_t (c_t − x_f) ⊗ S_t | [Warped faces](#warped-faces) |
 | Fluxes | Roe with Harten's fix on the acoustic waves only; HLLC with Einfeldt speeds; AUSM+-up with M_co the freestream Mach number | Roe (1981); Toro, Spruce, Speares (1994); Batten et al. (1997); Liou (2006) |
@@ -62,7 +62,7 @@ Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R
 - CFL = 10 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
 - A step is shortened so that no cell loses more than half its density or pressure.
 
-On the MMS (`autan-run`, `fp64`, ten orders from the freestream): hex 42–158 steps, poly 46–70, hybrid 64–192, tet 126–233. A Newton-Krylov variant (FGMRES on finite differences of the full residual, with these Gauss-Seidel sweeps as preconditioner) was less robust far from the solution, where its larger steps were shortened repeatedly; it is not used.
+On the MMS (`autan-run`, `fp64`, ten orders from the freestream): hex 42–158 steps, poly 46–70, hybrid 64–192, tet 126–233. A Newton-Krylov variant (FGMRES on finite differences of the full residual, the limiter frozen, these Gauss-Seidel sweeps as preconditioner) was less robust far from the solution: on the MMS from the freestream (hex, n = 16) its steps were shortened at almost every iteration and the run stalled after 1.3 orders, where the defect correction above converges ten orders in 177 steps. It is left for M3 as an end phase, switched on once the residual has dropped.
 
 Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `dt` or `cfl`.
 
@@ -70,8 +70,17 @@ Restart: `restart_fields` holds the conserved variables bit for bit, the averagi
 
 ## Limiter and verification
 
-Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips more as the mesh is refined: with it, the MMS order on tetrahedra falls to 1.82–1.94 (finest pairs, levels 12–32), against 1.97–2.05 without. A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) therefore run without the limiter. Every other case runs with it.
+Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips smooth extrema more as the mesh is refined; K sets where that starts (Venkatakrishnan 1995; Michalak and Ollivier-Gooch 2008, AIAA 2008-776, discuss the same trade-off). On the MMS (tet, levels 12–32, Roe, host study), fitted / finest-pair orders of ρv with the limiter on: K = 5 gives 1.88/1.78, K = 10, 20 and 40 give 1.99/1.97, the unlimited values. K = 10 is the default: smooth flows keep the design order at these resolutions, and the limiter still acts at shocks (Sod gate, below). A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) run without the limiter, every other case with it.
 
 ## Manufactured solution
 
-Steady `euler` solution of autan-vv (Roy et al. 2004 form), boundary faces at the exact state, cell sources at centroids; Newton-Krylov on the generated residual (`physics/mms/euler_mms.py`). The table is filled from the study of PR #99.
+Steady `euler` solution of autan-vv (Roy et al. 2004 form), every boundary face at the exact state, cell sources at centroids, solved by `autan-run` and checked by `autan-vv verify --gate euler-mms-order` (Roe, unlimited, implicit steady solver; commit a6b557c, PR #134). Fitted / finest-pair L2 orders:
+
+| Family, levels | Precision | ρ | ρu | ρv | ρw | ρE |
+|---|---|---|---|---|---|---|
+| tet, 12–32 | fp64, fp32+acc64 | 1.99/2.04 | 2.01/1.98 | 1.99/1.98 | 1.99/1.97 | 2.05/1.98 |
+| hex, 12–32 | fp64, fp32+acc64 | 2.20/2.18 | 2.06/1.99 | 1.96/1.97 | 2.17/2.15 | 1.91/1.96 |
+| poly, 12–32 | fp64, fp32+acc64 | 2.56/2.42 | 2.53/2.34 | 2.55/2.44 | 2.53/2.41 | 2.14/2.08 |
+| hybrid, 16–48 | fp64, fp32+acc64 | 2.11/2.12 | 1.97/2.07 | 1.95/2.00 | 1.99/2.10 | 1.98/2.01 |
+
+The hybrid family needs one level more: its pyramids, prisms and tetrahedra fill corner blocks that hold few cells on coarse levels, and the momentum orders between successive levels are 1.76–1.86 (12→16), 1.94–1.98 (16→24), 1.87–1.90 (24→32), 2.00–2.10 (32→48): they fluctuate by ±0.1, as on every non-nested family ([order.md](../validation/order.md)), and reach 2 on the finest pair. Polyhedral duals supraconverge (above 2.1: a warning of the gate, not a failure). The host study (`physics/mms/euler_mms.py`) gives the same orders for HLLC and AUSM+-up.

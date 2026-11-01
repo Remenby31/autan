@@ -1,5 +1,5 @@
 import pytest
-from autan_bench.stats import summarize
+from autan_bench.stats import median_ci, summarize
 
 
 def test_summary_statistics_follow_their_definitions():
@@ -14,3 +14,12 @@ def test_summary_statistics_follow_their_definitions():
     assert s["cv"] == pytest.approx(0.1, rel=1e-15)
     with pytest.raises(ValueError, match="two samples"):
         summarize([1.0])
+
+
+def test_median_interval_is_reproducible_and_brackets_the_median():
+    samples = [float(x) for x in (5, 1, 9, 3, 7, 2, 8, 4, 6, 10, 11)]
+    low, high = median_ci(samples)
+    # Every bootstrap median is a sample value or the mean of two, so the interval lies within
+    # the sample range; it contains the sample median 6; the seeded generator repeats it.
+    assert min(samples) <= low <= 6.0 <= high <= max(samples)
+    assert median_ci(samples) == (low, high)

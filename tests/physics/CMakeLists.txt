@@ -17,6 +17,26 @@ target_compile_definitions(
 )
 catch_discover_tests(autan_physics_tests)
 
+# The Euler residual on the generated Metal loops against the CPU physics (macOS).
+if(AUTAN_ENABLE_METAL)
+  enable_language(OBJCXX)
+  add_executable(autan_physics_metal_tests test_euler_metal.mm)
+  target_compile_options(autan_physics_metal_tests PRIVATE -fobjc-arc)
+  target_include_directories(
+    autan_physics_metal_tests
+    PRIVATE ${PROJECT_BINARY_DIR}/physics/generated
+  )
+  target_link_libraries(
+    autan_physics_metal_tests
+    PRIVATE autan::physics autan::io autan_metal Catch2::Catch2WithMain autan_compile_options
+  )
+  target_compile_definitions(
+    autan_physics_metal_tests
+    PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
+  )
+  catch_discover_tests(autan_physics_metal_tests)
+endif()
+
 # The Euler physics through autan-run's run_case; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)
   FetchContent_GetProperties(picosha2)

@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -41,9 +42,11 @@ constexpr double first_order_drop = 1e-3;
 constexpr int first_order_max_steps = 200;
 constexpr double cfl_max = 1e6;
 constexpr int gauss_seidel_sweeps = 4;
-// No update may lower density or pressure by more than this fraction in one step.
+// No update may lower density or pressure by more than this fraction in one step; a step
+// shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
-constexpr double venkatakrishnan_k = 5.0;
+constexpr double min_step = 1e-6;
+constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
@@ -94,14 +97,14 @@ class EulerPhysics final : public runtime::Physics {
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(make_flow(ctx, gas_)),
-        matrix_(ctx.mesh) {
+        euler_(make_flow(ctx, gas_)) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
     if (in.verification) mms.emplace(in.verification->text);
     set_boundaries(mms ? &*mms : nullptr);
     if (in.time.kind == "steady") {
+      matrix_.emplace(mesh);
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -442,13 +445,25 @@ class EulerPhysics final : public runtime::Physics {
 
   void steady_step(StepReport& report) {
     euler_.state(u_, state_);
+    if (!second_order_) {
+      // The history reports the second-order residual from the first step on, so that the
+      // runtime never judges convergence on the first-order one.
+      euler_.set_second_order(true);
+      euler_.residual(state_, res_);
+      record_norms(report);
+      euler_.set_second_order(false);
+    }
     euler_.residual_and_jacobian(state_, res_);
+    std::vector<double> norms = report.residuals;
     record_norms(report);
+    if (!norms.empty()) std::swap(norms, report.residuals);
     euler_.spectral_radius(lambda_);
-    double drop = 0.0;  // largest relative residual over the equations
-    if (first_norms_.empty()) first_norms_ = report.residuals;
+    // Largest relative residual over the equations, of the order being solved.
+    const std::vector<double>& current = norms.empty() ? report.residuals : norms;
+    double drop = 0.0;
+    if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0) drop = std::max(drop, report.residuals[k] / first_norms_[k]);
+      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
     }
     // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
     // solution; second order from the step after the first-order residual has dropped.
@@ -464,14 +479,34 @@ class EulerPhysics final : public runtime::Physics {
     if (drop > 0.0) cfl_ = std::clamp(penalty_ * cfl_start / drop, cfl_min, cfl_max);
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
-    euler_.assemble(shift, matrix_);
-    matrix_.factor();
+    euler_.assemble(shift, *matrix_);
+    matrix_->factor();
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    matrix_.gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
+    matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
+    if (alpha < min_step) {
+      // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
+      // number the run has diverged.
+      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return;
+    }
     for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+  }
+
+  // The cell whose density or pressure the full step lowers the most, relatively.
+  [[nodiscard]] std::size_t worst_cell() const {
+    std::size_t worst = 0;
+    double lowest = std::numeric_limits<double>::infinity();
+    for (std::size_t c = 0; c < n_; ++c) {
+      const double r = std::min((u_[c] + du_[c]) / u_[c], pressure(c, 1.0) / pressure(c, 0.0));
+      if (r < lowest) {
+        lowest = r;
+        worst = c;
+      }
+    }
+    return worst;
   }
 
   // Largest fraction of du (at most 1) that keeps every cell's density and pressure above
@@ -482,10 +517,7 @@ class EulerPhysics final : public runtime::Physics {
       const double rho = u_[c], drho = du_[c];
       if (drho < 0.0) alpha = std::min(alpha, max_decrease * rho / -drho);
       const double p = pressure(c, 0.0);
-      for (double a = alpha; a > 1e-6; a *= 0.5) {
-        if (pressure(c, a) >= (1.0 - max_decrease) * p) break;
-        alpha = 0.5 * a;
-      }
+      while (alpha >= min_step && !(pressure(c, alpha) >= (1.0 - max_decrease) * p)) alpha *= 0.5;
     }
     return alpha;
   }
@@ -580,7 +612,7 @@ class EulerPhysics final : public runtime::Physics {
   std::size_t n_;
   Flow euler_;
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  BlockMatrix matrix_;
+  std::optional<BlockMatrix> matrix_;  // steady runs only
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;

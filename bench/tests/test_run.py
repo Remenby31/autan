@@ -59,6 +59,7 @@ def raw_output(verified: bool, backend: str) -> dict:
         "driver_version": 13000,
         "device": DEVICES[backend],
         "config": {"mesh_sha256": "b" * 64, "n_cells": 1000},
+        "setup_seconds": {"read": 1.5, "renumber": 0.25},
         "verified": verified,
         "kernels": [
             {
@@ -111,6 +112,7 @@ def test_run_derives_bandwidth_and_time_per_cell_from_kernel_times(fake_gpu, tmp
     assert doc["provenance"]["precision"] == "fp32"
     assert doc["provenance"]["solver"] == {"commit": "a" * 40, "dirty": False}
     assert doc["config"]["n_cells"] == 1000
+    assert doc["conditions"]["setup_seconds"] == {"read": 1.5, "renumber": 0.25}
     load = doc["conditions"]["host_load"]
     assert load["cpus"] >= 1
     assert min(load["before_1m"], load["after_1m"]) >= 0

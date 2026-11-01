@@ -26,6 +26,17 @@ struct NavierStokes<P>::Impl {
   nk::Data<P> d{};
   const typename P::jac* dwdu = nullptr;
 
+  // The Euler arrays this residual reads; Euler<P> allocates its Jacobian blocks on first use.
+  void share() {
+    const auto a = euler.arrays();
+    d.prim = a.prim;
+    d.grad = a.grad;
+    d.prim_b = a.prim_b;
+    d.bc_kind = a.bc_kind;
+    d.bc = a.bc;
+    dwdu = a.dwdu;
+  }
+
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t)
       : euler(mesh, geometry, gas, scheme) {
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||
@@ -50,13 +61,7 @@ struct NavierStokes<P>::Impl {
     visc_bnd_jac.assign(25 * nf, typename P::jac(0));
 
     d.topo = topo;
-    const auto a = euler.arrays();
-    d.prim = a.prim;
-    d.grad = a.grad;
-    d.prim_b = a.prim_b;
-    d.bc_kind = a.bc_kind;
-    d.bc = a.bc;
-    dwdu = a.dwdu;
+    share();
     d.mu_t = mu_t.data();
     d.mu_t_b = mu_t_b.data();
     d.lam_v = lam_v.data();
@@ -140,6 +145,7 @@ template <class P>
 void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
   m.euler.residual(s, res);
+  m.share();
   m.d.res = res.data();
   nk::cpu::viscous_faces(m.d);
   nk::cpu::viscous_boundaries(m.d);
@@ -149,6 +155,7 @@ template <class P>
 void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
   m.euler.residual_and_jacobian(s, res);
+  m.share();
   m.d.res = res.data();
   nk::cpu::viscous_faces_jacobian(m.d);
   nk::cpu::viscous_boundaries_jacobian(m.d);
