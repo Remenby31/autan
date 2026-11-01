@@ -483,7 +483,6 @@ int iterations(const Mesh& mesh, const autan::Geometry& g, const MultigridOption
 TEMPLATE_LIST_TEST_CASE("multigrid iterations do not grow with refinement", "[multigrid]",
                         BlockSizes) {
   constexpr std::size_t B = TestType::value;
-  using Multigrid = autan::solvers::Multigrid<B>;
   // Diffusion, the stiff part of the viscous Jacobian, with a small pseudo-time shift on
   // isotropic cells; Gauss-Seidel alone needs O(n^2) sweeps for the same drop.
   const Fill fill = GENERATE(Fill::hexa, Fill::prism);
@@ -504,7 +503,6 @@ TEMPLATE_LIST_TEST_CASE(
     "line smoothing keeps the iterations bounded on wall layers of aspect ratio 1e4", "[multigrid]",
     BlockSizes) {
   constexpr std::size_t B = TestType::value;
-  using Multigrid = autan::solvers::Multigrid<B>;
   const Fill fill = GENERATE(Fill::hexa, Fill::prism);
   for (const int nx : {8, 16}) {
     const auto mesh = layered_box(nx, 1e-5, fill);

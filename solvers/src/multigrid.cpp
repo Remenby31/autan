@@ -401,6 +401,7 @@ Multigrid<B>::~Multigrid() = default;
 template <std::size_t B>
 void Multigrid<B>::set_operator(std::span<const double> diagonal, std::span<const double> upper,
                                 std::span<const double> lower) {
+  constexpr std::size_t bb = B * B;
   ops_[0].diag = diagonal;
   ops_[0].upper = upper;
   ops_[0].lower = lower;
