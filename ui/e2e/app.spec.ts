@@ -143,3 +143,16 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await expect(page.getByTestId("polar")).toBeVisible();
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
 });
+
+test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
+  const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/runs/${converged.run_id}`);
+  await page.getByRole("button", { name: "Open in Analysis" }).click();
+  await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
+  await expect(page.getByTestId("zones")).toContainText("wing.main");
+  await expect(page.getByTestId("zones")).not.toContainText("farfield");
+  await expect(page.getByTestId("legend")).toHaveText("Cp");
+  await page.getByRole("tab", { name: "Cf" }).click();
+  await expect(page.getByTestId("legend")).toHaveText("Cf");
+  await expect(page).toHaveURL(/field=Cf/);
+});

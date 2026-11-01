@@ -16,6 +16,29 @@ export const COOL_WARM: Colormap = {
   ],
 };
 
+// Viridis (van der Walt and Smith, matplotlib 2015), 10 samples.
+export const VIRIDIS: Colormap = {
+  name: "viridis",
+  stops: [
+    [68, 1, 84],
+    [72, 40, 120],
+    [62, 73, 137],
+    [49, 104, 142],
+    [38, 130, 142],
+    [31, 158, 137],
+    [53, 183, 121],
+    [110, 206, 88],
+    [181, 222, 43],
+    [253, 231, 37],
+  ],
+};
+
+/** Cool-warm for a field that changes sign (its zero on the neutral colour), viridis for a
+ * magnitude: the design direction's rule. */
+export function colormapFor(min: number, max: number): Colormap {
+  return min < 0 && max > 0 ? COOL_WARM : VIRIDIS;
+}
+
 /** `size` RGBA8 texels sampled by linear interpolation between the stops. */
 export function sampleColormap(map: Colormap, size = 256): Uint8Array {
   const out = new Uint8Array(size * 4);
@@ -40,6 +63,12 @@ export function cssGradient(map: Colormap): string {
 /** Display range of a field: symmetric about zero when the field changes sign, so the neutral
  * colour of a diverging map marks zero. */
 export function displayRange(min: number, max: number): { min: number; max: number } {
+  // A uniform field sits in the middle of the map instead of at one end; the half-width
+  // scales with the value so that FP32 in the shader still resolves it.
+  if (max - min <= 1e-9 * Math.max(1, Math.abs(max))) {
+    const half = Math.max(1, Math.abs(min));
+    return { min: min - half, max: max + half };
+  }
   if (min < 0 && max > 0) {
     const bound = Math.max(-min, max);
     return { min: -bound, max: bound };
