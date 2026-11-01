@@ -81,6 +81,11 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
+          {meshes.isError && (
+            <Note tone="error" title="The meshes could not be listed">
+              {meshes.error.message}
+            </Note>
+          )}
           <Section title="Case">
             <Field label="Name">
               <TextInput value={form.name} onChange={(v) => set("name", v)} mono />
@@ -355,7 +360,9 @@ function CaseEditor() {
               </TabPanel>
             </TabsRoot>
           )}
-          {rendered.data?.ok && rendered.data.plan && <PlanSummary plan={rendered.data.plan} />}
+          {rendered.data?.ok && rendered.data.plan && (
+            <PlanSummary plan={rendered.data.plan} current={!rendered.isPlaceholderData} />
+          )}
         </aside>
       </div>
     </>
@@ -393,15 +400,20 @@ function Section({
   );
 }
 
-function PlanSummary({ plan }: { plan: Plan }) {
+// `current`: the plan is of the case as it now reads; otherwise it is being checked again.
+function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
   const uncovered = plan.boundaries.filter((b) => b.condition === null);
   return (
     <section className="flex flex-col gap-2" data-testid="plan">
       <h2 className="m-0 flex items-baseline gap-2 font-medium text-base">
         Plan
-        <span className={plan.ok ? "text-success" : "text-danger"}>
-          {plan.ok ? "ready" : "refused"}
-        </span>
+        {current ? (
+          <span className={plan.ok ? "text-success" : "text-danger"}>
+            {plan.ok ? "ready" : "refused"}
+          </span>
+        ) : (
+          <span className="text-fg-3">checking…</span>
+        )}
         <span className="font-normal text-fg-3 text-sm">
           {plan.boundaries.length - uncovered.length} of {plan.boundaries.length} zones covered
         </span>
@@ -419,9 +431,10 @@ function PlanSummary({ plan }: { plan: Plan }) {
 function Diagnostics({ items, testId }: { items: Diagnostic[]; testId: string }) {
   return (
     <div className="flex flex-col gap-2" data-testid={testId}>
-      {items.map((d) => (
+      {items.map((d, k) => (
         <Note
-          key={`${d.code}-${d.location?.path ?? ""}`}
+          // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics repeat; their place is their identity
+          key={k}
           tone={d.severity === "warning" ? "warning" : "error"}
           title={d.location?.path ? `${d.code} · ${d.location.path}` : d.code}
         >

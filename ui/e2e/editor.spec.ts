@@ -81,3 +81,22 @@ test("a unit chosen first is kept, and monitors get names of their own", async (
   await expect(page.getByTestId("case-py")).toContainText('name="forces-2"');
   await expect(page.getByTestId("plan")).toContainText("ready");
 });
+
+test("errors leave with the rule that raised them", async ({ page }) => {
+  await page.goto("/cases/new");
+  await crmHl(page);
+  await rule(page, 3, "wing.*", "slip");
+  const errors = page.getByTestId("plan-diagnostics").getByText(/^E0411/);
+  await expect(errors).toHaveCount(3); // wing.slat, wing.main and wing.flap, matched twice
+
+  const zones = page.getByRole("group", { name: "Boundary rule 3" }).getByLabel("Zones");
+  await zones.fill("missing");
+  await expect(page.getByTestId("plan")).not.toContainText("checking");
+  await zones.fill("symmetry");
+  await expect(page.getByTestId("plan")).toContainText("refused");
+  await expect(errors).toHaveCount(1); // symmetry alone
+
+  await page.getByRole("button", { name: "Remove boundary rule 3" }).click();
+  await expect(page.getByTestId("plan")).toContainText("ready");
+  await expect(errors).toHaveCount(0);
+});
