@@ -31,7 +31,7 @@ endif()
 
 # The repository root: revision.cmake reads a git checkout only at its top level.
 find_package(Git QUIET)
-cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH autan_root)
+file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/.." autan_root)
 add_custom_target(
   autan_bench_revision
   COMMAND
