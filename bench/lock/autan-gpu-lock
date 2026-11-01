@@ -5,8 +5,9 @@
 
 -m WHY     what the command is for (agent, task), written to the holders log; required
 -w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
--n         the command takes the GPU lock itself (autan-bench): wait for CI and for a free
-           lock, then run it without holding the lock, under the same limits and records
+-n         only for autan-bench, which takes the GPU lock itself and gives CI priority itself:
+           wait for CI and for a free lock, then run it without holding the lock, under the
+           same records; the -t limit then counts from its start, its own lock wait included
 -t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's processes get
            TERM shortly before and KILL at the limit (exit 124)
 
