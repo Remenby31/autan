@@ -1003,10 +1003,10 @@ class Run final : public Log {
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
-                                 .cell_colours = colours_,
-                                 .n_colours = n_colours_,
                                  .face_global_id = face_global_id_,
-                                 .face_reversed = face_reversed_};
+                                 .face_reversed = face_reversed_,
+                                 .cell_colours = colours_,
+                                 .n_colours = n_colours_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {

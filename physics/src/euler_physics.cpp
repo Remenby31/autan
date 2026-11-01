@@ -17,6 +17,7 @@
 
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan/physics/euler_device.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -58,6 +59,8 @@ constexpr double linear_failure = 0.9;
 constexpr double max_decrease = 0.5;
 constexpr double min_step = 1e-6;
 constexpr double venkatakrishnan_k = 10.0;
+// Steady cases on a device: SSP-RK3 in pseudo-time with local time steps CFL V / lambda.
+constexpr double device_steady_cfl = 0.8;
 
 Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
@@ -128,9 +131,37 @@ class EulerPhysics final : public runtime::Physics {
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
     apply_vortices();
+    if (ctx.device >= 0) {
+#ifdef AUTAN_PHYSICS_CUDA
+      device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
+                                       ctx.ranks, ctx.ghosts, ctx.stream);
+      device_->upload(u_);
+      if (in.time.kind == "steady") {
+        ctx.log.write("warning", "solver",
+                      "steady case on the device: explicit SSP-RK3 with local time steps, not "
+                      "the implicit solver",
+                      {}, nlohmann::json{{
+                            "cfl",
+                            device_steady_cfl
+                          }}.dump());
+      }
+      if (!in.monitors.empty()) {
+        ctx.log.write("warning", "solver",
+                      "force monitors on the device: each recorded iteration downloads the state "
+                      "and evaluates the residual on the host",
+                      {}, nlohmann::json{{
+                            "monitors",
+                            in.monitors.size()
+                          }}.dump());
+      }
+#else
+      throw std::logic_error("the Euler physics was built without CUDA");
+#endif
+    }
   }
 
   StepReport step(std::int64_t /*iteration*/) override {
+    if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception.
@@ -152,6 +183,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void accumulate_average(double weight) override {
+    sync();
     const auto f = primitive_fields();
     for (std::size_t k = 0; k < 6; ++k) {
       for (std::size_t c = 0; c < owned_; ++c) mean_[k * n_ + c] += weight * f[k][c];
@@ -161,6 +193,7 @@ class EulerPhysics final : public runtime::Physics {
 
   // The conserved variables bit for bit, then the averaging sums and their weight.
   [[nodiscard]] std::vector<io::Field> restart_fields() const override {
+    sync();
     std::vector<io::Field> out;
     for (std::size_t k = 0; k < 5; ++k) {
       out.push_back({.name = conserved_names[k], .values = owned(u_, k)});
@@ -216,6 +249,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
+    sync();
     std::vector<io::Field> out;
     const auto f = primitive_fields();
     for (std::size_t k = 0; k < 6; ++k) {
@@ -607,21 +641,8 @@ class EulerPhysics final : public runtime::Physics {
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
     euler_.spectral_radius(lambda_);
-    // Largest relative residual over the equations, of the order being solved.
-    const std::vector<double>& current = norms.empty() ? report.residuals : norms;
-    double drop = 0.0;
-    if (first_norms_.empty()) first_norms_ = current;
-    for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
-    }
-    // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
-    // solution; second order from the step after the first-order residual has dropped.
-    if (!second_order_ &&
-        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
-      second_order_ = true;
-      euler_.set_second_order(true);
-      first_norms_.clear();
-    }
+    const double drop = relative_drop(norms.empty() ? report.residuals : norms);
+    switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
     penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
@@ -757,6 +778,7 @@ class EulerPhysics final : public runtime::Physics {
     const std::array<C, 3> mr{static_cast<C>(r[1]), static_cast<C>(r[2]), static_cast<C>(r[3])};
     const C p_ref = static_cast<C>((gas_.gamma - 1.0) *
                                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
+    LeastGlobal first{.ids = ctx_.mesh.cell_global_id(), .cell = {}, .best = 0};
     for (std::size_t c = 0; c < owned_; ++c) {
       std::array<C, 5> dq{};
       for (std::size_t k = 0; k < 5; ++k) {
@@ -772,16 +794,32 @@ class EulerPhysics final : public runtime::Physics {
       const C p = (g - C(1)) * (dq[4] - C(0.5) * dk) + p_ref;
       if (!std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
           !(rho > C(0)) || !(p > C(0))) {
-        return static_cast<index_t>(c);
+        first.take(c);
       }
     }
-    for (std::size_t c = 0; c < n_; ++c) {
+    if (first.cell) return first.cell;
+    for (std::size_t c = 0; c < owned_; ++c) {
       for (std::size_t k = 0; k < 5; ++k) {
-        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return static_cast<index_t>(c);
+        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) first.take(c);
       }
     }
-    return std::nullopt;
+    return first.cell;
   }
+
+  // Of the cells offered, the one with the least cell_global_id: the same cell whatever the
+  // numbering and the partition.
+  struct LeastGlobal {
+    std::span<const std::int64_t> ids;
+    std::optional<index_t> cell;
+    std::int64_t best = 0;
+    void take(std::size_t c) {
+      const std::int64_t id = ids.empty() ? static_cast<std::int64_t>(c) : ids[c];
+      if (!cell || id < best) {
+        cell = static_cast<index_t>(c);
+        best = id;
+      }
+    }
+  };
 
   [[nodiscard]] std::array<std::vector<double>, 6> primitive_fields() const {
     std::array<std::vector<double>, 6> f;
@@ -803,10 +841,77 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void face_pressure(std::span<double> p, std::span<double> force) const {
+    sync();
     auto& self = const_cast<EulerPhysics&>(*this);
     self.residual_of(u_);
     euler_.boundary_pressure(p, force);
   }
+
+  // Largest relative residual over the equations, of the order being solved.
+  double relative_drop(const std::vector<double>& current) {
+    double drop = 0.0;
+    if (first_norms_.empty()) first_norms_ = current;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
+    }
+    return drop;
+  }
+
+  // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
+  // solution; second order from the step after the first-order residual has dropped. The device
+  // starts the same way, so that both solve the same sequence of problems.
+  void switch_order(double drop) {
+    if (!second_order_ &&
+        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      if (device_) device_->set_second_order(true);
+      first_norms_.clear();
+    }
+  }
+
+  // One step on the device; the host state is out of date until sync().
+  StepReport device_step() {
+    StepReport report;
+    if (!device_checked_) {
+      // As the host's step: a stored state the kernels cannot evaluate diverges at once.
+      device_checked_ = true;
+      const auto e = device_->evaluate();
+      if (e.invalid) {
+        report.residuals = e.residuals;
+        report.diverged_cell = e.invalid;
+        return report;
+      }
+    }
+    const auto& t = ctx_.input.time;
+    const bool steady = t.kind == "steady";
+    if (steady && !second_order_) {
+      // As the host's steady step: the history reports the second-order residual.
+      device_->set_second_order(true);
+      report.residuals = device_->evaluate().residuals;
+      device_->set_second_order(false);
+    }
+    const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
+                          : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
+    host_stale_ = true;
+    if (steady) switch_order(relative_drop(r.residuals));
+    if (report.residuals.empty()) report.residuals = r.residuals;
+    if (!steady) report.time_step = r.time_step;
+    report.diverged_cell = r.invalid;
+    return report;
+  }
+
+  // The device state into the host's, before anything reads it.
+  void sync() const {
+    if (!device_ || !host_stale_) return;
+    auto& self = const_cast<EulerPhysics&>(*this);
+    device_->download(self.u_);
+    self.host_stale_ = false;
+  }
+
+  std::unique_ptr<DeviceStepper<P>> device_;  // devices.kind = cuda
+  bool host_stale_ = false;
+  bool device_checked_ = false;
 
   // The runtime's ghost exchange, on the host, for Euler<P>.
   class HostGhosts final : public GhostFill {
@@ -963,6 +1068,30 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
+#ifdef AUTAN_PHYSICS_CUDA
+// On a device, besides euler_scope: one rank, and no point vortex (the device steps do not
+// measure the circulation; the host's steady step does).
+std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
+                                                          int ranks) {
+  if (ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message = "the Euler physics runs on one device only, not " + std::to_string(ranks),
+        .path = "devices.kind",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].point_vortex) {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics on a device has no point vortex yet; boundary zone '" +
+                     in.boundaries[i].zone + "'",
+          .path = "boundaries[" + std::to_string(i) + "].point_vortex",
+          .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}}.dump()};
+    }
+  }
+  return euler_scope(in, ranks);
+}
+#endif
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
@@ -970,6 +1099,12 @@ void register_euler(runtime::PhysicsRegistry& registry) {
                /*several_ranks=*/true);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
                euler_scope, /*several_ranks=*/true);
+#ifdef AUTAN_PHYSICS_CUDA
+  registry.add({"compressible", "inviscid", "fp64", "cuda"}, factory<kernels::fp64>(),
+               euler_device_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"}, factory<kernels::fp32_acc64>(),
+               euler_device_scope);
+#endif
 }
 
 }  // namespace autan::physics

@@ -47,15 +47,15 @@ struct RelaxationOptions {
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
   bool one_rank = false;  ///< registered as running on one rank only
-  /// Symmetric sweeps per step of a smoother in the global colours (PhysicsContext::cell_colours):
-  /// each cell of a colour takes the mean of itself and its face neighbours, summed in increasing
-  /// global id, then the ghosts are exchanged; the residuals scale by 1 + 1e-3 of the field's RMS.
-  int colour_sweeps = 0;
   /// Checks PhysicsContext's face keys against the mesh file: each local face's global face has
   /// the local face's cells (by global id), swapped when it is marked reversed.
   bool check_keys = false;
   std::string refuse_code{};  ///< its scope refuses every input with this code; empty: none
   int expect_ranks = 0;       ///< its scope refuses a run on another number of ranks; 0: any
+  /// Symmetric sweeps per step of a smoother in the global colours (PhysicsContext::cell_colours):
+  /// each cell of a colour takes the mean of itself and its face neighbours, summed in increasing
+  /// global id, then the ghosts are exchanged; the residuals scale by 1 + 1e-3 of the field's RMS.
+  int colour_sweeps = 0;
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -79,8 +79,8 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROWTH", o.growth);
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
-    read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_CHECK_KEYS", o.check_keys);
+    read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);

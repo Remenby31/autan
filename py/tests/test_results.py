@@ -4,7 +4,6 @@ Expected values come from docs/contracts/results.md and case-schema.md (ideal-ga
 law, Sutherland's law, the force projections), recomputed here independently.
 """
 
-import hashlib
 import json
 import math
 import re
@@ -26,7 +25,7 @@ import pytest
 from autan import cgns
 from autan.cli import json_schema, main
 
-from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
+from tests.conftest import CRM_HL, EXAMPLES, FIXTURES, identity_of
 
 R_UNIVERSAL = 8.314462618
 CGNSCHECK = shutil.which("cgnscheck")
@@ -65,17 +64,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
     assert re.fullmatch(r"[0-9a-f]{40}", run["solver"]["commit"])
     assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())
-    parts = [
-        run["case"]["sha256"],
-        run["mesh"]["sha256"],
-        run["solver"]["commit"],
-        run["precision"],
-        "fake",
-        run["devices"]["kind"],
-        str(run["devices"]["count"]),
-        "input",
-    ]
-    assert run["identity"] == hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    assert run["identity"] == identity_of(run)
     assert run["iterations"] == 100
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run["finished"])
 
@@ -820,7 +809,9 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
             autan.Results.open(crm_run.path)
         assert error.value.codes == ["E0701"]
 
-    fp64 = autan.load(write_case(CRM_HL.replace('"fp32+acc64"', '"fp64"'), name="fp64.py"))
+    fp64 = autan.load(
+        write_case(CRM_HL.replace("autan.SA())", 'autan.SA(), precision="fp64")'), name="fp64.py")
+    )
     result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
     assert result.run.convergence is None
     _set_convergence(result.path, floors)

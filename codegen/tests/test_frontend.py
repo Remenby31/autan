@@ -275,6 +275,11 @@ u5 = cells.field("u5", State.Vec5)
 r5 = cells.field("r5", Residual.Vec5)
 
 
+@pointwise
+def apply_block(a: dsl.JacAccum.Mat5, v: State.Vec5) -> Residual.Vec5:
+    return a @ v
+
+
 def test_jacobian_outputs_are_checked_against_the_body() -> None:
     good = dsl.faces.field("good", dsl.Jac.shape(2, 5, 5))
     out = [dsl.Inc(r5, left=1, right=-1), dsl.Jacobian(good, wrt=("ql", "qr"))]
@@ -298,6 +303,17 @@ def test_jacobian_outputs_are_checked_against_the_body() -> None:
                 ),
             )
         assert info.value.code == code, dataset.name
+    # Blocks are passive: no Jacobian with respect to a block dataset.
+    blocks = dsl.cells.field("blocks", dsl.JacAccum.Mat5)
+    sink = dsl.cells.field("sink", dsl.Jac.shape(5, 25))
+    with pytest.raises(CodegenError) as info:
+        build_loop(
+            "passive",
+            dsl.cell_loop(
+                apply_block, a=blocks, v=u5, out=[dsl.Write(r5), dsl.Jacobian(sink, wrt="a")]
+            ),
+        )
+    assert info.value.code == "E1003"
     out = [
         dsl.Inc(r5, left=1, right=-1),
         dsl.Jacobian(good, wrt="ql"),

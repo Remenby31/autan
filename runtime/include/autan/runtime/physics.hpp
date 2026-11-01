@@ -94,18 +94,18 @@ struct PhysicsContext {
   /// stream (a cudaStream_t) for the physics' work and ghost exchanges. -1 and null on the CPU.
   int device = -1;
   void* stream = nullptr;
-  /// The colour of each cell of `mesh` (owned and ghosts) in the global distance-1 colouring of
-  /// the mesh (colour_cells: neighbours across faces and periodic pairs never share one), and
-  /// the number of colours: the same on any number of ranks and in any cell order, so a
-  /// smoother that sweeps them, exchanging ghosts after each colour, repeats its bits.
-  std::span<const std::int32_t> cell_colours;
-  std::int32_t n_colours = 0;
   /// For each face of `mesh`, its face in the mesh the run read and whether it runs against it
   /// (1: owner and neighbour swapped, area vector negated): with mesh.cell_global_id() and
   /// mesh.ghost_translation(), the keys a physics orders its sums by under reproducibility
   /// "ranks", so that its bits do not depend on the partition (solver-input.md).
   std::span<const std::int64_t> face_global_id;
   std::span<const std::uint8_t> face_reversed;
+  /// The colour of each cell of `mesh` (owned and ghosts) in the global distance-1 colouring of
+  /// the mesh (colour_cells: neighbours across faces and periodic pairs never share one), and
+  /// the number of colours: the same on any number of ranks and in any cell order, so a
+  /// smoother that sweeps them, exchanging ghosts after each colour, repeats its bits.
+  std::span<const std::int32_t> cell_colours;
+  std::int32_t n_colours = 0;
 };
 
 // case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus

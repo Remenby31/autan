@@ -49,7 +49,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | Field | Meaning |
 |---|---|
 | `run_id` | Unique name of this execution and of its directory: `run-`, `started` as `YYYYMMDDThhmmssZ`, `-`, 8 random lowercase hex characters. |
-| `identity` | What the run computes: SHA-256 of `case.sha256`, `mesh.sha256`, `solver.commit`, `precision`, `solver.backend`, `devices.kind`, `devices.count`, `cell_order` and, for a run with a `start`, `start.identity`, `start.mode`, `start.iterations`, `start.solution_sha256`, joined by `\n`, UTF-8. |
+| `identity` | What the run computes: the SHA-256 of the fields of [Identity](#identity). |
 | `status` | `running` · `converged` (convergence criterion of [case-schema.md](case-schema.md#time) met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
@@ -68,6 +68,24 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
 Two runs of the solver (not the `fake` backend) with the same `identity` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver build, precision, backend, devices, cell order and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` or `cell_order` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
+
+
+### Identity
+
+`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition.
+
+1. `case.sha256`
+2. `mesh.sha256`
+3. `solver.commit`
+4. `precision`
+5. `solver.backend`
+6. `devices.kind`
+7. `devices.count`
+8. `cell_order`
+9. `start.identity`
+10. `start.mode`
+11. `start.iterations`
+12. `start.solution_sha256`
 
 ## History
 
