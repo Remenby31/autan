@@ -444,6 +444,16 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   }
   CHECK(first_layer == wall_cells);
   CHECK(lines >= wall_cells);
+  // The lines a partition keeps whole: the same, without the single cells.
+  const auto groups = autan::solvers::smoother_lines(mesh, g);
+  CHECK(groups.offsets.size() == lines + 1);
+  std::size_t from_wall = 0;
+  for (std::size_t li = 0; li + 1 < groups.offsets.size(); ++li) {
+    const auto b = static_cast<std::size_t>(groups.offsets[li]);
+    CHECK(groups.offsets[li + 1] - groups.offsets[li] >= 2);
+    if (g.cell_centroid_z[static_cast<std::size_t>(groups.cells[b])] < 1e-4) ++from_wall;
+  }
+  CHECK(from_wall == wall_cells);
   // The coarse levels agglomerate in the wall plane while neighbouring lines remain (8 x 8 wall
   // cells, groups of 4: two levels), keeping the line length; then lines coarsen along
   // themselves down to a direct solve.
