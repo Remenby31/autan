@@ -212,10 +212,10 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto mesh = autan::io::read_mesh(mesh_path);
   const auto g = autan::compute_geometry(mesh);
   std::vector<double> surface(static_cast<std::size_t>(mesh.n_cells()), 0.0);
-  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
-    surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
-    if (f < static_cast<std::size_t>(mesh.n_interior_faces()))
-      surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+  for (std::size_t face = 0; face < static_cast<std::size_t>(mesh.n_faces()); ++face) {
+    surface[static_cast<std::size_t>(mesh.owner()[face])] += g.face_area[face];
+    if (face < static_cast<std::size_t>(mesh.n_interior_faces()))
+      surface[static_cast<std::size_t>(mesh.neighbour()[face])] += g.face_area[face];
   }
   double sum = 0.0;
   for (const double a : surface) sum += a * a;
