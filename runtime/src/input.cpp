@@ -514,6 +514,11 @@ SolverInput parse_solver_input(const std::string& text) {
   if (!root.is_null("initial_state")) {
     if (in.start)
       invalid("initial_state", "a run starts from start or from initial_state, not both");
+    // The file carries no turbulence variables (initial-state.md).
+    if (in.physics_kind != "compressible" ||
+        (in.turbulence.model != "inviscid" && in.turbulence.model != "laminar")) {
+      invalid("initial_state", "needs compressible inviscid or laminar flow");
+    }
     const Object s(root.get("initial_state"), "initial_state", {"path", "sha256"});
     InitialStateFile file;
     file.path = s.string("path");

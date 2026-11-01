@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -486,7 +487,10 @@ void load_initial(Prepared& p) {
   if (!doc.contains("schema") || doc["schema"] != "autan.initial-state/1")
     invalid_document("schema");
   if (!doc.contains("oracle") || !doc["oracle"].is_string()) invalid_document("oracle");
-  if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string())
+  if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string() ||
+      doc["mesh_sha256"].get<std::string>().size() != 64 ||
+      doc["mesh_sha256"].get<std::string>().find_first_not_of("0123456789abcdef") !=
+          std::string::npos)
     invalid_document("mesh_sha256");
   if (!doc.contains("variables") ||
       doc["variables"] !=
@@ -541,11 +545,54 @@ void load_initial(Prepared& p) {
   }
   const double tol = 1e-9 * extent;
   const Geometry g = compute_geometry(mesh);
-  // Rows sorted along x: a cell looks only at the rows within tol of it on x.
-  std::vector<std::size_t> sorted(rows);
-  for (std::size_t r = 0; r < rows; ++r) sorted[r] = r;
-  const auto coordinate = [&](std::size_t r) { return centroids[3 * r]; };
-  std::ranges::sort(sorted, {}, coordinate);
+  const auto centroid = [&](index_t c) {
+    const auto i = at(c);
+    return std::array<double, 3>{g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]};
+  };
+  // Points binned in cubes of side tol: two points within tol lie in
+  // neighbouring bins, whatever their alignment, so pairing is linear.
+  using Bin = std::array<std::int64_t, 3>;
+  struct BinHash {
+    std::size_t operator()(const Bin& b) const noexcept {
+      return std::hash<std::int64_t>{}(b[0] * 73856093 ^ b[1] * 19349663 ^ b[2] * 83492791);
+    }
+  };
+  const auto bin = [&](const std::array<double, 3>& x) {
+    return Bin{static_cast<std::int64_t>(std::floor(x[0] / tol)),
+               static_cast<std::int64_t>(std::floor(x[1] / tol)),
+               static_cast<std::int64_t>(std::floor(x[2] / tol))};
+  };
+  const auto near = [&](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= tol;
+  };
+  // The 27 bins around b, each visited with `visit`.
+  const auto around = [](const Bin& b, const auto& visit) {
+    for (std::int64_t dx = -1; dx <= 1; ++dx) {
+      for (std::int64_t dy = -1; dy <= 1; ++dy) {
+        for (std::int64_t dz = -1; dz <= 1; ++dz) visit(Bin{b[0] + dx, b[1] + dy, b[2] + dz});
+      }
+    }
+  };
+  // Within tol of each other, two fluid cells cannot be told apart.
+  std::unordered_map<Bin, std::vector<index_t>, BinHash> cell_bins;
+  for (const index_t c : fluid) cell_bins[bin(centroid(c))].push_back(c);
+  for (const index_t c : fluid) {
+    around(bin(centroid(c)), [&](const Bin& b) {
+      const auto it = cell_bins.find(b);
+      if (it == cell_bins.end()) return;
+      for (const index_t other : it->second) {
+        if (other > c && near(centroid(c), centroid(other))) {
+          fail("E0511",
+               "cells " + std::to_string(c) + " and " + std::to_string(other) +
+                   " lie within the pairing tolerance of each other",
+               {{"cells", {c, other}}, {"tolerance", tol}});
+        }
+      }
+    });
+  }
+  std::unordered_map<Bin, std::vector<std::size_t>, BinHash> row_bins;
+  for (std::size_t r = 0; r < rows; ++r)
+    row_bins[bin({centroids[3 * r], centroids[3 * r + 1], centroids[3 * r + 2]})].push_back(r);
   std::vector<std::int64_t> owner(rows, -1);  // the cell each row is paired with
   constexpr double unset = std::numeric_limits<double>::quiet_NaN();
   std::vector<io::Field> fields{{.name = "Density", .values = {}},
@@ -555,17 +602,18 @@ void load_initial(Prepared& p) {
                                 {.name = "Pressure", .values = {}}};
   for (auto& f : fields) f.values.assign(at(mesh.n_cells()), unset);
   for (const index_t c : fluid) {
-    const std::array<double, 3> x{g.cell_centroid_x[at(c)], g.cell_centroid_y[at(c)],
-                                  g.cell_centroid_z[at(c)]};
+    const auto x = centroid(c);
     std::size_t match = rows, count = 0;
-    for (auto r = std::ranges::lower_bound(sorted, x[0] - tol, {}, coordinate);
-         r != sorted.end() && coordinate(*r) <= x[0] + tol; ++r) {
-      const double* q = &centroids[3 * *r];
-      if (std::hypot(q[0] - x[0], q[1] - x[1], q[2] - x[2]) <= tol) {
-        match = *r;
-        ++count;
+    around(bin(x), [&](const Bin& b) {
+      const auto it = row_bins.find(b);
+      if (it == row_bins.end()) return;
+      for (const std::size_t r : it->second) {
+        if (near(x, {centroids[3 * r], centroids[3 * r + 1], centroids[3 * r + 2]})) {
+          match = r;
+          ++count;
+        }
       }
-    }
+    });
     if (count != 1) {
       fail("E0511",
            "cell " + std::to_string(c) + " matches " + std::to_string(count) +
@@ -575,7 +623,7 @@ void load_initial(Prepared& p) {
     if (owner[match] >= 0) {
       fail("E0511",
            "cells " + std::to_string(owner[match]) + " and " + std::to_string(c) +
-               " lie within the tolerance of one row of the initial state",
+               " match one row of the initial state",
            {{"cells", {owner[match], c}}, {"centroid", x}});
     }
     owner[match] = c;

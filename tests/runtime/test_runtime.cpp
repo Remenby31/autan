@@ -222,6 +222,15 @@ Json initial_state_document(const fs::path& mesh_file) {
               {"values", values}};
 }
 
+// The hybrid input made inviscid: an initial-state file has no turbulence
+// variables (initial-state.md).
+void inviscid(Json& d) {
+  d["physics"]["turbulence"]["model"] = "inviscid";
+  d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+  d["freestream"]["nu_tilde"] = nullptr;
+  for (auto& zone : d["cell_zones"]) zone["initial"]["nu_tilde"] = nullptr;
+}
+
 // `doc` written to a fresh file; the solver input's initial_state names it.
 Json with_initial_state(Json input_doc, const Json& doc) {
   const fs::path file = fresh_dir() / "initial.json";
@@ -943,7 +952,7 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
   // order; the relaxation physics keeps its state (factor 0.5, no growth),
   // so the solution is the file's values cell for cell.
   const Json state = initial_state_document(mesh_path);
-  const Json doc = with_initial_state(input(), state);
+  const Json doc = with_initial_state(input(inviscid), state);
   const Outcome o = run(doc);
   REQUIRE(o.status == ExitStatus::finished);
   const auto n = state["cells"].get<std::size_t>();
@@ -973,27 +982,38 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
   SECTION("E0508: not an initial-state document") {
     Json other = state;
     other["variables"] = {"density", "velocity-x", "velocity-y", "velocity-z", "temperature"};
-    require_error(run(with_initial_state(input(), other)), "E0508");
+    require_error(run(with_initial_state(input(inviscid), other)), "E0508");
+  }
+  SECTION("E0508: an unknown key, or a mesh hash that is no SHA-256") {
+    Json extra = state;
+    extra["note"] = "unknown";
+    require_error(run(with_initial_state(input(inviscid), extra)), "E0508");
+    Json malformed = state;
+    malformed["mesh_sha256"] = "not-a-sha256";
+    require_error(run(with_initial_state(input(inviscid), malformed)), "E0508");
+  }
+  SECTION("E0705: a turbulence model, whose variables the file lacks") {
+    require_error(run(with_initial_state(input(), state)), "E0705");
   }
   SECTION("E0509: written for another mesh") {
     Json other = state;
     other["mesh_sha256"] = std::string(64, 'a');
-    require_error(run(with_initial_state(input(), other)), "E0509");
+    require_error(run(with_initial_state(input(inviscid), other)), "E0509");
   }
   SECTION("E0510: a row short") {
     Json other = state;
     other["centroids"].erase(other["centroids"].size() - 1);
     other["values"].erase(other["values"].size() - 1);
     other["cells"] = n - 1;
-    require_error(run(with_initial_state(input(), other)), "E0510");
+    require_error(run(with_initial_state(input(inviscid), other)), "E0510");
   }
   SECTION("E0511: a row far from every cell, or two rows on one cell") {
     Json far = state;
     far["centroids"][3][0] = far["centroids"][3][0].get<double>() + 1e-3;
-    require_error(run(with_initial_state(input(), far)), "E0511");
+    require_error(run(with_initial_state(input(inviscid), far)), "E0511");
     Json twice = state;
     twice["centroids"][3] = twice["centroids"][4];
-    require_error(run(with_initial_state(input(), twice)), "E0511");
+    require_error(run(with_initial_state(input(inviscid), twice)), "E0511");
   }
   SECTION("E0705: initial_state with start") {
     Json both = doc;
@@ -1527,7 +1547,9 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   // An initial-state file, split among the ranks by their owned cells: the
   // solution of one rank, cell for cell.
   if (!periodic) {
-    const Json from_file = with_initial_state(doc, initial_state_document(mesh_path));
+    Json plain = doc;
+    inviscid(plain);
+    const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
     const Outcome one_file = run(from_file, options);
     const fs::path many_file =
         run_on_ranks(from_file, ranks,
