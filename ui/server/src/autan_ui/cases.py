@@ -10,10 +10,12 @@ from autan.errors import CaseError, Location
 from autan.schema import CaseSpec
 
 from autan_ui.confine import Folder
+from autan_ui.mesh_surface import mesh_surface
 
 log = logging.getLogger(__name__)
 
 MESH_INFO = ".meshinfo.json"
+SURFACE = ".surface"
 
 
 # The MeshInfo files (`*.meshinfo.json`) of one directory, which the case editor plans
@@ -38,6 +40,20 @@ class Meshes:
         with Folder(self.root) as folder:
             document = json.loads(folder.read(name + MESH_INFO).decode())
         return autan.MeshInfo.from_document(document, Location(file=name + MESH_INFO))
+
+    def surface(self, name: str) -> bytes:
+        # The `autan.surface/1` file `autan-mesh-info --surface` wrote next to the MeshInfo, as
+        # a viewer message; LookupError when there is none, ValueError when it breaks a contract.
+        if self.root is None or name not in self.names():
+            msg = f"no MeshInfo {name!r}"
+            raise LookupError(msg)
+        with Folder(self.root) as folder:
+            if folder.stat(name + SURFACE) is None:
+                msg = f"no surface for {name!r}: write it with autan-mesh-info --surface"
+                raise LookupError(msg)
+            data = folder.read(name + SURFACE)
+            mesh_info = json.loads(folder.read(name + MESH_INFO).decode())
+        return mesh_surface(data, mesh_info)
 
     def summaries(self) -> list[dict[str, Any]]:
         out = []
