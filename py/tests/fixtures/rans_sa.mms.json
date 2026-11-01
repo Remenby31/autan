@@ -2,6 +2,10 @@
  "schema": "autan.mms/1",
  "name": "rans_sa",
  "equations": "compressible RANS, Spalart-Allmaras (SA-neg)",
+ "model": {
+  "physics": "compressible",
+  "turbulence": "sa"
+ },
  "description": "Wall-bounded 3D fields, wall at y = 0, d = y, constant laminar viscosity.",
  "coordinates": [
   "x",

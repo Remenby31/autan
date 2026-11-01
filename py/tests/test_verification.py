@@ -105,8 +105,10 @@ def test_a_file_of_another_format_is_e0208(
     ("kwargs", "extra", "mismatches"),
     [
         ({"molar_mass": 0.0289647}, "", 1),  # air: R = 287.05, not 287
-        ({"turbulence": "autan.SA()"}, "", 1),  # viscous case, inviscid solution
-        ({"name": "rans_sa", "turbulence": "autan.Inviscid()"}, "", 1),  # viscous solution
+        ({"turbulence": "autan.SA()"}, "", 1),  # SA case, inviscid solution
+        ({"name": "rans_sa", "turbulence": "autan.Inviscid()"}, "", 1),  # SA solution
+        ({"name": "rans_sa", "turbulence": "autan.Laminar()"}, "", 1),  # SA solution
+        ({"name": "rans_sa_noft2", "turbulence": "autan.SA()"}, "", 1),  # no case counterpart
         ({}, "case.cell_zone('fluid').fluid(gas)\n", 1),
     ],
 )

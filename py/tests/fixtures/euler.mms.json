@@ -2,6 +2,10 @@
  "schema": "autan.mms/1",
  "name": "euler",
  "equations": "compressible Euler",
+ "model": {
+  "physics": "compressible",
+  "turbulence": "inviscid"
+ },
  "description": "Subsonic 3D trigonometric fields in the form of Roy et al. (2004).",
  "coordinates": [
   "x",

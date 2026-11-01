@@ -284,10 +284,14 @@ def _mismatches(document: dict[str, Any], spec: CaseSpec) -> list[str]:
         mine = case_values[key]
         if mine is None or not math.isclose(mine, value, rel_tol=1e-12):
             found.append(f"{key} is {value!r} in the solution and {mine!r} in the case")
-    if "viscosity" not in parameters and not isinstance(physics.turbulence, Inviscid):
-        found.append("the solution is inviscid; the case is not")
-    if "viscosity" in parameters and isinstance(physics.turbulence, Inviscid):
-        found.append("the solution is viscous; the case is inviscid")
+    model = document.get("model")
+    declared = model.get("turbulence") if isinstance(model, dict) else None
+    if not isinstance(model, dict) or model.get("physics") != "compressible":
+        found.append(f"the solution's model is {model!r}; the case is compressible flow")
+    elif declared != physics.turbulence.model:
+        found.append(
+            f"the solution is {declared!r} turbulence; the case is {physics.turbulence.model!r}"
+        )
     if spec.cell_zones:
         found.append("a manufactured solution covers one fluid zone; remove the cell zone rules")
     return found

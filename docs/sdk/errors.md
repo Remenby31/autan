@@ -360,7 +360,7 @@ Fix: Point the case at a manufactured solution exported by autan-vv.
 
 **Manufactured solution does not match the case** (error)
 
-The constants the manufactured solution declares (gamma, gas constant, viscosity, Prandtl number) differ from the case's gas, its viscous model differs from the case's turbulence model, or the case has cell zone rules a single-medium solution cannot cover. The message names the difference.
+The constants the manufactured solution declares (gamma, gas constant, viscosity, Prandtl number) differ from the case's gas, its declared model is not compressible flow with the case's turbulence model, or the case has cell zone rules a single-medium solution cannot cover. The message names the difference.
 
 Fix: Build the case gas from the solution's parameters, or export the solution the case needs.
 
