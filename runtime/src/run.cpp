@@ -10,6 +10,7 @@
 #include <ctime>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -26,6 +27,7 @@
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/runtime/diagnostic.hpp"
+#include "comm.hpp"
 #include "run_directory.hpp"
 
 namespace autan::runtime {
@@ -142,31 +144,11 @@ void check_periodic(const Prepared& p) {
   if (!same) invalid("periodic", "differs from the periodic pairs of the mesh");
 }
 
-// The exchange of a one-rank run: periodic images of owned cells, on the
-// host. Device fields get E0145 until a device copy is written.
-class SelfExchange final : public GhostExchange {
+// The ghost exchange of a run without ghosts.
+class NoGhosts final : public GhostExchange {
  public:
-  SelfExchange(const HaloPattern* halo, index_t n_owned) : halo_(halo), n_owned_(n_owned) {}
-  void forward(std::span<float* const> components, MemorySpace space, void* /*stream*/) override {
-    run(components, space);
-  }
-  void forward(std::span<double* const> components, MemorySpace space, void* /*stream*/) override {
-    run(components, space);
-  }
-
- private:
-  template <class T>
-  void run(std::span<T* const> components, MemorySpace space) const {
-    if (halo_ == nullptr) return;  // no ghost
-    if (space != MemorySpace::host) {
-      throw Error(ErrorCode::halo_device_unsupported,
-                  "autan-run exchanges periodic images on the host only");
-    }
-    forward_self(*halo_, n_owned_, components);
-  }
-
-  const HaloPattern* halo_;
-  index_t n_owned_;
+  void forward(std::span<float* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
+  void forward(std::span<double* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
 };
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is
@@ -282,7 +264,7 @@ void load_start(Prepared& p) {
   p.start = std::move(state);
 }
 
-Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
+Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
              .mesh_hash = {},
@@ -393,6 +375,14 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
                                   .data_json = data.dump()});
     }
   }
+  if (entry != nullptr && ranks > 1 && !entry->several_ranks) {
+    throw InputError(Diagnostic{
+        .code = "E0706",
+        .message =
+            "this build's physics for the input runs on one rank, not " + std::to_string(ranks),
+        .path = "physics",
+        .data_json = nlohmann::json{{"path", "physics"}, {"ranks", ranks}}.dump()});
+  }
   if (p.factory == nullptr) {
     const auto& in = p.input;
     throw InputError(Diagnostic{.code = "E0706",
@@ -441,15 +431,22 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
 
 class Run final : public Log {
  public:
-  Run(Prepared& p, const SolverBuild& build)
-      : p_(p),
-        geometry_(compute_geometry(p.mesh)),
-        local_(periodic_part(p.mesh, geometry_)),
-        ghosts_(local_ ? &local_->halo : nullptr, p.mesh.n_cells()) {
+  Run(Prepared& p, const SolverBuild& build, Comm& comm)
+      : p_(p), comm_(comm), geometry_(compute_geometry(p.mesh)), local_(make_part()) {
+    if (local_) {
+      ghosts_ = comm_.ghost_exchange(*local_);
+      if (p_.start) local_start_ = owned_start(*p_.start);
+    } else {
+      ghosts_ = std::make_unique<NoGhosts>();
+    }
+    // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
     char suffix[9];
     std::snprintf(suffix, sizeof suffix, "%08x", static_cast<unsigned>(random()));
+    const std::string run_id =
+        comm_.broadcast("run-" + utc(started, "%Y%m%dT%H%M%SZ") + "-" + suffix);
+    const std::string started_at = comm_.broadcast(utc(started, "%Y-%m-%dT%H:%M:%SZ"));
     const auto& in = p_.input;
     const std::string backend = in.device_kind;
     std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" +
@@ -478,7 +475,7 @@ class Run final : public Log {
     const std::string identity = sha256_hex(parts);
     info_ = Json{
         {"schema", "autan.results/1"},
-        {"run_id", "run-" + utc(started, "%Y%m%dT%H%M%SZ") + "-" + suffix},
+        {"run_id", run_id},
         {"identity", identity},
         {"status", "running"},
         {"case", {{"name", in.case_name}, {"sha256", in.case_sha256}}},
@@ -489,7 +486,7 @@ class Run final : public Log {
         {"precision", in.precision},
         {"deterministic", in.deterministic},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
-        {"started", utc(started, "%Y-%m-%dT%H:%M:%SZ")},
+        {"started", started_at},
         {"finished", nullptr},
         {"iterations", 0},
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
@@ -503,46 +500,115 @@ class Run final : public Log {
     }
   }
 
+  // Rank 0 creates the directory; the others append to it once it exists.
   void open(const fs::path& runs) {
-    dir_ = std::make_unique<RunDirectory>(
-        runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
-        io::mesh_info_json(p_.mesh, p_.mesh_hash),
-        log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
-                 Json{{"cells", p_.mesh.n_cells()}, {"faces", p_.mesh.n_faces()}}.dump()),
-        p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
-                              : std::nullopt);
+    std::string path;
+    if (comm_.rank() == 0) {
+      try {
+        dir_ = std::make_unique<RunDirectory>(
+            runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
+            io::mesh_info_json(p_.mesh, p_.mesh_hash),
+            log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
+                     Json{{"cells", p_.mesh.n_cells()},
+                          {"faces", p_.mesh.n_faces()},
+                          {"ranks", comm_.size()}}
+                         .dump()),
+            p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
+                                  : std::nullopt);
+        path = dir_->path().string();
+      } catch (...) {
+        (void)comm_.broadcast({});
+        throw;
+      }
+    }
+    path = comm_.broadcast(path);
+    if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
+    if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
+    if (comm_.size() > 1) log_partition();
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 
   ExitStatus execute() {
+    const StartState* start = nullptr;
+    if (p_.start) start = local_start_ ? &*local_start_ : &*p_.start;
     const PhysicsContext context{.mesh = physics_mesh(),
                                  .geometry = physics_geometry(),
                                  .input = p_.input,
                                  .log = *this,
-                                 .start = p_.start ? &*p_.start : nullptr,
-                                 .ghosts = ghosts_};
+                                 .start = start,
+                                 .ghosts = *ghosts_,
+                                 .ranks = comm_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
       status = std::string(iterate(done));
     } catch (const std::exception& e) {
-      record_failure(e.what());
-      return finish("failed", done);
+      return fail(e.what(), done);
     }
     return finish(status, done);
   }
 
  private:
-  // A mesh with periodic pairs runs on its one-part partition, whose image
-  // ghosts make each periodic face an interior face (partitioning.md); its
-  // owned cells are the mesh's cells, in order. Without pairs, the mesh.
-  static std::optional<LocalPartition> periodic_part(const Mesh& mesh, const Geometry& geometry) {
-    if (mesh.periodic_pairs().empty()) return std::nullopt;
-    const std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
-    LocalPartition part = extract_partition(mesh, geometry, parts, 1, 0);
-    fill_ghost_geometry(part);
+  // On several ranks, each runs its part of the mesh, partitioned by METIS
+  // with the face-count cost of each cell; every rank partitions the same
+  // mesh with the same seed, so all agree on the parts (partitioning.md).
+  // On one rank, a mesh with periodic pairs runs on its one-part partition,
+  // whose image ghosts make each periodic face an interior face; its owned
+  // cells are the mesh's cells, in order. Otherwise, the mesh itself.
+  std::optional<LocalPartition> make_part() {
+    const Mesh& mesh = p_.mesh;
+    const std::int32_t n = comm_.size();
+    if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
+    std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
+    if (n > 1) parts = partition_cells(mesh, n, {.cell_weights = cell_cost_weights(mesh)});
+    LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
+    comm_.fill_ghosts(part);
     return part;
+  }
+
+  // The start state of this rank's owned cells, from that of the mesh.
+  [[nodiscard]] StartState owned_start(const StartState& global) const {
+    const auto ids = owned_ids();
+    const auto slice = [&](const std::vector<io::Field>& fields) {
+      std::vector<io::Field> out;
+      for (const auto& f : fields) {
+        io::Field part{.name = f.name, .values = {}};
+        part.values.reserve(ids.size());
+        for (const auto id : ids) part.values.push_back(f.values.at(static_cast<std::size_t>(id)));
+        out.push_back(std::move(part));
+      }
+      return out;
+    };
+    return StartState{.fields = slice(global.fields),
+                      .mean_fields = slice(global.mean_fields),
+                      .restart_fields = slice(global.restart_fields)};
+  }
+
+  // The mesh index of each owned cell of the physics' mesh.
+  [[nodiscard]] std::vector<std::int64_t> owned_ids() const {
+    const Mesh& mesh = physics_mesh();
+    const auto global = mesh.cell_global_id();
+    std::vector<std::int64_t> ids(at(mesh.n_owned_cells()));
+    for (std::size_t c = 0; c < ids.size(); ++c) ids[c] = local_ ? global[c] : std::int64_t(c);
+    return ids;
+  }
+
+  // Owned and ghost cells of each rank, in log.jsonl.
+  void log_partition() {
+    const Mesh& mesh = physics_mesh();
+    std::vector<ExactSum> counts(2 * at(comm_.size()));
+    counts[2 * at(comm_.rank())].add(static_cast<double>(mesh.n_owned_cells()));
+    counts[2 * at(comm_.rank()) + 1].add(
+        static_cast<double>(mesh.n_cells() - mesh.n_owned_cells()));
+    comm_.sum(counts);
+    Json owned = Json::array(), ghosts = Json::array();
+    for (std::size_t r = 0; r < at(comm_.size()); ++r) {
+      owned.push_back(static_cast<std::int64_t>(counts[2 * r].value()));
+      ghosts.push_back(static_cast<std::int64_t>(counts[2 * r + 1].value()));
+    }
+    write("info", "mpi", "mesh partitioned over " + std::to_string(comm_.size()) + " ranks", "",
+          Json{{"ranks", comm_.size()}, {"owned_cells", owned}, {"ghost_cells", ghosts}}.dump());
   }
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
   [[nodiscard]] const Geometry& physics_geometry() const {
@@ -560,21 +626,57 @@ class Run final : public Log {
   };
 
   void record_failure(const std::string& message) {
-    add_diagnostic(Diagnostic{.code = "E0704", .message = message, .path = "", .data_json = "{}"});
+    add_diagnostic(Diagnostic{
+        .code = "E0704",
+        .message = message,
+        .path = "",
+        .data_json = comm_.size() > 1 ? Json{{"rank", comm_.rank()}}.dump() : std::string("{}")});
   }
 
   // A run diagnostic goes to run.json and, with the same code and data, to
-  // log.jsonl (results.md).
+  // log.jsonl (results.md). Every rank records it; rank 0 logs it.
   void add_diagnostic(const Diagnostic& d) {
     const Json entry = Json::parse(d.json());
     info_["diagnostics"].push_back(entry);
-    write("error", "solver", d.message, d.code, entry["data"].dump());
+    note("error", "solver", d.message, d.code, entry["data"].dump());
+  }
+
+  // An event of the run, which every rank knows: rank 0 logs it.
+  void note(std::string_view level, std::string_view source, std::string_view message,
+            std::string_view code, std::string_view data_json) {
+    if (comm_.rank() == 0) dir_->append_log(log_line(level, source, message, code, data_json));
+  }
+
+  // On several ranks, a physics failure on one rank leaves the others
+  // waiting in a collective call: that rank records E0704 and the failed
+  // run.json, and ends every process with exit status 1.
+  ExitStatus fail(const std::string& message, std::int64_t done) {
+    record_failure(message);
+    if (comm_.size() == 1) return finish("failed", done);
+    if (comm_.rank() != 0) {
+      const Json& entry = info_["diagnostics"].back();
+      dir_->append_log(log_line("error", "solver", message, "E0704", entry["data"].dump()));
+    }
+    info_["iterations"] = done;
+    info_["status"] = "failed";
+    info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
+    dir_->write_run_json(info_.dump(2));
+    comm_.abort(static_cast<int>(ExitStatus::failed));
+    return ExitStatus::failed;
   }
 
  public:
+  // A physics' event: rank 0 logs all, the other ranks their warnings and
+  // errors, with their rank in `data`.
   void write(std::string_view level, std::string_view source, std::string_view message,
              std::string_view code, std::string_view data_json) override {
-    dir_->append_log(log_line(level, source, message, code, data_json));
+    if (comm_.rank() == 0) {
+      dir_->append_log(log_line(level, source, message, code, data_json));
+    } else if (level != "info") {
+      Json data = Json::parse(data_json.empty() ? "{}" : data_json);
+      data["rank"] = comm_.rank();
+      dir_->append_log(log_line(level, source, message, code, data.dump()));
+    }
   }
 
  private:
@@ -618,12 +720,15 @@ class Run final : public Log {
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
     }
     for (std::int64_t it = from; it <= budget; ++it) {
-      if (stop_requested != 0) {
+      // A launcher forwards a signal to every rank, not at the same instant:
+      // the ranks stop together once any has received it.
+      if (comm_.max(stop_requested) != 0) {
         stopped_by_signal_ = true;
         return "stopped";
       }
       iteration_ = it;
-      const StepReport report = physics_->step(it);
+      StepReport report = physics_->step(it);
+      report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
                                  " residuals for " + std::to_string(equations.size()) +
@@ -662,7 +767,7 @@ class Run final : public Log {
         record["monitors"][monitor.name] = forces_record(
             physics_->loads(p_.monitor_zones[m], monitor.moment_center), monitor, in.freestream);
       }
-      dir_->append_history(record.dump());
+      if (comm_.rank() == 0) dir_->append_history(record.dump());
       // `iterations` is the last completed (recorded) iteration: a diverging
       // one is reported by its D diagnostic, not counted.
       done = it;
@@ -685,12 +790,21 @@ class Run final : public Log {
     return "completed";
   }
 
+  // The mesh index of the least diverged cell over all ranks, from the cell
+  // of this rank's physics mesh (on a partition, a ghost names its owner).
+  std::optional<index_t> first_diverged(std::optional<index_t> local) {
+    constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
+    std::int64_t key = none;
+    if (local) key = -1 - physics_mesh().cell_global_id()[at(*local)];
+    key = comm_.max(key);
+    if (key == none) return std::nullopt;
+    return static_cast<index_t>(-1 - key);
+  }
+
   void diverge(std::int64_t iteration, std::optional<index_t> cell) {
     nlohmann::json data{{"iteration", iteration}};
     std::string where;
     if (cell) {
-      // A cell of the physics' mesh: on a partition, a ghost names its owner.
-      cell = static_cast<index_t>(physics_mesh().cell_global_id()[at(*cell)]);
       const std::string& zone = p_.mesh.cell_zones()[at(p_.mesh.cell_zone()[at(*cell)])].name;
       data["cell"] = *cell;
       data["zone"] = zone;
@@ -723,14 +837,22 @@ class Run final : public Log {
       }
     }
     std::ranges::sort(s.wall_faces);
-    // The physics names faces in its own mesh: the partition's on a periodic
-    // mesh, where owned boundary faces map to the global ones one to one.
-    std::vector<index_t> physics_faces = s.wall_faces;
+    // The physics names faces in its own mesh. On a partition, this rank's
+    // wall faces are its owned boundary faces whose mesh face is a wall
+    // face, ascending, and `slots` their positions in s.wall_faces.
+    std::vector<index_t> physics_faces;
+    std::vector<std::int64_t> slots;
     if (local_) {
-      std::vector<index_t> local_of(at(p_.mesh.n_faces()), -1);
-      for (index_t f = local_->mesh.n_interior_faces(); f < local_->mesh.n_owned_faces(); ++f)
-        local_of[static_cast<std::size_t>(local_->face_global_id[at(f)])] = f;
-      for (index_t& f : physics_faces) f = local_of[at(f)];
+      for (index_t f = local_->mesh.n_interior_faces(); f < local_->mesh.n_owned_faces(); ++f) {
+        const auto global = static_cast<index_t>(local_->face_global_id[at(f)]);
+        const auto it = std::ranges::lower_bound(s.wall_faces, global);
+        if (it == s.wall_faces.end() || *it != global) continue;
+        physics_faces.push_back(f);
+        slots.push_back(it - s.wall_faces.begin());
+      }
+    } else {
+      physics_faces = s.wall_faces;
+      for (std::size_t k = 0; k < physics_faces.size(); ++k) slots.push_back(std::int64_t(k));
     }
     try {
       s.fields = physics_->fields(false);
@@ -745,6 +867,23 @@ class Run final : public Log {
     for (const auto& f : s.fields) names.push_back(f.name);
     if (names != field_names(in))
       throw PhysicsFailure("the physics returned another set of fields");
+    // Rank 0 gathers every field, cells by mesh index, wall faces by slot.
+    const auto ids = owned_ids();
+    const auto gather = [&](std::vector<io::Field>& fields, std::span<const std::int64_t> where,
+                            std::int64_t n) {
+      for (auto& f : fields) {
+        if (f.values.size() != where.size()) {
+          throw PhysicsFailure("the physics returned " + std::to_string(f.values.size()) +
+                               " values of " + f.name + " for " + std::to_string(where.size()));
+        }
+        f.values = comm_.gather(where, f.values, n);
+      }
+    };
+    gather(s.fields, ids, p_.mesh.n_cells());
+    gather(s.mean_fields, ids, p_.mesh.n_cells());
+    gather(s.restart_fields, ids, p_.mesh.n_cells());
+    gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
+    if (comm_.rank() != 0) return;
     // A diverged state may hold non-finite values; results.md asks for its
     // solution only if one can be written, and readers require finite fields.
     if (diverged) {
@@ -764,6 +903,7 @@ class Run final : public Log {
       try {
         write_solution(status == "diverged");
       } catch (const PhysicsFailure& e) {
+        if (comm_.size() > 1) return fail(e.what(), done);
         record_failure(e.what());
         status = "failed";
       } catch (const std::exception& e) {
@@ -773,19 +913,23 @@ class Run final : public Log {
         }
       }
     }
+    // Only rank 0 writes the solution: its status is the run's.
+    status = comm_.broadcast(status);
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
-    write(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
-          Json{{"status", status}, {"iterations", done}}.dump());
-    dir_->write_run_json(info_.dump(2));
+    note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
+         Json{{"status", status}, {"iterations", done}}.dump());
+    if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
     if (status == "failed") return ExitStatus::failed;
     return stopped_by_signal_ ? ExitStatus::signalled : ExitStatus::finished;
   }
 
   Prepared& p_;
+  Comm& comm_;
   Geometry geometry_;
   std::optional<LocalPartition> local_;
-  SelfExchange ghosts_;
+  std::unique_ptr<GhostExchange> ghosts_;
+  std::optional<StartState> local_start_;  // the owned cells' share of p_.start
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
@@ -795,8 +939,9 @@ class Run final : public Log {
 
 }  // namespace
 
-void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope) {
-  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope)});
+void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
+                          bool several_ranks) {
+  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
@@ -815,20 +960,36 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
                     std::FILE* err) {
+  // Every rank reads and checks the same input, so all reach the same
+  // verdict; rank 0 prints it.
+  std::unique_ptr<Comm> comm;
+  try {
+    comm = make_comm();
+  } catch (const Error& e) {
+    std::fprintf(
+        err, "%s\n",
+        Diagnostic{
+            .code = error_code_string(e.code()), .message = e.what(), .path = "", .data_json = "{}"}
+            .json()
+            .c_str());
+    return ExitStatus::invalid_input;
+  }
   std::optional<Prepared> prepared;
   try {
-    prepared.emplace(prepare(input_file, registry));
+    prepared.emplace(prepare(input_file, registry, comm->size()));
   } catch (const InputError& e) {
-    std::fprintf(err, "%s\n", e.diagnostic().json().c_str());
+    if (comm->rank() == 0) std::fprintf(err, "%s\n", e.diagnostic().json().c_str());
     return ExitStatus::invalid_input;
   }
   stop_requested = 0;
   const SignalGuard signals;
   try {
-    Run run(*prepared, build);
+    Run run(*prepared, build, *comm);
     run.open(runs);
-    std::fprintf(out, "%s\n", run.path().string().c_str());
-    std::fflush(out);
+    if (comm->rank() == 0) {
+      std::fprintf(out, "%s\n", run.path().string().c_str());
+      std::fflush(out);
+    }
     return run.execute();
   } catch (const std::exception& e) {
     // The run directory could not be created or its run.json not written:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -27,6 +28,10 @@ struct RelaxationOptions {
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
+  /// Every field and residual varies from cell to cell: values scaled by
+  /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
+  bool vary = false;
+  bool one_rank = false;  ///< registered as running on one rank only
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -38,6 +43,11 @@ struct RelaxationOptions {
     read("AUTAN_TEST_DIVERGE_AT", o.diverge_at);
     read("AUTAN_TEST_THROW_AT", o.throw_at);
     read("AUTAN_TEST_PAUSE_MS", o.pause_ms);
+    read("AUTAN_TEST_DIVERGE_CELL", o.diverge_cell);
+    read("AUTAN_TEST_PRESSURE_OFFSET", o.pressure_offset);
+    read("AUTAN_TEST_GROWTH", o.growth);
+    read("AUTAN_TEST_VARY", o.vary);
+    read("AUTAN_TEST_ONE_RANK", o.one_rank);
     return o;
   }
 };
@@ -75,6 +85,19 @@ class Relaxation final : public autan::runtime::Physics {
         f.values.push_back(v);
       }
     }
+    if (options_.vary) {
+      for (auto& f : state_) {
+        for (std::size_t c = 0; c < f.values.size(); ++c) f.values[c] *= scale(c);
+      }
+      // RMS of the scales over the mesh: a sum over every rank's cells.
+      std::array<autan::runtime::ExactSum, 2> sums;
+      for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c) {
+        sums[0].add(scale(c) * scale(c));
+        sums[1].add(1.0);
+      }
+      context_.ranks.sum(sums);
+      rms_ = std::sqrt(sums[0].value() / sums[1].value());
+    }
     mean_ = state_;
     context_.log.write(
         "info", "solver", "relaxation physics ready", "",
@@ -100,17 +123,21 @@ class Relaxation final : public autan::runtime::Physics {
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
     const auto equations = autan::runtime::residual_names(context_.input).size();
     for (std::size_t e = 0; e < equations; ++e)
-      report.residuals.push_back(static_cast<double>(e + 1) * r);
+      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_);
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
     }
     check_ghosts();
     const auto& time = context_.input.time;
     if (time.kind == "unsteady") report.time_step = time.dt.value_or(1e-3);
+    // diverge_cell is a mesh index: on several ranks, its owner reports it.
     if (iteration == options_.diverge_at) {
-      state_[0].values[static_cast<std::size_t>(options_.diverge_cell)] =
-          std::numeric_limits<double>::quiet_NaN();
-      report.diverged_cell = options_.diverge_cell;
+      const auto& mesh = context_.mesh;
+      for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+        if (mesh.cell_global_id()[static_cast<std::size_t>(c)] != options_.diverge_cell) continue;
+        state_[0].values[static_cast<std::size_t>(c)] = std::numeric_limits<double>::quiet_NaN();
+        report.diverged_cell = c;
+      }
     }
     return report;
   }
@@ -175,7 +202,9 @@ class Relaxation final : public autan::runtime::Physics {
                                             const std::array<double, 3>& center) const override {
     // Pressure force (p - p_inf) S over the zones' faces, its moment about
     // `center`; the cell's pressure stands for the face's.
-    autan::runtime::Loads loads;
+    // Exact sums over this rank's faces, then over the ranks: the same bits
+    // on any number of ranks.
+    std::array<autan::runtime::ExactSum, 6> sums;
     const auto& mesh = context_.mesh;
     const auto& g = context_.geometry;
     const double p_inf = context_.input.freestream.pressure;
@@ -190,11 +219,17 @@ class Relaxation final : public autan::runtime::Physics {
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
-        for (std::size_t k = 0; k < 3; ++k) loads.force[k] += force[k];
-        loads.moment[0] += arm[1] * force[2] - arm[2] * force[1];
-        loads.moment[1] += arm[2] * force[0] - arm[0] * force[2];
-        loads.moment[2] += arm[0] * force[1] - arm[1] * force[0];
+        for (std::size_t k = 0; k < 3; ++k) sums[k].add(force[k]);
+        sums[3].add(arm[1] * force[2] - arm[2] * force[1]);
+        sums[4].add(arm[2] * force[0] - arm[0] * force[2]);
+        sums[5].add(arm[0] * force[1] - arm[1] * force[0]);
       }
+    }
+    context_.ranks.sum(sums);
+    autan::runtime::Loads loads;
+    for (std::size_t k = 0; k < 3; ++k) {
+      loads.force[k] = sums[k].value();
+      loads.moment[k] = sums[3 + k].value();
     }
     return loads;
   }
@@ -207,8 +242,13 @@ class Relaxation final : public autan::runtime::Physics {
     return 0.0;
   }
 
+  [[nodiscard]] double scale(std::size_t cell) const {
+    return 1.0 + 1e-6 * static_cast<double>(context_.mesh.cell_global_id()[cell]);
+  }
+
   autan::runtime::PhysicsContext context_;
   RelaxationOptions options_;
+  double rms_ = 1.0;
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
@@ -216,10 +256,12 @@ class Relaxation final : public autan::runtime::Physics {
 
 inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions options) {
   autan::runtime::PhysicsRegistry registry;
-  registry.add({.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
-               [options](const autan::runtime::PhysicsContext& context) {
-                 return std::make_unique<Relaxation>(context, options);
-               });
+  registry.add(
+      {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
+      [options](const autan::runtime::PhysicsContext& context) {
+        return std::make_unique<Relaxation>(context, options);
+      },
+      {}, !options.one_rank);
   return registry;
 }
 

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <random>
 #include <regex>
 #include <sstream>
@@ -102,6 +103,37 @@ Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
 
 Outcome run(const Json& doc, autan_test::RelaxationOptions options = {}) {
   return run(doc, autan_test::relaxation_registry(options));
+}
+
+// The hybrid input on periodic-box (Gmsh): xmin -> xmax by (tx, 0, 0), ymin
+// -> ymax by (0, 1, 0), zmin a wall, zmax a symmetry plane.
+Json periodic_input(double tx, const std::function<void(Json&)>& edit = {}) {
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  return input([&](Json& d) {
+    d["mesh"]["path"] = fs::absolute(box).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+    d["periodic"] =
+        Json::array({Json{{"zones", {"xmin", "xmax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {tx, 0.0, 0.0}}}}},
+                     Json{{"zones", {"ymin", "ymax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    // zmin takes the wall condition of ymin (now periodic), zmax keeps its own.
+    Json kept = Json::array();
+    for (const auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") {
+        Json wall = b;
+        wall["zone"] = "zmin";
+        kept.push_back(wall);
+      }
+      if (b["zone"] == "zmax") kept.push_back(b);
+    }
+    d["boundaries"] = kept;
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+    d["monitors"][0]["zones"] = Json::array({"zmin"});
+    if (edit) edit(d);
+  });
 }
 
 std::vector<Json> history(const fs::path& run) {
@@ -383,6 +415,13 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   }
   SECTION("E0706 no physics in the build") {
     require_error(run(input(), autan::runtime::PhysicsRegistry{}), "E0706");
+  }
+  SECTION("E0146 a launcher's ranks without MPI started") {
+    // As a launcher would start one of four ranks, without MPI initialized.
+    REQUIRE(setenv("OMPI_COMM_WORLD_SIZE", "4", 1) == 0);
+    const Outcome o = run(input());
+    unsetenv("OMPI_COMM_WORLD_SIZE");
+    require_error(o, "E0146");
   }
 }
 
@@ -815,40 +854,11 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
 }
 
 TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]") {
-  // periodic-box (Gmsh): xmin -> xmax by (1, 0, 0), ymin -> ymax by
-  // (0, 1, 0), zmin a wall, zmax a symmetry plane. The relaxation physics
+  // periodic_input(1.0). The relaxation physics
   // checks at every step that the exchange gives each image ghost its
   // owner's value; the run converges as on any mesh (k = 28) and its
   // solution.cgns gives the pairs back.
-  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
-  const auto with_pairs = [&](double tx, const std::function<void(Json&)>& edit = {}) {
-    return input([&](Json& d) {
-      d["mesh"]["path"] = fs::absolute(box).string();
-      d["mesh"]["sha256"] = autan::io::mesh_hash(box);
-      d["periodic"] = Json::array(
-          {Json{{"zones", {"xmin", "xmax"}},
-                {"transform", {{"kind", "translation"}, {"vector", {tx, 0.0, 0.0}}}}},
-           Json{{"zones", {"ymin", "ymax"}},
-                {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
-      // zmin takes the wall condition of ymin (now periodic), zmax keeps its own.
-      Json kept = Json::array();
-      for (const auto& b : d["boundaries"]) {
-        if (b["zone"] == "ymin") {
-          Json wall = b;
-          wall["zone"] = "zmin";
-          kept.push_back(wall);
-        }
-        if (b["zone"] == "zmax") kept.push_back(b);
-      }
-      d["boundaries"] = kept;
-      Json zone = d["cell_zones"][0];
-      zone["zone"] = "fluid";
-      d["cell_zones"] = Json::array({zone});
-      d["monitors"][0]["zones"] = Json::array({"zmin"});
-      if (edit) edit(d);
-    });
-  };
-  const Outcome o = run(with_pairs(1.0));
+  const Outcome o = run(periodic_input(1.0));
   REQUIRE(o.status == ExitStatus::finished);
   const Json info = Json::parse(read(o.run / "run.json"));
   CHECK(info["status"] == "converged");
@@ -866,17 +876,165 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
   CHECK(back.periodic_pairs().size() == 2);
   CHECK(!solution_field(o.run / "solution.cgns", "FlowSolution", "Density").empty());
 
-  require_error(run(with_pairs(2.0)), "E0705");
+  require_error(run(periodic_input(2.0)), "E0705");
   // A periodic zone takes no condition and carries no forces monitor.
   require_error(
-      run(with_pairs(1.0, [](Json& d) { d["monitors"][0]["zones"] = Json::array({"ymin"}); })),
+      run(periodic_input(1.0, [](Json& d) { d["monitors"][0]["zones"] = Json::array({"ymin"}); })),
       "E0705");
   // A periodic zone takes no condition.
-  require_error(run(with_pairs(1.0,
-                               [](Json& d) {
-                                 Json b = d["boundaries"][0];
-                                 b["zone"] = "xmin";
-                                 d["boundaries"].push_back(b);
-                               })),
+  require_error(run(periodic_input(1.0,
+                                   [](Json& d) {
+                                     Json b = d["boundaries"][0];
+                                     b["zone"] = "xmin";
+                                     d["boundaries"].push_back(b);
+                                   })),
                 "E0705");
 }
+
+#ifdef AUTAN_MPIEXEC
+namespace {
+
+// The arrays of solution.cgns's WallSolution subregion, by name.
+std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  int regions = 0;
+  REQUIRE(cg_nsubregs(fn, 1, 1, &regions) == CG_OK);
+  std::map<std::string, std::vector<double>> out;
+  for (int r = 1; r <= regions; ++r) {
+    char name[33];
+    int dim = 0, bc_len = 0, gc_len = 0;
+    CGNS_ENUMT(GridLocation_t) location{};
+    CGNS_ENUMT(PointSetType_t) ptset{};
+    cgsize_t npnts = 0;
+    REQUIRE(cg_subreg_info(fn, 1, 1, r, name, &dim, &location, &ptset, &npnts, &bc_len, &gc_len) ==
+            CG_OK);
+    if (std::string(name) != "WallSolution") continue;
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "ZoneSubRegion_t", r, "end") == CG_OK);
+    int arrays = 0;
+    REQUIRE(cg_narrays(&arrays) == CG_OK);
+    for (int a = 1; a <= arrays; ++a) {
+      char array[33];
+      CGNS_ENUMT(DataType_t) type{};
+      int rank = 0;
+      cgsize_t size[3];
+      REQUIRE(cg_array_info(a, array, &type, &rank, size) == CG_OK);
+      if (std::string(array) == "PointList") continue;
+      std::vector<double> values(static_cast<std::size_t>(size[0]));
+      REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
+      out[array] = std::move(values);
+    }
+  }
+  cg_close(fn);
+  return out;
+}
+
+// autan-run-relaxation under the launcher on `ranks` ranks: its run
+// directory (none for an invalid input), after checking its exit status.
+fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
+                      int expected_status = 0) {
+  const fs::path dir = fresh_dir();
+  const fs::path input_file = dir / "solver-input.json";
+  std::ofstream(input_file) << doc.dump();
+  std::vector<std::string> args{AUTAN_MPIEXEC,
+                                AUTAN_MPIEXEC_NUMPROC_FLAG,
+                                std::to_string(ranks),
+                                AUTAN_RUN_RELAXATION,
+                                "--input",
+                                input_file.string(),
+                                "--runs",
+                                (dir / "runs").string()};
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  std::vector<std::string> env = options;
+  for (char** e = environ; *e != nullptr; ++e) env.emplace_back(*e);
+  std::vector<char*> envp;
+  for (auto& e : env) envp.push_back(e.data());
+  envp.push_back(nullptr);
+  pid_t pid = 0;
+  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, nullptr, nullptr, argv.data(), envp.data()) == 0);
+  int status = 0;
+  REQUIRE(waitpid(pid, &status, 0) == pid);
+  REQUIRE(WIFEXITED(status));
+  CHECK(WEXITSTATUS(status) == expected_status);
+  fs::path run;
+  if (fs::exists(dir / "runs")) {
+    for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
+  }
+  CHECK(run.empty() == (expected_status == 2));
+  return run;
+}
+
+}  // namespace
+
+TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
+  // Fields and residuals vary from cell to cell, so that a cell gathered to
+  // the wrong place or a norm summed in another order would change bits;
+  // forces are recorded at every iteration, and the state grows.
+  const bool periodic = GENERATE(false, true);
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(periodic, ranks);
+  const auto edit = [](Json& d) {
+    d["deterministic"] = true;
+    d["monitors"][0]["every"] = 1;
+    d["time"]["max_iterations"] = 12;
+  };
+  const Json doc = periodic ? periodic_input(1.0, edit) : input(edit);
+  const autan_test::RelaxationOptions options{
+      .factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3, .vary = true};
+  const Outcome one = run(doc, options);
+  REQUIRE(one.status == ExitStatus::finished);
+  const fs::path many = run_on_ranks(doc, ranks,
+                                     {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+
+  CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  const Json a = Json::parse(read(one.run / "run.json"));
+  const Json b = Json::parse(read(many / "run.json"));
+  for (const char* key : {"status", "iterations", "time", "diagnostics"}) {
+    CAPTURE(key);
+    CHECK(a[key] == b[key]);
+  }
+  for (const char* field : {"Density", "VelocityX", "Pressure", "TurbulentSANuTilde"}) {
+    CAPTURE(field);
+    const auto expected = solution_field(one.run / "solution.cgns", "FlowSolution", field);
+    CHECK(!expected.empty());
+    CHECK(solution_field(many / "solution.cgns", "FlowSolution", field) == expected);
+  }
+  const auto wall = wall_solution(one.run / "solution.cgns");
+  CHECK(wall.contains("Pressure"));
+  CHECK(wall_solution(many / "solution.cgns") == wall);
+  // Rank 0 logged the partition: every cell owned once.
+  std::int64_t owned = 0;
+  std::ifstream log_in(many / "log.jsonl");
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["source"] == "mpi") {
+      for (const auto& n : event["data"]["owned_cells"]) owned += n.get<std::int64_t>();
+    }
+  }
+  CHECK(owned == autan::io::read_mesh(doc["mesh"]["path"].get<std::string>()).n_cells());
+
+  // The diverged cell, wherever its owner, is the one a single rank names.
+  const Outcome diverged = run(doc, {.factor = 0.9, .diverge_at = 5, .diverge_cell = 7});
+  const Json d = Json::parse(read(run_on_ranks(doc, ranks,
+                                               {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_DIVERGE_AT=5",
+                                                "AUTAN_TEST_DIVERGE_CELL=7"}) /
+                                  "run.json"));
+  CHECK(d["status"] == "diverged");
+  CHECK(d["diagnostics"] == Json::parse(read(diverged.run / "run.json"))["diagnostics"]);
+
+  // A physics registered for one rank refuses several before any directory.
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_ONE_RANK=1"}, 2).empty());
+
+  // A physics failure ends every rank with status 1 and a failed run.json.
+  const Json f = Json::parse(
+      read(run_on_ranks(doc, ranks, {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_THROW_AT=4"}, 1) /
+           "run.json"));
+  CHECK(f["status"] == "failed");
+  CHECK(f["iterations"] == 3);
+  CHECK(f["diagnostics"][0]["code"] == "E0704");
+  CHECK(f["diagnostics"][0]["data"]["rank"].get<int>() < ranks);
+}
+#endif

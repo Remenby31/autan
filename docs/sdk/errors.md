@@ -300,6 +300,14 @@ A halo exchange on device memory without CUDA support in the build or in MPI.
 
 Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
 
+## E0146
+
+**Several ranks without MPI** (error)
+
+A launcher started several ranks of a build without MPI.
+
+Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
+
 ## E0201
 
 **No mesh information** (error)

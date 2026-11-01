@@ -14,6 +14,7 @@
 #include "autan/io/cgns.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
+#include "autan/runtime/ranks.hpp"
 
 namespace autan::runtime {
 
@@ -59,8 +60,8 @@ struct StartState {
   std::vector<io::Field> restart_fields;
 };
 
-/// Fills the ghost cells of PhysicsContext::mesh from their owners: on one
-/// rank, the periodic images of owned cells. Each component holds n_cells
+/// Fills the ghost cells of PhysicsContext::mesh from their owners: the
+/// cells of other ranks' parts and periodic images. Each component holds n_cells
 /// values (owned then ghost) in `space`, at most 16 per call; `stream` is a
 /// cudaStream_t or null. Call it before any loop that reads ghost values.
 class GhostExchange {
@@ -78,6 +79,8 @@ struct PhysicsContext {
   Log& log;
   const StartState* start;  ///< null unless input.start
   GhostExchange& ghosts;
+  /// The ranks of the run; norms and loads reduce over them.
+  Ranks& ranks;
 };
 
 /// A discretisation of the case's equations. The runtime owns the iteration
@@ -137,8 +140,12 @@ class PhysicsRegistry {
   struct Entry {
     PhysicsFactory factory;
     PhysicsScope scope;  ///< empty: every input the key matches
+    /// Whether it runs on several ranks: its norms, loads and other sums
+    /// reduce over PhysicsContext::ranks (runtime.md, Ranks).
+    bool several_ranks = false;
   };
-  void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {});
+  void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
+           bool several_ranks = false);
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 

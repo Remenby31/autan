@@ -223,6 +223,12 @@
       "fix": "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0145"
     },
+    "E0146": {
+      "severity": "error",
+      "title": "Several ranks without MPI",
+      "fix": "Run this build on one rank, or use a build with MPI, such as the dev image.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0146"
+    },
     "E0201": {
       "severity": "error",
       "title": "No mesh information",
