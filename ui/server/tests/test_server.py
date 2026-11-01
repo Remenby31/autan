@@ -614,6 +614,20 @@ def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server:
     assert reason.startswith("log.jsonl")
 
 
+def test_a_run_json_its_reader_refuses_ends_the_stream(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    run = json.loads((directory / "run.json").read_text())
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        assert next(events)[0] == "run"
+        # Well-formed, but not what the run computes (results.md#runjson, identity).
+        (directory / "run.json").write_text(json.dumps(run | {"identity": "0" * 64}))
+        kind, reason = next(e for e in events if e[0] not in ("history", "log"))
+    assert kind == "invalid"
+    assert reason.startswith("run.json")
+
+
 def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, server: str) -> None:
     import h5py  # noqa: PLC0415 -- only this test edits a CGNS file
     from autan.solver_input import freestream_state  # noqa: PLC0415

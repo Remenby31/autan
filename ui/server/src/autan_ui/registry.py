@@ -9,7 +9,10 @@ from stat import S_ISREG
 from typing import Any
 
 import autan
-from autan.errors import CaseError
+from autan.errors import CaseError, Location
+from autan.meshinfo import MeshInfo
+from autan.results import check_run_json
+from autan.schema import CaseSpec
 
 from autan_ui.confine import Folder, is_link
 from autan_ui.summary import Summaries
@@ -203,10 +206,21 @@ def _stat(path: Path) -> tuple[int, int] | None:
 
 
 def read_run(folder: Folder) -> dict[str, Any]:
-    """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
+    """run.json, checked as `autan.Results.open` checks it against the stored case and
+    MeshInfo (results.md#runjson), all read through `folder`; ValueError otherwise."""
     try:
         document = json.loads(folder.read("run.json"))
-        return autan.RunInfo.model_validate(document).document()
-    except (OSError, ValueError) as error:
+        case = CaseSpec.from_document(
+            tomllib.loads(folder.read("case.toml").decode()), Location(file="case.toml")
+        )
+        mesh_info = MeshInfo.from_document(
+            json.loads(folder.read("mesh-info.json")), Location(file="mesh-info.json")
+        )
+    except (OSError, ValueError, CaseError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
+    problems = check_run_json(document, case, mesh_info)
+    if problems:
+        msg = f"run.json: {'; '.join(problems)}"
+        raise ValueError(msg)
+    return autan.RunInfo.model_validate(document).document()
