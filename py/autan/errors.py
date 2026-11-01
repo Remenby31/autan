@@ -151,12 +151,6 @@ _CODES = [
         "Assign each face to one zone in the meshing tool.",
     ),
     Code(
-        "E0116",
-        "Face without an owned cell",
-        "A face touches only ghost cells.",
-        "Regenerate the partition; every face needs an owned cell.",
-    ),
-    Code(
         "E0117",
         "Duplicate or negative global cell id",
         "Two cells share a global id, or one is negative.",
@@ -166,8 +160,8 @@ _CODES = [
         "E0118",
         "Invalid periodic pair",
         "A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind "
-        "periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a "
-        "translation that is zero or not finite.",
+        "periodic, a zone paired with itself or in two pairs, a boundary zone of kind periodic in "
+        "no pair, or a translation that is zero or not finite.",
         "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one "
         "pair, with a non-zero translation.",
     ),

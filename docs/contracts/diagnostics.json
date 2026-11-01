@@ -121,12 +121,6 @@
       "fix": "Assign each face to one zone in the meshing tool.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0115"
     },
-    "E0116": {
-      "severity": "error",
-      "title": "Face without an owned cell",
-      "fix": "Regenerate the partition; every face needs an owned cell.",
-      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0116"
-    },
     "E0117": {
       "severity": "error",
       "title": "Duplicate or negative global cell id",
