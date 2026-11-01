@@ -166,12 +166,12 @@ int autan_mms_euler_set_boundary(void* euler, const std::uint8_t* kind, const do
   });
 }
 
-int autan_mms_euler_set_source(void* euler, const double* source, char* err,
-                               std::size_t err_len) {
+int autan_mms_euler_set_source(void* euler, const double* source, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
     std::visit(
         [&](auto& e) {
-          e->set_source(std::span<const double>(source, 5 * static_cast<std::size_t>(e->n_cells())));
+          e->set_source(
+              std::span<const double>(source, 5 * static_cast<std::size_t>(e->n_cells())));
         },
         static_cast<EulerHandle*>(euler)->euler);
   });
@@ -191,13 +191,14 @@ int autan_mms_euler_residual(void* euler, const double* u, double* res, char* er
 }
 
 /// out = dR1/dU du, the tangent of the first-order residual.
-int autan_mms_euler_first_order_tangent(void* euler, const double* u, const double* du,
-                                        double* out, char* err, std::size_t err_len) {
+int autan_mms_euler_first_order_tangent(void* euler, const double* u, const double* du, double* out,
+                                        char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
     std::visit(
         [&](auto& e) {
-          in_policy(e, u, du, out,
-                    [](auto& eu, auto su, auto sdu, auto r) { eu.first_order_tangent(su, sdu, r); });
+          in_policy(e, u, du, out, [](auto& eu, auto su, auto sdu, auto r) {
+            eu.first_order_tangent(su, sdu, r);
+          });
         },
         static_cast<EulerHandle*>(euler)->euler);
   });

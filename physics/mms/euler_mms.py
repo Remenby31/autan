@@ -213,7 +213,9 @@ def solve(m: Mesh, policy: str, flux: str, limiter: bool, tol: float) -> Solutio
     u = np.array([cc[k] for k in CONSERVED])
     sc = ex_s(m.cell_centroid)
     src = np.array([sc[k] for k in CONSERVED])
-    speed = np.sqrt(np.mean(cc["rhou"] ** 2 + cc["rhov"] ** 2 + cc["rhow"] ** 2) / np.mean(cc["rho"]) ** 2)
+    speed = np.sqrt(
+        np.mean(cc["rhou"] ** 2 + cc["rhov"] ** 2 + cc["rhow"] ** 2) / np.mean(cc["rho"]) ** 2
+    )
     sound = np.sqrt(1.4 * np.mean(wb["p"]) / np.mean(wb["rho"]))
     mach = float(speed / sound)
     kind = np.zeros(m.n_faces - m.n_interior, dtype=np.uint8)
@@ -240,7 +242,7 @@ def solve(m: Mesh, policy: str, flux: str, limiter: bool, tol: float) -> Solutio
     d = np.repeat(scale[:, 0][None, :], m.n_cells, axis=0).ravel()
     js = sp.diags(1.0 / d) @ jac @ sp.diags(d)
     ilu = spla.spilu(js.tocsc(), drop_tol=1e-4, fill_factor=8)
-    for newton in range(1, 31):
+    for newton in range(1, 31):  # noqa: B007 (reported after the loop)
         rx = to_x(r)
         r64 = e64.residual(u)
         ux = to_x(u)

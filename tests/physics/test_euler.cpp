@@ -178,8 +178,8 @@ TEMPLATE_TEST_CASE("a uniform flow that satisfies every boundary condition is st
   }
 }
 
-TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density field",
-                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density field", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
   // Each flux resolves a stationary contact exactly (Toro 2009, sections 10.4 and 11.2).
   using P = TestType;
   const char* file = GENERATE(from_range(meshes));

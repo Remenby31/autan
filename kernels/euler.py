@@ -314,7 +314,9 @@ def farfield_state(wi: State.Vec5, wf: State.Vec5, n: Geom.Vec3, g: Param) -> St
 
 
 @pointwise
-def inlet_state(wi: State.Vec5, data: State.Vec5, n: Geom.Vec3, g: Param, rgas: Param) -> State.Vec5:
+def inlet_state(
+    wi: State.Vec5, data: State.Vec5, n: Geom.Vec3, g: Param, rgas: Param
+) -> State.Vec5:
     # Subsonic inflow normal to the face from total pressure and temperature: the outgoing
     # invariant R+ = vn + 2c/(g-1) and the total enthalpy cp T0 = c^2/(g-1) + vn^2/2 give c_b
     # (larger root); Carlson (2011), NASA/TM-2011-217181, section 2.
@@ -404,7 +406,9 @@ boundary_states = boundary_loop(
 
 
 @pointwise
-def lsq_term(wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
+def lsq_term(
+    wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
     return outer(wn - wc, w), wn, wn
 
 
@@ -593,7 +597,9 @@ def roe_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl))
     wb = boundary_value(wf, kind, data, n, g, rgas)
-    return area * (wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else roe(wf, wb, n, g))
+    return area * (
+        wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else roe(wf, wb, n, g)
+    )
 
 
 @pointwise
@@ -612,7 +618,9 @@ def hllc_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl))
     wb = boundary_value(wf, kind, data, n, g, rgas)
-    return area * (wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else hllc(wf, wb, n, g))
+    return area * (
+        wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else hllc(wf, wb, n, g)
+    )
 
 
 @pointwise
@@ -632,7 +640,11 @@ def ausm_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl))
     wb = boundary_value(wf, kind, data, n, g, rgas)
-    return area * (wall_flux(wf, n) if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else ausm_up(wf, wb, n, g, minf))
+    return area * (
+        wall_flux(wf, n)
+        if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
+        else ausm_up(wf, wb, n, g, minf)
+    )
 
 
 BOUNDARY_ARGS = {
