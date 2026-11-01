@@ -20,9 +20,9 @@ The command runs in its own session, without the lock's descriptor. A command th
 killed with `docker kill` before the session whenever the command is stopped, and any still
 running at the end; a `docker run` nested in a shell is not seen. A signal to the wrapper
 stops it the same way (exit 143); a command that cannot start exits 127. Before the lock is
-released, every process left in the session is killed and waited for, so no worker outlives the
-hold; one that starts its own session escapes this, and one that survives SIGKILL (stuck in the
-kernel) is recorded as a leftover and makes the wrapper exit 70. Every event is one line of
+released, every process left in the session, and every descendant of one even in a session of
+its own, is killed and waited for, so no worker outlives the hold; one that survives SIGKILL
+(stuck in the kernel) is recorded as a leftover and makes the wrapper exit 70. Every event is one line of
 holders.log next to the lock (tab-separated: UTC time, event, who, where, seconds, exit status,
 why, command), written with a single append. Do not nest autan-bench under it: autan-bench takes
 the lock itself. See docs/infra/bench.md.
@@ -158,18 +158,50 @@ def ci_waiting() -> bool:
     return _held(LOCK.parent / "main.lock")
 
 
-def session_members(sid: int) -> list[int]:
-    """Live processes of a session (zombies left by a non-reaping PID 1 hold nothing)."""
-    members = []
-    for proc_stat in Path("/proc").glob("[0-9]*/stat"):
-        try:
-            # proc(5): state, ppid, process group and session follow the command name.
-            fields = proc_stat.read_bytes().rpartition(b")")[2].split()
-        except OSError:
-            continue
-        if int(fields[3]) == sid and fields[0] not in (b"Z", b"X"):
-            members.append(int(proc_stat.parent.name))
-    return members
+TREE_EVERY_S = 0.5
+
+
+class Tree:
+    """The command's processes: its session, and every descendant of a process ever seen in it,
+    so that a worker that starts its own session (autan-bench's gated binary) is still found.
+    Zombies left by a non-reaping PID 1 hold nothing and are not counted."""
+
+    def __init__(self, sid: int) -> None:
+        self.sid = sid
+        self.known: dict[int, bytes] = {}
+        self.at = 0.0
+
+    def scan(self) -> list[int]:
+        table = {}
+        for proc_stat in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                # proc(5): state, ppid, pgrp, session ... starttime (22nd field).
+                fields = proc_stat.read_bytes().rpartition(b")")[2].split()
+                table[int(proc_stat.parent.name)] = (fields[0], int(fields[1]), int(fields[3]),
+                                                     fields[19])  # fmt: skip
+            except (OSError, IndexError, ValueError):
+                continue
+        members = {pid for pid, (_, _, sid, _) in table.items() if sid == self.sid}
+        members |= {
+            pid for pid, start in self.known.items() if table.get(pid, (0, 0, 0, b""))[3] == start
+        }
+        grew = True
+        while grew:
+            children = {pid for pid, (_, ppid, _, _) in table.items() if ppid in members}
+            grew = not children <= members
+            members |= children
+        self.known = {pid: table[pid][3] for pid in members}
+        self.at = time.monotonic()
+        return [pid for pid in members if table[pid][0] not in (b"Z", b"X")]
+
+    def track(self) -> None:
+        if time.monotonic() - self.at >= TREE_EVERY_S:
+            self.scan()
+
+    def kill(self, sig: int) -> None:
+        for pid in self.scan():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, sig)
 
 
 class Container:
@@ -219,13 +251,6 @@ class Container:
             self.cidfile.unlink(missing_ok=True)
             with contextlib.suppress(OSError):
                 self.cidfile.parent.rmdir()
-
-
-def kill_session(sid: int, sig: int) -> None:
-    # The session, not the process group: a job-control shell puts workers in other groups.
-    for pid in session_members(sid):
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(pid, sig)
 
 
 def main() -> int:
@@ -313,7 +338,8 @@ def supervise(
     """Run the command's session to its end, its limit or the memory floor; returns its exit
     status, why it was stopped, how many of its processes outlived SIGKILL, and the lowest
     MemAvailable seen."""
-    sid = proc.pid
+    # The session, not the process group: a job-control shell puts workers in other groups.
+    tree = Tree(proc.pid)
     grace = min(10.0, hold_s / 2)
     hard = taken + hold_s
     stop = None
@@ -325,11 +351,12 @@ def supervise(
         free = memfloor.available() if floor else None
         if free is not None:
             low = free if low is None else min(low, free)
-        if stop is None and floor and (free is None or free < floor):
-            # No TERM grace: under memory pressure every second counts for the host.
+        tree.track()
+        if stop != "memory" and floor and (free is None or free < floor):
+            # No TERM grace, even during another stop's: every second counts for the host.
             stop = "memory"
             container.kill()
-            kill_session(sid, signal.SIGKILL)
+            tree.kill(signal.SIGKILL)
         if stop is None and cancel:
             stop = "killed"
         if stop is None and now >= hard - grace:
@@ -340,9 +367,9 @@ def supervise(
             if now >= hard or (termed_at is not None and now >= termed_at + grace):
                 # The container first: once its docker client is gone, nothing stops it.
                 container.kill()
-                kill_session(sid, signal.SIGKILL)
+                tree.kill(signal.SIGKILL)
             elif termed_at is None:
-                kill_session(sid, signal.SIGTERM)
+                tree.kill(signal.SIGTERM)
                 termed_at = now
             # A leader in uninterruptible sleep never exits: stop waiting for it.
             if now >= hard + CLEANUP_S:
@@ -351,14 +378,14 @@ def supervise(
     # Workers the command left in its session, or its container, would outlive the hold.
     if container.running():
         container.kill()
-    kill_session(sid, signal.SIGKILL)
+    tree.kill(signal.SIGKILL)
     end = time.monotonic() + CLEANUP_S
-    while (session_members(sid) or container.running()) and time.monotonic() < end:
+    while (tree.scan() or container.running()) and time.monotonic() < end:
         time.sleep(POLL_S)
     container.remove_cidfile()
     code = proc.returncode
     status = 128 - code if code is not None and code < 0 else (code if code is not None else 137)
-    return status, stop, len(session_members(sid)) + container.running(), low
+    return status, stop, len(tree.scan()) + container.running(), low
 
 
 if __name__ == "__main__":

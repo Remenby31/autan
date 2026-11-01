@@ -147,7 +147,7 @@ def test_a_signal_stops_the_command_and_is_recorded(lock):
 def test_fields_cannot_forge_records(lock):
     env = {**os.environ, "AUTAN_GPU_LOCK": str(lock), "AUTAN_AGENT": "a\tb\nc\\nd"}
     why = "job\n2026-01-01T00:00:00Z\ttake\tforged\u0085x\u2028y".encode() + b"\xff"
-    cmd = [str(WRAPPER).encode(), b"-m", why, b"--", b"echo", b"x\ny"]
+    cmd = [str(WRAPPER).encode(), b"-f", b"0G", b"-m", why, b"--", b"echo", b"x\ny"]
     assert subprocess.run(cmd, env=env, capture_output=True, check=False).returncode == 0
     rows = events(lock)
     assert [r[1] for r in rows] == ["wait", "take", "release"]
@@ -191,33 +191,56 @@ def mem_available() -> int:
     pytest.fail("no MemAvailable")
 
 
-# Real host memory, touched page by page: what a GB10 device allocation also consumes.
+# Real host memory, touched page by page: what a GB10 device allocation also consumes. The
+# allocator and its parent ignore TERM; the allocator runs in a session of its own (as
+# autan-bench's gated binary does), and writes its pid, then "done" once it has allocated.
 ALLOCATE = """
-import sys, time
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if sys.argv[-1] != "child":
+    sys.exit(subprocess.Popen([sys.executable, *sys.argv, "child"], start_new_session=True).wait())
+steps, out, linger, delay = int(sys.argv[1]), sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+open(out + ".pid", "w").write(str(os.getpid()))
+time.sleep(delay)
 chunks = []
-for _ in range(int(sys.argv[1])):
+for _ in range(steps):
     chunks.append(b"\\1" * (128 << 20))
     time.sleep(0.05)
-open(sys.argv[2], "w").write("done")
-time.sleep(float(sys.argv[3]))
+open(out, "w").write("done")
+time.sleep(linger)
 """
 
 
+def allocate(lock, floor, steps, out, linger, *, hold="60", delay="0"):
+    script = out.parent / "allocate.py"
+    script.write_text(ALLOCATE)
+    return wrapper(lock, "-m", "test", "-t", hold, "-f", floor, "--", sys.executable,
+                   str(script), str(steps), str(out), str(linger), delay)  # fmt: skip
+
+
 def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(lock, tmp_path):
-    # The floor sits 1.5 GiB below what is available now: 3 GiB crosses it, 256 MiB does not.
-    floor = f"{(mem_available() - (3 << 29)) >> 20}M"
+    # Each floor is taken from what is available just before (a shared host's memory moves):
+    # 1 GiB below it, 4 GiB of allocation crosses it; 2 GiB below it, 256 MiB does not.
+    def below_now(gib: int) -> str:
+        return f"{(mem_available() - (gib << 30)) >> 20}M"
+
     done = tmp_path / "done"
     start = time.monotonic()
-    greedy = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--",
-                     sys.executable, "-c", ALLOCATE, "24", str(done), "60")  # fmt: skip
+    greedy = allocate(lock, below_now(1), 32, done, 60)
     assert greedy.wait(timeout=60) == 71
-    assert time.monotonic() - start < 30
+    # At once: no TERM grace, which the allocator would sit out.
+    assert time.monotonic() - start < 8
     assert not done.exists()
+    assert not alive(pid_from(Path(f"{done}.pid")))
     assert [r[1] for r in events(lock)][-1] == "memory"
     assert free(lock)
 
-    modest = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--",
-                     sys.executable, "-c", ALLOCATE, "2", str(done), "0")  # fmt: skip
+    # The floor still holds during the grace of another stop (here the hold limit's).
+    late = allocate(lock, below_now(1), 32, done, 60, hold="6", delay="3.5")
+    assert late.wait(timeout=60) == 71
+    assert [r[1] for r in events(lock)][-1] == "memory"
+
+    modest = allocate(lock, below_now(2), 2, done, 0)
     assert modest.wait(timeout=60) == 0
     assert done.exists()
     assert [r[1] for r in events(lock)][-1] == "release"
@@ -268,10 +291,10 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock):
     subprocess.run(["docker", "pull", "-q", PYTHON_IMAGE], capture_output=True, check=True)
     label = f"autan-gpu-lock-test={os.getpid()}-{time.monotonic_ns()}"
     try:
-        floor = f"{(mem_available() - (3 << 29)) >> 20}M"
+        floor = f"{(mem_available() - (1 << 30)) >> 20}M"
         greedy = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--", "docker", "run",
-                         "--rm", "--label", label, PYTHON_IMAGE, "python", "-c", ALLOCATE, "24",
-                         "/tmp/done", "60")  # fmt: skip
+                         "--rm", "--label", label, PYTHON_IMAGE, "python", "-c", ALLOCATE, "32",
+                         "/tmp/done", "60", "0", "child")  # fmt: skip
         assert greedy.wait(timeout=90) == 71
         assert [r[1] for r in events(lock)][-1] == "memory"
         # PID 1 of the container ignores TERM: only `docker kill` stops it at the limit.

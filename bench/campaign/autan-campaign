@@ -25,6 +25,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -194,6 +195,20 @@ def watch(name: str, floor: int) -> int:
             log(name, f"{memfloor.show(memfloor.available())} of host memory available, below "
                       f"--free {memfloor.show(floor)}: not started")  # fmt: skip
             return 1
+        # Its own thread: the loop below waits on docker calls (up to 30 s each), the floor
+        # cannot. It kills the container at once; the loop then removes it.
+        breached = threading.Event()
+
+        def guard() -> None:
+            while not stopping and not breached.is_set():
+                if memfloor.below(floor):
+                    breached.set()
+                    with contextlib.suppress(subprocess.SubprocessError, OSError):
+                        docker("kill", container, check=False)
+                    return
+                time.sleep(POLL_S)
+
+        threading.Thread(target=guard, daemon=True).start()
         # "running" is published before the start, so that a measurement that takes the lock
         # in between waits for the freeze instead of measuring beside the campaign.
         publish(name, "running")
@@ -210,15 +225,14 @@ def watch(name: str, floor: int) -> int:
         busy_since: float | None = None
         while not stopping:
             heartbeat.touch()
+            if breached.is_set():
+                # Frozen or not: its memory is what the host needs back.
+                log(name, f"host memory available fell below --free {memfloor.show(floor)}")
+                return 1
             if not cgroup.exists():
                 ended = True
                 log(name, "campaign ended; `docker logs` keeps its output")
                 return 0
-            if memfloor.below(floor):
-                # Frozen or not: its memory is what the host needs back.
-                log(name, f"host memory available fell to {memfloor.show(memfloor.available())}, "
-                          f"below --free {memfloor.show(floor)}")  # fmt: skip
-                return 1
             wanted = lock_in_use(LOCK, Path("/proc/locks").read_text())
             if wanted and not frozen:
                 docker("pause", container)

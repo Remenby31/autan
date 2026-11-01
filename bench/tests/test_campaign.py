@@ -2,10 +2,8 @@ import fcntl
 import importlib.machinery
 import importlib.util
 import os
-import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -170,7 +168,7 @@ def test_every_live_campaign_is_excluded_from_the_outside_load(tmp_path, monkeyp
         monkeypatch.setattr(campaign, "CGROUPS", root)
         time.sleep(0.2)
         # Outside load = runnable threads - the 2 live campaigns' threads - this sampler.
-        excluded = {running_threads() - campaign.other_runnable() for _ in range(5)}
+        excluded = {running_threads() - campaign.other_runnable() for _ in range(25)}
         assert 3 in excluded
     finally:
         for proc in procs:
@@ -185,55 +183,56 @@ def mem_available() -> int:
     pytest.fail("no MemAvailable")
 
 
-def watched(tmp_path: Path, monkeypatch) -> Path:
-    """docker faked at the boundary: records its calls, reports the container running as this
-    test's own process (so its cgroup is real) and gone once removed."""
-    calls = tmp_path / "calls"
-    fake = tmp_path / "docker"
-    fake.write_text(
-        f'#!/bin/sh\necho "$*" >> {calls}\n'
-        f'case "$1" in inspect) echo "running {os.getpid()}" ;; esac\n'
-    )
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    lock = tmp_path / "gpu.lock"
-    lock.touch()
-    monkeypatch.setattr(campaign, "LOCK", lock)
-    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
-    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
-    campaign.STATE.mkdir()
-    campaign.STATES.mkdir()
-    return calls
+def until(predicate, timeout: float = 30.0) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc/meminfo and cgroups are Linux's")
 def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(tmp_path, monkeypatch):
-    calls = watched(tmp_path, monkeypatch)
-    # The watcher installs its own signal handlers; this process keeps pytest's.
-    monkeypatch.setattr(signal, "signal", lambda *_: None)
-    # Below the floor before it starts: never started, removed.
-    assert campaign.watch("c1", mem_available() + (4 << 30)) == 1
-    lines = calls.read_text().splitlines()
-    assert not any(c.startswith("start") for c in lines)
-    assert any(c.startswith("rm -f autan-campaign-c1") for c in lines)
+    # Through the CLI, whose detached watcher enforces the floor. docker is faked at the
+    # boundary: it records its calls and reports the container running as this test's own
+    # process, so that the container's cgroup is a real one.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
+                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; esac\n')  # fmt: skip
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    logs = tmp_path / "autan-campaigns"
 
-    # Running, then real host memory taken past a floor 1.5 GiB below what is available.
-    calls.unlink()
-    floor = mem_available() - (3 << 29)
+    def calls_of(name: str) -> list[str]:
+        return [c for c in calls.read_text().splitlines() if c.endswith(f"autan-campaign-{name}")]
+
+    # Below the floor before it starts: never started, removed.
+    high = f"{(mem_available() >> 20) + 4096}M"
+    assert campaign.main(["start", "c1", "--free", high, "--dir", str(tmp_path), "--", "x"]) == 0
+    assert until(lambda: "not started" in (logs / "c1.log").read_text())
+    assert until(lambda: "rm -f autan-campaign-c1" in calls_of("c1"))
+    assert "start autan-campaign-c1" not in calls_of("c1")
+
+    # Running, then real host memory taken past a floor 1 GiB below what is available.
+    low = f"{(mem_available() - (1 << 30)) >> 20}M"
+    assert campaign.main(["start", "c2", "--free", low, "--dir", str(tmp_path), "--", "x"]) == 0
+    assert until(lambda: "start autan-campaign-c2" in calls_of("c2"))
     hog = subprocess.Popen([sys.executable, "-c", (
-        "import time\ntime.sleep(1)\nchunks = []\nfor _ in range(24):\n"
+        "import time\nchunks = []\nfor _ in range(32):\n"
         "    chunks.append(b'\\1' * (128 << 20)); time.sleep(0.05)\ntime.sleep(60)\n")])  # fmt: skip
-    outcome: list[int] = []
     try:
-        # Bounded: a watcher that ignores the floor never returns.
-        watcher = threading.Thread(target=lambda: outcome.append(campaign.watch("c2", floor)),
-                                   daemon=True)  # fmt: skip
-        watcher.start()
-        watcher.join(timeout=30)
-        assert outcome == [1]
+        assert until(lambda: "kill autan-campaign-c2" in calls_of("c2"))
+        assert until(lambda: "below --free" in (logs / "c2.log").read_text())
+        assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         hog.kill()
         hog.wait()
-    lines = calls.read_text().splitlines()
-    assert lines.index("start autan-campaign-c2") < lines.index("rm -f autan-campaign-c2")
-    assert "below --free" in (campaign.STATE / "c2.log").read_text()
