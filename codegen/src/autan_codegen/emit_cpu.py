@@ -335,6 +335,29 @@ def cell_stores(lm: LoopModel, indent: str) -> list[str]:
     return lines
 
 
+def face_ends(kind: str, indent: str) -> list[str]:
+    """`l` (and `r`) of face f in its global orientation: an interior face listed in
+    Topology::face_reversed has its local owner on the global right (`rev`)."""
+    if kind != "face":
+        return [f"{indent}const index_t l = d.topo.owner[f];"]
+    return [
+        (
+            f"{indent}[[maybe_unused]] const bool rev = "
+            "d.topo.face_reversed != nullptr && d.topo.face_reversed[f] != 0;"
+        ),
+        f"{indent}const index_t l = rev ? d.topo.neighbour[f] : d.topo.owner[f];",
+        f"{indent}const index_t r = rev ? d.topo.owner[f] : d.topo.neighbour[f];",
+    ]
+
+
+def global_left(face: str = "f") -> str:
+    """C++ expression: the global left cell of interior face `f`."""
+    return (
+        f"((d.topo.face_reversed != nullptr && d.topo.face_reversed[{face}] != 0) "
+        f"? d.topo.neighbour[{face}] : d.topo.owner[{face}])"
+    )
+
+
 def boundary_write_body(lm: LoopModel, indent: str) -> list[str]:
     """Body of a boundary loop writing face datasets, for boundary face f."""
     lines = [f"{indent}[[maybe_unused]] const index_t l = d.topo.owner[f];"]
@@ -371,17 +394,26 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
     e.w("  using A [[maybe_unused]] = typename P::accum;")
     n = n_out(lm) if lm.kind != "reduce_adjoint" else 0
     if lm.kind in ("face", "boundary"):
+        # The scatter order follows the local numbering: refused on a rank-independent topology.
+        e.w("  if (d.topo.rank_independent) {")
+        e.w(
+            '    throw std::invalid_argument("E1109: a rank-independent topology needs a gather '
+            'strategy (store-gather or gather-recompute)");'
+        )
+        e.w("  }")
         lo, hi = (
             ("0", "d.topo.n_owned_interior_faces")
             if lm.kind == "face"
             else ("d.topo.n_interior_faces", "d.topo.n_owned_faces")
         )
         e.w(f"  for (index_t f = {lo}; f < {hi}; ++f) {{")
-        e.w("    const index_t l = d.topo.owner[f];")
-        if lm.kind == "face":
-            e.w("    const index_t r = d.topo.neighbour[f];")
+        for s in face_ends(lm.kind, "    "):
+            e.w(s)
         e.w(f"    typename P::compute out[{n}];")
-        args = call_args(lm.sig, loop.bindings, {"left": "l", "right": "r", "direct": "f"})
+        args = call_args(
+            lm.sig, loop.bindings, {"left": "l", "right": "r", "direct": "f"},
+            reversible=lm.kind == "face",
+        )  # fmt: skip
         e.w(f"    {lm.fn.name}<P>({', '.join([*args, 'out'])});")
         for s in jacobian_lines(lm, args, "f", "    "):
             e.w(s)
@@ -420,10 +452,85 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
     e.w()
 
 
+def signed(sign: int | None, v: str) -> str:
+    """`v` times an Inc sign (+1, -1 or another integer; none: zero)."""
+    if not sign:
+        return "A(0)"
+    if sign == 1:
+        return v
+    if sign == -1:
+        return f"-{v}"
+    return f"A({sign}) * {v}"
+
+
+def emit_gather(e: Emitter, lm: LoopModel) -> None:
+    """`name(d, strategy)` of a face or boundary loop: store_gather and gather_recompute make
+    each cell (owned or ghost) evaluate its own faces, in Topology::cell_faces order, and add
+    their contributions in that order: the deterministic order of the GPU gathers, so a cell's
+    sum does not depend on the face numbering when cell_faces is ordered by a global key. The
+    other strategies are the scatter loop `name(d)`, which they all equal on one thread."""
+    n = n_out(lm)
+    e.w("template <class P>")
+    e.w(f"void {lm.name}(const Data<P>& d, const ::autan::kernels::Strategy strategy) {{")
+    e.w("  using A [[maybe_unused]] = typename P::accum;")
+    e.w("  if (strategy != ::autan::kernels::Strategy::store_gather &&")
+    e.w("      strategy != ::autan::kernels::Strategy::gather_recompute) {")
+    e.w(f"    {lm.name}(d);")
+    e.w("    return;")
+    e.w("  }")
+    e.w("  for (index_t c = 0; c < d.topo.n_cells; ++c) {")
+    e.w(f"    A acc[{n}] = {{}};")
+    e.w(
+        "    for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {"
+    )
+    e.w("      const index_t f = d.topo.cell_faces[k];")
+    skip = (
+        "f >= d.topo.n_owned_interior_faces"
+        if lm.kind == "face"
+        else "f < d.topo.n_interior_faces || f >= d.topo.n_owned_faces"
+    )
+    e.w(f"      if ({skip}) {{")
+    e.w("        continue;")
+    e.w("      }")
+    for s in face_ends(lm.kind, "      "):
+        e.w(s)
+    e.w(f"      typename P::compute out[{n}];")
+    args = call_args(
+        lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"},
+        reversible=lm.kind == "face",
+    )  # fmt: skip
+    e.w(f"      {lm.fn.name}<P>({', '.join([*args, 'out'])});")
+    if lm.jac_fns:
+        e.w("      if (l == c) {")
+        for s in jacobian_lines(lm, args, "f", "        "):
+            e.w(s)
+        e.w("      }")
+    if lm.kind == "face":
+        e.w("      const bool left = l == c;")
+    for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
+        assert isinstance(o, dsl.Inc)
+        for c in range(o.dataset.type.size):
+            k = off + c
+            lv = signed(o.left, f"A(out[{k}])")
+            if lm.kind == "face":
+                rv = signed(o.right, f"A(out[{k}])")
+                e.w(f"      acc[{k}] += left ? {lv} : {rv};")
+            else:
+                e.w(f"      acc[{k}] += {lv};")
+    e.w("    }")
+    for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True):
+        for c in range(o.dataset.type.size):
+            e.w(f"    {at(o.dataset, 'c', c)} += acc[{off + c}];")
+    e.w("  }")
+    e.w("}")
+    e.w()
+
+
 def emit_cpu_header(m: Module) -> str:
     e = Emitter(f"{m.name}_cpu.hpp", line_directives=False)
     e.w(f"// Generated by autan_codegen from {m.path.name}. Do not edit.")
     e.w("#pragma once")
+    e.w('#include "autan/kernels/strategy.hpp"')
     e.w(f'#include "{m.name}.hpp"')
     e.w()
     e.w(f"namespace autan::kernels::{m.name}::cpu {{")
@@ -432,5 +539,7 @@ def emit_cpu_header(m: Module) -> str:
     e.w()
     for lm in m.loops:
         emit_loop(e, lm)
+        if lm.kind in ("face", "boundary"):
+            emit_gather(e, lm)
     e.w(f"}}  // namespace autan::kernels::{m.name}::cpu")
     return e.text()
