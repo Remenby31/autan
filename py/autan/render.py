@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import re
+import tokenize
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -36,12 +38,16 @@ _LIBRARY = [
 
 
 def to_python(spec: CaseSpec) -> str:
-    value = _Values()
-    body = _statements(spec, value)
+    body = "\n".join(_statements(spec, _Values())) + "\n"
+    names = {
+        token.string
+        for token in tokenize.generate_tokens(io.StringIO(body).readline)
+        if token.type == tokenize.NAME
+    }
     imports = ["import autan"]
-    if value.units:
-        imports.append(f"from autan.units import {', '.join(_sorted_names(value.units))}")
-    return "\n".join([*imports, "", *body]) + "\n"
+    if used := names & set(_EXPORTED_UNITS):
+        imports.append(f"from autan.units import {', '.join(_sorted_names(used))}")
+    return "\n".join([*imports, "", body])
 
 
 def _sorted_names(names: Iterable[str]) -> list[str]:
@@ -113,9 +119,6 @@ def _same(a: Any, b: Any) -> bool:
 
 
 class _Values:
-    def __init__(self) -> None:
-        self.units: set[str] = set()
-
     def __call__(self, value: Any) -> _Expr:
         if isinstance(value, pint.Quantity):
             return self.quantity(value)
@@ -158,7 +161,6 @@ class _Values:
         unit = text.split(" ", 1)[1]
         if not _EXPORTED_TEXT.fullmatch(unit):
             return _string(text)
-        self.units |= set(re.findall(r"[A-Za-z]+", unit))
         magnitude = _number(float(quantity.magnitude))
         expression = unit.replace(" ** ", "**")
         if expression.startswith("1 / "):
@@ -214,7 +216,15 @@ _Expr = str | _Call | _Quantity
 
 def _width(text: str) -> int:
     # Display width, as ruff measures lines: East Asian wide characters take two columns.
-    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+    # Combining marks take none.
+    return sum(
+        0
+        if unicodedata.category(char) in ("Mn", "Me")
+        else 2
+        if unicodedata.east_asian_width(char) in "WF"
+        else 1
+        for char in text
+    )
 
 
 def _flat(expr: _Expr | _Keyword) -> str:
@@ -249,7 +259,8 @@ def _layout(expr: _Expr | _Keyword, indent: int, column: int, tail: int) -> str:
         prefix = f"{expr.name}="
         return prefix + _layout(expr.value, indent, column + len(prefix), tail)
     if expr.receiver and (not expr.arguments or column + _width(_head(expr)) + 1 > WIDTH):
-        receiver = _layout(expr.receiver, indent, column, len(expr.head) + 1)
+        opening = len(expr.head) + (1 if expr.arguments else 2)
+        receiver = _layout(expr.receiver, indent, column, opening)
         last = _width(receiver.rsplit("\n", 1)[-1])
         if "\n" not in receiver:
             last += column
