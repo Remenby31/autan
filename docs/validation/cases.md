@@ -33,6 +33,22 @@ Pointers only (too large to fetch): HLPW-5 (CRM-HL, finest grids 2×10⁸–10�
 
 Offline tests check the checksum and member errors through `file://` URLs and each parser on snippets written from its format description. Network tests (`-m network`) fetch every file of every case, verify it, parse it, check grid dimensions against the file names, compare the values transcribed in the catalogue from the TMR pages with the downloaded data files (flat plate cf and CD for CFL3D and FUN3D, NACA 0012 CL and CD), reproduce with `autan_vv.order.richardson` the orders TMR publishes for the flat plate (cf p = 1.98 and 1.34, CD p = 1.75 and 0.80), and decode RAE 2822 case 9 from the 1981 tape to its published conditions (M = 0.73, α = 3.19°, corrected 2.79°, Re = 6.5×10⁶).
 
+## NACA 0012 inviscid
+
+The three M2 conditions of Vassberg and Jameson (2010), on the [O-mesh family](meshes.md#naca-0012-o-meshes) (source `vv/src/autan_vv/cases/naca0012.py`); there is nothing to download.
+
+```sh
+autan-vv meshes naca0012 --levels 32,64,128,256,512 --out meshes/naca0012
+autan-vv m2-cases naca0012 --family meshes/naca0012 --out cases/naca0012   # one case per condition and level
+autan-vv forces naca0012 runs/<one run per level> --out study.json           # exit 1 if a gate fails
+```
+
+- **Cases** `m050-a125`, `m080-a000`, `m080-a125` (M, α in hundredths of a degree): Euler, FP64, slip `airfoil`, `farfield`, symmetry `back` and `front`, steady to 10 orders of residual drop; forces on the airfoil with reference chord 1 m, area chord × span and moments about the quarter chord (`cmy` is the nose-up pitching moment).
+- **Study.** The runs must be one family (`V0802`: same case apart from name and mesh, commit, backend, precision, distinct meshes), at least three, all `converged` (`V0803`). h = N^(−1/2) ∝ 1/NC. CL, CD and CM are extrapolated from the three finest levels with `autan_vv.order.richardson`, which for a ratio of 2 is the paper's eqs. 20–24; a coefficient that does not converge monotonically gets the code of its failure instead of an estimate, and its gates fail. The report (`autan.vv-force-study/1`) also gives the paper's eq. 25 order, meaningful for the subcritical CD whose limit is zero. It is evidence only when no run comes from the fake backend.
+- **Gates** of [acceptance.md](acceptance.md#m2--compressible-euler): `naca0012-m080-a000-cd`, `naca0012-m080-a125-cl`, `naca0012-m080-a125-cd`, `naca0012-m050-a125-cd`.
+- **Tests** (`vv/tests/test_naca0012.py`): the geometry to every digit of the paper's eqs. 4–8 and 11; the continuum and order of the paper's Tables 2, 3 and 9 from their three finest grids; the gates on FLO82's sequences, including its CD rise from 256² to 512² at M 0.5, which fails the monotonic test; a family of fake-backend runs read back through `autan.Results`.
+- **Far field.** The CL band of the M 0.8, α 1.25° gate comes from point-vortex far-field runs; the Euler far field takes the uniform freestream. The correction is requested from the Euler lane in #186.
+
 ## Licences
 
 TMR repository: CC0-1.0. nasa.gov archives and NPARC (grc.nasa.gov) pages: US Government works with no stated restriction. Nothing is vendored: files are fetched by hash at use time.
@@ -43,4 +59,5 @@ TMR repository: CC0-1.0. nasa.gov archives and NPARC (grc.nasa.gov) pages: US Go
 - B. Diskin, J. L. Thomas, C. L. Rumsey and A. Schwöppe, Grid convergence for turbulent flows, AIAA 2015-1746; *AIAA J.* 54(9):2563–2588, 2016. doi:10.2514/1.J054555
 - V. Schmitt and F. Charpin, Pressure distributions on the ONERA-M6-wing at transonic Mach numbers, AGARD AR-138, 1979.
 - P. H. Cook, M. A. McDonald and M. C. P. Firmin, Aerofoil RAE 2822 — pressure distributions, and boundary layer and wake measurements, AGARD AR-138, 1979.
+- J. C. Vassberg and A. Jameson, In pursuit of grid convergence for two-dimensional Euler solutions, *J. Aircraft* 47(4):1152–1166, 2010. doi:10.2514/1.46737
 - C. L. Ladson, NASA TM-4074, 1988; N. Gregory and C. L. O'Reilly, ARC R&M 3726, 1970; W. J. McCroskey, NASA TM-100019, 1987; I. H. Abbott and A. E. von Doenhoff, *Theory of Wing Sections*, Dover, 1959.
