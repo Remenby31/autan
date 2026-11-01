@@ -10,7 +10,7 @@ Un calcul est une exécution d'un cas sur un maillage. Il écrit un répertoire 
 
 ![États d'un calcul](../assets/diagrams/run-lifecycle.svg)
 
-`autan plan` passe d'abord. S'il trouve une erreur, rien n'est écrit ; `autan-run` n'écrit rien non plus quand sa build n'a pas de physique pour le cas (`E0706`). Sinon le calcul démarre dans l'état `running` et se termine dans un seul état :
+`autan plan` passe d'abord. S'il trouve une erreur, rien n'est écrit ; `autan-run` n'écrit rien non plus quand sa version compilée ne prend pas en charge la physique du cas (`E0706`). Sinon le calcul démarre dans l'état `running` et se termine dans un seul état :
 
 | État | Signification |
 |---|---|
