@@ -15,7 +15,7 @@
 | METIS | 5.1.0 | Ubuntu 24.04 | 32-bit `idx_t` |
 | PT-Scotch | 7.0.17 | source | 64-bit `SCOTCH_Num`; no METIS compatibility library, so METIS symbols come only from METIS |
 | OSU micro-benchmarks | 7.5.2 | source | CUDA buffers, on `PATH` |
-| Python, uv | 3.12, 0.13.0 | Ubuntu 24.04, `ghcr.io/astral-sh/uv` | `uv` never downloads an interpreter |
+| Python, uv | 3.12, 0.13.6 | Ubuntu 24.04, `ghcr.io/astral-sh/uv` | `uv` never downloads an interpreter; every `setup-uv` step in `.github/workflows/` pins the same uv: change them together |
 
 Libraries built from source install to `/opt/autan`, which is on `PATH`, `CMAKE_PREFIX_PATH` and the loader path. Every download is checked against a SHA-256 written in the Dockerfile; to upgrade a component, change its version and checksum together. All components carry permissive or weak-copyleft licences (BSD, Apache-2.0, zlib, CeCILL-C); ParMETIS is excluded by its licence.
 
