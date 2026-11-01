@@ -110,3 +110,11 @@ def test_non_finite_inputs_are_rejected() -> None:
         with pytest.raises(VVError) as err:
             call()
         assert err.value.code in {"V0101", "V0103"}
+
+
+def test_fit_survives_data_far_from_the_asymptotic_range() -> None:
+    # Huge apparent order: the constant overflows, the order must still be reported.
+    h = [1 / 64, 1 / 65, 1 / 66, 1 / 67]
+    fit = fit_order(h, [1.0, 1e-2, 1e-4, 1e-6])
+    assert fit.order > 100.0
+    assert math.isinf(fit.constant)

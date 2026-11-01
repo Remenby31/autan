@@ -15,10 +15,14 @@ internal_net=autan-runner-internal
 egress_net=autan-runner-egress
 state=autan-runner-state
 work=autan-runner-work
-lock=/tmp/cfd-gpu.lock
+lock_dir=/home/admin/autan-gpu
+lock=$lock_dir/gpu.lock
 here=$(cd "$(dirname "$0")" && pwd)
 
 prepare() {
+  # Not in sticky /tmp: there fs.protected_regular stops other uids from opening a file they
+  # do not own with O_CREAT, which flock(1) uses.
+  install -d -m 0755 "$lock_dir"
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
   # Internal: no route out. Isolated gateway: the host gets no address on this bridge, so a job
   # cannot reach host services listening on all interfaces.
@@ -47,7 +51,7 @@ runner_args=(
   -e AUTAN_HOST="$name"
   -v "$state":/state
   -v "$work":/work
-  -v "$lock":"$lock"
+  -v "$lock_dir":"$lock_dir":ro
   --log-opt max-size=20m --log-opt max-file=3
 )
 

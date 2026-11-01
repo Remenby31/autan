@@ -102,5 +102,5 @@ Need a change in someone else's area? Say so in your PR description instead of e
 
 - Two DGX Spark (GB10, 128 GB unified memory, CUDA 13.0): `ssh spark` and `ssh spark-5359` over Tailscale. No direct ConnectX link between them: multi-node runs are for correctness only.
 - They are shared machines running other Docker stacks. Never stop, modify or inspect other containers. Build and run inside our own containers (`docker/`). No sudo.
-- Serialize GPU benchmarks with `flock /tmp/cfd-gpu.lock <cmd>` and check that the GPU is idle before timing. Never wait for a time slot; queue on the lock.
+- Serialize GPU benchmarks with `flock /home/admin/autan-gpu/gpu.lock <cmd>` (mount `/home/admin/autan-gpu` read-only at the same path in containers; see `docs/infra/bench.md`) and check that the GPU is idle before timing. Never wait for a time slot; queue on the lock.
 - GB10 FP64 throughput is very low: design for FP32 compute with FP64 accumulation where needed.

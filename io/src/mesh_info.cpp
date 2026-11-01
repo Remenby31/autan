@@ -113,6 +113,19 @@ std::size_t shape_index(const Mesh& mesh, index_t cell, std::vector<index_t>& no
 
 }  // namespace
 
+MeshInfoZones meshinfo_zones(const Mesh& mesh) {
+  MeshInfoZones zones;
+  for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+    if (mesh.face_zones()[z].boundary) zones.boundary.push_back(static_cast<index_t>(z));
+  }
+  std::vector<char> used(mesh.cell_zones().size(), 0);
+  for (const index_t z : mesh.cell_zone()) used[at(z)] = 1;
+  for (std::size_t z = 0; z < used.size(); ++z) {
+    if (used[z] != 0) zones.cell.push_back(static_cast<index_t>(z));
+  }
+  return zones;
+}
+
 std::string mesh_hash(const fs::path& path) {
   picosha2::hash256_one_by_one hasher;
   std::error_code ec;
@@ -145,11 +158,12 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
     max_faces = std::max(max_faces, mesh.cell_faces(c).size());
   }
 
+  const MeshInfoZones zones = meshinfo_zones(mesh);
   Json boundary = Json::array();
   const auto offsets = mesh.boundary_zone_offsets();
-  for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+  for (const index_t zi : zones.boundary) {
+    const auto z = at(zi);
     const FaceZone& zone = mesh.face_zones()[z];
-    if (!zone.boundary) continue;
     boundary.push_back(Json{{"name", zone.name},
                             {"type", name_or_null(bc_type_name(zone.kind))},
                             {"native_type", string_or_null(zone.bc_type)},
@@ -158,10 +172,9 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
 
   std::vector<std::int64_t> cells_in_zone(mesh.cell_zones().size(), 0);
   for (const index_t z : mesh.cell_zone()) ++cells_in_zone[at(z)];
-  // MeshInfo lists only cell zones that hold cells.
   Json cell_zones = Json::array();
-  for (std::size_t z = 0; z < mesh.cell_zones().size(); ++z) {
-    if (cells_in_zone[z] == 0) continue;
+  for (const index_t zi : zones.cell) {
+    const auto z = at(zi);
     const CellZone& zone = mesh.cell_zones()[z];
     const char* type = zone.kind == CellKind::fluid   ? "fluid"
                        : zone.kind == CellKind::solid ? "solid"
