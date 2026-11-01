@@ -145,6 +145,7 @@ struct fp32 {
   typedef float grad;
   typedef float residual;
   typedef float geom;
+  typedef float geom_value;
   typedef float jac;
   typedef float param;
   typedef float compute;
@@ -156,6 +157,7 @@ struct fp32_acc64 {
   typedef float grad;
   typedef df64 residual;
   typedef df64 geom;
+  typedef float geom_value;
   typedef float jac;
   typedef df64 param;
   typedef float compute;

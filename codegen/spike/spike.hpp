@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "autan/core/error.hpp"
@@ -52,25 +53,52 @@ int guarded(char* err, std::size_t len, F&& body) {
   }
 }
 
-/// Geometry arrays converted to the policy's Geom storage type.
+/// One geometry array in both types a dataset may be stored in: the policy's Geom type, and its
+/// geom_value type (Geom datasets no body reads through rel(); kernel-generator.md, Precision).
+template <class P>
+struct GeomArray {
+  // `value` stays empty when the two types coincide (fp64, fp32): `geom` serves both.
+  static constexpr bool same = std::is_same_v<typename P::geom, typename P::geom_value>;
+  std::vector<typename P::geom> geom;
+  std::vector<typename P::geom_value> value;
+  explicit GeomArray(const std::vector<double>& v)
+      : geom(autan::kernels::converted<typename P::geom>(v)),
+        value(same ? std::vector<typename P::geom_value>{}
+                   : autan::kernels::converted<typename P::geom_value>(v)) {}
+  template <class T>
+  [[nodiscard]] const T* as() const {
+    if constexpr (std::is_same_v<T, typename P::geom>) {
+      return geom.data();
+    } else {
+      return value.data();
+    }
+  }
+};
+
+/// Geometry arrays for the generated Data<P> structs; bind() picks the stored type.
 template <class P>
 struct GeomCopy {
-  using G = typename P::geom;
-  std::vector<G> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
-      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
+  GeomArray<P> face_area, face_centroid, face_moment, face_normal, face_area_magnitude, face_r_left,
+      face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
   explicit GeomCopy(const autan::kernels::PackedGeometry& g)
-      : face_area(autan::kernels::converted<G>(g.face_area)),
-        face_centroid(autan::kernels::converted<G>(g.face_centroid)),
-        face_moment(autan::kernels::converted<G>(g.face_moment)),
-        face_normal(autan::kernels::converted<G>(g.face_normal)),
-        face_area_magnitude(autan::kernels::converted<G>(g.face_area_magnitude)),
-        face_r_left(autan::kernels::converted<G>(g.face_r_left)),
-        face_r_right(autan::kernels::converted<G>(g.face_r_right)),
-        cell_centroid(autan::kernels::converted<G>(g.cell_centroid)),
-        cell_volume(autan::kernels::converted<G>(g.cell_volume)),
-        lsq_weight(autan::kernels::converted<G>(g.lsq_weight)),
-        stencil_lsq_weight(autan::kernels::converted<G>(g.stencil_lsq_weight)) {}
+      : face_area(g.face_area),
+        face_centroid(g.face_centroid),
+        face_moment(g.face_moment),
+        face_normal(g.face_normal),
+        face_area_magnitude(g.face_area_magnitude),
+        face_r_left(g.face_r_left),
+        face_r_right(g.face_r_right),
+        cell_centroid(g.cell_centroid),
+        cell_volume(g.cell_volume),
+        lsq_weight(g.lsq_weight),
+        stencil_lsq_weight(g.stencil_lsq_weight) {}
 };
+
+/// Points a Data<P> geometry member at the array of its stored type.
+template <class T, class A>
+void bind(const T*& member, const A& array) {
+  member = array.template as<T>();
+}
 
 /// Calls f with the policy object named by `policy`; throws for an unknown name.
 template <class F>

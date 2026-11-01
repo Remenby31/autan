@@ -52,6 +52,7 @@ struct fp64 {
   using grad = double;
   using residual = double;
   using geom = double;
+  using geom_value = double;  // Geom data that reach bodies only as values
   using param = double;
   using jac = double;
   using compute = double;
@@ -64,6 +65,7 @@ struct fp32_acc64 {
   using grad = float;
   using residual = double;
   using geom = double;
+  using geom_value = float;  // Geom data that reach bodies only as values
   using param = double;
   using jac = float;
   using compute = float;
@@ -76,6 +78,7 @@ struct fp32 {
   using grad = float;
   using residual = float;
   using geom = float;
+  using geom_value = float;  // Geom data that reach bodies only as values
   using param = float;
   using jac = float;
   using compute = float;
@@ -89,6 +92,7 @@ struct complex_step {
   using grad = std::complex<double>;
   using residual = std::complex<double>;
   using geom = double;
+  using geom_value = double;  // Geom data that reach bodies only as values
   using param = double;
   using jac = std::complex<double>;
   using compute = std::complex<double>;
