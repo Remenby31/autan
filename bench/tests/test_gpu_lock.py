@@ -61,3 +61,19 @@ def test_gpu_lock_waits_behind_an_announced_ci_job(tmp_path, monkeypatch):
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         with gpu_lock(lock, timeout_s=0.5) as waited:
             assert waited < 0.1
+
+
+def test_a_pull_request_s_ci_job_waits_behind_main(tmp_path, monkeypatch):
+    lock = tmp_path / "gpu.lock"
+    main = tmp_path / "main.lock"
+    main.touch()
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    with main.open() as announced:
+        fcntl.flock(announced, fcntl.LOCK_SH)
+        monkeypatch.setenv("GITHUB_REF", "refs/pull/7/merge")
+        with pytest.raises(BenchError) as err, gpu_lock(lock, timeout_s=0.5):
+            pass
+        assert err.value.code == Code.LOCK_TIMEOUT
+        monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+        with gpu_lock(lock, timeout_s=0.5) as waited:
+            assert waited < 0.1

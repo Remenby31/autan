@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Box, Copy } from "lucide-react";
+import { Box, Copy, FilePlus2 } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
@@ -115,6 +115,13 @@ function RunView() {
               }
             >
               Copy Run Id
+            </Button>
+            <Button
+              size="sm"
+              icon={<FilePlus2 className="size-4" />}
+              onClick={() => void navigate({ to: "/cases/new", search: { run: runId } })}
+            >
+              Edit a copy
             </Button>
             {hasSolution ? (
               <Button
@@ -434,6 +441,24 @@ function Facts({
             </span>
           ),
         },
+        ...(run.timing
+          ? [
+              {
+                label: "Iteration cost",
+                value: (
+                  <span className="flex flex-col" data-testid="timing">
+                    <span className="font-mono tabular-nums">
+                      {run.timing.ns_per_cell_iteration.toPrecision(3)} ns per cell
+                    </span>
+                    <span className="text-fg-3 text-sm tabular-nums">
+                      {run.timing.solve_seconds.toPrecision(3)} s solving of{" "}
+                      {run.timing.wall_seconds.toPrecision(3)} s
+                    </span>
+                  </span>
+                ),
+              },
+            ]
+          : []),
         { label: "Started", value: <RelativeTime iso={run.started} /> },
         ...(run.start
           ? [

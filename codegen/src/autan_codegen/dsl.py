@@ -191,6 +191,7 @@ class Body:
     """A pointwise function in the restricted subset; parsed lazily into the IR."""
 
     fn: Callable[..., Any]
+    compute: str = "compute"
 
     @property
     def name(self) -> str:
@@ -207,9 +208,18 @@ class Body:
         )
 
 
-def pointwise(fn: Callable[..., Any]) -> Body:
-    """Declare a pointwise body. Its source is parsed into the generator's IR."""
-    return Body(fn)
+def pointwise(fn: Callable[..., Any] | None = None, *, compute: str = "compute") -> Any:
+    """Declare a pointwise body. Its source is parsed into the generator's IR.
+
+    `@pointwise(compute="accum")` computes the body in the accumulation type of the policy
+    instead of the compute type (FP64 under fp32+acc64), for bodies whose arguments are all
+    passive (blocks, geometry, parameters) in cell loops.
+    """
+    if compute not in ("compute", "accum"):
+        raise CodegenError(Code.TYPE_MISMATCH, f"compute={compute!r}: 'compute' or 'accum'")
+    if fn is None:
+        return lambda f: Body(f, compute)
+    return Body(fn, compute)
 
 
 # ---------------------------------------------------------------------------- loops
@@ -410,6 +420,5 @@ def _intrinsic(*_: object) -> object:
     raise CodegenError(Code.UNSUPPORTED_CONSTRUCT, "DSL intrinsics only exist inside parsed bodies")
 
 
-dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = outer = Vec3 = Vec5 = (
-    _intrinsic
-)
+dot = cross = norm = sqrt = exp = log = sin = cos = rel = _intrinsic
+transpose = inverse = outer = Vec3 = Vec5 = _intrinsic
