@@ -33,6 +33,7 @@
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/runtime/diagnostic.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
 #include "run_directory.hpp"
@@ -1236,8 +1237,8 @@ class Run final : public Log {
     // Steady convergence is measured against iteration 1 of the original run
     // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
-    std::vector<char> exempt;
-    double floor = 0.0;
+    RoundOffExemption exempt(
+        equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -1320,39 +1321,26 @@ class Run final : public Log {
       }
       if (steady) {
         if (first.empty()) first = report.residuals;
-        // case-schema.md#time: an equation whose residual at iteration 1 is
-        // below 1e-12 of the largest is exempt while it stays below that
-        // floor; once above, it must drop like the others (W0710, once).
-        if (exempt.empty()) {
-          floor = 1e-12 * *std::ranges::max_element(first);
-          // Equations that left their floor earlier in a continued chain
-          // stay subject to the drop (solver-input.md, `start.woken`).
-          const std::vector<std::string> woken =
-              continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{};
-          for (std::size_t e = 0; e < equations.size(); ++e) {
-            exempt.push_back(
-                first[e] < floor && std::ranges::find(woken, equations[e]) == woken.end() ? 1 : 0);
-          }
+        exempt.reference(first);
+        // case-schema.md#time: equations at the round-off floor are exempt while they stay there
+        // (runtime/round_off.hpp); one leaving it reports W0710, once.
+        for (const std::size_t e : exempt.update(report.residuals)) {
+          add_diagnostic(
+              Diagnostic{.code = "W0710",
+                         .message = "equation " + equations[e] + " left its floor at iteration " +
+                                    std::to_string(it) + ": it now has to converge like the others",
+                         .path = "",
+                         .data_json = Json{{"equation", equations[e]},
+                                           {"iteration", it},
+                                           {"residual", report.residuals[e]},
+                                           {"floor", exempt.floor()}}
+                                          .dump()});
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
         for (std::size_t e = 0; e < equations.size(); ++e) {
           const double r = report.residuals[e];
-          if (exempt[e] != 0 && r > floor) {
-            exempt[e] = 0;
-            add_diagnostic(Diagnostic{
-                .code = "W0710",
-                .message = "equation " + equations[e] + " left its floor at iteration " +
-                           std::to_string(it) + ": it now has to converge like the others",
-                .path = "",
-                .data_json = Json{
-                    {"equation", equations[e]},
-                    {"iteration", it},
-                    {"residual", r},
-                    {"floor",
-                     floor}}.dump()});
-          }
-          converged = converged && (exempt[e] != 0 || r <= first[e] * drop ||
+          converged = converged && (exempt.exempt(e) || r <= first[e] * drop ||
                                     (!floor_.empty() && r <= floor_[e]));
         }
         if (converged) return "converged";

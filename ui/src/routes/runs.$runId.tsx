@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Box, Copy } from "lucide-react";
+import { Box, Copy, FilePlus2 } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
@@ -115,6 +115,13 @@ function RunView() {
               }
             >
               Copy Run Id
+            </Button>
+            <Button
+              size="sm"
+              icon={<FilePlus2 className="size-4" />}
+              onClick={() => void navigate({ to: "/cases/new", search: { run: runId } })}
+            >
+              Edit a copy
             </Button>
             {hasSolution ? (
               <Button
