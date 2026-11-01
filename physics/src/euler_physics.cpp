@@ -11,6 +11,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -18,6 +19,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/solvers/gcr.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -51,6 +53,12 @@ constexpr int linear_max_cycles = 10;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
 constexpr double linear_failure = 0.9;
+// Newton-Krylov end phase (fp64): once the second-order residual is this far below its largest
+// value, each step solves (V / dt + dR/dU) du = -R with dR/dU v by a finite difference of the
+// residual itself, the multigrid on the approximate Jacobian as preconditioner, so that the
+// steps no longer stall where the approximate Jacobian departs from dR/dU (#185).
+constexpr double newton_drop = 1e-3;
+constexpr int newton_max_iterations = 20;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
@@ -499,7 +507,24 @@ class EulerPhysics final : public runtime::Physics {
     solvers::Multigrid::Report linear;
     try {
       multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-      linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      const bool newton = second_order_ && drop <= newton_drop;
+      if (newton != newton_) {
+        newton_ = newton;
+        if constexpr (std::is_same_v<P, kernels::fp64>) {
+          if (newton) ctx_.log.write("info", "solver", "Newton-Krylov steps", {}, "{}");
+        } else if (newton) {
+          ctx_.log.write("info", "solver",
+                         "no Newton-Krylov steps in fp32+acc64: finite differences of an FP32 "
+                         "state are round-off",
+                         {}, "{}");
+        }
+      }
+      if constexpr (std::is_same_v<P, kernels::fp64>) {
+        linear = newton ? newton_solve(shift)
+                        : multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      } else {
+        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+      }
     } catch (const std::domain_error&) {
       linear = {};  // a singular block: the solve failed
     }
@@ -539,6 +564,45 @@ class EulerPhysics final : public runtime::Physics {
       return;
     }
     for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+  }
+
+  // GCR on (V / dt + dR/dU) du = -R from du = 0, dR/dU v = (R(u + eps v) - R(u)) / eps with
+  // eps = sqrt((1 + |u|) eps_mach) / |v| (Knoll and Keyes 2004, J. Comput. Phys. 193:357-397,
+  // eq. 14), preconditioned by one multigrid cycle on the assembled approximate Jacobian.
+  solvers::KrylovReport newton_solve(const std::vector<double>& shift) {
+    auto norm = [](std::span<const double> v) {
+      double s = 0.0;
+      for (const double x : v) s += x * x;
+      return std::sqrt(s);
+    };
+    const double unorm = norm(u_);
+    newton_u_.resize(5 * n_);
+    newton_state_.resize(5 * n_);
+    newton_res_.resize(5 * n_);
+    newton_r_ = rhs_;
+    auto apply = [&](std::span<const double> v, std::span<double> y) {
+      const double vnorm = norm(v);
+      if (!(vnorm > 0.0)) {
+        std::fill(y.begin(), y.end(), 0.0);
+        return;
+      }
+      const double eps = std::sqrt((1.0 + unorm) * std::numeric_limits<double>::epsilon()) / vnorm;
+      for (std::size_t i = 0; i < 5 * n_; ++i) newton_u_[i] = u_[i] + eps * v[i];
+      euler_.state(newton_u_, newton_state_);
+      euler_.residual(newton_state_, newton_res_);
+      for (std::size_t k = 0; k < 5; ++k) {
+        for (std::size_t c = 0; c < n_; ++c) {
+          const std::size_t i = k * n_ + c;
+          y[i] = shift[c] * v[i] +
+                 (static_cast<double>(newton_res_[i]) - static_cast<double>(res_[i])) / eps;
+        }
+      }
+    };
+    auto precondition = [&](std::span<const double> r, std::span<double> z) {
+      multigrid_->cycle(r, z);
+    };
+    return newton_gcr_.solve(apply, precondition, newton_r_, du_, newton_max_iterations,
+                             linear_tolerance);
   }
 
   // The cell whose density or pressure the full step lowers the most, relatively.
@@ -652,6 +716,11 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;
+  solvers::Gcr newton_gcr_;
+  std::vector<double> newton_u_, newton_r_;
+  std::vector<State> newton_state_;
+  std::vector<Res> newton_res_;
+  bool newton_ = false;       // logging only: the phase follows from the restart state
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
