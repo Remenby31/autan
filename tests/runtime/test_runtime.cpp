@@ -279,7 +279,9 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
         input({}, "hybrid-unsteady.solver-input.json")["freestream"]["density"].get<double>();
     REQUIRE(mean.size() == last.size());
     for (std::size_t c = 0; c < mean.size(); ++c) {
-      CHECK_THAT(mean[c], WithinRel(rho * (std::pow(1.1, 4) + std::pow(1.1, 5) + std::pow(1.1, 6)) / 3.0, 1e-12));
+      CHECK_THAT(
+          mean[c],
+          WithinRel(rho * (std::pow(1.1, 4) + std::pow(1.1, 5) + std::pow(1.1, 6)) / 3.0, 1e-12));
       CHECK_THAT(last[c], WithinRel(rho * std::pow(1.1, 6), 1e-12));
     }
   }
@@ -414,9 +416,9 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
   SECTION("WMLES needs its wall model") {
     require_error(run(input([](Json& d) {
                     d["physics"]["turbulence"] =
-                        Json{{"model", "wmles"},          {"base", nullptr},
-                             {"wall_model", nullptr},     {"nu_tilde_ratio", nullptr},
-                             {"intensity", nullptr},      {"viscosity_ratio", nullptr}};
+                        Json{{"model", "wmles"},      {"base", nullptr},
+                             {"wall_model", nullptr}, {"nu_tilde_ratio", nullptr},
+                             {"intensity", nullptr},  {"viscosity_ratio", nullptr}};
                   })),
                   "E0705");
   }

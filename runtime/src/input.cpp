@@ -126,8 +126,8 @@ class Object {
 std::string sha256(const Object& o, const std::string& key) {
   std::string v = o.string(key);
   const bool hex = v.size() == 64 && std::ranges::all_of(v, [](char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-  });
+                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                   });
   if (!hex) invalid(o.at(key), "expected 64 lowercase hexadecimal characters");
   return v;
 }
@@ -152,8 +152,9 @@ Turbulence parse_turbulence(const Object& physics, const std::string& kind) {
   const bool ddes = out.model == "ddes";
   out.base = t.maybe<std::string>("base", ddes,
                                   [&](const std::string& k) { return t.tag(k, {"sa", "sst"}); });
-  out.wall_model = t.maybe<std::string>("wall_model", out.model == "wmles",
-                                        [&](const std::string& k) { return t.tag(k, {"equilibrium"}); });
+  out.wall_model =
+      t.maybe<std::string>("wall_model", out.model == "wmles",
+                           [&](const std::string& k) { return t.tag(k, {"equilibrium"}); });
   const bool sa = out.model == "sa" || (ddes && out.base == "sa");
   const bool sst = out.model == "sst" || (ddes && out.base == "sst");
   out.nu_tilde_ratio = t.positive_if("nu_tilde_ratio", sa);
@@ -179,7 +180,8 @@ Medium parse_medium(const Json& value, const std::string& path) {
     m.kind = "constant-density-fluid";
     m.name = o.string("name");
     m.density = o.positive("density");
-    m.viscosity = Viscosity{.law = "constant", .mu_ref = {}, .t_ref = {}, .s = {}, .mu = o.positive("viscosity")};
+    m.viscosity = Viscosity{
+        .law = "constant", .mu_ref = {}, .t_ref = {}, .s = {}, .mu = o.positive("viscosity")};
     return m;
   } else if (kind == "solid") {
     const Object o(value, path, {"kind", "name", "density", "specific_heat", "conductivity"});
@@ -298,7 +300,8 @@ SolverInput parse_solver_input(const std::string& text) {
     in.case_toml = c.string("toml");
     const Object m(root.get("mesh"), "mesh", {"path", "sha256"});
     in.mesh_path = m.string("path");
-    if (!std::filesystem::path(in.mesh_path).is_absolute()) invalid("mesh.path", "must be an absolute path");
+    if (!std::filesystem::path(in.mesh_path).is_absolute())
+      invalid("mesh.path", "must be an absolute path");
     in.mesh_sha256 = sha256(m, "sha256");
   }
   in.precision = root.tag("precision", {"fp32+acc64", "fp64"});
@@ -329,7 +332,8 @@ SolverInput parse_solver_input(const std::string& text) {
     fs.viscosity = f.positive("viscosity");
     fs.mach = f.is_null("mach") ? std::nullopt : std::optional<double>(f.positive("mach"));
     fs.re = f.is_null("re") ? std::nullopt : std::optional<double>(f.positive("re"));
-    fs.ref_length = f.is_null("ref_length") ? std::nullopt : std::optional<double>(f.positive("ref_length"));
+    fs.ref_length =
+        f.is_null("ref_length") ? std::nullopt : std::optional<double>(f.positive("ref_length"));
     fs.aoa = f.number("aoa");
     fs.sideslip = f.number("sideslip");
     fs.nu_tilde = f.positive_if("nu_tilde", sa);
@@ -374,7 +378,8 @@ SolverInput parse_solver_input(const std::string& text) {
       invalid("time.kind", "expected steady or unsteady");
     }
   }
-  if ((in.turbulence.model == "ddes" || in.turbulence.model == "wmles") && in.time.kind != "unsteady") {
+  if ((in.turbulence.model == "ddes" || in.turbulence.model == "wmles") &&
+      in.time.kind != "unsteady") {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");
   }
   const Json& monitors = *array_at(root, "monitors");
@@ -386,7 +391,8 @@ SolverInput parse_solver_input(const std::string& text) {
     ForcesMonitor fm;
     fm.name = m.string("name");
     for (const auto& other : in.monitors) {
-      if (other.name == fm.name) invalid(m.at("name"), "monitor name '" + fm.name + "' is used twice");
+      if (other.name == fm.name)
+        invalid(m.at("name"), "monitor name '" + fm.name + "' is used twice");
     }
     fm.every = m.integer("every", 1);
     const Json& names = *array_at(m, "zones");

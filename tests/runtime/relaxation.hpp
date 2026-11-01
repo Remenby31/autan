@@ -85,7 +85,8 @@ class Relaxation final : public autan::runtime::Physics {
     // Equation e decays from e + 1, so that equations are told apart.
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
     const auto equations = autan::runtime::residual_names(context_.input).size();
-    for (std::size_t e = 0; e < equations; ++e) report.residuals.push_back(static_cast<double>(e + 1) * r);
+    for (std::size_t e = 0; e < equations; ++e)
+      report.residuals.push_back(static_cast<double>(e + 1) * r);
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
     }

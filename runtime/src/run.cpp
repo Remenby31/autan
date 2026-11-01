@@ -275,7 +275,7 @@ class Run {
     std::int64_t done = 0;
     try {
       physics_ = (*p_.factory)(context);
-      status = iterate(done);
+      status = std::string(iterate(done));
     } catch (const std::exception& e) {
       record_failure(e.what());
       return finish("failed", done);
@@ -295,7 +295,8 @@ class Run {
         Diagnostic{.code = "E0704", .message = message, .path = "", .data_json = "{}"}.json()));
   }
 
-  std::string iterate(std::int64_t& done) {
+  // Returns the final status; every value is a string literal.
+  std::string_view iterate(std::int64_t& done) {
     const auto& in = p_.input;
     const bool steady = in.time.kind == "steady";
     const std::int64_t budget = steady ? in.time.max_iterations : in.time.steps;
@@ -416,7 +417,8 @@ class Run {
     std::vector<std::string> names;
     names.reserve(s.fields.size());
     for (const auto& f : s.fields) names.push_back(f.name);
-    if (names != field_names(in)) throw PhysicsFailure("the physics returned another set of fields");
+    if (names != field_names(in))
+      throw PhysicsFailure("the physics returned another set of fields");
     // A diverged state may hold non-finite values; results.md asks for its
     // solution only if one can be written, and readers require finite fields.
     if (diverged) {
@@ -501,7 +503,9 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     // The run directory could not be created or its run.json not written:
     // nothing records the failure but this diagnostic.
     std::fprintf(err, "%s\n",
-                 Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"}.json().c_str());
+                 Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"}
+                     .json()
+                     .c_str());
     return ExitStatus::failed;
   }
 }

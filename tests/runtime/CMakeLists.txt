@@ -4,16 +4,12 @@ add_executable(autan-run-relaxation relaxation_main.cpp)
 target_link_libraries(autan-run-relaxation PRIVATE autan::runtime autan_compile_options)
 
 add_executable(autan_runtime_tests test_runtime.cpp)
-target_include_directories(
-  autan_runtime_tests
-  SYSTEM
-  PRIVATE ${CGNS_INCLUDE_DIR} ${picosha2_SOURCE_DIR}
-)
+target_include_directories(autan_runtime_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
 target_link_libraries(
   autan_runtime_tests
   PRIVATE
     autan::runtime
-    ${CGNS_LIBRARY}
+    autan_cgns
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain
     autan_compile_options
