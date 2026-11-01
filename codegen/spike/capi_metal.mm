@@ -96,16 +96,16 @@ void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const do
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.get();
   d.source = ss.get();
-  d.cell_volume = g.cell_volume.get();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -152,13 +152,13 @@ void gradients(const SpikeMesh& m, std::string_view method, Strategy strategy, i
   d.qmin = mins.get();
   d.qmax = maxs.get();
   d.gg_sum = acc.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
-  d.cell_volume = g.cell_volume.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  autan::spike::bind(d.cell_volume, g.cell_volume);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   if (method == "lsq") {
     gr::metal_loops::lsq_gradient_bounds(ctx, d, dm.schedule);
   } else {
@@ -193,10 +193,10 @@ void advection(const SpikeMesh& m, Strategy strategy, int block, const double* q
   d.q = qs.get();
   d.grad = gs.get();
   d.res = rs.get();
-  d.face_r_left = g.face_r_left.get();
-  d.face_r_right = g.face_r_right.get();
-  d.face_normal = g.face_normal.get();
-  d.face_area_magnitude = g.face_area_magnitude.get();
+  autan::spike::bind(d.face_r_left, g.face_r_left);
+  autan::spike::bind(d.face_r_right, g.face_r_right);
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -207,7 +207,7 @@ void advection(const SpikeMesh& m, Strategy strategy, int block, const double* q
 
 template <class P>
 void roe(const SpikeMesh& m, Strategy strategy, int block, int mode, const double* u,
-         const double* seed, double* out) {
+         const double* seed, double* out, double* jac = nullptr) {
   namespace rf = autan::kernels::roe;
   using S = typename P::state;
   using R = typename P::residual;
@@ -220,25 +220,33 @@ void roe(const SpikeMesh& m, Strategy strategy, int block, int mode, const doubl
   DeviceArray<S> u_tan(ctx, converted_in<S>(seed, 5 * nc));
   DeviceArray<R> r_adj(ctx, converted_in<R>(seed, 5 * nc));
   DeviceArray<R> rs(ctx, 5 * nc), r_tan(ctx, 5 * nc), u_adj(ctx, 5 * nc);
+  DeviceArray<typename P::jac> js(ctx,
+                                  mode == 3 ? 50 * static_cast<std::size_t>(m.topo.n_faces) : 0);
   rf::Data<P> d{};
   d.topo = dm.topo;
+  d.face_jac = js.get();
   d.u_cons = us.get();
   d.res = rs.get();
-  d.face_normal = g.face_normal.get();
-  d.face_area_magnitude = g.face_area_magnitude.get();
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   d.u_cons_tan = u_tan.get();
   d.res_tan = r_tan.get();
   d.res_adj = r_adj.get();
   d.u_cons_adj = u_adj.get();
   if (mode == 0) {
     rf::metal_loops::flux(ctx, d, strategy, dm.schedule);
+  } else if (mode == 3) {
+    rf::metal_loops::flux_and_jacobian(ctx, d, strategy, dm.schedule);
   } else if (mode == 1) {
     rf::metal_loops::flux_tangent(ctx, d, strategy, dm.schedule);
   } else {
     rf::metal_loops::flux_adjoint(ctx, d, strategy, dm.schedule);
   }
   synchronise();
-  copy_out((mode == 0 ? rs : mode == 1 ? r_tan : u_adj).download(), out);
+  copy_out((mode == 0 || mode == 3 ? rs : mode == 1 ? r_tan : u_adj).download(), out);
+  if (jac != nullptr) {
+    copy_out(js.download(), jac);
+  }
 }
 
 /// Adjoint of the composed advection-diffusion residual on the device (seed R-bar -> q-bar).
@@ -264,16 +272,16 @@ void advdiff_adjoint(const SpikeMesh& m, Strategy strategy, int block, const dou
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.get();
   d.source = ss.get();
-  d.cell_volume = g.cell_volume.get();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   d.res_adj = r_adj.get();
   d.q_adj = q_adj.get();
   d.grad_adj = g_adj.get();
@@ -326,8 +334,8 @@ void lsq_bounds_adjoint(const SpikeMesh& m, Strategy strategy, int block, const 
   d.grad = gs.get();
   d.qmin = lo.get();
   d.qmax = hi.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad_adj = g_adj.get();
   d.qmin_adj = lo_adj.get();
   d.qmax_adj = hi_adj.get();
@@ -384,6 +392,17 @@ int autan_spike_gpu_sum_of_squares(const double*, std::int64_t, double*, char* e
   return guarded(err, err_len, [&] {
     throw std::invalid_argument(
         "E1013: Metal has no FP64: an FP64 sum of squares is not available");
+  });
+}
+
+int autan_spike_gpu_roe_jacobian(const void* mesh, const char* policy, const char* strategy,
+                                 int block, const double* u, double* res, double* jac, char* err,
+                                 std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return metal_guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::metal::with_policy(
+        policy, [&](auto p) { roe<decltype(p)>(*m, s, block, 3, u, u, res, jac); });
   });
 }
 

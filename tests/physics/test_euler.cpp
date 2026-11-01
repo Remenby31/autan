@@ -4,7 +4,9 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <random>
 #include <span>
 #include <string>
 #include <vector>
@@ -106,14 +108,20 @@ double relative_residual(Euler<P>& e, const Case& c, std::span<const typename P:
   return worst;
 }
 
-template <class P>
-std::vector<typename P::state> uniform(const Prim& w, std::size_t n) {
+std::vector<double> uniform(const Prim& w, std::size_t n) {
   const auto uc = conserved(w);
-  std::vector<typename P::state> u(5 * n);
+  std::vector<double> u(5 * n);
   for (std::size_t k = 0; k < 5; ++k) {
-    std::fill_n(u.begin() + static_cast<std::ptrdiff_t>(k * n), n, typename P::state(uc[k]));
+    std::fill_n(u.begin() + static_cast<std::ptrdiff_t>(k * n), n, uc[k]);
   }
   return u;
+}
+
+template <class P>
+std::vector<typename P::state> stored(const Euler<P>& e, const std::vector<double>& u) {
+  std::vector<typename P::state> s(u.size());
+  e.state(u, s);
+  return s;
 }
 
 Scheme second_order(Flux flux, double mach) {
@@ -121,6 +129,8 @@ Scheme second_order(Flux flux, double mach) {
   s.flux = flux;
   s.mach_ref = mach;
   s.scale = {1.0, 100.0, 100.0, 100.0, 1e5};
+  // A reference state apart from every test state, so that the stored differences are not zero.
+  s.reference = conserved({1.1, {10.0, 5.0, 0.0}, 0.95e5});
   return s;
 }
 
@@ -162,7 +172,7 @@ TEMPLATE_TEST_CASE("a uniform flow that satisfies every boundary condition is st
     }
     Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.5));
     e.set_boundary(kind, data);
-    const auto u = uniform<P>(w, nc);
+    const auto u = stored(e, uniform(w, nc));
     CHECK(relative_residual(e, c, std::span<const typename P::state>(u), w) <= 64 * eps<P>());
   }
 
@@ -175,7 +185,7 @@ TEMPLATE_TEST_CASE("a uniform flow that satisfies every boundary condition is st
     }
     Euler<P> e(c.mesh, c.geometry, air, second_order(flux, mach));
     e.set_boundary(kind, data);
-    const auto u = uniform<P>(w, nc);
+    const auto u = stored(e, uniform(w, nc));
     CHECK(relative_residual(e, c, std::span<const typename P::state>(u), w) <= 64 * eps<P>());
   }
 }
@@ -195,18 +205,51 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
   Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.1));
   e.set_boundary(kind, data);
   const Prim w{1.0, {0.0, 0.0, 0.0}, 1e5};
-  auto u = uniform<P>(w, nc);
+  auto absolute = uniform(w, nc);
   for (std::size_t i = 0; i < nc; ++i) {
     const auto x = c.geometry.cell_centroid_x[i];
     const auto y = c.geometry.cell_centroid_y[i];
     const auto z = c.geometry.cell_centroid_z[i];
-    u[i] = typename P::state(1.0 + 0.5 * std::sin(7.0 * x + 3.0 * y) * std::cos(5.0 * z) +
-                             (x > 0.5 ? 9.0 : 0.0));
+    absolute[i] =
+        1.0 + 0.5 * std::sin(7.0 * x + 3.0 * y) * std::cos(5.0 * z) + (x > 0.5 ? 9.0 : 0.0);
   }
+  const auto u = stored(e, absolute);
   // A 10:1 density jump: the linear reconstruction would make the density negative at some
   // faces, where the scheme falls back to the cell value.
   const Prim scale{11.0, {0.0, 0.0, 0.0}, 1e5};
   CHECK(relative_residual(e, c, std::span<const typename P::state>(u), scale) <= 64 * eps<P>());
+}
+
+TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_ref", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // One skew tetrahedron with four slip faces: no interior neighbour determines its gradient, so
+  // the boundary values do. At rest under uniform pressure the gradient must vanish and the
+  // residual reduce to the closure of the gauge pressure, even when p - p_ref = 1e-3 is below the
+  // FP32 spacing of p_ref = 0.95e5 (7.8e-3).
+  using P = TestType;
+  const fs::path file = fs::temp_directory_path() / "autan-one-skew-tet.msh";
+  {
+    std::ofstream out(file);
+    out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
+        << "$PhysicalNames\n2\n2 1 \"walls\"\n3 101 \"fluid\"\n$EndPhysicalNames\n"
+        << "$Entities\n0 0 1 1\n1 0 0 0 1 1 1.3 1 1 0\n1 0 0 0 1 1 1.3 1 101 1 1\n"
+        << "$EndEntities\n"
+        << "$Nodes\n1 4 1 4\n3 1 0 4\n1\n2\n3\n4\n"
+        << "0 0 0\n1 0 0\n0.3 1 0\n0.2 0.4 1.3\n$EndNodes\n"
+        << "$Elements\n2 5 1 5\n2 1 2 4\n1 1 3 2\n2 1 2 4\n3 2 3 4\n4 1 4 3\n"
+        << "3 1 4 1\n5 1 2 3 4\n$EndElements\n";
+  }
+  const Case c(file.c_str());
+  REQUIRE(c.mesh.n_cells() == 1);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.1));
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip), std::vector<double>(5 * nb));
+  const double gauge = 1e-3;
+  const auto u = stored(e, uniform(Prim{1.0, {0.0, 0.0, 0.0}, 0.95e5 + gauge}, 1));
+  std::vector<typename P::residual> r(5);
+  e.residual(std::span<const typename P::state>(u), r);
+  const double surface = c.cell_surface()[0];
+  for (const auto v : r) CHECK(std::abs(static_cast<double>(v)) <= 64 * eps<P>() * gauge * surface);
 }
 
 TEST_CASE("the first-order tangent matches central differences of the first-order residual",
@@ -234,17 +277,19 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
   s.second_order = false;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(kind, data);
-  auto u = uniform<P>(w, nc);
+  auto absolute = uniform(w, nc);
   std::vector<double> du(5 * nc);
   const auto uc = conserved(w);
   for (std::size_t k = 0; k < 5; ++k) {
     for (std::size_t i = 0; i < nc; ++i) {
       const double x = c.geometry.cell_centroid_x[i];
       const double y = c.geometry.cell_centroid_y[i];
-      u[k * nc + i] *= 1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y);
+      absolute[k * nc + i] *=
+          1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y);
       du[k * nc + i] = uc[k] * std::cos(5.0 * x + 2.0 * y + static_cast<double>(k));
     }
   }
+  const auto u = stored(e, absolute);
   std::vector<double> jv(5 * nc), rp(5 * nc), rm(5 * nc);
   e.first_order_tangent(u, du, jv);
   const double h = 1e-6;
@@ -298,7 +343,7 @@ TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass diverg
     const auto uc = conserved({1.0, {a * c.geometry.cell_centroid_x[i], 0.0, 0.0}, p});
     for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
   }
-  const std::vector<typename P::state> st(u.begin(), u.end());
+  const auto st = stored(e, u);
   std::vector<typename P::residual> r(5 * nc);
   e.residual(st, r);
   const auto surface = c.cell_surface();
@@ -329,7 +374,7 @@ TEST_CASE("the local time step bounds the faster side of every face", "[euler]")
     const auto uc = conserved(w[i]);
     for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
   }
-  const std::vector<P::state> st(u.begin(), u.end());
+  const auto st = stored(e, u);
   std::vector<P::residual> r(5 * nc);
   e.residual(st, r);
   std::vector<P::state> lambda(nc);
@@ -355,5 +400,169 @@ TEST_CASE("the local time step bounds the faster side of every face", "[euler]")
   }
   for (std::size_t i = 0; i < nc; ++i) {
     CHECK(std::abs(lambda[i] - expected[i]) <= 1e-12 * expected[i]);
+  }
+}
+
+TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass divergence",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // One right tetrahedron with edges 1, h, h (aspect ratio 1/h up to 1e4), every face at the
+  // exact state of rho = 1, v = (a x, 0, 0): its four faces determine the linear reconstruction,
+  // which is then exact, so the mass residual is a V. Thin cells keep a full gradient.
+  using P = TestType;
+  const double h = GENERATE(5e-2, 5e-4, 1e-4);
+  INFO("h " << h);
+  std::random_device random;
+  const fs::path file =
+      fs::temp_directory_path() / ("autan-thin-tet-" + std::to_string(random()) + ".msh");
+  {
+    std::ofstream out(file);
+    out.precision(17);
+    out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
+        << "$PhysicalNames\n2\n2 1 \"walls\"\n3 101 \"fluid\"\n$EndPhysicalNames\n"
+        << "$Entities\n0 0 1 1\n1 0 0 0 1 " << h << " " << h << " 1 1 0\n1 0 0 0 1 " << h << " "
+        << h << " 1 101 1 1\n$EndEntities\n"
+        << "$Nodes\n1 4 1 4\n3 1 0 4\n1\n2\n3\n4\n"
+        << "0 0 0\n1 0 0\n0 " << h << " 0\n0 0 " << h << "\n$EndNodes\n"
+        << "$Elements\n2 5 1 5\n2 1 2 4\n1 1 3 2\n2 1 2 4\n3 2 3 4\n4 1 4 3\n"
+        << "3 1 4 1\n5 1 2 3 4\n$EndElements\n";
+  }
+  const Case c(file.c_str());
+  REQUIRE(c.mesh.n_cells() == 1);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const double a = 50.0, p = 1e5;
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> w = {1.0, a * c.geometry.face_centroid_x[b], 0.0, 0.0, p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  s.limiter = false;
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
+  const auto u = stored(e, uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1));
+  std::vector<typename P::residual> r(5);
+  e.residual(std::span<const typename P::state>(u), r);
+  const double v = c.geometry.cell_volume[0];
+  CHECK(std::abs(static_cast<double>(r[0]) - a * v) <= 64 * eps<P>() * a * c.cell_surface()[0]);
+}
+
+TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity planar", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // n x n perturbed hexahedra in x-z, one layer along y as thick as 1e-3 to 10 in-plane cells:
+  // slip (symmetry) on the two y planes, the flow's state on the sides. Some top nodes sit a few
+  // ulps off the top plane, as a mesh writer's rounding leaves them, so the cell centroids differ
+  // across the layer by round-off only: no stencil of cells determines a y gradient, and the
+  // planar flow below must leave the y-momentum residual at round-off.
+  using P = TestType;
+  const int n = 8;
+  const double thickness = GENERATE(1e-3, 1.0, 10.0) / n;
+  INFO("thickness " << thickness);
+  std::random_device random;
+  const fs::path file =
+      fs::temp_directory_path() / ("autan-one-layer-slab-" + std::to_string(random()) + ".msh");
+  {
+    const int layer = (n + 1) * (n + 1);
+    auto node = [&](int i, int k, int j) { return 1 + j * layer + k * (n + 1) + i; };
+    std::ofstream out(file);
+    out.precision(17);
+    out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$PhysicalNames\n3\n2 1 \"planes\"\n"
+        << "2 2 \"sides\"\n3 101 \"fluid\"\n$EndPhysicalNames\n$Entities\n0 0 2 1\n"
+        << "1 0 0 0 1 " << 1.1 * thickness << " 1 1 1 0\n2 0 0 0 1 " << 1.1 * thickness
+        << " 1 1 2 0\n1 0 0 0 1 " << 1.1 * thickness << " 1 1 101 2 1 2\n"
+        << "$EndEntities\n$Nodes\n1 " << 2 * layer << " 1 " << 2 * layer << "\n3 1 0 " << 2 * layer
+        << "\n";
+    for (int t = 1; t <= 2 * layer; ++t) out << t << "\n";
+    for (int j = 0; j < 2; ++j) {
+      for (int k = 0; k <= n; ++k) {
+        for (int i = 0; i <= n; ++i) {
+          const bool inner = i > 0 && i < n && k > 0 && k < n;
+          const double dx = inner ? 0.3 / n * std::sin(1.7 * i + 2.9 * k) : 0.0;
+          const double dz = inner ? 0.3 / n * std::cos(2.3 * i + 1.1 * k) : 0.0;
+          const double top =
+              (i + 2 * k) % 3 == 0
+                  ? thickness + 8 * std::numeric_limits<double>::epsilon() * thickness
+                  : thickness;
+          const double y = j == 0 ? 0.0 : top;
+          out << double(i) / n + dx << " " << y << " " << double(k) / n + dz << "\n";
+        }
+      }
+    }
+    out << "$EndNodes\n";
+    std::vector<std::array<int, 4>> planes, sides;
+    for (int k = 0; k < n; ++k) {
+      for (int i = 0; i < n; ++i) {
+        planes.push_back(
+            {node(i, k, 0), node(i + 1, k, 0), node(i + 1, k + 1, 0), node(i, k + 1, 0)});
+        planes.push_back(
+            {node(i, k, 1), node(i, k + 1, 1), node(i + 1, k + 1, 1), node(i + 1, k, 1)});
+      }
+    }
+    for (int t = 0; t < n; ++t) {
+      sides.push_back({node(t, 0, 0), node(t, 0, 1), node(t + 1, 0, 1), node(t + 1, 0, 0)});
+      sides.push_back({node(t, n, 0), node(t + 1, n, 0), node(t + 1, n, 1), node(t, n, 1)});
+      sides.push_back({node(0, t, 0), node(0, t + 1, 0), node(0, t + 1, 1), node(0, t, 1)});
+      sides.push_back({node(n, t, 0), node(n, t, 1), node(n, t + 1, 1), node(n, t + 1, 0)});
+    }
+    const auto total = planes.size() + sides.size() + static_cast<std::size_t>(n * n);
+    out << "$Elements\n3 " << total << " 1 " << total << "\n";
+    std::size_t tag = 1;
+    for (const auto& [entity, quads] : {std::pair{1, &planes}, std::pair{2, &sides}}) {
+      out << "2 " << entity << " 3 " << quads->size() << "\n";
+      for (const auto& q : *quads) {
+        out << tag++ << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << "\n";
+      }
+    }
+    out << "3 1 5 " << n * n << "\n";
+    for (int k = 0; k < n; ++k) {
+      for (int i = 0; i < n; ++i) {
+        // Bottom quad counter-clockwise seen from +y, where the top layer is.
+        const std::array<int, 4> q{node(i, k, 0), node(i, k + 1, 0), node(i + 1, k + 1, 0),
+                                   node(i + 1, k, 0)};
+        out << tag++;
+        for (const int v : q) out << " " << v;
+        for (const int v : q) out << " " << v + layer;
+        out << "\n";
+      }
+    }
+    out << "$EndElements\n";
+  }
+  const Case c(file.c_str());
+  REQUIRE(c.mesh.n_cells() == n * n);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  const double p0 = 1e5, speed = 100.0;
+  const auto flow = [&](double x, double z) {
+    return Prim{1.0 + 0.2 * std::sin(3.0 * x + 2.0 * z),
+                {speed * std::cos(2.0 * z), 0.0, speed * std::sin(2.0 * x)},
+                p0 * (1.0 + 0.1 * std::cos(3.0 * x - z))};
+  };
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    if (c.zone(b) != "sides") {
+      kind[b] = BoundaryKind::slip;
+      continue;
+    }
+    kind[b] = BoundaryKind::state;
+    const auto w = flow(c.geometry.face_centroid_x[ni + b], c.geometry.face_centroid_z[ni + b]);
+    const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.3));
+  e.set_boundary(kind, data);
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const auto uc = conserved(flow(c.geometry.cell_centroid_x[i], c.geometry.cell_centroid_z[i]));
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
+  }
+  const auto st = stored(e, u);
+  std::vector<typename P::residual> r(5 * nc);
+  e.residual(std::span<const typename P::state>(st), r);
+  const auto surface = c.cell_surface();
+  for (std::size_t i = 0; i < nc; ++i) {
+    INFO("cell " << i);
+    // The y planes carry p A each way: their round-off bounds the y-momentum residual.
+    CHECK(std::abs(static_cast<double>(r[2 * nc + i])) <= 64 * eps<P>() * 1.2 * p0 * surface[i]);
   }
 }

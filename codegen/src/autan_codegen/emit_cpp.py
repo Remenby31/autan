@@ -150,6 +150,37 @@ def at(d: dsl.Dataset | dsl.Parameter, index: str, c: int, layout: str = "soa") 
     return f"d.{d.name}[offset_t({c}) * {stride(d)} + ({index})]" if c else f"d.{d.name}[{index}]"
 
 
+def rel_datasets(m: Module) -> set[int]:
+    """Ids of the datasets some body reads through rel(), in any loop of the module."""
+    out: set[int] = set()
+    for lm in m.loops:
+        pairs = [(lm.fn, lm.loop.bindings)]
+        if lm.fin_fn is not None:
+            pairs.append((lm.fin_fn, lm.loop.finalise_bindings))
+        for fn, bindings in pairs:
+            for ins in fn.instrs:
+                if ins.op != "rel":
+                    continue
+                for a in ins.args:
+                    k = fn.instrs[a].attr[0]  # type: ignore[index]
+                    b = bindings.get(fn.arg_names[k])
+                    if b is not None:
+                        out.add(id(b.dataset))
+                        if b.boundary is not None:
+                            out.add(id(b.boundary))
+    return out
+
+
+def storage_type(d: dsl.Dataset, rel_read: set[int]) -> str:
+    """Storage of a dataset in Data<P>: its role's type, except built-in geometry no body
+    reads through rel(): it only reaches bodies converted to P::compute and is stored in
+    P::geom_value (the compute type's precision, as a real type): same values, fewer bytes.
+    Datasets kernels write keep their role's type."""
+    if d.geometry and d.type.role is dsl.Role.GEOM and id(d) not in rel_read:
+        return "typename P::geom_value"
+    return ctype(d.type.role)
+
+
 def emit_data_struct(e: Emitter, m: Module) -> None:
     e.w(
         "/// Pointers to every dataset the module's loops use (host or device), and parameter values."
@@ -158,10 +189,11 @@ def emit_data_struct(e: Emitter, m: Module) -> None:
     e.w("template <class P>")
     e.w("struct Data {")
     e.w("  ::autan::kernels::Topology topo;")
+    rel_read = rel_datasets(m)
     for d in m.datasets:
         const = "const " if d.geometry else ""
         e.w(
-            f"  {const}{ctype(d.type.role)}* {d.name};  // {d.set.value}, {d.type.size} component(s)"
+            f"  {const}{storage_type(d, rel_read)}* {d.name};  // {d.set.value}, {d.type.size} component(s)"
         )
     for p in m.params:
         e.w(f"  {ctype(p.type.role)} {p.name}[{p.type.size}];")

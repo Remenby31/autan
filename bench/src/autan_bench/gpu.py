@@ -119,8 +119,12 @@ def _sample_nvidia(gpu_index: int) -> GpuSample:
 
 
 @contextlib.contextmanager
-def gpu_lock(path: Path = DEFAULT_LOCK) -> Iterator[float]:
-    """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it."""
+def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Iterator[float]:
+    """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it.
+
+    Waits as long as needed unless ``timeout_s`` is given, in which case a lock still held by
+    someone else after that long fails with ``LOCK_TIMEOUT``.
+    """
     # flock needs only a read-only descriptor, so the lock works on a file owned by another user.
     # O_CREAT is used only when the file is missing: in a sticky /tmp, fs.protected_regular
     # refuses O_CREAT on another user's existing file even for reading.
@@ -134,7 +138,20 @@ def gpu_lock(path: Path = DEFAULT_LOCK) -> Iterator[float]:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             _log.warning("waiting for %s", path)
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            if timeout_s is None:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            else:
+                while True:
+                    try:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() - start > timeout_s:
+                            raise BenchError(
+                                Code.LOCK_TIMEOUT,
+                                f"{path} still held by another GPU job after {timeout_s:.0f} s",
+                            ) from None
+                        time.sleep(1.0)
         try:
             yield time.monotonic() - start
         finally:

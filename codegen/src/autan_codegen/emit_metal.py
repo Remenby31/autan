@@ -23,6 +23,8 @@ from autan_codegen.emit_cpp import (
     body_lines,
     call_args,
     ctype,
+    rel_datasets,
+    storage_type,
     unique_bodies,
 )
 from autan_codegen.emit_cpu import (
@@ -35,7 +37,7 @@ from autan_codegen.emit_cpu import (
     reduce_body,
     twin_gather_body,
 )
-from autan_codegen.emit_gpu import _face_eval, _incs, _signed
+from autan_codegen.emit_gpu import _face_eval, _incs, _signed, jacobian_lines
 
 if TYPE_CHECKING:
     from autan_codegen.ir import Function
@@ -70,9 +72,10 @@ def _msl_data_struct(e: Emitter, m: Module) -> None:
     e.w("template <class P>")
     e.w("struct Data {")
     e.w("  Topology topo;")
+    rel_read = rel_datasets(m)
     for d in m.datasets:
         const = "const " if d.geometry else ""
-        e.w(f"  device {const}{ctype(d.type.role)}* {d.name};")
+        e.w(f"  device {const}{storage_type(d, rel_read)}* {d.name};")
     for p in m.params:
         e.w(f"  {ctype(p.type.role)} {p.name}[{p.type.size}];")
     e.w("};")
@@ -274,7 +277,7 @@ def _cell_kernel(k: _Kernels, lm: LoopModel) -> None:
         e.w(f"  typename P::compute out[{n_out(lm)}];")
         args = call_args(lm.sig, lm.loop.bindings, {"direct": "c"})
         e.w(f"  {lm.fn.name}<P>({', '.join([*args, 'out'])});")
-        lines = cell_stores(lm, "  ")
+        lines = [*jacobian_lines(lm, args, "c", "  "), *cell_stores(lm, "  ")]
     elif lm.kind == "reduce_adjoint":
         lines = reduce_adjoint_body(lm, "  ", "atomic")
     else:

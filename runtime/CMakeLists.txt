@@ -10,7 +10,7 @@ target_include_directories(
 target_include_directories(autan_runtime SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
 target_link_libraries(
   autan_runtime
-  PUBLIC autan::io autan::core
+  PUBLIC autan::io autan::core autan::partition
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
 

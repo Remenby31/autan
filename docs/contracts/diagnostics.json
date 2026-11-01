@@ -445,6 +445,12 @@
       "fix": "Name them: `autan.forces(\"wing.*\", name=\"wing\")`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0602"
     },
+    "E0603": {
+      "severity": "error",
+      "title": "Monitor on a periodic zone",
+      "fix": "Integrate over the walls instead, or change the mesh if the zone is not meant to be periodic.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0603"
+    },
     "E0701": {
       "severity": "error",
       "title": "The run directory does not conform to autan.results/1",

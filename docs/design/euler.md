@@ -10,7 +10,7 @@ R_c = Σ_f F(W_L, W_R)·S_f − s_c V_c over the faces of cell c, in conserved v
 |---|---|---|
 | Variables reconstructed | primitive W = (ρ, u, v, w, p) | |
 | Gradients | weighted least squares (1/d²) over the **face2 stencil**: face neighbours, their face neighbours, and the boundary faces of both | [Stencil](#gradient-stencil) |
-| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 5, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
+| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 10, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
 | Face states | W_f = W_c + φ ∘ (∇W · (x_f − x_c)) | |
 | Warped faces | flux of the linear reconstruction through the fan triangles: Σ_j dF_j[W; ∇W · M_{:,j}], M = Σ_t (c_t − x_f) ⊗ S_t | [Warped faces](#warped-faces) |
 | Fluxes | Roe with Harten's fix on the acoustic waves only; HLLC with Einfeldt speeds; AUSM+-up with M_co the freestream Mach number | Roe (1981); Toro, Spruce, Speares (1994); Batten et al. (1997); Liou (2006) |
@@ -29,7 +29,7 @@ Each boundary face carries a code and five values (`BoundaryKind`). The boundary
 | `inlet` | p₀, T₀ | flow normal to the face; R⁺ from the interior and c_p T₀ give c_b (Carlson 2011) |
 | `outlet` | p | ρ and v from the outgoing characteristics; supersonic outflow extrapolates |
 
-The gradient's boundary values are the boundary states of the first-order interior state (`boundary_states`, a frozen loop: its derivatives are dropped, so the generated adjoint of the gradient is approximate at boundary faces). They enter the least-squares fit only on `state` faces, where the condition gives the value at the face; on the other kinds the value is the adjacent cell's, which belongs at the cell centroid, and the fit uses the interior stencil alone (a cell whose interior stencil cannot determine a gradient keeps every boundary face). Where the linear reconstruction would make ρ or p non-positive, the face takes the cell value. The warped-face correction applies to interior faces and to the pressure of slip faces.
+The gradient's boundary values are the boundary states of the first-order interior state (`boundary_states`, a frozen loop: its derivatives are dropped, so the generated adjoint of the gradient is approximate at boundary faces). They enter the least-squares fit only on `state` faces, where the condition gives the value at the face; on the other kinds the value is the adjacent cell's, which belongs at the cell centroid, and the fit uses the interior stencil alone (a cell whose interior stencil cannot determine a gradient keeps every boundary face). Offset components within 64 ulps of the coordinates count as zero: across a one-cell-thick slab the centroids differ only by round-off, and the fit would otherwise turn it into a gradient across the layer. The fit is determined when det A > 10⁻¹⁰ A₁₁A₂₂A₃₃, which is independent of the cells' aspect ratio. Where the linear reconstruction would make ρ or p non-positive, the face takes the cell value. The warped-face correction applies to interior faces and to the pressure of slip faces.
 
 ## Gradient stencil
 
@@ -49,6 +49,38 @@ Face neighbours stay stable on the hexahedral, prismatic, hybrid and polyhedral 
 
 The faces of polyhedral duals are not planar. A one-point flux at the face centroid then commits an O(h) relative error per face, and the solution converges at first order (measured: finest-pair order 1.05–1.26 on the `poly` family). Integrating the linear reconstruction over the fan triangles through the face moment M restores order 2 (2.1–2.6).
 
+## Precision
+
+Cells store U − U_ref, the reference being the freestream, and the primitive pressure is the gauge pressure p − p_ref, computed from the differences only: p − p_ref = (γ − 1)(ΔE − (|m|²/ρ − |m_ref|²/ρ_ref)/2), the kinetic difference written with Δm and Δρ. Momentum fluxes take the gauge pressure (p_ref sums to zero over a closed cell), and the slip mirror keeps it, so that FP32 does not round a small gauge pressure away through p_ref; every other use of p adds p_ref back. FP32 storage resolves U to ε₃₂|U_ref| in absolute terms: a cell whose density falls below about 10⁻⁷ ρ_ref cannot be stored, its residual is not finite, and the run ends `diverged`. In `fp32+acc64` the residual evaluated in FP32 has a rounding floor: on the MMS (hex, n = 16, from the freestream) the residuals drop 5.9–6.0 orders with absolute storage and 6.3–6.4 orders with the reference state, then stay there. The rest of the floor is the FP32 rounding of the fluxes themselves, ε₃₂ times the face flux, so how many orders a case drops in `fp32+acc64` depends on how far its first residual stands above it (3.8 orders on a subsonic NACA 0012 slab from the freestream, where `fp64` drops 12 orders and the lift agrees to 3·10⁻⁶; the limiter plays no part). The physics' residual scale per equation is that flux, Φ_k = f_k √(Σ_i A_i² / N) over the history's N cells, A_i the surface of cell i and f_k the freestream's ρq, ρq² (each momentum) and ρHq, q = |v| + c. Measured plateaus sit at 0.01–0.04 ε₃₂Φ_k on the NACA 0012 (M 0.5, α 0° and 2°, limited or not), up to 0.07 on the MMS (hex, n = 16) and up to 0.12 on Ni's transonic bump (M 0.675, three meshes, rising with refinement; measured by CFD - Multigrille), so a steady `fp32+acc64` run converges at 0.5 ε₃₂Φ_k at the latest ([case-schema.md](../contracts/case-schema.md#time)). A ten-order drop is therefore measured in `fp64`; in `fp32+acc64` the gate is the integrated forces and the surface pressure against `fp64`, and the plateau is reported ([acceptance.md](../validation/acceptance.md#m2--compressible-euler)). The surface pressure must then agree with `fp64` to max |ΔCp| ≤ 10⁻³ over the wall faces, shock cells excepted (reported there): the plateau leaves state differences of order 10⁻⁶–10⁻⁵ relative, so 10⁻³ is a margin of 100 or more, and it is ten times finer than the 0.01 to which Cp distributions are compared with experiment.
+
+## Time stepping
+
+Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R(U), Δt = CFL V / Σ_f (|v·n| + c) A local to each cell:
+
+- J̃ is the approximate Jacobian: dF/dW of every face with the reconstruction's gradients and limiter held fixed, written by the face loops in the same pass as the residual (`*_jacobian` loops of `kernels/euler.py`), times dW/dU of each cell; it is assembled in 5 × 5 blocks (`BlockMatrix`) and solved by four symmetric multicolour block Gauss-Seidel sweeps (cells of a colour share no face, so the sweep is deterministic).
+- The run starts at first order, where J̃ is the exact Jacobian, and switches to second order once the first-order residual has dropped three orders (at most 200 steps).
+- CFL = 10 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
+- A step is shortened so that no cell loses more than half its density or pressure.
+
+On the MMS (`autan-run`, `fp64`, ten orders from the freestream): hex 42–158 steps, poly 46–70, hybrid 64–192, tet 126–233. A Newton-Krylov variant (FGMRES on finite differences of the full residual, the limiter frozen, these Gauss-Seidel sweeps as preconditioner) was less robust far from the solution: on the MMS from the freestream (hex, n = 16) its steps were shortened at almost every iteration and the run stalled after 1.3 orders, where the defect correction above converges ten orders in 177 steps. It is left for M3 as an end phase, switched on once the residual has dropped.
+
+Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `dt` or `cfl`.
+
+Restart: `restart_fields` holds the conserved variables bit for bit, the averaging sums, and the steady solver's state (penalty, order, reference residuals) as uniform fields, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
+
+## Limiter and verification
+
+Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips smooth extrema more as the mesh is refined; K sets where that starts (Venkatakrishnan 1995; Michalak and Ollivier-Gooch 2008, AIAA 2008-776, discuss the same trade-off). On the MMS (tet, levels 12–32, Roe, host study), fitted / finest-pair orders of ρv with the limiter on: K = 5 gives 1.88/1.78, K = 10, 20 and 40 give 1.99/1.97, the unlimited values. K = 10 is the default: smooth flows keep the design order at these resolutions, and the limiter still acts at shocks (Sod gate, below). A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) run without the limiter, every other case with it.
+
 ## Manufactured solution
 
-Steady `euler` solution of autan-vv (Roy et al. 2004 form), boundary faces at the exact state, cell sources at centroids; Newton-Krylov on the generated residual (`physics/mms/euler_mms.py`). The table is filled from the study of PR #99.
+Steady `euler` solution of autan-vv (Roy et al. 2004 form), every boundary face at the exact state, cell sources at centroids, solved by `autan-run` and checked by `autan-vv verify --gate euler-mms-order` (Roe, unlimited, implicit steady solver; commit a6b557c, PR #134). Fitted / finest-pair L2 orders:
+
+| Family, levels | Precision | ρ | ρu | ρv | ρw | ρE |
+|---|---|---|---|---|---|---|
+| tet, 12–32 | fp64, fp32+acc64 | 1.99/2.04 | 2.01/1.98 | 1.99/1.98 | 1.99/1.97 | 2.05/1.98 |
+| hex, 12–32 | fp64, fp32+acc64 | 2.20/2.18 | 2.06/1.99 | 1.96/1.97 | 2.17/2.15 | 1.91/1.96 |
+| poly, 12–32 | fp64, fp32+acc64 | 2.56/2.42 | 2.53/2.34 | 2.55/2.44 | 2.53/2.41 | 2.14/2.08 |
+| hybrid, 16–48 | fp64, fp32+acc64 | 2.11/2.12 | 1.97/2.07 | 1.95/2.00 | 1.99/2.10 | 1.98/2.01 |
+
+The hybrid family needs one level more: its pyramids, prisms and tetrahedra fill corner blocks that hold few cells on coarse levels, and the momentum orders between successive levels are 1.76–1.86 (12→16), 1.94–1.98 (16→24), 1.87–1.90 (24→32), 2.00–2.10 (32→48): they fluctuate by ±0.1, as on every non-nested family ([order.md](../validation/order.md)), and reach 2 on the finest pair. Polyhedral duals supraconverge (above 2.1: a warning of the gate, not a failure). The host study (`physics/mms/euler_mms.py`) gives the same orders for HLLC and AUSM+-up.
