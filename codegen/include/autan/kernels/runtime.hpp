@@ -43,6 +43,11 @@ struct Topology {
   const offset_t* stencil_offsets = nullptr;
   const index_t* stencil = nullptr;
   const offset_t* stencil_twin = nullptr;
+  /// Sliced layout (autan::kernels::sliced): entry j of cell c is at stencil_offsets[c] +
+  /// j * stencil_stride for j < stencil_length[c], so a warp reading entry j of 32 consecutive
+  /// cells reads contiguous memory. stencil_stride == 1 is the plain CSR layout above.
+  offset_t stencil_stride = 1;
+  const index_t* stencil_length = nullptr;
 };
 
 /// Precision policies (docs/research/kernel-generator.md section 7): storage type of each role,
