@@ -705,6 +705,59 @@ TEST_CASE("a steady case on several ranks is refused before any directory exists
 }
 #endif
 
+TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
+  // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
+  // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
+  // which changes that round-off and nothing else at FP64 resolution; the CFL law must ignore it
+  // (case-schema.md#time, the runtime's exemption), so the other equations' histories agree bit
+  // for bit.
+  const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
+  auto doc = [&](double w) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["mesh"]["path"] = fs::absolute(mesh).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+      const double speed = d["freestream"]["speed"].get<double>();
+      Json zone = d["cell_zones"][0];
+      zone["zone"] = "fluid";
+      zone["initial"]["pressure"] = 1.3 * zone["initial"]["pressure"].get<double>();
+      zone["initial"]["velocity"] = {speed, 0.0, w * speed};
+      d["cell_zones"] = Json::array({zone});
+      Json boundaries = Json::array();
+      for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+        Json b = d["boundaries"][0];
+        for (auto& [key, value] : b.items()) {
+          if (key != "zone" && key != "kind") value = nullptr;
+        }
+        b["zone"] = name;
+        const bool side = std::string(name) != "back" && std::string(name) != "front";
+        b["kind"] = side ? "farfield" : "symmetry";
+        boundaries.push_back(b);
+      }
+      d["boundaries"] = boundaries;
+      d["monitors"] = Json::array();
+      d["time"]["max_iterations"] = 40;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  const auto a = run(doc(0.0));
+  INFO(a.err);
+  REQUIRE(a.status == ExitStatus::finished);
+  const auto b = run(doc(1e-20));
+  REQUIRE(b.status == ExitStatus::finished);
+  const auto ha = history(a.run), hb = history(b.run);
+  REQUIRE(ha.size() == hb.size());
+  bool noisy = false;
+  for (std::size_t i = 0; i < ha.size(); ++i) {
+    INFO("iteration " << i + 1);
+    for (const char* k : {"density", "momentum-x", "momentum-y", "energy"}) {
+      CHECK(ha[i]["residuals"][k] == hb[i]["residuals"][k]);
+    }
+    noisy = noisy || hb[i]["residuals"]["momentum-z"] != ha[i]["residuals"]["momentum-z"];
+  }
+  CHECK(noisy);  // the injected noise did reach the z-momentum residual
+}
+
 TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
   // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from
   // the freestream that rounds to zero density, so the residual is not finite and the run
