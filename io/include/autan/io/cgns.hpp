@@ -32,7 +32,23 @@ struct Solution {
   std::vector<Field> mean_fields;   ///< time averages; empty unless averaging
   std::vector<index_t> wall_faces;  ///< ascending face indices of wall and slip faces
   std::vector<Field> wall_fields;   ///< one value per wall face
+  /// Cell-centred state a physics needs to restart beyond `fields` (e.g.
+  /// earlier time levels), written as the FlowSolution_t "RestartState";
+  /// readers of results ignore it. Empty: no such node.
+  std::vector<Field> restart_fields;
 };
+
+/// Cell fields of a solution.cgns written by write_solution, to restart from:
+/// FlowSolution, FlowSolutionMean and RestartState (each empty when absent)
+/// and the RunMetadata text. Throws E0132 when the file's zone does not have
+/// `cells` cells.
+struct StoredSolution {
+  std::string run_metadata;
+  std::vector<Field> fields;
+  std::vector<Field> mean_fields;
+  std::vector<Field> restart_fields;
+};
+StoredSolution read_solution(const std::filesystem::path& file, index_t cells);
 
 /// Writes `solution` and `mesh` (unpartitioned) as solution.cgns with the
 /// layout of docs/contracts/results.md. Throws E0101 when the arrays do not

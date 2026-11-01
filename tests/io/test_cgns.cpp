@@ -94,7 +94,11 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   const std::string name = GENERATE("hybrid", "poly", "hanging");
   CAPTURE(name);
   const autan::Mesh mesh = autan::io::read_mesh(data_dir / name / "polyMesh");
-  const autan::io::Solution solution = solution_for(mesh);
+  autan::io::Solution solution = solution_for(mesh);
+  solution.mean_fields.push_back(solution.fields[0]);
+  autan::io::Field previous{.name = "DensityPreviousLevel", .values = {}};
+  for (index_t c = 0; c < mesh.n_cells(); ++c) previous.values.push_back(-1.0 / (c + 1));
+  solution.restart_fields.push_back(previous);
   const fs::path file = temp_dir() / (name + "-solution.cgns");
   fs::create_directories(temp_dir());
   autan::io::write_solution(file, mesh, solution);
@@ -118,6 +122,26 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   }
   for (const auto& field : solution.fields) {
     CHECK(read_field(file, field.name.c_str(), mesh.n_cells()) == field.values);
+  }
+
+  const auto stored = autan::io::read_solution(file, mesh.n_cells());
+  CHECK(stored.run_metadata == solution.run_metadata);
+  const auto same = [](const std::vector<autan::io::Field>& a,
+                       const std::vector<autan::io::Field>& b) {
+    REQUIRE(a.size() == b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      CHECK(a[i].name == b[i].name);
+      CHECK(a[i].values == b[i].values);
+    }
+  };
+  same(stored.fields, solution.fields);
+  same(stored.mean_fields, solution.mean_fields);
+  same(stored.restart_fields, solution.restart_fields);
+  try {
+    (void)autan::io::read_solution(file, mesh.n_cells() + 1);
+    FAIL("expected E0132");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::io_malformed);
   }
 }
 
