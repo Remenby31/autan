@@ -315,7 +315,7 @@ def test_the_runtime_takes_the_periodic_pairs_of_the_solver_input(tmp_path: Path
     assert error.value.codes == ["E0706"]  # accepted (not E0705), then not implemented
 
 
-def test_an_fp32_euler_mms_converges_by_default(
+def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     _, mesh = hybrid
@@ -333,6 +333,6 @@ def test_an_fp32_euler_mms_converges_by_default(
     )
     case = autan.load(path)
     assert isinstance(case.spec.time, autan.Steady)
-    assert case.spec.time.residual_orders == 5.0  # the fp32+acc64 default
+    assert case.spec.time.residual_orders == 8.0  # above the fp32+acc64 plateau
     result = case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     assert result.run.status == "converged"

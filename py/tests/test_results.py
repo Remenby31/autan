@@ -96,9 +96,7 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
         assert line["time"] is None
     first, last = lines[0]["residuals"]["density"], lines[-1]["residuals"]["density"]
     assert isinstance(crm_run.case.time, autan.Steady)
-    orders = crm_run.case.time.residual_orders
-    assert orders is not None
-    assert math.log10(first / last) >= orders - 1e-9
+    assert math.log10(first / last) >= crm_run.case.time.residual_orders - 1e-9
 
 
 def test_force_coefficients_are_the_contract_projections(crm_run: autan.Results) -> None:
@@ -412,12 +410,9 @@ def test_status_follows_the_convergence_criterion(
     )
     assert result.run.status == status
     density = result.history.residual("density")
-    assert isinstance(result.case.time, autan.Steady)
-    orders = result.case.time.residual_orders
-    assert orders == 5.0  # the fp32+acc64 default (case-schema.md#time)
-    assert extra or options or math.log10(density[0] / density[-1]) >= orders - 1e-9
+    assert extra or options or math.log10(density[0] / density[-1]) >= 8.0 - 1e-9
     if status != "converged":
-        assert density.size < 2 or math.log10(density[0] / density[-1]) < orders
+        assert density.size < 2 or math.log10(density[0] / density[-1]) < 8.0
 
 
 def test_each_zone_uses_its_own_medium(tmp_path: Path) -> None:
@@ -694,3 +689,34 @@ def test_the_writer_refuses_lines_the_reader_would_reject(crm_run: autan.Results
         writer.log("error", "x", source="solver", code="E9999")
     with pytest.raises(ValueError, match="level"):
         writer.log("info", "x", source="solver", code="D0107")
+
+
+def _set_convergence(path: Path, value: object) -> None:
+    document = json.loads((path / "run.json").read_text())
+    if value == "absent":
+        del document["convergence"]
+    else:
+        document["convergence"] = value
+    (path / "run.json").write_text(json.dumps(document))
+
+
+def test_convergence_floors_belong_to_a_steady_fp32_run(
+    crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
+) -> None:
+    names = autan.results.residual_names(crm_run.case)
+    floors = {"floor": dict.fromkeys(names, 1e-6)}
+    _set_convergence(crm_run.path, floors)
+    assert autan.Results.open(crm_run.path).run.convergence is not None
+    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
+        _set_convergence(crm_run.path, value)
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+
+    fp64 = autan.load(write_case(CRM_HL.replace('"fp32+acc64"', '"fp64"'), name="fp64.py"))
+    result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
+    assert result.run.convergence is None
+    _set_convergence(result.path, floors)
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(result.path)
+    assert error.value.codes == ["E0701"]

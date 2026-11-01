@@ -430,7 +430,8 @@ class Run final : public Log {
                    {"iterations", s.iterations},
                    {"time", s.time ? Json(*s.time) : Json(nullptr)},
                    {"solution_sha256", s.solution_sha256},
-                   {"residual_reference", reference}};
+                   {"residual_reference", reference},
+                   {"woken", s.woken ? Json(*s.woken) : Json(nullptr)}};
     }
     const std::string identity = sha256_hex(parts);
     info_ = Json{
@@ -451,6 +452,7 @@ class Run final : public Log {
         {"iterations", 0},
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
+        {"convergence", nullptr},
         {"start", start},
         {"diagnostics", Json::array()}};
     if (continued()) {
@@ -481,6 +483,7 @@ class Run final : public Log {
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
+      set_floor();
       status = std::string(iterate(done));
     } catch (const std::exception& e) {
       record_failure(e.what());
@@ -490,6 +493,33 @@ class Run final : public Log {
   }
 
  private:
+  // case-schema.md#time: in fp32+acc64, a steady run counts an equation
+  // converged at floor_k = 0.25 * 2^-23 * Phi_k at the latest, Phi_k the
+  // physics' constant flux scale; run.json records the floors.
+  void set_floor() {
+    const auto& in = p_.input;
+    const auto equations = residual_names(in);
+    const std::vector<double> scales = physics_->residual_scales();
+    if (scales.empty()) return;
+    if (scales.size() != equations.size()) {
+      throw std::runtime_error("the physics gave " + std::to_string(scales.size()) +
+                               " residual scales for " + std::to_string(equations.size()) +
+                               " equations");
+    }
+    for (const double s : scales) {
+      if (!std::isfinite(s) || s < 0.0)
+        throw std::runtime_error("the physics gave a residual scale that is not finite and >= 0");
+    }
+    if (in.time.kind != "steady" || in.precision != "fp32+acc64") return;
+    Json floors = Json::object();
+    for (std::size_t e = 0; e < equations.size(); ++e) {
+      floor_.push_back(0.25 * 0x1p-23 * scales[e]);
+      floors[equations[e]] = floor_.back();
+    }
+    info_["convergence"] = Json{{"floor", floors}};
+    dir_->write_run_json(info_.dump(2));
+  }
+
   [[nodiscard]] bool continued() const {
     return p_.input.start && p_.input.start->mode == "continue";
   }
@@ -509,7 +539,9 @@ class Run final : public Log {
   void add_diagnostic(const Diagnostic& d) {
     const Json entry = Json::parse(d.json());
     info_["diagnostics"].push_back(entry);
-    write("error", "solver", d.message, d.code, entry["data"].dump());
+    // The level follows the code's letter (results.md, Log).
+    write(d.code.starts_with('W') ? "warning" : "error", "solver", d.message, d.code,
+          entry["data"].dump());
   }
 
  public:
@@ -622,7 +654,14 @@ class Run final : public Log {
         // floor; once above, it must drop like the others (W0710, once).
         if (exempt.empty()) {
           floor = 1e-12 * *std::ranges::max_element(first);
-          for (const double f : first) exempt.push_back(f < floor ? 1 : 0);
+          // Equations that left their floor earlier in a continued chain
+          // stay subject to the drop (solver-input.md, `start.woken`).
+          const std::vector<std::string> woken =
+              continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{};
+          for (std::size_t e = 0; e < equations.size(); ++e) {
+            exempt.push_back(
+                first[e] < floor && std::ranges::find(woken, equations[e]) == woken.end() ? 1 : 0);
+          }
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
@@ -630,17 +669,20 @@ class Run final : public Log {
           const double r = report.residuals[e];
           if (exempt[e] != 0 && r > floor) {
             exempt[e] = 0;
-            write("warning", "solver",
-                  "equation " + equations[e] + " left its floor at iteration " +
-                      std::to_string(it) + ": it now has to converge like the others",
-                  "W0710",
-                  Json{{"equation", equations[e]},
-                       {"iteration", it},
-                       {"residual", r},
-                       {"floor", floor}}
-                      .dump());
+            add_diagnostic(Diagnostic{
+                .code = "W0710",
+                .message = "equation " + equations[e] + " left its floor at iteration " +
+                           std::to_string(it) + ": it now has to converge like the others",
+                .path = "",
+                .data_json = Json{
+                    {"equation", equations[e]},
+                    {"iteration", it},
+                    {"residual", r},
+                    {"floor",
+                     floor}}.dump()});
           }
-          converged = converged && (exempt[e] != 0 || r <= first[e] * drop);
+          converged = converged && (exempt[e] != 0 || r <= first[e] * drop ||
+                                    (!floor_.empty() && r <= floor_[e]));
         }
         if (converged) return "converged";
       }
@@ -740,7 +782,9 @@ class Run final : public Log {
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
   bool stopped_by_signal_ = false;
-  std::int64_t iteration_ = 0;  // the iteration being computed, 0 before the first
+  std::int64_t iteration_ = 0;
+  std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the
+                               // iteration being computed, 0 before the first
 };
 
 }  // namespace

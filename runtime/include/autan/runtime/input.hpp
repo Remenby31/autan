@@ -98,6 +98,9 @@ struct Start {
   /// Residuals at iteration 1 of the original run, in residual_names order;
   /// set exactly for a steady `continue`.
   std::optional<std::vector<double>> residual_reference;
+  /// Equations exempt at iteration 1 that left their floor earlier in the
+  /// chain (case-schema.md#time), sorted; set exactly with residual_reference.
+  std::optional<std::vector<std::string>> woken;
 };
 
 /// A periodic pair of the mesh, as MeshInfo lists it (solver-input.md,

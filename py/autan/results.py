@@ -76,6 +76,12 @@ class StartInfo(_Strict):
     woken: list[str] | None
 
 
+class Convergence(_Strict):
+    """The round-off floor of each equation of an fp32+acc64 steady run (case-schema.md#time)."""
+
+    floor: dict[str, Annotated[float, Field(gt=0, allow_inf_nan=False)]]
+
+
 class RunInfo(_Strict):
     """The content of ``run.json``."""
 
@@ -95,6 +101,7 @@ class RunInfo(_Strict):
     time: float | None
     averaging: Averaging | None
     start: StartInfo | None = None
+    convergence: Convergence | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -374,8 +381,9 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        if "start" not in document:
-            broken("run.json has no start key (null for a run from the freestream)", "run.json")
+        for key in ("start", "convergence"):
+            if key not in document:
+                broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
             run = RunInfo.model_validate(document)
         except ValidationError as error:
@@ -393,6 +401,15 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
+        if run.convergence is not None and (
+            run.precision != "fp32+acc64"
+            or not isinstance(case.time, Steady)
+            or set(run.convergence.floor) != set(residual_names(case))
+        ):
+            broken(
+                "convergence floors exist only for a steady fp32+acc64 run, one per equation",
+                "run.json",
+            )
         if case.verification is not None:
             archived = path / "manufactured.json"
             if (
