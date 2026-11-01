@@ -99,4 +99,12 @@ test("viewer renders on WebGPU and picks the zone under the cursor", async ({ pa
   await expect(zones.getByRole("button", { pressed: true })).toHaveText(/^wing\./);
   await page.mouse.click(box.x + 20, box.y + box.height - 20);
   await expect(zones.getByRole("button", { pressed: true })).toHaveCount(0);
+
+  const corner = { x: box.x + 4, y: box.y + 4, width: 8, height: 8 };
+  await page.getByRole("button", { name: "light theme" }).click();
+  const light = await page.screenshot({ clip: corner });
+  await page.getByRole("button", { name: "dark theme" }).click();
+  await expect
+    .poll(async () => (await page.screenshot({ clip: corner })).equals(light))
+    .toBe(false);
 });
