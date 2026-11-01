@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
+#include <span>
 
 #include "autan/runtime/physics.hpp"
 
@@ -53,7 +55,7 @@ class Relaxation final : public autan::runtime::Physics {
     for (const auto& z : context.input.cell_zones) zones[z.zone] = &z;
     const auto names = autan::runtime::field_names(context.input);
     for (const auto& name : names) state_.push_back({.name = name, .values = {}});
-    for (autan::index_t c = 0; c < mesh.n_cells(); ++c) {
+    for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
       const auto& zone = *zones.at(
           mesh.cell_zones()[static_cast<std::size_t>(mesh.cell_zone()[static_cast<std::size_t>(c)])]
               .name);
@@ -100,6 +102,7 @@ class Relaxation final : public autan::runtime::Physics {
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
     }
+    check_ghosts();
     const auto& time = context_.input.time;
     if (time.kind == "unsteady") report.time_step = time.dt.value_or(1e-3);
     if (iteration == options_.diverge_at) {
@@ -108,6 +111,23 @@ class Relaxation final : public autan::runtime::Physics {
       report.diverged_cell = options_.diverge_cell;
     }
     return report;
+  }
+
+  // The exchange must give every ghost (a periodic image) its owner's value:
+  // a field of global ids, ghosts unset, then compared after the exchange.
+  void check_ghosts() const {
+    const auto& mesh = context_.mesh;
+    const auto n = static_cast<std::size_t>(mesh.n_cells());
+    std::vector<double> id(n, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c)
+      id[c] = static_cast<double>(mesh.cell_global_id()[c]);
+    double* const component = id.data();
+    context_.ghosts.forward(std::span<double* const>(&component, 1),
+                            autan::MemorySpace::host, nullptr);
+    for (std::size_t c = 0; c < n; ++c) {
+      if (id[c] != static_cast<double>(mesh.cell_global_id()[c]))
+        throw std::runtime_error("relaxation: a ghost did not receive its owner's value");
+    }
   }
 
   void accumulate_average(double weight) override {

@@ -79,6 +79,10 @@ struct HaloPattern {
   std::vector<index_t> interface_faces;
 };
 
+/// Where the fields an exchange moves live. `cuda` packs and unpacks on the
+/// GPU and hands device buffers to a CUDA-aware MPI.
+enum class MemorySpace : std::uint8_t { host, cuda };
+
 /// One rank's share of a partitioned mesh.
 struct LocalPartition {
   Mesh mesh;
@@ -104,5 +108,17 @@ struct LocalPartition {
 LocalPartition extract_partition(const Mesh& global, const Geometry& global_geometry,
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
                                  std::int32_t rank, int layers = 2);
+
+/// The part of the forward exchange a rank does alone: copies each owned
+/// cell's values into the ghosts that are periodic images of it (the block
+/// of `halo` whose neighbour is `halo.rank`), for every component (n_cells
+/// values each, host memory). On one part, the whole forward exchange.
+template <class T>
+void forward_self(const HaloPattern& halo, index_t n_owned_cells, std::span<T* const> components);
+
+/// Fills the ghost volumes and centroids of a one-part partition from its
+/// owned cells, centroids moved by ghost_translation, as the exchange does
+/// on several. Throws E0140 when `part` is one of several.
+void fill_ghost_geometry(LocalPartition& part);
 
 }  // namespace autan

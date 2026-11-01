@@ -12,6 +12,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/cgns.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
 
 namespace autan::runtime {
@@ -58,6 +59,17 @@ struct StartState {
   std::vector<io::Field> restart_fields;
 };
 
+/// Fills the ghost cells of PhysicsContext::mesh from their owners: on one
+/// rank, the periodic images of owned cells. Each component holds n_cells
+/// values (owned then ghost) in `space`, at most 16 per call; `stream` is a
+/// cudaStream_t or null. Call it before any loop that reads ghost values.
+class GhostExchange {
+ public:
+  virtual ~GhostExchange() = default;
+  virtual void forward(std::span<float* const> components, MemorySpace space, void* stream) = 0;
+  virtual void forward(std::span<double* const> components, MemorySpace space, void* stream) = 0;
+};
+
 /// Valid until the run ends; a physics may keep a copy.
 struct PhysicsContext {
   const Mesh& mesh;
@@ -65,6 +77,7 @@ struct PhysicsContext {
   const SolverInput& input;
   Log& log;
   const StartState* start;  ///< null unless input.start
+  GhostExchange& ghosts;
 };
 
 /// A discretisation of the case's equations. The runtime owns the iteration
