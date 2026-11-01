@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "autan/core/error.hpp"
 #include "autan/runtime/physics.hpp"
 
 #ifdef AUTAN_HAVE_CUDA
@@ -63,7 +64,8 @@ struct RelaxationOptions {
   /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
   /// PhysicsContext gives it exactly those, in that order, each of one colour. With
   /// colour_sweeps, the sweeps run over the group colours, each group in its order: a line
-  /// smoother. 0: none; -1: a malformed group, cell 0 twice.
+  /// smoother. The runtime must ask once per rank. 0: none; -1: a malformed group, cell 0
+  /// twice; -2: rank 1 alone (by the launcher's rank variable) throws E0140 when asked.
   int groups = 0;
 
   static RelaxationOptions from_environment() {
@@ -476,18 +478,30 @@ inline void check_groups(const autan::runtime::PhysicsContext& context, int n,
 
 inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions options) {
   autan::runtime::PhysicsRegistry registry;
-  // Cells per group, recorded when the runtime asks for the groups.
+  // Cells per group, recorded when the runtime asks for the groups, and how many times it did.
   auto group_sizes = std::make_shared<std::vector<std::int64_t>>();
+  auto asked = std::make_shared<int>(0);
   autan::runtime::PartitionGroups groups;
   if (options.groups == -1) {
     groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
       return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}};
     };
   }
+  if (options.groups == -2) {
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
+      const char* rank = std::getenv("OMPI_COMM_WORLD_RANK");
+      if (rank == nullptr) rank = std::getenv("PMI_RANK");
+      if (rank == nullptr) throw std::runtime_error("no launcher rank");
+      if (std::string(rank) == "1")
+        throw autan::Error(autan::ErrorCode::partition_invalid_request, "rank 1 refuses");
+      return autan::runtime::CellGroups{};
+    };
+  }
   if (options.groups > 0) {
-    groups = [n = options.groups, group_sizes](const autan::runtime::SolverInput& /*input*/,
-                                               const autan::Mesh& mesh,
-                                               const autan::Geometry& /*geometry*/) {
+    groups = [n = options.groups, group_sizes, asked](const autan::runtime::SolverInput&,
+                                                      const autan::Mesh& mesh,
+                                                      const autan::Geometry&) {
+      ++*asked;
       autan::runtime::CellGroups g;
       g.offsets.push_back(0);
       group_sizes->assign(static_cast<std::size_t>(n), 0);
@@ -503,8 +517,11 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   }
   registry.add(
       {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
-      [options, group_sizes](const autan::runtime::PhysicsContext& context) {
-        if (options.groups > 0) check_groups(context, options.groups, *group_sizes);
+      [options, group_sizes, asked](const autan::runtime::PhysicsContext& context) {
+        if (options.groups > 0) {
+          if (*asked != 1) throw std::runtime_error("groups asked for " + std::to_string(*asked));
+          check_groups(context, options.groups, *group_sizes);
+        }
         return std::make_unique<Relaxation>(context, options);
       },
       [options](const autan::runtime::SolverInput& /*input*/,
