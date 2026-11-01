@@ -105,21 +105,19 @@ class EulerPhysics final : public runtime::Physics {
         multigrid_.emplace(mesh, ctx.geometry);
         nlohmann::json nodes = nlohmann::json::array();
         for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
-        ctx.log.write(
-            "info", "linear", "agglomeration multigrid", {},
-            nlohmann::json{{"nodes", nodes},
-                           {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
-                .dump());
+        ctx.log.write("info", "linear", "agglomeration multigrid", {},
+                      nlohmann::json{{"nodes", nodes},
+                                     {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
+                          .dump());
       } else {
         // The runtime's colouring by global id: the same sweeps on any number of ranks.
         colours_.assign(static_cast<std::size_t>(ctx.n_colours), {});
         for (std::size_t c = 0; c < owned_; ++c) {
           colours_[static_cast<std::size_t>(ctx.cell_colours[c])].push_back(c);
         }
-        ctx.log.write("info", "linear", "multicolour block Gauss-Seidel", {},
-                      nlohmann::json{{"colours", ctx.n_colours},
-                                     {"sweeps", gauss_seidel_sweeps}}
-                          .dump());
+        ctx.log.write(
+            "info", "linear", "multicolour block Gauss-Seidel", {},
+            nlohmann::json{{"colours", ctx.n_colours}, {"sweeps", gauss_seidel_sweeps}}.dump());
       }
       euler_.set_second_order(false);
     } else {
@@ -707,9 +705,7 @@ class EulerPhysics final : public runtime::Physics {
   // (ties: the least global id); reported by the rank that owns it.
   [[nodiscard]] std::optional<index_t> worst_cell() const {
     const auto ids = ctx_.mesh.cell_global_id();
-    auto id = [&](std::size_t c) {
-      return ids.empty() ? static_cast<std::int64_t>(c) : ids[c];
-    };
+    auto id = [&](std::size_t c) { return ids.empty() ? static_cast<std::int64_t>(c) : ids[c]; };
     std::size_t worst = 0;
     double lowest = std::numeric_limits<double>::infinity();
     for (std::size_t c = 0; c < owned_; ++c) {
@@ -879,8 +875,8 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  std::optional<BlockMatrix> matrix_;  // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;   // linear_solver = "multigrid"
+  std::optional<BlockMatrix> matrix_;              // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;    // linear_solver = "multigrid"
   std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
@@ -918,8 +914,9 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" &&
       (ranks > 1 || !in.periodic.empty())) {
     return runtime::PhysicsRefusal{
-        .message = "the steady multigrid runs on one rank without periodic pairs; set "
-                   "linear_solver = \"gauss-seidel\" until the distributed multigrid lands",
+        .message =
+            "the steady multigrid runs on one rank without periodic pairs; set "
+            "linear_solver = \"gauss-seidel\" until the distributed multigrid lands",
         .path = "time.linear_solver",
         .data_json = nlohmann::json{{"ranks", ranks}, {"pairs", in.periodic.size()}}.dump()};
   }
