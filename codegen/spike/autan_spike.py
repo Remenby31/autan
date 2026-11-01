@@ -192,18 +192,21 @@ def gpu_advdiff_residual(
     source: F64,
     velocity: tuple[float, float, float],
     nu: float,
-) -> tuple[F64, F64]:
+) -> tuple[F64, F64, float]:
+    """Residual, gradient and the FP64 norm of the owned residuals, computed on the device."""
     err = ctypes.create_string_buffer(512)
     res = np.zeros(m.n_cells)
     grad = np.zeros(3 * m.n_cells)
+    norm = ctypes.c_double()
     vel = np.array(velocity, dtype=np.float64)
     q, q_b, source = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b, source))
     rc = lib().autan_spike_gpu_advdiff_residual(
         m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(q_b), _p(source),
-        _p(vel), ctypes.c_double(nu), _p(res), _p(grad), err, ctypes.c_size_t(len(err)),
+        _p(vel), ctypes.c_double(nu), _p(res), _p(grad), ctypes.byref(norm), err,
+        ctypes.c_size_t(len(err)),
     )  # fmt: skip
     _check(rc, err)
-    return res, grad.reshape(3, -1).T
+    return res, grad.reshape(3, -1).T, norm.value
 
 
 def gpu_gradients(
