@@ -54,6 +54,8 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 
 `Inc` targets have role `Residual` (accumulation type). `Min`/`Max` ties keep the first incidence.
 
+**Jacobian blocks.** Face, boundary and cell loops may add `Jacobian(d, wrt=("ul", "ur"))` to `out`: per face (or cell), the derivative of the body's outputs with respect to the named arguments, the others held fixed, written to `d` of role `Jac` and shape `(n_out, n_in)` for one argument or `(len(wrt), n_out, n_in)` for several, row-major — the blocks an implicit solver assembles. `ad.jacobian` derives it by forward mode, one direction per input component in a single function sharing the body's primal, structural zeros folded. Written once per face (by the owner in gather-recompute), so every strategy gives the same blocks; the loop's tangent and adjoint ignore it. `Jac` storage is the place to move to 16-bit formats with a per-block scale later (research §7).
+
 ## Generated C++
 
 Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Data` (a `Topology` and one pointer per dataset, structure of arrays: component `c` of entity `i` at `c * n + i`; parameters by value) and one function per body. Loops: `cpu::name(d)`; `gpu_loops::name(d, schedule)` for cell loops and reductions; `gpu_loops::name(d, strategy, schedule)` for face and boundary loops, with `gpu::Strategy` one of:
@@ -76,13 +78,15 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 
 ## Precision
 
-| Policy | state, grad | residual, accum | geom, param | compute |
-|---|---|---|---|---|
-| `fp64` | double | double | double | double |
-| `fp32_acc64` (`fp32+acc64`) | float | double | double | float |
-| `fp32` | float | float | float | float |
+| Policy | state, grad | residual, accum | geom, param | compute | jac |
+|---|---|---|---|---|---|
+| `fp64` | double | double | double | double | double |
+| `fp32_acc64` (`fp32+acc64`) | float | double | double | float | float |
+| `fp32` | float | float | float | float | float |
 
 `complex_step` (host only) computes in `std::complex<double>` for complex-step tests.
+
+Built-in geometry that no body of the module reads through `rel()` (directly or as a `boundary=` source) reaches bodies only converted to `compute`, so `Data<P>` stores it in `P::geom_value`, a real type of the compute precision (`float` in `fp32+acc64`, `double` in `fp64` and for the complex step): the same values (rounded once, when filled instead of when loaded) in fewer bytes. Geometry `rel()` reads (in the spike kernels, the centroids) and `Geom` datasets a kernel writes keep `P::geom`.
 
 ## Errors
 

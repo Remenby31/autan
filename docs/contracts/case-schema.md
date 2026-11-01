@@ -190,7 +190,7 @@ Materials are stored in full, never by reference to a library entry, so the case
 
 | `kind` | Keys |
 |---|---|
-| `"forces"` | `name` (unique among monitors, default `"forces"`, `E0602`); `surfaces` glob over boundary zones; `every` integer ≥ 1, default 1; `ref_area` area > 0, optional; `moment_center` three lengths, default origin |
+| `"forces"` | `name` (unique among monitors, default `"forces"`, `E0602`); `surfaces` glob over boundary zones, periodic zones excepted (naming one is `E0603`); `every` integer ≥ 1, default 1; `ref_area` area > 0, optional; `moment_center` three lengths, default origin |
 
 Coefficients are reported only when `ref_area` is set; moment coefficients also need `freestream.ref_length`. The force definition and the recorded quantities are in [results.md](results.md#history).
 

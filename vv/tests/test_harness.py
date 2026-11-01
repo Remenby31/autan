@@ -55,7 +55,9 @@ def _case(
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
     p = oracle.parameters
     gas = _gas(oracle.gas_constant, p.get("viscosity", 10.0), p.get("prandtl", 0.72))
-    turbulence = autan.Laminar() if oracle.physics == "navier-stokes" else autan.Inviscid()
+    turbulence = {"navier-stokes": autan.Laminar(), "rans-sa": autan.SA()}.get(
+        oracle.physics, autan.Inviscid()
+    )
     case.physics = autan.Compressible(turbulence=turbulence, precision=precision, gas=gas)  # type: ignore[arg-type]
     case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
     if time is not None:
@@ -79,9 +81,11 @@ def _runs(
     *,
     amplitude: float = 0.05,
     time: float | None = None,
+    field_orders: dict[str, float] | None = None,
     **case_options: object,
 ) -> list[Path]:
-    """Runs whose fields are the oracle times (1 + amplitude h^order g(x)): errors scale as h^order."""
+    """Runs whose fields are the oracle times (1 + amplitude h^order g(x)): errors scale as h^order,
+    or as h^field_orders[name] for the fields it names."""
     oracle = get_oracle(oracle_name)
     paths = []
     for mesh, path, fmt in meshes:
@@ -90,7 +94,11 @@ def _runs(
         g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1]) * np.cos(x[:, 2])
         exact = oracle.fields(x, time)
         h = _h(mesh, oracle.axes)
-        fields = {k: exact[k] * (1.0 + amplitude * h**order * g) for k in field_names(case.spec)}
+        orders = field_orders or {}
+        fields = {
+            k: exact[k] * (1.0 + amplitude * h ** orders.get(k, order) * g)
+            for k in field_names(case.spec)
+        }
         info = mesh_info(mesh, path, fmt)
         paths.append(write_run(tmp_path / "runs", case, mesh, info, fields, time=time).path)
     return paths
@@ -148,27 +156,64 @@ def test_order_gate_recovers_the_order_of_the_error(
     assert all(not autan.Results.open(p).run.deterministic for p in runs)
 
 
+@pytest.mark.parametrize(
+    ("oracle", "gate"),
+    [
+        ("mms-euler", "euler-mms-order"),
+        ("mms-navier-stokes", "ns-mms-order"),
+        ("mms-rans-sa", "rans-sa-mms-order"),
+    ],
+)
 @pytest.mark.parametrize(("order", "investigate"), [(2.4, False), (2.8, True)])
-def test_euler_order_gate_warns_above_its_upper_bound(
-    tmp_path: Path, order: float, investigate: bool
+def test_mms_order_gates_warn_above_their_upper_bound(
+    tmp_path: Path, oracle: str, gate: str, order: float, investigate: bool
 ) -> None:
-    runs = _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), "mms-euler", order)
-    verdict = verify(runs, "mms-euler", "euler-mms-order")["verdict"]
+    runs = _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), oracle, order)
+    verdict = verify(runs, oracle, gate)["verdict"]
     assert verdict["pass"], verdict["checks"]
     assert "rho: order above 2.1" in verdict["warnings"]
     assert verdict["investigate"] is investigate
 
 
-def test_euler_order_gate_needs_errors_decreasing_with_refinement(tmp_path: Path) -> None:
+# Oracle, gate, and a run field together with a gated field it determines.
+MMS_GATES = [
+    ("mms-euler", "euler-mms-order", ("Density", "rho")),
+    ("mms-navier-stokes", "ns-mms-order", ("Density", "rho")),
+    ("mms-rans-sa", "rans-sa-mms-order", ("TurbulentSANuTilde", "TurbulentSANuTilde")),
+]
+
+
+@pytest.mark.parametrize(("oracle", "gate", "_field"), MMS_GATES)
+def test_mms_order_gates_need_errors_decreasing_with_refinement(
+    tmp_path: Path, oracle: str, gate: str, _field: tuple[str, str]
+) -> None:
     # The second level's error, 2.5 times too large, exceeds the first's; the orders stay >= 1.9.
     meshes = _family(tmp_path, "hex", (4, 6, 8, 12, 16))
-    runs = _runs(tmp_path / "a", meshes, "mms-euler", 2.0)
-    (louder,) = _runs(tmp_path / "b", meshes[1:2], "mms-euler", 2.0, amplitude=0.125)
-    verdict = verify([runs[0], louder, *runs[2:]], "mms-euler", "euler-mms-order")["verdict"]
+    runs = _runs(tmp_path / "a", meshes, oracle, 2.0)
+    (louder,) = _runs(tmp_path / "b", meshes[1:2], oracle, 2.0, amplitude=0.125)
+    verdict = verify([runs[0], louder, *runs[2:]], oracle, gate)["verdict"]
     rho = next(c for c in verdict["checks"] if c.get("field") == "rho")
     assert min(rho["fitted_order"], rho["finest_pair_order"]) >= 1.9
     assert rho["errors_decrease"] is False
     assert not rho["pass"]
+    # A middle level under the rounding floor does not hide the next level's error rising again.
+    (silent,) = _runs(tmp_path / "c", meshes[2:3], oracle, 2.0, amplitude=1e-14)
+    verdict = verify([*runs[:2], silent, *runs[3:]], oracle, gate)["verdict"]
+    rho = next(c for c in verdict["checks"] if c.get("field") == "rho")
+    assert rho["errors_decrease"] is False
+    assert not verdict["pass"]
+
+
+@pytest.mark.parametrize(("oracle", "gate", "field"), MMS_GATES)
+def test_mms_order_gates_check_every_listed_field(
+    tmp_path: Path, oracle: str, gate: str, field: tuple[str, str]
+) -> None:
+    written, gated = field
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12))
+    runs = _runs(tmp_path, meshes, oracle, 2.0, field_orders={written: 1.5})
+    verdict = verify(runs, oracle, gate)["verdict"]
+    assert not verdict["pass"]
+    assert not next(c for c in verdict["checks"] if c.get("field") == gated)["pass"]
 
 
 def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(tmp_path: Path) -> None:

@@ -137,7 +137,7 @@ struct Prepared {
 }
 
 // solver-input.md, `periodic`: the pairs of MeshInfo, which must be the
-// mesh's; no physics exchanges across them yet.
+// mesh's.
 void check_periodic(const Prepared& p) {
   const auto pairs = p.mesh.periodic_pairs();
   bool same = pairs.size() == p.input.periodic.size();
@@ -148,14 +148,34 @@ void check_periodic(const Prepared& p) {
            in.translation == pairs[i].translation;
   }
   if (!same) invalid("periodic", "differs from the periodic pairs of the mesh");
-  if (!pairs.empty()) {
-    throw InputError(
-        Diagnostic{.code = "E0706",
-                   .message = "this build of autan-run does not implement periodic boundaries",
-                   .path = "periodic",
-                   .data_json = nlohmann::json{{"pairs", pairs.size()}}.dump()});
-  }
 }
+
+// The exchange of a one-rank run: periodic images of owned cells, on the
+// host. Device fields get E0145 until a device copy is written.
+class SelfExchange final : public GhostExchange {
+ public:
+  SelfExchange(const HaloPattern* halo, index_t n_owned) : halo_(halo), n_owned_(n_owned) {}
+  void forward(std::span<float* const> components, MemorySpace space, void* /*stream*/) override {
+    run(components, space);
+  }
+  void forward(std::span<double* const> components, MemorySpace space, void* /*stream*/) override {
+    run(components, space);
+  }
+
+ private:
+  template <class T>
+  void run(std::span<T* const> components, MemorySpace space) const {
+    if (halo_ == nullptr) return;  // no ghost
+    if (space != MemorySpace::host) {
+      throw Error(ErrorCode::halo_device_unsupported,
+                  "autan-run exchanges periodic images on the host only");
+    }
+    forward_self(*halo_, n_owned_, components);
+  }
+
+  const HaloPattern* halo_;
+  index_t n_owned_;
+};
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is
 // hashed is what is read, whatever happens to the original meanwhile.
@@ -502,11 +522,15 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     if (conditioned[name])
       invalid("boundaries[" + std::to_string(i) + "].zone",
               "zone '" + name + "' has two conditions");
+    // A periodic zone joins its partner; it takes no condition.
+    if (p.mesh.face_zones()[at(p.face_zone.at(name))].kind == BcKind::periodic)
+      invalid("boundaries[" + std::to_string(i) + "].zone", "zone '" + name + "' is periodic");
     conditioned[name] = true;
   }
   const auto offsets = p.mesh.boundary_zone_offsets();
   for (const auto& [name, z] : p.face_zone) {
-    if (offsets[at(z) + 1] > offsets[at(z)] && !conditioned[name]) {
+    if (offsets[at(z) + 1] > offsets[at(z)] && !conditioned[name] &&
+        p.mesh.face_zones()[at(z)].kind != BcKind::periodic) {
       invalid("boundaries", "boundary zone '" + name + "' has faces and no condition");
     }
   }
@@ -530,6 +554,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     for (const auto& name : p.input.monitors[m].zones) {
       if (!p.face_zone.contains(name))
         invalid("monitors[" + std::to_string(m) + "].zones", "no boundary zone '" + name + "'");
+      // A periodic zone is no surface the fluid exerts a load on.
+      if (p.mesh.face_zones()[at(p.face_zone.at(name))].kind == BcKind::periodic)
+        invalid("monitors[" + std::to_string(m) + "].zones", "zone '" + name + "' is periodic");
       ids.push_back(p.face_zone.at(name));
     }
     p.monitor_zones.push_back(std::move(ids));
@@ -595,7 +622,11 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
 
 class Run final : public Log {
  public:
-  Run(Prepared& p, const SolverBuild& build) : p_(p), geometry_(compute_geometry(p.mesh)) {
+  Run(Prepared& p, const SolverBuild& build)
+      : p_(p),
+        geometry_(compute_geometry(p.mesh)),
+        local_(periodic_part(p.mesh, geometry_)),
+        ghosts_(local_ ? &local_->halo : nullptr, p.mesh.n_cells()) {
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
     char suffix[9];
@@ -666,11 +697,12 @@ class Run final : public Log {
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 
   ExitStatus execute() {
-    const PhysicsContext context{.mesh = p_.mesh,
-                                 .geometry = geometry_,
+    const PhysicsContext context{.mesh = physics_mesh(),
+                                 .geometry = physics_geometry(),
                                  .input = p_.input,
                                  .log = *this,
                                  .start = p_.start ? &*p_.start : nullptr,
+                                 .ghosts = ghosts_,
                                  .boundary_states = p_.boundary_states};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
@@ -685,6 +717,21 @@ class Run final : public Log {
   }
 
  private:
+  // A mesh with periodic pairs runs on its one-part partition, whose image
+  // ghosts make each periodic face an interior face (partitioning.md); its
+  // owned cells are the mesh's cells, in order. Without pairs, the mesh.
+  static std::optional<LocalPartition> periodic_part(const Mesh& mesh, const Geometry& geometry) {
+    if (mesh.periodic_pairs().empty()) return std::nullopt;
+    const std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
+    LocalPartition part = extract_partition(mesh, geometry, parts, 1, 0);
+    fill_ghost_geometry(part);
+    return part;
+  }
+  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
+  [[nodiscard]] const Geometry& physics_geometry() const {
+    return local_ ? local_->geometry : geometry_;
+  }
+
   [[nodiscard]] bool continued() const {
     return p_.input.start && p_.input.start->mode == "continue";
   }
@@ -825,6 +872,8 @@ class Run final : public Log {
     nlohmann::json data{{"iteration", iteration}};
     std::string where;
     if (cell) {
+      // A cell of the physics' mesh: on a partition, a ghost names its owner.
+      cell = static_cast<index_t>(physics_mesh().cell_global_id()[at(*cell)]);
       const std::string& zone = p_.mesh.cell_zones()[at(p_.mesh.cell_zone()[at(*cell)])].name;
       data["cell"] = *cell;
       data["zone"] = zone;
@@ -857,11 +906,20 @@ class Run final : public Log {
       }
     }
     std::ranges::sort(s.wall_faces);
+    // The physics names faces in its own mesh: the partition's on a periodic
+    // mesh, where owned boundary faces map to the global ones one to one.
+    std::vector<index_t> physics_faces = s.wall_faces;
+    if (local_) {
+      std::vector<index_t> local_of(at(p_.mesh.n_faces()), -1);
+      for (index_t f = local_->mesh.n_interior_faces(); f < local_->mesh.n_owned_faces(); ++f)
+        local_of[static_cast<std::size_t>(local_->face_global_id[at(f)])] = f;
+      for (index_t& f : physics_faces) f = local_of[at(f)];
+    }
     try {
       s.fields = physics_->fields(false);
       if (!info_["averaging"].is_null()) s.mean_fields = physics_->fields(true);
       s.restart_fields = physics_->restart_fields();
-      if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(s.wall_faces);
+      if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(physics_faces);
     } catch (const std::exception& e) {
       throw PhysicsFailure(e.what());
     }
@@ -909,6 +967,8 @@ class Run final : public Log {
 
   Prepared& p_;
   Geometry geometry_;
+  std::optional<LocalPartition> local_;
+  SelfExchange ghosts_;
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;

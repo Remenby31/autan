@@ -26,7 +26,8 @@ struct Field {
 struct Solution {
   std::string run_metadata;  ///< JSON text of the RunMetadata descriptor
   /// BCType name of the resolved condition of each boundary zone
-  /// (e.g. "BCWallViscousHeatFlux"); empty for a zone without faces.
+  /// (e.g. "BCWallViscousHeatFlux"); empty for a zone without faces and for
+  /// a periodic zone, which is a connectivity, not a boundary condition.
   std::vector<std::string> boundary_bc_types;
   std::vector<Field> fields;        ///< cell-centred, one value per cell
   std::vector<Field> mean_fields;   ///< time averages; empty unless averaging

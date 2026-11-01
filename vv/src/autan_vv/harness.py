@@ -542,12 +542,19 @@ def _gate_checks(
             if gate.investigate_above is not None and max(orders) > gate.investigate_above:
                 check["investigate"] = True
         if gate.monotone:
-            errors = [
-                r.errors[name][gate.norm]
+            # Every adjacent pair of levels; only two levels both under the rounding floor may
+            # stall, so that a level under the floor cannot hide a coarser error rising again.
+            levels = [
+                (
+                    r.errors[name][gate.norm],
+                    r.errors[name][gate.norm] < FLOOR_FACTOR * eps * _scale(r, name),
+                )
                 for r in runs
-                if r.errors[name][gate.norm] >= FLOOR_FACTOR * eps * _scale(r, name)
             ]
-            decreasing = all(b < a for a, b in itertools.pairwise(errors))
+            decreasing = all(
+                b < a or (a_floor and b_floor)
+                for (a, a_floor), (b, b_floor) in itertools.pairwise(levels)
+            )
             check["errors_decrease"] = decreasing
             check["pass"] = check["pass"] and decreasing
         checks.append(check)

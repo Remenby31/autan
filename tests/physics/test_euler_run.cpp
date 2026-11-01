@@ -261,6 +261,43 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
   }
 }
 
+TEST_CASE("a mesh with periodic pairs is refused before any directory exists", "[euler]") {
+  // Until the physics exchanges ghost cells across periodic pairs: E0706 at `periodic`.
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["mesh"]["path"] = fs::absolute(box).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+    d["periodic"] =
+        Json::array({Json{{"zones", {"xmin", "xmax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}},
+                     Json{{"zones", {"ymin", "ymax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    // Periodic zones take no condition: zmin a slip wall, zmax its symmetry plane.
+    Json kept = Json::array();
+    for (const auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") {
+        Json wall = b;
+        wall["zone"] = "zmin";
+        kept.push_back(wall);
+      }
+      if (b["zone"] == "zmax") kept.push_back(b);
+    }
+    d["boundaries"] = kept;
+    d["monitors"][0]["zones"] = {"zmin"};
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["location"]["path"] == "periodic");
+}
+
 TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
   // E0706 on stderr, exit 2, no run directory; data names the zone and what it holds.
   const char* precision = GENERATE("fp64", "fp32+acc64");
