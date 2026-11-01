@@ -304,7 +304,7 @@ class ForcesInput(_Strict):
     moment_center: Vector
 
 
-class VerificationInput(_Strict):
+class FileInput(_Strict):
     path: AbsolutePath
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
@@ -349,7 +349,8 @@ class SolverInput(_Strict):
     cell_zones: tuple[CellZoneInput, ...]
     time: Annotated[SteadyInput | UnsteadyInput, Field(discriminator="kind")]
     monitors: tuple[ForcesInput, ...]
-    verification: VerificationInput | None
+    verification: FileInput | None
+    initial_state: FileInput | None
     start: StartInput | None
 
     model_config = ConfigDict(populate_by_name=True)
@@ -385,6 +386,13 @@ class SolverInput(_Strict):
             raise ValueError(message) from None
         if case.hash() != self.case.sha256:
             message = "case.sha256 is not the hash of case.toml"
+            raise ValueError(message)
+        initial = case.initial_state.sha256 if case.initial_state else None
+        if initial != (self.initial_state.sha256 if self.initial_state else None):
+            message = "initial_state differs from the case's initial_state"
+            raise ValueError(message)
+        if self.initial_state is not None and self.start is not None:
+            message = "an initial-state file and a start exclude each other"
             raise ValueError(message)
         recorded = case.verification.manufactured.sha256 if case.verification else None
         if recorded != (self.verification.sha256 if self.verification else None):
@@ -722,11 +730,18 @@ def build(
             StartInput(run=str(start.run), **start.info.model_dump()) if start is not None else None
         ),
         verification=(
-            VerificationInput(
+            FileInput(
                 path=str(case.resolve(spec.verification.manufactured.path)),
                 sha256=spec.verification.manufactured.sha256,
             )
             if spec.verification is not None
+            else None
+        ),
+        initial_state=(
+            FileInput(
+                path=str(case.resolve(spec.initial_state.path)), sha256=spec.initial_state.sha256
+            )
+            if spec.initial_state is not None
             else None
         ),
     )

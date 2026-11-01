@@ -277,6 +277,10 @@ class FakeBackend:
             for rule in spec.boundaries
             if isinstance(rule.condition, OracleState)
         }
+        if spec.initial_state is not None:
+            states[spec.initial_state.sha256] = _archived(
+                case.resolve(spec.initial_state.path), spec.initial_state.sha256
+            )
         writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake", states=states)
         for warning in result.diagnostics:
             writer.diagnose(warning)
