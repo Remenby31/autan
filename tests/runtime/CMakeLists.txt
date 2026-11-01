@@ -38,8 +38,37 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
 endif()
 # The multi-rank tests carry the label `mpi` (ctest -L mpi).
 catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]")
-catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
-catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]" PROPERTIES LABELS mpi)
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]~[mpi]" PROPERTIES LABELS gpu)
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES LABELS mpi)
+# [mpi][gpu]: on several ranks, and on the GPU too in a CUDA build (its tags as labels).
+if(AUTAN_ENABLE_CUDA)
+  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" ADD_TAGS_AS_LABELS)
+else()
+  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" PROPERTIES LABELS mpi)
+endif()
+
+# Ranks through the runtime's communicator: one rank here, 1 to 4 under MPI.
+add_executable(autan_ranks_tests test_ranks.cpp)
+target_include_directories(autan_ranks_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
+target_link_libraries(autan_ranks_tests PRIVATE autan::runtime Catch2::Catch2 autan_compile_options)
+add_test(NAME autan_ranks_tests COMMAND autan_ranks_tests)
+if(AUTAN_ENABLE_MPI)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+  target_compile_definitions(autan_ranks_tests PRIVATE AUTAN_HAVE_MPI)
+  target_link_libraries(autan_ranks_tests PRIVATE MPI::MPI_CXX)
+  foreach(ranks 2 4)
+    add_test(
+      NAME autan_ranks_tests_${ranks}_ranks
+      COMMAND
+        ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:autan_ranks_tests> ${MPIEXEC_POSTFLAGS}
+    )
+    set_tests_properties(
+      autan_ranks_tests_${ranks}_ranks
+      PROPERTIES PROCESSORS ${ranks} TIMEOUT 300 LABELS mpi
+    )
+  endforeach()
+endif()
 
 add_executable(autan_exact_sum_tests test_exact_sum.cpp)
 target_link_libraries(

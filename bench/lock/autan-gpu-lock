@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""autan-gpu-lock: run a command under the Spark GPU lock, bounded, and record who held it.
+
+    autan-gpu-lock -m WHY [-n] [-w WAIT_S] [-t HOLD_S] -- COMMAND...
+
+-m WHY     what the command is for (agent, task), written to the holders log; required
+-w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
+-n         only for autan-bench, which takes the GPU lock itself and gives CI priority itself:
+           wait for CI and for a free lock, then run it without holding the lock, under the
+           same records; the -t limit then counts from its start, its own lock wait included
+-t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's processes get
+           TERM shortly before and KILL at the limit (exit 124)
+
+The command runs in its own session, without the lock's descriptor. A signal to the wrapper
+stops it the same way (exit 143); a command that cannot start exits 127. Before the lock is
+released, every process left in the session is killed and waited for, so no worker outlives the
+hold; one that starts its own session escapes this, and one that survives SIGKILL (stuck in the
+kernel) is recorded as a leftover and makes the wrapper exit 70. Every event is one line of
+holders.log next to the lock (tab-separated: UTC time, event, who, where, seconds, exit status,
+why, command), written with a single append. Do not nest autan-bench under it: autan-bench takes
+the lock itself. See docs/infra/bench.md.
+"""
+
+import contextlib
+import fcntl
+import os
+import pwd
+import re
+import shlex
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
+LOG = LOCK.parent / "holders.log"
+CI_LOCK = LOCK.parent / "ci.lock"
+MAX_HOLD_S = 600
+POLL_S = 0.05
+CLEANUP_S = 10.0
+
+
+def usage(message: str) -> None:
+    sys.stderr.write(f"autan-gpu-lock: {message}\n{__doc__.split(chr(10) * 2)[1]}\n")
+    sys.exit(2)
+
+
+def seconds(text: str, low: int, high: int) -> int:
+    # Decimal digits only: no octal, sign, exponent or fraction.
+    if not re.fullmatch(r"0|[1-9][0-9]{0,6}", text) or not low <= int(text) <= high:
+        usage(f"{text!r} is not a whole number of seconds from {low} to {high}")
+    return int(text)
+
+
+def parse(argv: list[str]) -> tuple[str, int, int, bool, list[str]]:
+    why, wait_s, hold_s, self_locking = "", 3600, MAX_HOLD_S, False
+    while argv and argv[0] != "--":
+        if argv[0] == "-n":
+            self_locking, argv = True, argv[1:]
+            continue
+        if len(argv) < 2 or argv[0] not in ("-m", "-w", "-t"):
+            usage(f"unexpected {argv[0]!r}")
+        flag, value, argv = argv[0], argv[1], argv[2:]
+        if flag == "-m":
+            why = value
+        elif flag == "-w":
+            wait_s = seconds(value, 0, 10**6)
+        else:
+            hold_s = seconds(value, 1, MAX_HOLD_S)
+    command = argv[1:]
+    if not why or not command:
+        usage("-m WHY and a command after -- are required")
+    return why, wait_s, hold_s, self_locking, command
+
+
+def field(text: str, limit: int) -> str:
+    # Every character a line reader may split on (C0, DEL, C1, U+2028/9) becomes a space;
+    # undecodable argument bytes are kept escaped.
+    text = text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", " ", text)[:limit]
+
+
+class Log:
+    def __init__(self, why: str, command: list[str]) -> None:
+        try:
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except KeyError:
+            user = str(os.getuid())
+        who = os.environ.get("AUTAN_AGENT") or user
+        where = os.environ.get("AUTAN_CONTAINER") or socket.gethostname()
+        self.fields = [field(who, 100), field(where, 100)]
+        self.tail = [field(why, 500), field(shlex.join(command), 1000)]
+        self.warned = False
+
+    def warn(self) -> None:
+        if not self.warned:
+            sys.stderr.write(f"autan-gpu-lock: cannot write {LOG}; this hold is not recorded\n")
+            self.warned = True
+
+    def record(self, event: str, secs: float, status: object = "-") -> None:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        line = "\t".join([stamp, event, *self.fields, f"{secs:.0f}", str(status), *self.tail])
+        data = (line + "\n").encode()
+        try:
+            # Non-blocking: a FIFO without a reader fails instead of hanging. One write on an
+            # O_APPEND descriptor: concurrent records do not interleave.
+            flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+            fd = os.open(LOG, flags)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode) or os.write(fd, data) != len(data):
+                    self.warn()
+            finally:
+                os.close(fd)
+        except OSError:
+            self.warn()
+
+
+def _held(path: Path) -> bool:
+    try:
+        with path.open() as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+    except FileNotFoundError:
+        return False
+
+
+def ci_waiting() -> bool:
+    """Whether a job with priority waits for or holds the GPU: outside CI, any CI job (it holds
+    ci.lock, shared); in a CI job not on main, a job on main (main.lock). Main never yields."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return _held(CI_LOCK)
+    if os.environ.get("GITHUB_REF") == "refs/heads/main":
+        return False
+    return _held(LOCK.parent / "main.lock")
+
+
+def session_members(sid: int) -> list[int]:
+    """Live processes of a session (zombies left by a non-reaping PID 1 hold nothing)."""
+    members = []
+    for proc_stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            # proc(5): state, ppid, process group and session follow the command name.
+            fields = proc_stat.read_bytes().rpartition(b")")[2].split()
+        except OSError:
+            continue
+        if int(fields[3]) == sid and fields[0] not in (b"Z", b"X"):
+            members.append(int(proc_stat.parent.name))
+    return members
+
+
+def kill_session(sid: int, sig: int) -> None:
+    # The session, not the process group: a job-control shell puts workers in other groups.
+    for pid in session_members(sid):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, sig)
+
+
+def main() -> int:
+    why, wait_s, hold_s, self_locking, command = parse(sys.argv[1:])
+    log = Log(why, command)
+    cancel = []
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda signum, _frame: cancel.append(signum))
+
+    with LOCK.open() as handle:
+        start = time.monotonic()
+        log.record("wait", 0)
+        yielded = False
+        while True:
+            # CI goes first: never take the lock while a CI job announces it waits for or holds
+            # it, and give it back if CI announced itself while it was being taken.
+            if not ci_waiting():
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    if not ci_waiting():
+                        if self_locking:
+                            # The command takes the lock itself (autan-bench): hand it over.
+                            fcntl.flock(handle, fcntl.LOCK_UN)
+                        break
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+            elif not yielded:
+                log.record("yield", time.monotonic() - start)
+                yielded = True
+            waited = time.monotonic() - start
+            if cancel:
+                log.record("cancelled", waited, 143)
+                return 143
+            if waited >= wait_s:
+                log.record("timeout", waited, 75)
+                sys.stderr.write(f"autan-gpu-lock: {LOCK} still held after {wait_s} s\n")
+                return 75
+            time.sleep(0.2)
+        taken = time.monotonic()
+        log.record("start" if self_locking else "take", taken - start)
+        if cancel:
+            log.record("cancelled", 0, 143)
+            return 143
+        try:
+            proc = subprocess.Popen(command, start_new_session=True)
+        except OSError as err:
+            log.record("failed", time.monotonic() - taken, 127)
+            sys.stderr.write(f"autan-gpu-lock: cannot run {command[0]}: {err}\n")
+            return 127
+        status, stop, leftover = supervise(proc, taken, hold_s, cancel)
+        held = time.monotonic() - taken
+        fcntl.flock(handle, fcntl.LOCK_UN)
+
+    if leftover:
+        log.record("leftover", held, leftover)
+        sys.stderr.write(f"autan-gpu-lock: {leftover} process(es) survived SIGKILL\n")
+    if stop == "overrun":
+        log.record("overrun", held, 124)
+        sys.stderr.write(f"autan-gpu-lock: stopped at the {hold_s} s limit; split the work\n")
+        return 124
+    if stop == "killed":
+        log.record("killed", held, 143)
+        return 143
+    log.record("release", held, status)
+    return 70 if leftover else status
+
+
+def supervise(
+    proc: subprocess.Popen, taken: float, hold_s: int, cancel: list[int]
+) -> tuple[int, str | None, int]:
+    """Run the command's session to its end or its limit; returns its exit status, why it was
+    stopped, and how many of its processes outlived SIGKILL."""
+    sid = proc.pid
+    grace = min(10.0, hold_s / 2)
+    hard = taken + hold_s
+    stop = None
+    termed_at = None
+    # The deadline is checked before the exit: a command noticed done after its limit overran.
+    while True:
+        now = time.monotonic()
+        if stop is None and cancel:
+            stop = "killed"
+        if stop is None and now >= hard - grace:
+            stop = "overrun"
+        if proc.poll() is not None:
+            break
+        if stop is not None:
+            if now >= hard or (termed_at is not None and now >= termed_at + grace):
+                kill_session(sid, signal.SIGKILL)
+            elif termed_at is None:
+                kill_session(sid, signal.SIGTERM)
+                termed_at = now
+            # A leader in uninterruptible sleep never exits: stop waiting for it.
+            if now >= hard + CLEANUP_S:
+                break
+        time.sleep(POLL_S)
+    # Workers the command left in its session would outlive the hold.
+    kill_session(sid, signal.SIGKILL)
+    end = time.monotonic() + CLEANUP_S
+    while session_members(sid) and time.monotonic() < end:
+        time.sleep(POLL_S)
+    code = proc.returncode
+    status = 128 - code if code is not None and code < 0 else (code if code is not None else 137)
+    return status, stop, len(session_members(sid))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

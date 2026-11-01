@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -28,11 +30,39 @@ struct PackedGeometry {
   /// M = sum_k d_k d_k^T / |d_k|^2, d_k from the cell centroid to the neighbour centroid
   /// (interior face) or the face centroid (boundary face). Zero on ghost cells.
   std::vector<double> lsq_weight;
+  /// n_incidences: +1 where the cell is the face's owner (left), and on boundary faces; -1 where
+  /// it is the neighbour (right).
+  std::vector<double> incidence_side;
   /// 3 x stencil size: LSQ weights over the cell stencil, when one is set (CellStencil).
   std::vector<double> stencil_lsq_weight;
 };
 
-PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry);
+/// The global numbering of a partition (LocalPartition: Mesh::cell_global_id, face_global_id,
+/// face_reversed), so that what a cell sums or a face computes does not depend on how the mesh
+/// was partitioned: bit-for-bit results across rank counts (runtime.md, Ranks).
+struct GlobalKeys {
+  std::span<const std::int64_t> cell;      ///< global id of each local cell
+  std::span<const std::int64_t> face;      ///< global id of each local face
+  std::span<const std::uint8_t> reversed;  ///< 1 where a local face runs against its global one
+  /// Translation of each ghost cell (Mesh::ghost_translation; zero for an ordinary ghost): a
+  /// periodic image shares its cell's global id, so the pair (id, translation) is the key.
+  std::span<const std::array<double, 3>> shift;
+};
+
+/// Without `keys`, as the mesh is numbered. With them: face moments computed in each face's
+/// global orientation from a canonical fan start (the node of smallest coordinates) then signed
+/// for the local orientation, and lsq_weight in the incidence order of global_order(mesh, keys).
+PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry,
+                             const GlobalKeys* keys = nullptr);
+
+/// Each cell's faces ordered by global face id (Topology::cell_faces) and their incidence twins
+/// (Topology::incidence_twin): a gather over a cell's faces then adds them in the same order on
+/// every rank count.
+struct GlobalOrder {
+  std::vector<index_t> cell_faces;
+  std::vector<offset_t> twin;
+};
+GlobalOrder global_order(const Mesh& mesh, const GlobalKeys& keys);
 
 /// Topology of `mesh`; `incidence_twin` stays null (set it from incidence_twins()).
 [[nodiscard]] Topology topology(const MeshView& mesh) noexcept;
@@ -63,7 +93,23 @@ struct CellStencil {
   std::vector<double> stencil_lsq_weight;
 };
 
-CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind);
+/// With `keys`, a cell's entries are its stencil cells by global cell id, then its boundary faces
+/// by global face id, and the LSQ weights are summed in that order.
+CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind,
+                         const GlobalKeys* keys = nullptr);
+
+/// A cell stencil in sliced layout (Topology::stencil_stride): cells in slices of `slice`
+/// consecutive cells, entry j of the cell in lane l of slice s stored at start(s) + j * slice + l,
+/// start(s) the sum of slice * (longest row) over the slices before. Each cell keeps its entries
+/// in the same order, so a reduction gives the same bits. `position[k]` is where CSR entry k
+/// went; twins point at sliced positions; padding holds entry 0, twin -1, weights 0.
+struct SlicedStencil {
+  CellStencil stencil;  ///< offsets: n_cells + 1 starts (the last the total size)
+  std::vector<index_t> length;
+  std::vector<offset_t> position;
+  offset_t stride = 1;
+};
+SlicedStencil sliced(const CellStencil& csr, int slice);
 
 /// Copy of `v` converted to T (the storage type of a precision role).
 template <class T>

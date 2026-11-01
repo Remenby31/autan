@@ -819,7 +819,9 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
             autan.Results.open(crm_run.path)
         assert error.value.codes == ["E0701"]
 
-    fp64 = autan.load(write_case(CRM_HL.replace('"fp32+acc64"', '"fp64"'), name="fp64.py"))
+    fp64 = autan.load(
+        write_case(CRM_HL.replace("autan.SA())", 'autan.SA(), precision="fp64")'), name="fp64.py")
+    )
     result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
     assert result.run.convergence is None
     _set_convergence(result.path, floors)

@@ -467,14 +467,18 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
-        for rule in case.boundaries:
-            if rule.condition.kind == "oracle-state":
-                archived = path / "states" / f"{rule.condition.sha256}.json"
-                if (
-                    not archived.is_file()
-                    or hashlib.sha256(archived.read_bytes()).hexdigest() != rule.condition.sha256
-                ):
-                    broken(f"{archived.name} is missing or differs from the case", "states")
+        digests = [
+            r.condition.sha256 for r in case.boundaries if r.condition.kind == "oracle-state"
+        ]
+        if case.initial_state is not None:
+            digests.append(case.initial_state.sha256)
+        for digest in digests:
+            archived = path / "states" / f"{digest}.json"
+            if (
+                not archived.is_file()
+                or hashlib.sha256(archived.read_bytes()).hexdigest() != digest
+            ):
+                broken(f"{archived.name} is missing or differs from the case", "states")
         if case.verification is not None:
             archived = path / "manufactured.json"
             if (
