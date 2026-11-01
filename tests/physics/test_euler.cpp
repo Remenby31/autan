@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <span>
 #include <string>
@@ -355,5 +356,87 @@ TEST_CASE("the local time step bounds the faster side of every face", "[euler]")
   }
   for (std::size_t i = 0; i < nc; ++i) {
     CHECK(std::abs(lambda[i] - expected[i]) <= 1e-12 * expected[i]);
+  }
+}
+
+TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity planar", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // n x n perturbed hexahedra in x-z, one layer 0.1 thick along y, slip on every side. The cell
+  // centroids' y agree only to round-off, so no stencil determines a y gradient: the planar flow
+  // below must leave the y-momentum residual at round-off (issue #161).
+  using P = TestType;
+  const int n = 8;
+  const fs::path file = fs::temp_directory_path() / "autan-one-layer-slab.msh";
+  {
+    auto node = [&](int i, int k, int j) { return 1 + j * (n + 1) * (n + 1) + k * (n + 1) + i; };
+    std::ofstream out(file);
+    out.precision(17);
+    const int nodes = 2 * (n + 1) * (n + 1);
+    out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
+        << "$PhysicalNames\n2\n2 1 \"walls\"\n3 101 \"fluid\"\n$EndPhysicalNames\n"
+        << "$Entities\n0 0 1 1\n1 0 0 0 1 0.1 1 1 1 0\n1 0 0 0 1 0.1 1 1 101 1 1\n$EndEntities\n"
+        << "$Nodes\n1 " << nodes << " 1 " << nodes << "\n3 1 0 " << nodes << "\n";
+    for (int t = 1; t <= nodes; ++t) out << t << "\n";
+    for (int j = 0; j < 2; ++j) {
+      for (int k = 0; k <= n; ++k) {
+        for (int i = 0; i <= n; ++i) {
+          const bool inner = i > 0 && i < n && k > 0 && k < n;
+          const double dx = inner ? 0.3 / n * std::sin(1.7 * i + 2.9 * k) : 0.0;
+          const double dz = inner ? 0.3 / n * std::cos(2.3 * i + 1.1 * k) : 0.0;
+          out << double(i) / n + dx << " " << 0.1 * j << " " << double(k) / n + dz << "\n";
+        }
+      }
+    }
+    out << "$EndNodes\n";
+    std::vector<std::array<int, 4>> quads;
+    for (int k = 0; k < n; ++k) {
+      for (int i = 0; i < n; ++i) {
+        quads.push_back({node(i, k, 0), node(i, k + 1, 0), node(i + 1, k + 1, 0), node(i + 1, k, 0)});
+        quads.push_back({node(i, k, 1), node(i + 1, k, 1), node(i + 1, k + 1, 1), node(i, k + 1, 1)});
+      }
+    }
+    for (int t = 0; t < n; ++t) {
+      quads.push_back({node(t, 0, 0), node(t + 1, 0, 0), node(t + 1, 0, 1), node(t, 0, 1)});
+      quads.push_back({node(t, n, 0), node(t, n, 1), node(t + 1, n, 1), node(t + 1, n, 0)});
+      quads.push_back({node(0, t, 0), node(0, t, 1), node(0, t + 1, 1), node(0, t + 1, 0)});
+      quads.push_back({node(n, t, 0), node(n, t + 1, 0), node(n, t + 1, 1), node(n, t, 1)});
+    }
+    const auto nq = quads.size();
+    const auto nh = static_cast<std::size_t>(n * n);
+    out << "$Elements\n2 " << nq + nh << " 1 " << nq + nh << "\n2 1 3 " << nq << "\n";
+    std::size_t tag = 1;
+    for (const auto& q : quads) out << tag++ << " " << q[0] << " " << q[1] << " " << q[2] << " " << q[3] << "\n";
+    out << "3 1 5 " << nh << "\n";
+    for (int k = 0; k < n; ++k) {
+      for (int i = 0; i < n; ++i) {
+        out << tag++ << " " << node(i, k, 0) << " " << node(i + 1, k, 0) << " "
+            << node(i + 1, k + 1, 0) << " " << node(i, k + 1, 0) << " " << node(i, k, 1) << " "
+            << node(i + 1, k, 1) << " " << node(i + 1, k + 1, 1) << " " << node(i, k + 1, 1) << "\n";
+      }
+    }
+    out << "$EndElements\n";
+  }
+  const Case c(file.c_str());
+  REQUIRE(c.mesh.n_cells() == n * n);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.3));
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip), std::vector<double>(5 * nb));
+  const double p0 = 1e5, speed = 100.0;
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double x = c.geometry.cell_centroid_x[i], z = c.geometry.cell_centroid_z[i];
+    const auto uc = conserved({1.0 + 0.2 * std::sin(3.0 * x + 2.0 * z),
+                               {speed * std::cos(2.0 * z), 0.0, speed * std::sin(2.0 * x)},
+                               p0 * (1.0 + 0.1 * std::cos(3.0 * x - z))});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
+  }
+  const std::vector<typename P::state> st(u.begin(), u.end());
+  std::vector<typename P::residual> r(5 * nc);
+  e.residual(st, r);
+  const auto surface = c.cell_surface();
+  for (std::size_t i = 0; i < nc; ++i) {
+    // The y faces carry p A each way: their round-off bounds the y-momentum residual.
+    CHECK(std::abs(static_cast<double>(r[2 * nc + i])) <= 64 * eps<P>() * 1.2 * p0 * surface[i]);
   }
 }
