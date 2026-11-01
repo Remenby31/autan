@@ -112,11 +112,10 @@ jobs:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
           PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
         run: |
-          tests='^(autan_halo_tests_[0-9]+_ranks|Several ranks .*)$'
-          n=$(ctest --test-dir build -N -R "$tests" | sed -n 's/^Total Tests: //p')
-          echo "$n multi-rank tests"
-          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 multi-rank tests, found $n"; exit 1; }
-          ctest --test-dir build -R "$tests" --output-on-failure --no-tests=error
+          n=$(ctest --test-dir build -N -L mpi | sed -n 's/^Total Tests: //p')
+          echo "$n multi-rank tests (CTest label mpi)"
+          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 tests labelled mpi, found $n"; exit 1; }
+          ctest --test-dir build -L mpi --output-on-failure --no-tests=error
 
   clang-tidy:
     name: clang-tidy
