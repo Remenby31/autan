@@ -785,6 +785,8 @@ function CaseActions({
   rendered: { python: string; toml: string; plan: Plan | null } | null;
 }) {
   const [copied, setCopied] = useState<"copied" | "refused" | null>(null);
+  const dismiss = useRef<number | undefined>(undefined);
+  useEffect(() => () => clearTimeout(dismiss.current), []);
   const ready = rendered !== null && rendered.plan?.ok === true;
   const copy = async () => {
     if (!rendered) return;
@@ -794,7 +796,8 @@ function CaseActions({
     } catch {
       setCopied("refused");
     }
-    setTimeout(() => setCopied(null), 4000);
+    clearTimeout(dismiss.current);
+    dismiss.current = window.setTimeout(() => setCopied(null), 4000);
   };
   const save = () => {
     if (!rendered) return;
