@@ -162,7 +162,10 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
       int count = 0;
       for (int octave = own - 1; octave <= own + 1; ++octave) {
         const double size = bin_size(octave);
-        const auto reach = static_cast<std::int64_t>(std::ceil(tolerance / size));
+        if (!std::isnormal(size)) continue;
+        // tolerance is in [1e-4 2^own, 1e-4 2^(own+1)): one bin of the own
+        // octave and above, two of the octave below.
+        const std::int64_t reach = tolerance <= size ? 1 : 2;
         std::array<std::int64_t, 3> c{};
         bool inside = true;
         for (std::size_t d = 0; d < 3; ++d) inside = inside && bin(q[d], origin[d], size, c[d]);
