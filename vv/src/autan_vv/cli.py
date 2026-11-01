@@ -78,6 +78,13 @@ def _cmd_cases(args: argparse.Namespace) -> None:
             _say(str(path))
 
 
+def _cmd_oracles(_args: argparse.Namespace) -> None:
+    from autan_vv.oracles.registry import ORACLES  # noqa: PLC0415
+
+    for name in sorted(ORACLES):
+        _say(f"{name}: {ORACLES[name]().description}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
     parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
@@ -120,6 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("case", nargs="?", default="all")
     p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
     p.set_defaults(func=_cmd_cases)
+
+    p = sub.add_parser(
+        "oracles", help="list the exact and reference solutions runs are verified against"
+    )
+    p.set_defaults(func=_cmd_oracles)
 
     args = parser.parse_args(argv)
     try:
