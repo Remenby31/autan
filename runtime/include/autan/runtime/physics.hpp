@@ -158,6 +158,19 @@ struct PhysicsRefusal {
 using PhysicsScope =
     std::function<std::optional<PhysicsRefusal>(const SolverInput& input, int ranks)>;
 
+/// Groups of cells of the global mesh that the partition keeps on one rank, as CSR
+/// (PartitionOptions::group_offsets and group_cells).
+struct CellGroups {
+  std::vector<offset_t> offsets;
+  std::vector<index_t> cells;
+};
+
+/// The groups a physics needs whole on one rank (a smoother's lines), from the global mesh and
+/// its geometry. Every rank calls it with the same mesh before partitioning a run on several
+/// ranks, so it must be deterministic; invalid groups are E0140.
+using PartitionGroups =
+    std::function<CellGroups(const SolverInput& input, const Mesh& mesh, const Geometry& geometry)>;
+
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
  public:
@@ -167,9 +180,10 @@ class PhysicsRegistry {
     /// Whether it runs on several ranks: its norms, loads and other sums
     /// reduce over PhysicsContext::ranks (runtime.md, Ranks).
     bool several_ranks = false;
+    PartitionGroups groups;  ///< empty: no group
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
-           bool several_ranks = false);
+           bool several_ranks = false, PartitionGroups groups = {});
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 

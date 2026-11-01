@@ -1562,9 +1562,11 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
       .factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3, .vary = true};
   const Outcome one = run(doc, options);
   REQUIRE(one.status == ExitStatus::finished);
+  // The physics' groups (each spanning the mesh) stay whole on one rank.
   const fs::path many = run_on_ranks(doc, ranks,
                                      {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
-                                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+                                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1",
+                                      "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
 #ifdef AUTAN_HAVE_CUDA
