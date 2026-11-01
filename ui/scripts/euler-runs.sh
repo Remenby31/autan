@@ -57,7 +57,7 @@ case.monitor(autan.forces("airfoil", ref_area=0.1 * m**2), every=10)
 CASE
 done
 
-run() { autan run "$work/$1.py" --mesh-info "$work/$2.meshinfo.json" --backend cpu --runs "$runs" || [ $? -eq 1 ]; }
+run() { autan run "$work/$1.py" --mesh-info "$work/$2.meshinfo.json" --backend cpu --runs "$runs"; }
 run mms hybrid
 run sod hybrid
 for aoa in 0 2 4 6; do run "naca_$aoa" naca; done
