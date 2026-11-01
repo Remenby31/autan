@@ -8,7 +8,7 @@
       "dirty": false
     },
     "binary_sha256": "3ce82ec072fd1d35f8610e83e62363d7e22f36539aeaaf2b3ab2b2e551e482df",
-    "host": "MacBook-Pro-BaptisteCruvellier",
+    "host": "apple-m4-pro-dev",
     "image": null,
     "image_revision": null,
     "backend": "metal",
@@ -29,7 +29,7 @@
     "os_version": "26.7.1"
   },
   "conditions": {
-    "lock": "/Users/baptistec/.autan-gpu.lock",
+    "lock": "~/.autan-gpu.lock",
     "lock_wait_s": 4.916917532682419e-06,
     "idle_check": {
       "samples": 5,
@@ -54,7 +54,7 @@
     }
   },
   "config": {
-    "mesh": "/Users/baptistec/.claude/jobs/a13286a8/tmp/meshes/hex/hex-n128.msh",
+    "mesh": "~/.claude/jobs/a13286a8/tmp/meshes/hex/hex-n128.msh",
     "policy": "fp32",
     "order": "rcm",
     "layout": "soa",

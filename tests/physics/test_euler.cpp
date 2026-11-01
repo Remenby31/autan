@@ -558,7 +558,7 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
   }
   const auto st = stored(e, u);
   std::vector<typename P::residual> r(5 * nc);
-  e.residual(st, r);
+  e.residual(std::span<const typename P::state>(st), r);
   const auto surface = c.cell_surface();
   for (std::size_t i = 0; i < nc; ++i) {
     INFO("cell " << i);

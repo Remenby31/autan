@@ -18,10 +18,10 @@ The runtime (`autan/kernels/metal.hpp`, `codegen/cpp/metal.mm`, Objective-C++) c
 
 Metal has no FP64. The `fp32+acc64` policy keeps its FP64 roles (residual, accumulation, geometry, parameters) as double-float: an unevaluated sum `hi + lo` of two floats with `|lo| ≤ ulp(hi)/2`, about 48 significant bits. `fp64` is refused: by the generator (`--policies fp64` with `--backends metal`) and by the driver, with E1013.
 
-| Policy | state, grad | residual, accum | geom, param | compute |
-|---|---|---|---|---|
-| `fp32` | float | float | float | float |
-| `fp32+acc64` | float | double-float | double-float | float |
+| Policy | state, grad | residual, accum | geom, param | geom read only as a value | jac | compute |
+|---|---|---|---|---|---|---|
+| `fp32` | float | float | float | float | float | float |
+| `fp32+acc64` | float | double-float | double-float | float | float | float |
 
 | Operation | Algorithm | Error |
 |---|---|---|

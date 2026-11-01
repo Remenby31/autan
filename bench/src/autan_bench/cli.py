@@ -1,6 +1,7 @@
 """Measure, validate and compare Autan benchmark results."""
 
 import argparse
+import os
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -11,6 +12,11 @@ from autan_bench.errors import BenchError, Code
 
 MAX_BASELINE_CV = 0.02
 MIN_ARRAY_OVER_L2 = 4
+
+
+def _env_seconds(name: str) -> float | None:
+    value = os.environ.get(name)
+    return float(value) if value else None
 
 
 def _say(text: str, *, err: bool = False) -> None:
@@ -44,6 +50,7 @@ def _stream(args: argparse.Namespace) -> int:
         suite="stream",
         precision="fp64",
         lock=args.lock,
+        lock_timeout_s=args.lock_timeout,
         max_load_per_cpu=args.max_load,
     )
     return _report(doc, args.out)
@@ -57,6 +64,7 @@ def _run(args: argparse.Namespace) -> int:
         suite=args.suite,
         precision=args.precision,
         lock=args.lock,
+        lock_timeout_s=args.lock_timeout,
         max_load_per_cpu=args.max_load,
     )
     return _report(doc, args.out)
@@ -177,6 +185,14 @@ def parser() -> argparse.ArgumentParser:
         "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
     )
     s.add_argument(
+        "--lock-timeout",
+        type=float,
+        metavar="SECONDS",
+        default=_env_seconds("AUTAN_BENCH_LOCK_TIMEOUT"),
+        help="fail (LOCK_TIMEOUT) if the GPU lock is still held after this long; default: wait"
+        " ($AUTAN_BENCH_LOCK_TIMEOUT)",
+    )
+    s.add_argument(
         "--max-load",
         type=float,
         metavar="PER_CPU",
@@ -195,6 +211,14 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--out", type=Path, required=True, help="result JSON to write")
     r.add_argument(
         "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
+    )
+    r.add_argument(
+        "--lock-timeout",
+        type=float,
+        metavar="SECONDS",
+        default=_env_seconds("AUTAN_BENCH_LOCK_TIMEOUT"),
+        help="fail (LOCK_TIMEOUT) if the GPU lock is still held after this long; default: wait"
+        " ($AUTAN_BENCH_LOCK_TIMEOUT)",
     )
     r.add_argument(
         "--max-load",

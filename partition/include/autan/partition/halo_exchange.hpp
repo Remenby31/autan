@@ -12,10 +12,6 @@
 
 namespace autan {
 
-/// Where the fields an exchange moves live. `cuda` packs and unpacks on the
-/// GPU and hands device buffers to a CUDA-aware MPI.
-enum class MemorySpace : std::uint8_t { host, cuda };
-
 /// Halo exchange of cell fields between the ranks of a partition, one rank
 /// per part. A field is a list of components, each an array of n_cells values
 /// (owned then ghost) in `space`; one call moves at most max_components of
