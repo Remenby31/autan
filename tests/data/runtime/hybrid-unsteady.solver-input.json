@@ -181,7 +181,8 @@
     "steps": 6,
     "dt": 0.01,
     "cfl": null,
-    "average_from": 3
+    "average_from": 3,
+    "linear_solver": null
   },
   "monitors": [
     {

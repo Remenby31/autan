@@ -191,7 +191,8 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
       d["time"]["max_iterations"] = 20;
     } else {
       d["time"] = {
-          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 10}};
+          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"linear_solver", nullptr},
+                   {"average_from", 10}};
     }
   });
   const auto out = run(doc);
@@ -253,8 +254,11 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
+  const char* linear = GENERATE("multigrid", "gauss-seidel");
+  INFO(precision << " " << linear);
   const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
     d["precision"] = precision;
+    d["time"]["linear_solver"] = linear;
     d["time"]["max_iterations"] = 20000;
     d["time"]["residual_orders"] = std::string(precision) == "fp64" ? 10.0 : 5.0;
   });
@@ -287,7 +291,8 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
                      {"steps", budget},
                      {"dt", nullptr},
                      {"cfl", 0.8},
-                     {"average_from", 2}};
+                     {"linear_solver", nullptr},
+                   {"average_from", 2}};
       }
     });
   };
@@ -395,7 +400,8 @@ TEST_CASE("a steady run reports the residual of its second-order scheme from the
                      {"steps", 1},
                      {"dt", nullptr},
                      {"cfl", 0.8},
-                     {"average_from", nullptr}};
+                     {"linear_solver", nullptr},
+                   {"average_from", nullptr}};
       }
     });
   };
@@ -447,13 +453,16 @@ void unsteady_through_pairs(Json& d, int steps) {
                {"steps", steps},
                {"dt", nullptr},
                {"cfl", 0.8},
-               {"average_from", nullptr}};
+               {"linear_solver", nullptr},
+                   {"average_from", nullptr}};
 }
 
 }  // namespace
 
-TEST_CASE("a steady case with periodic pairs is refused before any directory exists", "[euler]") {
-  // The steady solver's Gauss-Seidel does not take image ghosts: E0706 at `periodic`.
+TEST_CASE("a steady multigrid case with periodic pairs is refused before any directory exists",
+          "[euler]") {
+  // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
+  // `time.linear_solver`.
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) { periodic_box(d, "fp64"); });
   const auto out = run(doc);
   INFO(out.err);
@@ -461,7 +470,7 @@ TEST_CASE("a steady case with periodic pairs is refused before any directory exi
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
   CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["location"]["path"] == "periodic");
+  CHECK(diagnostic["location"]["path"] == "time.linear_solver");
 }
 
 TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
@@ -541,6 +550,7 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
                    {"steps", 2},
                    {"dt", nullptr},
                    {"cfl", 0.8},
+                   {"linear_solver", nullptr},
                    {"average_from", nullptr}};
       path = "time.kind";
       field = "time";
@@ -629,6 +639,7 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
                    {"steps", 12},
                    {"dt", nullptr},
                    {"cfl", 0.8},
+                   {"linear_solver", nullptr},
                    {"average_from", nullptr}};
     }
   });
@@ -685,8 +696,9 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   }
 }
 
-TEST_CASE("a steady case on several ranks is refused before any directory exists", "[euler][mpi]") {
-  // The steady solver's Gauss-Seidel is coloured in one mesh's order: E0706, exit 2.
+TEST_CASE("a steady multigrid case on several ranks is refused before any directory exists",
+          "[euler][mpi]") {
+  // The multigrid agglomerates one mesh's cells: E0706 at `time.linear_solver`, exit 2.
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) { inviscid_along_x(d, "fp64"); });
   std::string err;
   CHECK(run_on_ranks(doc, 2, 2, &err).empty());
@@ -701,7 +713,57 @@ TEST_CASE("a steady case on several ranks is refused before any directory exists
     }
   }
   CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["location"]["path"] == "time.kind");
+  CHECK(diagnostic["location"]["path"] == "time.linear_solver");
+}
+
+TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank solution",
+          "[euler][mpi]") {
+  // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
+  // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. The face sums
+  // still follow local order (#199), so the bits differ: converged 10 orders, the fields agree
+  // within 1e-9 of their magnitude, and a fixed rank count repeats bit for bit. Two zones at
+  // different states on the hybrid mesh (farfield around), and the periodic box.
+  const bool periodic = GENERATE(false, true);
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(periodic, ranks);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    if (periodic) {
+      periodic_box(d, "fp64");
+      const double speed = d["freestream"]["speed"].get<double>();
+      d["cell_zones"][0]["initial"]["velocity"] = {0.6 * speed, 0.7 * speed, -0.3 * speed};
+    } else {
+      inviscid_along_x(d, "fp64");
+      for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+    }
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 2000;
+    d["time"]["residual_orders"] = 10.0;
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  CHECK(Json::parse(read(one.run / "run.json"))["status"] == "converged");
+  const fs::path many = run_on_ranks(doc, ranks);
+  REQUIRE(!many.empty());
+  CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
+  double worst = 0.0;
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    const auto a = field(one.run, name), b = field(many, name);
+    REQUIRE(a.size() == b.size());
+    double diff = 0.0, scale = 0.0;
+    for (std::size_t c = 0; c < a.size(); ++c) {
+      diff = std::max(diff, std::abs(a[c] - b[c]));
+      scale = std::max(scale, std::abs(a[c]));
+    }
+    worst = std::max(worst, diff / scale);
+  }
+  INFO("fields differ by " << worst << " of their magnitude");
+  CHECK(worst <= 1e-9);
+  const fs::path again = run_on_ranks(doc, ranks);
+  CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
 }
 #endif
 
@@ -767,7 +829,8 @@ TEST_CASE("a fast flow at low pressure that the kernels resolve is not taken for
                  {"steps", 3},
                  {"dt", nullptr},
                  {"cfl", 0.5},
-                 {"average_from", nullptr}};
+                 {"linear_solver", nullptr},
+                   {"average_from", nullptr}};
   });
   const auto out = run(doc);
   INFO(out.err);
