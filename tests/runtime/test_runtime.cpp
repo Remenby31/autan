@@ -31,6 +31,7 @@
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
@@ -1553,6 +1554,16 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // In RCM order too (AUTAN_CELL_ORDER): partitioned after renumbering, the
+  // outputs mapped back to the mesh's numbering.
+  const fs::path rcm = run_on_ranks(
+      doc, ranks,
+      {"AUTAN_CELL_ORDER=rcm", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+  CHECK(lines_of(rcm / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  CHECK(solution_field(rcm / "solution.cgns", "FlowSolution", "Pressure") ==
+        solution_field(one.run / "solution.cgns", "FlowSolution", "Pressure"));
+  CHECK(wall_solution(rcm / "solution.cgns") == wall_solution(one.run / "solution.cgns"));
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in
@@ -1706,3 +1717,119 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   }
 }
 #endif
+
+TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[runtime][renumber]") {
+  // AUTAN_CELL_ORDER=rcm computes on the mesh renumbered in reverse
+  // Cuthill-McKee order; every output keeps the mesh's numbering.
+  struct Order {
+    Order() { REQUIRE(setenv("AUTAN_CELL_ORDER", "rcm", 1) == 0); }
+    ~Order() { unsetenv("AUTAN_CELL_ORDER"); }
+    Order(const Order&) = delete;
+    Order& operator=(const Order&) = delete;
+  };
+  SECTION("bit for bit when nothing sums over faces: the relaxation physics") {
+    // Fields that vary per cell, forces at every iteration, a cell that
+    // diverges, an initial state and the periodic box: each output mapped back.
+    const bool periodic = GENERATE(false, true);
+    CAPTURE(periodic);
+    const auto edit = [](Json& d) {
+      d["deterministic"] = true;
+      d["monitors"][0]["every"] = 1;
+      d["time"]["max_iterations"] = 12;
+    };
+    const Json doc = periodic ? periodic_input(1.0, edit) : input(edit);
+    const autan_test::RelaxationOptions options{
+        .factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3, .vary = true};
+    const Outcome a = run(doc, options);
+    Outcome b;
+    {
+      const Order rcm;
+      b = run(doc, options);
+    }
+    REQUIRE(b.status == ExitStatus::finished);
+    CHECK(lines_of(a.run / "history.jsonl") == lines_of(b.run / "history.jsonl"));
+    for (const char* field : {"Density", "VelocityX", "Pressure"}) {
+      CAPTURE(field);
+      CHECK(solution_field(a.run / "solution.cgns", "FlowSolution", field) ==
+            solution_field(b.run / "solution.cgns", "FlowSolution", field));
+    }
+    std::ifstream log_in(b.run / "log.jsonl");
+    bool renumbered = false;
+    for (std::string line; std::getline(log_in, line);)
+      renumbered = renumbered || Json::parse(line)["data"].value("order", "") == "rcm";
+    CHECK(renumbered);
+    const auto diverged = [&](const Json& d) {
+      const Outcome o = run(d, {.factor = 0.9, .diverge_at = 3, .diverge_cell = 7});
+      return Json::parse(read(o.run / "run.json"))["diagnostics"];
+    };
+    const Json in_order = diverged(doc);
+    const Order rcm;
+    CHECK(diverged(doc) == in_order);
+    if (!periodic) {
+      Json plain = doc;
+      inviscid(plain);
+      const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
+      const Outcome c = run(from_file, options);
+      unsetenv("AUTAN_CELL_ORDER");
+      const Outcome d = run(from_file, options);
+      CHECK(solution_field(c.run / "solution.cgns", "FlowSolution", "Pressure") ==
+            solution_field(d.run / "solution.cgns", "FlowSolution", "Pressure"));
+    }
+  }
+  SECTION("to round-off under the Euler physics, which sums faces in their order") {
+    // Five explicit SSP-RK3 steps of an inviscid flow at incidence, so not
+    // uniform near the symmetry plane zmax, on each mesh family and in each
+    // precision: only the order of the face sums differs, so every field
+    // agrees to a few units of the precision's epsilon of its magnitude.
+    const char* family = GENERATE("tet", "hex", "poly", "hybrid");
+    const char* precision = GENERATE("fp64", "fp32+acc64");
+    CAPTURE(family, precision);
+    const fs::path mesh_file = data_dir / "mesh" / family / "polyMesh";
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_file);
+    const Json doc = input([&](Json& d) {
+      d["mesh"]["path"] = fs::absolute(mesh_file).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh_file);
+      d["precision"] = precision;
+      inviscid(d);
+      for (auto& b : d["boundaries"]) {
+        if (b["zone"] == "ymin") b["kind"] = "slip";
+      }
+      Json zones = Json::array();
+      for (const auto z : autan::io::meshinfo_zones(mesh).cell) {
+        Json zone = d["cell_zones"][0];
+        zone["zone"] = mesh.cell_zones()[static_cast<std::size_t>(z)].name;
+        zones.push_back(zone);
+      }
+      d["cell_zones"] = zones;
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", 5},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", nullptr}};
+    });
+    autan::runtime::PhysicsRegistry euler;
+    autan::physics::register_euler(euler);
+    const Outcome a = run(doc, euler);
+    REQUIRE(a.status == ExitStatus::finished);
+    Outcome b;
+    {
+      const Order rcm;
+      b = run(doc, euler);
+    }
+    REQUIRE(b.status == ExitStatus::finished);
+    const double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
+    for (const char* field : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
+      CAPTURE(field);
+      const auto x = solution_field(a.run / "solution.cgns", "FlowSolution", field);
+      const auto y = solution_field(b.run / "solution.cgns", "FlowSolution", field);
+      REQUIRE(x.size() == y.size());
+      double scale = 0.0, worst = 0.0;
+      for (std::size_t c = 0; c < x.size(); ++c) {
+        scale = std::max(scale, std::abs(x[c]));
+        worst = std::max(worst, std::abs(x[c] - y[c]));
+      }
+      CAPTURE(worst / (eps * scale));
+      CHECK(worst <= 64 * eps * scale);
+    }
+  }
+}

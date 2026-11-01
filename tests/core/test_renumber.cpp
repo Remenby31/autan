@@ -83,7 +83,8 @@ TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   CHECK(bandwidth(renumbered) < bandwidth(shuffled_mesh));
   CHECK(autan::rcm_order(shuffled_mesh) == autan::rcm_order(shuffled_mesh));
 
-  const autan::Mesh again = autan::renumber_cells(mesh, order);
+  autan::AssemblyMap map;
+  const autan::Mesh again = autan::renumber_cells(mesh, order, &map);
   const autan::Geometry g0 = autan::compute_geometry(mesh);
   const autan::Geometry g1 = autan::compute_geometry(again);
   REQUIRE(again.n_faces() == mesh.n_faces());
@@ -95,7 +96,30 @@ TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   for (std::size_t z = 0; z + 1 < mesh.boundary_zone_offsets().size(); ++z) {
     CHECK(again.boundary_zone_offsets()[z + 1] - again.boundary_zone_offsets()[z] ==
           mesh.boundary_zone_offsets()[z + 1] - mesh.boundary_zone_offsets()[z]);
+  }  // The map names each face's source: the same nodes, zone and cells (by
+  // global id), each source once.
+  REQUIRE(map.face_source.size() == at(again.n_faces()));
+  std::vector<int> seen(at(mesh.n_faces()), 0);
+  const auto nodes = [](const autan::Mesh& m, index_t f) {
+    const auto n = m.face_nodes(f);
+    std::vector<index_t> v(n.begin(), n.end());
+    std::sort(v.begin(), v.end());
+    return v;
+  };
+  const auto cells = [](const autan::Mesh& m, index_t f) {
+    std::vector<std::int64_t> c{m.cell_global_id()[at(m.owner()[at(f)])]};
+    if (f < m.n_interior_faces()) c.push_back(m.cell_global_id()[at(m.neighbour()[at(f)])]);
+    std::sort(c.begin(), c.end());
+    return c;
+  };
+  for (index_t f = 0; f < again.n_faces(); ++f) {
+    const index_t source = map.face_source[at(f)];
+    ++seen[at(source)];
+    CHECK(nodes(again, f) == nodes(mesh, source));
+    CHECK(again.face_zone()[at(f)] == mesh.face_zone()[at(source)]);
+    CHECK(cells(again, f) == cells(mesh, source));
   }
+  CHECK(std::all_of(seen.begin(), seen.end(), [](int k) { return k == 1; }));
 }
 
 TEST_CASE("Renumbering rejects an invalid permutation", "[renumber]") {

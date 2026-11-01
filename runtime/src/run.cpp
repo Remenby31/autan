@@ -28,6 +28,7 @@
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -826,15 +827,21 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
 class Run final : public Log {
  public:
   Run(Prepared& p, const SolverBuild& build, Comm& comm)
-      : p_(p), comm_(comm), geometry_(compute_geometry(p.mesh)), local_(make_part()) {
+      : p_(p),
+        comm_(comm),
+        ordered_(make_ordered()),
+        geometry_(compute_geometry(compute_mesh())),
+        local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
-    if (local_) {
-      ghosts_ = comm_.ghost_exchange(*local_);
+    ghosts_ = local_ ? comm_.ghost_exchange(*local_) : std::make_unique<NoGhosts>();
+    // The physics' cells and faces differ from the mesh's on a partition or
+    // a renumbered mesh: their shares of the start, the initial state and
+    // the face states, in its order.
+    if (local_ || ordered_) {
       if (p_.start) local_start_ = owned_start(*p_.start);
       if (p_.initial) local_initial_ = owned_fields(*p_.initial);
-    } else {
-      ghosts_ = std::make_unique<NoGhosts>();
     }
+    local_states_ = physics_boundary_states();
     // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
@@ -924,6 +931,10 @@ class Run final : public Log {
     path = comm_.broadcast(path);
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
+    if (ordered_) {
+      note("info", "solver", "cells renumbered in reverse Cuthill-McKee order", "",
+           Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
+    }
     if (comm_.size() > 1) log_partition();
     if (gpu_) {
       note(
@@ -948,7 +959,7 @@ class Run final : public Log {
                                  .start = start,
                                  .ghosts = *ghosts_,
                                  .ranks = comm_,
-                                 .boundary_states = p_.boundary_states,
+                                 .boundary_states = local_states_,
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr};
@@ -999,7 +1010,7 @@ class Run final : public Log {
   // whose image ghosts make each periodic face an interior face; its owned
   // cells are the mesh's cells, in order. Otherwise, the mesh itself.
   std::optional<LocalPartition> make_part() {
-    const Mesh& mesh = p_.mesh;
+    const Mesh& mesh = compute_mesh();
     const std::int32_t n = comm_.size();
     if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
@@ -1033,9 +1044,60 @@ class Run final : public Log {
   [[nodiscard]] std::vector<std::int64_t> owned_ids() const {
     const Mesh& mesh = physics_mesh();
     const auto global = mesh.cell_global_id();
-    std::vector<std::int64_t> ids(at(mesh.n_owned_cells()));
-    for (std::size_t c = 0; c < ids.size(); ++c) ids[c] = local_ ? global[c] : std::int64_t(c);
-    return ids;
+    return {global.begin(), global.begin() + mesh.n_owned_cells()};
+  }
+
+  // AUTAN_CELL_ORDER=rcm: the mesh's cells in reverse Cuthill-McKee order
+  // (mesh.md, Renumbering), for memory locality; the outputs keep the mesh's
+  // numbering through cell_global_id and face_source. Unset or "input": the
+  // mesh's order.
+  struct Ordered {
+    Mesh mesh;
+    std::vector<index_t> face_source;  // the mesh face of each face of `mesh`
+  };
+  std::optional<Ordered> make_ordered() {
+    const char* order = std::getenv("AUTAN_CELL_ORDER");
+    const std::string_view name = order == nullptr ? "input" : order;
+    if (name == "input") return std::nullopt;
+    if (name != "rcm") {
+      throw std::runtime_error("AUTAN_CELL_ORDER is '" + std::string(name) + "', not input or rcm");
+    }
+    const auto start = std::chrono::steady_clock::now();
+    AssemblyMap map;
+    Mesh mesh = renumber_cells(p_.mesh, rcm_order(p_.mesh), &map);
+    renumber_seconds_ =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    return Ordered{.mesh = std::move(mesh), .face_source = std::move(map.face_source)};
+  }
+  // The mesh the runtime partitions and the physics computes on: the mesh,
+  // or its renumbered copy.
+  [[nodiscard]] const Mesh& compute_mesh() const { return ordered_ ? ordered_->mesh : p_.mesh; }
+  // The mesh face of face f of the physics' mesh.
+  [[nodiscard]] index_t mesh_face(index_t f) const {
+    const auto g = local_ ? static_cast<index_t>(local_->face_global_id[at(f)]) : f;
+    return ordered_ ? ordered_->face_source[at(g)] : g;
+  }
+
+  // The oracle-state face states in the order of the physics' owned
+  // boundary faces of each zone (PhysicsContext::boundary_states), from
+  // those in the mesh's zone order.
+  [[nodiscard]] std::map<index_t, std::vector<double>> physics_boundary_states() const {
+    std::map<index_t, std::vector<double>> out;
+    const Mesh& mesh = physics_mesh();
+    const auto offsets = mesh.boundary_zone_offsets();
+    const auto mesh_offsets = p_.mesh.boundary_zone_offsets();
+    for (const auto& [zone, states] : p_.boundary_states) {
+      const index_t first = mesh_offsets[at(zone)];
+      const auto total = at(mesh_offsets[at(zone) + 1] - first);
+      const auto n = at(offsets[at(zone) + 1] - offsets[at(zone)]);
+      std::vector<double> paired(5 * n);
+      for (std::size_t j = 0; j < n; ++j) {
+        const auto row = at(mesh_face(offsets[at(zone)] + static_cast<index_t>(j)) - first);
+        for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = states[k * total + row];
+      }
+      out.emplace(zone, std::move(paired));
+    }
+    return out;
   }
 
   // Owned and ghost cells of each rank, in log.jsonl.
@@ -1054,7 +1116,7 @@ class Run final : public Log {
     write("info", "mpi", "mesh partitioned over " + std::to_string(comm_.size()) + " ranks", "",
           Json{{"ranks", comm_.size()}, {"owned_cells", owned}, {"ghost_cells", ghosts}}.dump());
   }
-  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
+  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : compute_mesh(); }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
   }
@@ -1334,17 +1396,13 @@ class Run final : public Log {
     // face, ascending, and `slots` their positions in s.wall_faces.
     std::vector<index_t> physics_faces;
     std::vector<std::int64_t> slots;
-    if (local_) {
-      for (index_t f = local_->mesh.n_interior_faces(); f < local_->mesh.n_owned_faces(); ++f) {
-        const auto global = static_cast<index_t>(local_->face_global_id[at(f)]);
-        const auto it = std::ranges::lower_bound(s.wall_faces, global);
-        if (it == s.wall_faces.end() || *it != global) continue;
-        physics_faces.push_back(f);
-        slots.push_back(it - s.wall_faces.begin());
-      }
-    } else {
-      physics_faces = s.wall_faces;
-      for (std::size_t k = 0; k < physics_faces.size(); ++k) slots.push_back(std::int64_t(k));
+    const Mesh& own = physics_mesh();
+    for (index_t f = own.n_interior_faces(); f < own.n_owned_faces(); ++f) {
+      const index_t global = mesh_face(f);
+      const auto it = std::ranges::lower_bound(s.wall_faces, global);
+      if (it == s.wall_faces.end() || *it != global) continue;
+      physics_faces.push_back(f);
+      slots.push_back(it - s.wall_faces.begin());
     }
     try {
       s.fields = physics_->fields(false);
@@ -1473,8 +1531,11 @@ class Run final : public Log {
   Comm& comm_;
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
+  double renumber_seconds_ = 0.0;
+  std::optional<Ordered> ordered_;
   Geometry geometry_;
   std::optional<LocalPartition> local_;
+  std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial

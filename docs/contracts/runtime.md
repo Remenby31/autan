@@ -16,9 +16,9 @@ On several ranks, or on one with periodic pairs, `mesh` and `geometry` are those
 
 With `devices.kind = cuda`, each rank runs on CUDA device (its rank among the ranks of its host) modulo (the devices it sees), made current on the thread that calls the physics, with a non-blocking stream of its own: `PhysicsContext::device` and `PhysicsContext::stream` (a `cudaStream_t`); on the CPU they are -1 and null. The log's `cuda` event names rank 0's device. Nothing falls back to the CPU: a kind this build does not drive is `E0706` (`data.path` `devices.kind`), and a CUDA build that sees no device is `E0807` (`data.visible`, `data.needed`), both before any directory exists.
 
-## Devices
+## Cell order
 
-With `devices.kind = cuda`, each rank runs on CUDA device (its rank among the ranks of its host) modulo (the devices it sees), made current on the thread that calls the physics, with a non-blocking stream of its own: `PhysicsContext::device` and `PhysicsContext::stream` (a `cudaStream_t`); on the CPU they are -1 and null. The log's `cuda` event names rank 0's device. Nothing falls back to the CPU: a kind this build does not drive is `E0706` (`data.path` `devices.kind`), and a CUDA build that sees no device is `E0807` (`data.visible`, `data.needed`), both before any directory exists.
+With `AUTAN_CELL_ORDER=rcm` in its environment, `autan-run` renumbers the mesh's cells in reverse Cuthill-McKee order (`rcm_order`, [mesh.md](mesh.md)) before it partitions them, so that neighbours sit close in memory, and logs it (`order`, `seconds`). The physics computes on that order; every output keeps the mesh's numbering: fields by `cell_global_id`, wall fields, loads and face states through the renumbered faces' source faces, the diverged cell by its mesh index. Unset or `input`, the mesh's own order. Results agree with those in the mesh's order to the round-off of the face sums' order: bit for bit for a physics whose sums do not depend on it, a few units of the precision's epsilon for the Euler physics.
 
 ## Ranks
 

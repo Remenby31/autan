@@ -145,7 +145,7 @@ std::vector<index_t> rcm_order(const Mesh& mesh) {
   return order;
 }
 
-Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
+Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old, AssemblyMap* map) {
   const auto n_cells = at(mesh.n_cells());
   if (new_to_old.size() != n_cells) {
     throw Error(ErrorCode::mesh_index_out_of_range, "permutation size differs from the cell count");
@@ -193,7 +193,8 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
   in.cell_zones.assign(mesh.cell_zones().begin(), mesh.cell_zones().end());
   in.periodic.assign(mesh.periodic_pairs().begin(), mesh.periodic_pairs().end());
   in.source = mesh.source();
-  return assemble(std::move(in));
+  // Input face f is face f of `mesh`, so the map's face_source names them.
+  return assemble(std::move(in), map);
 }
 
 }  // namespace autan

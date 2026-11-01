@@ -178,14 +178,17 @@ class Relaxation final : public autan::runtime::Physics {
     check_ghosts();
     const auto& time = context_.input.time;
     if (time.kind == "unsteady") report.time_step = time.dt.value_or(1e-3);
-    // Cells diverge on every rank that owns one; each rank reports its
-    // least, owned cells being in mesh order.
+    // Cells diverge on every rank that owns one; each rank reports the one of
+    // least mesh index, whatever the order of its cells.
     if (iteration == options_.diverge_at) {
       const auto& mesh = context_.mesh;
+      const auto id = [&](autan::index_t c) {
+        return mesh.cell_global_id()[static_cast<std::size_t>(c)];
+      };
       for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
-        if (mesh.cell_global_id()[static_cast<std::size_t>(c)] < options_.diverge_cell) continue;
+        if (id(c) < options_.diverge_cell) continue;
         state_[0].values[static_cast<std::size_t>(c)] = std::numeric_limits<double>::quiet_NaN();
-        if (!report.diverged_cell) report.diverged_cell = c;
+        if (!report.diverged_cell || id(c) < id(*report.diverged_cell)) report.diverged_cell = c;
       }
     }
     return report;
