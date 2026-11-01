@@ -458,9 +458,10 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
       [](const autan::runtime::PhysicsContext& context) {
         return std::make_unique<autan_test::Relaxation>(context, autan_test::RelaxationOptions{});
       },
-      [refuse](
-          const autan::runtime::SolverInput& in) -> std::optional<autan::runtime::PhysicsRefusal> {
-        if (!refuse) return std::nullopt;
+      [refuse](const autan::runtime::SolverInput& in,
+               int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        // The scope sees the run's rank count: one, here.
+        if (!refuse || ranks != 1) return std::nullopt;
         return autan::runtime::PhysicsRefusal{
             .message = "refused",
             .path = "cell_zones[1].medium",
@@ -1162,8 +1163,10 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(d["status"] == "diverged");
   CHECK(d["diagnostics"] == Json::parse(read(diverged.run / "run.json"))["diagnostics"]);
 
-  // A physics registered for one rank refuses several before any directory.
+  // A physics registered for one rank refuses several before any directory,
+  // and a scope refuses by the rank count it is given.
   CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_ONE_RANK=1"}, 2).empty());
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_REFUSE_RANKS=" + std::to_string(ranks)}, 2).empty());
 
   // A physics failure on the last rank alone, the others waiting for it in a
   // collective call, ends every rank with status 1 and a failed run.json.
