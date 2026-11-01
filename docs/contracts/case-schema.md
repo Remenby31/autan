@@ -62,7 +62,7 @@ ref_area = "191.84 m ** 2"
 
 A dimensional value is written as a string `"<number> <unit>"`, for example `"7.0 m"`, `"101325.0 Pa"`, `"1.716e-05 Pa * s"`. Units are parsed by [Pint](https://pint.readthedocs.io) with its default registry. Each field declares a dimension; a value of another dimension is rejected (`E0301`), a bare number in a dimensional field is rejected (`E0302`), an unknown unit is rejected (`E0303`). Angles need an angle unit (`deg`, `rad`): a bare `19.57` is ambiguous and rejected. Dimensionless fields (`mach`, `re`, `gamma`, `prandtl`) are plain numbers.
 
-Values keep the unit they were written in; consumers convert to SI. Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
+Values keep the unit they were written in; consumers convert to SI. The Python builders take a Pint quantity or its text. A quantity built in Python is held as its text reads back: a 64-bit float in Pint's short unit, so the case, its document and its hash agree. A unit whose text does not read back with the field's dimension (exponents are written with six significant digits) is rejected (`E0301`). Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
 
 ## Tree
 

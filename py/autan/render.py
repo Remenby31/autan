@@ -1,9 +1,7 @@
-"""The canonical Python rendering of a case: SDK code that ``autan.load`` turns back into the
-same case."""
-
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -11,14 +9,8 @@ import pint
 from pydantic import BaseModel
 
 from autan import gases, materials, units
-from autan.schema import (
-    CaseSpec,
-    Compressible,
-    Fluid,
-    Freestream,
-    Spec,
-    Steady,
-)
+from autan.schema import CaseSpec, Compressible, Fluid, Freestream, Spec, Steady
+from autan.units import format_quantity
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -26,8 +18,15 @@ if TYPE_CHECKING:
 WIDTH = 100
 INDENT = "    "
 # The temperature CaseSpec gives a compressible freestream that has none.
-_FILLED_TEMPERATURE = 288.15 * units.K
-_UNIT_NAMES = frozenset(name for name, value in vars(units).items() if isinstance(value, pint.Unit))
+_FILLED_TEMPERATURE = "288.15 K"
+_EXPORTED_UNITS = sorted(
+    (name for name, value in vars(units).items() if isinstance(value, pint.Unit)),
+    key=len,
+    reverse=True,
+)
+_UNIT = "(?:" + "|".join(map(re.escape, _EXPORTED_UNITS)) + r")(?: \*\* [0-9.]+)?"
+# Pint's short unit text when every unit in it is one autan.units exports.
+_EXPORTED_TEXT = re.compile(rf"(?:1 / )?{_UNIT}(?: [*/] {_UNIT})*")
 _LIBRARY = [
     (f"autan.{module.__name__.rsplit('.', 1)[1]}.{name}", value)
     for module in (gases, materials)
@@ -36,21 +35,17 @@ _LIBRARY = [
 ]
 
 
-class _Imports:
-    def __init__(self) -> None:
-        self.units: set[str] = set()
-
-    def lines(self) -> list[str]:
-        lines = ["import autan"]
-        if self.units:
-            lines.append(f"from autan.units import {', '.join(_sorted_names(self.units))}")
-        return lines
+def to_python(spec: CaseSpec) -> str:
+    value = _Values()
+    body = _statements(spec, value)
+    imports = ["import autan"]
+    if value.units:
+        imports.append(f"from autan.units import {', '.join(_sorted_names(value.units))}")
+    return "\n".join([*imports, "", *body]) + "\n"
 
 
 def _sorted_names(names: Iterable[str]) -> list[str]:
-    """ruff's isort order within one import: constants (uppercase, longer than one character),
-    then classes, then the rest, each case-insensitively."""
-
+    # ruff's isort order: constants (uppercase, longer than one character), classes, the rest.
     def kind(name: str) -> int:
         if len(name) > 1 and name.isupper():
             return 0
@@ -59,23 +54,11 @@ def _sorted_names(names: Iterable[str]) -> list[str]:
     return sorted(names, key=lambda name: (kind(name), name.lower(), name))
 
 
-def to_python(spec: CaseSpec) -> str:
-    """Render ``spec`` as SDK code (see ``autan.Case.to_python``)."""
-    imports = _Imports()
-    body = _statements(spec, imports)
-    return "\n".join([*imports.lines(), "", *body]) + "\n"
-
-
-def _statements(spec: CaseSpec, imports: _Imports) -> list[str]:
-    value = _Values(imports)
-    out = [
-        _statement(
-            "case", _Call("autan.Case", (value(spec.name), _Keyword("mesh", value(spec.mesh))))
-        )
-    ]
-    out.append(_statement("case.physics", value(spec.physics)))
+def _statements(spec: CaseSpec, value: _Values) -> list[str]:
+    case = _Call("autan.Case", (value(spec.name), _Keyword("mesh", value(spec.mesh))))
+    out = [_statement("case", case), _statement("case.physics", value(spec.physics))]
     out.append(_statement("", _Call("case.freestream", value.keywords(_freestream(spec)))))
-    if spec.time != Steady():
+    if not _same(spec.time, Steady()):
         out.append(_statement("case.time", value(spec.time)))
     if spec.initial_state is not None:
         out.append(_statement("case.initial_state", value(spec.initial_state)))
@@ -83,18 +66,16 @@ def _statements(spec: CaseSpec, imports: _Imports) -> list[str]:
         out.append(_statement("case.verification", value(spec.verification.manufactured)))
     for zone in spec.cell_zones:
         medium = zone.medium
-        selector = f"case.cell_zone({_flat(value(zone.zones))})"
+        selector = _Call("case.cell_zone", (value(zone.zones),))
         arguments: tuple[_Expr | _Keyword, ...] = (value(medium.material),)
-        if isinstance(medium, Fluid):
-            if medium.initial is not None:
-                arguments += (_Keyword("initial", value(medium.initial)),)
-            out.append(_statement("", _Call(f"{selector}.fluid", arguments)))
-        else:
-            out.append(_statement("", _Call(f"{selector}.solid", arguments)))
+        if isinstance(medium, Fluid) and medium.initial is not None:
+            arguments += (_Keyword("initial", value(medium.initial)),)
+        out.append(_statement("", _Call(f".{medium.kind}", arguments, selector)))
     for rule in spec.boundaries:
         condition = rule.condition
-        method = f"case.boundary({_flat(value(rule.zones))}).{condition.kind.replace('-', '_')}"
-        out.append(_statement("", _Call(method, value.keywords(condition))))
+        selector = _Call("case.boundary", (value(rule.zones),))
+        method = f".{condition.kind.replace('-', '_')}"
+        out.append(_statement("", _Call(method, value.keywords(condition), selector)))
     for monitor in spec.monitors:
         given = value.keywords(monitor, skip=frozenset({"surfaces", "every"}))
         forces = _Call("autan.forces", (value(monitor.surfaces), *given))
@@ -104,23 +85,43 @@ def _statements(spec: CaseSpec, imports: _Imports) -> list[str]:
 
 
 def _freestream(spec: CaseSpec) -> Freestream:
-    """The freestream as the case gave it: without the temperature CaseSpec filled in."""
     fs = spec.freestream
-    if isinstance(spec.physics, Compressible) and fs.temperature == _FILLED_TEMPERATURE:
+    if (
+        isinstance(spec.physics, Compressible)
+        and fs.temperature is not None
+        and format_quantity(fs.temperature) == _FILLED_TEMPERATURE
+    ):
         return fs.model_copy(update={"temperature": None})
     return fs
 
 
-class _Values:
-    """Python expressions of case values."""
+def _document(value: Any) -> Any:
+    if isinstance(value, Spec):
+        return (type(value), value.model_dump(mode="json", by_alias=True))
+    if isinstance(value, pint.Quantity):
+        return format_quantity(value)
+    if isinstance(value, tuple | list):
+        return [_document(item) for item in value]
+    if isinstance(value, float):
+        return repr(value)
+    return value
 
-    def __init__(self, imports: _Imports) -> None:
-        self.imports = imports
+
+def _same(a: Any, b: Any) -> bool:
+    # Equal as the case document writes them: 0 rad is not 0 deg, -0.0 is not 0.0.
+    return bool(_document(a) == _document(b))
+
+
+class _Values:
+    def __init__(self) -> None:
+        self.units: set[str] = set()
 
     def __call__(self, value: Any) -> _Expr:
         if isinstance(value, pint.Quantity):
             return self.quantity(value)
-        if isinstance(value, bool | int | float) or value is None:
+        if isinstance(value, float):
+            return _number(value)
+        if isinstance(value, bool | int) or value is None:
             return repr(value)
         if isinstance(value, str):
             return _string(value)
@@ -133,40 +134,57 @@ class _Values:
 
     def model(self, model: Spec) -> _Expr:
         for name, library in _LIBRARY:
-            if model == library:
+            if _same(model, library):
                 return name
         return _Call(f"autan.{type(model).__name__}", self.keywords(model))
 
     def keywords(
         self, model: BaseModel, skip: frozenset[str] = frozenset()
     ) -> tuple[_Keyword, ...]:
-        """``key=value`` for each field of ``model`` that differs from its default."""
         found = []
         for key, field in type(model).model_fields.items():
             if key in skip or key in ("kind", "model"):
                 continue
             mine = getattr(model, key)
-            if not field.is_required() and mine == field.get_default(call_default_factory=True):
+            if not field.is_required() and _same(
+                mine, field.get_default(call_default_factory=True)
+            ):
                 continue
             found.append(_Keyword(key, self(mine)))
         return tuple(found)
 
-    def quantity(self, quantity: pint.Quantity) -> str:
-        magnitude = repr(float(quantity.magnitude))
-        text = f"{quantity.units:~D}"
-        symbols = set(re.findall(r"[A-Za-z_]\w*", text))
-        if not symbols <= _UNIT_NAMES:
-            return f"autan.units.Quantity({magnitude}, {_string(text)})"
-        self.imports.units |= symbols
-        expression = text.replace(" ** ", "**")
+    def quantity(self, quantity: pint.Quantity) -> _Expr:
+        text = format_quantity(quantity)
+        unit = text.split(" ", 1)[1]
+        if not _EXPORTED_TEXT.fullmatch(unit):
+            return _string(text)
+        self.units |= set(re.findall(r"[A-Za-z]+", unit))
+        magnitude = _number(float(quantity.magnitude))
+        expression = unit.replace(" ** ", "**")
         if expression.startswith("1 / "):
-            return f"{magnitude} / {expression[4:]}"
-        return f"{magnitude} * {expression}"
+            return _Quantity(f"{magnitude} / {expression.removeprefix('1 / ')}", _string(text))
+        return _Quantity(f"{magnitude} * {expression}", _string(text))
+
+
+def _number(value: float) -> str:
+    # ruff writes a positive exponent without its sign.
+    return repr(value).replace("e+", "e")
 
 
 def _string(text: str) -> str:
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    return f'"{escaped}"'
+    # ruff's preferred quotes: double, unless single quotes need fewer escapes.
+    quote = "'" if text.count('"') > text.count("'") else '"'
+    body = "".join(
+        "\\\\"
+        if char == "\\"
+        else f"\\{quote}"
+        if char == quote
+        else char
+        if char.isprintable()
+        else repr(char)[1:-1]
+        for char in text
+    )
+    return f"{quote}{body}{quote}"
 
 
 @dataclass(frozen=True)
@@ -177,52 +195,80 @@ class _Keyword:
 
 @dataclass(frozen=True)
 class _Call:
-    """``head(arguments)``; a tuple when ``head`` is empty."""
-
+    # ``receiver.head(arguments)``; a tuple when ``head`` is empty.
     head: str
     arguments: tuple[_Expr | _Keyword, ...]
+    receiver: _Call | None = None
 
 
-_Expr = str | _Call
+@dataclass(frozen=True)
+class _Quantity:
+    # A quantity as an expression of autan.units, or as its text where the expression would
+    # need a line of its own that it does not fit on.
+    expression: str
+    text: str
+
+
+_Expr = str | _Call | _Quantity
+
+
+def _width(text: str) -> int:
+    # Display width, as ruff measures lines: East Asian wide characters take two columns.
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
 
 
 def _flat(expr: _Expr | _Keyword) -> str:
     if isinstance(expr, str):
         return expr
+    if isinstance(expr, _Quantity):
+        return expr.expression
     if isinstance(expr, _Keyword):
         return f"{expr.name}={_flat(expr.value)}"
-    inner = ", ".join(_flat(argument) for argument in expr.arguments)
-    if not expr.head and len(expr.arguments) == 1:
-        inner += ","
-    return f"{expr.head}({inner})"
+    return f"{_head(expr)}({_joined(expr)})"
+
+
+def _head(call: _Call) -> str:
+    return (_flat(call.receiver) if call.receiver else "") + call.head
+
+
+def _joined(call: _Call) -> str:
+    inner = ", ".join(_flat(argument) for argument in call.arguments)
+    return inner + "," if not call.head and len(call.arguments) == 1 else inner
 
 
 def _layout(expr: _Expr | _Keyword, indent: int, column: int, tail: int) -> str:
-    """``expr`` starting at ``column`` of a line indented by ``indent``, followed by ``tail``
-    characters on its last line, broken the way ruff format breaks it."""
+    # ``expr`` from ``column`` on a line indented by ``indent``, ``tail`` columns following it,
+    # broken as ruff format breaks it: the last brackets first, unless what precedes them does
+    # not fit, then the receiver's.
     flat = _flat(expr)
-    if isinstance(expr, str) or column + len(flat) + tail <= WIDTH:
+    if isinstance(expr, str) or column + _width(flat) + tail <= WIDTH:
         return flat
+    if isinstance(expr, _Quantity):
+        return expr.text
     if isinstance(expr, _Keyword):
         prefix = f"{expr.name}="
         return prefix + _layout(expr.value, indent, column + len(prefix), tail)
+    if expr.receiver and (not expr.arguments or column + _width(_head(expr)) + 1 > WIDTH):
+        receiver = _layout(expr.receiver, indent, column, len(expr.head) + 1)
+        last = _width(receiver.rsplit("\n", 1)[-1])
+        if "\n" not in receiver:
+            last += column
+        return receiver + _layout(_Call(expr.head, expr.arguments), indent, last, tail)
+    head = _head(expr)
     inner = indent + len(INDENT)
-    joined = ", ".join(_flat(argument) for argument in expr.arguments)
-    if not expr.head and len(expr.arguments) == 1:
-        joined += ","
-    if inner + len(joined) <= WIDTH:
-        return f"{expr.head}(\n{' ' * inner}{joined}\n{' ' * indent})"
+    joined = _joined(expr)
+    if expr.head and inner + _width(joined) <= WIDTH:
+        return f"{head}(\n{' ' * inner}{joined}\n{' ' * indent})"
     if expr.head and len(expr.arguments) == 1:
-        # One argument has no comma to split at: ruff breaks inside it, without a trailing comma.
+        # No comma to split at: ruff breaks inside the argument, without a trailing comma.
         argument = _layout(expr.arguments[0], inner, inner, 0)
-        return f"{expr.head}(\n{' ' * inner}{argument}\n{' ' * indent})"
+        return f"{head}(\n{' ' * inner}{argument}\n{' ' * indent})"
     lines = "".join(
         f"{' ' * inner}{_layout(argument, inner, inner, 1)},\n" for argument in expr.arguments
     )
-    return f"{expr.head}(\n{lines}{' ' * indent})"
+    return f"{head}(\n{lines}{' ' * indent})"
 
 
 def _statement(target: str, expr: _Expr) -> str:
-    """``target = expr``, or the bare call ``expr`` when ``target`` is empty."""
     prefix = f"{target} = " if target else ""
     return prefix + _layout(expr, 0, len(prefix), 0)
