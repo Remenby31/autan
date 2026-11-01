@@ -681,7 +681,7 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
 }
 
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
-  const Json doc = input([](Json& d) { d["deterministic"] = true; });
+  const Json doc = input([](Json& d) { d["reproducibility"] = "run"; });
   const Outcome a = run(doc);
   const Outcome b = run(doc);
   CHECK(read(a.run / "history.jsonl") == read(b.run / "history.jsonl"));
@@ -913,7 +913,7 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   const autan_test::RelaxationOptions options{.growth = 1e-3};
   const auto budget = [&](std::int64_t n) {
     return [steady, n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       if (steady)
         d["time"]["max_iterations"] = n;
@@ -1395,7 +1395,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   options.sleep_at = 15;
   const auto doc = [](std::int64_t n) {
     return input([n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["time"]["max_iterations"] = n;
     });
   };
@@ -1553,7 +1553,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   const int ranks = GENERATE(2, 4);
   CAPTURE(periodic, ranks);
   const auto edit = [](Json& d) {
-    d["deterministic"] = true;
+    d["reproducibility"] = "run";
     d["monitors"][0]["every"] = 1;
     d["time"]["max_iterations"] = 12;
   };
@@ -1567,6 +1567,28 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // Reproducibility "ranks": a partition even on one rank, and face keys that
+  // match the mesh file on 1 and N ranks (the physics checks them); a run on
+  // several ranks in another mode says its results depend on the count.
+  Json keyed = doc;
+  keyed["reproducibility"] = "ranks";
+  autan_test::RelaxationOptions checking = options;
+  checking.check_keys = true;
+  REQUIRE(run(keyed, checking).status == ExitStatus::finished);
+  const fs::path many_keyed =
+      run_on_ranks(keyed, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
+  CHECK(Json::parse(read(many_keyed / "run.json"))["status"] == "completed");
+  const auto has_event = [](const fs::path& run_dir) {
+    std::ifstream in(run_dir / "log.jsonl");
+    for (std::string line; std::getline(in, line);) {
+      if (Json::parse(line)["data"].contains("mode")) return true;
+    }
+    return false;
+  };
+  CHECK(has_event(many));
+  CHECK_FALSE(has_event(many_keyed));
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in
@@ -1693,7 +1715,7 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   CAPTURE(ranks);
   const auto steps = [](std::int64_t n) {
     return [n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       d["time"]["steps"] = n;
     };
