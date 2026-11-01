@@ -21,14 +21,12 @@ MESH_FILES = {"crm-hl.cgns": b"crm-hl fixture", "heat-exchanger.msh": b"heat-exc
 
 
 def identity_fields() -> list[str]:
-    """The fields results.md#identity lists, in order, read from that page."""
     page = (ROOT / "docs" / "contracts" / "results.md").read_text()
     section = page.split("### Identity\n", 1)[1].split("\n## ", 1)[0]
     return re.findall(r"^\d+\. `([a-z0-9_.]+)`$", section, flags=re.MULTILINE)
 
 
 def identity_of(run: dict[str, Any]) -> str:
-    """``identity`` as results.md#identity lists its fields, read from that page."""
     parts = []
     for path in identity_fields():
         if path.startswith("start.") and run["start"] is None:

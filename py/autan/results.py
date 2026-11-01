@@ -179,9 +179,12 @@ IDENTITY = (
 
 def run_identity(run: RunInfo | dict[str, Any]) -> str:
     """The ``identity`` of a run from its ``run.json`` fields (results.md#identity): ``run`` is a
-    ``RunInfo`` or the ``run.json`` document. Its own ``identity`` field is not read, so a
+    ``RunInfo`` or the ``run.json`` document, which is validated as a ``RunInfo`` first
+    (pydantic ``ValidationError`` otherwise). Its own ``identity`` field is not read, so a
     writer computes the value to record and a reader the value to compare."""
-    document = run.document() if isinstance(run, RunInfo) else run
+    if not isinstance(run, RunInfo):
+        run = RunInfo.model_validate({**run, "identity": "0" * 64})
+    document = run.document()
     parts = []
     for path in IDENTITY:
         if path.startswith("start.") and document.get("start") is None:

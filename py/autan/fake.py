@@ -243,7 +243,7 @@ class FakeBackend:
         devices = Devices(kind="cpu", count=1)
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
-            identity="0" * 64,  # replaced below, once the fields it hashes are set
+            identity="0" * 64,
             status="running",
             case=CaseIdentity(name=spec.name, sha256=spec.hash()),
             mesh=MeshIdentity(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
