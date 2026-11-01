@@ -121,8 +121,10 @@ export function CommandPalette({
               {offered.map((s) => (
                 <Item
                   key={s.name}
-                  // Unique by the study's newest run: two studies never share an entry.
-                  value={`compare ${s.name} ${s.label} ${s.ids[0]}`}
+                  // A study is one case name: its value is that name, quoted, which stays the same
+                  // as runs come and never reads as another study's; its label is searched too.
+                  value={`compare study ${JSON.stringify(s.name)}`}
+                  keywords={["compare", s.name, s.label]}
                   icon={<GitCompareArrows className="size-4" />}
                   title={`${s.name} · ${s.label}`}
                   onSelect={() =>
