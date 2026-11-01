@@ -871,7 +871,7 @@ class Run final : public Log {
     const std::string backend = in.device_kind;
     std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" +
                         in.precision + "\n" + backend + "\n" + in.device_kind + "\n" +
-                        std::to_string(in.device_count);
+                        std::to_string(in.device_count) + "\n" + cell_order();
     Json start = nullptr;
     if (in.start) {
       const Start& s = *in.start;
@@ -906,6 +906,7 @@ class Run final : public Log {
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
+        {"cell_order", cell_order()},
         {"started", started_at},
         {"finished", nullptr},
         {"iterations", 0},
@@ -1113,6 +1114,8 @@ class Run final : public Log {
     if (!ordered_) return g;
     return renumber_geometry(g, ordered_->new_to_old, ordered_->map);
   }
+  // The cell order the run computes in, as run.json records it.
+  [[nodiscard]] const char* cell_order() const { return ordered_ ? "rcm" : "input"; }
   // The mesh the runtime partitions and the physics computes on: the mesh,
   // or its renumbered copy.
   [[nodiscard]] const Mesh& compute_mesh() const { return ordered_ ? ordered_->mesh : p_.mesh; }

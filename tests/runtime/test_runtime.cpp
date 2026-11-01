@@ -315,11 +315,13 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
                          std::regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")));
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
   CHECK(info["solver"] == Json{{"version", "0.0.0"}, {"commit", build.commit}, {"backend", "cpu"}});
-  // identity: SHA-256 of the seven fields joined by "\n" (results.md).
+  // identity: SHA-256 of the eight fields joined by "\n" (results.md); the
+  // cell order is RCM by default.
+  CHECK(info["cell_order"] == "rcm");
   std::string expected;
   picosha2::hash256_hex_string(doc["case"]["sha256"].get<std::string>() + "\n" +
                                    doc["mesh"]["sha256"].get<std::string>() + "\n" + build.commit +
-                                   "\nfp32+acc64\ncpu\ncpu\n1",
+                                   "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
                                expected);
   CHECK(info["identity"] == expected);
   CHECK(read(o.run / "case.toml") == doc["case"]["toml"].get<std::string>());
@@ -973,13 +975,13 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
-  // identity: the seven parts, then the start's identity, mode, iterations
+  // identity: the eight parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
   std::string identity;
   picosha2::hash256_hex_string(second["case"]["sha256"].get<std::string>() + "\n" +
                                    second["mesh"]["sha256"].get<std::string>() + "\n" +
-                                   build.commit + "\nfp32+acc64\ncpu\ncpu\n1\n" +
+                                   build.commit + "\nfp32+acc64\ncpu\ncpu\n1\nrcm\n" +
                                    s["identity"].get<std::string>() + "\ncontinue\n" +
                                    std::to_string(s["iterations"].get<int>()) + "\n" +
                                    s["solution_sha256"].get<std::string>(),
@@ -1871,6 +1873,12 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     REQUIRE(a.status == ExitStatus::finished);
     const Outcome b = run(doc, options);
     REQUIRE(b.status == ExitStatus::finished);
+    // The order is recorded and part of the identity (results.md).
+    const Json info_a = Json::parse(read(a.run / "run.json"));
+    const Json info_b = Json::parse(read(b.run / "run.json"));
+    CHECK(info_a["cell_order"] == "input");
+    CHECK(info_b["cell_order"] == "rcm");
+    CHECK(info_a["identity"] != info_b["identity"]);
     CHECK(lines_of(a.run / "history.jsonl") == lines_of(b.run / "history.jsonl"));
     for (const char* field : {"Density", "VelocityX", "Pressure"}) {
       CAPTURE(field);
