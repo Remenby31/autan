@@ -89,8 +89,9 @@ def case(
 ) -> autan.Case:
     """The case of `condition` (a key of CONDITIONS) on the NACA 0012 slab `mesh`.
 
-    Slip airfoil, characteristic far field, symmetry planes on the two faces of the layer; forces on
-    the airfoil with reference chord 1 m (the paper's, although the sharp-edged chord is 1.0089),
+    Slip airfoil, characteristic far field, symmetry planes on the two faces of the layer; at a
+    nonzero angle of attack the far field carries the point vortex of the airfoil's lift about the
+    quarter chord, as in the FLO82 references of Vassberg and Jameson. Forces on the airfoil with reference chord 1 m (the paper's, although the sharp-edged chord is 1.0089),
     reference area chord x span and moments about the quarter chord.
     """
     if condition not in CONDITIONS:
@@ -107,7 +108,11 @@ def case(
     )
     result.time = autan.Steady(max_iterations=max_iterations, residual_orders=residual_orders)
     result.boundary("airfoil").slip()
-    result.boundary("farfield").farfield()
+    if c.alpha_deg != 0.0:
+        vortex = autan.PointVortex(surfaces="airfoil", center=(0.25 * m, 0.0 * m, 0.0 * m))
+        result.boundary("farfield").farfield(point_vortex=vortex)
+    else:
+        result.boundary("farfield").farfield()
     result.boundary("back").symmetry()
     result.boundary("front").symmetry()
     result.monitor(
