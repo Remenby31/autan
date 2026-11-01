@@ -39,6 +39,7 @@ struct RelaxationOptions {
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
   bool one_rank = false;  ///< registered as running on one rank only
+  int expect_ranks = 0;   ///< its scope refuses a run on another number of ranks; 0: any
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -62,6 +63,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROWTH", o.growth);
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
+    read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
@@ -296,7 +298,15 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
       [options](const autan::runtime::PhysicsContext& context) {
         return std::make_unique<Relaxation>(context, options);
       },
-      {}, !options.one_rank);
+      [options](const autan::runtime::SolverInput& /*input*/,
+                int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (options.expect_ranks == 0 || ranks == options.expect_ranks) return std::nullopt;
+        return autan::runtime::PhysicsRefusal{
+            .message = "refused on " + std::to_string(ranks) + " ranks",
+            .path = "physics",
+            .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
+      },
+      !options.one_rank);
   return registry;
 }
 
