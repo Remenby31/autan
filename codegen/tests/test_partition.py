@@ -60,7 +60,10 @@ WHERE_DETERMINISTIC = ["host", *(pytest.param(x, marks=pytest.mark.gpu) for x in
 def test_results_are_bit_identical_across_rank_counts(backend: str, kind: str, where: str) -> None:
     # Ordered by the global numbering (runtime.md, Ranks), a cell sums its faces by global face
     # id and a face is evaluated in its global orientation, so every owned cell of a 2-rank
-    # partition holds the bits of the same cell of a 1-rank partition.
+    # partition holds the bits of the same cell of a 1-rank partition. Compared: the advection
+    # face loop, the face2 stencil gradient and the incidence LSQ gradient with its bounds. The
+    # advection-diffusion residual is not: it reads ghost gradients, which a solver fills by a
+    # halo exchange between the two loops and this test does not.
     if where != "host" and backend == "metal":
         pytest.skip("the global order is a DeviceMesh option (CUDA/HIP)")
     full = s.mesh(meshes.build(kind, 6, 0.15, seed=31))

@@ -317,7 +317,24 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
         }
       }
     }
-    // Cells by global id (else index), then boundary faces by global id (else index).
+    // Cells by (global id, translation), else index; then boundary faces by global id, else
+    // index. A periodic image shares its cell's global id: its translation tells them apart.
+    auto by_cell = [&](index_t a, index_t b) {
+      if (keys == nullptr || keys->cell.empty()) {
+        return a < b;
+      }
+      auto key = [&](index_t i) {
+        std::array<double, 3> t{};
+        const auto owned = static_cast<index_t>(n_owned);
+        if (i >= owned && !keys->shift.empty()) {
+          t = keys->shift[static_cast<std::size_t>(i - owned)];
+        }
+        return std::make_pair(keys->cell[static_cast<std::size_t>(i)], t);
+      };
+      const auto ka = key(a);
+      const auto kb = key(b);
+      return ka != kb ? ka < kb : a < b;
+    };
     auto by = [](std::span<const std::int64_t> key) {
       return [key](index_t a, index_t b) {
         if (key.empty()) {
@@ -328,8 +345,7 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
         return ka != kb ? ka < kb : a < b;
       };
     };
-    std::sort(cells.begin(), cells.end(),
-              by(keys != nullptr ? keys->cell : std::span<const std::int64_t>{}));
+    std::sort(cells.begin(), cells.end(), by_cell);
     cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
     cells.erase(std::remove(cells.begin(), cells.end(), static_cast<index_t>(c)), cells.end());
     std::sort(bfaces.begin(), bfaces.end(),

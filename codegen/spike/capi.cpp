@@ -593,7 +593,14 @@ int autan_spike_set_global_order(void* mesh, int stencil_kind, char* err, std::s
     m->topo.face_reversed = m->face_reversed.empty() ? nullptr : m->face_reversed.data();
     m->topo.rank_independent = true;
     m->global = true;
-    if (stencil_kind >= 0) {
+    if (stencil_kind < 0) {
+      m->stencil = {};
+      m->packed.stencil_lsq_weight.clear();
+      m->topo.n_stencil = 0;
+      m->topo.stencil_offsets = nullptr;
+      m->topo.stencil = nullptr;
+      m->topo.stencil_twin = nullptr;
+    } else {
       m->stencil =
           autan::kernels::cell_stencil(m->mesh, m->packed,
                                        stencil_kind == 0 ? autan::kernels::StencilKind::vertex

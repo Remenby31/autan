@@ -168,6 +168,10 @@ def rel_datasets(m: Module) -> set[int]:
                         out.add(id(b.dataset))
                         if b.boundary is not None:
                             out.add(id(b.boundary))
+    # Members of a swapped pair (a reversed face reads one for the other) share their storage.
+    for name, other in SWAPPED.items():
+        if id(getattr(dsl.geometry, name)) in out:
+            out.add(id(getattr(dsl.geometry, other)))
     return out
 
 

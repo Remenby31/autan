@@ -32,7 +32,7 @@ struct SpikeMesh {
   autan::kernels::GlobalOrder order;
   bool global = false;
   [[nodiscard]] autan::kernels::GlobalKeys keys() const {
-    return {cell_key, face_key, face_reversed};
+    return {cell_key, face_key, face_reversed, mesh.ghost_translation()};
   }
 };
 

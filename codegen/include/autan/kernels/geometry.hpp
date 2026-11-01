@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -40,6 +41,9 @@ struct GlobalKeys {
   std::span<const std::int64_t> cell;      ///< global id of each local cell
   std::span<const std::int64_t> face;      ///< global id of each local face
   std::span<const std::uint8_t> reversed;  ///< 1 where a local face runs against its global one
+  /// Translation of each ghost cell (Mesh::ghost_translation; zero for an ordinary ghost): a
+  /// periodic image shares its cell's global id, so the pair (id, translation) is the key.
+  std::span<const std::array<double, 3>> shift;
 };
 
 /// Without `keys`, as the mesh is numbered. With them: face moments computed in each face's
