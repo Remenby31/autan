@@ -10,10 +10,10 @@ import secrets
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
@@ -63,6 +63,32 @@ class Averaging(_Strict):
     to_time: float
 
 
+EQUATIONS = (
+    "density",
+    "pressure",
+    "momentum-x",
+    "momentum-y",
+    "momentum-z",
+    "energy",
+    "nu-tilde",
+    "k",
+    "omega",
+)
+# What a JSON Schema can say of ``woken``; membership and order are checked by the readers.
+WOKEN_SCHEMA = {"type": "array", "items": {"enum": list(EQUATIONS)}, "uniqueItems": True}
+
+
+def woken_problem(reference: dict[str, float] | None, woken: list[str] | None) -> str | None:
+    """Why ``woken`` does not go with ``residual_reference`` (results.md#runjson, ``start``)."""
+    if (woken is None) != (reference is None):
+        return "start.woken is given exactly with start.residual_reference"
+    if woken is not None and (
+        woken != sorted(set(woken)) or not set(woken) <= set(reference or {})
+    ):
+        return "start.woken lists sorted, distinct equations of residual_reference"
+    return None
+
+
 class StartInfo(_Strict):
     """Where a restarted run started from (results.md#runjson, ``start``)."""
 
@@ -73,6 +99,30 @@ class StartInfo(_Strict):
     time: float | None
     solution_sha256: Hex
     residual_reference: dict[str, float] | None
+    woken: Annotated[
+        list[str] | None, Field(json_schema_extra={"anyOf": [WOKEN_SCHEMA, {"type": "null"}]})
+    ]
+
+    @model_validator(mode="after")
+    def _woken(self) -> Self:
+        problem = woken_problem(self.residual_reference, self.woken)
+        if problem:
+            raise ValueError(problem)
+        return self
+
+
+class Convergence(_Strict):
+    """The round-off floor of each equation of an fp32+acc64 steady run (case-schema.md#time)."""
+
+    floor: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
+
+
+class FinalMonitor(BaseModel):
+    """A monitor's record on the final state: its History quantities and the iteration."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+    iteration: Annotated[int, Field(strict=True, ge=0)]
+    __pydantic_extra__: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
 
 
 class RunInfo(_Strict):
@@ -94,6 +144,8 @@ class RunInfo(_Strict):
     time: float | None
     averaging: Averaging | None
     start: StartInfo | None = None
+    convergence: Convergence | None = None
+    monitors: dict[str, FinalMonitor] | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -192,6 +244,7 @@ class RunWriter:
         staging.mkdir()
         self.path = staging
         self.info = info
+        self.spec = spec
         (staging / "case.toml").write_text(_toml(spec))
         (staging / "mesh-info.json").write_text(json.dumps(mesh_info.document(), indent=2))
         if manufactured is not None:
@@ -267,6 +320,11 @@ class RunWriter:
         )
 
     def finish(self, **changes: Any) -> None:
+        if changes.get("status") in FINAL and "monitors" not in changes:
+            if self.spec.monitors:
+                message = "a finished run of a case with monitors records their final values"
+                raise ValueError(message)
+            changes["monitors"] = {}
         self.info = self.info.model_copy(update={**changes, "finished": iso(utc_now())})
         for found in self.info.diagnostics:
             self.diagnose(found)
@@ -378,8 +436,9 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        if "start" not in document:
-            broken("run.json has no start key (null for a run from the freestream)", "run.json")
+        for key in ("start", "convergence", "monitors"):
+            if key not in document:
+                broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
             run = RunInfo.model_validate(document)
         except ValidationError as error:
@@ -397,6 +456,15 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
+        if run.convergence is not None and (
+            run.precision != "fp32+acc64"
+            or not isinstance(case.time, Steady)
+            or set(run.convergence.floor) != set(residual_names(case))
+        ):
+            broken(
+                "convergence floors exist only for a steady fp32+acc64 run, one per equation",
+                "run.json",
+            )
         for rule in case.boundaries:
             if rule.condition.kind == "oracle-state":
                 archived = path / "states" / f"{rule.condition.sha256}.json"
@@ -423,6 +491,8 @@ class Results:
             broken(problem, "log.jsonl")
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
+        for problem in final_monitor_problems(records, run, case):
+            broken(problem, "run.json")
         results = cls(
             path,
             run,
@@ -684,8 +754,53 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
     return found
 
 
+FINAL = frozenset({"converged", "completed", "stopped"})
+# run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
+# after the solution is written, or name its final state.
+NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "diagnostics")
+
+
+def run_metadata(info: RunInfo) -> dict[str, Any]:
+    """The RunMetadata descriptor of solution.cgns for ``info``."""
+    return {k: v for k, v in info.document().items() if k not in NOT_IN_METADATA}
+
+
+def final_monitor_problems(
+    records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
+) -> list[str]:
+    """run.json ``monitors``: each monitor on the final state of a finished run, equal to the
+    last history line when that line carries it (results.md#runjson)."""
+    final = run.monitors
+    if (final is None) != (run.status not in FINAL):
+        return ["monitors must be given exactly for converged, completed and stopped runs"]
+    if final is None:
+        return []
+    monitors = {m.name: m for m in case.monitors}
+    if set(final) != set(monitors):
+        return [f"monitors must be exactly {sorted(monitors)}"]
+    found = []
+    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
+    for name, monitor in final.items():
+        values = dict(monitor.model_extra or {})
+        iteration = monitor.iteration
+        if iteration != run.iterations:
+            found.append(f"monitor {name!r}: iteration must be {run.iterations}")
+        elif set(values) != force_keys(monitors[name], case) or not all(
+            _finite(v) for v in values.values()
+        ):
+            found.append(f"monitor {name!r} has the wrong or non-finite quantities")
+        elif last is not None and name in last["monitors"] and last["monitors"][name] != values:
+            found.append(f"monitor {name!r} differs from the last history line")
+    return found
+
+
 def _finite(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an integer beyond the double range
+        return False
 
 
 UNITS = ("Kilogram", "Meter", "Second", "Kelvin", "Radian")
@@ -743,7 +858,7 @@ def _solution_problems(
             found.append(f"{node.name} is not a {label}")
     if base.child("DimensionalUnits").text_rows() != list(UNITS):
         found.append(f"DimensionalUnits must be {list(UNITS)}")
-    if json.loads(base.child("RunMetadata").text()).get("identity") != run.identity:
+    if json.loads(base.child("RunMetadata").text()) != run_metadata(run):
         found.append("RunMetadata does not match run.json")
     names = json.loads(base.child("ZoneNames").text())
     if sorted(names["boundary"].values()) != sorted(z.name for z in mesh_info.boundary_zones):

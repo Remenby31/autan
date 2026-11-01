@@ -39,8 +39,8 @@ add_custom_command(
     --backends cpu
   COMMAND
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
-    autan_codegen ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py --out
-    ${AUTAN_PHYSICS_GENERATED} --backends cpu
+    autan_codegen ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py --out ${AUTAN_PHYSICS_GENERATED}
+    --backends cpu
   DEPENDS
     ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py
     ${PROJECT_SOURCE_DIR}/kernels/navier_stokes.py
@@ -115,7 +115,7 @@ if(AUTAN_ENABLE_CGNS)
   target_link_libraries(
     autan_physics_runtime
     PUBLIC autan::runtime
-    PRIVATE autan::physics autan_compile_options nlohmann_json::nlohmann_json
+    PRIVATE autan::physics autan::solvers autan_compile_options nlohmann_json::nlohmann_json
   )
 endif()
 

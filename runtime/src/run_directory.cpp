@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -44,7 +45,12 @@ void rename_no_replace(const fs::path& from, const fs::path& to) {
 }  // namespace
 
 void write_atomically(const fs::path& path, const std::string& text) {
-  const fs::path staging = path.parent_path() / ("." + path.filename().string() + ".tmp");
+  // A staging file per writer: the ranks of a run, on one host or several,
+  // may write at once.
+  std::random_device random;
+  const fs::path staging =
+      path.parent_path() / ("." + path.filename().string() + "." + std::to_string(random()) +
+                            std::to_string(random()) + ".tmp");
   write_file(staging, text);
   if (std::rename(staging.c_str(), path.c_str()) != 0) fail("replace", path);
 }
@@ -52,7 +58,8 @@ void write_atomically(const fs::path& path, const std::string& text) {
 RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
                            const std::string& run_json, const std::string& case_toml,
                            const std::string& mesh_info_json, const std::string& first_log_line,
-                           const std::optional<std::string>& manufactured_json) {
+                           const std::optional<std::string>& manufactured_json,
+                           const std::map<std::string, std::string>& state_files) {
   std::error_code ec;
   fs::create_directories(runs, ec);
   if (ec) fail("create", runs);
@@ -62,6 +69,12 @@ RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
   write_file(staging / "case.toml", case_toml);
   write_file(staging / "mesh-info.json", mesh_info_json);
   if (manufactured_json) write_file(staging / "manufactured.json", *manufactured_json);
+  if (!state_files.empty()) {
+    if (!fs::create_directory(staging / "states", ec) || ec) fail("create", staging / "states");
+    for (const auto& [sha256, bytes] : state_files) {
+      write_file(staging / "states" / (sha256 + ".json"), bytes);
+    }
+  }
   write_file(staging / "log.jsonl", first_log_line + "\n");
   path_ = runs / run_id;
   rename_no_replace(staging, path_);

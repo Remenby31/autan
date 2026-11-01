@@ -39,6 +39,9 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "iterations": 3000,
   "time": null,
   "averaging": null,
+  "start": null,
+  "convergence": null,
+  "monitors": {"forces": {"iteration": 3000, "fx": 1.2e4, "fy": 0.0, "fz": 9.8e4, "mx": 0.0, "my": -3.1e4, "mz": 0.0, "cl": 2.04, "cd": 0.31, "cs": 0.0, "cmx": 0.0, "cmy": -0.4, "cmz": 0.0}},
   "diagnostics": []
 }
 ```
@@ -47,7 +50,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 |---|---|
 | `run_id` | Unique name of this execution and of its directory: `run-`, `started` as `YYYYMMDDThhmmssZ`, `-`, 8 random lowercase hex characters. |
 | `identity` | What the run computes: SHA-256 of `case.sha256`, `mesh.sha256`, `solver.commit`, `precision`, `solver.backend`, `devices.kind`, `devices.count` and, for a run with a `start`, `start.identity`, `start.mode`, `start.iterations`, `start.solution_sha256`, joined by `\n`, UTF-8. |
-| `status` | `running` · `converged` (convergence criterion met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
+| `status` | `running` · `converged` (convergence criterion of [case-schema.md](case-schema.md#time) met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
@@ -59,7 +62,9 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
 | `time` | Physical time reached in seconds (unsteady), `null` (steady). |
 | `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}`: the interval actually averaged by an unsteady run with `average_from`, once at least one step past `average_from` is done; a continued run averages from the original `average_from`. |
-| `start` | `null`, or where the run started from: `{run_id, identity, mode, iterations, time, solution_sha256, residual_reference}` of the previous run ([solver-input.md](solver-input.md)); `residual_reference` is the residuals at iteration 1 of the original run of a steady `continue` chain, keyed by the equation names of [History](#history) with the values of that history line, `null` otherwise. The key is always present. A `continue` run carries on the previous count: its first history line is `start.iterations + 1` and `iterations` is the total; a `warm` run counts from 1. |
+| `start` | `null`, or where the run started from: `{run_id, identity, mode, iterations, time, solution_sha256, residual_reference, woken}` of the previous run ([solver-input.md](solver-input.md)); `residual_reference` is the residuals at iteration 1 of the original run of a steady `continue` chain, keyed by the equation names of [History](#history) with the values of that history line, `null` otherwise; `woken`, given exactly with `residual_reference`, lists in sorted order the identically zero equations of that reference that rose above their floor anywhere in the chain ([case-schema.md](case-schema.md#time)), so that a continuation judges convergence as the uninterrupted run would. The key is always present. A `continue` run carries on the previous count: its first history line is `start.iterations + 1` and `iterations` is the total; a `warm` run counts from 1. |
+| `convergence` | `{"floor": {<equation>: value}}`, the round-off floor of every equation of [History](#history) (≥ 0, in its units; 0 when the physics gives that equation no scale) of a steady `fp32+acc64` run whose physics gives flux scales ([case-schema.md](case-schema.md#time)); `null` otherwise, and while a `running` run has not yet built its physics. The key is always present. |
+| `monitors` | The record of every monitor of the case on the run's final state, `{<name>: {iteration, <the quantities of [History](#history)>}}`, `iteration` being `iterations`, whether or not the last iteration was a multiple of the monitor's `every`; equal to the last history line when that line carries the monitor. Given for `converged`, `completed` and `stopped` runs (a run stopped before its first iteration: the initial state, iteration 0); `null` while `running` and for `diverged` and `failed` runs. The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
 Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times).
@@ -112,7 +117,7 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
 /Base                    CGNSBase_t      CellDimension 3, PhysicalDimension 3
   DataClass                              Dimensional
   DimensionalUnits                       Kilogram Meter Second Kelvin Radian
-  RunMetadata            Descriptor_t    run.json without status, finished, iterations, diagnostics (JSON)
+  RunMetadata            Descriptor_t    run.json without status, finished, iterations, monitors, diagnostics (JSON)
   ZoneNames              Descriptor_t    {"boundary": {<node name>: <zone name>}, "cell": {…}} (JSON)
   <family>               Family_t        one per boundary zone and per cell zone
     FamilyBC             FamilyBC_t      boundary zones with a condition: BCType of that condition

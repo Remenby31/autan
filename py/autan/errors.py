@@ -256,6 +256,12 @@ _CODES = [
         "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
     ),
     Code(
+        "E0146",
+        "Several ranks without MPI",
+        "A launcher started several ranks of a build without MPI.",
+        "Run this build on one rank, or use a build with MPI, such as the dev image.",
+    ),
+    Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "
@@ -593,6 +599,16 @@ _CODES = [
         "Prepare the input again from the run as it is now.",
     ),
     Code(
+        "W0710",
+        "Exempt equation left its floor",
+        "An equation that was identically zero at iteration 1 (below 1e-12 times the largest "
+        "initial residual) rose above that floor, so it must now drop `residual_orders` like "
+        "the others (case-schema.md#time). `data` gives the equation, iteration, residual and "
+        "floor.",
+        "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry "
+        "breaks during the run usually means a boundary condition breaks it.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
@@ -771,6 +787,14 @@ _CODES = [
         "The file given to `-o`/`--output` cannot be written: missing directory, a directory "
         "in its place, or no permission.",
         "Give a writable file path.",
+    ),
+    Code(
+        "E0807",
+        "No GPU device",
+        "The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA, but "
+        "the process sees no CUDA device (`data.visible`, `data.needed`).",
+        "Run on a host with a GPU visible to the process (`docker --gpus`), or use "
+        "`devices.kind = cpu`.",
     ),
 ]
 

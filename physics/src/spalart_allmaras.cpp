@@ -43,11 +43,16 @@ struct SpalartAllmaras<P>::Impl {
         nf(static_cast<std::size_t>(mesh.n_faces())),
         ni(static_cast<std::size_t>(mesh.n_interior_faces())) {
     const auto packed = kernels::pack_geometry(mesh, geometry);
-    face_normal = kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
-    face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<typename decltype(face_centroid)::value_type>(packed.face_centroid);
-    cell_centroid = kernels::converted<typename decltype(cell_centroid)::value_type>(packed.cell_centroid);
-    cell_volume = kernels::converted<typename decltype(cell_volume)::value_type>(packed.cell_volume);
+    face_normal =
+        kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
+    face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(
+        packed.face_area_magnitude);
+    face_centroid =
+        kernels::converted<typename decltype(face_centroid)::value_type>(packed.face_centroid);
+    cell_centroid =
+        kernels::converted<typename decltype(cell_centroid)::value_type>(packed.cell_centroid);
+    cell_volume =
+        kernels::converted<typename decltype(cell_volume)::value_type>(packed.cell_volume);
     wall_distance.assign(nc, typename decltype(wall_distance)::value_type(1));
     nt.assign(nc, State(0));
     nt_b.assign(nf, State(0));

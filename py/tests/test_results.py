@@ -20,10 +20,11 @@ from typing import Any
 
 import autan
 import h5py
+import jsonschema
 import numpy as np
 import pytest
 from autan import cgns
-from autan.cli import main
+from autan.cli import json_schema, main
 
 from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
 
@@ -673,7 +674,7 @@ def test_log_lines_are_framed_on_bytes(crm_run: autan.Results) -> None:
     assert autan.Results.open(crm_run.path).log[0].message == first["message"]
 
     document = json.loads((crm_run.path / "run.json").read_text())
-    document.update(status="running", finished=None)
+    document.update(status="running", finished=None, monitors=None)
     (crm_run.path / "run.json").write_text(json.dumps(document))
     with path.open("ab") as log:
         log.write('{"message": "half a character \u00e9'.encode()[:-1])
@@ -689,3 +690,139 @@ def test_the_writer_refuses_lines_the_reader_would_reject(crm_run: autan.Results
         writer.log("error", "x", source="solver", code="E9999")
     with pytest.raises(ValueError, match="level"):
         writer.log("info", "x", source="solver", code="D0107")
+
+
+@pytest.mark.parametrize(
+    ("options", "every", "status", "iteration"),
+    [
+        ({}, 10, "converged", 100),  # on cadence: the last history line carries it
+        ({}, 7, "converged", 100),  # off cadence
+        ({"iterations": 0}, 10, "stopped", 0),  # the initial state
+        ({"diverge_at": 10, "iterations": 30}, 10, "diverged", None),
+    ],
+)
+def test_run_json_records_the_final_monitors(
+    options: dict[str, Any],
+    every: int,
+    status: str,
+    iteration: int | None,
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+) -> None:
+    body = CRM_HL.replace("every=10", f"every={every}")
+    result = autan.load(write_case(body)).run(
+        crm_mesh, backend=autan.FakeBackend(**options), runs=tmp_path
+    )
+    assert result.run.status == status
+    final = result.run.monitors
+    if iteration is None:
+        assert final is None
+        return
+    assert final is not None
+    assert final["forces"].iteration == iteration
+    history = result.path / "history.jsonl"  # absent before the first iteration
+    lines = history.read_text().splitlines() if history.exists() else []
+    last = json.loads(lines[-1])["monitors"] if lines else {}
+    if iteration % every == 0 and "forces" in last:
+        assert final["forces"].model_extra == last["forces"]
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda d: d.pop("monitors"),
+        lambda d: d["monitors"]["forces"].update(iteration=99),
+        lambda d: d["monitors"]["forces"].update(cl=d["monitors"]["forces"]["cl"] + 1),
+        lambda d: d.update(monitors=None),
+        lambda d: d["monitors"]["forces"].update(fx=10**400),  # beyond the double range
+    ],
+)
+def test_the_reader_checks_the_final_monitors(
+    damage: Callable[[dict[str, Any]], object], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    damage(document)
+    (crm_run.path / "run.json").write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]
+
+
+@pytest.mark.parametrize(
+    "record", [{}, {"iteration": 100, "fx": "1.0"}, {"iteration": "100", "fx": 1.0}]
+)
+def test_the_published_schema_types_the_final_monitors(
+    record: dict[str, Any], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    validator = jsonschema.Draft202012Validator(json_schema("results"))
+    validator.validate(document)
+    document["monitors"] = {"forces": record}
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(document)
+
+
+def test_a_final_monitor_that_overflows_fails_the_run(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    body = CRM_HL.replace(
+        'autan.forces("wing.*", ref_area=191.84 * m**2)',
+        'autan.forces("wing.*", ref_area=191.84 * m**2, moment_center=(1e308 * m, 1e308 * m, 1e308 * m))',
+    )
+    assert body != CRM_HL
+    result = autan.load(write_case(body)).run(
+        crm_mesh, backend=autan.FakeBackend(iterations=5), runs=tmp_path
+    )
+    assert (result.run.status, result.run.monitors) == ("failed", None)
+    assert [d.code for d in result.run.diagnostics] == ["E0704"]
+
+
+def test_run_metadata_is_run_json_without_its_final_keys(crm_run: autan.Results) -> None:
+    path = crm_run.path / "solution.cgns"
+    with h5py.File(path, "r+") as handle:
+        node = handle["Base/RunMetadata"]
+        metadata = json.loads(bytes(node[" data"][...]).decode())
+        metadata["monitors"] = None
+        del node[" data"]
+        node.create_dataset(
+            " data", data=np.frombuffer(json.dumps(metadata).encode(), dtype=np.int8)
+        )
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path).field("Density")
+    assert error.value.codes == ["E0701"]
+
+
+def _set_convergence(path: Path, value: object) -> None:
+    document = json.loads((path / "run.json").read_text())
+    if value == "absent":
+        del document["convergence"]
+    else:
+        document["convergence"] = value
+    (path / "run.json").write_text(json.dumps(document))
+
+
+def test_convergence_floors_belong_to_a_steady_fp32_run(
+    crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
+) -> None:
+    names = autan.results.residual_names(crm_run.case)
+    floors = {"floor": dict.fromkeys(names, 1e-6) | {names[0]: 0.0}}  # a zero scale: no floor
+    _set_convergence(crm_run.path, floors)
+    assert autan.Results.open(crm_run.path).run.convergence is not None
+    run_json = json.loads((crm_run.path / "run.json").read_text())
+    del run_json["convergence"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("results")).validate(run_json)
+    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
+        _set_convergence(crm_run.path, value)
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+
+    fp64 = autan.load(write_case(CRM_HL.replace('"fp32+acc64"', '"fp64"'), name="fp64.py"))
+    result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
+    assert result.run.convergence is None
+    _set_convergence(result.path, floors)
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(result.path)
+    assert error.value.codes == ["E0701"]
