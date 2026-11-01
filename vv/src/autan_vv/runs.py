@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import autan
 import numpy as np
@@ -38,7 +38,13 @@ if TYPE_CHECKING:
 
     from autan_vv.meshes.facemesh import FaceMesh, FloatArray
 
-KINDS = {"tet": "tetra", "hex": "hexa", "prism": "prism", "pyramid": "pyramid", "polyhedron": "polyhedron"}
+KINDS = {
+    "tet": "tetra",
+    "hex": "hexa",
+    "prism": "prism",
+    "pyramid": "pyramid",
+    "polyhedron": "polyhedron",
+}
 NORMALIZED = {"wall": "wall", "pressure-far-field": "farfield"}
 
 
@@ -56,48 +62,75 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
     d = g.cell_centroid[mesh.neighbour] - g.cell_centroid[mesh.owner[:ni]]
     db = g.face_centroid[ni:] - g.cell_centroid[mesh.owner[ni:]]
     normal = g.face_area / np.linalg.norm(g.face_area, axis=1, keepdims=True)
-    cos = np.einsum("ij,ij->i", np.concatenate([d, db]), normal) / np.linalg.norm(np.concatenate([d, db]), axis=1)
-    faces_per_cell = np.bincount(np.concatenate([mesh.owner, mesh.neighbour]), minlength=mesh.n_cells)
+    cos = np.einsum("ij,ij->i", np.concatenate([d, db]), normal) / np.linalg.norm(
+        np.concatenate([d, db]), axis=1
+    )
+    faces_per_cell = np.bincount(
+        np.concatenate([mesh.owner, mesh.neighbour]), minlength=mesh.n_cells
+    )
     typed = mesh_format == "fluent"
     document = {
         "schema": "autan.mesh-info/1",
-        "source": {"path": str(path), "format": mesh_format, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()},
-        "counts": {"cells": mesh.n_cells, "faces": mesh.n_faces, "nodes": int(mesh.points.shape[0]),
-                   "cells_by_type": by_type},
+        "source": {
+            "path": str(path),
+            "format": mesh_format,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        },
+        "counts": {
+            "cells": mesh.n_cells,
+            "faces": mesh.n_faces,
+            "nodes": int(mesh.points.shape[0]),
+            "cells_by_type": by_type,
+        },
         "boundary_zones": [
-            {"name": z.name, "type": NORMALIZED[z.bc_type] if typed else None,
-             "native_type": z.bc_type if typed else None, "faces": z.count}
+            {
+                "name": z.name,
+                "type": NORMALIZED[z.bc_type] if typed else None,
+                "native_type": z.bc_type if typed else None,
+                "faces": z.count,
+            }
             for z in mesh.zones
         ],
         "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": mesh.n_cells}],
         "interfaces": [],
         "quality": {
-            "max_non_orthogonality_deg": float(np.degrees(np.arccos(np.clip(cos.min(), -1.0, 1.0)))),
+            "max_non_orthogonality_deg": float(
+                np.degrees(np.arccos(np.clip(cos.min(), -1.0, 1.0)))
+            ),
             "max_faces_per_cell": int(faces_per_cell.max()),
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))
 
 
-def _point_list(parent: Any, ids: npt.ArrayLike) -> None:  # noqa: ANN401
+def _point_list(parent: Any, ids: npt.ArrayLike) -> None:
     cgns.node(parent, "PointList", "IndexArray_t", np.asarray(ids, dtype=np.int64).reshape(1, -1))
 
 
-
-
-def _elements(zone: Any, name: str, kind: int, first: int, offsets: npt.ArrayLike, connectivity: npt.ArrayLike) -> None:  # noqa: ANN401
+def _elements(
+    zone: Any, name: str, kind: int, first: int, offsets: npt.ArrayLike, connectivity: npt.ArrayLike
+) -> None:
     elements = cgns.node(zone, name, "Elements_t", np.array([kind, 0], dtype=np.int32))
-    count = len(offsets) - 1
-    cgns.node(elements, "ElementRange", "IndexRange_t", np.array([first, first + count - 1], dtype=np.int64))
+    count = np.asarray(offsets).size - 1
+    cgns.node(
+        elements,
+        "ElementRange",
+        "IndexRange_t",
+        np.array([first, first + count - 1], dtype=np.int64),
+    )
     cgns.node(elements, "ElementStartOffset", "DataArray_t", np.asarray(offsets, dtype=np.int64))
-    cgns.node(elements, "ElementConnectivity", "DataArray_t", np.asarray(connectivity, dtype=np.int64))
+    cgns.node(
+        elements, "ElementConnectivity", "DataArray_t", np.asarray(connectivity, dtype=np.int64)
+    )
 
 
-def _write_solution(path: Path, mesh: FaceMesh, plan: autan.Plan, info: RunInfo,
-                    fields: dict[str, FloatArray]) -> None:
+def _write_solution(
+    path: Path, mesh: FaceMesh, plan: autan.Plan, info: RunInfo, fields: dict[str, FloatArray]
+) -> None:
     boundary_names = [b.zone for b in plan.boundaries]
     boundary_nodes, cell_nodes = node_names(boundary_names, ["fluid"])
-    conditions = {b.zone: b.condition for b in plan.boundaries}
+    # A plan that is ok gives every zone with faces a condition; V&V meshes have no empty zone.
+    conditions = {b.zone: b.condition for b in plan.boundaries if b.condition is not None}
     zone_of = {z.name: z for z in mesh.zones}
     n_faces = mesh.n_faces
     # NFACE: each cell lists its faces, positive when the face normal points out of the cell.
@@ -110,27 +143,49 @@ def _write_solution(path: Path, mesh: FaceMesh, plan: autan.Plan, info: RunInfo,
         base = cgns.node(handle, "Base", "CGNSBase_t", np.array([3, 3], dtype=np.int32))
         cgns.node(base, "DataClass", "DataClass_t", "Dimensional")
         units = "".join(u.ljust(32) for u in ("Kilogram", "Meter", "Second", "Kelvin", "Radian"))
-        cgns.node(base, "DimensionalUnits", "DimensionalUnits_t",
-                  np.frombuffer(units.encode(), dtype=np.int8).reshape(5, 32).T)
-        metadata = {k: v for k, v in info.document().items()
-                    if k not in ("status", "finished", "iterations", "diagnostics")}
+        cgns.node(
+            base,
+            "DimensionalUnits",
+            "DimensionalUnits_t",
+            np.frombuffer(units.encode(), dtype=np.int8).reshape(5, 32).T,
+        )
+        metadata = {
+            k: v
+            for k, v in info.document().items()
+            if k not in ("status", "finished", "iterations", "diagnostics")
+        }
         cgns.node(base, "RunMetadata", "Descriptor_t", json.dumps(metadata, sort_keys=True))
-        cgns.node(base, "ZoneNames", "Descriptor_t", json.dumps(
-            {"boundary": dict(zip(boundary_nodes, boundary_names, strict=True)),
-             "cell": dict(zip(cell_nodes, ["fluid"], strict=True))}, sort_keys=True))
+        cgns.node(
+            base,
+            "ZoneNames",
+            "Descriptor_t",
+            json.dumps(
+                {
+                    "boundary": dict(zip(boundary_nodes, boundary_names, strict=True)),
+                    "cell": dict(zip(cell_nodes, ["fluid"], strict=True)),
+                },
+                sort_keys=True,
+            ),
+        )
         for zone_name, node_name in zip(boundary_names, boundary_nodes, strict=True):
             family = cgns.node(base, node_name, "Family_t")
             cgns.node(family, "FamilyBC", "FamilyBC_t", bc_type(conditions[zone_name]))
         cgns.node(base, cell_nodes[0], "Family_t")
-        zone = cgns.node(base, "Zone", "Zone_t",
-                         np.array([[mesh.points.shape[0], mesh.n_cells, 0]], dtype=np.int64))
+        zone = cgns.node(
+            base,
+            "Zone",
+            "Zone_t",
+            np.array([[mesh.points.shape[0], mesh.n_cells, 0]], dtype=np.int64),
+        )
         cgns.node(zone, "ZoneType", "ZoneType_t", "Unstructured")
         coordinates = cgns.node(zone, "GridCoordinates", "GridCoordinates_t")
         for axis in range(3):
             cgns.data_array(coordinates, f"Coordinate{'XYZ'[axis]}", mesh.points[:, axis].copy())
         _elements(zone, "NGonElements", 22, 1, mesh.face_offsets, mesh.face_nodes + 1)
         offsets = np.concatenate([[0], np.cumsum([len(c) for c in cell_faces])])
-        _elements(zone, "NFaceElements", 23, n_faces + 1, offsets, [f for c in cell_faces for f in c])
+        _elements(
+            zone, "NFaceElements", 23, n_faces + 1, offsets, [f for c in cell_faces for f in c]
+        )
         zone_bc = cgns.node(zone, "ZoneBC", "ZoneBC_t")
         walls = []
         for zone_name, node_name in zip(boundary_names, boundary_nodes, strict=True):
@@ -168,7 +223,7 @@ def write_run(
     *,
     time: float | None = None,
     status: str = "converged",
-    backend: str = "fake",
+    backend: Literal["cuda", "hip", "cpu", "fake"] = "fake",
 ) -> autan.Results:
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
@@ -204,8 +259,14 @@ def write_run(
         diagnostics=(),
     )
     writer = RunWriter(runs, run, spec, info)
-    writer.append({"iteration": 1, "time": time, "residuals": dict.fromkeys(residual_names(spec), 1.0),
-                   "monitors": {}})
+    writer.append(
+        {
+            "iteration": 1,
+            "time": time,
+            "residuals": dict.fromkeys(residual_names(spec), 1.0),
+            "monitors": {},
+        }
+    )
     final = writer.info.model_copy(update={"status": status, "iterations": 1, "time": time})
     staging = writer.path / ".solution.cgns.tmp"
     _write_solution(staging, mesh, plan, final, {k: fields[k] for k in field_names(spec)})

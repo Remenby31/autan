@@ -8,7 +8,6 @@
 """
 
 import json
-import math
 import re
 from pathlib import Path
 
@@ -16,7 +15,6 @@ import autan
 import numpy as np
 import pytest
 from autan.units import K, Pa, kg, mol
-
 from autan_vv.cli import main
 from autan_vv.errors import VVError
 from autan_vv.gates import GATES
@@ -39,18 +37,24 @@ def _gas(gas_constant: float, gamma: float = 1.4) -> autan.IdealGas:
     )
 
 
-def _case(path: Path, oracle_name: str, *, turbulence: object = None) -> autan.Case:
+def _case(path: Path, oracle_name: str) -> autan.Case:
     oracle = get_oracle(oracle_name) if oracle_name != "freestream" else None
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
     gas = _gas(oracle.gas_constant if oracle else 287.0)
-    case.physics = autan.Compressible(turbulence=turbulence or autan.Inviscid(), precision="fp64", gas=gas)
+    case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64", gas=gas)
     case.freestream(mach=0.3, pressure=1e5 * Pa, temperature=300 * K)
     case.boundary("*").farfield()
     return case
 
 
-def _family(tmp_path: Path, kind: str, levels: tuple[int, ...], oracle_name: str, order: float,
-            amplitude: float = 0.05) -> list[Path]:
+def _family(
+    tmp_path: Path,
+    kind: str,
+    levels: tuple[int, ...],
+    oracle_name: str,
+    order: float,
+    amplitude: float = 0.05,
+) -> list[Path]:
     """Runs whose fields are the oracle times (1 + amplitude h^order sin(...)): errors ~ h^order."""
     oracle = get_oracle(oracle_name)
     family, meshes = generate_family(kind, levels, tmp_path / kind)
@@ -76,12 +80,16 @@ def test_geometry_rebuilt_from_solution_cgns_matches_the_mesh(tmp_path: Path, ki
     _, meshes = generate_family(kind, (4,), tmp_path / "again")
     original = meshes[0].geometry
     np.testing.assert_allclose(rebuilt.geometry.cell_volume, original.cell_volume, rtol=1e-13)
-    np.testing.assert_allclose(rebuilt.geometry.cell_centroid, original.cell_centroid, rtol=0, atol=1e-14)
+    np.testing.assert_allclose(
+        rebuilt.geometry.cell_centroid, original.cell_centroid, rtol=0, atol=1e-14
+    )
     assert rebuilt.geometry.cell_volume.sum() == pytest.approx(1.0, abs=1e-13)
 
 
 @pytest.mark.parametrize(("order", "passes"), [(2.0, True), (1.0, False)])
-def test_order_gate_recovers_the_order_of_the_error(tmp_path: Path, order: float, passes: bool) -> None:
+def test_order_gate_recovers_the_order_of_the_error(
+    tmp_path: Path, order: float, passes: bool
+) -> None:
     runs = _family(tmp_path, "hex", (4, 8, 16), "mms-euler", order)
     report = verify(runs, "mms-euler", "euler-mms-order")
     for name in ("rho", "rhou", "rhoE", "Pressure"):
@@ -92,7 +100,9 @@ def test_order_gate_recovers_the_order_of_the_error(tmp_path: Path, order: float
     assert verdict["pass"] is passes
     assert verdict["evidence"] is False  # these runs carry backend "fake"
     assert [r["n_cells"] for r in report["runs"]] == [64, 512, 4096]
-    assert all(len(r["mesh_sha256"]) == 64 and len(r["solver_commit"]) == 40 for r in report["runs"])
+    assert all(
+        len(r["mesh_sha256"]) == 64 and len(r["solver_commit"]) == 40 for r in report["runs"]
+    )
 
 
 def test_fake_backend_run_preserves_the_freestream(tmp_path: Path) -> None:
@@ -100,9 +110,17 @@ def test_fake_backend_run_preserves_the_freestream(tmp_path: Path) -> None:
     path = tmp_path / "mesh" / family.levels[0].file
     case = autan.Case("fake-freestream", mesh=path)
     case.physics = autan.Compressible(turbulence=autan.Laminar(), precision="fp64")
-    case.freestream(mach=0.4, re=2.0e6, ref_length=1.0 * autan.units.m, temperature=250 * K, aoa=3.0 * autan.units.deg)
+    case.freestream(
+        mach=0.4,
+        re=2.0e6,
+        ref_length=1.0 * autan.units.m,
+        temperature=250 * K,
+        aoa=3.0 * autan.units.deg,
+    )
     case.boundary("*").farfield()
-    results = case.run(mesh_info(meshes[0], path, "gmsh"), backend=autan.FakeBackend(), runs=tmp_path / "runs")
+    results = case.run(
+        mesh_info(meshes[0], path, "gmsh"), backend=autan.FakeBackend(), runs=tmp_path / "runs"
+    )
     report = verify([results.path], "freestream", "freestream-preservation")
     verdict = report["verdict"]
     assert verdict["pass"], verdict["checks"]
@@ -137,11 +155,24 @@ def test_two_dimensional_oracles_need_one_cell_thick_meshes(tmp_path: Path) -> N
     assert err.value.code == "V0724"
 
 
-def test_cli_verify_writes_a_strict_report_and_exits_on_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_verify_writes_a_strict_report_and_exits_on_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     runs = [str(p) for p in _family(tmp_path, "hex", (4, 8, 16), "mms-euler", 1.0)]
     out = tmp_path / "verdict.json"
     with pytest.raises(SystemExit) as exit_info:
-        main(["verify", *runs, "--against", "mms-euler", "--gate", "euler-mms-order", "--out", str(out)])
+        main(
+            [
+                "verify",
+                *runs,
+                "--against",
+                "mms-euler",
+                "--gate",
+                "euler-mms-order",
+                "--out",
+                str(out),
+            ]
+        )
     assert exit_info.value.code == 1
     assert "gate euler-mms-order: FAIL" in capsys.readouterr().out
 
@@ -159,6 +190,12 @@ def test_every_gate_is_stated_in_acceptance_md() -> None:
         assert row is not None, gate.id
         numbers = {float(v) for v in re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", row)}
         if gate.measure == "order":
-            assert {gate.lower, gate.upper} <= numbers or math.isclose(gate.upper - gate.lower, 0.2), gate.id
+            centred = {
+                round((gate.lower + gate.upper) / 2, 9),
+                round((gate.upper - gate.lower) / 2, 9),
+            }
+            assert {gate.lower, gate.upper} <= numbers or centred <= {
+                round(v, 9) for v in numbers
+            }, gate.id
         else:
             assert gate.upper in numbers, gate.id

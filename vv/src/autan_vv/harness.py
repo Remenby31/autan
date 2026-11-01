@@ -9,7 +9,15 @@ from typing import TYPE_CHECKING, Any
 import autan
 import numpy as np
 from autan import cgns
-from autan.schema import SA, Compressible, ConstantViscosity, IdealGas, Incompressible, Inviscid, Laminar
+from autan.schema import (
+    SA,
+    Compressible,
+    ConstantViscosity,
+    IdealGas,
+    Incompressible,
+    Inviscid,
+    Laminar,
+)
 from autan.units import si
 
 from autan_vv.errors import VVError
@@ -24,8 +32,11 @@ if TYPE_CHECKING:
 
 VERDICT_SCHEMA = "autan.vv-verdict/1"
 UNIVERSAL_GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact
-PRECISION_EPS = {"fp64": float(np.finfo(np.float64).eps), "fp32": float(np.finfo(np.float32).eps),
-                 "fp32+acc64": float(np.finfo(np.float32).eps)}
+PRECISION_EPS = {
+    "fp64": float(np.finfo(np.float64).eps),
+    "fp32": float(np.finfo(np.float32).eps),
+    "fp32+acc64": float(np.finfo(np.float32).eps),
+}
 FINISHED = ("converged", "completed")
 
 
@@ -37,7 +48,9 @@ def read_geometry(results: autan.Results) -> FaceMesh:
     """
     zone = cgns.read(results.path / "solution.cgns").child("Base").child("Zone")
     coords = zone.child("GridCoordinates")
-    points = np.column_stack([np.asarray(coords.child(f"Coordinate{a}").data, dtype=np.float64) for a in "XYZ"])
+    points = np.column_stack(
+        [np.asarray(coords.child(f"Coordinate{a}").data, dtype=np.float64) for a in "XYZ"]
+    )
     ngon, nface = zone.child("NGonElements"), zone.child("NFaceElements")
     face_offsets = np.asarray(ngon.child("ElementStartOffset").data, dtype=np.int64)
     face_nodes = np.asarray(ngon.child("ElementConnectivity").data, dtype=np.int64) - 1
@@ -88,6 +101,10 @@ def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
         raise VVError(msg, code="V0722")
     gas = physics.gas
     fs = spec.freestream
+    # A validated compressible case has mach, and either pressure or re with ref_length.
+    if fs.mach is None or (fs.pressure is None and (fs.re is None or fs.ref_length is None)):
+        msg = "the case's freestream lacks mach, or both pressure and re with ref_length"
+        raise VVError(msg, code="V0722")
     r = UNIVERSAL_GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
     temperature = si(fs.temperature, "K") if fs.temperature is not None else 288.15
     speed = fs.mach * math.sqrt(gas.gamma * r * temperature)
@@ -100,20 +117,50 @@ def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
             mu = si(law.mu, "Pa * s")
         else:
             t_ref, s = si(law.t_ref, "K"), si(law.s, "K")
-            mu = si(law.mu_ref, "Pa * s") * (temperature / t_ref) ** 1.5 * (t_ref + s) / (temperature + s)
+            mu = (
+                si(law.mu_ref, "Pa * s")
+                * (temperature / t_ref) ** 1.5
+                * (t_ref + s)
+                / (temperature + s)
+            )
+        assert fs.re is not None
+        assert fs.ref_length is not None
         density = fs.re * mu / (speed * si(fs.ref_length, "m"))
         pressure = density * r * temperature
     a, b = si(fs.aoa, "rad"), si(fs.sideslip, "rad")
-    velocity = speed * np.array([math.cos(a) * math.cos(b), -math.sin(b), math.sin(a) * math.cos(b)])
+    velocity = speed * np.array(
+        [math.cos(a) * math.cos(b), -math.sin(b), math.sin(a) * math.cos(b)]
+    )
 
     def evaluate(points: FloatArray, _t: float | None) -> dict[str, FloatArray]:
         one = np.ones(points.shape[0])
-        return {"Density": density * one, "VelocityX": velocity[0] * one, "VelocityY": velocity[1] * one,
-                "VelocityZ": velocity[2] * one, "Pressure": pressure * one, "Temperature": temperature * one}
+        return {
+            "Density": density * one,
+            "VelocityX": velocity[0] * one,
+            "VelocityY": velocity[1] * one,
+            "VelocityZ": velocity[2] * one,
+            "Pressure": pressure * one,
+            "Temperature": temperature * one,
+        }
 
     turbulence = physics.turbulence
-    kind = "euler" if isinstance(turbulence, Inviscid) else "navier-stokes" if isinstance(turbulence, Laminar) else "any"
-    return Oracle("freestream", "Uniform freestream state of the case.", kind, 3, False, gas.gamma, r, evaluate)
+    kind = (
+        "euler"
+        if isinstance(turbulence, Inviscid)
+        else "navier-stokes"
+        if isinstance(turbulence, Laminar)
+        else "any"
+    )
+    return Oracle(
+        "freestream",
+        "Uniform freestream state of the case.",
+        kind,
+        (0, 1, 2),
+        False,
+        gas.gamma,
+        r,
+        evaluate,
+    )
 
 
 def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
@@ -125,14 +172,20 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
     physics = spec.physics
     expected = {"euler": Inviscid, "navier-stokes": Laminar, "rans-sa": SA}
     if oracle.physics in expected:
-        if not isinstance(physics, Compressible) or not isinstance(physics.turbulence, expected[oracle.physics]):
-            reasons.append(f"physics {physics.kind}/{physics.turbulence.model}, oracle needs {oracle.physics}")
+        if not isinstance(physics, Compressible) or not isinstance(
+            physics.turbulence, expected[oracle.physics]
+        ):
+            reasons.append(
+                f"physics {physics.kind}/{physics.turbulence.model}, oracle needs {oracle.physics}"
+            )
         elif isinstance(physics.gas, IdealGas):
             r = UNIVERSAL_GAS_CONSTANT / si(physics.gas.molar_mass, "kg / mol")
             if not math.isclose(physics.gas.gamma, oracle.gamma, rel_tol=1e-12):
                 reasons.append(f"gamma {physics.gas.gamma}, oracle uses {oracle.gamma}")
             if not math.isclose(r, oracle.gas_constant, rel_tol=1e-9):
-                reasons.append(f"gas constant {r:.9g} J/(kg K), oracle uses {oracle.gas_constant:.9g}")
+                reasons.append(
+                    f"gas constant {r:.9g} J/(kg K), oracle uses {oracle.gas_constant:.9g}"
+                )
     if oracle.physics == "incompressible-navier-stokes" and not isinstance(physics, Incompressible):
         reasons.append("oracle needs an incompressible case")
     if oracle.unsteady and results.run.time is None:
@@ -151,22 +204,19 @@ class RunErrors:
     errors: dict[str, dict[str, float]]
 
 
-def _h(mesh: FaceMesh, dim: int) -> tuple[float, float]:
-    """Total volume and mesh size: (V/N)^(1/3) in 3D; for dim < 3 the mesh must be one cell thick in
-    the other directions, and h = (V / (their extent) / N)^(1/dim)."""
+def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
+    """Total volume and mesh size along the oracle's axes: the mesh must be one cell thick along the
+    other directions (V0723), and h = (V / (their extent) / N)^(1/len(axes))."""
     g = mesh.geometry
     volume = float(g.cell_volume.sum())
-    if dim == 3:
-        return volume, (volume / mesh.n_cells) ** (1.0 / 3.0)
     span = 1.0
-    for axis in range(dim, 3):
-        centres = g.cell_centroid[:, axis]
+    for axis in sorted(set(range(3)) - set(axes)):
         extent = float(np.ptp(mesh.points[:, axis]))
-        if np.ptp(centres) > 1e-9 * max(extent, 1.0):
-            msg = f"a {dim}D oracle needs a mesh one cell thick along {'xyz'[axis]}"
+        if np.ptp(g.cell_centroid[:, axis]) > 1e-9 * max(extent, 1.0):
+            msg = f"the oracle varies along {[('xyz')[a] for a in axes]}: the mesh must be one cell thick along {'xyz'[axis]}"
             raise VVError(msg, code="V0723")
         span *= extent
-    return volume, (volume / span / mesh.n_cells) ** (1.0 / dim)
+    return volume, (volume / span / mesh.n_cells) ** (1.0 / len(axes))
 
 
 def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
@@ -194,13 +244,19 @@ def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
             "Linf": float(np.max(np.abs(diff))),
             "scale": float(np.max(np.abs(exact[name]))),
         }
-    volume, h = _h(mesh, oracle.dim)
+    volume, h = _h(mesh, oracle.axes)
     run_info = results.run
     provenance = {
-        "path": str(results.path), "run_id": run_info.run_id, "identity": run_info.identity,
-        "status": run_info.status, "backend": run_info.solver.backend, "solver_commit": run_info.solver.commit,
-        "precision": run_info.precision, "case_sha256": run_info.case.sha256,
-        "mesh_sha256": run_info.mesh.sha256, "time": run_info.time,
+        "path": str(results.path),
+        "run_id": run_info.run_id,
+        "identity": run_info.identity,
+        "status": run_info.status,
+        "backend": run_info.solver.backend,
+        "solver_commit": run_info.solver.commit,
+        "precision": run_info.precision,
+        "case_sha256": run_info.case.sha256,
+        "mesh_sha256": run_info.mesh.sha256,
+        "time": run_info.time,
     }
     return RunErrors(provenance, mesh.n_cells, volume, h, errors)
 
@@ -211,7 +267,9 @@ def _field_names(results: autan.Results) -> set[str]:
     return set(field_names(results.case))
 
 
-def _gate_checks(gate: Gate, runs: list[RunErrors], fits: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _gate_checks(
+    gate: Gate, runs: list[RunErrors], fits: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     checks = []
     for name in gate.fields:
         if gate.measure == "order":
@@ -221,16 +279,35 @@ def _gate_checks(gate: Gate, runs: list[RunErrors], fits: dict[str, dict[str, An
                 continue
             fitted, finest = fit["order"], fit["pairwise_orders"][-1]
             ok = all(gate.lower <= v <= gate.upper for v in (fitted, finest))
-            checks.append({"field": name, "fitted_order": fitted, "finest_pair_order": finest,
-                           "lower": gate.lower, "upper": gate.upper, "pass": ok})
+            checks.append(
+                {
+                    "field": name,
+                    "fitted_order": fitted,
+                    "finest_pair_order": finest,
+                    "lower": gate.lower,
+                    "upper": gate.upper,
+                    "pass": ok,
+                }
+            )
         else:
-            worst = max(
-                r.errors[name][gate.norm] / max(r.errors[name]["scale"], 1e-300)
-                / PRECISION_EPS[r.provenance["precision"]]
-                for r in runs
-            ) if all(name in r.errors for r in runs) else math.inf
-            checks.append({"field": name, "max_relative_error_in_eps": worst, "upper": gate.upper,
-                           "pass": worst <= gate.upper})
+            worst = (
+                max(
+                    r.errors[name][gate.norm]
+                    / max(r.errors[name]["scale"], 1e-300)
+                    / PRECISION_EPS[r.provenance["precision"]]
+                    for r in runs
+                )
+                if all(name in r.errors for r in runs)
+                else math.inf
+            )
+            checks.append(
+                {
+                    "field": name,
+                    "max_relative_error_in_eps": worst,
+                    "upper": gate.upper,
+                    "pass": worst <= gate.upper,
+                }
+            )
     return checks
 
 
@@ -268,14 +345,23 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
                 values = [r.errors[name][norm] for r in runs]
                 if min(values) > 0.0:
                     fit = fit_order(hs, values)
-                    fits[name][norm] = {"order": fit.order, "pairwise_orders": list(fit.pairwise_orders),
-                                        "r_squared": fit.r_squared}
+                    fits[name][norm] = {
+                        "order": fit.order,
+                        "pairwise_orders": list(fit.pairwise_orders),
+                        "r_squared": fit.r_squared,
+                    }
     report: dict[str, Any] = {
         "schema": VERDICT_SCHEMA,
-        "oracle": {"name": oracle.name, "physics": oracle.physics, "reference_only": oracle.reference_only,
-                   "parameters": dict(oracle.parameters)},
-        "runs": [{**r.provenance, "n_cells": r.n_cells, "volume": r.volume, "h": r.h, "errors": r.errors}
-                 for r in sorted(runs, key=lambda r: -r.h)],
+        "oracle": {
+            "name": oracle.name,
+            "physics": oracle.physics,
+            "reference_only": oracle.reference_only,
+            "parameters": dict(oracle.parameters),
+        },
+        "runs": [
+            {**r.provenance, "n_cells": r.n_cells, "volume": r.volume, "h": r.h, "errors": r.errors}
+            for r in sorted(runs, key=lambda r: -r.h)
+        ],
         "fits": fits,
         "verdict": None,
     }
@@ -296,7 +382,12 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
             reasons.append("fake backend: synthetic results are never evidence")
         if oracle.reference_only:
             reasons.append("the oracle is a numerical reference, not an exact solution")
-        report["verdict"] = {"gate": gate.id, "milestone": gate.milestone, "checks": checks,
-                             "pass": all(c["pass"] for c in checks), "evidence": not reasons,
-                             "not_evidence_because": reasons}
+        report["verdict"] = {
+            "gate": gate.id,
+            "milestone": gate.milestone,
+            "checks": checks,
+            "pass": all(c["pass"] for c in checks),
+            "evidence": not reasons,
+            "not_evidence_because": reasons,
+        }
     return report

@@ -27,15 +27,46 @@ class Gate:
     milestone: str
 
 
-GATES: dict[str, Gate] = {g.id: g for g in (
-    Gate("freestream-preservation", "freestream", "max-error", "Linf",
-         ("Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"), 0.0, 64.0, "M2"),
-    Gate("euler-mms-order", "mms-euler", "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
-    Gate("ringleb-order", "ringleb", "order", "L2", ("Density", "Entropy"), 1.9, 2.1, "M2"),
-    Gate("vortex-order", "isentropic-vortex", "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
-    Gate("sod-order", "sod", "order", "L1", ("Density",), 0.6, 1.1, "M2"),
-    Gate("ns-mms-order", "mms-navier-stokes", "order", "L2", CONSERVED, 1.9, 2.1, "M3"),
-    Gate("rans-sa-mms-order", "mms-rans-sa", "order", "L2", (*CONSERVED, "TurbulentSANuTilde"), 1.9, 2.1, "M3"),
-    Gate("couette-velocity-exact", "couette", "max-error", "Linf", ("VelocityX",), 0.0, 64.0, "M3"),
-    Gate("couette-temperature-order", "couette", "order", "L2", ("Temperature",), 1.9, 2.1, "M3"),
-)}
+GATES: dict[str, Gate] = {
+    g.id: g
+    for g in (
+        Gate(
+            "freestream-preservation",
+            "freestream",
+            "max-error",
+            "Linf",
+            ("Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"),
+            0.0,
+            64.0,
+            "M2",
+        ),
+        Gate("euler-mms-order", "mms-euler", "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
+        Gate("ringleb-order", "ringleb", "order", "L2", ("Density", "Entropy"), 1.9, 2.1, "M2"),
+        Gate("vortex-order", "isentropic-vortex", "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
+        Gate("sod-order", "sod", "order", "L1", ("Density",), 0.6, 1.1, "M2"),
+        Gate("ns-mms-order", "mms-navier-stokes", "order", "L2", CONSERVED, 1.9, 2.1, "M3"),
+        Gate(
+            "rans-sa-mms-order",
+            "mms-rans-sa",
+            "order",
+            "L2",
+            (*CONSERVED, "TurbulentSANuTilde"),
+            1.9,
+            2.1,
+            "M3",
+        ),
+        Gate(
+            "couette-velocity-exact",
+            "couette",
+            "max-error",
+            "Linf",
+            ("VelocityX",),
+            0.0,
+            64.0,
+            "M3",
+        ),
+        Gate(
+            "couette-temperature-order", "couette", "order", "L2", ("Temperature",), 1.9, 2.1, "M3"
+        ),
+    )
+}
