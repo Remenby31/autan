@@ -393,6 +393,22 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
   }
+  SECTION("failed on a recorded load that is not finite: E0704, history up to the line before") {
+    // results.md, History: a record holds numbers, so a non-finite force
+    // at iteration 5 fails the run there instead of writing null.
+    const Outcome o = run(input([](Json& d) { d["monitors"][0]["every"] = 1; }),
+                          {.factor = 0.9, .nan_loads_from = 5});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["iterations"] == 4);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+    const auto lines = history(o.run);
+    REQUIRE(lines.size() == 4);
+    CHECK(lines.back()["iteration"] == 4);
+    CHECK(std::isfinite(lines.back()["monitors"]["forces"]["fy"].get<double>()));
+  }
   SECTION("failed writing the solution: E0704, no monitors") {
     const Outcome o = run(input(), {.factor = 0.5, .throw_in_fields = true});
     CHECK(o.status == ExitStatus::failed);
@@ -542,6 +558,58 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(pmix, "E0146");
   }
 }
+
+TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") {
+  // Never a silent CPU run: a kind this build does not drive is E0706, and
+  // a CUDA build that sees no device is E0807, both before any directory,
+  // whatever the physics registered: here, one for the CPU only.
+  autan::runtime::PhysicsRegistry cpu_only;
+  cpu_only.add({.kind = "*", .turbulence = "*", .precision = "*", .device = "cpu"},
+               [](const autan::runtime::PhysicsContext& context) {
+                 return std::make_unique<autan_test::Relaxation>(context,
+                                                                 autan_test::RelaxationOptions{});
+               });
+  const Outcome hip = run(input([](Json& d) { d["devices"]["kind"] = "hip"; }), cpu_only);
+  require_error(hip, "E0706");
+  CHECK(Json::parse(hip.err)["data"]["path"] == "devices.kind");
+#ifdef AUTAN_HAVE_CUDA
+  // As a host without a GPU: CUDA reads this before its first call, and
+  // this test runs in a process of its own.
+  REQUIRE(setenv("CUDA_VISIBLE_DEVICES", "-1", 1) == 0);
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
+  require_error(o, "E0807");
+  CHECK(Json::parse(o.err)["data"] ==
+        Json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}});
+#else
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
+  require_error(o, "E0706");
+  CHECK(Json::parse(o.err)["data"]["path"] == "devices.kind");
+#endif
+}
+
+#ifdef AUTAN_HAVE_CUDA
+TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]") {
+  // On a periodic mesh too, where the relaxation physics checks that the
+  // device exchange fills each image ghost on the run's stream.
+  const bool periodic = GENERATE(false, true);
+  CAPTURE(periodic);
+  const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
+  const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
+  REQUIRE(o.status == ExitStatus::finished);
+  std::ifstream log_in(o.run / "log.jsonl");
+  Json ready, cuda;
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "relaxation physics ready") ready = event["data"];
+    if (event["source"] == "cuda") cuda = event["data"];
+  }
+  CHECK(ready["device"] == 0);
+  CHECK(ready["stream"] == true);
+  CHECK(cuda["device"] == 0);
+  CHECK(!cuda["name"].get<std::string>().empty());
+  CHECK(cuda["visible"].get<int>() >= 1);
+}
+#endif
 
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
@@ -1385,6 +1453,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#ifdef AUTAN_HAVE_CUDA
+  // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
+  // physics checks at every step that the exchange fills its ghosts in
+  // device memory, through a CUDA-aware MPI; the history stays that of one rank.
+  Json on_gpu = doc;
+  on_gpu["devices"]["kind"] = "cuda";
+  const fs::path gpu = run_on_ranks(on_gpu, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                     "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+  CHECK(lines_of(gpu / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#endif
   const Json a = Json::parse(read(one.run / "run.json"));
   const Json b = Json::parse(read(many / "run.json"));
   for (const char* key : {"status", "iterations", "time", "diagnostics"}) {
