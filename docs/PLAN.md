@@ -16,7 +16,7 @@ Validé le 2026-10-31. Sources : [état de l'art](research/state-of-the-art-2026
 - SDK Python (nanobind), schéma de cas typé avec unités, CLI `plan / run / logs / diff / doctor / verify`. Le cas est du code, l'UI en est une vue.
 - Conditions aux limites : **types lus dans le maillage** (Fluent .msh, Gmsh, CGNS), valeurs et surcharges en Python, provenance affichée par `plan`.
 - « Plusieurs gaz » : mélange multi-espèces **et** zones de cellules à fluides différents + solides (CHT), jalon M9.
-- Matériel : dev RTX PRO 6000 / DGX Spark ; prod B200/GB200, MI300X/MI355X. Apple Silicon : backend CPU optimisé ARM dès M1, backend GPU Metal en M1b (pas de FP64 sur Metal : `fp32+acc64` émulé en double-float, `fp64` refusé avec un code d'erreur).
+- Matériel : dev DGX Spark (GB10) et Mac Apple Silicon ; cibles prod NVIDIA B200/GB200 ; AMD Instinct (MI300X/MI355X) : compilation HIP seulement, non mesuré (décision du lead 2026-11-01). Apple Silicon : backend CPU optimisé ARM dès M1, backend GPU Metal en M1b (pas de FP64 sur Metal : `fp32+acc64` émulé en double-float, `fp64` refusé avec un code d'erreur).
 
 ## Arborescence
 
@@ -69,7 +69,7 @@ M0 → M1 → M2 → M3 → M5 → M6 / M7. M4 et M10 avancent en parallèle dè
 | FP32 insuffisant (CLmax) | Précision en paramètre de template dès M1, étude M5, repli FP64 par kernel |
 | AMG/solveurs lents | Harnais de matrices réelles dès M2 ; backends interchangeables |
 | Portage AMD fragile | HIP compilé en CI dès M1 (`gpu-hip`) ; exécution sur AMD reportée faute de matériel (décision du lead, 2026-11-01) |
-| Accès matériel de prod | Cloud B200/MI300X pour M5 ; dev sur RTX PRO 6000 et DGX Spark |
+| Accès matériel de prod | Cloud NVIDIA B200 pour M5 si besoin ; dev sur DGX Spark |
 | Données de validation | Grilles et données TMR, DPW et HLPW publiques |
 
 ## Exécution
