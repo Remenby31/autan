@@ -1848,6 +1848,9 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
   const Outcome b = run(in_inches, registry);
   REQUIRE(a.status == ExitStatus::finished);
   REQUIRE(b.status == ExitStatus::finished);
+  // The archived MeshInfo describes the file, in its units.
+  CHECK(read(b.run / "mesh-info.json") ==
+        autan::io::mesh_info_json(autan::io::read_mesh(inches), autan::io::mesh_hash(inches)));
 
   constexpr double eps = 0x1p-52;
   const auto close = [&](const std::vector<double>& x, const std::vector<double>& y) {
