@@ -1,0 +1,67 @@
+name: metal
+
+# Metal backend on GitHub's macOS arm64 runner: generate the Metal loops, build the runtime, the
+# driver and the benchmarks, then run the device tests if the VM exposes a Metal device. Without
+# one, the job says so in a warning and the step summary: the Metal library is compiled at load
+# time, so only a device can check the emitted Metal Shading Language.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  metal:
+    name: Metal (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read # checkout
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: Install the generator's test environment
+        working-directory: codegen
+        run: |
+          uv sync --locked
+          echo "PYTHON=$(uv run --locked python -c 'import sys; print(sys.executable)')" >> "${GITHUB_ENV}"
+      # CGNS is off: the spike driver builds its meshes from face arrays.
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
+          -DAUTAN_ENABLE_CGNS=OFF -DAUTAN_ENABLE_METAL=ON -DAUTAN_WARNINGS_AS_ERRORS=ON
+          -DPython3_EXECUTABLE="${PYTHON}"
+      - name: Build the Metal runtime, driver and benchmarks
+        run: >-
+          cmake --build build --parallel
+          --target autan_spike_metal autan_metal_stream autan_metal_loop_bench
+      - name: Look for a Metal device
+        id: probe
+        run: |
+          name=$(xcrun swift -e 'import Metal; print(MTLCreateSystemDefaultDevice()?.name ?? "")')
+          if [ -n "${name}" ]; then
+            echo "device=true" >> "${GITHUB_OUTPUT}"
+            echo "Metal device: ${name}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "device=false" >> "${GITHUB_OUTPUT}"
+            msg="No Metal device in the macOS VM: Metal loops generated and host code built, device tests not run (run them on an Apple Silicon Mac)."
+            echo "::warning::${msg}"
+            echo "${msg}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Device tests (every loop, strategy and policy against the host loops)
+        if: steps.probe.outputs.device == 'true'
+        working-directory: codegen
+        env:
+          AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_metal.dylib
+        run: uv run --locked pytest tests/test_gpu.py --backend metal -m "not slow"

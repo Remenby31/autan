@@ -33,7 +33,9 @@ struct Topology {
 // Double-float: x = hi + lo with |lo| <= ulp(hi) / 2, about 48 significant bits.
 // TwoSum: Knuth, TAOCP vol. 2, 4.2.2, theorem B; Fast2Sum: Dekker (1971), needs |a| >= |b|.
 // Sum: Joldes, Muller and Popescu (2017), "Tight and rigorous error bounds for basic building
-// blocks of double-word arithmetic", algorithm 6 (AccurateDWPlusDW), relative error <= 3u^2.
+// blocks of double-word arithmetic", algorithm 6 (AccurateDWPlusDW), relative error <= 3u^2;
+// algorithm 4 (DWPlusFP), relative error <= 2u^2, when y is a float (y.lo == 0): accumulations
+// of body outputs, half the operations.
 // Product: Dekker (1971), the exact error of hi * hi from an FMA, lo * lo dropped.
 // Exact only without reassociation: the library is compiled with MTLMathModeSafe.
 struct df64 {
@@ -58,6 +60,10 @@ inline df64 fast_two_sum(float a, float b) {
 }
 
 inline df64 operator+(df64 x, df64 y) {
+  if (y.lo == 0.0f) {
+    const df64 s = two_sum(x.hi, y.hi);
+    return fast_two_sum(s.hi, x.lo + s.lo);
+  }
   const df64 s = two_sum(x.hi, y.hi);
   const df64 t = two_sum(x.lo, y.lo);
   const df64 v = fast_two_sum(s.hi, s.lo + t.hi);

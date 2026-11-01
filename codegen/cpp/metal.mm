@@ -133,8 +133,15 @@ Context::~Context() {
 }
 
 Context::DeviceInfo Context::info() const {
-  DeviceInfo out{impl_->device.name.UTF8String, impl_->device.registryID, 0,
-                 impl_->device.recommendedMaxWorkingSetSize, 0};
+  const NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
+  DeviceInfo out{impl_->device.name.UTF8String,
+                 impl_->device.registryID,
+                 0,
+                 impl_->device.recommendedMaxWorkingSetSize,
+                 0,
+                 static_cast<int>(os.majorVersion),
+                 static_cast<int>(os.minorVersion),
+                 static_cast<int>(os.patchVersion)};
   io_service_t service =
       IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"));
   if (service != IO_OBJECT_NULL) {

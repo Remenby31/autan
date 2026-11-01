@@ -164,7 +164,10 @@ if(AUTAN_ENABLE_METAL)
   # Peak bandwidth of the Mac's GPU, and the generated loops timed against it.
   add_executable(autan_metal_stream bench/metal_stream.mm)
   add_dependencies(autan_metal_stream autan_codegen_revision)
-  target_include_directories(autan_metal_stream PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision)
+  target_include_directories(
+    autan_metal_stream
+    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike bench
+  )
   target_compile_options(autan_metal_stream PRIVATE -fobjc-arc)
   target_link_libraries(autan_metal_stream PRIVATE autan_metal)
 
@@ -172,7 +175,7 @@ if(AUTAN_ENABLE_METAL)
   add_dependencies(autan_metal_loop_bench autan_codegen_revision)
   target_include_directories(
     autan_metal_loop_bench
-    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike
+    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike bench
   )
   target_compile_options(autan_metal_loop_bench PRIVATE -fobjc-arc)
   target_link_libraries(autan_metal_loop_bench PRIVATE autan::kernels autan::io autan_metal)

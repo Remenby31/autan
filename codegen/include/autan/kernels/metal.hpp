@@ -133,6 +133,7 @@ class Context {
     int gpu_cores;  ///< 0 when the IO registry does not report it
     std::uint64_t recommended_max_working_set_bytes;
     std::uint64_t memory_bytes;
+    int os_major, os_minor, os_patch;  ///< macOS version
   };
   DeviceInfo info() const;
   /// A zeroed shared buffer of `bytes` (at least one byte is allocated).

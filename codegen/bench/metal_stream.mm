@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "autan/kernels/metal.hpp"
+#include "metal_bench.hpp"
 #include "revision.h"
 
 namespace {
@@ -132,15 +133,10 @@ int main(int argc, char** argv) {
       break;
     }
   }
-  const auto dev = ctx.info();
-  std::printf("{\"device\":{\"name\":\"%s\",\"registry_id\":\"%llu\",\"gpu_cores\":%d,"
-              "\"recommended_max_working_set_bytes\":%llu,\"memory_bytes\":%llu},",
-              dev.name.c_str(), static_cast<unsigned long long>(dev.registry_id), dev.gpu_cores,
-              static_cast<unsigned long long>(dev.recommended_max_working_set_bytes),
-              static_cast<unsigned long long>(dev.memory_bytes));
+  std::printf("{");
+  autan::spike::metal::print_device(ctx);
   std::printf("\"revision\":{\"commit\":\"%s\",\"dirty\":%s},", AUTAN_BENCH_COMMIT,
               AUTAN_BENCH_DIRTY);
-  std::printf("\"backend\":\"metal\",");
   std::printf(
       "\"config\":{\"elements\":%ld,\"element_bytes\":4,\"warmup\":%d,\"reps\":%d,\"batch\":%d,"
       "\"block\":%d,\"compile_seconds\":%.3f},",
