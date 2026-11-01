@@ -1,5 +1,4 @@
 #include "autan/runtime/run.hpp"
-#include "autan/runtime/round_off.hpp"
 
 #include <algorithm>
 #include <array>
@@ -33,6 +32,7 @@
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/runtime/diagnostic.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
 #include "run_directory.hpp"
@@ -1259,16 +1259,16 @@ class Run final : public Log {
         // case-schema.md#time: equations at the round-off floor are exempt while they stay there
         // (runtime/round_off.hpp); one leaving it reports W0710, once.
         for (const std::size_t e : exempt.update(report.residuals)) {
-          add_diagnostic(Diagnostic{
-              .code = "W0710",
-              .message = "equation " + equations[e] + " left its floor at iteration " +
-                         std::to_string(it) + ": it now has to converge like the others",
-              .path = "",
-              .data_json = Json{{"equation", equations[e]},
-                                {"iteration", it},
-                                {"residual", report.residuals[e]},
-                                {"floor", exempt.floor()}}
-                               .dump()});
+          add_diagnostic(
+              Diagnostic{.code = "W0710",
+                         .message = "equation " + equations[e] + " left its floor at iteration " +
+                                    std::to_string(it) + ": it now has to converge like the others",
+                         .path = "",
+                         .data_json = Json{{"equation", equations[e]},
+                                           {"iteration", it},
+                                           {"residual", report.residuals[e]},
+                                           {"floor", exempt.floor()}}
+                                          .dump()});
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;

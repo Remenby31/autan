@@ -708,9 +708,10 @@ TEST_CASE("a steady case on several ranks is refused before any directory exists
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
   // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
   // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
-  // which changes that round-off and nothing else at FP64 resolution; the CFL law must ignore it
-  // (case-schema.md#time, the runtime's exemption), so the other equations' histories agree bit
-  // for bit.
+  // which changes that round-off and the other equations by an ulp at most; the CFL law must
+  // ignore it (case-schema.md#time, the runtime's exemption), so over 40 steps the other
+  // equations' histories agree within 1e-6 (measured 8.5e-9; driven by the round-off, they
+  // differ by 3.4).
   const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   auto doc = [&](double w) {
     return input("hybrid.solver-input.json", [&](Json& d) {
@@ -748,13 +749,17 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   const auto ha = history(a.run), hb = history(b.run);
   REQUIRE(ha.size() == hb.size());
   bool noisy = false;
+  double worst = 0.0;
   for (std::size_t i = 0; i < ha.size(); ++i) {
-    INFO("iteration " << i + 1);
     for (const char* k : {"density", "momentum-x", "momentum-y", "energy"}) {
-      CHECK(ha[i]["residuals"][k] == hb[i]["residuals"][k]);
+      const double x = ha[i]["residuals"][k].get<double>();
+      const double y = hb[i]["residuals"][k].get<double>();
+      worst = std::max(worst, std::abs(x - y) / std::abs(x));
     }
     noisy = noisy || hb[i]["residuals"]["momentum-z"] != ha[i]["residuals"]["momentum-z"];
   }
+  INFO("histories differ by " << worst);
+  CHECK(worst <= 1e-6);
   CHECK(noisy);  // the injected noise did reach the z-momentum residual
 }
 

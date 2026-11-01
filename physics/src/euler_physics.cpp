@@ -19,8 +19,8 @@
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
-#include "autan/runtime/round_off.hpp"
 #include "autan/runtime/exact_sum.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -84,9 +84,9 @@ class EulerPhysics final : public runtime::Physics {
   using Res = typename P::residual;
 
   explicit EulerPhysics(const PhysicsContext& ctx)
-      : exempt_(runtime::residual_names(ctx.input),
-                ctx.input.start && ctx.input.start->woken ? *ctx.input.start->woken
-                                                          : std::vector<std::string>{}),
+      : exempt_(runtime::residual_names(ctx.input), ctx.input.start && ctx.input.start->woken
+                                                        ? *ctx.input.start->woken
+                                                        : std::vector<std::string>{}),
         ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),

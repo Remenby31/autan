@@ -27,8 +27,7 @@ class RoundOffExemption {
     if (!exempt_.empty()) return;
     floor_ = 1e-12 * *std::ranges::max_element(first);
     for (std::size_t e = 0; e < first.size(); ++e) {
-      exempt_.push_back(first[e] < floor_ &&
-                        std::ranges::find(woken_, names_[e]) == woken_.end());
+      exempt_.push_back(first[e] < floor_ && std::ranges::find(woken_, names_[e]) == woken_.end());
     }
   }
 
