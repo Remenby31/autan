@@ -23,10 +23,13 @@ if [[ -z $base ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
 fi
 changed=$(git diff --name-only "$base" HEAD --)
 printf 'changed files:\n%s\n' "$changed" >&2
-# Code that is timed or builds what is timed; readers (io/) fix the face and cell order of the
-# measured mesh; the mesh generator feeds the loop benchmark.
-measured_paths='^(runtime|codegen|kernels|physics|solvers|core|io|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
-# The harness's own GPU tests and the image smoke test take the GPU lock: only when they changed.
+# Measured on the reference Spark: code that is timed or builds what is timed (readers in io/
+# fix the face and cell order of the measured mesh; the mesh generator feeds the loop
+# benchmark), the image it runs in, and the measurement method itself (bench/src: statistics,
+# timing, protocol; the STREAM binary; the baselines).
+measured_paths='^(runtime|codegen|kernels|physics|solvers|core|io)/|^docker/dev/|^bench/(src|stream|cmake|baselines)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
+# The harness's own GPU tests and the image smoke test: whenever the harness or an image changed.
+# Without a measured change they run on the tests runner, keeping the bench Spark for measurements.
 harness='^(bench|docker)/'
 grep -q -E "$measured_paths" <<<"$changed" && say bench true || say bench false
 grep -q -E "$harness" <<<"$changed" && say harness true || say harness false

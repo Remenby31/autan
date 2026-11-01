@@ -82,6 +82,37 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  harness:
+    needs: changes
+    # The harness or an image changed but nothing measured: its GPU tests run on the tests
+    # runner, and the bench Spark stays for measurements.
+    if: >-
+      needs.changes.outputs.bench != 'true' && needs.changes.outputs.harness == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10, tests]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      AUTAN_BENCH_REQUIRE_GPU: "1"
+      AUTAN_BENCH_LOCK_TIMEOUT: "900"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the benchmarks
+        run: cmake -S bench -B build/bench && cmake --build build/bench
+      - name: Install the harness
+        run: uv sync --project bench --locked
+      - name: Harness tests on the GPU
+        run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+      - name: Image smoke test on the GPU
+        run: >-
+          REQUIRE_GPU=1 flock --timeout "$AUTAN_BENCH_LOCK_TIMEOUT" --conflict-exit-code 75
+          /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
+          || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
+
   bench:
     needs: [changes, mesh]
     if: >-

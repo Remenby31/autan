@@ -133,3 +133,34 @@ def test_without_a_readable_base_everything_runs(repo):
     commit(repo, "docs/index.md")
     assert decide(repo, "workflow_dispatch") == {"bench": "true", "harness": "true"}
     assert decide(repo, "push", before="0" * 40) == {"bench": "true", "harness": "true"}
+
+
+@pytest.mark.parametrize(
+    ("path", "bench", "harness"),
+    [
+        ("kernels/flux.cu", "true", "false"),
+        ("io/gmsh.cpp", "true", "false"),
+        ("docker/dev/Dockerfile", "true", "true"),
+        ("bench/src/autan_bench/stats.py", "true", "true"),
+        ("bench/stream/stream.cu", "true", "true"),
+        ("bench/cmake/revision.cmake", "true", "true"),
+        ("bench/baselines/gb10.json", "true", "true"),
+        ("bench/CMakeLists.txt", "true", "true"),
+        ("vv/src/autan_vv/meshes/families.py", "true", "false"),
+        (".github/workflows/gpu-bench.yml", "true", "false"),
+        ("bench/tests/test_run.py", "false", "true"),
+        ("bench/ci/gate.sh", "false", "true"),
+        ("bench/lock/autan-gpu-lock", "false", "true"),
+        ("bench/campaign/autan-campaign", "false", "true"),
+        ("docker/runner/entrypoint.sh", "false", "true"),
+        ("docs/infra/bench.md", "false", "false"),
+        ("ui/src/app.ts", "false", "false"),
+    ],
+)
+def test_each_path_is_measured_tested_or_neither(repo, path, bench, harness):
+    # Measured on the reference Spark: measured code, the image and the measurement method.
+    # The harness's GPU tests alone (tests runner): its tests, CI scripts, lock and campaign tools.
+    git(repo, "checkout", "-q", "-b", "change")
+    commit(repo, path)
+    pull_request_merge(repo, "change")
+    assert decide(repo, "pull_request") == {"bench": bench, "harness": harness}
