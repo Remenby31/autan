@@ -43,20 +43,26 @@ struct Euler<P>::Impl {
   GhostFill* ghosts = nullptr;
 
   // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
+  // The exchange takes at most 16 components a call.
   template <class T>
   void fill_ghosts(std::vector<T>& v, std::size_t n) const {
     if (ghosts == nullptr) return;
     const auto nc = static_cast<std::size_t>(topo.n_cells);
-    std::array<T*, 16> components{};
-    for (std::size_t k = 0; k < n; ++k) components[k] = v.data() + k * nc;
-    ghosts->forward(std::span<T* const>(components.data(), n));
+    for (std::size_t first = 0; first < n; first += 16) {
+      const std::size_t count = std::min<std::size_t>(16, n - first);
+      std::array<T*, 16> components{};
+      for (std::size_t k = 0; k < count; ++k) components[k] = v.data() + (first + k) * nc;
+      ghosts->forward(std::span<T* const>(components.data(), count));
+    }
   }
 
-  // The loops before the faces: primitives, boundary states, gradients and limiter of the owned
-  // cells, each filled into the ghosts before a later loop reads it there.
+  // The loops before the faces: primitives (and their Jacobian dW/dU, which the coupling blocks
+  // of faces to ghost cells take), boundary states, gradients and limiter of the owned cells,
+  // each filled into the ghosts before a later loop or the assembly reads it there.
   void cell_loops(bool jacobian) {
     if (jacobian) {
       ek::cpu::primitives_jacobian(d);
+      fill_ghosts(dwdu, 25);
     } else {
       ek::cpu::primitives(d);
     }

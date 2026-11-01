@@ -23,7 +23,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
 from watchfiles import Change, awatch
 
-from autan_ui.cases import Meshes, render
+from autan_ui.cases import Meshes, materials, render
 from autan_ui.confine import Folder, is_link
 from autan_ui.history import read_lines
 from autan_ui.registry import (
@@ -440,6 +440,24 @@ def create_app(
     def list_meshes() -> list[dict[str, Any]]:
         """The MeshInfo files a case can be planned against."""
         return meshes.summaries()
+
+    @app.get("/api/materials")
+    def list_materials() -> list[dict[str, Any]]:
+        """The SDK's library gases and solids, by the name a case writes them."""
+        return materials()
+
+    @app.get("/api/meshes/{name}/surface")
+    def mesh_surface_message(name: str) -> Response:
+        """The boundary zones of a listed mesh as an `autan-ui.surface/1` message, from the
+        `autan.surface/1` file next to its MeshInfo. 404 without one; 422 when it breaks the
+        contract or is not of that mesh."""
+        try:
+            message = meshes.surface(name)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return Response(message, media_type="application/octet-stream")
 
     @app.post("/api/cases/render")
     def render_case(
