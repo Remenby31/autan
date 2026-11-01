@@ -1,0 +1,52 @@
+# Runs the GPU tests and the STREAM benchmark on a DGX Spark runner, gates on the GB10
+# baseline and uploads the results. Self-hosted runners never run fork pull requests:
+# the job condition below skips them, and the runner's job-started hook refuses them
+# even if a pull request edits this file (docs/infra/runners.md).
+name: gpu-bench
+
+on:
+  push:
+    branches: [main]
+    paths: [bench/**, docker/**, .github/workflows/gpu-bench.yml]
+  pull_request:
+    paths: [bench/**, docker/**, .github/workflows/gpu-bench.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: gpu-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # `bench`: runners whose GPU is not shared with another team's long-running process.
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      AUTAN_BENCH_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the benchmarks
+        run: cmake -S bench -B build/bench && cmake --build build/bench
+      - name: Install the harness
+        run: uv sync --project bench --locked
+      - name: Tests (CPU and GPU)
+        run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+      - name: Image smoke test on the GPU
+        run: REQUIRE_GPU=1 flock /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
+      - name: STREAM bandwidth
+        run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
+      - name: Compare with the GB10 baseline
+        run: uv run --project bench --locked autan-bench compare results/stream.json bench/baselines/gb10.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: gpu-bench-${{ github.sha }}
+          path: results/
+          if-no-files-found: error

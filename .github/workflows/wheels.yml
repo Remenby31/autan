@@ -170,15 +170,17 @@ jobs:
   gpu:
     name: GPU check on DGX Spark
     needs: [sdk, probe]
-    # Self-hosted runner: never for pull requests from forks. Enabled once the runner exists.
+    # Self-hosted runner (docs/infra/runners.md): never for pull requests from forks.
     if: >-
-      vars.AUTAN_SPARK_RUNNER == 'true' &&
+      vars.AUTAN_SPARK_WHEELS == 'true' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, linux, arm64, gpu, gb10]
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10]
     timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      AUTAN_NO_MODIFY_PATH: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -188,18 +190,24 @@ jobs:
           pattern: dist-*
           path: wheelhouse
           merge-multiple: true
-      - name: Install in a fresh container that sees only the driver, and require native GPU code
-        # The lock must cover the container, not only the docker client: on cancellation the
-        # trap removes the container while flock still holds the lock.
+      - name: Install with install.sh in an empty home, and require native GPU code on GB10
+        # Jobs run in the runner container (no Docker); the GPU lock is mounted there.
         run: |
-          name="autan-wheels-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "AUTAN_CONTAINER=$name" >> "$GITHUB_ENV"
-          # shellcheck disable=SC2016 # the inner script expands $1 itself
-          flock /tmp/cfd-gpu.lock sh -c '
-            trap "docker rm -f \"$1\" >/dev/null 2>&1" EXIT INT TERM
-            docker run --rm --gpus all --name "$1" -e REQUIRE_GPU=1 -v "$PWD:/w:ro" \
-              ubuntu:24.04 sh /w/packaging/test-install.sh /w
-          ' sh "$name"
-      - name: Remove the container if the step was killed
-        if: always()
-        run: docker rm -f "$AUTAN_CONTAINER" >/dev/null 2>&1 || true
+          home=$(mktemp -d "$RUNNER_TEMP/home.XXXXXX")
+          echo "AUTAN_TEST_HOME=$home" >> "$GITHUB_ENV"
+          # Like a user's machine: an empty home (and scratch space under it, removed with the
+          # job's temp directory) and none of the dev image's uv settings.
+          flock /home/admin/autan-gpu/gpu.lock env -u UV_PYTHON -u UV_PYTHON_DOWNLOADS -u UV_CACHE_DIR -u XDG_DATA_HOME \
+            HOME="$home" TMPDIR="$home" REQUIRE_GPU=1 sh packaging/test-install.sh "$PWD"
+      - name: With no GPU visible, the probe falls back to the CPU and still passes
+        run: |
+          CUDA_VISIBLE_DEVICES="" HOME="$AUTAN_TEST_HOME" \
+            "$AUTAN_TEST_HOME/.local/bin/autan-probe" --json > probe-nogpu.json
+          python3 - probe-nogpu.json <<'PY'
+          import json, sys
+          doc = json.load(open(sys.argv[1]))
+          gpu = [c for c in doc["checks"] if c["name"].startswith("gpu")]
+          assert doc["ok"], doc
+          assert doc["cuda"]["driver_version"] > 0 and not doc["cuda"]["devices"], doc["cuda"]
+          assert [c["status"] for c in gpu] == ["info"], gpu
+          PY

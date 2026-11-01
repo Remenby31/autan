@@ -1,6 +1,6 @@
 self-hosted-runner:
-  # DGX Spark runners (issue #4).
-  labels: [gpu, gb10]
+  # DGX Spark runners (issue #4); only spark-5359 carries "bench", for timed benchmarks.
+  labels: [gpu, gb10, bench]
 paths:
   .github/workflows/**/*.{yml,yaml}:
     ignore:

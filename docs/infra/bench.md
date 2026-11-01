@@ -24,11 +24,15 @@ uv run --project bench --locked autan-bench run --suite codegen --binary build/c
 
 The binary prints one JSON object on stdout: `revision` (`commit`, `dirty`, embedded at build time with `bench/cmake/revision.cmake`), `backend`, `runtime_version`, `driver_version`, `device`, a free-form `config`, `verified` (its own check of the results against the specification), and `kernels`, each with `name`, `bytes_per_rep` (useful bytes moved per repetition), `seconds` (one entry per timed sample), and optionally `cells` (cells processed per repetition) and a free-form `params`. Each kernel gives a `<suite>.<kernel>` bandwidth benchmark (GB/s, the numerator of "% of peak") and, with `cells`, a `<suite>.<kernel>.time_per_cell` benchmark (ns per cell per iteration). `autan-bench stream` is `run` with the STREAM binary's arguments.
 
+### Metal on macOS
+
+On a Mac, `autan-bench run` reads GPU utilisation from the IOAccelerator registry (`ioreg -r -d 1 -c IOAccelerator`, "Device Utilization %") and takes its lock at `~/.autan-gpu.lock`. macOS lists no GPU processes, so the result records `compute_apps_max: null`: contention from another process is not checked there, only utilisation. Clocks, power and temperature need root (`powermetrics`) and are recorded as unknown. A Metal binary prints `backend: "metal"`, a `device` with `name`, `registry_id` (decimal string), `gpu_cores`, `recommended_max_working_set_bytes`, `memory_bytes` and, from the chip's published specification only, `l2_bytes`; `runtime_version` and `driver_version` encode the macOS version (26.7 → 26070) and `os_version` gives it as text.
+
 ## Timing method
 
 `autan-bench` applies the same procedure to every benchmark:
 
-1. Takes an exclusive `flock` on `/tmp/cfd-gpu.lock`, waiting as long as needed. Containers mount the host's lock file, so CI and interactive runs queue on the same lock.
+1. Takes an exclusive `flock` on `/home/admin/autan-gpu/gpu.lock`, waiting as long as needed. Containers mount the lock's directory at the same path, so CI, containers and host shells queue on the same lock. The lock lives outside `/tmp`: there the kernel's `fs.protected_regular` refuses `flock(1)` (which opens with `O_CREAT`) a file owned by another uid, which is every container user.
 2. Refuses to start (`GPU_BUSY`) unless, within 5 s, five consecutive `nvidia-smi` samples over one second show no compute process and at most 5 % utilisation (the utilisation counter is a trailing average, so a GPU released a moment ago needs a second to read idle). A GPU that reports no utilisation fails (`NVIDIA_SMI_FAILED`): idleness is measured, never assumed. Another team's job is not something to wait for: rerun later.
 3. Samples SM clock, power, temperature, clock event reasons and the number of compute processes every 200 ms during the run, and fails (`GPU_CONTENDED`) if another process appeared. Clock, power and temperature are summarised over the samples taken at ≥ 50 % utilisation, so setup and host-side verification do not drag the median to base clock. GB10 reports no memory clock, so none is recorded.
 4. Times each repetition with CUDA events around the kernel after warm-up repetitions, and reports the median, quartiles (Hyndman–Fan type 7), IQR and coefficient of variation (CV = standard deviation / mean) of the per-repetition metric.

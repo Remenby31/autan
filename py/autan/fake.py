@@ -72,6 +72,7 @@ BC_TYPES = {
     "inlet": "BCInflowSubsonic",
     "velocity-inlet": "BCInflowSubsonic",
     "outlet": "BCOutflowSubsonic",
+    "manufactured": "UserDefined",
 }
 BASE_CHILDREN = frozenset({"Zone", "ZoneNames", "RunMetadata", "DataClass", "DimensionalUnits"})
 ZONE_CHILDREN = frozenset(
@@ -247,7 +248,12 @@ class FakeBackend:
             averaging=None,
             diagnostics=(),
         )
-        writer = RunWriter(runs, info, spec, mesh_info)
+        manufactured = (
+            case.resolve(spec.verification.manufactured.path).read_bytes()
+            if spec.verification is not None
+            else None
+        )
+        writer = RunWriter(runs, info, spec, mesh_info, manufactured)
         history = _History(spec, freestream_state(spec))
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps

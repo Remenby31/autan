@@ -10,7 +10,7 @@ from autan.errors import CaseError, Diagnostic, Location
 from autan.fake import FakeBackend
 from autan.meshinfo import MeshInfo
 from autan.plan import Plan
-from autan.results import Results, RunInfo
+from autan.results import Devices, Results, RunInfo
 from autan.schema import (
     DDES,
     SA,
@@ -24,11 +24,13 @@ from autan.schema import (
     Incompressible,
     Inviscid,
     Laminar,
+    Manufactured,
     Solid,
     Steady,
     Sutherland,
     Unsteady,
 )
+from autan.solver_backend import SolverBackend
 from autan.version import __version__
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "Compressible",
     "ConstantDensityFluid",
     "ConstantViscosity",
+    "Devices",
     "Diagnostic",
     "FakeBackend",
     "IdealGas",
@@ -49,11 +52,13 @@ __all__ = [
     "Inviscid",
     "Laminar",
     "Location",
+    "Manufactured",
     "MeshInfo",
     "Plan",
     "Results",
     "RunInfo",
     "Solid",
+    "SolverBackend",
     "Steady",
     "Sutherland",
     "Unsteady",

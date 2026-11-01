@@ -13,11 +13,12 @@ Autan is a C++ core, a kernel generator and a Python SDK that exchange documents
 | `partition/` | Partitioning with METIS or Scotch, and the MPI halo exchange. | M0 |
 | `py/` | The `autan` SDK and CLI: case schema, `plan`, `run`, results. | M0, M4 |
 | `codegen/`, `kernels/` | Kernels written once, emitted for CUDA, HIP and CPU with their tangent and adjoint. | M1 |
+| `runtime/` | `autan-run`: reads a solver input, drives a registered physics, writes the run directory. It registers no physics before M2. | M2 |
 | `physics/`, `solvers/` | Flux schemes, turbulence models, time stepping, linear solvers. | M2, M3 |
 | `vv/`, `bench/`, `docker/` | Verification against manufactured solutions and reference data; development image and bandwidth benchmarks. | M0 |
 | `ui/` | Web UI: case editor and result viewer. | M10 |
 
-Components talk through three schemas, never through each other's internals: the [case](../contracts/case-schema.md) (`autan.case/1`), the [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`) and the [run directory](../contracts/results.md) (`autan.results/1`).
+Components talk through four schemas, never through each other's internals: the [case](../contracts/case-schema.md) (`autan.case/1`), the [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`), the [solver input](../contracts/solver-input.md) (`autan.solver-input/1`), which [`autan prepare`](../sdk/prepare.md) writes from a planned case and `autan-run` reads, and the [run directory](../contracts/results.md) (`autan.results/1`).
 
 ## How Autan differentiates its kernels
 

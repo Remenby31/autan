@@ -1,5 +1,5 @@
 ---
-source_hash: "999db47e2398"
+source_hash: "b94b09b2d8c5"
 ---
 
 # Architecture
@@ -17,11 +17,12 @@ Autan est un cœur C++, un générateur de kernels et un SDK Python qui échange
 | `partition/` | Partitionnement par METIS ou Scotch, et échange de halos MPI. | M0 |
 | `py/` | Le SDK et la CLI `autan` : schéma de cas, `plan`, `run`, résultats. | M0, M4 |
 | `codegen/`, `kernels/` | Kernels écrits une fois, émis pour CUDA, HIP et CPU avec leur tangent et leur adjoint. | M1 |
+| `runtime/` | `autan-run` : lit une entrée du solveur, pilote une physique enregistrée, écrit le répertoire de calcul. Il n'enregistre aucune physique avant M2. | M2 |
 | `physics/`, `solvers/` | Schémas de flux, modèles de turbulence, pas de temps, solveurs linéaires. | M2, M3 |
 | `vv/`, `bench/`, `docker/` | Vérification par solutions manufacturées et données de référence ; image de développement et mesures de bande passante. | M0 |
 | `ui/` | Interface web : éditeur de cas et visualisation des résultats. | M10 |
 
-Les composants communiquent par trois schémas, jamais par leurs internes : le [cas](../contracts/case-schema.md) (`autan.case/1`), le [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`) et le [répertoire de calcul](../contracts/results.md) (`autan.results/1`).
+Les composants communiquent par quatre schémas, jamais par leurs internes : le [cas](../contracts/case-schema.md) (`autan.case/1`), le [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`), l'[entrée du solveur](../contracts/solver-input.md) (`autan.solver-input/1`), qu'[`autan prepare`](../sdk/prepare.md) écrit à partir d'un cas planifié et qu'`autan-run` lit, et le [répertoire de calcul](../contracts/results.md) (`autan.results/1`).
 
 ## Comment Autan dérive ses kernels
 

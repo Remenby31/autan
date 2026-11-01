@@ -87,7 +87,7 @@ def test_solver_rejects_problems_it_cannot_solve(ms: object, code: str) -> None:
 
 def test_cli_verify_writes_report_plot_and_manifest(tmp_path: Path) -> None:
     assert (
-        main(["verify", "hex", "--levels", "4,8", "--precision", "fp32", "--out", str(tmp_path)])
+        main(["reference", "hex", "--levels", "4,8", "--precision", "fp32", "--out", str(tmp_path)])
         == 0
     )
 

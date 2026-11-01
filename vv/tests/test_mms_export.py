@@ -134,6 +134,7 @@ def test_json_document_round_trips_through_a_parser(name: str) -> None:
     doc = json.loads(dump_json(ms))
     assert doc["schema"] == "autan.mms/1"
     assert doc["parameters"] == dict(ms.parameters)
+    assert doc["model"]["turbulence"] in {None, "inviscid", "laminar", "sa", "sa-noft2"}
     pts = _points()
     expected = _expected(ms, pts)
     for group in GROUPS:
