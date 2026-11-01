@@ -40,6 +40,7 @@ from autan.units import parse, si
 if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
+    from autan.schema import State
 
 SCHEMA_ID = "autan.solver-input/1"
 GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact value
@@ -481,19 +482,37 @@ def zone_viscosity(medium: Gas | Liquid, temperature: float | None) -> float:
 
 
 def initial_state(
-    medium: MediumInput, freestream: FreestreamInput, turbulence: TurbulenceInput
+    medium: MediumInput,
+    freestream: FreestreamInput,
+    turbulence: TurbulenceInput,
+    given: State | None = None,
 ) -> FluidInitial | SolidInitial:
-    """Initial state of a cell zone: the freestream pressure, temperature and velocity in
-    the zone's own medium (solver-input.md#initial-state)."""
+    """Initial state of a cell zone (solver-input.md#initial-state): the zone's ``given``
+    state, or the freestream pressure, temperature and velocity, closed in the zone's own
+    medium. Turbulence values use the freestream speed as reference."""
     if isinstance(medium, SolidMedium):
         assert freestream.temperature is not None
         return SolidInitial(kind="solid", temperature=freestream.temperature)
+    if given is None:
+        pressure, temperature, velocity = (
+            freestream.pressure,
+            freestream.temperature,
+            freestream.velocity,
+        )
+    else:
+        pressure = si(given.pressure, "Pa")
+        temperature = si(given.temperature, "K") if given.temperature is not None else None
+        velocity = (
+            si(given.velocity[0], "m / s"),
+            si(given.velocity[1], "m / s"),
+            si(given.velocity[2], "m / s"),
+        )
     if isinstance(medium, Gas):
-        assert freestream.temperature is not None
-        density = freestream.pressure / (medium.gas_constant * freestream.temperature)
+        assert temperature is not None
+        density = pressure / (medium.gas_constant * temperature)
     else:
         density = medium.density
-    nu = zone_viscosity(medium, freestream.temperature) / density
+    nu = zone_viscosity(medium, temperature) / density
     k = (
         1.5 * (turbulence.intensity * freestream.speed) ** 2
         if turbulence.intensity is not None
@@ -502,9 +521,9 @@ def initial_state(
     return FluidInitial(
         kind="fluid",
         density=density,
-        pressure=freestream.pressure,
-        temperature=freestream.temperature,
-        velocity=freestream.velocity,
+        pressure=pressure,
+        temperature=temperature,
+        velocity=velocity,
         nu_tilde=(
             turbulence.nu_tilde_ratio * nu if turbulence.nu_tilde_ratio is not None else None
         ),
@@ -515,6 +534,10 @@ def initial_state(
             else None
         ),
     )
+
+
+def given_state(medium: Fluid | SolidZone) -> State | None:
+    return medium.initial if isinstance(medium, Fluid) else None
 
 
 def _si(condition: dict[str, Any], key: str, unit: str) -> float | None:
@@ -544,12 +567,14 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
             )
         )
     freestream, turbulence = freestream_state(spec), turbulence_input(spec)
-    media = [(z.zone, medium_input(_MEDIUM.validate_python(z.medium))) for z in plan.cell_zones]
+    media = [(z.zone, _MEDIUM.validate_python(z.medium)) for z in plan.cell_zones]
     cell_zones = tuple(
         CellZoneInput(
-            zone=zone, medium=medium, initial=initial_state(medium, freestream, turbulence)
+            zone=zone,
+            medium=medium_input(rule),
+            initial=initial_state(medium_input(rule), freestream, turbulence, given_state(rule)),
         )
-        for zone, medium in media
+        for zone, rule in media
     )
     zone_names = [b.zone for b in plan.boundaries]
     monitors = tuple(
