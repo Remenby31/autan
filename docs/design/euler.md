@@ -74,4 +74,13 @@ Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variati
 
 ## Manufactured solution
 
-Steady `euler` solution of autan-vv (Roy et al. 2004 form), boundary faces at the exact state, cell sources at centroids; Newton-Krylov on the generated residual (`physics/mms/euler_mms.py`). The table is filled from the study of PR #99.
+Steady `euler` solution of autan-vv (Roy et al. 2004 form), every boundary face at the exact state, cell sources at centroids, solved by `autan-run` and checked by `autan-vv verify --gate euler-mms-order` (Roe, unlimited, implicit steady solver; commit a6b557c, PR #134). Fitted / finest-pair L2 orders:
+
+| Family, levels | Precision | ρ | ρu | ρv | ρw | ρE |
+|---|---|---|---|---|---|---|
+| tet, 12–32 | fp64, fp32+acc64 | 1.99/2.04 | 2.01/1.98 | 1.99/1.98 | 1.99/1.97 | 2.05/1.98 |
+| hex, 12–32 | fp64, fp32+acc64 | 2.20/2.18 | 2.06/1.99 | 1.96/1.97 | 2.17/2.15 | 1.91/1.96 |
+| poly, 12–32 | fp64, fp32+acc64 | 2.56/2.42 | 2.53/2.34 | 2.55/2.44 | 2.53/2.41 | 2.14/2.08 |
+| hybrid, 16–48 | fp64, fp32+acc64 | 2.11/2.12 | 1.97/2.07 | 1.95/2.00 | 1.99/2.10 | 1.98/2.01 |
+
+The hybrid family needs one level more: its pyramids, prisms and tetrahedra fill corner blocks that hold few cells on coarse levels, and the momentum orders between successive levels are 1.76–1.86 (12→16), 1.94–1.98 (16→24), 1.87–1.90 (24→32), 2.00–2.10 (32→48): they fluctuate by ±0.1, as on every non-nested family ([order.md](../validation/order.md)), and reach 2 on the finest pair. Polyhedral duals supraconverge (above 2.1: a warning of the gate, not a failure). The host study (`physics/mms/euler_mms.py`) gives the same orders for HLLC and AUSM+-up.
