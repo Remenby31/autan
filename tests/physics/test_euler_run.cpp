@@ -714,6 +714,32 @@ TEST_CASE("a steady multigrid case on several ranks is refused before any direct
   CHECK(diagnostic["location"]["path"] == "time.linear_solver");
 }
 
+TEST_CASE("a steady run whose state is not physical on some ranks stops every rank",
+          "[euler][mpi]") {
+  // Zone `lower` at 1e-9 times the freestream density rounds to zero density in fp32+acc64. On 4
+  // ranks some parts hold none of it: they must take the divergence branch with the others, or the
+  // ranks enter different collectives and the run hangs instead of reporting D0107.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp32+acc64");
+    for (auto& z : d["cell_zones"]) {
+      if (z["zone"] == "lower")
+        z["initial"]["density"] = 1e-9 * d["freestream"]["density"].get<double>();
+    }
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 5;
+  });
+  const fs::path many = run_on_ranks(doc, 4);
+  REQUIRE(!many.empty());
+  const Json info = Json::parse(read(many / "run.json"));
+  INFO(info["diagnostics"].dump());
+  CHECK(info["status"] == "diverged");
+  const auto& diagnostics = info["diagnostics"];
+  const auto d107 = std::find_if(diagnostics.begin(), diagnostics.end(),
+                                 [](const Json& g) { return g["code"] == "D0107"; });
+  REQUIRE(d107 != diagnostics.end());
+  CHECK((*d107)["data"]["zone"] == "lower");
+}
+
 TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank solution",
           "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell

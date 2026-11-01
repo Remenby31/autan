@@ -182,8 +182,9 @@ class EulerPhysics final : public runtime::Physics {
     if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
-    // before a solve turns it into an exception.
-    if (const auto bad = first_invalid_cell()) {
+    // before a solve turns it into an exception; on every rank, also those that own no such cell.
+    const auto bad = first_invalid_cell();
+    if (ctx_.ranks.max(bad ? 1.0 : 0.0) > 0.0) {
       residual_of(u_);
       record_norms(report);
       report.diverged_cell = bad;

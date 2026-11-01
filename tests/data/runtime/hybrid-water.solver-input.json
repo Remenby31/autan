@@ -2,7 +2,7 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "hybrid-water",
-    "sha256": "8e436aa1fd91f17c736a1a168148c127bcf053ac148b9adb65d1c948d6d7c7ea",
+    "sha256": "80723db4b922a612152d3b2138856b0cadca31e3d717a5ba140fff0ebbe820da",
     "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\n"
   },
   "mesh": {
