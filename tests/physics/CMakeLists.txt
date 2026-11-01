@@ -49,7 +49,11 @@ if(AUTAN_ENABLE_CGNS)
     autan_euler_run_tests
     PRIVATE AUTAN_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
   )
-  catch_discover_tests(autan_euler_run_tests)
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]")
+  if(AUTAN_ENABLE_CUDA)
+    target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
+    catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
+  endif()
 endif()
 
 # The Euler residual on a CUDA device against the host's.
