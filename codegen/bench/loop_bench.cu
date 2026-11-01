@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <string>
@@ -17,6 +18,7 @@
 #include "advection_cpu.hpp"
 #include "advection_gpu.cuh"
 #include "autan/core/renumber.hpp"
+#include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "device.cuh"
 #include "gradients_cpu.hpp"
@@ -232,6 +234,87 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   out.push_back({"lsq_gradient_bounds", lsq_bytes, "cell",
                  time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule); })});
 
+  // Its adjoint: atomic scatter against the deterministic two-pass form. Bytes: the primal's
+  // reads, the 5 seeds per cell read and zeroed, q_adj read and written.
+  DeviceArray<R> g_adj(3 * nc), lo_adj(nc), hi_adj(nc), q_adj(nc);
+  gr::Data<P> da = d;
+  da.grad_adj = g_adj.get();
+  da.qmin_adj = lo_adj.get();
+  da.qmax_adj = hi_adj.get();
+  da.q_adj = q_adj.get();
+  const double lsq_adj_bytes = lsq_bytes - cells * (3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
+                               cells * (sizeof(S) + 10.0 * sizeof(R) + 2.0 * sizeof(R));
+  // Host reference with random seeds; the adjoint consumes (zeroes) its seeds, so each check
+  // uploads them again. Timed repetitions after the first run on zeroed seeds: same work.
+  std::vector<R> seeds(5 * nc);
+  for (auto& v : seeds) v = R(normal(rng));
+  std::vector<R> h_gadj(seeds.begin(), seeds.begin() + 3 * nc);
+  std::vector<R> h_lo(seeds.begin() + 3 * nc, seeds.begin() + 4 * nc);
+  std::vector<R> h_hi(seeds.begin() + 4 * nc, seeds.end());
+  std::vector<R> h_qadj(nc, R(0));
+  gr::Data<P> dha = dh;
+  dha.grad_adj = h_gadj.data();
+  dha.qmin_adj = h_lo.data();
+  dha.qmax_adj = h_hi.data();
+  dha.q_adj = h_qadj.data();
+  gr::cpu::lsq_gradient_bounds(dh);
+  gr::cpu::lsq_gradient_bounds_adjoint(dha);
+  for (auto s : {gpu::Strategy::atomic, gpu::Strategy::store_gather}) {
+    g_adj.upload(seeds.data());
+    lo_adj.upload(seeds.data() + 3 * nc);
+    hi_adj.upload(seeds.data() + 4 * nc);
+    gpu::check(cudaMemset(q_adj.get(), 0, nc * sizeof(R)), "memset");
+    gr::gpu_loops::lsq_gradient_bounds_adjoint(da, s, dm.schedule);
+    gpu::check(cudaDeviceSynchronize(), "lsq adjoint");
+    if (max_rel_diff(as_double(q_adj.download()), as_double(h_qadj)) > tolerance) verified = false;
+    std::string tag = gpu::name(s);
+    std::replace(tag.begin(), tag.end(), '-', '_');
+    out.push_back(
+        {"lsq_gradient_bounds_adjoint_" + tag, lsq_adj_bytes, gpu::name(s),
+         time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds_adjoint(da, s, dm.schedule); })});
+  }
+
+  // LSQ gradient over the wider cell stencils that make the unlimited scheme stable on
+  // tetrahedra. Analytic minimum: per entry its index and weight; per cell its offset, q, and
+  // the gradient written.
+  for (auto kind : {autan::kernels::StencilKind::vertex, autan::kernels::StencilKind::face2}) {
+    const auto t_build = std::chrono::steady_clock::now();
+    const auto st = autan::kernels::cell_stencil(m.mesh, m.packed, kind);
+    const double build_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+    const auto ns = st.entries.size();
+    DeviceArray<offset_t> st_off(st.offsets), st_twin(st.twin);
+    DeviceArray<index_t> st_entries(st.entries);
+    const auto w_host = autan::kernels::converted<
+        std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>>(st.lsq_weight);
+    DeviceArray<std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>> w_dev(
+        w_host);
+    gr::Data<P> dst = d;
+    dst.topo.n_stencil = static_cast<offset_t>(ns);
+    dst.topo.stencil_offsets = st_off.get();
+    dst.topo.stencil = st_entries.get();
+    dst.topo.stencil_twin = st_twin.get();
+    dst.stencil_lsq_weight = w_dev.get();
+    gr::Data<P> hst = dh;
+    hst.topo.n_stencil = static_cast<offset_t>(ns);
+    hst.topo.stencil_offsets = st.offsets.data();
+    hst.topo.stencil = st.entries.data();
+    hst.topo.stencil_twin = st.twin.data();
+    hst.stencil_lsq_weight = w_host.data();
+    gr::cpu::lsq_gradient_stencil(hst);
+    gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule);
+    gpu::check(cudaDeviceSynchronize(), "lsq stencil");
+    if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+    const double st_bytes = static_cast<double>(ns) * (sizeof(index_t) + 3.0 * sizeof(w_host[0])) +
+                            cells * (sizeof(offset_t) + sizeof(S) + 3.0 * sizeof(Gr)) +
+                            nb * sizeof(S);
+    const char* label = kind == autan::kernels::StencilKind::vertex ? "vertex" : "face2";
+    std::fprintf(stderr, "%s stencil: %zu entries (%.1f per cell), built in %.3f s\n", label, ns,
+                 static_cast<double>(ns) / cells, build_seconds);
+    out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
+                   time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
+  }
+
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
   namespace rf = autan::kernels::roe;
   std::vector<S> u(5 * nc);
@@ -288,10 +371,12 @@ int main(int argc, char** argv) {
   } else if (o.order != "input") {
     fail("--order is input or rcm");
   }
-  SpikeMesh m{std::move(mesh), {}, {}, {}};
+  SpikeMesh m{std::move(mesh), {}, {}, {}, {}, {}};
   m.geometry = autan::compute_geometry(m.mesh);
   m.packed = autan::kernels::pack_geometry(m.mesh, m.geometry);
   m.topo = autan::kernels::topology(m.mesh.view());
+  m.twins = autan::kernels::incidence_twins(m.mesh);
+  m.topo.incidence_twin = m.twins.data();
   const double read_seconds = std::chrono::duration<double>(t1 - t0).count();
 
   std::vector<Timed> timed;
@@ -322,14 +407,19 @@ int main(int argc, char** argv) {
               AUTAN_BENCH_DIRTY);
   std::printf("\"backend\":\"cuda\",\"runtime_version\":%d,\"driver_version\":%d,", runtime,
               driver);
+  // `config` identifies a run by content (mesh hash, not path) and holds no measurement, so that
+  // autan-bench compare can match runs; one-off host costs go to `setup_seconds`.
+  const std::string sha = autan::io::mesh_hash(o.mesh);
   std::printf(
-      "\"config\":{\"mesh\":\"%s\",\"policy\":\"%s\",\"order\":\"%s\",\"layout\":\"soa\","
-      "\"n_cells\":%d,\"n_faces\":%d,\"n_interior_faces\":%d,\"n_incidences\":%lld,"
-      "\"block\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,\"read_seconds\":%.3f,"
-      "\"renumber_seconds\":%.3f,\"tolerance\":%.1e},",
-      o.mesh.c_str(), o.policy.c_str(), o.order.c_str(), m.topo.n_cells, m.topo.n_faces,
-      m.topo.n_interior_faces, static_cast<long long>(m.topo.n_incidences), o.block, o.warmup,
-      o.reps, o.batch, read_seconds, renumber_seconds, tolerance);
+      "\"config\":{\"mesh_file\":\"%s\",\"mesh_sha256\":\"%s\",\"policy\":\"%s\","
+      "\"order\":\"%s\",\"layout\":\"soa\",\"n_cells\":%d,\"n_faces\":%d,"
+      "\"n_interior_faces\":%d,\"n_incidences\":%lld,\"block\":%d,\"warmup\":%d,\"reps\":%d,"
+      "\"batch\":%d,\"tolerance\":%.1e},",
+      std::filesystem::path(o.mesh).filename().string().c_str(), sha.c_str(), o.policy.c_str(),
+      o.order.c_str(), m.topo.n_cells, m.topo.n_faces, m.topo.n_interior_faces,
+      static_cast<long long>(m.topo.n_incidences), o.block, o.warmup, o.reps, o.batch, tolerance);
+  std::printf("\"setup_seconds\":{\"read\":%.3f,\"renumber\":%.3f},", read_seconds,
+              renumber_seconds);
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < timed.size(); ++k) {
     const auto& t = timed[k];

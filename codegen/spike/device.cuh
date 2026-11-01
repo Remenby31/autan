@@ -46,12 +46,18 @@ class DeviceArray {
 
 /// Topology, colourings and scratch of a spike mesh on the device.
 struct DeviceMesh {
-  static constexpr int kScratchWidth = 10;  // widest spike face loop: the Roe adjoint
+  static constexpr int kScratchWidth = 10;          // widest spike face loop: the Roe adjoint
+  static constexpr int kIncidenceScratchWidth = 1;  // spike reductions gather one scalar
   DeviceArray<index_t> owner, neighbour, cell_faces;
   DeviceArray<offset_t> offsets;
   autan::kernels::HostColouring int_colours, bnd_colours;
   DeviceArray<index_t> int_faces, bnd_faces;
   DeviceArray<double> scratch;
+  DeviceArray<offset_t> twin;
+  DeviceArray<offset_t> stencil_offsets;
+  DeviceArray<index_t> stencil;
+  DeviceArray<offset_t> stencil_twin;
+  DeviceArray<double> incidence_scratch;
   autan::kernels::Topology topo;
   gpu::Schedule schedule;
 
@@ -65,6 +71,14 @@ struct DeviceMesh {
         int_faces(int_colours.faces),
         bnd_faces(bnd_colours.faces),
         scratch(kScratchWidth * static_cast<std::size_t>(m.topo.n_faces)),
+        twin(m.topo.incidence_twin, static_cast<std::size_t>(m.topo.n_incidences)),
+        stencil_offsets(m.topo.stencil_offsets, m.topo.stencil_offsets != nullptr
+                                                    ? static_cast<std::size_t>(m.topo.n_cells) + 1
+                                                    : 0),
+        stencil(m.topo.stencil, static_cast<std::size_t>(m.topo.n_stencil)),
+        stencil_twin(m.topo.stencil_twin, static_cast<std::size_t>(m.topo.n_stencil)),
+        incidence_scratch(kIncidenceScratchWidth * static_cast<std::size_t>(std::max(
+                                                       m.topo.n_incidences, m.topo.n_stencil))),
         topo(m.topo) {
     topo.owner = owner.get();
     topo.neighbour = neighbour.get();
@@ -75,6 +89,14 @@ struct DeviceMesh {
     schedule.boundary = {bnd_faces.get(), bnd_colours.offsets};
     schedule.face_scratch = scratch.get();
     schedule.face_scratch_width = kScratchWidth;
+    schedule.incidence_scratch = incidence_scratch.get();
+    schedule.incidence_scratch_width = kIncidenceScratchWidth;
+    topo.incidence_twin = twin.get();
+    if (m.topo.stencil != nullptr) {
+      topo.stencil_offsets = stencil_offsets.get();
+      topo.stencil = stencil.get();
+      topo.stencil_twin = stencil_twin.get();
+    }
   }
 };
 
@@ -82,7 +104,7 @@ template <class P>
 struct DeviceGeom {
   using G = typename P::geom;
   DeviceArray<G> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
-      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight;
+      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
   explicit DeviceGeom(const GeomCopy<P>& g)
       : face_area(g.face_area),
         face_centroid(g.face_centroid),
@@ -93,7 +115,8 @@ struct DeviceGeom {
         face_r_right(g.face_r_right),
         cell_centroid(g.cell_centroid),
         cell_volume(g.cell_volume),
-        lsq_weight(g.lsq_weight) {}
+        lsq_weight(g.lsq_weight),
+        stencil_lsq_weight(g.stencil_lsq_weight) {}
 };
 
 inline gpu::Strategy strategy_of(std::string_view s) {

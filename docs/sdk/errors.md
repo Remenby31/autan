@@ -616,9 +616,9 @@ Fix: Build the C++ core (see README) to run real computations.
 
 **No solver backend** (error)
 
-`case.run()` needs a backend. The C++ core is not part of this build, so only the `fake` backend exists; it writes synthetic results.
+`case.run()` needs a backend, and the solver backend needs the runtime `autan-run`, found through `$AUTAN_RUN` or the PATH.
 
-Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
+Fix: Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run installed, or `autan.FakeBackend()` for synthetic results.
 
 ## E0805
 
@@ -771,3 +771,19 @@ Fix: Use one of the race strategies the driver lists.
 Store-gather scratch has fewer components per face than the loop's outputs.
 
 Fix: Regenerate the loop so its scratch holds every output component per face.
+
+## E1105
+
+**Incidence scratch too narrow** (error)
+
+The deterministic adjoint of a cell reduction has fewer scratch components per incidence than the values it sends to neighbours.
+
+Fix: Size the schedule's incidence scratch for the widest reduction adjoint of the module.
+
+## E1106
+
+**Incidence twins missing** (error)
+
+The deterministic adjoint of a cell reduction runs on a topology without incidence twins.
+
+Fix: Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.

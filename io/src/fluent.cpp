@@ -305,6 +305,7 @@ class FluentReader {
     for (std::size_t f = 0; f < n; ++f) {
       const std::int64_t count = face_type == 0 || face_type == 5 ? next() : face_type;
       if (count < 3) c_.fail("face with fewer than 3 nodes");
+      c_.check_fits(static_cast<std::uint64_t>(count), binary ? 4 : 2);
       nodes.resize(static_cast<std::size_t>(count));
       for (auto& v : nodes) v = next();
       const std::int64_t c0 = next();

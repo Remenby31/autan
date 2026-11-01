@@ -1,9 +1,12 @@
+import hashlib
 import http.client
 import json
+import math
 import shutil
 import socket
 import threading
 import time
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,7 +20,9 @@ import pytest
 import uvicorn
 from autan_ui import create_app
 from autan_ui.confine import Folder
-from autan_ui.registry import Registry, read_history
+from autan_ui.history import read_history
+from autan_ui.registry import Registry
+from autan_ui.summary import residual_orders
 from autan_ui.surface import synthetic_wing
 from fastapi import FastAPI
 
@@ -140,7 +145,7 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
 ) -> None:
     source = next(runs.iterdir())
     with httpx.stream("GET", f"{server}/api/runs/events", timeout=10) as response:
-        events = sse_events(response)
+        events = (e for e in sse_events(response) if e[0] != "summaries")
         kind, snapshot = next(events)
         assert (kind, len(snapshot["runs"])) == ("runs", 1)
 
@@ -217,37 +222,55 @@ def test_synthetic_surface_layout() -> None:
     assert [zone["name"] for zone in header["zones"]] == ["wing.upper", "wing.lower", "wing.tip"]
 
 
-def test_a_running_run_reports_its_last_recorded_iteration(runs: Path) -> None:
+def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     run = json.loads((source / "run.json").read_text())
     (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    records = [json.loads(line) for line in (source / "history.jsonl").read_text().splitlines()]
     with (source / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
-
-    snapshot = Registry(runs).scan()
-
-    assert snapshot.runs[source.name]["iterations"] == 30
-    assert snapshot.progress == {source.name: 30}
-
-
-def test_progress_survives_long_and_malformed_last_lines(runs: Path) -> None:
-    source = next(runs.iterdir())
-    run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
     registry = Registry(runs)
-    assert registry.scan().progress == {source.name: 30}
+
+    summary = registry.scan().summaries[source.name]
+
+    first, last = records[0]["residuals"], records[-1]["residuals"]
+    slowest = min(math.log10(first[name] / last[name]) for name in first)
+    assert summary["iteration"] == 30
+    assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
+    assert len(summary["trend"]) == 30
+    assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert summary["settings"]["aoa"] == case["freestream"]["aoa"]
+    assert summary["settings"]["turbulence"] == case["physics"]["turbulence"]["model"]
 
     # Lines appended after the directory was checked are not re-validated by the registry.
-    long_record = {"iteration": 31, "padding": "x" * 200_000}
     with (source / "history.jsonl").open("a") as history:
-        history.write(json.dumps(long_record) + "\n")
-    assert registry.scan().progress == {source.name: 31}
-
-    with (source / "history.jsonl").open("a") as history:
+        history.write('uals": {}, "padding": "' + "x" * 200_000 + '"}\n')
         history.write('{"iteration": 1e400}\n')
     snapshot = registry.scan()
     assert source.name in snapshot.runs
-    assert snapshot.progress == {}
+    assert snapshot.summaries[source.name]["iteration"] == 31
+
+
+def test_run_details_and_plan(runs: Path, server: str) -> None:
+    run_id = next(runs.iterdir()).name
+    details = httpx.get(f"{server}/api/runs/{run_id}").json()
+    assert {o["name"] for o in details["outputs"]} >= {
+        "run.json",
+        "case.toml",
+        "mesh-info.json",
+        "history.jsonl",
+        "solution.cgns",
+    }
+    assert details["case_toml"] == (runs / run_id / "case.toml").read_text()
+    mesh_info = json.loads((runs / run_id / "mesh-info.json").read_text())
+
+    plan = httpx.get(f"{server}/api/runs/{run_id}/plan").json()
+
+    assert plan["ok"] is True
+    assert {b["zone"] for b in plan["boundaries"]} == {
+        z["name"] for z in mesh_info["boundary_zones"]
+    }
 
 
 @pytest.mark.parametrize(
@@ -333,3 +356,64 @@ def test_a_stream_keeps_reading_the_run_it_opened(runs: Path, server: str, tmp_p
 
         _, records = next(e for e in events if e[0] == "history")
         assert [r["iteration"] for r in records] == [31]
+
+
+def test_a_manufactured_solution_run_plans_against_its_archive(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    fixture = PY / "tests" / "fixtures" / "euler.mms.json"
+    digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    case = tmp_path / "mms.py"
+    case.write_text(
+        "import autan\nfrom autan.units import K, Pa, kg, mol, s\n"
+        f"gas = autan.IdealGas(name='mms', molar_mass={8.314462618 / 287.0!r} * kg / mol,"
+        " gamma=1.4, prandtl=0.72, viscosity=autan.ConstantViscosity(mu=1e-3 * Pa * s))\n"
+        "case = autan.Case('mms', mesh='crm-hl.cgns')\n"
+        "case.physics = autan.Compressible(turbulence=autan.Inviscid(), gas=gas)\n"
+        "case.freestream(mach=0.3, pressure=101325 * Pa, temperature=300 * K)\n"
+        f"case.verification = autan.Manufactured(path='euler.mms.json', sha256={digest!r})\n"
+    )
+    shutil.copy(fixture, tmp_path / "euler.mms.json")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    result = autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs)
+
+    plan = httpx.get(f"{server}/api/runs/{result.path.name}/plan").json()
+
+    assert plan["ok"] is True, plan
+
+
+@pytest.mark.parametrize(
+    ("first", "now", "expected"),
+    [
+        ({"density": 1e-300, "energy": 1.0}, {"density": 1e-310, "energy": 1e-8}, 8.0),
+        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 0.0}, 8.0),
+        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 1.0}, None),
+        ({"density": 1.0, "energy": 1.0}, {"density": 0.0, "energy": 1e-8}, 8.0),
+    ],
+)
+def test_residual_drop_is_the_slowest_equation(
+    first: dict[str, float], now: dict[str, float], expected: float | None
+) -> None:
+    orders = residual_orders(first, now)
+    assert orders == (None if expected is None else pytest.approx(expected))
+
+
+def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
+    first = next(runs.iterdir())
+    second = shutil.copytree(first, runs / ".staging")
+    run = json.loads((second / "run.json").read_text())
+    run |= {"run_id": "run-20261031T235959Z-0123abcd", "started": "2026-10-31T23:59:59Z"}
+    (second / "run.json").write_text(json.dumps(run))
+    second = second.rename(runs / run["run_id"])
+    url = f"{server}/api/runs/history/events?run={first.name}&run={second.name}"
+    resume = {"Last-Event-ID": json.dumps({first.name: 0, second.name: None})}
+    with httpx.stream("GET", url, headers=resume, timeout=10) as response:
+        events = sse_events(response)
+        seen = [next(events) for _ in range(4)]
+    assert sorted((kind, data["run_id"]) for kind, data in seen) == sorted(
+        [(k, r) for k in ("run", "history") for r in (first.name, second.name)]
+    )
+    assert (
+        httpx.get(f"{server}/api/runs/history/events?run=run-20261031T000000Z-deadbeef").status_code
+        == 404
+    )

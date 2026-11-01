@@ -103,7 +103,7 @@ std::string_view bc_type(const BoundaryInput& b) {
   if (b.kind == "symmetry") return "BCSymmetryPlane";
   if (b.kind == "farfield") return "BCFarfield";
   if (b.kind == "outlet") return "BCOutflowSubsonic";
-  if (b.kind == "manufactured") return "BCTypeUserDefined";
+  if (b.kind == "manufactured") return "UserDefined";
   return "BCInflowSubsonic";  // inlet, velocity-inlet
 }
 
@@ -252,7 +252,7 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
   return r;
 }
 
-class Run {
+class Run final : public Log {
  public:
   Run(Prepared& p, const SolverBuild& build) : p_(p), geometry_(compute_geometry(p.mesh)) {
     const auto started = std::chrono::system_clock::now();
@@ -289,13 +289,16 @@ class Run {
     dir_ = std::make_unique<RunDirectory>(
         runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
         io::mesh_info_json(p_.mesh, p_.mesh_hash),
+        log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
+                 Json{{"cells", p_.mesh.n_cells()}, {"faces", p_.mesh.n_faces()}}.dump()),
         p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
                               : std::nullopt);
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 
   ExitStatus execute() {
-    const PhysicsContext context{.mesh = p_.mesh, .geometry = geometry_, .input = p_.input};
+    const PhysicsContext context{
+        .mesh = p_.mesh, .geometry = geometry_, .input = p_.input, .log = *this};
     std::string status = "running";
     std::int64_t done = 0;
     try {
@@ -316,8 +319,43 @@ class Run {
   };
 
   void record_failure(const std::string& message) {
-    info_["diagnostics"].push_back(Json::parse(
-        Diagnostic{.code = "E0704", .message = message, .path = "", .data_json = "{}"}.json()));
+    add_diagnostic(Diagnostic{.code = "E0704", .message = message, .path = "", .data_json = "{}"});
+  }
+
+  // A run diagnostic goes to run.json and, with the same code and data, to
+  // log.jsonl (results.md).
+  void add_diagnostic(const Diagnostic& d) {
+    const Json entry = Json::parse(d.json());
+    info_["diagnostics"].push_back(entry);
+    write("error", "solver", d.message, d.code, entry["data"].dump());
+  }
+
+ public:
+  void write(std::string_view level, std::string_view source, std::string_view message,
+             std::string_view code, std::string_view data_json) override {
+    dir_->append_log(log_line(level, source, message, code, data_json));
+  }
+
+ private:
+  // One log.jsonl line: wall-clock UTC time in milliseconds and the current
+  // iteration (null before the first).
+  [[nodiscard]] std::string log_line(std::string_view level, std::string_view source,
+                                     std::string_view message, std::string_view code,
+                                     std::string_view data_json) const {
+    const auto now = std::chrono::system_clock::now();
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() %
+        1000;
+    char fraction[8];
+    std::snprintf(fraction, sizeof fraction, ".%03dZ", static_cast<int>(ms));
+    return Json{{"time", utc(now, "%Y-%m-%dT%H:%M:%S") + fraction},
+                {"iteration", iteration_ > 0 ? Json(iteration_) : Json(nullptr)},
+                {"level", level},
+                {"source", source},
+                {"message", message},
+                {"code", code.empty() ? Json(nullptr) : Json(code)},
+                {"data", Json::parse(data_json.empty() ? "{}" : data_json)}}
+        .dump();
   }
 
   // Returns the final status; every value is a string literal.
@@ -333,6 +371,7 @@ class Run {
         stopped_by_signal_ = true;
         return "stopped";
       }
+      iteration_ = it;
       const StepReport report = physics_->step(it);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -404,12 +443,11 @@ class Run {
       data["zone"] = zone;
       where = " near cell " + std::to_string(*cell) + " (zone '" + zone + "')";
     }
-    info_["diagnostics"].push_back(Json::parse(
+    add_diagnostic(
         Diagnostic{.code = "D0107",
                    .message = "divergence at iteration " + std::to_string(iteration) + where,
                    .path = "",
-                   .data_json = data.dump()}
-            .json()));
+                   .data_json = data.dump()});
   }
 
   // Collects the solution from the physics (PhysicsFailure on any error of
@@ -474,6 +512,8 @@ class Run {
     }
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
+    write(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
+          Json{{"status", status}, {"iterations", done}}.dump());
     dir_->write_run_json(info_.dump(2));
     if (status == "failed") return ExitStatus::failed;
     return stopped_by_signal_ ? ExitStatus::signalled : ExitStatus::finished;
@@ -485,6 +525,7 @@ class Run {
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
   bool stopped_by_signal_ = false;
+  std::int64_t iteration_ = 0;  // the iteration being computed, 0 before the first
 };
 
 }  // namespace

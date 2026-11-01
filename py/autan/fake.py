@@ -253,7 +253,9 @@ class FakeBackend:
             if spec.verification is not None
             else None
         )
-        writer = RunWriter(runs, info, spec, mesh_info, manufactured)
+        writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake")
+        for warning in result.diagnostics:
+            writer.diagnose(warning)
         history = _History(spec, freestream_state(spec))
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps
@@ -265,6 +267,13 @@ class FakeBackend:
             for iteration in range(1, last + 1):
                 writer.append(history.record(iteration))
                 done = iteration
+                if iteration == CONVERGED_AT // 2:
+                    writer.log(
+                        "info",
+                        "synthetic residuals halfway to convergence",
+                        source="fake",
+                        iteration=iteration,
+                    )
                 if self.pace:
                     clock.sleep(self.pace)
         except KeyboardInterrupt:

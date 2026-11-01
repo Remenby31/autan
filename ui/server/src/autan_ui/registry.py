@@ -1,17 +1,18 @@
 import json
 import logging
-import os
 import re
 import threading
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
 
 import autan
 from autan.errors import CaseError
 
 from autan_ui.confine import Folder, is_link
+from autan_ui.summary import Summaries
 
 log = logging.getLogger(__name__)
 
@@ -35,18 +36,12 @@ CHECKED_FILES = ("run.json", "case.toml", "mesh-info.json", "solution.cgns")
 class Snapshot:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejected: dict[str, str] = field(default_factory=dict)
-    progress: dict[str, int] = field(default_factory=dict)
+    summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def document(self) -> dict[str, Any]:
         runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
         rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
-        return {"runs": runs, "rejected": rejected, "progress": self.progress}
-
-
-@dataclass(frozen=True)
-class HistoryChunk:
-    records: list[dict[str, Any]]
-    offset: int
+        return {"runs": runs, "rejected": rejected, "summaries": self.summaries}
 
 
 class Registry:
@@ -59,6 +54,8 @@ class Registry:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self._checked: dict[str, tuple[tuple[Any, ...], dict[str, Any] | str]] = {}
+        self._summaries = Summaries()
+        self._budgets: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def run_dir(self, run_id: str) -> Path:
@@ -92,16 +89,21 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
-                        if outcome["status"] == "running":
-                            try:
-                                with Folder(child) as folder:
-                                    last = last_iteration(folder)
-                            except OSError:
-                                last = None
-                            if last is not None:
-                                snapshot.progress[child.name] = last
-            for gone in self._checked.keys() - names:
-                del self._checked[gone]
+                        try:
+                            with Folder(child) as folder:
+                                live = outcome["status"] == "running"
+                                summary = self._summaries.update(child.name, folder, live=live)
+                        except (OSError, ValueError, ArithmeticError) as error:
+                            log.warning("no summary for %s: %s", child, error)
+                            summary = None
+                        if summary is not None:
+                            budget = self._budgets.get(child.name, {})
+                            snapshot.summaries[child.name] = summary | budget
+            gone = self._checked.keys() - names
+            for name in gone:
+                del self._checked[name]
+                self._budgets.pop(name, None)
+            self._summaries.forget(gone)
         return snapshot
 
     def _check(self, directory: Path) -> dict[str, Any] | str:
@@ -114,7 +116,15 @@ class Registry:
             outcome = "no run.json"
         else:
             try:
-                outcome = autan.Results.open(directory).run.document()
+                results = autan.Results.open(directory)
+                outcome = results.run.document()
+                time = results.case.document()["time"]
+                case = results.case.document()
+                self._budgets[directory.name] = {
+                    "target_orders": time.get("residual_orders"),
+                    "max_iterations": time.get("max_iterations", time.get("steps")),
+                    "settings": _settings(case),
+                }
             except CaseError as error:
                 outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
             except (OSError, ValueError) as error:
@@ -126,14 +136,22 @@ class Registry:
 
     def details(self, directory: Path) -> dict[str, Any]:
         with Folder(directory) as folder:
+            case_toml = folder.read("case.toml").decode()
+            outputs = []
+            for name in sorted(path.name for path in folder.path.iterdir()):
+                stat = folder.stat(name)
+                if stat is not None and S_ISREG(stat.st_mode) and not name.startswith("."):
+                    outputs.append({"name": name, "bytes": stat.st_size, "modified": stat.st_mtime})
             return {
                 "run": read_run(folder),
-                "case": tomllib.loads(folder.read("case.toml").decode()),
+                "case": tomllib.loads(case_toml),
+                "case_toml": case_toml,
                 "mesh_info": json.loads(folder.read("mesh-info.json")),
+                "outputs": outputs,
             }
 
 
-RUN_FILES = (*CHECKED_FILES, "history.jsonl")
+RUN_FILES = (*CHECKED_FILES, "history.jsonl", "manufactured.json")
 
 
 def _inside(root: Path, directory: Path) -> bool:
@@ -145,6 +163,21 @@ def _inside(root: Path, directory: Path) -> bool:
         and directory.resolve().parent == root
         and not any(is_link(directory / name) for name in RUN_FILES)
     )
+
+
+def _settings(case: dict[str, Any]) -> dict[str, Any]:
+    """The settings a study usually sweeps, as the case writes them, for labels and polars."""
+    freestream = case.get("freestream", {})
+    physics = case.get("physics", {})
+    turbulence = physics.get("turbulence", {})
+    return {
+        "aoa": freestream.get("aoa"),
+        "sideslip": freestream.get("sideslip"),
+        "mach": freestream.get("mach"),
+        "re": freestream.get("re"),
+        "turbulence": turbulence.get("model") if isinstance(turbulence, dict) else None,
+        "precision": physics.get("precision"),
+    }
 
 
 def _stat(path: Path) -> tuple[int, int] | None:
@@ -163,48 +196,3 @@ def read_run(folder: Folder) -> dict[str, Any]:
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
-
-
-def last_iteration(folder: Folder) -> int | None:
-    """Iteration of the last complete history line: run.json is rewritten only when the status
-    changes, so this is how far a running run has got. Reads backwards until it has the whole
-    line, however long."""
-    try:
-        with os.fdopen(folder.open("history.jsonl"), "rb") as file:
-            end = file.seek(0, 2)
-            tail = b""
-            while end > 0:
-                start = max(end - 65536, 0)
-                file.seek(start)
-                tail = file.read(end - start) + tail
-                end = start
-                complete = tail[: tail.rfind(b"\n") + 1]
-                if complete.count(b"\n") >= 2 or (end == 0 and complete):
-                    break
-    except OSError:
-        return None
-    lines = tail[: tail.rfind(b"\n") + 1].splitlines()
-    if not lines:
-        return None
-    try:
-        iteration = json.loads(lines[-1]).get("iteration")
-    except (ValueError, AttributeError):
-        return None
-    return iteration if type(iteration) is int else None
-
-
-def read_history(folder: Folder, offset: int, *, live: bool) -> HistoryChunk:
-    """Complete lines of history.jsonl after byte `offset`.
-
-    While the run is live its last line may still be being written and waits; once the run has
-    ended, an unterminated last line violates autan.results/1 and raises ValueError.
-    """
-    if folder.stat("history.jsonl") is None:
-        return HistoryChunk([], offset)
-    data = folder.read("history.jsonl", offset)
-    end = data.rfind(b"\n") + 1
-    if end < len(data) and not live:
-        msg = "history.jsonl: the last line is not terminated"
-        raise ValueError(msg)
-    records = [json.loads(line) for line in data[:end].splitlines() if line.strip()]
-    return HistoryChunk(records, offset + end)

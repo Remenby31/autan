@@ -70,6 +70,10 @@ ALLOWED_VIA = {
         dsl.MeshSet.CELLS: {"left", "right"},
         dsl.MeshSet.FACES: {"direct"},
     },
+    "reduce_stencil": {
+        dsl.MeshSet.CELLS: {"self", "other"},
+        dsl.MeshSet.STENCIL: {"direct"},
+    },
     "boundary": {
         dsl.MeshSet.CELLS: {"left"},
         dsl.MeshSet.FACES: {"direct"},
@@ -179,7 +183,8 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
     where = f"{loop.body.source_file}: loop {name}"
     fn, sig = parse(loop.body)
     fin_fn = fin_sig = None
-    _check_bindings(where, loop.kind, sig, loop.bindings)
+    kind = "reduce_stencil" if loop.kind == "reduce" and loop.over == dsl.STENCIL else loop.kind
+    _check_bindings(where, kind, sig, loop.bindings)
     if loop.finalise is not None:
         fin_fn, fin_sig = parse(loop.finalise)
         n_acc = len(loop.outputs)

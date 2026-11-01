@@ -1,6 +1,6 @@
 import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type { HistoryRecord, Run, RunRegistry } from "./contracts";
+import type { Diagnostic, Forces, HistoryRecord, Run, RunRegistry } from "./contracts";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -16,9 +16,62 @@ export const runsQuery = queryOptions({
 
 export interface RunDetails {
   run: Run;
-  case: Record<string, unknown>;
-  mesh_info: Record<string, unknown>;
+  case: CaseDocument;
+  /** case.toml as stored in the run directory. */
+  case_toml: string;
+  mesh_info: MeshInfo;
+  outputs: RunOutput[];
 }
+
+export interface CaseDocument {
+  name: string;
+  time: {
+    kind: "steady" | "unsteady";
+    max_iterations?: number;
+    residual_orders?: number;
+    steps?: number;
+  };
+  [key: string]: unknown;
+}
+
+export interface MeshInfo {
+  source: { path: string; format: string; sha256: string };
+  counts: { cells: number; faces: number; nodes: number };
+  boundary_zones: { name: string; faces: number }[];
+}
+
+export interface RunOutput {
+  name: string;
+  bytes: number;
+  /** Seconds since the epoch. */
+  modified: number;
+}
+
+export interface Plan {
+  ok: boolean;
+  boundaries: {
+    zone: string;
+    faces: number;
+    mesh_type: string | null;
+    condition: { kind: string } | null;
+    provenance: "code" | "mesh" | "default" | null;
+  }[];
+  cell_zones: {
+    zone: string;
+    cells: number;
+    medium: { kind: string } | null;
+    provenance: string | null;
+  }[];
+  memory: { bytes_total: number; bytes_per_gpu: number; gpus: number; equations: number };
+  diagnostics: Diagnostic[];
+}
+
+export const planQuery = (runId: string) =>
+  queryOptions({
+    queryKey: ["plan", runId],
+    queryFn: () => getJson<Plan>(`/api/runs/${runId}/plan`),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
 export const runQuery = (runId: string) =>
   queryOptions({
@@ -30,7 +83,7 @@ function upsert(registry: RunRegistry | undefined, run: Run): RunRegistry {
   const runs = (registry?.runs ?? []).filter((r) => r.run_id !== run.run_id);
   runs.push(run);
   runs.sort((a, b) => b.started.localeCompare(a.started));
-  return { runs, rejected: registry?.rejected ?? [], progress: registry?.progress ?? {} };
+  return { runs, rejected: registry?.rejected ?? [], summaries: registry?.summaries ?? {} };
 }
 
 /** Keeps the run registry query live from the server's event stream. */
@@ -56,11 +109,11 @@ export function subscribeRegistry(client: QueryClient): () => void {
   });
   source.addEventListener("rejected", (e) => {
     const rejected = JSON.parse(e.data) as RunRegistry["rejected"];
-    update((old) => ({ runs: old?.runs ?? [], rejected, progress: old?.progress ?? {} }));
+    update((old) => ({ runs: old?.runs ?? [], rejected, summaries: old?.summaries ?? {} }));
   });
-  source.addEventListener("progress", (e) => {
-    const progress = JSON.parse(e.data) as RunRegistry["progress"];
-    update((old) => ({ runs: old?.runs ?? [], rejected: old?.rejected ?? [], progress }));
+  source.addEventListener("summaries", (e) => {
+    const summaries = JSON.parse(e.data) as RunRegistry["summaries"];
+    update((old) => ({ runs: old?.runs ?? [], rejected: old?.rejected ?? [], summaries }));
   });
   return () => source.close();
 }
@@ -81,11 +134,22 @@ export interface HistoryColumns {
   iteration: number[];
   residuals: Map<string, number[]>;
   forces: Map<string, ForceColumns>;
+  /** Last recorded value of every monitor, by name. */
+  monitors: Map<string, Forces>;
+  /** Orders of magnitude the slowest residual has dropped since the first record. */
+  orders: number[];
   version: number;
 }
 
-function emptyColumns(): HistoryColumns {
-  return { iteration: [], residuals: new Map(), forces: new Map(), version: 0 };
+export function emptyColumns(): HistoryColumns {
+  return {
+    iteration: [],
+    residuals: new Map(),
+    forces: new Map(),
+    monitors: new Map(),
+    orders: [],
+    version: 0,
+  };
 }
 
 function column<T>(map: Map<string, T>, name: string, create: () => T): T {
@@ -101,10 +165,22 @@ function column<T>(map: Map<string, T>, name: string, create: () => T): T {
 export function appendHistory(columns: HistoryColumns, records: HistoryRecord[]): HistoryColumns {
   for (const record of records) {
     columns.iteration.push(record.iteration);
+    let slowest = Number.POSITIVE_INFINITY;
+    let comparable = true;
     for (const [name, value] of Object.entries(record.residuals)) {
-      column(columns.residuals, name, () => []).push(value);
+      const series = column(columns.residuals, name, () => []);
+      series.push(value);
+      const first = series[0] ?? 0;
+      if (value === 0 && first >= 0) continue;
+      if (first > 0 && value > 0)
+        slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
+      else comparable = false;
     }
+    // Same rule as the server's residual_orders: a residual at exactly zero does not limit the
+    // drop; one grown from an exact zero, or not positive, leaves it undefined.
+    columns.orders.push(comparable && Number.isFinite(slowest) ? slowest : Number.NaN);
     for (const [name, forces] of Object.entries(record.monitors ?? {})) {
+      columns.monitors.set(name, forces);
       if (forces.cl === undefined || forces.cd === undefined) continue;
       const series = column(columns.forces, name, () => ({ iteration: [], cl: [], cd: [] }));
       series.iteration.push(record.iteration);
@@ -159,5 +235,49 @@ export function useLiveRun(runId: string): LiveRun {
     });
     return () => source.close();
   }, [runId]);
+  return state;
+}
+
+/** Live history of several runs at once over one connection, keyed by run id. */
+export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> {
+  const [state, setState] = useState<Map<string, LiveRun>>(() => new Map());
+  const key = runIds.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for the id list
+  useEffect(() => {
+    setState(new Map());
+    if (!runIds.length) return;
+    const histories = new Map(runIds.map((id) => [id, emptyColumns()]));
+    const set = (runId: string, change: (old: LiveRun) => LiveRun) =>
+      setState((s) => {
+        const next = new Map(s);
+        const old = s.get(runId) ?? {
+          run: null,
+          history: histories.get(runId) ?? emptyColumns(),
+          connected: true,
+          invalid: null,
+        };
+        next.set(runId, change(old));
+        return next;
+      });
+    const query = runIds.map((id) => `run=${encodeURIComponent(id)}`).join("&");
+    const source = new EventSource(`/api/runs/history/events?${query}`);
+    source.addEventListener("run", (e) => {
+      const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: Run };
+      set(run_id, (old) => ({ ...old, run: data }));
+    });
+    source.addEventListener("history", (e) => {
+      const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: HistoryRecord[] };
+      const history = histories.get(run_id);
+      if (!history || !data.length) return;
+      const next = appendHistory(history, data);
+      histories.set(run_id, next);
+      set(run_id, (old) => ({ ...old, history: next }));
+    });
+    source.addEventListener("invalid", (e) => {
+      const { run_id, data } = JSON.parse(e.data) as { run_id: string | null; data?: string };
+      if (run_id) set(run_id, (old) => ({ ...old, invalid: data ?? "invalid" }));
+    });
+    return () => source.close();
+  }, [key]);
   return state;
 }
