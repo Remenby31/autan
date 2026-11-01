@@ -19,6 +19,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
+#include <fcntl.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <signal.h>
@@ -550,9 +551,10 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
       [](const autan::runtime::PhysicsContext& context) {
         return std::make_unique<autan_test::Relaxation>(context, autan_test::RelaxationOptions{});
       },
-      [refuse](
-          const autan::runtime::SolverInput& in) -> std::optional<autan::runtime::PhysicsRefusal> {
-        if (!refuse) return std::nullopt;
+      [refuse](const autan::runtime::SolverInput& in,
+               int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        // The scope sees the run's rank count: one, here.
+        if (!refuse || ranks != 1) return std::nullopt;
         return autan::runtime::PhysicsRefusal{
             .message = "refused",
             .path = "cell_zones[1].medium",
@@ -1310,9 +1312,10 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
 }
 
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
-// directory (none for an invalid input), after checking its exit status.
+// directory (none for an invalid input), after checking its exit status;
+// `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0) {
+                      int expected_status = 0, Json* diagnostic = nullptr) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
@@ -1332,12 +1335,24 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   std::vector<char*> envp;
   for (auto& e : env) envp.push_back(e.data());
   envp.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  const std::string err_file = (dir / "stderr.txt").string();
+  posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                   0644);
   pid_t pid = 0;
-  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, nullptr, nullptr, argv.data(), envp.data()) == 0);
+  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, &actions, nullptr, argv.data(), envp.data()) == 0);
+  posix_spawn_file_actions_destroy(&actions);
   int status = 0;
   REQUIRE(waitpid(pid, &status, 0) == pid);
   REQUIRE(WIFEXITED(status));
   CHECK(WEXITSTATUS(status) == expected_status);
+  if (diagnostic != nullptr) {
+    std::ifstream in(err_file);
+    for (std::string line; std::getline(in, line);) {
+      if (line.starts_with("{")) *diagnostic = Json::parse(line);
+    }
+  }
   fs::path run;
   if (fs::exists(dir / "runs")) {
     for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
@@ -1406,8 +1421,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(d["status"] == "diverged");
   CHECK(d["diagnostics"] == Json::parse(read(diverged.run / "run.json"))["diagnostics"]);
 
-  // A physics registered for one rank refuses several before any directory.
+  // A physics registered for one rank refuses several before any directory,
+  // and a scope refuses by the rank count it is given.
   CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_ONE_RANK=1"}, 2).empty());
+  // Every rank's scope must see the count for the run to start.
+  CHECK(!run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks)}).empty());
+  Json refusal;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks + 1)}, 2,
+                     &refusal)
+            .empty());
+  CHECK(refusal["code"] == "E0706");
+  CHECK(refusal["data"] == Json{{"ranks", ranks}, {"path", "physics"}});
 
   // A physics failure on the last rank alone, the others waiting for it in a
   // collective call, ends every rank with status 1 and a failed run.json.

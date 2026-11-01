@@ -773,7 +773,7 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and no periodic pairs (it exchanges no ghost cells yet).
-std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int /*ranks*/) {
   if (!in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message = "the Euler physics does not exchange periodic ghost cells yet",
