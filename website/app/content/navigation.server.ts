@@ -36,7 +36,7 @@ const sidebar: Group[] = [
       {
         title: "Contracts",
         dir: "contracts",
-        exclude: ["contracts/mesh"],
+        exclude: ["contracts/mesh", "contracts/solver-input"],
       },
       { title: "SDK", dir: "sdk" },
     ],
@@ -47,11 +47,12 @@ const sidebar: Group[] = [
       { slugs: ["plan", "style"] },
       {
         title: "Internal contracts",
-        slugs: ["contracts/mesh"],
+        slugs: ["contracts/mesh", "contracts/solver-input"],
       },
       { title: "Design", dir: "design" },
       { title: "Research", dir: "research" },
       { title: "Validation", dir: "validation" },
+      { title: "Infrastructure", dir: "infra" },
     ],
   },
 ];
