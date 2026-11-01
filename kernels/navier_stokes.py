@@ -222,10 +222,18 @@ def viscous_face(
     tgr, ugr, vgr, wgr = side_gradients(
         wr, gr, qr, r0, r1, r2, r3, r4, r5, r6, rel(xf, xr), rgas, pref
     )
-    gu = corrected(0.5 * (ugl + ugr), wr[1] - wl[1], e, inv_d)
-    gv = corrected(0.5 * (vgl + vgr), wr[2] - wl[2], e, inv_d)
-    gwz = corrected(0.5 * (wgl + wgr), wr[3] - wl[3], e, inv_d)
-    gt = corrected(0.5 * (tgl + tgr), tr - tl, e, inv_d)
+    # Where a side carries the fit, its gradient at the face replaces the average: averaging it
+    # with a centroid gradient would mix two points; otherwise the centroids' average.
+    if ql > 0.5 or qr > 0.5:
+        wfl = ql / (ql + qr)
+        wfr = qr / (ql + qr)
+    else:
+        wfl = 0.5
+        wfr = 0.5
+    gu = corrected(wfl * ugl + wfr * ugr, wr[1] - wl[1], e, inv_d)
+    gv = corrected(wfl * vgl + wfr * vgr, wr[2] - wl[2], e, inv_d)
+    gwz = corrected(wfl * wgl + wfr * wgr, wr[3] - wl[3], e, inv_d)
+    gt = corrected(wfl * tgl + wfr * tgr, tr - tl, e, inv_d)
     mu = viscosity(temperature(wf, rgas, pref), mref, tref, s, law)
     mt = 0.5 * (ml + mr)
     k = g * rgas / (g - 1.0) * (mu / prl + mt / prt)
@@ -417,7 +425,7 @@ def side_gradients(
     # Gradients of T, u, v, w that one cell gives a face: its cubic fit's at the face where it
     # carries one, its least-squares gradient otherwise.
     if q > 0.5:
-        gt, a0 = cubic_parts(
+        gt, _a0 = cubic_parts(
             Vec3(f0[0, 0], f0[0, 1], f0[0, 2]),
             Vec3(f1[0, 0], f1[0, 1], f1[0, 2]),
             Vec3(f2[0, 0], f2[0, 1], f2[0, 2]),
@@ -427,7 +435,7 @@ def side_gradients(
             Vec3(f6[0, 0], f6[0, 1], f6[0, 2]),
             r,
         )
-        gu, a1 = cubic_parts(
+        gu, _a1 = cubic_parts(
             Vec3(f0[1, 0], f0[1, 1], f0[1, 2]),
             Vec3(f1[1, 0], f1[1, 1], f1[1, 2]),
             Vec3(f2[1, 0], f2[1, 1], f2[1, 2]),
@@ -437,7 +445,7 @@ def side_gradients(
             Vec3(f6[1, 0], f6[1, 1], f6[1, 2]),
             r,
         )
-        gv, a2 = cubic_parts(
+        gv, _a2 = cubic_parts(
             Vec3(f0[2, 0], f0[2, 1], f0[2, 2]),
             Vec3(f1[2, 0], f1[2, 1], f1[2, 2]),
             Vec3(f2[2, 0], f2[2, 1], f2[2, 2]),
@@ -447,7 +455,7 @@ def side_gradients(
             Vec3(f6[2, 0], f6[2, 1], f6[2, 2]),
             r,
         )
-        gwz, a3 = cubic_parts(
+        gwz, _a3 = cubic_parts(
             Vec3(f0[3, 0], f0[3, 1], f0[3, 2]),
             Vec3(f1[3, 0], f1[3, 1], f1[3, 2]),
             Vec3(f2[3, 0], f2[3, 1], f2[3, 2]),
@@ -458,10 +466,10 @@ def side_gradients(
             r,
         )
     else:
-        a0 = 0.0
-        a1 = 0.0
-        a2 = 0.0
-        a3 = 0.0
+        _a0 = 0.0
+        _a1 = 0.0
+        _a2 = 0.0
+        _a3 = 0.0
         gt = temperature_gradient(w, gw, rgas, pref)
         gu = Vec3(gw[1, 0], gw[1, 1], gw[1, 2])
         gv = Vec3(gw[2, 0], gw[2, 1], gw[2, 2])
