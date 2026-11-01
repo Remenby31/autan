@@ -17,11 +17,23 @@ def fake_tools(tmp_path: Path, launcher_body: str) -> dict[str, str]:
     launcher = bin_dir / "mpiexec"
     launcher.write_text(f"#!/bin/sh\n{launcher_body}\n")
     gdb = bin_dir / "fake-gdb"
-    gdb.write_text('#!/bin/sh\necho "fake backtrace of $3"\n')
+    # It prints, then ignores TERM and never exits: the watchdog must still finish.
+    gdb.write_text(
+        '#!/bin/sh\necho "fake backtrace of $3"\ntrap "" TERM\nwhile :; do sleep 1; done\n'
+    )
     for tool in (launcher, gdb):
         tool.chmod(0o755)
     return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "AUTAN_WATCHDOG_GDB": str(gdb), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}  # fmt: skip
+            "AUTAN_WATCHDOG_GDB": str(gdb), "AUTAN_WATCHDOG_GDB_TIMEOUT": "2",
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}  # fmt: skip
+
+
+def running(pid: str) -> bool:
+    """Alive and not a zombie: a container's PID 1 may never reap the killed rank."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
 
 
 def test_a_hung_launcher_is_dumped_then_killed_and_the_command_fails(tmp_path):
@@ -33,12 +45,12 @@ def test_a_hung_launcher_is_dumped_then_killed_and_the_command_fails(tmp_path):
                           check=False, env=env, capture_output=True, text=True, timeout=60)  # fmt: skip
     assert proc.returncode != 0
     assert time.monotonic() - start < 30
-    dumps = sorted(stacks.iterdir())
-    assert len(dumps) >= 2  # the launcher and its rank
-    assert any("fake backtrace" in d.read_text() for d in dumps)
-    assert "fake backtrace" in proc.stdout
+    pid = rank.read_text().strip()
+    (dump,) = stacks.glob(f"*-{pid}.txt")
+    assert f"fake backtrace of {pid}" in dump.read_text()
+    assert f"fake backtrace of {pid}" in proc.stdout
     assert "MPI hang caught by the watchdog" in (tmp_path / "summary").read_text()
-    assert not Path(f"/proc/{rank.read_text().strip()}").exists()
+    assert not running(pid)
 
 
 def test_a_launcher_that_finishes_in_time_is_left_alone(tmp_path):
