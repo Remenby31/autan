@@ -172,7 +172,7 @@ A rule assigns a medium to every cell zone whose name matches `zones` (same glob
 
 | `medium.kind` | Keys |
 |---|---|
-| `"fluid"` | `material`: an [IdealGas](#materials) (compressible) or a [ConstantDensityFluid](#materials) (incompressible); `E0504` otherwise |
+| `"fluid"` | `material`: an [IdealGas](#materials) (compressible) or a [ConstantDensityFluid](#materials) (incompressible); `E0504` otherwise; `initial` (optional): the state the zone starts from, `{pressure, temperature, velocity}` — pressure (absolute > 0 and temperature > 0 for compressible flow; gauge, without temperature, for incompressible flow, `E0507`), velocity three speeds in mesh axes; without it the zone starts from the freestream |
 | `"solid"` | `material`: a [Solid](#materials); compressible physics only (`E0506`), since `autan.case/1` gives incompressible flow no energy equation |
 
 ### Materials
