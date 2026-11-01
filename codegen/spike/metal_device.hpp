@@ -6,6 +6,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "autan/kernels/colouring.hpp"
@@ -102,11 +103,27 @@ struct DeviceMesh {
   }
 };
 
+/// One geometry array on the device in both stored types (spike.hpp, GeomArray).
+template <class P>
+struct DeviceGeomArray {
+  Array<typename P::geom> geom;
+  Array<typename P::geom_value> value;  // empty when GeomArray<P>::same
+  DeviceGeomArray(mtl::Context& ctx, const GeomArray<P>& a)
+      : geom(ctx, a.geom), value(ctx, a.value) {}
+  template <class T>
+  [[nodiscard]] const T* as() const {
+    if constexpr (std::is_same_v<T, typename P::geom>) {
+      return geom.get();
+    } else {
+      return value.get();
+    }
+  }
+};
+
 template <class P>
 struct DeviceGeom {
-  using G = typename P::geom;
-  Array<G> face_area, face_centroid, face_moment, face_normal, face_area_magnitude, face_r_left,
-      face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
+  DeviceGeomArray<P> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
+      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
   DeviceGeom(mtl::Context& ctx, const GeomCopy<P>& g)
       : face_area(ctx, g.face_area),
         face_centroid(ctx, g.face_centroid),

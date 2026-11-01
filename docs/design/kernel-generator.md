@@ -84,6 +84,8 @@ The adjoint of a cell reduction sends values to neighbouring cells, so it takes 
 
 `complex_step` (host only) computes in `std::complex<double>` for complex-step tests.
 
+Built-in geometry that no body of the module reads through `rel()` (directly or as a `boundary=` source) reaches bodies only converted to `compute`, so `Data<P>` stores it in `P::geom_value`, a real type of the compute precision (`float` in `fp32+acc64`, `double` in `fp64` and for the complex step): the same values (rounded once, when filled instead of when loaded) in fewer bytes. Geometry `rel()` reads (in the spike kernels, the centroids) and `Geom` datasets a kernel writes keep `P::geom`.
+
 ## Errors
 
 | Code | Name | Raised when |
