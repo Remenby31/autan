@@ -370,26 +370,31 @@ function Facts({
         { label: "State", value: <Status status={run.status} /> },
         {
           label: "Iteration",
-          value: (
-            <>
-              {maxIterations !== undefined && (
-                <Gauge
-                  value={iteration}
-                  max={maxIterations}
-                  size={20}
-                  label="Iteration budget used"
-                />
-              )}
-              <span className="font-mono tabular-nums" data-testid="iteration">
-                {iteration}
-              </span>
-              {maxIterations !== undefined && (
-                <span className="font-mono text-fg-3 tabular-nums">
-                  / {maxIterations.toLocaleString("en")}
+          value:
+            run.status === "running" ? (
+              <>
+                {maxIterations !== undefined && (
+                  <Gauge
+                    value={iteration}
+                    max={maxIterations}
+                    size={20}
+                    label="Iteration budget used"
+                  />
+                )}
+                <span className="font-mono tabular-nums" data-testid="iteration">
+                  {iteration.toLocaleString("en")}
                 </span>
-              )}
-            </>
-          ),
+                {maxIterations !== undefined && (
+                  <span className="font-mono text-fg-3 tabular-nums">
+                    / {maxIterations.toLocaleString("en")}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="font-mono tabular-nums" data-testid="iteration">
+                {iteration.toLocaleString("en")}
+              </span>
+            ),
         },
         {
           label: "Residual drop",
