@@ -116,6 +116,7 @@ def _cmd_su2(args: argparse.Namespace) -> None:
             max_iterations=args.max_iterations,
             stop_margin=args.stop_margin,
             scheme=args.scheme,
+            published=args.published,
         ):
             _say(str(run.relative_to(args.out)))
         return
@@ -313,6 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
     p.add_argument("--scheme", choices=("roe", "jst"), default="roe", help="prepare: SU2 scheme")
+    p.add_argument(
+        "--published", type=Path, help="prepare: run this SU2-published configuration as it is"
+    )
     p.add_argument("--max-iterations", type=int, default=20000)
     p.add_argument("--stop-margin", type=float, default=2.0, help="prepare: orders SU2 runs on")
     p.add_argument("--orders", type=float, default=10.0, help="history: residual drop criterion")

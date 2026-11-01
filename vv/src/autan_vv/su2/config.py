@@ -226,3 +226,52 @@ def equations(dimension: int) -> tuple[str, ...]:
     """SU2's names of the residuals of the Euler equations in `dimension`."""
     momentum = ("MOMENTUM-X", "MOMENTUM-Y", "MOMENTUM-Z")[:dimension]
     return ("DENSITY", *momentum, "ENERGY")
+
+
+# What `adopt` changes in a published SU2 configuration: the mesh, the flight condition and the
+# outputs and stop rule the protocol reads; nothing that sets the scheme or the solver.
+ADOPTED_KEYS = ("MESH_FILENAME", "MESH_FORMAT", "MACH_NUMBER", "AOA", "FREESTREAM_PRESSURE",
+                "FREESTREAM_TEMPERATURE", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
+                "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME", "OUTPUT_FILES",
+                "OUTPUT_WRT_FREQ")  # fmt: skip
+
+
+def options(text: str) -> dict[str, str]:
+    """The options of an SU2 configuration (`%` starts a comment), keys stripped."""
+    out = {}
+    for line in text.splitlines():
+        body = line.split("%", 1)[0]
+        if "=" in body:
+            key, value = body.split("=", 1)
+            out[key.strip()] = value.strip()
+    return out
+
+
+def adopt(
+    published: str,
+    case: autan.Case,
+    mesh: Record,
+    *,
+    span: float,
+    max_iterations: int = 20000,
+    residual_orders: float = 10.0,
+    stop_margin: float = STOP_MARGIN,
+) -> str:
+    """A configuration SU2 publishes, run on the converted `mesh` at the flight condition of
+    `case`: only ADOPTED_KEYS change. The published markers must name the mesh's zones with the
+    case's conditions, and its force reference must be the case's (V0903 otherwise)."""
+    ours = options(config(case, mesh, 0.0, span=span, max_iterations=max_iterations,
+                          residual_orders=residual_orders, stop_margin=stop_margin))  # fmt: skip
+    theirs = options(published)
+    for key in ("MARKER_EULER", "MARKER_FAR", "REF_LENGTH", "REF_AREA", "REF_ORIGIN_MOMENT_X",
+                "REF_ORIGIN_MOMENT_Y"):  # fmt: skip
+        same = theirs.get(key, "").replace(" ", "") == ours[key].replace(" ", "")
+        numeric = key.startswith("REF_") and key in theirs
+        if not same and not (numeric and float(theirs[key]) == float(ours[key])):
+            msg = f"published {key} = {theirs.get(key)!r}, the case needs {ours[key]!r}"
+            raise VVError(msg, code="V0903")
+    kept = [
+        line for line in published.splitlines()
+        if line.split("%", 1)[0].split("=", 1)[0].strip() not in ADOPTED_KEYS
+    ]  # fmt: skip
+    return "\n".join([*kept, *(f"{k}= {ours[k]}" for k in ADOPTED_KEYS)]) + "\n"
