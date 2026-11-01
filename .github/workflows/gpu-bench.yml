@@ -105,8 +105,11 @@ jobs:
       (needs.changes.outputs.bench == 'true' || needs.changes.outputs.harness == 'true') &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    # `bench`: runners whose GPU is not shared with another team's long-running process.
-    runs-on: ${{ fromJSON(needs.changes.outputs.bench == 'true' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "tests"]') }}
+    # `bench`: runners whose GPU is not shared with another team's long-running process. Main has
+    # its own runner process on the same Spark (`bench-main`, its only label, so no other job can
+    # take it), so it never queues behind pull requests in GitHub; on the machine the GPU lock
+    # orders them, main first. Harness-only changes run on the tests runner.
+    runs-on: ${{ fromJSON(needs.changes.outputs.bench != 'true' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "tests"]' || github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
     # A bisection on main measures up to 8 commits in this job (bench/ci/bisect.py).
     timeout-minutes: ${{ github.event_name == 'pull_request' && 90 || 240 }}
     permissions:
@@ -124,22 +127,25 @@ jobs:
           persist-credentials: false
           # A bisection on main checks out earlier commits of main.
           fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
-      - name: Build the benchmarks
-        run: cmake -S bench -B build/bench && cmake --build build/bench
-      - name: Install the harness
-        run: uv sync --project bench --locked
       - name: Give this job priority on the GPU lock
         # As long as the job may last: a bisection on main keeps the GPU first through its probes.
         run: bench/ci/priority.sh start ${{ github.event_name == 'pull_request' && 90 || 240 }}
+      # Builds run under the GPU lock too, briefly: on the bench Spark no measurement ever runs
+      # beside a compilation.
+      - name: Build the benchmarks
+        run: >-
+          bench/lock/autan-gpu-lock -m "gpu-bench: build the benchmarks" -t 600 --
+          bash -c 'cmake -S bench -B build/bench && cmake --build build/bench'
+      - name: Install the harness
+        run: uv sync --project bench --locked
       - name: Harness tests on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
       - name: Image smoke test on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: >-
-          REQUIRE_GPU=1 flock --timeout "$AUTAN_BENCH_LOCK_TIMEOUT" --conflict-exit-code 75
-          /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
-          || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
+          REQUIRE_GPU=1 bench/lock/autan-gpu-lock -m "gpu-bench: image smoke test"
+          -w "$AUTAN_BENCH_LOCK_TIMEOUT" -t 600 -- docker/dev/smoke/run.sh build/smoke
       - name: STREAM bandwidth
         if: needs.changes.outputs.bench == 'true'
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
@@ -157,8 +163,9 @@ jobs:
       - name: Build the generated loops
         if: needs.changes.outputs.bench == 'true'
         run: >-
-          cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
-          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench
+          bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
+          bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
+          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
       - name: Generated loops, hex n = 128, fp32, RCM order
         if: needs.changes.outputs.bench == 'true'
         run: >-
