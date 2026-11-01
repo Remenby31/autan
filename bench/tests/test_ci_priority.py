@@ -17,9 +17,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="flock(1) and /p
 @pytest.fixture
 def spark(tmp_path: Path) -> dict[str, str]:
     """A lock directory as deploy.sh prepares it, and the environment of an agent outside CI."""
-    for name in ("gpu.lock", "ci.lock", "holders.log"):
+    for name in ("gpu.lock", "ci.lock", "main.lock", "holders.log"):
         (tmp_path / name).touch()
-    env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_ACTIONS", "GITHUB_REF")}
     env |= {"AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock"), "RUNNER_TEMP": str(tmp_path)}
     return env
 
@@ -119,7 +119,7 @@ def test_the_guard_records_every_holder_and_never_announces_ci_for_others(spark)
         time.sleep(1)
         subprocess.run(["flock", lock, "sleep", "1.5"], check=True)
         time.sleep(1.5)
-        held = events(spark)
+        held = [e for e in events(spark) if not e.startswith("foreign")]
         assert held[:2] == ["held", "released"]
         # Not the runner container: ci.lock stays free.
         assert (
@@ -145,3 +145,70 @@ def test_the_guard_reads_holders_and_waiters_from_proc_locks():
         "23: POSIX  ADVISORY  WRITE 99 103:02:1 0 EOF\n"
     )
     assert guard.lock_users(key, text) == ({4242}, {4343})
+
+
+def test_a_main_job_goes_before_a_pull_request_s(spark, tmp_path):
+    # The main job's priority.sh holds main.lock; a pull request's CI job (here the wrapper with
+    # GITHUB_ACTIONS and a pull request ref) waits for it, then runs.
+    order = tmp_path / "order"
+    main_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main"}
+    pr_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
+    priority(main_env, "start", "5")
+    pr = agent(pr_env, "pr", order)
+    time.sleep(1)
+    assert pr.poll() is None
+    main = agent(main_env, "main", order)
+    assert main.wait(timeout=20) == 0
+    priority(main_env, "stop")
+    assert pr.wait(timeout=20) == 0
+    assert lines(order) == ["main", "pr"]
+
+
+def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, monkeypatch):
+    loader = importlib.machinery.SourceFileLoader("guard", str(GUARD))
+    spec = importlib.util.spec_from_loader("guard", loader)
+    guard = importlib.util.module_from_spec(spec)
+    loader.exec_module(guard)
+    # nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits
+    # as it printed on spark-5512 (a process name may contain commas), and a hostile name.
+    csv = (
+        "3285079, VLLM::EngineCore, 22484\n3292695, /w/build/autan_halo_tests, 170\n7, a, b, 3\n"
+        "9, ##[stop-commands]tok\t::error::x, 1\n"
+    )
+    assert guard.gpu_apps(csv)[7] == ("a, b", "3")
+    # The external boundaries: nvidia-smi, and the cgroups that place each process.
+    fake = tmp_path / "nvidia-smi"
+    fake.write_text(f"#!/bin/sh\nprintf '{csv}'\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(guard, "GPU_APPS", [str(fake)])
+    monkeypatch.setattr(guard, "FOREIGN", tmp_path / "foreign-gpu")
+    ours, theirs = "a" * 64, "b" * 64
+    places = {3285079: theirs, 3292695: ours, 7: None, 9: theirs}
+    monkeypatch.setattr(guard, "container_of", places.get)
+    containers = guard.Containers()
+    containers.names = {ours: "autan-runner", theirs: "mcpbench-vllm"}
+    foreign = guard.foreign_apps(containers)
+    assert {pid: f["where"] for pid, f in foreign.items()} == {
+        3285079: "mcpbench-vllm",
+        7: "host",
+        9: "mcpbench-vllm",
+    }
+    env = {**os.environ, "AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock")}
+
+    def report() -> list[str]:
+        return subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env=env, capture_output=True,
+                              text=True, check=True).stdout.splitlines()  # fmt: skip
+
+    guard.publish(foreign)
+    out = report()
+    (error,) = [line for line in out if line.startswith("::error::")]
+    assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in error
+    assert "autan_halo_tests" not in error
+    assert not [line for line in out if line.startswith(("::", "##")) and line != error]
+    assert not any("#" in line or "[" in line for line in out[1:])
+    guard.publish({})
+    assert not [line for line in report() if line.startswith("::")]
+    guard.publish(None)
+    assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]
+    (tmp_path / "foreign-gpu").unlink()
+    assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]

@@ -904,7 +904,7 @@ Fix: Differentiate loops with a single output dataset; declare boundary-state lo
 
 **Policy not available on the backend** (error)
 
-A precision policy is requested on a backend that cannot run it (`fp64` on Metal).
+A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).
 
 Fix: Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +17,7 @@ from autan_codegen.dsl import (
     State,
     cells,
     dot,
+    inverse,
     outer,
     pointwise,
     rel,
@@ -25,6 +27,8 @@ from autan_codegen.errors import CodegenError
 from autan_codegen.frontend import parse
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from autan_codegen.ir import Function
 from autan_codegen.model import build_loop
 
@@ -150,6 +154,21 @@ def calls_python(x: State) -> State:
     return round(x)
 
 
+@pointwise(compute="accum")
+def accum_helper(x: State) -> State:
+    return x
+
+
+@pointwise
+def calls_accum_helper(x: State) -> State:
+    return accum_helper(x)
+
+
+@pointwise
+def inverse_of_a_rectangle(m: Grad.Mat53) -> Grad.Mat53:
+    return inverse(m)
+
+
 @pointwise
 def guarded_sqrt(x: State) -> State:
     return sqrt(x) if x > 0.0 else x
@@ -173,6 +192,8 @@ def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
         (one_sided, "E1005"),
         (rel_after_arithmetic, "E1007"),
         (calls_python, "E1001"),
+        (inverse_of_a_rectangle, "E1006"),
+        (calls_accum_helper, "E1006"),
     ],
 )
 def test_unsupported_constructs_are_rejected_with_a_code_and_line(
@@ -199,6 +220,11 @@ def in_place(x: Residual) -> Residual:
     return 2.0 * x
 
 
+@pointwise(compute="accum")
+def scaled_in_accum(x: Geom) -> Residual:
+    return 2.0 * x
+
+
 def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.face_loop(flux, ql=q.left, out=dsl.Inc(r, left=1, right=-1)))
@@ -214,6 +240,12 @@ def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.cell_loop(in_place, x=r, out=dsl.Write(r)))
     assert info.value.code == "E1003"
+    # A body computing in the accumulation type reads blocks and parameters only: no
+    # derivatives, no geometry rounded to the compute type.
+    for x in (q, cells.field("volume", Geom)):
+        with pytest.raises(CodegenError) as info:
+            build_loop("bad", dsl.cell_loop(scaled_in_accum, x=x, out=dsl.Write(r)))
+        assert info.value.code == "E1003"
 
 
 @pointwise
@@ -341,3 +373,34 @@ def test_jacobian_columns_are_the_partial_derivatives() -> None:
     a, b = np.array(ql), np.array(qr)
     np.testing.assert_allclose(got[0], 2.0 * np.outer(b, a) + 2.0 * np.eye(5), rtol=1e-15)
     np.testing.assert_allclose(got[1], (a @ a) * np.eye(5), rtol=1e-15)
+
+
+SHADOWED_ABS = """
+from autan_codegen.dsl import JacAccum, inverse, pointwise
+
+
+@pointwise
+def abs(x: JacAccum) -> JacAccum:
+    return x
+
+
+@pointwise
+def invert(a: JacAccum.Mat5) -> JacAccum.Mat5:
+    return inverse(a)
+"""
+
+
+def test_inverse_pivots_on_magnitudes_whatever_the_module_calls_abs(tmp_path: Path) -> None:
+    src = tmp_path / "shadowed.py"
+    src.write_text(SHADOWED_ABS)
+    spec = importlib.util.spec_from_file_location("shadowed", src)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    fn, _ = parse(module.invert)
+    a = -np.eye(5)
+    a[4, 0] = 3.0  # pivoting on column 0 swaps rows 0 and 4
+    with np.errstate(invalid="ignore"):  # the NaN constant of the singular branch
+        got = run(fn, tuple(a.ravel()))
+    np.testing.assert_allclose(got, np.linalg.inv(a).ravel())

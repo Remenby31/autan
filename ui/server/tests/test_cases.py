@@ -52,6 +52,7 @@ def test_a_case_renders_as_the_sdk_reads_it(client: TestClient, tmp_path: Path) 
     expected = autan.load(alone / "case.json").plan(mesh_info).document()
     assert rendered["ok"] is True
     assert rendered["python"] == case.to_python()
+    assert rendered["document"] == json.loads(case.to_json())
     assert rendered["toml"] == case.to_toml()
     assert _without_files(rendered["plan"]) == _without_files(expected)
 
