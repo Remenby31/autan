@@ -200,6 +200,45 @@ std::string file_sha256(const fs::path& file) {
   return hash;
 }
 
+// An autan.initial-state/1 document for the fluid cells of `mesh_file`
+// (every cell of the hybrid box), rows in reverse cell order: density
+// 1 + 1e-3 c, velocity (c, -c, 0.5), pressure 1e5 + c for cell c.
+Json initial_state_document(const fs::path& mesh_file) {
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_file);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  Json centroids = Json::array(), values = Json::array();
+  for (autan::index_t c = mesh.n_cells() - 1; c >= 0; --c) {
+    const auto i = static_cast<std::size_t>(c);
+    const auto x = static_cast<double>(c);
+    centroids.push_back({g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]});
+    values.push_back({1.0 + 1e-3 * x, x, -x, 0.5, 1e5 + x});
+  }
+  return Json{{"schema", "autan.initial-state/1"},
+              {"oracle", "test"},
+              {"mesh_sha256", autan::io::mesh_hash(mesh_file)},
+              {"variables", {"density", "velocity-x", "velocity-y", "velocity-z", "pressure"}},
+              {"cells", mesh.n_cells()},
+              {"centroids", centroids},
+              {"values", values}};
+}
+
+// The hybrid input made inviscid: an initial-state file has no turbulence
+// variables (initial-state.md).
+void inviscid(Json& d) {
+  d["physics"]["turbulence"]["model"] = "inviscid";
+  d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+  d["freestream"]["nu_tilde"] = nullptr;
+  for (auto& zone : d["cell_zones"]) zone["initial"]["nu_tilde"] = nullptr;
+}
+
+// `doc` written to a fresh file; the solver input's initial_state names it.
+Json with_initial_state(Json input_doc, const Json& doc) {
+  const fs::path file = fresh_dir() / "initial.json";
+  std::ofstream(file) << doc.dump();
+  input_doc["initial_state"] = {{"path", file.string()}, {"sha256", file_sha256(file)}};
+  return input_doc;
+}
+
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
 // steady `continue`, the residuals at iteration 1 of the chain's first run
@@ -393,6 +432,22 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
   }
+  SECTION("failed on a recorded load that is not finite: E0704, history up to the line before") {
+    // results.md, History: a record holds numbers, so a non-finite force
+    // at iteration 5 fails the run there instead of writing null.
+    const Outcome o = run(input([](Json& d) { d["monitors"][0]["every"] = 1; }),
+                          {.factor = 0.9, .nan_loads_from = 5});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["iterations"] == 4);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+    const auto lines = history(o.run);
+    REQUIRE(lines.size() == 4);
+    CHECK(lines.back()["iteration"] == 4);
+    CHECK(std::isfinite(lines.back()["monitors"]["forces"]["fy"].get<double>()));
+  }
   SECTION("failed writing the solution: E0704, no monitors") {
     const Outcome o = run(input(), {.factor = 0.5, .throw_in_fields = true});
     CHECK(o.status == ExitStatus::failed);
@@ -505,6 +560,20 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                   })),
                   "E0705");
   }
+  SECTION("E0705 point vortex on a condition other than farfield") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][2]["point_vortex"] = {{"zones", {"ymin"}},
+                                                          {"center", {0.0, 0.0, 0.0}}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 point vortex over a zone that is not a wall") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["point_vortex"] = {{"zones", {"xmax"}},
+                                                          {"center", {0.0, 0.0, 0.0}}};
+                  })),
+                  "E0705");
+  }
   SECTION("E0705 zone absent from the mesh") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }
@@ -528,6 +597,58 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(pmix, "E0146");
   }
 }
+
+TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") {
+  // Never a silent CPU run: a kind this build does not drive is E0706, and
+  // a CUDA build that sees no device is E0807, both before any directory,
+  // whatever the physics registered: here, one for the CPU only.
+  autan::runtime::PhysicsRegistry cpu_only;
+  cpu_only.add({.kind = "*", .turbulence = "*", .precision = "*", .device = "cpu"},
+               [](const autan::runtime::PhysicsContext& context) {
+                 return std::make_unique<autan_test::Relaxation>(context,
+                                                                 autan_test::RelaxationOptions{});
+               });
+  const Outcome hip = run(input([](Json& d) { d["devices"]["kind"] = "hip"; }), cpu_only);
+  require_error(hip, "E0706");
+  CHECK(Json::parse(hip.err)["data"]["path"] == "devices.kind");
+#ifdef AUTAN_HAVE_CUDA
+  // As a host without a GPU: CUDA reads this before its first call, and
+  // this test runs in a process of its own.
+  REQUIRE(setenv("CUDA_VISIBLE_DEVICES", "-1", 1) == 0);
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
+  require_error(o, "E0807");
+  CHECK(Json::parse(o.err)["data"] ==
+        Json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}});
+#else
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
+  require_error(o, "E0706");
+  CHECK(Json::parse(o.err)["data"]["path"] == "devices.kind");
+#endif
+}
+
+#ifdef AUTAN_HAVE_CUDA
+TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]") {
+  // On a periodic mesh too, where the relaxation physics checks that the
+  // device exchange fills each image ghost on the run's stream.
+  const bool periodic = GENERATE(false, true);
+  CAPTURE(periodic);
+  const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
+  const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
+  REQUIRE(o.status == ExitStatus::finished);
+  std::ifstream log_in(o.run / "log.jsonl");
+  Json ready, cuda;
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "relaxation physics ready") ready = event["data"];
+    if (event["source"] == "cuda") cuda = event["data"];
+  }
+  CHECK(ready["device"] == 0);
+  CHECK(ready["stream"] == true);
+  CHECK(cuda["device"] == 0);
+  CHECK(!cuda["name"].get<std::string>().empty());
+  CHECK(cuda["visible"].get<int>() >= 1);
+}
+#endif
 
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
@@ -881,6 +1002,81 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
       CHECK(solution_field(b.run / "solution.cgns", "FlowSolutionMean", field) ==
             solution_field(whole.run / "solution.cgns", "FlowSolutionMean", field));
     }
+  }
+}
+
+TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") {
+  // initial-state.md: rows paired with cells by centroid, whatever their
+  // order; the relaxation physics keeps its state (factor 0.5, no growth),
+  // so the solution is the file's values cell for cell.
+  const Json state = initial_state_document(mesh_path);
+  const Json doc = with_initial_state(input(inviscid), state);
+  const Outcome o = run(doc);
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto n = state["cells"].get<std::size_t>();
+  const std::array<std::pair<const char*, std::function<double(double)>>, 5> expected{{
+      {"Density", [](double c) { return 1.0 + 1e-3 * c; }},
+      {"VelocityX", [](double c) { return c; }},
+      {"VelocityY", [](double c) { return -c; }},
+      {"VelocityZ", [](double) { return 0.5; }},
+      {"Pressure", [](double c) { return 1e5 + c; }},
+  }};
+  for (const auto& [field, value] : expected) {
+    CAPTURE(field);
+    const auto got = solution_field(o.run / "solution.cgns", "FlowSolution", field);
+    REQUIRE(got.size() == n);
+    for (std::size_t c = 0; c < n; ++c) CHECK(got[c] == value(static_cast<double>(c)));
+  }
+  // Archived byte for byte under its hash.
+  const std::string sha = doc["initial_state"]["sha256"];
+  CHECK(read(o.run / "states" / (sha + ".json")) ==
+        read(doc["initial_state"]["path"].get<std::string>()));
+
+  SECTION("E0508: the file differs from its hash") {
+    Json bad = doc;
+    bad["initial_state"]["sha256"] = std::string(64, '0');
+    require_error(run(bad), "E0508");
+  }
+  SECTION("E0508: not an initial-state document") {
+    Json other = state;
+    other["variables"] = {"density", "velocity-x", "velocity-y", "velocity-z", "temperature"};
+    require_error(run(with_initial_state(input(inviscid), other)), "E0508");
+  }
+  SECTION("E0508: an unknown key, or a mesh hash that is no SHA-256") {
+    Json extra = state;
+    extra["note"] = "unknown";
+    require_error(run(with_initial_state(input(inviscid), extra)), "E0508");
+    Json malformed = state;
+    malformed["mesh_sha256"] = "not-a-sha256";
+    require_error(run(with_initial_state(input(inviscid), malformed)), "E0508");
+  }
+  SECTION("E0705: a turbulence model, whose variables the file lacks") {
+    require_error(run(with_initial_state(input(), state)), "E0705");
+  }
+  SECTION("E0509: written for another mesh") {
+    Json other = state;
+    other["mesh_sha256"] = std::string(64, 'a');
+    require_error(run(with_initial_state(input(inviscid), other)), "E0509");
+  }
+  SECTION("E0510: a row short") {
+    Json other = state;
+    other["centroids"].erase(other["centroids"].size() - 1);
+    other["values"].erase(other["values"].size() - 1);
+    other["cells"] = n - 1;
+    require_error(run(with_initial_state(input(inviscid), other)), "E0510");
+  }
+  SECTION("E0511: a row far from every cell, or two rows on one cell") {
+    Json far = state;
+    far["centroids"][3][0] = far["centroids"][3][0].get<double>() + 1e-3;
+    require_error(run(with_initial_state(input(inviscid), far)), "E0511");
+    Json twice = state;
+    twice["centroids"][3] = twice["centroids"][4];
+    require_error(run(with_initial_state(input(inviscid), twice)), "E0511");
+  }
+  SECTION("E0705: initial_state with start") {
+    Json both = doc;
+    both["start"] = start_from(o.run, "warm");
+    require_error(run(both), "E0705");
   }
 }
 
@@ -1394,6 +1590,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#ifdef AUTAN_HAVE_CUDA
+  // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
+  // physics checks at every step that the exchange fills its ghosts in
+  // device memory, through a CUDA-aware MPI; the history stays that of one rank.
+  Json on_gpu = doc;
+  on_gpu["devices"]["kind"] = "cuda";
+  const fs::path gpu = run_on_ranks(on_gpu, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                     "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+  CHECK(lines_of(gpu / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#endif
   const Json a = Json::parse(read(one.run / "run.json"));
   const Json b = Json::parse(read(many / "run.json"));
   for (const char* key : {"status", "iterations", "time", "diagnostics"}) {
@@ -1405,6 +1612,23 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
     const auto expected = solution_field(one.run / "solution.cgns", "FlowSolution", field);
     CHECK(!expected.empty());
     CHECK(solution_field(many / "solution.cgns", "FlowSolution", field) == expected);
+  }
+  // An initial-state file, split among the ranks by their owned cells: the
+  // solution of one rank, cell for cell.
+  if (!periodic) {
+    Json plain = doc;
+    inviscid(plain);
+    const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
+    const Outcome one_file = run(from_file, options);
+    const fs::path many_file =
+        run_on_ranks(from_file, ranks,
+                     {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+    for (const char* field : {"Density", "VelocityY", "Pressure"}) {
+      CAPTURE(field);
+      CHECK(solution_field(many_file / "solution.cgns", "FlowSolution", field) ==
+            solution_field(one_file.run / "solution.cgns", "FlowSolution", field));
+    }
   }
   const auto wall = wall_solution(one.run / "solution.cgns");
   CHECK(wall.contains("Pressure"));

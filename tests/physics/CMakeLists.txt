@@ -49,5 +49,16 @@ if(AUTAN_ENABLE_CGNS)
     autan_euler_run_tests
     PRIVATE AUTAN_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
   )
+  # Several ranks: autan-run under the MPI launcher, as tests/runtime does.
+  if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
+    target_compile_definitions(
+      autan_euler_run_tests
+      PRIVATE
+        AUTAN_RUN="$<TARGET_FILE:autan-run>"
+        AUTAN_MPIEXEC="${MPIEXEC_EXECUTABLE}"
+        AUTAN_MPIEXEC_NUMPROC_FLAG="${MPIEXEC_NUMPROC_FLAG}"
+    )
+    add_dependencies(autan_euler_run_tests autan-run)
+  endif()
   catch_discover_tests(autan_euler_run_tests)
 endif()

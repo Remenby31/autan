@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from autan import face_states
+from autan import face_states, initial_state
 from autan.errors import Diagnostic, diagnostic
 from autan.meshinfo import mesh_sha256
 from autan.schema import (
@@ -37,6 +37,7 @@ from autan.schema import (
     OracleState,
     Slip,
     SolidZone,
+    StateFile,
     Symmetry,
     VelocityInlet,
     Wall,
@@ -195,7 +196,14 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         boundaries = _manufactured_boundaries(mesh)
     else:
         boundaries = _resolve_boundaries(case, spec, mesh, found)
+        _check_point_vortices(case, spec, mesh, boundaries, found)
     cell_zones = _resolve_cell_zones(case, spec, mesh, found)
+    if spec.initial_state is not None:
+        kinds = [(z.medium or {}).get("kind") for z in cell_zones]
+        fluid = sum(z.cells for z, k in zip(cell_zones, kinds, strict=True) if k != "solid")
+        # A zone left without a medium (E0503) leaves the fluid cells unknown.
+        count = fluid if None not in kinds else None
+        _check_initial_state(case, spec.initial_state, mesh, count, found)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
 
@@ -451,6 +459,54 @@ def _resolve_boundaries(
     return resolved
 
 
+def read_regular(path: Path) -> bytes:
+    """The bytes of a regular file, read once; ``OSError`` for anything else."""
+    # O_NONBLOCK: opening a FIFO must not wait for a writer before the check below.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            message = f"{path} is not a regular file"
+            raise OSError(message)
+        return handle.read()
+
+
+def _check_initial_state(
+    case: Case,
+    state: StateFile,
+    mesh: MeshInfo,
+    fluid_cells: int | None,
+    found: list[Diagnostic],
+) -> None:
+    """The initial-state file of the case (docs/contracts/initial-state.md), hashed and parsed
+    from the same bytes."""
+    source = case.resolve(state.path)
+    where = case.locate("initial_state")
+
+    def problem(code: str, message: str) -> None:
+        found.append(diagnostic(code, message, location=where, path=str(source)))
+
+    try:
+        data = read_regular(source)
+    except OSError as error:
+        problem("E0508", f"initial-state file {str(source)!r} cannot be read: {error}")
+        return
+    if hashlib.sha256(data).hexdigest() != state.sha256:
+        problem("E0508", f"the SHA-256 of {str(source)!r} differs from the case's sha256")
+        return
+    document = initial_state.parse(data)
+    if isinstance(document, str):
+        problem(
+            "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
+        )
+        return
+    if document.mesh_sha256 != mesh.source.sha256:
+        problem("E0509", "the initial state was written for another mesh")
+    if fluid_cells is not None and document.cells != fluid_cells:
+        problem(
+            "E0510",
+            f"the mesh has {fluid_cells} fluid cells; the file gives {document.cells}",
+        )
+
+
 def _check_oracle(
     case: Case,
     oracle: OracleState,
@@ -468,14 +524,9 @@ def _check_oracle(
         found.append(diagnostic(code, message, location=where, path=str(source)))
 
     try:
-        # O_NONBLOCK: opening a FIFO must not wait for a writer before the check below.
-        with os.fdopen(os.open(source, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                problem("E0420", f"face-state file {str(source)!r} is not a regular file")
-                return
-            data = handle.read()
-    except OSError:
-        problem("E0420", f"face-state file {str(source)!r} cannot be read")
+        data = read_regular(source)
+    except OSError as error:
+        problem("E0420", f"face-state file {str(source)!r} cannot be read: {error}")
         return
     if hashlib.sha256(data).hexdigest() != oracle.sha256:
         problem("E0420", f"the SHA-256 of {str(source)!r} differs from the case's sha256")
@@ -646,6 +697,50 @@ def _properties(material: dict[str, Any]) -> dict[str, Any]:
 
     result: dict[str, Any] = canonical(material)
     return result
+
+
+def vortex_zones(
+    pattern: str, mesh: MeshInfo, boundaries: tuple[BoundaryResolution, ...] | list[Any]
+) -> tuple[list[str], list[str]]:
+    """The zones a point vortex's ``surfaces`` matches (periodic zones skipped), and those of
+    them that are not wall or slip zones."""
+    partners = _partners(mesh)
+    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
+    kinds = {b.zone: (b.condition or {}).get("kind") for b in boundaries}
+    matched = _matches(pattern, names)
+    return matched, [z for z in matched if kinds.get(z) not in ("wall", "slip")]
+
+
+def _check_point_vortices(
+    case: Case,
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    boundaries: list[BoundaryResolution],
+    found: list[Diagnostic],
+) -> None:
+    partners = _partners(mesh)
+    for index, rule in enumerate(spec.boundaries):
+        vortex = rule.condition.point_vortex if isinstance(rule.condition, Farfield) else None
+        if vortex is None:
+            continue
+        matched, others = vortex_zones(vortex.surfaces, mesh, boundaries)
+        literal = not any(c in vortex.surfaces for c in "*?[")
+        if literal and vortex.surfaces in partners:
+            problem = f"zone {vortex.surfaces!r} is periodic"
+        elif not matched:
+            problem = f"{vortex.surfaces!r} matches no boundary zone"
+        elif others:
+            problem = f"it matches zones that are not wall or slip: {', '.join(others)}"
+        else:
+            continue
+        found.append(
+            diagnostic(
+                "E0425",
+                f"point vortex of boundaries[{index}]: {problem}",
+                location=case.locate(f"boundaries[{index}].condition.point_vortex"),
+                surfaces=vortex.surfaces,
+            )
+        )
 
 
 def _check_monitors(case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]) -> None:

@@ -16,6 +16,10 @@
 
 #include "autan/runtime/physics.hpp"
 
+#ifdef AUTAN_HAVE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace autan_test {
 
 // Behaviour of the relaxation physics, so that tests can drive every path of
@@ -34,6 +38,7 @@ struct RelaxationOptions {
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
   bool signal_on_start = false;  ///< raise SIGTERM once constructed, before iteration 1
   bool throw_in_loads = false;
+  std::int64_t nan_loads_from = 0;  ///< loads are NaN from this iteration on; 0: never
   bool throw_in_fields = false;
   /// Every field and residual varies from cell to cell: values scaled by
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
@@ -106,6 +111,17 @@ class Relaxation final : public autan::runtime::Physics {
         f.values.push_back(v);
       }
     }
+    // An initial-state file sets the fluid cells' density, velocity and pressure.
+    if (context.initial != nullptr) {
+      for (const auto& from : *context.initial) {
+        for (auto& f : state_) {
+          if (f.name != from.name) continue;
+          for (std::size_t c = 0; c < f.values.size(); ++c) {
+            if (!std::isnan(from.values[c])) f.values[c] = from.values[c];
+          }
+        }
+      }
+    }
     if (options_.vary) {
       for (auto& f : state_) {
         for (std::size_t c = 0; c < f.values.size(); ++c) f.values[c] *= scale(c);
@@ -120,9 +136,10 @@ class Relaxation final : public autan::runtime::Physics {
       rms_ = std::sqrt(sums[0].value() / sums[1].value());
     }
     mean_ = state_;
-    context_.log.write(
-        "info", "solver", "relaxation physics ready", "",
-        "{\"ghosts\": " + std::to_string(mesh.n_cells() - mesh.n_owned_cells()) + "}");
+    context_.log.write("info", "solver", "relaxation physics ready", "",
+                       "{\"ghosts\": " + std::to_string(mesh.n_cells() - mesh.n_owned_cells()) +
+                           ", \"device\": " + std::to_string(context.device) +
+                           ", \"stream\": " + (context.stream != nullptr ? "true" : "false") + "}");
     for (auto& f : mean_) std::fill(f.values.begin(), f.values.end(), 0.0);
     if (context.start != nullptr) {
       state_ = context.start->fields;
@@ -137,6 +154,7 @@ class Relaxation final : public autan::runtime::Physics {
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
+    last_stepped_iteration_ = iteration;
     if (options_.coded_events) {
       context_.log.write("warning", "solver", "relaxation: coded event", "W0711",
                          "{\"iteration\": " + std::to_string(iteration) +
@@ -195,6 +213,27 @@ class Relaxation final : public autan::runtime::Physics {
       if (id[c] != static_cast<double>(mesh.cell_global_id()[c]))
         throw std::runtime_error("relaxation: a ghost did not receive its owner's value");
     }
+#ifdef AUTAN_HAVE_CUDA
+    // On a CUDA run, the same through device memory on the run's stream.
+    if (context_.stream == nullptr) return;
+    for (std::size_t c = static_cast<std::size_t>(mesh.n_owned_cells()); c < n; ++c)
+      id[c] = std::numeric_limits<double>::quiet_NaN();
+    const auto stream = static_cast<cudaStream_t>(context_.stream);
+    double* device = nullptr;
+    if (cudaMalloc(&device, n * sizeof(double)) != cudaSuccess)
+      throw std::runtime_error("relaxation: cudaMalloc");
+    cudaMemcpyAsync(device, id.data(), n * sizeof(double), cudaMemcpyHostToDevice, stream);
+    context_.ghosts.forward(std::span<double* const>(&device, 1), autan::MemorySpace::cuda,
+                            context_.stream);
+    cudaMemcpyAsync(id.data(), device, n * sizeof(double), cudaMemcpyDeviceToHost, stream);
+    const bool done = cudaStreamSynchronize(stream) == cudaSuccess;
+    cudaFree(device);
+    if (!done) throw std::runtime_error("relaxation: the device exchange failed");
+    for (std::size_t c = 0; c < n; ++c) {
+      if (id[c] != static_cast<double>(mesh.cell_global_id()[c]))
+        throw std::runtime_error("relaxation: a device ghost did not receive its owner's value");
+    }
+#endif
   }
 
   void accumulate_average(double weight) override {
@@ -275,6 +314,8 @@ class Relaxation final : public autan::runtime::Physics {
       loads.force[k] = sums[k].value();
       loads.moment[k] = sums[3 + k].value();
     }
+    if (options_.nan_loads_from > 0 && last_stepped_iteration_ >= options_.nan_loads_from)
+      loads.force[1] = std::numeric_limits<double>::quiet_NaN();
     return loads;
   }
 
@@ -293,6 +334,7 @@ class Relaxation final : public autan::runtime::Physics {
   autan::runtime::PhysicsContext context_;
   RelaxationOptions options_;
   double rms_ = 1.0;
+  std::int64_t last_stepped_iteration_ = 0;
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;

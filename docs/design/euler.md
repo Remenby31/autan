@@ -24,12 +24,20 @@ Each boundary face carries a code and five values (`BoundaryKind`). The boundary
 | Kind | Values | Boundary state |
 |---|---|---|
 | `state` | W | given (manufactured solutions) |
-| `farfield` | freestream W | Riemann invariants normal to the face; entropy and tangential velocity from the upwind side; supersonic faces take the upwind state |
+| `farfield` | freestream W, or W plus a [point vortex](#point-vortex) | Riemann invariants normal to the face; entropy and tangential velocity from the upwind side; supersonic faces take the upwind state |
 | `slip` (slip wall, symmetry) | — | mirror state for the gradients; pressure flux |
 | `inlet` | p₀, T₀ | flow normal to the face; R⁺ from the interior and c_p T₀ give c_b (Carlson 2011) |
 | `outlet` | p | ρ and v from the outgoing characteristics; supersonic outflow extrapolates |
 
 The gradient's boundary values are the boundary states of the first-order interior state (`boundary_states`, a frozen loop: its derivatives are dropped, so the generated adjoint of the gradient is approximate at boundary faces). They enter the least-squares fit only on `state` faces, where the condition gives the value at the face; on the other kinds the value is the adjacent cell's, which belongs at the cell centroid, and the fit uses the interior stencil alone (a cell whose interior stencil cannot determine a gradient keeps every boundary face). Offset components within 64 ulps of the coordinates count as zero: across a one-cell-thick slab the centroids differ only by round-off, and the fit would otherwise turn it into a gradient across the layer. The fit is determined when det A > 10⁻¹⁰ A₁₁A₂₂A₃₃, which is independent of the cells' aspect ratio. Where the linear reconstruction would make ρ or p non-positive, the face takes the cell value. The warped-face correction applies to interior faces and to the pressure of slip faces.
+
+### Point vortex
+
+A lifting 2D body leaves the circulation's vortex in the far field, so a uniform farfield state makes the lift depend on the outer radius. With `point_vortex`, each farfield face takes the freestream plus the compressible vortex of Thomas and Salas (1986, AIAA J. 24(7)) centred at `center`, in the x–z lift plane (steady cases, zero sideslip, subsonic freestream). The velocity is the Prandtl-Glauert vortex (β = √(1 − M∞²)):
+
+u = u∞ + q sin θ, w = w∞ − q cos θ, q = Γβ / (2πr (1 − M∞² sin²(θ − α))).
+
+Here r and θ are the face centroid's distance and polar angle from the vortex in x–z. The speed of sound follows from the freestream total enthalpy; density and pressure are isentropic (`physics/include/autan/physics/point_vortex.hpp`). The circulation is Kutta–Joukowski's Γ = L′/(ρ∞V∞), where L′ is the lift on the `surfaces` zones per unit of their extent along y. It is measured on the residual of each step and applied from the next, so a converged solution satisfies it exactly. The implicit Jacobian omits it, and restarts carry it (`VortexCirculation<i>` in `RestartState`).
 
 ## Gradient stencil
 
@@ -60,15 +68,21 @@ Cells store U − U_ref, the reference being the freestream, and the primitive p
 Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R(U), Δt = CFL V / Σ_f (|v·n| + c) A local to each cell:
 
 - J̃ is the approximate Jacobian: dF/dW of every face with the reconstruction's gradients and limiter held fixed, written by the face loops in the same pass as the residual (`*_jacobian` loops of `kernels/euler.py`), times dW/dU of each cell; it is assembled in 5 × 5 blocks (`BlockMatrix`) and the step's system is solved to a relative residual of 0.1 by the [agglomeration multigrid](multigrid.md).
-- The run starts at first order, where J̃ is the exact Jacobian, and switches to second order once the first-order residual is three orders below its largest value (at most 200 steps).
-- CFL = 1000 / (largest residual relative to its largest value so far in the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶. The largest value so far, not the first: from the freestream the first residual is near zero and the start's transient would hold the CFL number at 1. An equation identically zero at the start of the order (below 10⁻¹² of the largest, the span momentum of a one-cell-thick mesh) is left out while it stays below that floor, the runtime's rule ([case-schema.md](../contracts/case-schema.md#time)): its round-off would otherwise set the CFL number.
-- A step is shortened so that no cell loses more than half its density or pressure, and logged (`solver` info event with alpha and the CFL number; a step with no admissible length is rejected, W0711); the next CFL number is then at most half the one used.
+- The run starts at first order, where J̃ is the exact Jacobian, and switches to second order once the first-order residual has dropped three orders (at most 200 steps).
+- CFL = 1000 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
+- A step is shortened so that no cell loses more than half its density or pressure, and logged (`solver` warning with alpha and the CFL number); the next CFL number is then at most half the one used.
 
-Steps to ten orders: [multigrid.md](multigrid.md#measurements). A Newton-Krylov variant (FGMRES on finite differences of the full residual, the limiter frozen, block Gauss-Seidel sweeps as preconditioner) was less robust far from the solution: on the MMS from the freestream (hex, n = 16) its steps were shortened at almost every iteration and the run stalled after 1.3 orders, where the defect correction converged ten orders in 177 steps (Gauss-Seidel, CFL = 10 / drop). It is left for M3 as an end phase, switched on once the residual has dropped.
+- Newton-Krylov end phase (fp64): once every residual is 10⁻⁵ below its largest value in the second order (ADflow's switch, Yildirim, Kenway, Mader and Martins 2019, J. Comput. Phys. 397:108741, §4; equations identically zero at the start of the order left out, the runtime's rule), each step solves the same system with dR/dU v by a finite difference of the full residual (Knoll and Keyes 2004, eq. 14), GCR preconditioned by one multigrid cycle on J̃, at most 40 iterations. The CFL number and the step then follow HANIM (Wang, Diskin, Nielsen and Liu 2021, AIAA SciTech, §II.D): the step is rejected, the state kept and the CFL number divided by 10 (W0711) when the solve leaves more than 0.9 of its residual, when it lowers some cell's density or pressure by more than half, or when the pseudo-time residual |V/Δt ΔU + R(U + ΔU)| stays above (1 + μ)/2 of |R(U)|, μ the reduction the solve reached, even after HANIM's quadratic line search; an accepted full step doubles the CFL number, a line-searched one keeps it; a correction below 10⁻¹² of the state is round-off and accepted. ADflow's ANK controls on the defect correction did not beat the SER above (#207).
+
+Steps to ten orders: [multigrid.md](multigrid.md#measurements).
 
 Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `dt` or `cfl`.
 
 Restart: `restart_fields` holds the conserved variables bit for bit, the averaging sums, and the steady solver's state (penalty, order, reference residuals) as uniform fields, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
+
+## Partitions
+
+On a partition (several ranks, or one with periodic image ghosts) the residual fills the ghost cells' primitives, gradients and limiter between its loops (`Euler<P>::set_ghosts`), and the physics updates, sums and reports its owned cells only; norms, residual scales and loads are exact sums over the ranks. The guarantee across rank counts is in [runtime.md](../contracts/runtime.md#ranks).
 
 ## Limiter and verification
 

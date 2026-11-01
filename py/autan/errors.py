@@ -462,6 +462,15 @@ _CODES = [
         "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
     ),
     Code(
+        "E0425",
+        "Point-vortex surfaces match no wall",
+        "The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of "
+        "a periodic pair, or match zones that are not wall or slip zones: the vortex's "
+        "circulation comes from the lift on the body. Patterns with wildcards skip periodic "
+        "zones.",
+        'Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.',
+    ),
+    Code(
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",
@@ -508,6 +517,45 @@ _CODES = [
         "temperature.",
         "Give the state the physics needs: `autan.State(pressure=..., temperature=..., "
         "velocity=(u, v, w))`.",
+    ),
+    Code(
+        "E0508",
+        "Initial-state file missing or invalid",
+        "The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs "
+        "from the case's, or it is not a valid `autan.initial-state/1` document: its "
+        "variables, a row of 3 finite coordinates and 5 finite values per cell, density and "
+        "pressure > 0 (docs/contracts/initial-state.md).",
+        "Write the initial state with `autan.initial_state.write` for this mesh, and give "
+        "its path and the SHA-256 it returns.",
+    ),
+    Code(
+        "E0509",
+        "Initial state written for another mesh",
+        "The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.",
+        "Write the initial state for the mesh the case uses.",
+    ),
+    Code(
+        "E0510",
+        "Initial state does not cover the fluid cells",
+        "The file gives another number of rows than the mesh has fluid cells.",
+        "Write one row per fluid cell of the mesh, at its centroid.",
+    ),
+    Code(
+        "E0511",
+        "Initial states do not match the cells",
+        "The solver could not pair every fluid cell with exactly one row of the file by "
+        "centroid, within 1e-9 times the largest extent of the mesh's bounding box, or two "
+        "cells lie within that tolerance of each other; `data` names the cells.",
+        "Write the initial state from the cell centroids of the mesh the case uses.",
+    ),
+    Code(
+        "E0512",
+        "Initial-state file not available for this case",
+        "An initial-state file needs compressible inviscid or laminar physics (it carries no "
+        "turbulence variable), replaces the fluid zones' `initial` states, and cannot be "
+        "combined with a start from a previous run, which gives the initial state itself.",
+        "Remove the zones' `initial`, the start, or the file; or use a compressible inviscid "
+        "or laminar case.",
     ),
     Code(
         "E0601",
@@ -611,12 +659,13 @@ _CODES = [
     Code(
         "W0711",
         "Implicit step rejected",
-        "A steady run's implicit step was rejected: no step length kept density and pressure "
-        "admissible, or the step's linear solve failed (it left more than 0.9 of its residual, "
-        "or met a singular block). The state is kept and the next step's CFL number is at most "
-        "half the rejected one. Logged at each rejection; recorded once in run.json. `data` "
-        "gives the iteration, the reason (`admissible` or `linear`), the CFL number of the "
-        "rejected step and, for `linear`, the residual drop of the solve (null otherwise).",
+        "A steady run's Newton-Krylov step was rejected (HANIM's controls, docs/design/euler.md): "
+        "its linear solve failed (it left more than 0.9 of its residual) or met a singular block "
+        "(`linear`), the update was not realisable (`admissible`), or it reduced the pseudo-time "
+        "residual too little even after a line search (`nonlinear`). The state is kept and the "
+        "CFL number divided by 10. Logged at each rejection; recorded once in run.json. `data` "
+        "gives the iteration, the reason, the CFL number of the rejected step and the linear "
+        "solve's residual drop (null for `admissible`).",
         "A few rejections are part of the start of a run. Many of them slow the convergence: "
         "check the boundary conditions and the initial state.",
     ),
@@ -799,6 +848,14 @@ _CODES = [
         "The file given to `-o`/`--output` cannot be written: missing directory, a directory "
         "in its place, or no permission.",
         "Give a writable file path.",
+    ),
+    Code(
+        "E0807",
+        "No GPU device",
+        "The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA, but "
+        "the process sees no CUDA device (`data.visible`, `data.needed`).",
+        "Run on a host with a GPU visible to the process (`docker --gpus`), or use "
+        "`devices.kind = cpu`.",
     ),
 ]
 
