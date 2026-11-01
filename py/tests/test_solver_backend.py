@@ -344,12 +344,12 @@ def test_a_periodic_run_reads_back_through_the_results_contract(tmp_path: Path) 
     assert iterations == list(range(7, result.run.iterations + 1, 7))
 
 
-def test_euler_refuses_a_periodic_mesh(tmp_path: Path) -> None:
+def test_euler_refuses_the_multigrid_on_a_periodic_mesh(tmp_path: Path) -> None:
     case, mesh = _box(tmp_path, "Inviscid")
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     [found] = error.value.diagnostics
-    assert (found.code, found.data.get("path")) == ("E0706", "periodic")  # not missing physics
+    assert (found.code, found.data.get("path")) == ("E0706", "time.linear_solver")
     assert not any((tmp_path / "runs").iterdir())
 
 

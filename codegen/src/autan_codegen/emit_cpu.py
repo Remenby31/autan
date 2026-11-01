@@ -430,7 +430,7 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
         e.w("  }")
     elif lm.kind == "cell":
         e.w("  for (index_t c = 0; c < d.topo.n_owned_cells; ++c) {")
-        e.w(f"    typename P::compute out[{n}];")
+        e.w(f"    typename P::{lm.fn.compute} out[{n}];")
         args = call_args(lm.sig, loop.bindings, {"direct": "c"})
         e.w(f"    {lm.fn.name}<P>({', '.join([*args, 'out'])});")
         for s in jacobian_lines(lm, args, "c", "    "):
