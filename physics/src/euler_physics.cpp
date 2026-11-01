@@ -625,13 +625,23 @@ class EulerPhysics final : public runtime::Physics {
     if (failed) {
       // As a step with no admissible length: the state is kept and the next CFL number is half
       // this one, also when this one was clamped; at the smallest CFL number the run diverged.
-      if (drop > 0.0) penalty_ = cfl_ * drop / cfl_start;
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
       shortened_ = true;
       if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
       return;
     }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
+    // The next step halves the penalty; starting from the CFL number actually used, so that the
+    // CFL number halves also when it was clamped.
+    if (shortened_ && drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+    if (shortened_) {
+      std::array<char, 64> text{};
+      std::snprintf(text.data(), text.size(), "{\"alpha\": %.6g, \"cfl\": %.6g}", alpha, cfl_);
+      ctx_.log.write("warning", "solver",
+                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
+                     text.data());
+    }
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
       // number the run has diverged.
