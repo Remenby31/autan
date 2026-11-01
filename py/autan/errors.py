@@ -615,6 +615,18 @@ _CODES = [
         "Regenerate the loop so its scratch holds every output component per face.",
     ),
     Code(
+        "E1105",
+        "Incidence scratch too narrow",
+        "The deterministic adjoint of a cell reduction has fewer scratch components per incidence than the values it sends to neighbours.",
+        "Size the schedule's incidence scratch for the widest reduction adjoint of the module.",
+    ),
+    Code(
+        "E1106",
+        "Incidence twins missing",
+        "The deterministic adjoint of a cell reduction runs on a topology without incidence twins.",
+        "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",
@@ -636,9 +648,10 @@ _CODES = [
     Code(
         "E0804",
         "No solver backend",
-        "`case.run()` needs a backend. The C++ core is not part of this build, so only the "
-        "`fake` backend exists; it writes synthetic results.",
-        "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
+        "`case.run()` needs a backend, and the solver backend needs the runtime `autan-run`, "
+        "found through `$AUTAN_RUN` or the PATH.",
+        "Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run "
+        "installed, or `autan.FakeBackend()` for synthetic results.",
     ),
     Code(
         "E0805",

@@ -136,11 +136,54 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     return lines
 
 
+def other_targets(lm: LoopModel) -> list[tuple[int, int]]:
+    """(argument, component) of each active argument read across incidences (`other`): the
+    per-incidence scratch columns of the deterministic reduction adjoint."""
+    ra = lm.radj
+    assert isinstance(ra, ReduceAdjoint)
+    p = ra.primal
+    return [
+        (k, c)
+        for k in ra.body_active
+        if p.loop.bindings[p.sig.names[k]].via == "other"
+        for c in range(p.sig.types[k].size)
+    ]
+
+
+def twin_gather_body(lm: LoopModel, indent: str) -> list[str]:
+    """Second pass of the deterministic reduction adjoint, for cell c (owned or ghost): add, in
+    the order of c's incidences, what each owned neighbour stored for c on the shared face."""
+    ra = lm.radj
+    assert isinstance(ra, ReduceAdjoint)
+    p = ra.primal
+    i2 = indent + "  "
+    lines = [
+        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{",
+        f"{i2}const index_t f = d.topo.cell_faces[k];",
+        f"{i2}if (f >= d.topo.n_interior_faces) {{",
+        f"{i2}  continue;",
+        f"{i2}}}",
+        f"{i2}const index_t nb = d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f];",
+        f"{i2}if (nb >= d.topo.n_owned_cells) {{",
+        f"{i2}  continue;",
+        f"{i2}}}",
+        f"{i2}const offset_t kt = d.topo.incidence_twin[k];",
+    ]
+    for m_other, (k, c) in enumerate(other_targets(lm)):
+        a = adj_ds(p.loop.bindings[p.sig.names[k]].dataset)  # type: ignore[arg-type]
+        lines.append(f"{i2}{at(a, 'c', c)} += scratch[{m_other} * d.topo.n_incidences + kt];")
+    lines.append(f"{indent}}}")
+    return lines
+
+
 def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
     """Adjoint of one cell's reduction (given `c`): recompute the accumulators and the incidence
     each Min/Max selected, apply the finalise adjoint, then send each accumulator's adjoint to
     the incidences that fed it (all for Sum, the selected one for Min/Max) through the body's
-    adjoint. `scatter` is "plain" or "atomic" for the increments of other cells' adjoints."""
+    adjoint. `scatter` says how the increments of other cells' adjoints are made: "plain"
+    (serial), "atomic", or "store" (to the per-incidence scratch, summed afterwards in a fixed
+    order by twin_gather_body); in "store" mode the cell's own adjoints are plain increments, as
+    no other thread writes them in that pass."""
     ra = lm.radj
     assert isinstance(ra, ReduceAdjoint)
     p = ra.primal
@@ -151,6 +194,8 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
     i2 = indent + "  "
 
     def add(target: str, v: str, ind: str) -> str:
+        if scatter == "store":
+            return f"{ind}{target} += {v};"
         if scatter == "atomic":
             return f"{ind}atomicAdd(&{target}, {v});"
         return f"{ind}{target} += {v};"
@@ -228,6 +273,9 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
         for c in range(p.sig.types[k].size):
             if b.via == "self":
                 lines.append(add(at(a, "c", c), f"A(bar[{j}])", i2))
+            elif scatter == "store":
+                m_other = len(other_targets(lm)[: other_targets(lm).index((k, c))])
+                lines.append(f"{i2}scratch[{m_other} * d.topo.n_incidences + k] = A(bar[{j}]);")
             else:
                 lines.append(f"{i2}if (f < d.topo.n_interior_faces) {{")
                 lines.append(add(at(a, "nb", c), f"A(bar[{j}])", i2 + "  "))

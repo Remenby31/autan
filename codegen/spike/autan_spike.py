@@ -192,18 +192,21 @@ def gpu_advdiff_residual(
     source: F64,
     velocity: tuple[float, float, float],
     nu: float,
-) -> tuple[F64, F64]:
+) -> tuple[F64, F64, float]:
+    """Residual, gradient and the FP64 norm of the owned residuals, computed on the device."""
     err = ctypes.create_string_buffer(512)
     res = np.zeros(m.n_cells)
     grad = np.zeros(3 * m.n_cells)
+    norm = ctypes.c_double()
     vel = np.array(velocity, dtype=np.float64)
     q, q_b, source = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b, source))
     rc = lib().autan_spike_gpu_advdiff_residual(
         m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(q_b), _p(source),
-        _p(vel), ctypes.c_double(nu), _p(res), _p(grad), err, ctypes.c_size_t(len(err)),
+        _p(vel), ctypes.c_double(nu), _p(res), _p(grad), ctypes.byref(norm), err,
+        ctypes.c_size_t(len(err)),
     )  # fmt: skip
     _check(rc, err)
-    return res, grad.reshape(3, -1).T
+    return res, grad.reshape(3, -1).T, norm.value
 
 
 def gpu_gradients(
@@ -387,6 +390,34 @@ def gpu_advdiff_adjoint(
     )  # fmt: skip
     _check(rc, err)
     return out
+
+
+def gpu_lsq_bounds_adjoint(
+    m: Mesh, policy: str, strategy: str, block: int, q: F64, q_b: F64, seed: F64
+) -> F64:
+    """Adjoint of the LSQ gradient + bounds reduction on the device: seed (n, 5) -> q-bar (n,)."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_cells)
+    sd = soa(seed)
+    q, q_b = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b))
+    rc = lib().autan_spike_gpu_lsq_bounds_adjoint(
+        m.handle, policy.encode(), strategy.encode(), ctypes.c_int(block), _p(q), _p(q_b), _p(sd), _p(out),
+        err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return out
+
+
+def gpu_sum_of_squares(x: F64) -> float:
+    """Fixed-order FP64 sum of squares computed on the device."""
+    err = ctypes.create_string_buffer(512)
+    out = ctypes.c_double()
+    xs = np.ascontiguousarray(x, dtype=np.float64)
+    rc = lib().autan_spike_gpu_sum_of_squares(
+        _p(xs), ctypes.c_int64(xs.size), ctypes.byref(out), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    return out.value
 
 
 def face_weighted(
