@@ -260,7 +260,7 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     CHECK(first == n_faces);
     // Each side of the box (zones xmin ... zmax) holds faces on its plane only.
     std::array<double, 3> low{}, high{};
-    for (int d = 0; d < 3; ++d) {
+    for (std::size_t d = 0; d < 3; ++d) {
       low[d] = high[d] = positions[static_cast<std::size_t>(d)];
       for (std::size_t i = static_cast<std::size_t>(d); i < positions.size(); i += 3) {
         low[d] = std::min(low[d], positions[i]);
@@ -298,9 +298,9 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
         s[0] += (p[1] - q[1]) * (p[2] + q[2]);
         s[1] += (p[2] - q[2]) * (p[0] + q[0]);
         s[2] += (p[0] - q[0]) * (p[1] + q[1]);
-        for (int d = 0; d < 3; ++d) c[d] += p[d] / k;
+        for (std::size_t d = 0; d < 3; ++d) c[d] += p[d] / k;
       }
-      for (int d = 0; d < 3; ++d) {
+      for (std::size_t d = 0; d < 3; ++d) {
         s[d] *= 0.5;
         sum[d] += s[d];
         volume += c[d] * s[d] / 3.0;
