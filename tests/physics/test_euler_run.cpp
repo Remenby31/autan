@@ -191,8 +191,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
       d["time"]["max_iterations"] = 20;
     } else {
       d["time"] = {
-          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"linear_solver", nullptr},
-                   {"average_from", 10}};
+          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 10}};
     }
   });
   const auto out = run(doc);
@@ -291,8 +290,7 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
                      {"steps", budget},
                      {"dt", nullptr},
                      {"cfl", 0.8},
-                     {"linear_solver", nullptr},
-                   {"average_from", 2}};
+                     {"average_from", 2}};
       }
     });
   };
@@ -400,8 +398,7 @@ TEST_CASE("a steady run reports the residual of its second-order scheme from the
                      {"steps", 1},
                      {"dt", nullptr},
                      {"cfl", 0.8},
-                     {"linear_solver", nullptr},
-                   {"average_from", nullptr}};
+                     {"average_from", nullptr}};
       }
     });
   };
@@ -453,8 +450,7 @@ void unsteady_through_pairs(Json& d, int steps) {
                {"steps", steps},
                {"dt", nullptr},
                {"cfl", 0.8},
-               {"linear_solver", nullptr},
-                   {"average_from", nullptr}};
+               {"average_from", nullptr}};
 }
 
 }  // namespace
@@ -550,7 +546,6 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
                    {"steps", 2},
                    {"dt", nullptr},
                    {"cfl", 0.8},
-                   {"linear_solver", nullptr},
                    {"average_from", nullptr}};
       path = "time.kind";
       field = "time";
@@ -639,7 +634,6 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
                    {"steps", 12},
                    {"dt", nullptr},
                    {"cfl", 0.8},
-                   {"linear_solver", nullptr},
                    {"average_from", nullptr}};
     }
   });
@@ -829,8 +823,7 @@ TEST_CASE("a fast flow at low pressure that the kernels resolve is not taken for
                  {"steps", 3},
                  {"dt", nullptr},
                  {"cfl", 0.5},
-                 {"linear_solver", nullptr},
-                   {"average_from", nullptr}};
+                 {"average_from", nullptr}};
   });
   const auto out = run(doc);
   INFO(out.err);

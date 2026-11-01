@@ -488,9 +488,7 @@ SolverInput parse_solver_input(const std::string& text) {
       in.time.residual_orders = o.positive("residual_orders");
       in.time.linear_solver = o.tag("linear_solver", {"multigrid", "gauss-seidel"});
     } else if (kind == "unsteady") {
-      const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from", "linear_solver"});
-      if (!o.is_null("linear_solver"))
-        invalid("time.linear_solver", "only a steady case takes a linear solver");
+      const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from"});
       in.time.kind = "unsteady";
       in.time.steps = o.integer("steps", 1);
       in.time.dt = o.is_null("dt") ? std::nullopt : std::optional<double>(o.positive("dt"));
