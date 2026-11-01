@@ -263,12 +263,15 @@ def adopt(
     ours = options(config(case, mesh, 0.0, span=span, max_iterations=max_iterations,
                           residual_orders=residual_orders, stop_margin=stop_margin))  # fmt: skip
     theirs = options(published)
-    for key in ("MARKER_EULER", "MARKER_FAR", "REF_LENGTH", "REF_AREA", "REF_ORIGIN_MOMENT_X",
-                "REF_ORIGIN_MOMENT_Y"):  # fmt: skip
-        same = theirs.get(key, "").replace(" ", "") == ours[key].replace(" ", "")
-        numeric = key.startswith("REF_") and key in theirs
+    checked = ("MARKER_EULER", "MARKER_FAR", "MARKER_SYM", "MARKER_MONITORING", "REF_LENGTH",
+               "REF_AREA", "REF_ORIGIN_MOMENT_X", "REF_ORIGIN_MOMENT_Y", "REF_ORIGIN_MOMENT_Z")  # fmt: skip
+    for key in checked:
+        if key not in ours and key not in theirs:
+            continue
+        same = theirs.get(key, "").replace(" ", "") == ours.get(key, "").replace(" ", "")
+        numeric = key.startswith("REF_") and key in theirs and key in ours
         if not same and not (numeric and float(theirs[key]) == float(ours[key])):
-            msg = f"published {key} = {theirs.get(key)!r}, the case needs {ours[key]!r}"
+            msg = f"published {key} = {theirs.get(key)!r}, the case needs {ours.get(key)!r}"
             raise VVError(msg, code="V0903")
     kept = [
         line for line in published.splitlines()

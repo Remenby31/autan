@@ -242,13 +242,22 @@ def test_published_configuration_is_run_as_it_is() -> None:
         "% a published configuration\nSOLVER= EULER\nMACH_NUMBER= 0.8\nAOA= 1.25\n"
         "CONV_NUM_METHOD_FLOW= JST\nJST_SENSOR_COEFF= ( 0.5, 0.02 )\nMGLEVEL= 3\n"
         "MARKER_EULER= ( airfoil )\nMARKER_FAR= ( farfield )\nREF_LENGTH= 1.0\nREF_AREA= 1.0\n"
-        "REF_ORIGIN_MOMENT_X = 0.25\nREF_ORIGIN_MOMENT_Y = 0.00\nMESH_FILENAME= theirs.su2\nITER= 99\n"
+        "REF_ORIGIN_MOMENT_X = 0.25\nREF_ORIGIN_MOMENT_Y = 0.00\nREF_ORIGIN_MOMENT_Z = 0.00\n"
+        "MARKER_MONITORING= ( airfoil )\nMESH_FILENAME= theirs.su2\nITER= 99\n"
     )
     adopted = config.adopt(published, case, record, span=1.0)
     opts = config.options(adopted)
     before = config.options(published)
-    # Only the mesh, the flight condition and the outputs change; the scheme is SU2's.
-    assert {k for k in opts if opts[k] != before.get(k)} <= set(config.ADOPTED_KEYS)
+    # Only the mesh, the flight condition and the outputs change; every other published option is
+    # kept with its value.
+    may_change = {"MESH_FILENAME", "MESH_FORMAT", "MACH_NUMBER", "AOA", "FREESTREAM_PRESSURE",
+                  "FREESTREAM_TEMPERATURE", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
+                  "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME", "OUTPUT_FILES",
+                  "OUTPUT_WRT_FREQ"}  # fmt: skip
+    assert {k: v for k, v in before.items() if k not in may_change} == {
+        k: v for k, v in opts.items() if k in before and k not in may_change
+    }
+    assert {k for k in opts if opts[k] != before.get(k)} <= may_change
     assert opts["CONV_NUM_METHOD_FLOW"] == "JST"
     assert opts["JST_SENSOR_COEFF"] == "( 0.5, 0.02 )"
     assert float(opts["MACH_NUMBER"]) == 0.5
@@ -259,6 +268,9 @@ def test_published_configuration_is_run_as_it_is() -> None:
     assert err.value.code == "V0903"
     with pytest.raises(VVError) as err:
         config.adopt(published.replace("X = 0.25", "X = 0.0"), case, record, span=1.0)
+    assert err.value.code == "V0903"
+    with pytest.raises(VVError) as err:
+        config.adopt(published + "MARKER_MONITORING= ( farfield )\n", case, record, span=1.0)
     assert err.value.code == "V0903"
 
 

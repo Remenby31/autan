@@ -46,9 +46,9 @@ def prepare(
         msg = f"{family} is not a naca0012 mesh family ({MANIFEST_SCHEMA})"
         raise VVError(msg, code="V0805")
     (out / "meshes").mkdir(parents=True, exist_ok=True)
-    source_text = published.read_text() if published is not None else None
-    if source_text is not None:
-        scheme = "published:" + hashlib.sha256(source_text.encode()).hexdigest()
+    source_text = published.read_bytes().decode() if published is not None else None
+    if published is not None:
+        scheme = "published:" + hashlib.sha256(published.read_bytes()).hexdigest()
     dirs = []
     for level in manifest["levels"]:
         source = family / level["file"]
