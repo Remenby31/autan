@@ -38,7 +38,7 @@ const decade = (value: number) => {
     .join("");
   return `10${k < 0 ? "⁻" : ""}${digits}`;
 };
-const short = (value: number) => value.toExponential(2);
+const short = (value: number) => (value === 0 ? "0" : value.toExponential(2));
 const decades = (_: uPlot, __: number, min: number, max: number) => {
   if (!(min > 0 && max > min)) return [];
   const low = Math.ceil(Math.log10(min) - 1e-9);
@@ -73,11 +73,19 @@ export function ResidualChart({
   const names = [...history.residuals.keys()];
   const key = names.join(",");
   // R₀ of each equation: the reference a continued run carries, or its first positive residual.
-  const first = (name: string) =>
-    reference?.[name] ?? history.residuals.get(name)?.find((v) => v > 0) ?? 1;
+  // A zero reference (an equation woken after the run it continues began) gives no scale.
+  const first = (name: string) => {
+    const given = reference?.[name];
+    return given !== undefined && given > 0
+      ? given
+      : (history.residuals.get(name)?.find((v) => v > 0) ?? 1);
+  };
   const r0 = useRef<Record<string, number>>({});
   r0.current = Object.fromEntries(names.map((name) => [name, first(name)]));
   const hidden = (name: string) => steady && history.exempt.has(name);
+  // What the uPlot hooks read, as of the latest render.
+  const latest = useRef({ history, hidden });
+  latest.current = { history, hidden };
   const value = (name: string) => readout?.values.find(([n]) => n === name)?.[1];
   const [readout, setReadout] = useState<{ iteration: number; values: [string, number][] } | null>(
     null,
@@ -101,6 +109,7 @@ export function ResidualChart({
                 min,
                 max,
                 Object.entries(floorsRef.current ?? {})
+                  .filter(([name]) => !latest.current.hidden(name))
                   .map(([name, v]) => v / (r0.current[name] ?? 1))
                   .filter((v) => v > 0),
               ),
@@ -112,9 +121,12 @@ export function ResidualChart({
               const index = u.cursor.idx;
               const iteration = index == null ? undefined : u.data[0][index];
               if (index == null || iteration == null) return setReadout(null);
+              // What is drawn, and a drawn equation's exact zero, which a log axis leaves as a gap.
               const values = names.flatMap((name, k): [string, number][] => {
                 const v = u.data[k + 1]?.[index];
-                return v == null ? [] : [[name, v]];
+                if (v != null) return [[name, v]];
+                const raw = latest.current.history.residuals.get(name)?.[index];
+                return raw === 0 && !latest.current.hidden(name) ? [[name, 0]] : [];
               });
               setReadout({ iteration, values });
             },
@@ -127,7 +139,7 @@ export function ResidualChart({
               ctx.lineWidth = devicePixelRatio;
               names.forEach((name, k) => {
                 const raw = floorsRef.current?.[name];
-                if (raw === undefined || !(raw > 0)) return;
+                if (raw === undefined || !(raw > 0) || latest.current.hidden(name)) return;
                 const floor = raw / (r0.current[name] ?? 1);
                 const y = Math.round(u.valToPos(floor, "y", true));
                 ctx.strokeStyle = series(k);
@@ -216,6 +228,11 @@ export function ResidualChart({
                 <Swatch k={k} />
                 {name}
                 <span className="font-sans">exempt: identically zero, not drawn</span>
+                {value(name) !== undefined && (
+                  <span className="text-fg-2 tabular-nums" data-testid={`residual-${name}`}>
+                    {short(value(name) as number)}
+                  </span>
+                )}
               </span>
             </Tooltip>
           ) : (
