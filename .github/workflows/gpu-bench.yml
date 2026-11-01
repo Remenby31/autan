@@ -40,26 +40,10 @@ jobs:
         id: filter
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DRAFT: ${{ github.event.pull_request.draft }}
-        run: |
-          if [ "$DRAFT" = true ]; then
-            echo "bench=false" >> "$GITHUB_OUTPUT"; echo "bench: skipped, the pull request is a draft"; exit 0
-          fi
-          if [ "$EVENT" = workflow_dispatch ] || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "bench=true" >> "$GITHUB_OUTPUT"; echo "harness=true" >> "$GITHUB_OUTPUT"
-            echo "bench: forced ($EVENT)"; exit 0
-          fi
-          changed=$(git diff --name-only "$BASE" "$GITHUB_SHA")
-          echo "changed files:"; echo "$changed"
-          # Code that is timed or builds what is timed; readers (io/) fix the face and cell order of
-          # the measured mesh; the mesh generator feeds the loop benchmark.
-          pattern='^(runtime|codegen|kernels|physics|solvers|core|io|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
-          if echo "$changed" | grep -q -E "$pattern"; then bench=true; else bench=false; fi
-          echo "bench=$bench" >> "$GITHUB_OUTPUT"; echo "bench: $bench"
-          # The harness's own GPU tests and the image smoke test take the GPU lock: only when they changed.
-          if echo "$changed" | grep -q -E '^(bench|docker)/'; then harness=true; else harness=false; fi
-          echo "harness=$harness" >> "$GITHUB_OUTPUT"; echo "harness: $harness"
+          BEFORE: ${{ github.event.before }}
+        # No pipe: the default shell has no pipefail, so a failing filter would pass unnoticed.
+        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$BEFORE" >> "$GITHUB_OUTPUT"
 
   mesh:
     needs: changes
