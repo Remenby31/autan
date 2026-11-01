@@ -14,7 +14,8 @@ uv run autan-vv --help
 | [mms.md](mms.md) | Manufactured solutions, their source-term convention, and the C++ and JSON exports the kernel generator consumes |
 | [meshes.md](meshes.md) | Mesh families of the unit cube: kinds, files, zones, perturbation, manifest, reproducibility |
 | [order.md](order.md) | Observed order, Richardson extrapolation and GCI; the order-study report; the reference finite-volume solve and its measured orders |
-| [oracles.md](oracles.md) | Exact and reference solutions runs are verified against (MMS, Ringleb, vortex, shock tubes, Shu–Osher, Couette, Poiseuille, Blasius) |
+| [oracles.md](oracles.md) | Exact and reference solutions runs are verified against (MMS, Ringleb, vortex, shock tubes, Couette, Poiseuille, Blasius) |
+| [harness.md](harness.md) | `autan-vv verify`: runs against an oracle, errors, observed order, gate verdict |
 | [cases.md](cases.md) | Reference cases (TMR, ONERA M6, RAE 2822): pinned downloads, checksums, parsers |
 | [acceptance.md](acceptance.md) | The numbers each milestone gate must meet, with their sources |
 
