@@ -40,11 +40,18 @@ class Snapshot:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejected: dict[str, str] = field(default_factory=dict)
     summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Runs whose solution.cgns is a result: ended and written (results.md).
+    solutions: list[str] = field(default_factory=list)
 
     def document(self) -> dict[str, Any]:
         runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
         rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
-        return {"runs": runs, "rejected": rejected, "summaries": self.summaries}
+        return {
+            "runs": runs,
+            "rejected": rejected,
+            "summaries": self.summaries,
+            "solutions": self.solutions,
+        }
 
 
 class Registry:
@@ -92,6 +99,9 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
+                        solved = (child / "solution.cgns").is_file()
+                        if outcome["status"] != "running" and solved:
+                            snapshot.solutions.append(child.name)
                         try:
                             with Folder(child) as folder:
                                 live = outcome["status"] == "running"

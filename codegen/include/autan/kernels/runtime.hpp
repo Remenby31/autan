@@ -43,6 +43,20 @@ struct Topology {
   const offset_t* stencil_offsets = nullptr;
   const index_t* stencil = nullptr;
   const offset_t* stencil_twin = nullptr;
+  /// Sliced layout (autan::kernels::sliced): entry j of cell c is at stencil_offsets[c] +
+  /// j * stencil_stride for j < stencil_length[c], so a warp reading entry j of 32 consecutive
+  /// cells reads contiguous memory. stencil_stride == 1 is the plain CSR layout above.
+  offset_t stencil_stride = 1;
+  const index_t* stencil_length = nullptr;
+  /// Faces whose local orientation is the reverse of their global one (partition faces,
+  /// LocalPartition::face_reversed), or null. Face loops then evaluate such a face in its global
+  /// orientation: left and right swapped, oriented geometry negated back, so a face gives the
+  /// same bits on every rank count. Jacobian blocks follow: block "left" is the global left cell.
+  const std::uint8_t* face_reversed = nullptr;
+  /// Set with the global order (GlobalKeys): results must not depend on the partition, so face
+  /// and boundary loops accept only the gather strategies (E1109), whose per-cell order is the
+  /// global one; scatter, atomic and coloured orders follow the local numbering.
+  bool rank_independent = false;
 };
 
 /// Precision policies (docs/research/kernel-generator.md section 7): storage type of each role,

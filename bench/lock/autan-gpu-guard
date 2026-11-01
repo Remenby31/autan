@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""autan-gpu-guard: host-side guard of a Spark's GPU lock.
+
+    autan-gpu-guard        (on the host, detached; one per Spark)
+
+Every 0.5 s it reads /proc/locks for /home/admin/autan-gpu/gpu.lock and:
+- holds ci.lock (shared) while any process of the runner container (autan-runner) holds or waits
+  for the GPU lock, so that autan-gpu-lock gives CI priority whatever the workflow does;
+- records in holders.log each holder it sees (`held` when it appears, `released` with the
+  duration when it goes, `overhold` every 5 minutes past 10 minutes), with the holder's
+  container and command line, whether or not the holder used autan-gpu-lock.
+It never signals or stops anything. See docs/infra/bench.md.
+"""
+
+import fcntl
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
+LOG = LOCK.parent / "holders.log"
+CI_LOCK = LOCK.parent / "ci.lock"
+# Every runner of the Spark (autan-runner, autan-runner-main, ...), not their proxy.
+RUNNER = re.compile(
+    os.environ.get("AUTAN_RUNNER_CONTAINER", r"autan-runner(?!-proxy$)(-[a-z0-9-]+)?")
+)
+POLL_S = 0.5
+MAX_HOLD_S = 600
+REPEAT_S = 300
+DOCKER_EVERY_S = 30
+
+
+def lock_users(key: str, proc_locks: str) -> tuple[set[int], set[int]]:
+    """PIDs holding and waiting for the lock whose device:inode key is ``key`` (proc(5))."""
+    holders, waiters = set(), set()
+    for line in proc_locks.splitlines():
+        fields = line.split()
+        if key not in fields:
+            continue
+        pid = int(fields[fields.index(key) - 1])
+        (waiters if "->" in fields else holders).add(pid)
+    return holders, waiters
+
+
+def container_of(pid: int) -> str | None:
+    try:
+        text = Path(f"/proc/{pid}/cgroup").read_text()
+    except OSError:
+        return None
+    match = re.search(r"docker-([0-9a-f]{64})\.scope|/docker/([0-9a-f]{64})", text)
+    return (match.group(1) or match.group(2)) if match else None
+
+
+def describe(pid: int) -> tuple[str, str]:
+    """The holder's user and command line, cleaned for one log field."""
+    try:
+        uid = Path(f"/proc/{pid}").stat().st_uid
+        cmd = (
+            Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        )
+    except OSError:
+        return "?", "?"
+    return str(uid), re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", " ", cmd).strip()[:1000]
+
+
+class Containers:
+    """Docker container names by id, and the runner's id, refreshed every DOCKER_EVERY_S."""
+
+    def __init__(self) -> None:
+        self.names: dict[str, str] = {}
+        self.at = 0.0
+
+    def refresh(self) -> None:
+        if time.monotonic() - self.at < DOCKER_EVERY_S:
+            return
+        self.at = time.monotonic()
+        try:
+            out = subprocess.run(
+                ["docker", "ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"],
+                capture_output=True, text=True, check=True, timeout=20,
+            ).stdout  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            return
+        self.names = dict(line.split(maxsplit=1) for line in out.splitlines() if " " in line)
+
+    def name(self, cid: str | None) -> str:
+        return "host" if cid is None else self.names.get(cid, cid[:12])
+
+
+def record(event: str, who: str, where: str, secs: float, command: str) -> None:
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    line = f"{stamp}\t{event}\t{who}\t{where}\t{secs:.0f}\t-\tseen by autan-gpu-guard\t{command}\n"
+    try:
+        fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK)
+        try:
+            os.write(fd, line.encode())
+        finally:
+            os.close(fd)
+    except OSError as err:
+        sys.stderr.write(f"autan-gpu-guard: cannot write {LOG}: {err}\n")
+
+
+def say(message: str) -> None:
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    sys.stderr.write(f"{stamp} {message}\n")
+    sys.stderr.flush()
+
+
+def main() -> int:
+    stopping = []
+    signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
+    st = LOCK.stat()
+    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    containers = Containers()
+    say(f"watching {LOCK} ({key}); CI is any container named {RUNNER.pattern}")
+    ci = CI_LOCK.open()
+    announcing = False
+    seen: dict[int, dict] = {}
+    while not stopping:
+        containers.refresh()
+        holders, waiters = lock_users(key, Path("/proc/locks").read_text())
+        runner = {c for c, n in containers.names.items() if RUNNER.fullmatch(n)}
+        ci_present = any(container_of(p) in runner for p in holders | waiters)
+        if ci_present and not announcing:
+            try:
+                fcntl.flock(ci, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                announcing = True
+                say("CI waits for or holds the GPU lock: ci.lock held")
+            except BlockingIOError:
+                pass
+        elif not ci_present and announcing:
+            fcntl.flock(ci, fcntl.LOCK_UN)
+            announcing = False
+            say("CI gone: ci.lock released")
+        now = time.monotonic()
+        for pid in holders - seen.keys():
+            who, cmd = describe(pid)
+            seen[pid] = {"since": now, "noted": now, "who": who, "cmd": cmd,
+                         "where": containers.name(container_of(pid))}  # fmt: skip
+            record("held", who, seen[pid]["where"], 0, cmd)
+        for pid in list(seen):
+            h = seen[pid]
+            held = now - h["since"]
+            if pid not in holders:
+                record("released", h["who"], h["where"], held, h["cmd"])
+                del seen[pid]
+            elif held > MAX_HOLD_S and (h["noted"] == h["since"] or now - h["noted"] >= REPEAT_S):
+                record("overhold", h["who"], h["where"], held, h["cmd"])
+                h["noted"] = now
+        time.sleep(POLL_S)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

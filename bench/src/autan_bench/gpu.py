@@ -118,12 +118,38 @@ def _sample_nvidia(gpu_index: int) -> GpuSample:
     )
 
 
+def _held(path: Path) -> bool:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(fd) as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+
+
+def ci_waiting(lock: Path) -> bool:
+    """Whether a job with priority waits for or holds the GPU (docs/infra/bench.md): outside CI,
+    any CI job (it holds ``ci.lock`` shared); in a CI job that is not on main, a job on main
+    (``main.lock``). A job on main never yields."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return _held(lock.parent / "ci.lock")
+    if os.environ.get("GITHUB_REF") == "refs/heads/main":
+        return False
+    return _held(lock.parent / "main.lock")
+
+
 @contextlib.contextmanager
 def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Iterator[float]:
     """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it.
 
-    Waits as long as needed unless ``timeout_s`` is given, in which case a lock still held by
-    someone else after that long fails with ``LOCK_TIMEOUT``.
+    Outside CI, waits while a CI job announces itself (``ci_waiting``). Waits as long as needed
+    unless ``timeout_s`` is given, in which case a lock still unavailable after that long fails
+    with ``LOCK_TIMEOUT``.
     """
     # flock needs only a read-only descriptor, so the lock works on a file owned by another user.
     # O_CREAT is used only when the file is missing: in a sticky /tmp, fs.protected_regular
@@ -134,28 +160,62 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
         fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
     with os.fdopen(fd) as handle:
         start = time.monotonic()
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            _log.warning("waiting for %s", path)
-            if timeout_s is None:
-                fcntl.flock(handle, fcntl.LOCK_EX)
-            else:
-                while True:
-                    try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        warned = False
+        while True:
+            # CI goes first; a lock taken just as CI announced itself is given back.
+            if not ci_waiting(path):
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    if not ci_waiting(path):
                         break
-                    except BlockingIOError:
-                        if time.monotonic() - start > timeout_s:
-                            raise BenchError(
-                                Code.LOCK_TIMEOUT,
-                                f"{path} still held by another GPU job after {timeout_s:.0f} s",
-                            ) from None
-                        time.sleep(1.0)
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+            if not warned:
+                _log.warning("waiting for %s", path)
+                warned = True
+            if timeout_s is not None and time.monotonic() - start > timeout_s:
+                raise BenchError(
+                    Code.LOCK_TIMEOUT,
+                    f"{path} still held by another GPU job after {timeout_s:.0f} s",
+                )
+            time.sleep(0.2)
         try:
             yield time.monotonic() - start
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+CAMPAIGN_HEARTBEAT_S = 90.0
+
+
+def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
+    """Wait until every live CPU campaign (bench/campaign/) reads frozen.
+
+    Its watcher writes ``campaigns/NAME.state`` next to the lock ("running" before any start or
+    thaw, "frozen" once frozen) and touches ``NAME.heartbeat``; a campaign whose heartbeat is
+    older than CAMPAIGN_HEARTBEAT_S has stopped by itself and is ignored. Still running after
+    ``timeout_s``: ``HOST_BUSY``.
+    """
+    states = lock.parent / "campaigns"
+    deadline = time.monotonic() + timeout_s
+    while True:
+        running = []
+        for state in states.glob("*.state"):
+            try:
+                live = time.time() - state.with_suffix(".heartbeat").stat().st_mtime
+                if state.read_text().strip() != "frozen" and live < CAMPAIGN_HEARTBEAT_S:
+                    running.append(state.stem)
+            except FileNotFoundError:
+                continue
+        if not running:
+            return
+        if time.monotonic() > deadline:
+            raise BenchError(
+                Code.HOST_BUSY, f"CPU campaigns still running under the GPU lock: {running}"
+            )
+        time.sleep(0.1)
 
 
 def require_idle(
@@ -269,6 +329,47 @@ class Sampler:
 LOAD_WARN_PER_CPU = 1.0
 
 
+PROC_STAT = Path("/proc/stat")
+
+
+def _runnable_now() -> int:
+    """Threads runnable on the host now, the observer included (global, also in a container)."""
+    try:
+        if sys.platform == "darwin":
+            # -o stat= appends the state as the last column of every thread line, after the
+            # truncated command; the C locale keeps the other columns' numbers unlocalised.
+            out = subprocess.run(
+                ["ps", "-A", "-M", "-o", "stat="], capture_output=True, text=True, check=True,
+                env={**os.environ, "LC_ALL": "C"}, timeout=10,
+            )  # fmt: skip
+            rows = out.stdout.splitlines()[1:]
+            return sum(1 for row in rows if row.split() and row.split()[-1].startswith("R"))
+        for line in PROC_STAT.read_text().splitlines():
+            if line.startswith("procs_running "):
+                return int(line.split()[1])
+    except (OSError, subprocess.SubprocessError) as err:
+        raise BenchError(Code.TELEMETRY_FAILED, f"cannot count runnable threads: {err}") from err
+    raise BenchError(Code.TELEMETRY_FAILED, f"{PROC_STAT} has no procs_running line")
+
+
+def runnable_threads(window_s: float = 1.0, samples: int = 10) -> float:
+    """Median count of runnable threads over ``window_s``, the observer excluded.
+
+    Unlike the load average, it reacts at once: a campaign frozen when the GPU lock is taken
+    (bench/campaign/) no longer counts, while the 1-minute average would keep it for minutes.
+    The median ignores the threads that run for an instant.
+    """
+    counts = []
+    for _ in range(samples):
+        counts.append(max(0, _runnable_now() - 1))
+        time.sleep(window_s / samples)
+    return float(statistics.median(counts))
+
+
 def host_load() -> dict[str, float | int]:
-    """1-minute load average of the host (global, also inside a container) and its CPU count."""
-    return {"load_1m": os.getloadavg()[0], "cpus": os.cpu_count() or 1}
+    """Runnable threads and 1-minute load average of the host, and its CPU count."""
+    return {
+        "runnable": runnable_threads(),
+        "load_1m": os.getloadavg()[0],
+        "cpus": os.cpu_count() or 1,
+    }

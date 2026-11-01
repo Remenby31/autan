@@ -429,6 +429,36 @@ TEST_CASE("A halo pattern that does not fit the communicator is rejected", "[hal
 #endif
 }
 
+TEST_CASE("Graph levels exchange their nodes and edges through HaloExchange", "[halo][graph]") {
+  // The dual graph of a box, METIS parts, coarse nodes of 4 consecutive cells: after a forward
+  // exchange of the node ids and of the edge ids, every ghost holds its own id.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(6, autan::test::BoxFill::tetra, 0.2)));
+  const auto n = world_size(), r = world_rank();
+  const auto parts = autan::partition_cells(mesh, n);
+  std::vector<index_t> owner(mesh.owner().begin(), mesh.owner().begin() + mesh.n_interior_faces());
+  std::vector<index_t> neighbour(mesh.neighbour().begin(), mesh.neighbour().end());
+  std::vector<std::int64_t> ids(mesh.cell_global_id().begin(), mesh.cell_global_id().end());
+  std::vector<index_t> coarse(at(mesh.n_cells()));
+  for (std::size_t c = 0; c < coarse.size(); ++c) coarse[c] = static_cast<index_t>(c / 4);
+  const auto cp = autan::coarse_parts(parts, coarse, ids, (coarse.size() + 3) / 4);
+  const autan::LocalGraph g = autan::extract_graph(
+      {.n_nodes = at(mesh.n_cells()), .owner = owner, .neighbour = neighbour, .global_id = ids},
+      parts, n, r, coarse, cp);
+  const auto exchange = [&](const autan::HaloPattern& halo, std::size_t n_owned,
+                            const std::vector<std::int64_t>& truth) {
+    std::vector<double> value(truth.size(), -1.0);
+    for (std::size_t i = 0; i < n_owned; ++i) value[i] = static_cast<double>(truth[i]);
+    autan::HaloExchange x(halo, static_cast<index_t>(n_owned), MPI_COMM_WORLD,
+                          autan::MemorySpace::host);
+    double* const component = value.data();
+    x.forward(std::span<double* const>(&component, 1));
+    for (std::size_t i = 0; i < truth.size(); ++i) CHECK(value[i] == static_cast<double>(truth[i]));
+  };
+  exchange(g.node_halo, g.n_owned, g.node_global_id);
+  exchange(g.edge_halo, g.n_owned_edges, g.edge_global_id);
+}
+
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
   Catch::Session session;

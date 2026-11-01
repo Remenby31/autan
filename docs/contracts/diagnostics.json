@@ -397,6 +397,12 @@
       "fix": "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0424"
     },
+    "E0425": {
+      "severity": "error",
+      "title": "Point-vortex surfaces match no wall",
+      "fix": "Give a pattern that matches the walls of the lifting body, e.g. `surfaces=\"wing.*\"`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0425"
+    },
     "E0501": {
       "severity": "error",
       "title": "Cell zone rule matches no zone",
@@ -438,6 +444,36 @@
       "title": "Initial state does not match the physics",
       "fix": "Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0507"
+    },
+    "E0508": {
+      "severity": "error",
+      "title": "Initial-state file missing or invalid",
+      "fix": "Write the initial state with `autan.initial_state.write` for this mesh, and give its path and the SHA-256 it returns.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0508"
+    },
+    "E0509": {
+      "severity": "error",
+      "title": "Initial state written for another mesh",
+      "fix": "Write the initial state for the mesh the case uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0509"
+    },
+    "E0510": {
+      "severity": "error",
+      "title": "Initial state does not cover the fluid cells",
+      "fix": "Write one row per fluid cell of the mesh, at its centroid.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0510"
+    },
+    "E0511": {
+      "severity": "error",
+      "title": "Initial states do not match the cells",
+      "fix": "Write the initial state from the cell centroids of the mesh the case uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0511"
+    },
+    "E0512": {
+      "severity": "error",
+      "title": "Initial-state file not available for this case",
+      "fix": "Remove the zones' `initial`, the start, or the file; or use a compressible inviscid or laminar case.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0512"
     },
     "E0601": {
       "severity": "error",
@@ -696,6 +732,12 @@
       "title": "Strategy not available",
       "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
+    },
+    "E1109": {
+      "severity": "error",
+      "title": "Strategy not rank-independent",
+      "fix": "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1109"
     }
   }
 }

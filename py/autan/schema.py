@@ -315,8 +315,17 @@ class Symmetry(Spec):
     kind: Literal["symmetry"] = "symmetry"
 
 
+class PointVortex(Spec):
+    """The point-vortex correction of a 2D farfield: the far field of a vortex at ``center``
+    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``."""
+
+    surfaces: Pattern
+    center: tuple[Coordinate, Coordinate, Coordinate]
+
+
 class Farfield(Spec):
     kind: Literal["farfield"] = "farfield"
+    point_vortex: PointVortex | None = None
 
 
 class Inlet(Spec):
@@ -414,6 +423,14 @@ class Verification(Spec):
     manufactured: Manufactured
 
 
+class StateFile(Spec):
+    """The initial state of every fluid cell, from an ``autan.initial-state/1`` file written
+    for the case's mesh (docs/contracts/initial-state.md), fixed by its SHA-256."""
+
+    path: Name
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 # --- case --------------------------------------------------------------------------------
 
 
@@ -430,6 +447,7 @@ class CaseSpec(Spec):
     cell_zones: tuple[CellZoneRule, ...] = ()
     monitors: tuple[Monitor, ...] = ()
     verification: Verification | None = None
+    initial_state: StateFile | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -512,6 +530,24 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
             )
         if not compressible and state.temperature is not None:
             found.append(("E0507", where, "an incompressible initial state takes no temperature"))
+    if spec.initial_state is not None:
+        zones = [
+            f"cell_zones[{i}].medium.initial"
+            for i, rule in enumerate(spec.cell_zones)
+            if isinstance(rule.medium, Fluid) and rule.medium.initial is not None
+        ]
+        if not compressible or not isinstance(physics.turbulence, Inviscid | Laminar):
+            found.append(
+                (
+                    "E0512",
+                    "initial_state",
+                    "an initial-state file needs compressible inviscid or laminar physics",
+                )
+            )
+        found.extend(
+            ("E0512", where, "a zone takes no initial state with an initial-state file")
+            for where in zones
+        )
     if spec.verification is not None and spec.boundaries:
         found.append(
             (
@@ -564,6 +600,22 @@ def json_schema() -> dict[str, Any]:
         return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
 
     schema["allOf"] = [
+        {
+            "if": {"required": ["initial_state"]},
+            "then": {
+                "properties": {
+                    "physics": {
+                        "properties": {
+                            "kind": {"const": "compressible"},
+                            "turbulence": {
+                                "properties": {"model": {"enum": ["inviscid", "laminar"]}}
+                            },
+                        }
+                    },
+                    **zone_states({"not": {}})["properties"],
+                },
+            },
+        },
         {"if": physics("compressible"), "then": zone_states({"required": ["temperature"]})},
         {
             "if": physics("incompressible"),
