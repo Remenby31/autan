@@ -129,3 +129,58 @@ def test_zone_states_round_trip(write_case: Callable[..., Path], tmp_path: Path)
     toml = tmp_path / "copy.toml"
     toml.write_text(case.to_toml())
     assert autan.load(toml).spec == case.spec
+
+
+def test_wall_pressure_is_that_of_the_wall_cells(
+    write_case: Callable[..., Path], tube: Path, tmp_path: Path
+) -> None:
+    case = autan.load(
+        write_case(
+            SOD + "case.boundary('wing.*').slip()\n"
+            "case.boundary('fuselage').slip()\n"
+            "case.boundary('empennage').slip()\n"
+        )
+    )
+    result = case.run(
+        autan.MeshInfo.load(tube), backend=autan.FakeBackend(iterations=2), runs=tmp_path / "runs"
+    )
+    _, pressure = result.wall("Pressure")
+    assert set(np.unique(pressure)) <= {1e5, 1e4}  # the zone states, not the freestream
+
+
+@pytest.mark.parametrize(
+    ("body", "edit"),
+    [
+        (SOD, lambda doc: doc["cell_zones"][0]["medium"]["initial"].pop("temperature")),
+        (
+            (
+                "import autan\nfrom autan.units import Pa, kg, m, s\n"
+                "water = autan.ConstantDensityFluid(name='water', density=998 * kg / m**3,"
+                " viscosity=1e-3 * Pa * s)\n"
+                "case = autan.Case('c', mesh='crm-hl.cgns')\n"
+                "case.physics = autan.Incompressible(turbulence=autan.Laminar(), fluid=water)\n"
+                "case.freestream(velocity=2 * m / s)\n"
+                "case.cell_zone('fluid').fluid(water, initial=autan.State(pressure=0 * Pa,"
+                " velocity=(1 * m / s, 0 * m / s, 0 * m / s)))\n"
+            ),
+            lambda doc: doc["cell_zones"][0]["medium"]["initial"].update(temperature="300 K"),
+        ),
+    ],
+)
+def test_schema_and_reader_reject_the_same_zone_states(
+    body: str,
+    edit: Callable[[dict[str, Any]], None],
+    write_case: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    document = autan.load(write_case(body)).spec.document()
+    validator = jsonschema.Draft202012Validator(json_schema("case"))
+    validator.validate(document)
+    edit(document)
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(document)
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(path)
+    assert error.value.codes == ["E0507"]

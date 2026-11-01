@@ -550,7 +550,16 @@ def json_schema() -> dict[str, Any]:
     def absent(*keys: str) -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
 
+    def zone_states(rule: dict[str, Any]) -> dict[str, Any]:
+        initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
+        return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
+
     schema["allOf"] = [
+        {"if": physics("compressible"), "then": zone_states({"required": ["temperature"]})},
+        {
+            "if": physics("incompressible"),
+            "then": zone_states({"not": {"required": ["temperature"]}}),
+        },
         {
             "if": {
                 "required": ["verification"],
