@@ -194,6 +194,17 @@ function CaseEditor() {
     : form.freestream.pressure.trim() || inviscid
       ? "pressure"
       : givenBy;
+  const shown = rendered.data;
+  const uncoveredZones =
+    shown?.ok && shown.plan ? shown.plan.boundaries.filter((b) => b.condition === null).length : 0;
+  const announcement =
+    shown?.ok === false
+      ? "The case is not complete yet."
+      : uncoveredZones > 0
+        ? `${uncoveredZones} ${uncoveredZones === 1 ? "zone" : "zones"} without a condition.`
+        : shown?.plan?.ok
+          ? "The plan is ready."
+          : "";
   const set = <K extends keyof CaseForm>(key: K, value: CaseForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   const setIn = <K extends "physics" | "freestream" | "time">(
@@ -658,6 +669,10 @@ function CaseEditor() {
               The code below is from an earlier version of the case: {rendered.error.message}
             </Note>
           )}
+          {/* Mounted for good, so that a screen reader hears what blocks the case as it changes. */}
+          <p role="status" className="sr-only">
+            {announcement}
+          </p>
           <div className="flex justify-end">
             <CaseActions
               name={form.name}
@@ -881,7 +896,7 @@ function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
         </span>
       </h2>
       {uncovered.length > 0 && (
-        <p className="m-0 text-fg-2 text-sm" role="status" data-testid="uncovered">
+        <p className="m-0 text-fg-2 text-sm" data-testid="uncovered">
           {uncovered.length} {uncovered.length === 1 ? "zone" : "zones"} without a condition:{" "}
           <span className="font-mono">{uncovered.map((b) => b.zone).join(" · ")}</span>
         </p>
@@ -949,7 +964,7 @@ function Refusal({ diagnostics, document }: { diagnostics: Diagnostic[]; documen
   return (
     <div className="flex flex-col gap-2">
       {missing.length > 0 && (
-        <p className="m-0 text-fg-2 text-sm" role="status" data-testid="still-to-set">
+        <p className="m-0 text-fg-2 text-sm" data-testid="still-to-set">
           Still to set: {missing.join(" · ")}
         </p>
       )}

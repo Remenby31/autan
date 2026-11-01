@@ -496,5 +496,8 @@ test("a new case asks for what it lacks before showing errors", async ({ page })
 
   // Zones without a condition are one line, not one error each.
   await expect(page.getByTestId("uncovered")).toContainText("6 zones without a condition");
+  await expect(page.getByRole("status").filter({ hasText: "without a condition" })).toHaveText(
+    "6 zones without a condition.",
+  );
   await expect(page.getByTestId("plan-diagnostics")).not.toContainText("E0412");
 });
