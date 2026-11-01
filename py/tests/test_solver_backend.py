@@ -97,6 +97,7 @@ def test_a_real_run_reads_back_through_the_results_contract(
         run.solver.backend,
         run.devices.kind,
         str(run.devices.count),
+        run.cell_order,
     ]
     assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
     assert result.history.iterations[-1] == run.iterations

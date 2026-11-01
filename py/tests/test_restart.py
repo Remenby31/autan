@@ -58,6 +58,7 @@ def test_continue_extends_the_run_as_if_it_never_stopped(
         run.solver.backend,
         run.devices.kind,
         str(run.devices.count),
+        run.cell_order,
         start.identity,
         "continue",
         "30",

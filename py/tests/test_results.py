@@ -73,6 +73,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
         "fake",
         run["devices"]["kind"],
         str(run["devices"]["count"]),
+        "input",
     ]
     assert run["identity"] == hashlib.sha256("\n".join(parts).encode()).hexdigest()
     assert run["iterations"] == 100
