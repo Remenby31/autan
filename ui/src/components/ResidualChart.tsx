@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import type { HistoryColumns } from "../api/runs";
 import { Tooltip } from "./ui/Tooltip";
@@ -27,7 +27,18 @@ const range = (
 
 // Ticks, labels and grid lines on whole decades, every n-th past LABELS of them. uPlot's own
 // log splits are not used: they overflow on decades far below 1.
-const LABELS = 8;
+const LABELS = 12;
+const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+/** A power of ten as 10ⁿ. */
+const decade = (value: number) => {
+  const k = Math.round(Math.log10(value));
+  const digits = String(Math.abs(k))
+    .split("")
+    .map((d) => SUPERSCRIPT[Number(d)])
+    .join("");
+  return `10${k < 0 ? "⁻" : ""}${digits}`;
+};
+const short = (value: number) => value.toExponential(2);
 const decades = (_: uPlot, __: number, min: number, max: number) => {
   if (!(min > 0 && max > min)) return [];
   const low = Math.ceil(Math.log10(min) - 1e-9);
@@ -38,15 +49,20 @@ const decades = (_: uPlot, __: number, min: number, max: number) => {
   return splits;
 };
 
-/** Residuals on a log axis, with the round-off floor of each equation dashed in its colour
- * (run.json `convergence.floor`); redraws in place as the history grows. */
+/** Residuals relative to their first value, R/R₀, on a log axis with a label per decade (or
+ * per few), the round-off floor of each equation dashed in its colour (run.json
+ * `convergence.floor`), and the values at the cursor; redraws in place as the history grows.
+ * A continued run divides by its `start.residual_reference`, the first residuals of the run it
+ * continues. An equation exempt from the convergence rule (identically zero) is not drawn. */
 export function ResidualChart({
   history,
   floors,
+  reference,
   steady,
 }: {
   history: HistoryColumns;
   floors?: Record<string, number> | undefined;
+  reference?: Record<string, number> | null | undefined;
   /** The convergence rule, and so its exemptions, applies to steady runs only. */
   steady: boolean;
 }) {
@@ -56,6 +72,16 @@ export function ResidualChart({
   floorsRef.current = floors;
   const names = [...history.residuals.keys()];
   const key = names.join(",");
+  // R₀ of each equation: the reference a continued run carries, or its first positive residual.
+  const first = (name: string) =>
+    reference?.[name] ?? history.residuals.get(name)?.find((v) => v > 0) ?? 1;
+  const r0 = useRef<Record<string, number>>({});
+  r0.current = Object.fromEntries(names.map((name) => [name, first(name)]));
+  const hidden = (name: string) => steady && history.exempt.has(name);
+  const value = (name: string) => readout?.values.find(([n]) => n === name)?.[1];
+  const [readout, setReadout] = useState<{ iteration: number; values: [string, number][] } | null>(
+    null,
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the plot is rebuilt only when the equations change
   useEffect(() => {
@@ -74,11 +100,25 @@ export function ResidualChart({
                 u,
                 min,
                 max,
-                Object.values(floorsRef.current ?? {}).filter((v) => v > 0),
+                Object.entries(floorsRef.current ?? {})
+                  .map(([name, v]) => v / (r0.current[name] ?? 1))
+                  .filter((v) => v > 0),
               ),
           },
         },
         hooks: {
+          setCursor: [
+            (u) => {
+              const index = u.cursor.idx;
+              const iteration = index == null ? undefined : u.data[0][index];
+              if (index == null || iteration == null) return setReadout(null);
+              const values = names.flatMap((name, k): [string, number][] => {
+                const v = u.data[k + 1]?.[index];
+                return v == null ? [] : [[name, v]];
+              });
+              setReadout({ iteration, values });
+            },
+          ],
           draw: [
             (u) => {
               const ctx = u.ctx;
@@ -86,8 +126,9 @@ export function ResidualChart({
               ctx.setLineDash([4 * devicePixelRatio, 4 * devicePixelRatio]);
               ctx.lineWidth = devicePixelRatio;
               names.forEach((name, k) => {
-                const floor = floorsRef.current?.[name];
-                if (floor === undefined || !(floor > 0)) return;
+                const raw = floorsRef.current?.[name];
+                if (raw === undefined || !(raw > 0)) return;
+                const floor = raw / (r0.current[name] ?? 1);
                 const y = Math.round(u.valToPos(floor, "y", true));
                 ctx.strokeStyle = series(k);
                 ctx.beginPath();
@@ -100,13 +141,20 @@ export function ResidualChart({
           ],
         },
         axes: [
-          { stroke: css("--fg-3"), grid: { stroke: css("--line") } },
           {
             stroke: css("--fg-3"),
             grid: { stroke: css("--line") },
-            size: 60,
+            label: "iteration",
+            labelSize: 20,
+          },
+          {
+            stroke: css("--fg-3"),
+            grid: { stroke: css("--line") },
+            size: 56,
+            label: "R / R₀",
+            labelSize: 20,
             splits: decades,
-            values: (_, splits) => splits.map((v) => (v == null ? "" : v.toExponential(0))),
+            values: (_, splits) => splits.map((v) => (v == null ? "" : decade(v))),
           },
         ],
         legend: { show: false },
@@ -142,29 +190,43 @@ export function ResidualChart({
   useEffect(() => {
     plot.current?.setData([
       history.iteration,
-      ...names.map((name) => positive(history.residuals.get(name) ?? [])),
+      ...names.map((name) => {
+        if (hidden(name)) return history.iteration.map(() => null);
+        const r = r0.current[name] ?? 1;
+        return positive(history.residuals.get(name) ?? []).map((v) => (v == null ? null : v / r));
+      }),
     ]);
-  }, [history.version, key, floorsKey]);
+  }, [history.version, key, floorsKey, steady, [...history.exempt].join()]);
 
   return (
     <div className="flex h-full flex-col gap-2">
       <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-fg-3 text-xs">
+        {readout && (
+          <span className="text-fg-2" data-testid="residual-iteration">
+            iteration {readout.iteration}
+          </span>
+        )}
         {names.map((name, k) =>
           steady && history.exempt.has(name) ? (
             <Tooltip
               key={name}
               content="Identically zero: exempt while ≤ 1e-12 × the largest initial residual"
             >
-              <span className="flex items-center gap-1.5 opacity-50" data-exempt>
+              <span className="flex items-center gap-1.5 opacity-60" data-exempt>
                 <Swatch k={k} />
                 {name}
-                <span className="font-sans">exempt</span>
+                <span className="font-sans">exempt: identically zero, not drawn</span>
               </span>
             </Tooltip>
           ) : (
             <span key={name} className="flex items-center gap-1.5">
               <Swatch k={k} />
               {name}
+              {value(name) !== undefined && (
+                <span className="text-fg-2 tabular-nums" data-testid={`residual-${name}`}>
+                  {short(value(name) as number)}
+                </span>
+              )}
             </span>
           ),
         )}
