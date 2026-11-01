@@ -4,7 +4,6 @@
 #include <cmath>
 #include <filesystem>
 #include <initializer_list>
-#include <regex>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -293,9 +292,19 @@ std::string Diagnostic::json() const {
 
 namespace {
 
-bool is_run_id(const std::string& id) {
-  static const std::regex pattern("run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}");
-  return std::regex_match(id, pattern);
+// results.md: run-YYYYMMDDTHHMMSSZ-xxxxxxxx, x lowercase hexadecimal.
+bool is_run_id(std::string_view id) {
+  constexpr std::string_view shape = "run-DDDDDDDDTDDDDDDZ-hhhhhhhh";
+  if (id.size() != shape.size()) return false;
+  for (std::size_t i = 0; i < id.size(); ++i) {
+    const char c = id[i];
+    const bool digit = c >= '0' && c <= '9';
+    const bool ok = shape[i] == 'D'   ? digit
+                    : shape[i] == 'h' ? digit || (c >= 'a' && c <= 'f')
+                                      : c == shape[i];
+    if (!ok) return false;
+  }
+  return true;
 }
 
 // Needs the rest of the input: the residual reference is keyed by its

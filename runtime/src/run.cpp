@@ -183,7 +183,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
              .mesh_hash = {},
              .face_zone = {},
              .monitor_zones = {},
-             .factory = nullptr};
+             .factory = nullptr,
+             .start = std::nullopt,
+             .start_averaging = {}};
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
