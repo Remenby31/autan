@@ -17,7 +17,8 @@ namespace fs = std::filesystem;
 enum class Reader { gmsh, fluent, polymesh, cgns };
 
 inline void write(const fs::path& path, std::string_view bytes) {
-  std::ofstream(path, std::ios::binary).write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  std::ofstream(path, std::ios::binary)
+      .write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
 /// Reads `bytes` as a file of `reader` through its public reader, using

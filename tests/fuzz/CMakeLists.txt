@@ -1,6 +1,9 @@
 # Regression inputs from fuzzing (tests/data/fuzz), read without a fuzzer.
 add_executable(autan_fuzz_regressions test_regressions.cpp)
-target_link_libraries(autan_fuzz_regressions PRIVATE autan::io Catch2::Catch2WithMain autan_compile_options)
+target_link_libraries(
+  autan_fuzz_regressions
+  PRIVATE autan::io Catch2::Catch2WithMain autan_compile_options
+)
 target_compile_definitions(
   autan_fuzz_regressions
   PRIVATE

@@ -3,12 +3,12 @@
 // sanitizer report, an uncaught exception of another type or another code
 // is a finding.
 
-#include <unistd.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+
+#include <unistd.h>
 
 #include "autan/core/error.hpp"
 #include "read_input.hpp"
