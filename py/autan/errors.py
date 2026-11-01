@@ -636,9 +636,10 @@ _CODES = [
     Code(
         "E0804",
         "No solver backend",
-        "`case.run()` needs a backend. The C++ core is not part of this build, so only the "
-        "`fake` backend exists; it writes synthetic results.",
-        "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
+        "`case.run()` needs a backend, and the solver backend needs the runtime `autan-run`, "
+        "found through `$AUTAN_RUN` or the PATH.",
+        "Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run "
+        "installed, or `autan.FakeBackend()` for synthetic results.",
     ),
     Code(
         "E0805",

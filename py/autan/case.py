@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from autan.fake import FakeBackend
     from autan.meshinfo import MeshInfo
     from autan.results import Results
+    from autan.solver_backend import SolverBackend
 
 _collectors: list[list[Case]] = []
 
@@ -283,13 +284,17 @@ class Case:
         return json.dumps(self.spec.document(), indent=2) + "\n"
 
     def run(
-        self, mesh_info: MeshInfo, *, backend: FakeBackend | None = None, runs: str | Path = "runs"
+        self,
+        mesh_info: MeshInfo,
+        *,
+        backend: FakeBackend | SolverBackend | None = None,
+        runs: str | Path = "runs",
     ) -> Results:
         """Run the case with ``backend`` into a new directory under ``runs``."""
         if backend is None:
             missing = diagnostic(
                 "E0804",
-                "case.run() needs a backend; the solver core is not built",
+                "case.run() needs a backend: autan.SolverBackend() or autan.FakeBackend()",
                 location=_caller_location(),
             )
             raise CaseError([missing])
