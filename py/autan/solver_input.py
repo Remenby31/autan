@@ -131,6 +131,7 @@ class MeshRef(_Strict):
     path: AbsolutePath
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
     scale: Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
+    groups_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None
 
 
 class SutherlandLaw(_Strict):
@@ -432,10 +433,22 @@ class SolverInput(_Strict):
         ) not in {("compressible", m) for m in ORACLE_MODELS}:
             message = "oracle-state needs compressible inviscid or laminar physics"
             raise ValueError(message)
+        # Without the MeshInfo a group's zones are unknown: a zone's states must be those of
+        # an oracle-state rule, and of the rule a glob over zone names gives it, if any.
+        oracles = {
+            r.condition.sha256 for r in case.boundaries if isinstance(r.condition, OracleState)
+        }
         for boundary in self.boundaries:
-            rules = [r.condition for r in case.boundaries if fnmatchcase(boundary.zone, r.zones)]
-            oracle = rules[0] if len(rules) == 1 and isinstance(rules[0], OracleState) else None
-            if (boundary.states and boundary.states.sha256) != (oracle and oracle.sha256):
+            rules = [
+                r.condition
+                for r in case.boundaries
+                if r.zones is not None and fnmatchcase(boundary.zone, r.zones)
+            ]
+            named = (
+                rules[0].sha256 if len(rules) == 1 and isinstance(rules[0], OracleState) else None
+            )
+            states = boundary.states.sha256 if boundary.states else None
+            if (states is not None and states not in oracles) or (rules and states != named):
                 message = f"boundary {boundary.zone!r}: states differ from the case's rule"
                 raise ValueError(message)
         manufactured = {b.kind == "manufactured" for b in self.boundaries}
@@ -667,7 +680,7 @@ def _point_vortex(
     vortex = rule.condition.point_vortex if rule and isinstance(rule.condition, Farfield) else None
     if vortex is None:
         return None
-    zones, _ = vortex_zones(vortex.surfaces, mesh_info, plan.boundaries)
+    zones, _ = vortex_zones(vortex, mesh_info, plan.boundaries)
     return PointVortexInput(
         zones=tuple(zones),
         center=(si(vortex.center[0], "m"), si(vortex.center[1], "m"), si(vortex.center[2], "m")),
@@ -719,14 +732,14 @@ def build(
         )
         for zone, rule in media
     )
-    periodic = {zone for pair in mesh_info.periodic for zone in pair.zones}
-    zone_names = [b.zone for b in plan.boundaries if b.zone not in periodic]
+    from autan.plan import selected  # noqa: PLC0415 -- plan imports this module
+
     monitors = tuple(
         ForcesInput(
             kind="forces",
             name=m.name,
             every=m.every,
-            zones=tuple(n for n in zone_names if fnmatchcase(n, m.surfaces)),
+            zones=tuple(selected(m.surfaces, m.group, mesh_info)),
             ref_area=si(m.ref_area, "m**2") if m.ref_area is not None else None,
             ref_length=(
                 si(spec.freestream.ref_length, "m")
@@ -763,6 +776,7 @@ def build(
             path=str(case.mesh_path),
             sha256=mesh_info.source.sha256,
             scale=metres_per(spec.mesh_unit),
+            groups_sha256=mesh_info.groups_source.sha256 if mesh_info.groups_source else None,
         ),
         precision=spec.physics.precision,
         deterministic=deterministic,

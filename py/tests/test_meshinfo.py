@@ -24,6 +24,19 @@ def _zones(d: dict[str, Any]) -> list[dict[str, Any]]:
     return zones
 
 
+def _grouped(
+    document: dict[str, Any],
+    groups: dict[str, list[str]],
+    *,
+    sort: bool = True,
+    source: bool = True,
+) -> None:
+    names = sorted(groups) if sort else list(groups)
+    document["groups"] = [{"name": name, "zones": groups[name]} for name in names]
+    if source:
+        document["groups_source"] = {"path": "m.zones.json", "sha256": "0" * 64, "provenance": {}}
+
+
 @pytest.mark.parametrize(
     "edit",
     [
@@ -41,6 +54,15 @@ def _zones(d: dict[str, Any]) -> list[dict[str, Any]]:
         lambda d: d.pop("bounds"),
         lambda d: d["bounds"]["min"].__setitem__(0, 1e3),  # min above max
         lambda d: d["bounds"]["max"].pop(),
+        # zone groups: refused by the MeshInfo reader too
+        lambda d: _grouped(d, {"wing": ["nowhere"]}),
+        lambda d: _grouped(d, {"wing": []}),
+        lambda d: _grouped(d, {"wing": ["wing.main", "wing.slat"]}),  # not in MeshInfo order
+        lambda d: _grouped(d, {"wing": ["wing.main", "wing.main"]}),
+        lambda d: _grouped(d, {"*wing": ["wing.main"]}),
+        lambda d: _grouped(d, {"-wing": ["wing.main"]}),
+        lambda d: _grouped(d, {"b": ["wing.main"], "a": ["wing.main"]}, sort=False),
+        lambda d: _grouped(d, {"wing": ["wing.main"]}, source=False),
     ],
 )
 def test_invalid_documents_are_rejected_with_e0202(

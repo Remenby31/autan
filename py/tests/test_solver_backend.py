@@ -93,6 +93,7 @@ def test_a_real_run_reads_back_through_the_results_contract(
     parts = [
         run.case.sha256,
         run.mesh.sha256,
+        run.mesh.groups_sha256 or "",
         run.solver.commit,
         run.precision,
         run.solver.backend,
