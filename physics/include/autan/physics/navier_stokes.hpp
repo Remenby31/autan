@@ -45,6 +45,11 @@ class NavierStokes {
   /// needs (std::logic_error before it) and which refuses a cell whose stencil leaves the fit
   /// undetermined (std::invalid_argument).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
+  /// As Euler<P>'s; the fit depends on the conditions only, so it is kept.
+  void set_boundary_data(std::span<const double> data);
+  /// Euler<P>'s ghost exchange. The viscous terms fill no ghosts of their own: a mesh with
+  /// ghosts (periodic pairs, partitions) is outside this physics' scope.
+  void set_ghosts(GhostFill* ghosts) noexcept;
   void set_second_order(bool on);
   void set_source(std::span<const double> source);
   /// Eddy viscosity mu_t (Pa s) per cell and per boundary face; zero until set.

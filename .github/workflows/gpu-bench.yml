@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       bench: ${{ steps.filter.outputs.bench }}
       harness: ${{ steps.filter.outputs.harness }}
@@ -36,30 +37,20 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Find the last commit of main that was measured
+        id: measured
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bench/ci/last-measured.sh)" >> "$GITHUB_OUTPUT"
       - name: Decide whether anything measured changed
         id: filter
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DRAFT: ${{ github.event.pull_request.draft }}
-        run: |
-          if [ "$DRAFT" = true ]; then
-            echo "bench=false" >> "$GITHUB_OUTPUT"; echo "bench: skipped, the pull request is a draft"; exit 0
-          fi
-          if [ "$EVENT" = workflow_dispatch ] || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "bench=true" >> "$GITHUB_OUTPUT"; echo "harness=true" >> "$GITHUB_OUTPUT"
-            echo "bench: forced ($EVENT)"; exit 0
-          fi
-          changed=$(git diff --name-only "$BASE" "$GITHUB_SHA")
-          echo "changed files:"; echo "$changed"
-          # Code that is timed or builds what is timed; readers (io/) fix the face and cell order of
-          # the measured mesh; the mesh generator feeds the loop benchmark.
-          pattern='^(runtime|codegen|kernels|physics|solvers|core|io|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
-          if echo "$changed" | grep -q -E "$pattern"; then bench=true; else bench=false; fi
-          echo "bench=$bench" >> "$GITHUB_OUTPUT"; echo "bench: $bench"
-          # The harness's own GPU tests and the image smoke test take the GPU lock: only when they changed.
-          if echo "$changed" | grep -q -E '^(bench|docker)/'; then harness=true; else harness=false; fi
-          echo "harness=$harness" >> "$GITHUB_OUTPUT"; echo "harness: $harness"
+          MEASURED: ${{ steps.measured.outputs.sha }}
+        # No pipe: the default shell has no pipefail, so a failing filter would pass unnoticed.
+        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$MEASURED" >> "$GITHUB_OUTPUT"
 
   mesh:
     needs: changes
@@ -76,6 +67,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Install the libraries the Gmsh wheel loads
         run: >-

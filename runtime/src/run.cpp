@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -134,6 +135,8 @@ struct Prepared {
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
+  // initial_state: Density, VelocityX/Y/Z and Pressure of every cell, NaN in solid cells.
+  std::optional<std::vector<io::Field>> initial;
 };
 
 [[noreturn]] void start_mismatch(const std::string& code, const std::string& message,
@@ -448,6 +451,188 @@ void load_states(Prepared& p) {
   }
 }
 
+// initial-state.md: the file read once and checked (E0508), against the mesh (E0509) and its
+// fluid cells (E0510), then every fluid cell paired with exactly one row by centroid, and every
+// row with exactly one cell (E0511), on the whole mesh.
+void load_initial(Prepared& p) {
+  const InitialStateFile& file = *p.input.initial_state;
+  const auto fail = [&](const char* code, const std::string& message,
+                        const nlohmann::json& data = nlohmann::json::object()) {
+    throw InputError(Diagnostic{
+        .code = code, .message = message, .path = "initial_state.path", .data_json = data.dump()});
+  };
+  std::error_code ec;
+  if (!fs::is_regular_file(file.path, ec)) fail("E0508", "'" + file.path + "' is not a file");
+  std::ifstream in(file.path, std::ios::binary);
+  if (!in) fail("E0508", "cannot read '" + file.path + "'");
+  std::ostringstream text;
+  text << in.rdbuf();
+  const std::string bytes = text.str();
+  const std::string found = sha256_hex(bytes);
+  if (found != file.sha256) {
+    fail("E0508", "the initial-state file's SHA-256 differs from initial_state.sha256",
+         {{"expected", file.sha256}, {"found", found}});
+  }
+  const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
+  const auto invalid_document = [&](const std::string& why) {
+    fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
+         {{"problem", why}});
+  };
+  if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
+  for (const auto& [key, value] : doc.items()) {
+    if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
+        key != "cells" && key != "centroids" && key != "values")
+      invalid_document("unknown key '" + key + "'");
+  }
+  if (!doc.contains("schema") || doc["schema"] != "autan.initial-state/1")
+    invalid_document("schema");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string()) invalid_document("oracle");
+  if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string() ||
+      doc["mesh_sha256"].get<std::string>().size() != 64 ||
+      doc["mesh_sha256"].get<std::string>().find_first_not_of("0123456789abcdef") !=
+          std::string::npos)
+    invalid_document("mesh_sha256");
+  if (!doc.contains("variables") ||
+      doc["variables"] !=
+          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+    invalid_document("variables");
+  if (!doc.contains("cells") || !doc["cells"].is_number_integer() ||
+      doc["cells"].get<std::int64_t>() < 1)
+    invalid_document("cells");
+  const auto rows = doc["cells"].get<std::size_t>();
+  std::vector<double> centroids, values;
+  for (const auto& [array, width] : {std::pair{"centroids", 3}, std::pair{"values", 5}}) {
+    const auto& a = doc.contains(array) ? doc[array] : nlohmann::json();
+    if (!a.is_array() || a.size() != rows) invalid_document(array);
+    auto& to = std::string(array) == "centroids" ? centroids : values;
+    to.reserve(rows * static_cast<std::size_t>(width));
+    for (const auto& row : a) {
+      if (!row.is_array() || row.size() != static_cast<std::size_t>(width)) invalid_document(array);
+      for (const auto& v : row) {
+        if (!v.is_number() || !std::isfinite(v.get<double>())) invalid_document(array);
+        to.push_back(v.get<double>());
+      }
+    }
+  }
+  for (std::size_t r = 0; r < rows; ++r) {
+    if (!(values[5 * r] > 0.0) || !(values[5 * r + 4] > 0.0))
+      invalid_document("values: density and pressure must be > 0");
+  }
+  if (doc["mesh_sha256"].get<std::string>() != p.mesh_hash) {
+    fail("E0509", "the initial state was written for another mesh",
+         {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
+  }
+  // Fluid cells: those of zones whose initial state is a fluid's.
+  std::map<std::string, bool> fluid_zone;
+  for (const auto& z : p.input.cell_zones) fluid_zone[z.zone] = z.initial.kind == "fluid";
+  const Mesh& mesh = p.mesh;
+  std::vector<index_t> fluid;
+  for (index_t c = 0; c < mesh.n_cells(); ++c) {
+    if (fluid_zone[mesh.cell_zones()[at(mesh.cell_zone()[at(c)])].name]) fluid.push_back(c);
+  }
+  if (rows != fluid.size()) {
+    fail("E0510",
+         "the initial state has " + std::to_string(rows) + " rows for " +
+             std::to_string(fluid.size()) + " fluid cells",
+         {{"expected", fluid.size()}, {"found", rows}});
+  }
+  // Tolerance: 1e-9 times the largest extent of the mesh's bounding box.
+  const std::array<std::span<const double>, 3> xyz{mesh.x(), mesh.y(), mesh.z()};
+  double extent = 0.0;
+  for (const auto& coordinate : xyz) {
+    const auto [lo, hi] = std::ranges::minmax_element(coordinate);
+    extent = std::max(extent, *hi - *lo);
+  }
+  const double tol = 1e-9 * extent;
+  const Geometry g = compute_geometry(mesh);
+  const auto centroid = [&](index_t c) {
+    const auto i = at(c);
+    return std::array<double, 3>{g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]};
+  };
+  // Points binned in cubes of side tol: two points within tol lie in
+  // neighbouring bins, whatever their alignment, so pairing is linear.
+  using Bin = std::array<std::int64_t, 3>;
+  struct BinHash {
+    std::size_t operator()(const Bin& b) const noexcept {
+      return std::hash<std::int64_t>{}(b[0] * 73856093 ^ b[1] * 19349663 ^ b[2] * 83492791);
+    }
+  };
+  const auto bin = [&](const std::array<double, 3>& x) {
+    return Bin{static_cast<std::int64_t>(std::floor(x[0] / tol)),
+               static_cast<std::int64_t>(std::floor(x[1] / tol)),
+               static_cast<std::int64_t>(std::floor(x[2] / tol))};
+  };
+  const auto near = [&](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= tol;
+  };
+  // The 27 bins around b, each visited with `visit`.
+  const auto around = [](const Bin& b, const auto& visit) {
+    for (std::int64_t dx = -1; dx <= 1; ++dx) {
+      for (std::int64_t dy = -1; dy <= 1; ++dy) {
+        for (std::int64_t dz = -1; dz <= 1; ++dz) visit(Bin{b[0] + dx, b[1] + dy, b[2] + dz});
+      }
+    }
+  };
+  // Within tol of each other, two fluid cells cannot be told apart.
+  std::unordered_map<Bin, std::vector<index_t>, BinHash> cell_bins;
+  for (const index_t c : fluid) cell_bins[bin(centroid(c))].push_back(c);
+  for (const index_t c : fluid) {
+    around(bin(centroid(c)), [&](const Bin& b) {
+      const auto it = cell_bins.find(b);
+      if (it == cell_bins.end()) return;
+      for (const index_t other : it->second) {
+        if (other > c && near(centroid(c), centroid(other))) {
+          fail("E0511",
+               "cells " + std::to_string(c) + " and " + std::to_string(other) +
+                   " lie within the pairing tolerance of each other",
+               {{"cells", {c, other}}, {"tolerance", tol}});
+        }
+      }
+    });
+  }
+  std::unordered_map<Bin, std::vector<std::size_t>, BinHash> row_bins;
+  for (std::size_t r = 0; r < rows; ++r)
+    row_bins[bin({centroids[3 * r], centroids[3 * r + 1], centroids[3 * r + 2]})].push_back(r);
+  std::vector<std::int64_t> owner(rows, -1);  // the cell each row is paired with
+  constexpr double unset = std::numeric_limits<double>::quiet_NaN();
+  std::vector<io::Field> fields{{.name = "Density", .values = {}},
+                                {.name = "VelocityX", .values = {}},
+                                {.name = "VelocityY", .values = {}},
+                                {.name = "VelocityZ", .values = {}},
+                                {.name = "Pressure", .values = {}}};
+  for (auto& f : fields) f.values.assign(at(mesh.n_cells()), unset);
+  for (const index_t c : fluid) {
+    const auto x = centroid(c);
+    std::size_t match = rows, count = 0;
+    around(bin(x), [&](const Bin& b) {
+      const auto it = row_bins.find(b);
+      if (it == row_bins.end()) return;
+      for (const std::size_t r : it->second) {
+        if (near(x, {centroids[3 * r], centroids[3 * r + 1], centroids[3 * r + 2]})) {
+          match = r;
+          ++count;
+        }
+      }
+    });
+    if (count != 1) {
+      fail("E0511",
+           "cell " + std::to_string(c) + " matches " + std::to_string(count) +
+               " rows of the initial state",
+           {{"cells", {c}}, {"centroid", x}, {"matches", count}});
+    }
+    if (owner[match] >= 0) {
+      fail("E0511",
+           "cells " + std::to_string(owner[match]) + " and " + std::to_string(c) +
+               " match one row of the initial state",
+           {{"cells", {owner[match], c}}, {"centroid", x}});
+    }
+    owner[match] = c;
+    for (std::size_t k = 0; k < 5; ++k) fields[k].values[at(c)] = values[5 * match + k];
+  }
+  p.initial = std::move(fields);
+  p.state_files.emplace(found, bytes);
+}
+
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
@@ -458,7 +643,8 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .start = std::nullopt,
              .start_averaging = {},
              .boundary_states = {},
-             .state_files = {}};
+             .state_files = {},
+             .initial = std::nullopt};
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
@@ -549,7 +735,22 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     }
     p.monitor_zones.push_back(std::move(ids));
   }
+  // A point vortex takes its circulation from the lift on walls (slip walls in inviscid flow).
+  std::map<std::string, std::string> condition;
+  for (const auto& b : p.input.boundaries) condition[b.zone] = b.kind;
+  for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
+    const auto& vortex = p.input.boundaries[i].point_vortex;
+    if (!vortex) continue;
+    const std::string path = "boundaries[" + std::to_string(i) + "].point_vortex.zones";
+    for (const auto& name : vortex->zones) {
+      if (!p.face_zone.contains(name)) invalid(path, "no boundary zone '" + name + "'");
+      const auto it = condition.find(name);
+      if (it == condition.end() || (it->second != "wall" && it->second != "slip"))
+        invalid(path, "zone '" + name + "' is not a wall");
+    }
+  }
   load_states(p);
+  if (p.input.initial_state) load_initial(p);
   // A device run needs a build that drives that device and a device to
   // drive; neither falls back to the CPU.
   if (p.input.device_kind != "cpu") {
@@ -644,6 +845,7 @@ class Run final : public Log {
     if (local_) {
       ghosts_ = comm_.ghost_exchange(*local_);
       if (p_.start) local_start_ = owned_start(*p_.start);
+      if (p_.initial) local_initial_ = owned_fields(*p_.initial);
     } else {
       ghosts_ = std::make_unique<NoGhosts>();
     }
@@ -751,6 +953,8 @@ class Run final : public Log {
   ExitStatus execute() {
     const StartState* start = nullptr;
     if (p_.start) start = local_start_ ? &*local_start_ : &*p_.start;
+    const std::vector<io::Field>* initial = nullptr;
+    if (p_.initial) initial = local_initial_ ? &*local_initial_ : &*p_.initial;
     const PhysicsContext context{.mesh = physics_mesh(),
                                  .geometry = physics_geometry(),
                                  .input = p_.input,
@@ -759,6 +963,7 @@ class Run final : public Log {
                                  .ghosts = *ghosts_,
                                  .ranks = comm_,
                                  .boundary_states = p_.boundary_states,
+                                 .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr};
     std::string status = "running";
@@ -818,22 +1023,24 @@ class Run final : public Log {
     return part;
   }
 
+  // This rank's owned cells' share of cell fields of the mesh.
+  [[nodiscard]] std::vector<io::Field> owned_fields(const std::vector<io::Field>& fields) const {
+    const auto ids = owned_ids();
+    std::vector<io::Field> out;
+    for (const auto& f : fields) {
+      io::Field part{.name = f.name, .values = {}};
+      part.values.reserve(ids.size());
+      for (const auto id : ids) part.values.push_back(f.values.at(static_cast<std::size_t>(id)));
+      out.push_back(std::move(part));
+    }
+    return out;
+  }
+
   // The start state of this rank's owned cells, from that of the mesh.
   [[nodiscard]] StartState owned_start(const StartState& global) const {
-    const auto ids = owned_ids();
-    const auto slice = [&](const std::vector<io::Field>& fields) {
-      std::vector<io::Field> out;
-      for (const auto& f : fields) {
-        io::Field part{.name = f.name, .values = {}};
-        part.values.reserve(ids.size());
-        for (const auto id : ids) part.values.push_back(f.values.at(static_cast<std::size_t>(id)));
-        out.push_back(std::move(part));
-      }
-      return out;
-    };
-    return StartState{.fields = slice(global.fields),
-                      .mean_fields = slice(global.mean_fields),
-                      .restart_fields = slice(global.restart_fields)};
+    return StartState{.fields = owned_fields(global.fields),
+                      .mean_fields = owned_fields(global.mean_fields),
+                      .restart_fields = owned_fields(global.restart_fields)};
   }
 
   // The mesh index of each owned cell of the physics' mesh.
@@ -1033,8 +1240,7 @@ class Run final : public Log {
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
         const auto& monitor = in.monitors[m];
         if (it % monitor.every != 0) continue;
-        record["monitors"][monitor.name] = forces_record(
-            physics_->loads(p_.monitor_zones[m], monitor.moment_center), monitor, in.freestream);
+        record["monitors"][monitor.name] = monitor_record(m, "at iteration " + std::to_string(it));
       }
       if (comm_.rank() == 0) dir_->append_history(record.dump());
       // `iterations` is the last completed (recorded) iteration: a diverging
@@ -1205,20 +1411,28 @@ class Run final : public Log {
 
   // The forces of every monitor on the final state, whether or not its last
   // iteration was a multiple of `every` (results.md, run.json `monitors`).
+  // The forces record of monitor m on the current state. A value that is not
+  // finite fails the run (E0704) rather than reaching history.jsonl or
+  // run.json as null (results.md, History).
+  [[nodiscard]] Json monitor_record(std::size_t m, const std::string& when) const {
+    const auto& in = p_.input;
+    Json record = forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
+                                in.monitors[m], in.freestream);
+    for (const auto& [key, value] : record.items()) {
+      if (!std::isfinite(value.get<double>())) {
+        throw std::runtime_error("monitor '" + in.monitors[m].name + "': " + key +
+                                 " is not finite " + when);
+      }
+    }
+    return record;
+  }
+
   void record_final_monitors(std::int64_t done) {
     const auto& in = p_.input;
     Json monitors = Json::object();
     try {
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
-        Json record =
-            forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
-                          in.monitors[m], in.freestream);
-        for (const auto& [key, value] : record.items()) {
-          if (!std::isfinite(value.get<double>())) {
-            throw std::runtime_error("monitor '" + in.monitors[m].name + "': " + key +
-                                     " is not finite on the final state");
-          }
-        }
+        Json record = monitor_record(m, "on the final state");
         record["iteration"] = done;
         monitors[in.monitors[m].name] = std::move(record);
       }
@@ -1276,7 +1490,8 @@ class Run final : public Log {
   Geometry geometry_;
   std::optional<LocalPartition> local_;
   std::unique_ptr<GhostExchange> ghosts_;
-  std::optional<StartState> local_start_;  // the owned cells' share of p_.start
+  std::optional<StartState> local_start_;                // the owned cells' share of p_.start
+  std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;

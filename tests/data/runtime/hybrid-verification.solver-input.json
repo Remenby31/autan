@@ -55,7 +55,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "xmax",
@@ -65,7 +66,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "ymin",
@@ -75,7 +77,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "ymax",
@@ -85,7 +88,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "zmin",
@@ -95,7 +99,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "zmax",
@@ -105,7 +110,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     }
   ],
   "cell_zones": [
@@ -173,6 +179,7 @@
   },
   "monitors": [],
   "start": null,
+  "initial_state": null,
   "periodic": [],
   "verification": {
     "path": "@MMS@",

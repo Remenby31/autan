@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
@@ -37,6 +38,7 @@ test("a run written by another process appears and updates live", async ({ page 
     status: "running",
     started,
     finished: null,
+    monitors: null,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
   renameSync(staging, directory);
@@ -61,9 +63,30 @@ test("a run written by another process appears and updates live", async ({ page 
   await expect(budget).toBeVisible();
   append(last + 2);
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 2));
-  const finished = { ...run, status: "converged", finished: "2026-11-01T00:10:00Z" };
+  // The final record of every monitor (results.md#runjson), equal to the last line where it
+  // carries one: the appended line repeats the last.
+  const records = {
+    ...source.monitors,
+    ...JSON.parse(lines[last - 1] as string).monitors,
+  };
+  const monitors = Object.fromEntries(
+    Object.entries(records).map(([name, record]) => [
+      name,
+      { ...(record as object), iteration: last + 2 },
+    ]),
+  );
+  const finished = {
+    ...run,
+    status: "converged",
+    finished: "2026-11-01T00:10:00Z",
+    iterations: last + 2,
+    monitors,
+  };
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
   await expect(page.getByTestId("status")).toContainText(/converged/i);
+  await expect
+    .poll(async () => (await runs(page)).find((r) => r.run_id === runId)?.status)
+    .toBe("converged");
   await expect(budget).toHaveCount(0);
   await expect(page.getByTestId("iteration").locator("..")).toHaveText(String(last + 2));
 });
@@ -196,7 +219,10 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
 });
 
 test("floors written while a run page is open recompute its residual drop", async ({ page }) => {
-  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  // One monitor, recorded every 10 iterations: line 30 carries its final record.
+  const source = (await runs(page)).find(
+    (r) => r.status === "converged" && Object.keys(r.monitors ?? {}).join() === "forces",
+  ) as Run;
   const started = new Date(Date.now() - 7_200_000).toISOString().replace(/\.\d+Z$/, "Z");
   const suffix = Math.floor(Math.random() * 2 ** 32)
     .toString(16)
@@ -210,7 +236,11 @@ test("floors written while a run page is open recompute its residual drop", asyn
     .split("\n")
     .slice(0, 30);
   writeFileSync(join(staging, "history.jsonl"), `${lines.join("\n")}\n`);
-  const run = { ...source, run_id: runId, started, status: "completed", iterations: 30 };
+  const at30 = JSON.parse(lines.at(-1) as string).monitors ?? {};
+  const monitors = Object.fromEntries(
+    Object.entries(at30).map(([name, record]) => [name, { ...(record as object), iteration: 30 }]),
+  );
+  const run = { ...source, run_id: runId, started, status: "completed", iterations: 30, monitors };
   writeFileSync(join(staging, "run.json"), JSON.stringify({ ...run, convergence: null }));
   renameSync(staging, join(RUNS, runId));
   const last = JSON.parse(lines.at(-1) as string).residuals;
@@ -227,4 +257,60 @@ test("floors written while a run page is open recompute its residual drop", asyn
   );
 
   await expect(orders).toHaveText(target.toFixed(2));
+});
+
+test("Compare lists where each run ran when that differs", async ({ page }) => {
+  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const started = new Date(Date.now() - 10_800_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const suffix = Math.floor(Math.random() * 2 ** 32)
+    .toString(16)
+    .padStart(8, "0");
+  const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
+  const solver = { ...source.solver, backend: "cuda" as const, commit: "f".repeat(40) };
+  const devices = { kind: "cuda" as const, count: 4 };
+  // results.md#runjson: identity over what the run computes, start fields absent.
+  const identity = createHash("sha256")
+    .update(
+      [
+        source.case.sha256,
+        source.mesh.sha256,
+        solver.commit,
+        source.precision,
+        solver.backend,
+        devices.kind,
+        devices.count,
+      ].join("\n"),
+    )
+    .digest("hex");
+  const staging = join(RUNS, `.staging-${suffix}`);
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  const run = {
+    ...source,
+    run_id: runId,
+    started,
+    identity,
+    solver,
+    devices,
+    deterministic: !source.deterministic,
+  };
+  writeFileSync(join(staging, "run.json"), JSON.stringify(run));
+  renameSync(staging, join(RUNS, runId));
+  await expect.poll(async () => (await runs(page)).some((r) => r.run_id === runId)).toBe(true);
+
+  await page.goto(`/compare?runs=${encodeURIComponent(JSON.stringify([source.run_id, runId]))}`);
+
+  const diff = page.getByTestId("settings-diff");
+  for (const [key, a, b] of [
+    ["run.devices", "1 CPU", "4 CUDA GPUs"],
+    ["run.backend", source.solver.backend, "cuda"],
+    ["run.solver", source.solver.commit, solver.commit],
+    ["run.deterministic", String(source.deterministic), String(!source.deterministic)],
+  ]) {
+    await expect(diff.getByRole("row", { name: new RegExp(`^${key} `) })).toContainText(
+      a as string,
+    );
+    await expect(diff.getByRole("row", { name: new RegExp(`^${key} `) })).toContainText(
+      b as string,
+    );
+  }
 });

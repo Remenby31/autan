@@ -626,6 +626,17 @@ void NavierStokes<P>::set_boundary(std::span<const BoundaryKind> kind,
 }
 
 template <class P>
+void NavierStokes<P>::set_boundary_data(std::span<const double> data) {
+  impl_->euler.set_boundary_data(data);
+  impl_->share();
+}
+
+template <class P>
+void NavierStokes<P>::set_ghosts(GhostFill* ghosts) noexcept {
+  impl_->euler.set_ghosts(ghosts);
+}
+
+template <class P>
 void NavierStokes<P>::set_second_order(bool on) {
   impl_->euler.set_second_order(on);
 }

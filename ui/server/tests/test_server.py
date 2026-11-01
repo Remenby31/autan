@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import ANY
 
 import autan
+import autan.initial_state
 import httpx
 import numpy as np
 import numpy.typing as npt
@@ -226,7 +227,9 @@ def test_synthetic_surface_layout() -> None:
 def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    (source / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
     records = [json.loads(line) for line in (source / "history.jsonl").read_text().splitlines()]
     with (source / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
@@ -474,54 +477,72 @@ def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path
     assert after == case["time"]["residual_orders"]
 
 
-def _oracle_state_run(runs: Path, tmp_path: Path) -> Path:
-    # The case names its face states by absolute path: a plan that reads them is not confined.
+def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Path]:
+    # The case names its state file by absolute path: a plan that reads it is not confined.
     mesh = json.loads((PY / "tests" / "fixtures" / "crm-hl.meshinfo.json").read_text())
-    for zone in mesh["boundary_zones"]:
-        if zone["name"] == "farfield":
-            zone.update(faces=2, type=None, native_type=None)
-    (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
-    states = json.dumps(
-        {
+    case = (PY / "examples" / "crm_hl.py").read_text().replace("autan.SA()", "autan.Laminar()")
+    source = tmp_path / "state.json"
+    row = [1.2, 30, 0, 0, 1e5]
+    if kind == "oracle-state":
+        for zone in mesh["boundary_zones"]:
+            if zone["name"] == "farfield":
+                zone.update(faces=2, type=None, native_type=None)
+        states = {
             "schema": "autan.face-states/1",
             "oracle": "test",
             "mesh_sha256": mesh["source"]["sha256"],
             "variables": ["density", "velocity-x", "velocity-y", "velocity-z", "pressure"],
             "zones": {
-                "farfield": {
-                    "faces": 2,
-                    "centroids": [[0, 0, 0], [1, 0, 0]],
-                    "values": [[1.2, 30, 0, 0, 1e5], [1.2, 30, 0, 0, 1e5]],
-                }
+                "farfield": {"faces": 2, "centroids": [[0, 0, 0], [1, 0, 0]], "values": [row] * 2}
             },
         }
-    ).encode()
-    (tmp_path / "ringleb.json").write_bytes(states)
-    case = tmp_path / "oracle.py"
-    case.write_text(
-        (PY / "examples" / "crm_hl.py").read_text().replace("autan.SA()", "autan.Laminar()")
-        + f"case.boundary('farfield').oracle_state(path={str(tmp_path / 'ringleb.json')!r}, "
-        + f"sha256={hashlib.sha256(states).hexdigest()!r})\n"
-    )
+        source.write_text(json.dumps(states))
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        case += f"case.boundary('farfield').oracle_state(path={str(source)!r}, sha256={digest!r})\n"
+    else:
+        mesh["counts"]["cells"] = 4
+        mesh["counts"]["cells_by_type"] = dict.fromkeys(mesh["counts"]["cells_by_type"], 0)
+        mesh["counts"]["cells_by_type"]["hexa"] = 4
+        mesh["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": 4}]
+        mesh["interfaces"] = []
+        digest = autan.initial_state.write(
+            source,
+            oracle="test",
+            mesh_sha256=mesh["source"]["sha256"],
+            centroids=[[0.1 * i, 0, 0] for i in range(4)],
+            values=[row] * 4,
+        )
+        case += f"case.initial_state = autan.StateFile(path={str(source)!r}, sha256={digest!r})\n"
+    (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
+    (tmp_path / "case.py").write_text(case)
     mesh_info = autan.MeshInfo.load(tmp_path / "mesh.meshinfo.json")
-    return autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs).path
+    backend = autan.FakeBackend(iterations=2)
+    run = autan.load(tmp_path / "case.py").run(mesh_info, backend=backend, runs=runs).path
+    return run, source
 
 
-def test_an_oracle_state_run_plans_against_its_archived_face_states(
-    runs: Path, server: str, tmp_path: Path
+STATE_FILES = pytest.mark.parametrize(
+    ("kind", "missing"), [("oracle-state", "E0420"), ("initial-state", "E0508")]
+)
+
+
+@pytest.mark.parametrize("kind", ["oracle-state", "initial-state"])
+def test_a_run_plans_against_its_archived_state_file(
+    kind: str, runs: Path, server: str, tmp_path: Path
 ) -> None:
-    run = _oracle_state_run(runs, tmp_path)
-    (tmp_path / "ringleb.json").unlink()  # The plan reads the run's archive, not the source.
+    run, source = _archived_state_run(kind, runs, tmp_path)
+    source.unlink()  # The plan reads the run's archive, not the source.
 
     plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
 
     assert plan["ok"] is True, plan
 
 
-def test_a_missing_face_state_archive_is_never_replaced_by_its_source(
-    runs: Path, server: str, tmp_path: Path
+@STATE_FILES
+def test_a_missing_state_archive_is_never_replaced_by_its_source(
+    kind: str, missing: str, runs: Path, server: str, tmp_path: Path
 ) -> None:
-    run = _oracle_state_run(runs, tmp_path)
+    run, _ = _archived_state_run(kind, runs, tmp_path)
     assert httpx.get(f"{server}/api/runs/{run.name}/plan").json()["ok"] is True
     for archive in (run / "states").iterdir():
         archive.unlink()  # After the run was accepted: its source is still at tmp_path.
@@ -529,7 +550,7 @@ def test_a_missing_face_state_archive_is_never_replaced_by_its_source(
     plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
 
     assert plan["ok"] is False
-    assert "E0420" in {d["code"] for d in plan["diagnostics"]}
+    assert missing in {d["code"] for d in plan["diagnostics"]}
 
 
 def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
@@ -598,7 +619,9 @@ def test_stream_cursors_count_only_what_was_sent(runs: Path, server: str) -> Non
 def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server: str) -> None:
     directory = next(runs.iterdir())
     run = json.loads((directory / "run.json").read_text())
-    (directory / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
     url = f"{server}/api/runs/{directory.name}/history/events"
     with httpx.stream("GET", url, timeout=10) as response:
         events = sse_events(response)

@@ -53,6 +53,16 @@ struct Scheme {
   std::array<double, 5> reference{1.0, 0.0, 0.0, 0.0, 2.5};
 };
 
+/// Fills the ghost cells of a partitioned mesh from their owners: each pointer is one component
+/// of n_cells values, owned cells then ghosts (at most 16 per call). The runtime's GhostExchange
+/// behind it; a mesh without ghosts needs none.
+class GhostFill {
+ public:
+  virtual ~GhostFill() = default;
+  virtual void forward(std::span<float* const> components) = 0;
+  virtual void forward(std::span<double* const> components) = 0;
+};
+
 /// Euler residual R(U) = sum_f F . S - s V of a mesh, in precision policy P
 /// (autan::kernels::fp64 or fp32_acc64), on the host. Arrays are structure of arrays: component
 /// c of cell i at c * n_cells + i; boundary arrays are indexed by boundary face b, mesh face
@@ -71,8 +81,14 @@ class Euler {
   [[nodiscard]] index_t n_cells() const noexcept;
   [[nodiscard]] index_t n_boundary_faces() const noexcept;
 
+  /// On a partition: the residual fills the ghosts' primitives, gradients and limiter through
+  /// `ghosts` between its loops, so that the faces of owned cells read their neighbours' values.
+  /// Cell loops cover the owned cells and face loops the owned faces. Null: no ghosts.
+  void set_ghosts(GhostFill* ghosts) noexcept;
   /// Sets each boundary face's condition and its data (5 x n_boundary_faces).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
+  /// Replaces the data of the conditions set_boundary set (5 x n_boundary_faces), keeping them.
+  void set_boundary_data(std::span<const double> data);
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
   /// The least-squares weights of the gradient over its stencil (layout of

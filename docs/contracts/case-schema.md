@@ -82,6 +82,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `cell_zones` | list of [CellZoneRule](#cell-zones) | `[]` |
 | `monitors` | list of [Monitor](#monitors) | `[]` |
 | `verification` | [Verification](#verification) | absent |
+| `initial_state` | [Initial state file](#initial-state-file) | absent |
 
 ### Physics
 
@@ -161,11 +162,13 @@ A rule applies a condition to every boundary zone whose name matches `zones`, a 
 | `"wall"` | `temperature` (temperature > 0), optional: isothermal if set, adiabatic otherwise | viscous; with `inviscid` turbulence use `slip` (`E0414`) |
 | `"slip"` | — | all |
 | `"symmetry"` | — | all |
-| `"farfield"` | — (uses the freestream) | all |
+| `"farfield"` | — (uses the freestream); optional `point_vortex = {surfaces, center}` (pattern over boundary zones; three lengths) | all |
 | `"inlet"` | `total_pressure` (pressure > 0), `total_temperature` (temperature > 0) | compressible (`E0414` otherwise) |
 | `"velocity-inlet"` | `velocity` (speed > 0) | incompressible (`E0414` otherwise) |
 | `"outlet"` | `static_pressure` (pressure > 0) | all |
 | `"oracle-state"` | `path` (relative to the case file) and `sha256` of an `autan.face-states/1` file exported for this mesh ([face-states.md](face-states.md)): every face of the zone takes its state | compressible, inviscid or laminar (`E0414` otherwise) |
+
+A farfield's `point_vortex` corrects the far-field state of a 2D lifting body: the farfield takes the velocity of a point vortex at `center`, whose circulation is that of the lift on the boundary zones matched by `surfaces` (wall and slip zones only; wildcards skip periodic zones, `E0425` otherwise). The physics states which flows it accepts (the Euler physics: steady case, no sideslip, subsonic freestream; `E0706` otherwise).
 
 `inlet`, `velocity-inlet` and `outlet` are subsonic conditions. Inlet flow is normal to the boundary face. Where the outflow is supersonic, the outlet extrapolates every variable and ignores `static_pressure`. The solver reports inlet faces with supersonic or reversed flow and outlet faces with reversed flow (codes defined with the M2 boundary conditions).
 
@@ -199,6 +202,10 @@ Coefficients are reported only when `ref_area` is set; moment coefficients also 
 ### Verification
 
 `verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`, not an `autan.mms/1` document `E0208` ([mms.md](../validation/mms.md)); and checks it against the case (`E0209`): the solution's declared `parameters` (`gamma`, `gas_constant`, `viscosity`, `prandtl`) must equal the case gas (constant viscosity), its declared `model` must be compressible flow with the case's turbulence model (`inviscid`, `laminar` or `sa`; `sa-noft2` has no case counterpart), and the case has no cell zone rules (one fluid medium). Manufactured solutions are steady, so a verification case is steady (`E0417`). In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
+
+### Initial state file
+
+`initial_state = { path, sha256 }` starts every fluid cell from an `autan.initial-state/1` file written for the case's mesh ([initial-state.md](initial-state.md)): `path` is relative to the case file, like `mesh`, and `sha256` is the SHA-256 of its bytes. `autan plan` checks the file (`E0508` to `E0510`). The file carries no turbulence variable, so the case is compressible, inviscid or laminar. It replaces the fluid zones' `initial`, which the case leaves out, and a run of the case starts from it, not from a previous run (`E0512` otherwise). In Python: `case.initial_state = autan.StateFile(path="vortex.json", sha256="…")`.
 
 ## Boundary resolution
 
