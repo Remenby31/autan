@@ -60,13 +60,16 @@ class Registry:
 
     def run_dir(self, run_id: str) -> Path:
         """The directory of an accepted run."""
-        if not RUN_ID.fullmatch(run_id) or not (self.root / run_id).is_dir():
+        if not RUN_ID.fullmatch(run_id):
+            raise RunNotFoundError(run_id)
+        directory = self.root / run_id
+        if not _inside(self.root, directory):
             raise RunNotFoundError(run_id)
         with self._lock:
-            outcome = self._check(self.root / run_id)
+            outcome = self._check(directory)
         if isinstance(outcome, str):
             raise RunRejectedError(outcome)
-        return self.root / run_id
+        return directory
 
     def scan(self) -> Snapshot:
         snapshot = Snapshot()
@@ -74,7 +77,10 @@ class Registry:
             names = set()
             if self.root.is_dir():
                 for child in sorted(self.root.iterdir()):
-                    if not child.is_dir() or child.name.startswith("."):
+                    if child.name.startswith(".") or not child.is_dir():
+                        continue
+                    if not _inside(self.root, child):
+                        snapshot.rejected[child.name] = "links outside the runs directory"
                         continue
                     names.add(child.name)
                     outcome = self._check(child)
@@ -116,6 +122,12 @@ class Registry:
             "case": tomllib.loads((directory / "case.toml").read_text(encoding="utf-8")),
             "mesh_info": json.loads((directory / "mesh-info.json").read_text(encoding="utf-8")),
         }
+
+
+def _inside(root: Path, directory: Path) -> bool:
+    """A real directory directly under `root`: a symbolic link, even to another run, is refused
+    so that every file the server reads lies under the runs directory."""
+    return directory.is_dir() and not directory.is_symlink() and directory.resolve().parent == root
 
 
 def _stat(path: Path) -> tuple[int, int] | None:

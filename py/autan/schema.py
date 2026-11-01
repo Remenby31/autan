@@ -467,24 +467,24 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
     return found
 
 
-def _require_tags(schema: dict[str, Any]) -> None:
+def require_tags(schema: dict[str, Any]) -> None:
     """Discriminators and ``schema`` are required in documents, even where Python has defaults."""
     if schema.get("type") == "object" and "properties" in schema:
         tags = [k for k, v in schema["properties"].items() if "const" in v or k == "schema"]
         schema["required"] = sorted(set(schema.get("required", [])) | set(tags))
     for value in schema.values():
         if isinstance(value, dict):
-            _require_tags(value)
+            require_tags(value)
         elif isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    _require_tags(item)
+                    require_tags(item)
 
 
 def json_schema() -> dict[str, Any]:
     """The published JSON Schema of ``autan.case/1``, cross-field rules included."""
     schema = CaseSpec.model_json_schema(by_alias=True, mode="validation")
-    _require_tags(schema)
+    require_tags(schema)
 
     def physics(kind: str) -> dict[str, Any]:
         return {"properties": {"physics": {"properties": {"kind": {"const": kind}}}}}

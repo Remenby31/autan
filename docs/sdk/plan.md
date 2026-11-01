@@ -1,6 +1,12 @@
 # `autan plan`
 
-`autan plan CASE --mesh-info MESHINFO [--gpus N] [--json]` checks a case against its mesh before any GPU is reserved: it resolves every boundary and cell zone and shows where each condition comes from ([case-schema.md](../contracts/case-schema.md#boundary-resolution)), reports coded diagnostics ([errors.md](errors.md)) and estimates device memory. It exits with 1 when an error is found. Until the C++ mesh readers exist, the MeshInfo is passed explicitly; `plan` checks that it describes the case's mesh by comparing its `source.sha256` with the hash of the mesh file (`E0203`), and warns when the file is absent (`W0205`).
+`autan plan` checks a case against its mesh before you reserve a GPU. It shows the condition of every boundary and cell zone and where it comes from ([boundary resolution](../contracts/case-schema.md#boundary-resolution)), reports coded [diagnostics](errors.md) and estimates device memory.
+
+```text
+autan plan CASE --mesh-info MESHINFO [--gpus N] [--json]
+```
+
+It exits with 1 when it finds an error. The SDK does not call the mesh readers yet: write the MeshInfo with `autan-mesh-info --json MESH` and pass it with `--mesh-info`. `plan` compares its `source.sha256` with the hash of the mesh file (`E0203`) and warns when the file is absent (`W0205`). [Check a case before you run it](../guides/check-a-case.md) walks through the output.
 
 ## Memory model `autan.memory/1`
 
