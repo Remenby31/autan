@@ -525,3 +525,30 @@ def test_ringleb_family_with_its_face_states_meets_the_gate(tmp_path: Path) -> N
         )
     verdict = verify(paths, "ringleb", "ringleb-order")["verdict"]
     assert verdict["pass"], verdict["checks"]
+
+
+def test_fp32_agreement_measures_the_relative_difference_in_units_of_eps32(tmp_path: Path) -> None:
+    # The fp32 runs hold the fp64 density times (1 + delta): its relative L2 difference is delta
+    # whatever the mesh, so the reported value is delta / 2^-23, compared with k.
+    from autan_vv.agreement import EPS32, agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    for delta in (100.0 * EPS32, 600.0 * EPS32):
+        out = tmp_path / f"d{delta:.3g}"
+        double = _runs(out, meshes, "mms-euler", 2.0)
+        single = []
+        for mesh, path, fmt in meshes:
+            case = _case(path, "mms-euler", precision="fp32+acc64")
+            x = mesh.geometry.cell_centroid
+            exact = get_oracle("mms-euler").fields(x, None)
+            h = _h(mesh, (0, 1, 2))
+            g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1]) * np.cos(x[:, 2])
+            fields = {k: exact[k] * (1.0 + 0.05 * h**2.0 * g) for k in field_names(case.spec)}
+            fields["Density"] = fields["Density"] * (1.0 + delta)
+            info = mesh_info(mesh, path, fmt)
+            single.append(write_run(out / "single", case, mesh, info, fields).path)
+        report = agreement(double, single)
+        for pair in report["pairs"]:
+            assert pair["fields"]["Density"] == pytest.approx(delta / EPS32, rel=1e-9)
+            assert pair["fields"]["Pressure"] == 0.0
+        assert report["pass"] is (delta / EPS32 <= 500.0)
