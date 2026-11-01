@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { Box, CornerDownLeft, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
+import { Box, CornerDownLeft, FilePlus2, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
@@ -90,6 +90,12 @@ export function CommandPalette({
               icon={<Box className="size-4" />}
               title="Analysis"
               onSelect={() => close(() => navigate({ to: "/viewer" }))}
+            />
+            <Item
+              value="new case"
+              icon={<FilePlus2 className="size-4" />}
+              title="New case"
+              onSelect={() => close(() => navigate({ to: "/cases/new" }))}
             />
           </Command.Group>
           <Command.Group heading="Theme">

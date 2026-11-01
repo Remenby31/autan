@@ -118,22 +118,29 @@ def _sample_nvidia(gpu_index: int) -> GpuSample:
     )
 
 
-def ci_waiting(lock: Path) -> bool:
-    """Whether a CI job announces, by holding ``ci.lock`` next to the GPU lock (shared), that it
-    waits for or holds the GPU. A CI job itself never yields (docs/infra/bench.md)."""
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        return False
+def _held(path: Path) -> bool:
     try:
-        fd = os.open(lock.parent / "ci.lock", os.O_RDONLY)
+        fd = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
         return False
-    with os.fdopen(fd) as ci:
+    with os.fdopen(fd) as handle:
         try:
-            fcntl.flock(ci, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return True
-        fcntl.flock(ci, fcntl.LOCK_UN)
+        fcntl.flock(handle, fcntl.LOCK_UN)
         return False
+
+
+def ci_waiting(lock: Path) -> bool:
+    """Whether a job with priority waits for or holds the GPU (docs/infra/bench.md): outside CI,
+    any CI job (it holds ``ci.lock`` shared); in a CI job that is not on main, a job on main
+    (``main.lock``). A job on main never yields."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return _held(lock.parent / "ci.lock")
+    if os.environ.get("GITHUB_REF") == "refs/heads/main":
+        return False
+    return _held(lock.parent / "main.lock")
 
 
 @contextlib.contextmanager

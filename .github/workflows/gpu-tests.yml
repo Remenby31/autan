@@ -14,12 +14,16 @@ on:
     # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+  # Nightly on main: the generator's slow GPU tests, too long for every push (docs/infra/runners.md).
+  schedule:
+    - cron: "17 2 * * *"
 
 permissions: {}
 
 # Pull requests cancel their older run; runs on main queue, each checking a merged commit.
+# The nightly has its own group: a push to main would otherwise replace it while it is pending.
 concurrency:
-  group: gpu-tests-${{ github.ref }}
+  group: gpu-tests-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -36,6 +40,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The merge commit and its first parent: the pull request's own change.
+          fetch-depth: 2
+      - name: What the pull request changes
+        id: scope
+        if: github.event_name == 'pull_request'
+        run: echo "paths=$(git diff --name-only HEAD^1 HEAD -- | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - name: Configure with CUDA, MPI, METIS and Scotch
         run: >-
           cmake -S . -B build -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
@@ -43,10 +53,75 @@ jobs:
           -DAUTAN_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build
+      # CPU tests outside the GPU lock, with no GPU visible: a test that needs one but lacks the
+      # `gpu` label fails here instead of running without the lock. MPI tests one at a time: they
+      # busy-poll, and concurrent ranks on shared cores starve each other.
+      - name: CPU tests (no GPU, outside the lock)
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+        run: |
+          ctest --test-dir build -LE 'gpu|mpi' -j 4 --output-on-failure --no-tests=error
+          ctest --test-dir build -L mpi -LE gpu -j 1 --output-on-failure --no-tests=error
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
-      - name: Test (under the GPU lock)
-        run: flock /home/admin/autan-gpu/gpu.lock ctest --test-dir build -j 8 --output-on-failure
+      - name: GPU tests (under the GPU lock, at most 10 minutes)
+        run: >-
+          bench/lock/autan-gpu-lock -m "gpu-tests: ctest -L gpu" -t 600 --
+          ctest --test-dir build -L gpu -j 1 --output-on-failure --no-tests=error
+      - name: Install the generator's test environment
+        working-directory: codegen
+        run: uv sync --locked
+      # Every generated loop, strategy and policy on the GPU against the host loops (595 tests,
+      # 39 s on the Spark); the slow ones in their own shards below.
+      - name: Generator on the GPU (under the GPU lock)
+        working-directory: codegen
+        env:
+          AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_gpu.so
+        run: >-
+          ../bench/lock/autan-gpu-lock -m "gpu-tests: codegen pytest --backend gpu, not slow" -t 600 --
+          uv run --locked pytest --backend gpu -m "not slow" -q
+      # The 25 slow ones (second-order MMS on the device, ~55 s each, 22 min in all on the Spark)
+      # in 4 shards of about 6 minutes, each its own hold of the lock: nightly and on demand on
+      # main, and on pull requests that change the generator or the kernels.
+      - name: Generator's slow tests on the GPU (4 shards under the GPU lock)
+        if: >-
+          github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+          contains(steps.scope.outputs.paths, 'codegen/') || contains(steps.scope.outputs.paths, 'kernels/')
+        working-directory: codegen
+        env:
+          AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_gpu.so
+        run: |
+          uv run --locked pytest --backend gpu -m slow --collect-only -q | grep '::' > "$RUNNER_TEMP/slow"
+          echo "$(wc -l < "$RUNNER_TEMP/slow") slow tests"
+          for k in 0 1 2 3; do
+            mapfile -t shard < <(awk -v k="$k" 'NR % 4 == k' "$RUNNER_TEMP/slow")
+            ../bench/lock/autan-gpu-lock -m "gpu-tests: codegen slow shard $((k + 1))/4" -t 600 -- \
+              uv run --locked pytest --backend gpu -q "${shard[@]}"
+          done
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop
+
+  report-nightly:
+    needs: tests
+    # A nightly failure on main becomes an issue naming the commits since the last green night.
+    if: always() && github.event_name == 'schedule' && needs.tests.result == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          good=$(gh api "repos/$GH_REPO/actions/workflows/gpu-tests.yml/runs?event=schedule&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // empty')
+          range=${good:+$good..$GITHUB_SHA}
+          gh label create gpu-tests-nightly --force --color B60205 --description "The nightly GPU test run failed"
+          gh issue create --label gpu-tests-nightly \
+            --title "gpu-tests nightly failed on ${GITHUB_SHA:0:10}" \
+            --body "The nightly gpu-tests run on main failed: $RUN_URL. Commits since the last green night: ${range:-unknown (no green night yet)}; compare with https://github.com/$GH_REPO/compare/${range/../...}."

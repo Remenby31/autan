@@ -85,6 +85,8 @@ export interface RunRegistry {
   rejected: { dir: string; reason: string }[];
   /** Per run id: last recorded iteration and residual drop, from history.jsonl. */
   summaries: Record<string, RunSummary>;
+  /** Runs that have ended and written solution.cgns, which Analysis shows. */
+  solutions: string[];
 }
 
 export interface RunSummary {

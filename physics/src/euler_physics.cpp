@@ -21,6 +21,7 @@
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/runtime/exact_sum.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -88,7 +89,10 @@ class EulerPhysics final : public runtime::Physics {
   using Res = typename P::residual;
 
   explicit EulerPhysics(const PhysicsContext& ctx)
-      : ctx_(ctx),
+      : exempt_(runtime::residual_names(ctx.input), ctx.input.start && ctx.input.start->woken
+                                                        ? *ctx.input.start->woken
+                                                        : std::vector<std::string>{}),
+        ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
         owned_(static_cast<std::size_t>(ctx.mesh.n_owned_cells())),
@@ -143,6 +147,7 @@ class EulerPhysics final : public runtime::Physics {
     du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
+    if (in.start && in.start->residual_reference) exempt_.reference(*in.start->residual_reference);
     apply_vortices();
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
@@ -654,7 +659,10 @@ class EulerPhysics final : public runtime::Physics {
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
     euler_.spectral_radius(lambda_);
-    const double drop = relative_drop(norms.empty() ? report.residuals : norms);
+    // Largest relative residual over the equations, of the order being solved, leaving out the
+    // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
+    // their ratio is round-off and would set the CFL number.
+    const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
@@ -895,11 +903,14 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   // Largest relative residual over the equations, of the order being solved.
-  double relative_drop(const std::vector<double>& current) {
+  double relative_drop(const std::vector<double>& current, const std::vector<double>& reported) {
+    note_exemptions(reported);
     double drop = 0.0;
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
+      if (first_norms_[k] > 0.0 && !exempt_.exempt(k)) {
+        drop = std::max(drop, current[k] / first_norms_[k]);
+      }
     }
     return drop;
   }
@@ -941,7 +952,7 @@ class EulerPhysics final : public runtime::Physics {
     const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
                           : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
     host_stale_ = true;
-    if (steady) switch_order(relative_drop(r.residuals));
+    if (steady) switch_order(relative_drop(r.residuals, r.residuals));
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
@@ -980,6 +991,28 @@ class EulerPhysics final : public runtime::Physics {
     const auto begin = v.begin() + static_cast<std::ptrdiff_t>(k * n_);
     return {begin, begin + static_cast<std::ptrdiff_t>(owned_)};
   }
+
+  // The runtime's round-off exemption, kept in step with its decisions: fed the same reported
+  // residuals from the same reference, on every rank.
+  void note_exemptions(const std::vector<double>& reported) {
+    const bool first = !exempt_logged_;
+    exempt_.update(reported);
+    if (first) {
+      exempt_logged_ = true;
+      nlohmann::json names = nlohmann::json::array();
+      for (std::size_t k = 0; k < reported.size(); ++k) {
+        if (exempt_.exempt(k)) names.push_back(exempt_.name(k));
+      }
+      if (!names.empty()) {
+        ctx_.log.write("info", "solver",
+                       "equations at the round-off floor do not set the CFL number", {},
+                       nlohmann::json{{"equations", names}, {"floor", exempt_.floor()}}.dump());
+      }
+    }
+  }
+
+  runtime::RoundOffExemption exempt_;
+  bool exempt_logged_ = false;
 
   PhysicsContext ctx_;
   Gas gas_;
