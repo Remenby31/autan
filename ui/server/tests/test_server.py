@@ -621,11 +621,18 @@ def test_a_run_json_its_reader_refuses_ends_the_stream(runs: Path, server: str) 
     with httpx.stream("GET", url, timeout=10) as response:
         events = sse_events(response)
         assert next(events)[0] == "run"
-        # Well-formed, but not what the run computes (results.md#runjson, identity).
-        (directory / "run.json").write_text(json.dumps(run | {"identity": "0" * 64}))
+        # Well-formed, but not what the run computes (results.md#runjson, identity), replaced
+        # atomically so that no reader sees a half-written file.
+        (directory / ".run.json").write_text(json.dumps(run | {"identity": "0" * 64}))
+        (directory / ".run.json").replace(directory / "run.json")
         kind, reason = next(e for e in events if e[0] not in ("history", "log"))
     assert kind == "invalid"
     assert reason.startswith("run.json")
+    # Refused with its reason: 409 once the registry has rejected the run, 422 before.
+    for path in ("", "/plan", "/surface"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}{path}")
+        assert response.status_code in (409, 422)
+        assert response.json()["detail"]
 
 
 def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, server: str) -> None:

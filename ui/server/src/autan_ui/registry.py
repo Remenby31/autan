@@ -209,12 +209,12 @@ def read_run(folder: Folder) -> dict[str, Any]:
     """run.json, checked as `autan.Results.open` checks it against the stored case and
     MeshInfo (results.md#runjson), all read through `folder`; ValueError otherwise."""
     try:
-        document = json.loads(folder.read("run.json"))
+        document = json.loads(folder.read("run.json").decode())
         case = CaseSpec.from_document(
             tomllib.loads(folder.read("case.toml").decode()), Location(file="case.toml")
         )
         mesh_info = MeshInfo.from_document(
-            json.loads(folder.read("mesh-info.json")), Location(file="mesh-info.json")
+            json.loads(folder.read("mesh-info.json").decode()), Location(file="mesh-info.json")
         )
     except (OSError, ValueError, CaseError) as error:
         msg = f"run.json: {error}"

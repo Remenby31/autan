@@ -185,6 +185,13 @@ def _list_build(build: Folder) -> set[str]:
     return names
 
 
+def checked_run(folder: Folder) -> dict[str, Any]:
+    try:
+        return read_run(folder)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
 def create_app(
     runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
 ) -> FastAPI:
@@ -309,13 +316,16 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
-        return registry.details(find_run(run_id))
+        try:
+            return registry.details(find_run(run_id))
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         """`autan plan --json` of the run's stored case against its stored MeshInfo."""
         with Folder(find_run(run_id)) as folder:
-            run = read_run(folder)
+            run = checked_run(folder)
             case_toml = folder.read("case.toml")
             mesh_info = folder.read("mesh-info.json")
             manufactured = (
@@ -405,7 +415,7 @@ def create_app(
         """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
         directory = find_run(run_id)
         with Folder(directory) as folder:
-            if read_run(folder)["status"] == "running":
+            if checked_run(folder)["status"] == "running":
                 # results.md: the solution is not a result while the run is running.
                 raise HTTPException(409, f"run {run_id} is still running")
             stat = folder.stat("solution.cgns")
