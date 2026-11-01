@@ -90,3 +90,15 @@ export interface RunSettings {
   turbulence: string | null;
   precision: string | null;
 }
+
+/** One line of log.jsonl (results.md#log), with the page documenting its code. */
+export interface LogLine {
+  time: string;
+  iteration: number | null;
+  level: "info" | "warning" | "error";
+  source: string;
+  message: string;
+  code: string | null;
+  data: Record<string, unknown>;
+  doc: string | null;
+}

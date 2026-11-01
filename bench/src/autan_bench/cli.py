@@ -44,6 +44,7 @@ def _stream(args: argparse.Namespace) -> int:
         suite="stream",
         precision="fp64",
         lock=args.lock,
+        max_load_per_cpu=args.max_load,
     )
     return _report(doc, args.out)
 
@@ -51,7 +52,12 @@ def _stream(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     binary_args = args.binary_args[1:] if args.binary_args[:1] == ["--"] else args.binary_args
     doc = runner.run(
-        args.binary, binary_args, suite=args.suite, precision=args.precision, lock=args.lock
+        args.binary,
+        binary_args,
+        suite=args.suite,
+        precision=args.precision,
+        lock=args.lock,
+        max_load_per_cpu=args.max_load,
     )
     return _report(doc, args.out)
 
@@ -170,6 +176,12 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
     )
+    s.add_argument(
+        "--max-load",
+        type=float,
+        metavar="PER_CPU",
+        help="refuse to run when the host's 1-minute load per CPU exceeds this (HOST_BUSY)",
+    )
     s.set_defaults(func=_stream)
 
     r = sub.add_parser(
@@ -183,6 +195,12 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--out", type=Path, required=True, help="result JSON to write")
     r.add_argument(
         "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
+    )
+    r.add_argument(
+        "--max-load",
+        type=float,
+        metavar="PER_CPU",
+        help="refuse to run when the host's 1-minute load per CPU exceeds this (HOST_BUSY)",
     )
     r.add_argument("binary_args", nargs=argparse.REMAINDER, help="-- then the binary's arguments")
     r.set_defaults(func=_run)

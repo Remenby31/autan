@@ -46,6 +46,7 @@ from autan.schema import (
 from autan.solver_input import (
     SolidInitial,
     SolidMedium,
+    given_state,
     initial_state,
     medium_input,
     turbulence_input,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
     from autan.plan import Plan
+    from autan.restart import Start
 
 MEDIUM: TypeAdapter[Fluid | SolidZone] = TypeAdapter(Medium)
 
@@ -85,6 +87,7 @@ ZONE_CHILDREN = frozenset(
         "FlowSolution",
         "FlowSolutionMean",
         "WallSolution",
+        "RestartState",
     }
 )
 GENERATED = re.compile(r"(boundary|cell-zone)-\d{4}")
@@ -221,10 +224,17 @@ class FakeBackend:
     pace: float = 0.0
     diverge_at: int | None = None
 
-    def run(self, case: Case, mesh_info: MeshInfo, runs: Path) -> Results:
+    def run(
+        self, case: Case, mesh_info: MeshInfo, runs: Path, start: Start | None = None
+    ) -> Results:
         result = case.plan(mesh_info)
         if not result.ok:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
+        if mesh_info.periodic:
+            message = "the fake backend, like autan-run, does not implement periodic boundaries"
+            raise CaseError(
+                [diagnostic("E0706", message, path="periodic", pairs=len(mesh_info.periodic))]
+            )
         spec = case.spec
         started = utc_now()
         solver = Solver(version=__version__, commit=COMMIT, backend="fake")
@@ -232,7 +242,12 @@ class FakeBackend:
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
             identity=identity(
-                spec.hash(), mesh_info.source.sha256, solver, spec.physics.precision, devices
+                spec.hash(),
+                mesh_info.source.sha256,
+                solver,
+                spec.physics.precision,
+                devices,
+                start.info if start is not None else None,
             ),
             status="running",
             case=CaseIdentity(name=spec.name, sha256=spec.hash()),
@@ -246,6 +261,7 @@ class FakeBackend:
             iterations=0,
             time=None,
             averaging=None,
+            start=start.info if start is not None else None,
             diagnostics=(),
         )
         manufactured = (
@@ -260,11 +276,21 @@ class FakeBackend:
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps
         end = min(budget, CONVERGED_AT) if steady else budget
-        diverges = self.diverge_at is not None and self.diverge_at <= min(end, self.iterations)
-        last = min(end, self.iterations, (self.diverge_at or end + 1) - 1)
-        done, status = 0, "running"
+        # A started run begins from the state of the previous one, which the synthetic
+        # trajectory leaves unchanged.
+        inherited = (
+            {name: Results.open(start.run).field(name) for name in field_names(spec)}
+            if start is not None
+            else None
+        )
+        # A continued run goes on counting; its trajectory is that of an uninterrupted run.
+        offset = start.info.iterations if start and start.info.mode == "continue" else 0
+        cap = offset + self.iterations
+        diverges = self.diverge_at is not None and self.diverge_at <= min(end, cap)
+        last = min(end, cap, (self.diverge_at or end + 1) - 1)
+        done, status = offset, "running"
         try:
-            for iteration in range(1, last + 1):
+            for iteration in range(offset + 1, last + 1):
                 writer.append(history.record(iteration))
                 done = iteration
                 if iteration == CONVERGED_AT // 2:
@@ -288,7 +314,7 @@ class FakeBackend:
             raise
         finally:
             if status == "stopped":
-                self._finish(writer, spec, result, history, done, "stopped", mesh_info)
+                self._finish(writer, spec, result, history, done, "stopped", mesh_info, inherited)
         if diverges:
             status = "diverged"
         elif done < end:
@@ -297,7 +323,7 @@ class FakeBackend:
             status = "converged" if done == CONVERGED_AT else "completed"
         else:
             status = "completed"
-        self._finish(writer, spec, result, history, done, status, mesh_info)
+        self._finish(writer, spec, result, history, done, status, mesh_info, inherited)
         return Results.open(writer.path)
 
     def _finish(
@@ -309,6 +335,7 @@ class FakeBackend:
         done: int,
         status: str,
         mesh_info: MeshInfo,
+        inherited: dict[str, NDArray[np.float64]] | None = None,
     ) -> None:
         box = Box(
             max(
@@ -343,7 +370,7 @@ class FakeBackend:
                 )
         info = writer.info.model_copy(update=changes)
         staging = writer.path / ".solution.cgns.tmp"
-        _write_solution(staging, spec, plan, history.state, box, layout, info)
+        _write_solution(staging, spec, plan, box, layout, info, inherited)
         staging.rename(writer.path / "solution.cgns")
         writer.finish(**changes)
 
@@ -426,10 +453,10 @@ def _write_solution(
     path: Path,
     spec: CaseSpec,
     plan: Plan,
-    state: dict[str, Any],
     box: Box,
     layout: list[str],
     info: RunInfo,
+    inherited: dict[str, NDArray[np.float64]] | None = None,
 ) -> None:
     """Write solution.cgns for the final ``info``."""
     faces, boundary_faces, index = box.faces()
@@ -517,7 +544,7 @@ def _write_solution(
             cgns.node(region, "GridLocation", "GridLocation_t", "CellCenter")
             cgns.node(region, "FamilyName", "FamilyName_t", name)
 
-        fields = _fields(spec, plan, layout)
+        fields = inherited if inherited is not None else _fields(spec, plan, layout)
         for solution_name in ("FlowSolution",) + (
             ("FlowSolutionMean",) if info.averaging is not None else ()
         ):
@@ -540,7 +567,9 @@ def _write_solution(
             region = cgns.node(zone, "WallSolution", "ZoneSubRegion_t", np.array([2], np.int32))
             _point_list(region, walls + 1)
             cgns.node(region, "GridLocation", "GridLocation_t", "FaceCenter")
-            cgns.data_array(region, "Pressure", np.full(walls.size, state["pressure"]))
+            owner = {abs(face) - 1: cell for cell, faces in enumerate(cells) for face in faces}
+            cells_of_walls = np.array([owner[int(face)] for face in walls])
+            cgns.data_array(region, "Pressure", fields["Pressure"][cells_of_walls])
             for axis in "XYZ":
                 cgns.data_array(region, f"WallShearStress{axis}", np.zeros(walls.size))
 
@@ -572,7 +601,10 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
     freestream, turbulence = closed_freestream(spec), turbulence_input(spec)
     initial = {
         z.zone: initial_state(
-            medium_input(MEDIUM.validate_python(z.medium)), freestream, turbulence
+            medium_input(MEDIUM.validate_python(z.medium)),
+            freestream,
+            turbulence,
+            given_state(MEDIUM.validate_python(z.medium)),
         )
         for z in plan.cell_zones
     }

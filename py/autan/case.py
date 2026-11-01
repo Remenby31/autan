@@ -8,12 +8,13 @@ import tomllib
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import tomli_w
 
 from autan.errors import CaseError, Location, diagnostic
 from autan.plan import Plan, plan
+from autan.restart import resolve as resolve_start
 from autan.schema import (
     BoundaryRule,
     CaseSpec,
@@ -32,6 +33,7 @@ from autan.schema import (
     Slip,
     Solid,
     SolidZone,
+    State,
     Steady,
     Symmetry,
     Unsteady,
@@ -289,8 +291,11 @@ class Case:
         *,
         backend: FakeBackend | SolverBackend | None = None,
         runs: str | Path = "runs",
+        start: Results | None = None,
+        mode: Literal["continue", "warm"] = "continue",
     ) -> Results:
-        """Run the case with ``backend`` into a new directory under ``runs``."""
+        """Run the case with ``backend`` into a new directory under ``runs``; with ``start``,
+        from the state of that previous run (``continue`` it, or ``warm``-start a case)."""
         if backend is None:
             missing = diagnostic(
                 "E0804",
@@ -298,7 +303,8 @@ class Case:
                 location=_caller_location(),
             )
             raise CaseError([missing])
-        return backend.run(self, mesh_info, Path(runs))
+        checked = resolve_start(self.spec, mesh_info, start, mode)
+        return backend.run(self, mesh_info, Path(runs), checked)
 
     def plan(self, mesh_info: MeshInfo, *, gpus: int = 1) -> Plan:
         """Resolve boundaries and cell zones against the mesh and estimate memory."""
@@ -348,8 +354,16 @@ class CellZoneSelector:
     def __init__(self, case: Case, zones: str) -> None:
         self._case, self._zones = case, zones
 
-    def fluid(self, material: IdealGas | ConstantDensityFluid) -> None:
-        self._case._add_cell_zone(CellZoneRule(zones=self._zones, medium=Fluid(material=material)))
+    def fluid(
+        self, material: IdealGas | ConstantDensityFluid, *, initial: State | None = None
+    ) -> None:
+        """A fluid zone of ``material``, starting from ``initial`` (default: the freestream)."""
+        medium = (
+            Fluid(material=material)
+            if initial is None
+            else Fluid(material=material, initial=initial)
+        )
+        self._case._add_cell_zone(CellZoneRule(zones=self._zones, medium=medium))
 
     def solid(self, material: Solid) -> None:
         self._case._add_cell_zone(

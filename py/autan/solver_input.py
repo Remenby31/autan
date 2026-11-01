@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from autan.errors import CaseError, Location
+from autan.meshinfo import (
+    PairZones,
+    Translation,
+    shared_zones,
+)
 from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
 from autan.schema import (
     DDES,
@@ -40,6 +45,8 @@ from autan.units import parse, si
 if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
+    from autan.restart import Start
+    from autan.schema import State
 
 SCHEMA_ID = "autan.solver-input/1"
 GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact value
@@ -279,6 +286,22 @@ class VerificationInput(_Strict):
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
+class PeriodicInput(_Strict):
+    zones: PairZones
+    transform: Translation
+
+
+class StartInput(_Strict):
+    run: AbsolutePath
+    run_id: Annotated[str, Field(pattern=r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")]
+    identity: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+    mode: Literal["continue", "warm"]
+    iterations: Annotated[int, Field(strict=True, ge=1)]
+    time: Number | None
+    residual_reference: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]] | None
+    solution_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
@@ -291,10 +314,12 @@ class SolverInput(_Strict):
     physics: PhysicsInput
     freestream: FreestreamInput
     boundaries: tuple[BoundaryInput, ...]
+    periodic: tuple[PeriodicInput, ...]
     cell_zones: tuple[CellZoneInput, ...]
     time: Annotated[SteadyInput | UnsteadyInput, Field(discriminator="kind")]
     monitors: tuple[ForcesInput, ...]
     verification: VerificationInput | None
+    start: StartInput | None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -303,6 +328,13 @@ class SolverInput(_Strict):
         turbulence, fs = self.physics.turbulence, self.freestream
         if turbulence.model in ("ddes", "wmles") and self.time.kind != "unsteady":
             message = f"{turbulence.model} needs an unsteady time"
+            raise ValueError(message)
+        if shared_zones(pair.zones for pair in self.periodic):
+            message = "a zone is in two periodic pairs"
+            raise ValueError(message)
+        periodic = {zone for pair in self.periodic for zone in pair.zones}
+        if periodic & {b.zone for b in self.boundaries}:
+            message = "a periodic zone takes no boundary condition"
             raise ValueError(message)
         sa = turbulence.nu_tilde_ratio is not None
         sst = turbulence.intensity is not None
@@ -481,19 +513,37 @@ def zone_viscosity(medium: Gas | Liquid, temperature: float | None) -> float:
 
 
 def initial_state(
-    medium: MediumInput, freestream: FreestreamInput, turbulence: TurbulenceInput
+    medium: MediumInput,
+    freestream: FreestreamInput,
+    turbulence: TurbulenceInput,
+    given: State | None = None,
 ) -> FluidInitial | SolidInitial:
-    """Initial state of a cell zone: the freestream pressure, temperature and velocity in
-    the zone's own medium (solver-input.md#initial-state)."""
+    """Initial state of a cell zone (solver-input.md#initial-state): the zone's ``given``
+    state, or the freestream pressure, temperature and velocity, closed in the zone's own
+    medium. Turbulence values use the freestream speed as reference."""
     if isinstance(medium, SolidMedium):
         assert freestream.temperature is not None
         return SolidInitial(kind="solid", temperature=freestream.temperature)
+    if given is None:
+        pressure, temperature, velocity = (
+            freestream.pressure,
+            freestream.temperature,
+            freestream.velocity,
+        )
+    else:
+        pressure = si(given.pressure, "Pa")
+        temperature = si(given.temperature, "K") if given.temperature is not None else None
+        velocity = (
+            si(given.velocity[0], "m / s"),
+            si(given.velocity[1], "m / s"),
+            si(given.velocity[2], "m / s"),
+        )
     if isinstance(medium, Gas):
-        assert freestream.temperature is not None
-        density = freestream.pressure / (medium.gas_constant * freestream.temperature)
+        assert temperature is not None
+        density = pressure / (medium.gas_constant * temperature)
     else:
         density = medium.density
-    nu = zone_viscosity(medium, freestream.temperature) / density
+    nu = zone_viscosity(medium, temperature) / density
     k = (
         1.5 * (turbulence.intensity * freestream.speed) ** 2
         if turbulence.intensity is not None
@@ -502,9 +552,9 @@ def initial_state(
     return FluidInitial(
         kind="fluid",
         density=density,
-        pressure=freestream.pressure,
-        temperature=freestream.temperature,
-        velocity=freestream.velocity,
+        pressure=pressure,
+        temperature=temperature,
+        velocity=velocity,
         nu_tilde=(
             turbulence.nu_tilde_ratio * nu if turbulence.nu_tilde_ratio is not None else None
         ),
@@ -517,11 +567,22 @@ def initial_state(
     )
 
 
+def given_state(medium: Fluid | SolidZone) -> State | None:
+    return medium.initial if isinstance(medium, Fluid) else None
+
+
 def _si(condition: dict[str, Any], key: str, unit: str) -> float | None:
     return float(parse(condition[key], unit).to(unit).magnitude) if key in condition else None
 
 
-def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: bool) -> SolverInput:
+def build(
+    case: Case,
+    mesh_info: MeshInfo,
+    *,
+    devices: Devices,
+    deterministic: bool,
+    start: Start | None = None,
+) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
     plan = case.plan(mesh_info)
     if not plan.ok:
@@ -530,7 +591,7 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
     boundaries = []
     for resolution in plan.boundaries:
         condition = resolution.condition
-        if condition is None:
+        if condition is None or condition["kind"] == "periodic":
             continue
         boundaries.append(
             BoundaryInput(
@@ -544,12 +605,14 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
             )
         )
     freestream, turbulence = freestream_state(spec), turbulence_input(spec)
-    media = [(z.zone, medium_input(_MEDIUM.validate_python(z.medium))) for z in plan.cell_zones]
+    media = [(z.zone, _MEDIUM.validate_python(z.medium)) for z in plan.cell_zones]
     cell_zones = tuple(
         CellZoneInput(
-            zone=zone, medium=medium, initial=initial_state(medium, freestream, turbulence)
+            zone=zone,
+            medium=medium_input(rule),
+            initial=initial_state(medium_input(rule), freestream, turbulence, given_state(rule)),
         )
-        for zone, medium in media
+        for zone, rule in media
     )
     zone_names = [b.zone for b in plan.boundaries]
     monitors = tuple(
@@ -597,9 +660,15 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,
         boundaries=tuple(boundaries),
+        periodic=tuple(
+            PeriodicInput(zones=p.zones, transform=p.transform) for p in mesh_info.periodic
+        ),
         cell_zones=cell_zones,
         time=time,
         monitors=monitors,
+        start=(
+            StartInput(run=str(start.run), **start.info.model_dump()) if start is not None else None
+        ),
         verification=(
             VerificationInput(
                 path=str(case.resolve(spec.verification.manufactured.path)),

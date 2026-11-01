@@ -26,6 +26,9 @@ DEFAULT_LOCK = (
 )
 IDLE_UTILIZATION_PCT = 5.0
 BUSY_UTILIZATION_PCT = 50.0
+# macOS "Device Utilization %" stays at 8-18 % while a bandwidth-bound Metal kernel saturates
+# memory (M4 Pro, STREAM): there a sample is busy as soon as it is above the idle threshold.
+BUSY_UTILIZATION_PCT_MACOS = IDLE_UTILIZATION_PCT
 
 _GPU_FIELDS = (
     "utilization.gpu",
@@ -215,7 +218,8 @@ class Sampler:
 
         # Clocks, power and temperature describe the GPU while it works: setup and host-side
         # verification leave it idle at base clock for part of the run.
-        busy = [s for s in self.samples if (s.utilization_pct or 0.0) >= BUSY_UTILIZATION_PCT]
+        threshold = BUSY_UTILIZATION_PCT_MACOS if sys.platform == "darwin" else BUSY_UTILIZATION_PCT
+        busy = [s for s in self.samples if (s.utilization_pct or 0.0) > threshold]
         if not busy:
             raise BenchError(Code.NO_SAMPLES, "no clock sample was taken while the GPU was busy")
 
@@ -230,6 +234,10 @@ class Sampler:
         return {
             "samples": len(self.samples),
             "busy_samples": len(busy),
+            "busy_threshold_pct": threshold,
+            "utilization_pct": _spread(
+                [u for s in self.samples if (u := s.utilization_pct) is not None]
+            ),
             "sm_mhz": _spread(values("sm_mhz")),
             "sm_max_mhz": max(values("sm_max_mhz"), default=None),
             "power_w": _spread(values("power_w")),
@@ -237,3 +245,13 @@ class Sampler:
             "clocks_event_reasons": None if reasons is None else f"0x{reasons:016x}",
             "compute_apps_max": max(listed) if listed else None,
         }
+
+
+# On unified memory (GB10, Apple silicon) CPU work by other processes takes DRAM bandwidth from
+# the GPU, and GPU telemetry does not show it: the host load is recorded with every run.
+LOAD_WARN_PER_CPU = 1.0
+
+
+def host_load() -> dict[str, float | int]:
+    """1-minute load average of the host (global, also inside a container) and its CPU count."""
+    return {"load_1m": os.getloadavg()[0], "cpus": os.cpu_count() or 1}

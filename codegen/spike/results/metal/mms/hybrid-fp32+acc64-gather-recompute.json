@@ -1,0 +1,66 @@
+{
+ "label": "hybrid fp32+acc64 gather-recompute",
+ "dim": 3,
+ "levels": [
+  {
+   "n_cells": 2240,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.0013226757233826929,
+    "L2": 0.0015924544407907146,
+    "Linf": 0.004676434158112919
+   },
+   "mesh_sha256": "0115f7094662795cbbd4ec2cbb1c751135f8cc05c94696e109799cbb322a1bb5",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
+   "precision": "fp32+acc64",
+   "relative_residual": 1.5843713562046303e-07,
+   "strategy": "gather-recompute"
+  },
+  {
+   "n_cells": 5904,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.0006358005892232606,
+    "L2": 0.0007789204823678604,
+    "Linf": 0.0023661754142647595
+   },
+   "mesh_sha256": "fd962918211d038dfcd853ebffd3c751a063ab5e3637517bc55aa4f2406a12f8",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
+   "precision": "fp32+acc64",
+   "relative_residual": 1.877214242563763e-07,
+   "strategy": "gather-recompute"
+  },
+  {
+   "n_cells": 14336,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.00034333586403872995,
+    "L2": 0.000422255689725254,
+    "Linf": 0.0013333056038613567
+   },
+   "mesh_sha256": "0346b5a478e6719b9a220eb9a148d62dd9520c080d8c62c828aa9bfc9aea395c",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
+   "precision": "fp32+acc64",
+   "relative_residual": 2.229297927766834e-07,
+   "strategy": "gather-recompute"
+  },
+  {
+   "n_cells": 44352,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.00015242902282660594,
+    "L2": 0.0001889576676425599,
+    "Linf": 0.0006203834456692814
+   },
+   "mesh_sha256": "d5e0090cadf116bd028cac2a2e74b3825d547a7de66e7c85326f5772b41b9874",
+   "case_sha256": "0acad5d90baa58d62603c919fe8fede22500ac7c3a01bfb174816add08767195",
+   "solver_commit": "df59dd4bd7a71782e984a04edb796196c40d93ec",
+   "precision": "fp32+acc64",
+   "relative_residual": 2.7029899234011785e-07,
+   "strategy": "gather-recompute"
+  }
+ ]
+}

@@ -180,6 +180,22 @@ Two cells share a global id, or one is negative.
 
 Fix: Regenerate the partition; global cell ids must be unique and non-negative.
 
+## E0118
+
+**Invalid periodic pair** (error)
+
+A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite.
+
+Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.
+
+## E0119
+
+**Periodic faces do not match** (error)
+
+The faces of a periodic pair do not match one to one under its translation.
+
+Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
+
 ## E0120
 
 **Degenerate face** (error)
@@ -476,6 +492,14 @@ Manufactured solutions are steady, and a run starting from the freestream would 
 
 Fix: Set `case.time = autan.Steady(...)` in the verification case.
 
+## E0424
+
+**Condition on a periodic zone** (error)
+
+A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.
+
+Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic.
+
 ## E0501
 
 **Cell zone rule matches no zone** (error)
@@ -523,6 +547,14 @@ Fix: Use the same material on both sides, or separate them by a solid zone.
 Conjugate heat transfer needs an energy equation in the fluid, which incompressible flow does not solve in `autan.case/1`.
 
 Fix: Use `autan.Compressible(...)`, or remove the solid zone from the mesh.
+
+## E0507
+
+**Initial state does not match the physics** (error)
+
+A compressible fluid zone starts from an absolute pressure > 0, a temperature and a velocity; an incompressible one from a gauge pressure and a velocity, without temperature.
+
+Fix: Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.
 
 ## E0601
 
@@ -587,6 +619,30 @@ Fix: Regenerate the input with `autan prepare` from the same Autan version as th
 The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind; `data` names the combination.
 
 Fix: Use a build that includes it, or change the case or the devices.
+
+## E0707
+
+**Previous run cannot be resumed** (error)
+
+A start needs a previous run that ended converged, completed or stopped after at least one iteration and holds a solution that conforms to its run.json; diverged and failed runs, and runs without a sound solution, cannot be resumed.
+
+Fix: Start from another run, or run the case from the freestream.
+
+## E0708
+
+**Start does not match the case** (error)
+
+`continue` needs the previous run's case unchanged except its iteration or step budget, and a budget above the iterations already done; `warm` needs the same physics and transported variables. The message names the difference.
+
+Fix: Change the case, or use `warm` to start a different case from that state.
+
+## E0709
+
+**Start solution differs** (error)
+
+The solution of the run to start from no longer has the SHA-256 the solver input records: the run directory changed after the input was written.
+
+Fix: Prepare the input again from the run as it is now.
 
 ## W0801
 
@@ -732,6 +788,14 @@ A loop with several output datasets is differentiated, or a boundary loop writes
 
 Fix: Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.
 
+## E1013
+
+**Policy not available on the backend** (error)
+
+A precision policy is requested on a backend that cannot run it (`fp64` on Metal).
+
+Fix: Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.
+
 ## E1100
 
 **Generated loop failed** (error)
@@ -787,3 +851,19 @@ Fix: Size the schedule's incidence scratch for the widest reduction adjoint of t
 The deterministic adjoint of a cell reduction runs on a topology without incidence twins.
 
 Fix: Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.
+
+## E1107
+
+**Metal runtime error** (error)
+
+A Metal call, library compilation or command buffer fails.
+
+Fix: Check that the Mac has an Apple GPU with `autan doctor`, then report the message.
+
+## E1108
+
+**Strategy not available** (error)
+
+A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.
+
+Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.
