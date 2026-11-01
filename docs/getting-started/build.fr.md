@@ -1,5 +1,5 @@
 ---
-source_hash: "c61b411a9ae4"
+source_hash: "aaaec9c74a78"
 ---
 
 # Compiler Autan depuis les sources
@@ -35,14 +35,15 @@ La compilation génère d'abord les kernels d'écoulement depuis `kernels/` avec
 
 ## Lancer un cas sur CPU
 
-Écrivez un cas pour le maillage de test hexaédrique de 27 cellules du dépôt : un écoulement à Mach 0,3 le long d'une paroi glissante, avec des conditions de champ lointain sur les faces ouvertes.
+Écrivez un cas pour le maillage de test hexaédrique de 27 cellules du dépôt, dans un répertoire dédié : un écoulement à Mach 0,3 le long d'une paroi glissante, avec des conditions de champ lointain sur les faces ouvertes.
 
 ```sh
-cat > euler_box.py <<'EOF'
+mkdir -p "${TMPDIR:-/tmp}/euler-box"
+cat > "${TMPDIR:-/tmp}/euler-box/case.py" <<EOF
 import autan
 from autan.units import Pa, deg
 
-case = autan.Case("euler-box", mesh="tests/data/mesh/hex/polyMesh")
+case = autan.Case("euler-box", mesh="$PWD/tests/data/mesh/hex/polyMesh")
 case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
 case.freestream(mach=0.3, aoa=5 * deg, pressure=101325 * Pa)
 case.time = autan.Steady(max_iterations=200)
@@ -52,11 +53,11 @@ for zone in ("xmin", "xmax", "ymax", "zmin"):
 EOF
 ```
 
-`zmax` est un plan de symétrie dans le fichier de maillage : le cas ne le nomme pas. Résumez le maillage, puis lancez le cas avec le solveur :
+Le `EOF` sans guillemets laisse le shell écrire le chemin absolu du maillage dans le cas. `zmax` est un plan de symétrie dans le fichier de maillage : le cas ne le nomme pas. Résumez le maillage, puis lancez le cas avec le solveur :
 
 ```sh
-build/io/autan-mesh-info --json tests/data/mesh/hex/polyMesh > euler_box.meshinfo.json
-AUTAN_RUN="$PWD/build/runtime/autan-run" uv run autan run euler_box.py --mesh-info euler_box.meshinfo.json --backend cpu --runs "${TMPDIR:-/tmp}/autan-runs"
+build/io/autan-mesh-info --json tests/data/mesh/hex/polyMesh > "${TMPDIR:-/tmp}/euler-box/meshinfo.json"
+AUTAN_RUN="$PWD/build/runtime/autan-run" uv run autan run "${TMPDIR:-/tmp}/euler-box/case.py" --mesh-info "${TMPDIR:-/tmp}/euler-box/meshinfo.json" --backend cpu --runs "${TMPDIR:-/tmp}/euler-box/runs"
 ```
 
 La commande affiche l'identifiant du calcul, son état final et son répertoire. `run.json` enregistre `"backend": "cpu"` ; [Calculs](../concepts/runs.fr.md) décrit le reste du répertoire.

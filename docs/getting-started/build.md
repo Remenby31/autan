@@ -31,14 +31,15 @@ The build generates the flow kernels from `kernels/` with Python, then compiles 
 
 ## Run a case on the CPU
 
-Write a case for the 27-cell hexahedral test mesh of the repository: flow at Mach 0.3 over a slip wall, with farfield conditions on the open sides.
+Write a case for the 27-cell hexahedral test mesh of the repository, in a directory of its own: flow at Mach 0.3 over a slip wall, with farfield conditions on the open sides.
 
 ```sh
-cat > euler_box.py <<'EOF'
+mkdir -p "${TMPDIR:-/tmp}/euler-box"
+cat > "${TMPDIR:-/tmp}/euler-box/case.py" <<EOF
 import autan
 from autan.units import Pa, deg
 
-case = autan.Case("euler-box", mesh="tests/data/mesh/hex/polyMesh")
+case = autan.Case("euler-box", mesh="$PWD/tests/data/mesh/hex/polyMesh")
 case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
 case.freestream(mach=0.3, aoa=5 * deg, pressure=101325 * Pa)
 case.time = autan.Steady(max_iterations=200)
@@ -48,11 +49,11 @@ for zone in ("xmin", "xmax", "ymax", "zmin"):
 EOF
 ```
 
-`zmax` is a symmetry plane in the mesh file, so the case does not name it. Summarise the mesh, then run the case with the solver:
+The unquoted `EOF` lets the shell write the absolute path of the mesh into the case. `zmax` is a symmetry plane in the mesh file, so the case does not name it. Summarise the mesh, then run the case with the solver:
 
 ```sh
-build/io/autan-mesh-info --json tests/data/mesh/hex/polyMesh > euler_box.meshinfo.json
-AUTAN_RUN="$PWD/build/runtime/autan-run" uv run autan run euler_box.py --mesh-info euler_box.meshinfo.json --backend cpu --runs "${TMPDIR:-/tmp}/autan-runs"
+build/io/autan-mesh-info --json tests/data/mesh/hex/polyMesh > "${TMPDIR:-/tmp}/euler-box/meshinfo.json"
+AUTAN_RUN="$PWD/build/runtime/autan-run" uv run autan run "${TMPDIR:-/tmp}/euler-box/case.py" --mesh-info "${TMPDIR:-/tmp}/euler-box/meshinfo.json" --backend cpu --runs "${TMPDIR:-/tmp}/euler-box/runs"
 ```
 
 The command prints the run id, its final state and its directory. `run.json` records `"backend": "cpu"`; [Runs](../concepts/runs.md) describes the rest of the directory.
