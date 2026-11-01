@@ -62,6 +62,11 @@ jobs:
       - name: Seed the corpus from tests/data/mesh
         run: tests/fuzz/seed.sh build-fuzz/corpus
       - name: Fuzz
+        env:
+          # Full unwinding so the suppressions see the frame they name (tests/fuzz/lsan.supp lists
+          # a leak inside CGNS 4.5.2's cg_version, a library bug); it costs about a quarter of exec/s.
+          ASAN_OPTIONS: fast_unwind_on_malloc=0
+          LSAN_OPTIONS: suppressions=tests/fuzz/lsan.supp
         run: |
           mkdir -p findings
           "build-fuzz/tests/fuzz/fuzz-${READER}" "build-fuzz/corpus/${READER}" \
