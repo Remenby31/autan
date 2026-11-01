@@ -10,6 +10,20 @@ case "$(uname -m)" in
   *) echo "install-cuda.sh: unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
 dnf config-manager --add-repo "https://developer.download.nvidia.com/compute/cuda/repos/rhel8/${repo}/cuda-rhel8.repo"
-dnf install -y --setopt=install_weak_deps=False "cuda-nvcc-${CUDA_VERSION}" "cuda-cudart-devel-${CUDA_VERSION}" "cuda-cuobjdump-${CUDA_VERSION}"
+
+# Distribution mirrors sometimes serve broken metadata ("repomd.xml parser error"). Each attempt
+# drops the cached metadata so the mirror list picks again; dnf retries each download too.
+attempt=1
+until dnf install -y --setopt=install_weak_deps=False --setopt=retries=5 --setopt=timeout=60 \
+  "cuda-nvcc-${CUDA_VERSION}" "cuda-cudart-devel-${CUDA_VERSION}" "cuda-cuobjdump-${CUDA_VERSION}"; do
+  if [ "$attempt" -ge 4 ]; then
+    echo "install-cuda.sh: dnf failed $attempt times" >&2
+    exit 1
+  fi
+  echo "install-cuda.sh: dnf failed (attempt $attempt of 4); refreshing metadata and retrying" >&2
+  dnf clean metadata
+  sleep $((attempt * 20))
+  attempt=$((attempt + 1))
+done
 ln -sfn "/usr/local/cuda-$(echo "$CUDA_VERSION" | tr - .)" /usr/local/cuda
 /usr/local/cuda/bin/nvcc --version
