@@ -62,6 +62,7 @@ def test_a_pull_request_that_merged_main_is_judged_on_its_own_files(repo):
 
 def test_a_pull_request_is_measured_when_it_changes_measured_code(repo):
     git(repo, "checkout", "-q", "-b", "kernel")
+    commit(repo, "HEAD")
     commit(repo, "kernels/flux.cu")
     pull_request_merge(repo, "kernel")
     assert decide(repo, "pull_request") == {"bench": "true", "harness": "false"}

@@ -42,7 +42,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           DRAFT: ${{ github.event.pull_request.draft }}
           BEFORE: ${{ github.event.before }}
-        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$BEFORE" | tee -a "$GITHUB_OUTPUT"
+        # No pipe: the default shell has no pipefail, so a failing filter would pass unnoticed.
+        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$BEFORE" >> "$GITHUB_OUTPUT"
 
   mesh:
     needs: changes
