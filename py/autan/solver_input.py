@@ -289,7 +289,7 @@ class SteadyInput(_Strict):
     kind: Literal["steady"]
     max_iterations: Annotated[int, Field(ge=1)]
     residual_orders: Positive
-    linear_solver: Literal["multigrid", "gauss-seidel"]
+    linear_solver: Literal["multigrid", "gauss-seidel", "lines"]
 
 
 class UnsteadyInput(_Strict):

@@ -256,10 +256,14 @@ def test_the_runtime_mode_is_the_case_s(
         autan.solver_input.SolverInput.model_validate(document)
 
 
+@pytest.mark.parametrize("linear_solver", ["multigrid", "gauss-seidel", "lines"])
 def test_the_linear_solver_is_a_steady_choice(
-    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], tmp_path: Path
+    write_case: Callable[..., Path],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    linear_solver: str,
 ) -> None:
-    body = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    body = CRM_HL + f"case.time = autan.Steady(linear_solver='{linear_solver}')\n"
     case = write_case(body)
     copy = tmp_path / "copy.toml"
     copy.write_text(autan.load(case).to_toml())
@@ -268,7 +272,7 @@ def test_the_linear_solver_is_a_steady_choice(
     document = json.loads(capsys.readouterr().out)
     validator = jsonschema.Draft202012Validator(json_schema("solver-input"))
     validator.validate(document)
-    assert document["time"]["linear_solver"] == "gauss-seidel"
+    assert document["time"]["linear_solver"] == linear_solver
     unsteady = {"kind": "unsteady", "steps": 10, "dt": 1e-3, "cfl": None, "average_from": None}
     with pytest.raises(jsonschema.ValidationError):  # an unsteady run has no linear solver choice
         validator.validate(document | {"time": unsteady | {"linear_solver": "multigrid"}})
