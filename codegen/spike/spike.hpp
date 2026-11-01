@@ -21,6 +21,8 @@ struct SpikeMesh {
   autan::Mesh mesh;
   autan::Geometry geometry;
   autan::kernels::PackedGeometry packed;
+  std::vector<autan::kernels::offset_t> twins;
+  autan::kernels::CellStencil stencil;
   autan::kernels::Topology topo{};
 };
 
@@ -54,7 +56,7 @@ template <class P>
 struct GeomCopy {
   using G = typename P::geom;
   std::vector<G> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
-      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight;
+      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
   explicit GeomCopy(const autan::kernels::PackedGeometry& g)
       : face_area(autan::kernels::converted<G>(g.face_area)),
         face_centroid(autan::kernels::converted<G>(g.face_centroid)),
@@ -65,7 +67,8 @@ struct GeomCopy {
         face_r_right(autan::kernels::converted<G>(g.face_r_right)),
         cell_centroid(autan::kernels::converted<G>(g.cell_centroid)),
         cell_volume(autan::kernels::converted<G>(g.cell_volume)),
-        lsq_weight(autan::kernels::converted<G>(g.lsq_weight)) {}
+        lsq_weight(autan::kernels::converted<G>(g.lsq_weight)),
+        stencil_lsq_weight(autan::kernels::converted<G>(g.stencil_lsq_weight)) {}
 };
 
 /// Calls f with the policy object named by `policy`; throws for an unknown name.

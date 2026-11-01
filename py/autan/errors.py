@@ -638,6 +638,18 @@ _CODES = [
         "Regenerate the loop so its scratch holds every output component per face.",
     ),
     Code(
+        "E1105",
+        "Incidence scratch too narrow",
+        "The deterministic adjoint of a cell reduction has fewer scratch components per incidence than the values it sends to neighbours.",
+        "Size the schedule's incidence scratch for the widest reduction adjoint of the module.",
+    ),
+    Code(
+        "E1106",
+        "Incidence twins missing",
+        "The deterministic adjoint of a cell reduction runs on a topology without incidence twins.",
+        "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",

@@ -1,15 +1,17 @@
 import { Toggle } from "@base-ui/react/toggle";
 import { ToggleGroup } from "@base-ui/react/toggle-group";
 import { Link } from "@tanstack/react-router";
-import { Box, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
+import { Box, GitCompareArrows, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { Kbd } from "../ui/Kbd";
 import { setTheme, type ThemeChoice, useResolvedTheme, useTheme } from "./theme";
 
-const NAV: { to: "/" | "/viewer"; label: string; icon: ReactNode; exact?: boolean }[] = [
-  { to: "/", label: "Runs", icon: <ListTree className="size-4" />, exact: true },
-  { to: "/viewer", label: "Analysis", icon: <Box className="size-4" /> },
-];
+const NAV: { to: "/" | "/compare" | "/viewer"; label: string; icon: ReactNode; exact?: boolean }[] =
+  [
+    { to: "/", label: "Runs", icon: <ListTree className="size-4" />, exact: true },
+    { to: "/compare", label: "Compare", icon: <GitCompareArrows className="size-4" /> },
+    { to: "/viewer", label: "Analysis", icon: <Box className="size-4" /> },
+  ];
 
 /** The only navigation chrome: Find on top, sections, theme at the bottom. */
 export function Sidebar({ onFind }: { onFind: () => void }) {
@@ -18,6 +20,7 @@ export function Sidebar({ onFind }: { onFind: () => void }) {
   return (
     <aside className="flex w-60 flex-none flex-col gap-3 border-line border-r bg-bg-1 px-3 py-3">
       <Link to="/" className="flex h-8 items-center gap-2 px-2" aria-label="Autan, runs">
+        <img src={`/logo-${resolved}.svg`} alt="" className="size-6" />
         <img src={`/wordmark-${resolved}.svg`} alt="Autan" className="h-[18px]" />
       </Link>
       <button

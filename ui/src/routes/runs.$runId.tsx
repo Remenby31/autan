@@ -48,7 +48,9 @@ function RunView() {
   const { runId } = Route.useParams();
   const { tab = "run" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { run, history, connected, invalid } = useLiveRun(runId);
+  const { run, history, log, connected, invalid } = useLiveRun(runId);
+  const warnings = log.lines.filter((line) => line.level === "warning").length;
+  const errors = log.lines.filter((line) => line.level === "error").length;
   const details = useQuery({
     ...runQuery(runId),
     // Outputs grow while the run writes them; the status change brings solution.cgns.
@@ -227,7 +229,7 @@ function RunView() {
                 </Collapse>
                 <Collapse
                   title="Monitors"
-                  defaultOpen
+                  defaultOpen={history.monitors.size > 0 || !history.iteration.length}
                   meta={
                     <span className="font-mono text-fg-2 text-sm tabular-nums">
                       {forces
@@ -254,14 +256,16 @@ function RunView() {
                 <Collapse
                   title="Log"
                   meta={
-                    <span className="text-fg-2 text-sm tabular-nums">
-                      {history.iteration.length.toLocaleString("en")} lines
+                    <span className="flex items-center gap-2 text-fg-2 text-sm tabular-nums">
+                      {log.lines.length.toLocaleString("en")} lines
+                      {warnings > 0 && <Badge tone="amber">{warnings} warnings</Badge>}
+                      {errors > 0 && <Badge tone="red">{errors} errors</Badge>}
                     </span>
                   }
                 >
                   <LogView
                     history={history}
-                    diagnostics={run?.diagnostics ?? []}
+                    log={log}
                     running={run?.status === "running"}
                     height={240}
                   />
@@ -270,11 +274,7 @@ function RunView() {
             </TabPanel>
 
             <TabPanel value="log" className="outline-none">
-              <LogView
-                history={history}
-                diagnostics={run?.diagnostics ?? []}
-                running={run?.status === "running"}
-              />
+              <LogView history={history} log={log} running={run?.status === "running"} />
             </TabPanel>
 
             <TabPanel value="case" className="flex flex-col gap-4 outline-none">

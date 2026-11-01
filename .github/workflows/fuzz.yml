@@ -1,0 +1,82 @@
+name: Fuzz
+
+# libFuzzer harnesses of the mesh readers (tests/fuzz/README.md). Weekly, 30 minutes per reader.
+on:
+  schedule:
+    - cron: "0 3 * * 6"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing time per reader, in seconds
+        default: "1800"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.reader }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        reader: [gmsh, fluent, polymesh, cgns]
+    env:
+      CC: clang
+      CXX: clang++
+      SECONDS_PER_READER: ${{ inputs.seconds || '1800' }}
+      READER: ${{ matrix.reader }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # 64-bit, HDF5-backed CGNS 4.5 and Ninja from conda-forge, as in ci.yml.
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          micromamba-version: 2.3.3-0
+          environment-name: cgns
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
+          init-shell: none
+          cache-downloads: false
+          cache-environment: false
+      - name: Put CGNS tools and Ninja on the PATH
+        run: |
+          grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
+          echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
+      - name: Configure with libFuzzer, ASan and UBSan
+        run: |
+          clang++ --version
+          cmake -S . -B build-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" \
+            -DAUTAN_BUILD_FUZZERS=ON \
+            "-DCMAKE_CXX_FLAGS=-fsanitize=fuzzer-no-link,address,undefined" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+      - name: Build the harness
+        run: cmake --build build-fuzz --target "fuzz-${READER}"
+      - name: Seed the corpus from tests/data/mesh
+        run: tests/fuzz/seed.sh build-fuzz/corpus
+      - name: Fuzz
+        env:
+          # Full unwinding so the suppressions see the frame they name (tests/fuzz/lsan.supp lists
+          # a leak inside CGNS 4.5.2's cg_version, a library bug); it costs about a quarter of exec/s.
+          ASAN_OPTIONS: fast_unwind_on_malloc=0
+          LSAN_OPTIONS: suppressions=tests/fuzz/lsan.supp
+        run: |
+          mkdir -p findings
+          "build-fuzz/tests/fuzz/fuzz-${READER}" "build-fuzz/corpus/${READER}" \
+            -max_total_time="${SECONDS_PER_READER}" -rss_limit_mb=4096 \
+            -artifact_prefix=findings/
+      - name: Upload findings
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-findings-${{ matrix.reader }}
+          path: findings/
+          if-no-files-found: ignore
+          retention-days: 30
