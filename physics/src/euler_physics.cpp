@@ -142,6 +142,15 @@ class EulerPhysics final : public runtime::Physics {
                             device_steady_cfl
                           }}.dump());
       }
+      if (!in.monitors.empty()) {
+        ctx.log.write("warning", "solver",
+                      "force monitors on the device: each recorded iteration downloads the state "
+                      "and evaluates the residual on the host",
+                      {}, nlohmann::json{{
+                            "monitors",
+                            in.monitors.size()
+                          }}.dump());
+      }
 #else
       throw std::logic_error("the Euler physics was built without CUDA");
 #endif

@@ -233,8 +233,9 @@ class CudaStepper final : public DeviceStepper<P> {
       d_.limiter_scale[k] = h.limiter_scale[k];
     }
     for (int k = 0; k < 5; ++k) ref_.v[k] = scheme_.reference[static_cast<std::size_t>(k)];
-    const auto& r = scheme_.reference;
-    p_ref_ = (gamma - 1.0) * (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]);
+    // The host's value (computed in host code built with -ffp-contract=off), not recomputed
+    // here: nvcc may contract this expression.
+    p_ref_ = static_cast<double>(h.p_ref[0]);
   }
 
   Result step(double cfl, std::optional<double> dt, bool local) override {

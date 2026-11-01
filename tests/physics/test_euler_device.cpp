@@ -140,6 +140,7 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   for (std::size_t k = 0; k < 5; ++k) {
     for (std::size_t c = 0; c < n; ++c) {
       const double d = std::abs(r_device[k * n + c] - static_cast<double>(r_host[k * n + c]));
+      REQUIRE(std::isfinite(d));
       worst = std::max(worst, d / (eps * f_k[k] * surface[c]));
     }
   }
