@@ -287,3 +287,29 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
     assert lines(first) + lines(rest) == lines(whole)
     assert (rest.run.status, rest.run.iterations) == (whole.run.status, whole.run.iterations)
     assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+
+
+def test_the_runtime_takes_the_periodic_pairs_of_the_solver_input(tmp_path: Path) -> None:
+    assert MESH_INFO is not None
+    source = ROOT / "tests" / "data" / "mesh" / "periodic-box" / "periodic-box.binary.msh"
+    info = tmp_path / "box.meshinfo.json"
+    info.write_text(
+        subprocess.run(
+            [str(MESH_INFO), "--json", str(source)], capture_output=True, text=True, check=True
+        ).stdout
+    )
+    case = tmp_path / "box.py"
+    case.write_text(
+        "import autan\nfrom autan.units import K, Pa\n"
+        f"case = autan.Case('box', mesh={str(source)!r})\n"
+        "case.physics = autan.Compressible(turbulence=autan.Laminar())\n"
+        "case.freestream(mach=0.2, pressure=101325 * Pa, temperature=300 * K)\n"
+        "case.boundary('z*').slip()\n"
+    )
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(case).run(
+            autan.MeshInfo.load(info),
+            backend=autan.SolverBackend(executable=RELAXATION),
+            runs=tmp_path / "runs",
+        )
+    assert error.value.codes == ["E0706"]  # accepted (not E0705), then not implemented

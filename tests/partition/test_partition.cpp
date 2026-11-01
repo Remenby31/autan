@@ -216,6 +216,17 @@ TEST_CASE("Invalid partition requests are rejected with their documented code", 
                 [&] { autan::extract_partition(global, gg, two, 1, 1); });
   require_error(ErrorCode::partition_invalid_request,
                 [&] { autan::partition_quality(global, std::vector<std::int32_t>(8, 3), 2); });
+  {
+    autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+    cells.face_zones[0].kind = autan::BcKind::periodic;
+    cells.face_zones[1].kind = autan::BcKind::periodic;
+    cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    const autan::Mesh periodic = autan::assemble(autan::to_face_based(std::move(cells)));
+    const autan::Geometry pg = autan::compute_geometry(periodic);
+    require_error(ErrorCode::partition_invalid_request, [&] {
+      autan::extract_partition(periodic, pg, std::vector<std::int32_t>(8, 0), 1, 0);
+    });
+  }
 
   const auto parts = slabs(gg, 2, 1.0);
   const auto half = autan::extract_partition(global, gg, parts, 2, 0);

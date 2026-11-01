@@ -161,7 +161,8 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   [[nodiscard]] std::vector<io::Field> wall_fields(std::span<const index_t> faces) const override {
-    const auto p = face_pressure();
+    std::vector<double> p(static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()));
+    face_pressure(p, {});
     const auto ni = static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
     std::vector<io::Field> out{{.name = "Pressure", .values = {}},
                                {.name = "WallShearStressX", .values = {}},
@@ -176,10 +177,13 @@ class EulerPhysics final : public runtime::Physics {
 
   [[nodiscard]] Loads loads(std::span<const index_t> zones,
                             const std::array<double, 3>& center) const override {
-    const auto p = face_pressure();
+    // The pressure force exactly as the residual integrates it, minus p_inf S (results.md).
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+    std::vector<double> p(nb), face_force(3 * nb);
+    face_pressure(p, face_force);
     const double p_inf = ctx_.input.freestream.pressure;
     const auto offsets = mesh.boundary_zone_offsets();
     Loads loads;
@@ -187,9 +191,10 @@ class EulerPhysics final : public runtime::Physics {
       for (auto f = offsets[static_cast<std::size_t>(z)];
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
         const auto i = static_cast<std::size_t>(f);
-        const double dp = p[i - ni] - p_inf;
-        const std::array<double, 3> force{dp * g.face_area_x[i], dp * g.face_area_y[i],
-                                          dp * g.face_area_z[i]};
+        const auto b = i - ni;
+        const std::array<double, 3> force{face_force[b] - p_inf * g.face_area_x[i],
+                                          face_force[nb + b] - p_inf * g.face_area_y[i],
+                                          face_force[2 * nb + b] - p_inf * g.face_area_z[i]};
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
@@ -502,12 +507,10 @@ class EulerPhysics final : public runtime::Physics {
     return f;
   }
 
-  [[nodiscard]] std::vector<double> face_pressure() const {
+  void face_pressure(std::span<double> p, std::span<double> force) const {
     auto& self = const_cast<EulerPhysics&>(*this);
     self.residual_of(u_);
-    std::vector<double> p(static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()));
-    euler_.boundary_pressure(p);
-    return p;
+    euler_.boundary_pressure(p, force);
   }
 
   PhysicsContext ctx_;

@@ -51,7 +51,7 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 |---|---|---|
 | `name` | Name in the source (Fluent zone name, Gmsh physical name, OpenFOAM patch). | Same. |
 | `bc_type` / `type` | Type exactly as written in the source; empty if the format has none. | Same. |
-| `kind` | `BcKind`: `unspecified`, `wall`, `thermal_wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
+| `kind` | `BcKind`: `unspecified`, `wall`, `thermal_wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, `periodic`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
 | `boundary` | Role: boundary (true) or interior (false) faces. | — |
 | `provenance.source_id` | Identifier in the source file, or −1 for a zone the reader synthesised. | Same. |
 | `provenance.detail` | Human-readable origin. | Same. |
@@ -59,6 +59,15 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 Synthesised zones: `interior` for interior faces with no zone in the source, `unassigned` for boundary faces with no zone in the source (so `autan plan` reports the missing condition), `fluid` (kind `unspecified`) for cells with no zone in the source. A source zone with one of these names collides and is rejected with E0110.
 
 `Mesh::source()` records the format (`gmsh`, `fluent`, `polymesh`, `cgns`, or `memory` for meshes built in code) and the path as given.
+
+## Periodic pairs
+
+`Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, empty, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a periodic zone in no pair, a translation that is zero or not finite) and matches the faces (E0119):
+
+- each node of zone a, translated, coincides with exactly one node of zone b: closer than 1e-4 of the shortest edge of zone a's faces at that node, far below any spacing and far above single-precision coordinates;
+- each face of zone a, so mapped, has the node set of exactly one face of zone b, the two zones have as many faces, and partners run through their nodes in opposite directions (both point out of the domain).
+
+`renumber_cells` keeps the pairs. A partition carries none: `extract_partition` rejects a mesh with periodic pairs (E0140), and `write_solution` rejects one (E0133), until periodic faces become interior faces to image ghost cells in a partition and pairs are written to CGNS. Rotations are reserved.
 
 ## Geometry
 
@@ -94,7 +103,7 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 
 | Format | Supported | Zones | Rejected (E0133 unless noted) |
 |---|---|---|---|
-| Gmsh MSH 4.1, ASCII and binary | Linear tetra, pyramid, prism, hexa; triangles and quadrilaterals label faces; sparse node tags; parametric nodes; unknown sections are skipped as the format prescribes. | Physical volumes → cell zones, physical surfaces → face zones (also when they have no element), named from `$PhysicalNames` wherever it appears, else the tag; type empty, kind `unspecified`. | MSH 2 and other versions, higher-order elements, `$PartitionedEntities`, `$Periodic`, `$GhostElements`, big-endian files; non-positive physical tags (E0132); an entity in two physical groups (E0135). |
+| Gmsh MSH 4.1, ASCII and binary | Linear tetra, pyramid, prism, hexa; triangles and quadrilaterals label faces; sparse node tags; parametric nodes; unknown sections are skipped as the format prescribes. `$Periodic` surface links with a translation become periodic pairs (master group → zone a, slave group → zone b). | Physical volumes → cell zones, physical surfaces → face zones (also when they have no element), named from `$PhysicalNames` wherever it appears, else the tag; type empty, kind `unspecified` (`periodic` for the groups of a periodic link). | MSH 2 and other versions, higher-order elements, `$PartitionedEntities`, rotational or transform-less `$Periodic` surface links, `$GhostElements`, big-endian files; non-positive physical tags (E0132); an entity in two physical groups (E0135); a periodic link of another dimension than 0 to 2, a periodic surface in no physical group, node pairs that do not follow the link's translation, or two translations for one pair of groups (E0132). |
 | Fluent mesh, ASCII and binary (2010/3010, 2012, 2013) | Sections 0, 1, 2, 10, 12, 13, 39, 45; 4, 37, 38, 40 are skipped. Mixed and polygonal faces, polyhedral cells (type 7). The face normal points toward c0. | Zone sections 39/45 give names and types (they take precedence over face-section codes); a zone without one is named `zone-<id>` and typed from its code; a declared zone without faces is kept. A zone's role is that of its faces. Declared element types must match the cell's face count (E0132). | 2D meshes, periodic shadow faces (18), hanging-node trees and interface parents (58, 59, 61–63), any other section. |
 | CGNS/HDF5 (SIDS 4.x, header `io/include/autan/io/cgns.hpp`) | One base, one unstructured zone; cells as `NFACE_n` over `NGON_n` faces (positive face id: normal out of the cell), or linear `TETRA_4`, `PYRA_5`, `PENTA_6`, `HEXA_8` and `MIXED` with `TRI_3`/`QUAD_4` faces; `PointList`, `PointRange`, `ElementList`, `ElementRange`. | `BC_t` → boundary zones; a BC naming a family belongs to that family's group (the root of its `FamilyName_t` chain), and BCs of one group form one zone. `BCType`, or the family's `FamilyBC` when `FamilySpecified`, is the type. A BC or `ZoneSubRegion_t` over cells, or the family of an element section, gives cell zones (type empty). Whether a BC labels faces or cells follows the dimension of its elements, whatever its `GridLocation`. A `FamilyName` may be a path; its last component names the family. Files with the `ZoneNames` descriptor of results.md get their zone names back, empty boundary zones included. | Several bases or zones, structured zones, higher-order elements, BCs given by vertices, `NFACE_n` mixed with standard cells; links to other files (E0134); inconsistent offsets, cell counts or element references, unknown families (E0132); a face or cell in two zones, or BCs of one zone with different types (E0135). CGNS must be built with 64-bit `cgsize_t`. |
 | OpenFOAM polyMesh, ASCII and binary, 32/64-bit labels and scalars | The `polyMesh` directory or a case directory holding `constant/polyMesh`; comments anywhere; sized, unsized and uniform label lists; ASCII faces in nested form (`faceList` or `faceCompactList`), binary faces as `faceCompactList`. | Patches → boundary zones (type as written), `cellZones` → cell zones (type empty). `faceZones`, `pointZones` and `sets` are selections, not zones, and are not read. | Compressed files, binary `faceList`, processor patches; a cell in two cell zones (E0135). |
@@ -128,6 +137,8 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
 | E0116 | `mesh_face_without_owned_cell` | A face touches only ghost cells. |
 | E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
+| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite. |
+| E0119 | `mesh_periodic_unmatched` | The faces of a periodic pair do not match one to one under its translation. |
 | E0120 | `geometry_degenerate_face` | A face has zero or non-finite area. |
 | E0121 | `geometry_non_positive_volume` | An owned cell has zero, negative or non-finite volume. |
 | E0130 | `io_cannot_open` | The file or directory cannot be opened or read. |

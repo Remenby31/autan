@@ -17,6 +17,7 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan_build_info.hpp"
 
 namespace {
 
@@ -74,6 +75,9 @@ void in_policy(E& e, const double* a, const double* b, double* out, F&& f) {
 }  // namespace
 
 extern "C" {
+
+/// Git commit the library was built from.
+const char* autan_mms_commit() { return AUTAN_BUILD_COMMIT; }
 
 int autan_mms_mesh_read(const char* path, void** out, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
