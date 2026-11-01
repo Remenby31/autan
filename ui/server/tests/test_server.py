@@ -427,7 +427,7 @@ INF = math.inf
             {"rho": 2e-4, "e": 1e-6},
             set(),
             {"rho": 1e-4, "e": 1e-6},
-            3.699,
+            4 - math.log10(2),
             set(),
         ),
     ],
@@ -441,7 +441,7 @@ def test_residual_drop_is_the_slowest_equation_not_converged(
     now_woken: set[str],
 ) -> None:
     orders = residual_orders(first, now, woken, floors)
-    assert orders == (None if expected is None else pytest.approx(expected, abs=1e-3))
+    assert orders == (None if expected is None else pytest.approx(expected))
     assert woken == now_woken
 
 
@@ -457,6 +457,21 @@ def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
     case = tomllib.loads((source / "case.toml").read_text())
     assert summary["orders"] == case["time"]["residual_orders"]
     assert summary["trend"][-1] == case["time"]["residual_orders"]
+
+
+def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path) -> None:
+    source = next(runs.iterdir())
+    registry = Registry(runs)
+    before = registry.scan().summaries[source.name]["orders"]
+    last = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+
+    after = registry.scan().summaries[source.name]["orders"]
+
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert before < case["time"]["residual_orders"]
+    assert after == case["time"]["residual_orders"]
 
 
 def test_several_histories_share_one_stream(runs: Path, server: str) -> None:

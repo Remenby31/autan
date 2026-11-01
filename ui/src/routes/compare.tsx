@@ -71,7 +71,6 @@ function Compare() {
   const version = ids.map((id) => live.get(id)?.history.version ?? 0).join(",");
 
   // Histories grow in place: `version` is what changes when they do.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const charts = useMemo(() => {
     const drop: OverlaySeries[] = [];
     const cl: OverlaySeries[] = [];
@@ -90,7 +89,8 @@ function Compare() {
         cd.push({ label, color, x: forces.iteration, y: forces.cd });
       }
     });
-    return { drop, cl, cd };
+    const targets = ids.map((id) => registry.data?.summaries[id]?.target_orders ?? "").join(",");
+    return { drop, cl, cd, dropVersion: `${version}|${targets}` };
   }, [ids, live, version, registry.data]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: histories grow in place, see charts
@@ -180,7 +180,7 @@ function Compare() {
                     series={charts.drop}
                     xLabel="iteration"
                     sync="compare"
-                    version={version}
+                    version={charts.dropVersion}
                   />
                 </ChartCard>
                 <ChartCard title="CL" unit="iteration">

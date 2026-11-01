@@ -1,3 +1,4 @@
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ class _Trend:
     orders: list[float] = field(default_factory=list)
     current: float | None = None
     woken: set[str] = field(default_factory=set)
+    rule: str = ""
 
 
 def residual_orders(
@@ -94,10 +96,13 @@ class Summaries:
         `continue` run (results.md), the residuals the drop is measured from and the identically
         zero equations no longer exempt; `floors`: run.json `convergence.floor`; `target`: the
         case's `residual_orders`, which a run with every equation converged reports."""
-        trend = self._trends.setdefault(name, _Trend())
+        # Floors arrive once the runtime has built its physics (results.md): a change in the
+        # rule's inputs recomputes the whole history.
+        rule = json.dumps([reference, woken, floors, target], sort_keys=True)
+        trend = self._trends.setdefault(name, _Trend(rule=rule))
         stat = folder.stat("history.jsonl")
-        if (stat.st_size if stat else 0) < trend.offset:
-            trend = self._trends[name] = _Trend()
+        if (stat.st_size if stat else 0) < trend.offset or trend.rule != rule:
+            trend = self._trends[name] = _Trend(rule=rule)
         try:
             chunk = read_history(folder, trend.offset, live=live)
         except (OSError, ValueError):

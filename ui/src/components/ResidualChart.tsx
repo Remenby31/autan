@@ -65,7 +65,13 @@ export function ResidualChart({
           x: { time: false },
           y: {
             distr: 3,
-            range: (u, min, max) => range(u, min, max, Object.values(floorsRef.current ?? {})),
+            range: (u, min, max) =>
+              range(
+                u,
+                min,
+                max,
+                Object.values(floorsRef.current ?? {}).filter((v) => v > 0),
+              ),
           },
         },
         hooks: {
@@ -77,7 +83,7 @@ export function ResidualChart({
               ctx.lineWidth = devicePixelRatio;
               names.forEach((name, k) => {
                 const floor = floorsRef.current?.[name];
-                if (floor === undefined) return;
+                if (floor === undefined || !(floor > 0)) return;
                 const y = Math.round(u.valToPos(floor, "y", true));
                 ctx.strokeStyle = series(k);
                 ctx.beginPath();
@@ -126,13 +132,15 @@ export function ResidualChart({
     };
   }, [key]);
 
+  // A new floor rescales the axis: the data is set again, which recomputes the range.
+  const floorsKey = JSON.stringify(floors ?? null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `version` changes on every append
   useEffect(() => {
     plot.current?.setData([
       history.iteration,
       ...names.map((name) => positive(history.residuals.get(name) ?? [])),
     ]);
-  }, [history.version, key]);
+  }, [history.version, key, floorsKey]);
 
   return (
     <div className="flex h-full flex-col gap-2">

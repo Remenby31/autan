@@ -38,7 +38,7 @@ export function remainingMs({
   const candidates: number[] = [];
   if (maxIterations !== undefined) candidates.push((maxIterations - iteration) * msPerIteration);
   const n = orders.length;
-  if (orders[n - 1] === Number.POSITIVE_INFINITY) return 0;
+  if (targetOrders !== undefined && orders[n - 1] === Number.POSITIVE_INFINITY) return 0;
   if (targetOrders !== undefined && n >= 10) {
     const back = Math.max(0, n - 50);
     const rise = (orders[n - 1] ?? 0) - (orders[back] ?? 0);

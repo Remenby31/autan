@@ -174,36 +174,34 @@ export function shownOrders(orders: number | undefined, target: number | undefin
   return orders ?? Number.NaN;
 }
 
-/** Appends in place, so a long history is never copied; returns a new handle for React.
- * `orders` follows the steady convergence rule of case-schema.md#time, as the server's
- * residual_orders does: the drop of the slowest equation not yet converged, +Infinity once
+type Rule = Pick<Run, "start" | "convergence"> | null | undefined;
+
+/** The inputs of the convergence rule a run's drop depends on, as a comparable key. */
+export function ruleKey(run: Rule): string {
+  return JSON.stringify([run?.start?.residual_reference, run?.start?.woken, run?.convergence]);
+}
+
+/** `orders` from row `from` on, by the steady convergence rule of case-schema.md#time, as the
+ * server's residual_orders: the drop of the slowest equation not yet converged, +Infinity once
  * every equation is, NaN when one cannot be compared. */
-export function appendHistory(
-  columns: HistoryColumns,
-  records: HistoryRecord[],
-  /** The run: its `start` (the reference residuals and woken equations of a continued run)
-   * and its `convergence` floors. */
-  run?: Pick<Run, "start" | "convergence"> | null,
-): HistoryColumns {
+function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
   const reference = run?.start?.residual_reference ?? null;
   const floors = run?.convergence?.floor ?? {};
-  if (!columns.iteration.length)
-    for (const name of run?.start?.woken ?? []) columns.woken.add(name);
-  for (const record of records) {
-    columns.iteration.push(record.iteration);
-    for (const [name, value] of Object.entries(record.residuals)) {
-      column(columns.residuals, name, () => []).push(value);
-    }
-    const firsts: Record<string, number> =
-      reference ??
-      Object.fromEntries([...columns.residuals].map(([name, series]) => [name, series[0] ?? 0]));
-    const floor =
-      FLOOR * Math.max(0, ...Object.values(firsts).filter((v) => v > 0 && v < Infinity));
+  if (from === 0) {
+    columns.orders.length = 0;
+    columns.woken = new Set(run?.start?.woken ?? []);
+  }
+  const series = [...columns.residuals];
+  const firsts: Record<string, number> =
+    reference ?? Object.fromEntries(series.map(([name, values]) => [name, values[0] ?? 0]));
+  const floor = FLOOR * Math.max(0, ...Object.values(firsts).filter((v) => v > 0 && v < Infinity));
+  for (let k = from; k < columns.iteration.length; k++) {
     let slowest = Number.POSITIVE_INFINITY;
-    let comparable = Object.keys(record.residuals).length > 0;
-    for (const [name, value] of Object.entries(record.residuals)) {
+    let comparable = series.length > 0;
+    for (const [name, values] of series) {
+      const value = values[k];
       const first = firsts[name];
-      if (first === undefined) {
+      if (value === undefined || first === undefined) {
         comparable = false;
         continue;
       }
@@ -219,6 +217,22 @@ export function appendHistory(
       else comparable = false;
     }
     columns.orders.push(comparable ? slowest : Number.NaN);
+  }
+}
+
+/** Appends in place, so a long history is never copied; returns a new handle for React.
+ * `run` gives the convergence rule's inputs (its `start` and `convergence`). */
+export function appendHistory(
+  columns: HistoryColumns,
+  records: HistoryRecord[],
+  run?: Rule,
+): HistoryColumns {
+  const from = columns.iteration.length;
+  for (const record of records) {
+    columns.iteration.push(record.iteration);
+    for (const [name, value] of Object.entries(record.residuals)) {
+      column(columns.residuals, name, () => []).push(value);
+    }
     for (const [name, forces] of Object.entries(record.monitors ?? {})) {
       columns.monitors.set(name, forces);
       if (forces.cl === undefined || forces.cd === undefined) continue;
@@ -228,10 +242,18 @@ export function appendHistory(
       series.cd.push(forces.cd);
     }
   }
+  computeOrders(columns, run, from);
   return { ...columns, version: columns.version + 1 };
 }
 
-/** The coefficients of the case's forces monitor, when exactly one reports them. */
+/** Recomputes the whole drop when the rule's inputs of `run` changed (`floors` arrive once the
+ * runtime has built its physics, results.md); the same handle otherwise. */
+export function reapplyRule(columns: HistoryColumns, before: Rule, run: Rule): HistoryColumns {
+  if (ruleKey(before) === ruleKey(run)) return columns;
+  computeOrders(columns, run, 0);
+  return { ...columns, version: columns.version + 1 };
+}
+
 export function soleForces(history: HistoryColumns): ForceColumns | null {
   return history.forces.size === 1 ? ([...history.forces.values()][0] ?? null) : null;
 }
@@ -269,8 +291,10 @@ export function useLiveRun(runId: string): LiveRun {
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
     source.addEventListener("run", (e) => {
       const next = JSON.parse(e.data) as Run;
+      history = reapplyRule(history, run, next);
       run = next;
-      setState((s) => ({ ...s, run: next }));
+      const columns = history;
+      setState((s) => ({ ...s, run: next, history: columns }));
     });
     source.addEventListener("history", (e) => {
       const records = JSON.parse(e.data) as HistoryRecord[];
@@ -325,8 +349,11 @@ export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> 
     const source = new EventSource(`/api/runs/history/events?${query}`);
     source.addEventListener("run", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: Run };
+      const history = histories.get(run_id);
+      const columns = history && reapplyRule(history, starts.get(run_id), data);
+      if (columns) histories.set(run_id, columns);
       starts.set(run_id, data);
-      set(run_id, (old) => ({ ...old, run: data }));
+      set(run_id, (old) => ({ ...old, run: data, ...(columns ? { history: columns } : {}) }));
     });
     source.addEventListener("history", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: HistoryRecord[] };
