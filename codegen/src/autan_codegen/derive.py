@@ -1,7 +1,7 @@
 """Tangent and adjoint loops of a module's loops (research section 4.1).
 
-Active data are cell datasets; geometry, parameters and face datasets (boundary values) are
-passive. The tangent of a loop reads the tangents of its active inputs and increments or writes
+Active data are cell datasets; geometry, parameters, face datasets (boundary values) and matrix
+blocks (Jac, JacAccum) are passive. The tangent of a loop reads the tangents of its active inputs and increments or writes
 the tangents of its outputs. The adjoint transposes access modes: an increment's adjoint reads the
 target's adjoint through the same map with the declared signs, a gather's adjoint increments the
 source's adjoint, and a write's adjoint reads the target's adjoint and then zeroes it.
@@ -37,7 +37,12 @@ def adj_ds(d: dsl.Dataset) -> dsl.Dataset:
 
 def _is_active(b: dsl.Binding) -> bool:
     d = b.dataset
-    return isinstance(d, dsl.Dataset) and not d.geometry and d.set is dsl.MeshSet.CELLS
+    return (
+        isinstance(d, dsl.Dataset)
+        and not d.geometry
+        and d.set is dsl.MeshSet.CELLS
+        and d.type.role not in dsl.PASSIVE_ROLES
+    )
 
 
 def _active(sig: Signature, bindings: dict[str, dsl.Binding], skip: int = 0) -> list[int]:
