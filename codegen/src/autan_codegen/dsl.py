@@ -176,6 +176,9 @@ class geometry:
     cell_centroid = Dataset("cell_centroid", MeshSet.CELLS, Geom.Vec3, geometry=True)
     cell_volume = Dataset("cell_volume", MeshSet.CELLS, Geom.scalar, geometry=True)
     lsq_weight = Dataset("lsq_weight", MeshSet.INCIDENCES, Geom.Vec3, geometry=True)
+    # +1 where the cell is its face's left (owner) cell, and on boundary faces; -1 where it is
+    # the right one: the sign of a face's contribution to the cell in a gather over incidences.
+    incidence_side = Dataset("incidence_side", MeshSet.INCIDENCES, Geom.scalar, geometry=True)
     # The same least-squares weights over the entries of the cell stencil.
     stencil_lsq_weight = Dataset("stencil_lsq_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
 

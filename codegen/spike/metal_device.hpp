@@ -123,7 +123,8 @@ struct DeviceGeomArray {
 template <class P>
 struct DeviceGeom {
   DeviceGeomArray<P> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
-      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
+      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, incidence_side,
+      stencil_lsq_weight;
   DeviceGeom(mtl::Context& ctx, const GeomCopy<P>& g)
       : face_area(ctx, g.face_area),
         face_centroid(ctx, g.face_centroid),
@@ -135,6 +136,7 @@ struct DeviceGeom {
         cell_centroid(ctx, g.cell_centroid),
         cell_volume(ctx, g.cell_volume),
         lsq_weight(ctx, g.lsq_weight),
+        incidence_side(ctx, g.incidence_side),
         stencil_lsq_weight(ctx, g.stencil_lsq_weight) {}
 };
 

@@ -28,6 +28,9 @@ struct PackedGeometry {
   /// M = sum_k d_k d_k^T / |d_k|^2, d_k from the cell centroid to the neighbour centroid
   /// (interior face) or the face centroid (boundary face). Zero on ghost cells.
   std::vector<double> lsq_weight;
+  /// n_incidences: +1 where the cell is the face's owner (left), and on boundary faces; -1 where
+  /// it is the neighbour (right).
+  std::vector<double> incidence_side;
   /// 3 x stencil size: LSQ weights over the cell stencil, when one is set (CellStencil).
   std::vector<double> stencil_lsq_weight;
 };

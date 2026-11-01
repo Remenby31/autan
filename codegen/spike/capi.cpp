@@ -636,7 +636,8 @@ void autan_spike_mesh_counts(const void* mesh, std::int64_t* counts) {
 void autan_spike_mesh_arrays(const void* mesh, std::int32_t* owner, std::int32_t* neighbour,
                              std::int64_t* cell_face_offsets, std::int32_t* cell_faces,
                              double* face_area, double* face_centroid, double* face_moment,
-                             double* cell_centroid, double* cell_volume, double* lsq_weight) {
+                             double* cell_centroid, double* cell_volume, double* lsq_weight,
+                             double* incidence_side) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   const auto& t = m->topo;
   std::memcpy(owner, t.owner, sizeof(index_t) * static_cast<std::size_t>(t.n_faces));
@@ -652,6 +653,7 @@ void autan_spike_mesh_arrays(const void* mesh, std::int32_t* owner, std::int32_t
   std::memcpy(cell_centroid, p.cell_centroid.data(), sizeof(double) * p.cell_centroid.size());
   std::memcpy(cell_volume, p.cell_volume.data(), sizeof(double) * p.cell_volume.size());
   std::memcpy(lsq_weight, p.lsq_weight.data(), sizeof(double) * p.lsq_weight.size());
+  std::memcpy(incidence_side, p.incidence_side.data(), sizeof(double) * p.incidence_side.size());
 }
 
 int autan_spike_advdiff_residual(const void* mesh, const char* policy, const double* q,

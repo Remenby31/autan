@@ -172,6 +172,15 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {
   const auto neighbour = mesh.neighbour();
   const auto ni = static_cast<std::size_t>(offsets.back());
   p.lsq_weight.assign(3 * ni, 0.0);
+  p.incidence_side.assign(ni, 1.0);
+  for (std::size_t c = 0; c + 1 < offsets.size(); ++c) {
+    for (auto k = offsets[c]; k < offsets[c + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(cell_faces[static_cast<std::size_t>(k)]);
+      if (f < neighbour.size() && static_cast<std::size_t>(owner[f]) != c) {
+        p.incidence_side[static_cast<std::size_t>(k)] = -1.0;
+      }
+    }
+  }
   std::vector<Vec> d;
   for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
     const auto ci = static_cast<std::size_t>(c);
