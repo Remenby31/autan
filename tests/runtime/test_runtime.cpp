@@ -1497,7 +1497,7 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0, Json* diagnostic = nullptr) {
+                      int expected_status = 0, Json* diagnostic = nullptr, bool directory = true) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
@@ -1539,7 +1539,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   if (fs::exists(dir / "runs")) {
     for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
   }
-  CHECK(run.empty() == (expected_status == 2));
+  CHECK(run.empty() == (expected_status == 2 || !directory));
   return run;
 }
 
@@ -1563,10 +1563,10 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   const Outcome one = run(doc, options);
   REQUIRE(one.status == ExitStatus::finished);
   // The physics' groups (each spanning the mesh) stay whole on one rank.
-  const fs::path many = run_on_ranks(doc, ranks,
-                                     {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
-                                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1",
-                                      "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
+  const fs::path many = run_on_ranks(
+      doc, ranks,
+      {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000", "AUTAN_TEST_GROWTH=0.001",
+       "AUTAN_TEST_VARY=1", "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
 #ifdef AUTAN_HAVE_CUDA

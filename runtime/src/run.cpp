@@ -131,8 +131,8 @@ struct Prepared {
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
-  std::optional<StartState> start;  // input.start, read and checked
-  Json start_averaging;             // `continue`: the previous run's averaging
+  std::optional<StartState> start;          // input.start, read and checked
+  Json start_averaging;                     // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -1581,11 +1581,13 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     }
     return run.execute();
   } catch (const std::exception& e) {
-    // The run directory could not be created or its run.json not written:
+    // The run could not be set up (a coded error keeps its code, invalid
+    // partition groups E0140), its directory created or its run.json written:
     // nothing records the failure but this diagnostic. On several ranks, the
     // others may wait in a collective call: every rank ends.
+    const auto* coded = dynamic_cast<const Error*>(&e);
     std::fprintf(err, "%s\n",
-                 Diagnostic{.code = "E0704",
+                 Diagnostic{.code = coded != nullptr ? error_code_string(coded->code()) : "E0704",
                             .message = e.what(),
                             .path = "",
                             .data_json = Json{{"rank", comm->rank()}}.dump()}

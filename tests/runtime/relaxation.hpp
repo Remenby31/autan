@@ -54,7 +54,8 @@ struct RelaxationOptions {
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh. On several ranks, the physics throws unless the
-  /// runtime asked for them and every group it holds a cell of is wholly owned. 0: none.
+  /// runtime asked for them and every group it holds a cell of is wholly owned. 0: none;
+  /// -1: a malformed group, cell 0 twice.
   int groups = 0;
 
   static RelaxationOptions from_environment() {
@@ -343,6 +344,11 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   // Cells per group, recorded when the runtime asks for the groups.
   auto group_sizes = std::make_shared<std::vector<std::int64_t>>();
   autan::runtime::PartitionGroups groups;
+  if (options.groups == -1) {
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
+      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}};
+    };
+  }
   if (options.groups > 0) {
     groups = [n = options.groups, group_sizes](const autan::runtime::SolverInput& /*input*/,
                                                const autan::Mesh& mesh,
