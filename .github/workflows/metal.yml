@@ -66,7 +66,7 @@ jobs:
         working-directory: codegen
         env:
           AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_metal.dylib
-        run: uv run --locked pytest tests/test_gpu.py tests/test_metal.py --backend metal -m "not slow"
+        run: uv run --locked pytest tests/test_gpu.py tests/test_metal.py tests/test_jacobian.py --backend metal -m "not slow"
       - name: Euler residual on Metal against the CPU physics
         if: steps.probe.outputs.device == 'true'
         run: build/tests/physics/autan_physics_metal_tests
