@@ -3,7 +3,14 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
-import { type LiveRun, runQuery, runsQuery, soleForces, useRunsHistory } from "../api/runs";
+import {
+  type LiveRun,
+  runQuery,
+  runsQuery,
+  shownOrders,
+  soleForces,
+  useRunsHistory,
+} from "../api/runs";
 import { degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -74,7 +81,9 @@ function Compare() {
       if (!history) return;
       const label = id.slice(-8);
       const color = resolvedColor(k);
-      drop.push({ label, color, x: history.iteration, y: history.orders });
+      const target = registry.data?.summaries[id]?.target_orders ?? undefined;
+      const y = history.orders.map((o) => shownOrders(o, target));
+      drop.push({ label, color, x: history.iteration, y });
       const forces = soleForces(history);
       if (forces) {
         cl.push({ label, color, x: forces.iteration, y: forces.cl });
@@ -82,7 +91,7 @@ function Compare() {
       }
     });
     return { drop, cl, cd };
-  }, [ids, live, version]);
+  }, [ids, live, version, registry.data]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: histories grow in place, see charts
   const polar = useMemo(

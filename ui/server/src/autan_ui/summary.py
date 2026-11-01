@@ -21,29 +21,45 @@ class _Trend:
 
 
 def residual_orders(
-    first: dict[str, float], residuals: dict[str, float], woken: set[str]
+    first: dict[str, float],
+    residuals: dict[str, float],
+    woken: set[str],
+    floors: dict[str, float] | None = None,
 ) -> float | None:
-    """Orders of magnitude the slowest equation has dropped since iteration 1: the quantity
-    the steady convergence criterion (`time.residual_orders`, case-schema.md) compares. An
-    equation below the floor at iteration 1 (FLOOR times the largest first residual) is exempt
-    while it stays at or below it; once above, it joins `woken`, which this call updates, and
-    is never exempt again. None when an equation cannot be compared: a residual that is not a
-    positive finite number, or that grew from an exact zero. A residual that reached exactly
-    zero does not limit the drop."""
+    """Orders of magnitude the slowest equation not yet converged has dropped since iteration 1,
+    by the steady convergence rule of case-schema.md#time: `math.inf` once every equation is.
+
+    An equation below the floor at iteration 1 (FLOOR times the largest first residual) is
+    exempt while it stays at or below it; once above, it joins `woken`, which this call
+    updates, and is never exempt again. An equation at or below its round-off floor (`floors`,
+    run.json `convergence.floor`) has converged, and so has one at exactly zero. None when an
+    equation cannot be compared: a residual that is not a positive finite number, or that grew
+    from an exact zero; None for an empty line."""
     floor = FLOOR * max((v for v in first.values() if _positive(v)), default=0.0)
     drops = []
+    comparable = True
     for name, value in residuals.items():
         start = first.get(name)
-        if name not in woken and isinstance(start, float | int) and 0 <= start < floor:
-            if isinstance(value, float | int) and 0 <= value <= floor:
+        if name not in woken and _number(start) and 0 <= start < floor:  # type: ignore[operator]
+            if _number(value) and 0 <= value <= floor:
                 continue
             woken.add(name)
+        limit = (floors or {}).get(name)
+        if _number(value) and limit is not None and 0 <= value <= limit:
+            continue  # At its round-off floor.
         if value == 0 and (start == 0 or _positive(start)):
-            continue  # Reached exactly zero: no limit on the drop.
-        if not (_positive(start) and _positive(value)):
-            return None
-        drops.append(math.log10(start) - math.log10(value))  # type: ignore[arg-type]
-    return min(drops) if drops else None
+            continue  # Reached exactly zero.
+        if _positive(start) and _positive(value):
+            drops.append(math.log10(start) - math.log10(value))  # type: ignore[arg-type]
+        else:
+            comparable = False  # Keep going: the equations after it may still wake.
+    if not comparable or not residuals:
+        return None
+    return min(drops, default=math.inf)
+
+
+def _number(value: object) -> bool:
+    return isinstance(value, float | int) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _positive(value: object) -> bool:
@@ -71,10 +87,13 @@ class Summaries:
         live: bool,
         reference: dict[str, float] | None = None,
         woken: list[str] | None = None,
+        floors: dict[str, float] | None = None,
+        target: float | None = None,
     ) -> dict[str, Any] | None:
         """`reference` and `woken`: `start.residual_reference` and `start.woken` of a steady
         `continue` run (results.md), the residuals the drop is measured from and the identically
-        zero equations no longer exempt."""
+        zero equations no longer exempt; `floors`: run.json `convergence.floor`; `target`: the
+        case's `residual_orders`, which a run with every equation converged reports."""
         trend = self._trends.setdefault(name, _Trend())
         stat = folder.stat("history.jsonl")
         if (stat.st_size if stat else 0) < trend.offset:
@@ -94,7 +113,9 @@ class Summaries:
                 trend.first = reference or residuals
                 trend.woken = set(woken or ())
             trend.iteration = iteration
-            orders = residual_orders(trend.first, residuals, trend.woken)
+            orders = residual_orders(trend.first, residuals, trend.woken, floors)
+            if orders == math.inf:
+                orders = target
             trend.current = orders
             if orders is not None:
                 trend.orders.append(orders)

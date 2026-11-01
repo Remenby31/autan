@@ -11,8 +11,14 @@ const series = (k: number) => css(`--series-${(k % 8) + 1}`);
 // below its top; zero, which a log axis cannot place, is a gap.
 const DECADES = 20;
 const positive = (values: number[]) => values.map((v) => (v > 0 ? v : null));
-const range = (_: uPlot, min: number | null, max: number | null): uPlot.Range.MinMax => {
-  if (min == null || max == null || !(max > 0)) return [min, max];
+const range = (
+  _: uPlot,
+  data: number | null,
+  max: number | null,
+  floors: number[],
+): uPlot.Range.MinMax => {
+  const min = Math.min(data ?? Number.POSITIVE_INFINITY, ...floors);
+  if (!Number.isFinite(min) || max == null || !(max > 0)) return [data, max];
   const top = Math.ceil(Math.log10(max));
   const bottom = Math.max(Math.floor(Math.log10(Math.max(min, Number.MIN_VALUE))), top - DECADES);
   return [10 ** Math.min(bottom, top - 1), 10 ** top];
@@ -31,10 +37,19 @@ const decades = (_: uPlot, __: number, min: number, max: number) => {
   return splits;
 };
 
-/** Residuals on a log axis; redraws in place as the history grows. */
-export function ResidualChart({ history }: { history: HistoryColumns }) {
+/** Residuals on a log axis, with the round-off floor of each equation dashed in its colour
+ * (run.json `convergence.floor`); redraws in place as the history grows. */
+export function ResidualChart({
+  history,
+  floors,
+}: {
+  history: HistoryColumns;
+  floors?: Record<string, number> | undefined;
+}) {
   const host = useRef<HTMLDivElement>(null);
   const plot = useRef<uPlot | null>(null);
+  const floorsRef = useRef(floors);
+  floorsRef.current = floors;
   const names = [...history.residuals.keys()];
   const key = names.join(",");
 
@@ -46,7 +61,34 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
       {
         width: el.clientWidth,
         height: el.clientHeight,
-        scales: { x: { time: false }, y: { distr: 3, range } },
+        scales: {
+          x: { time: false },
+          y: {
+            distr: 3,
+            range: (u, min, max) => range(u, min, max, Object.values(floorsRef.current ?? {})),
+          },
+        },
+        hooks: {
+          draw: [
+            (u) => {
+              const ctx = u.ctx;
+              ctx.save();
+              ctx.setLineDash([4 * devicePixelRatio, 4 * devicePixelRatio]);
+              ctx.lineWidth = devicePixelRatio;
+              names.forEach((name, k) => {
+                const floor = floorsRef.current?.[name];
+                if (floor === undefined) return;
+                const y = Math.round(u.valToPos(floor, "y", true));
+                ctx.strokeStyle = series(k);
+                ctx.beginPath();
+                ctx.moveTo(u.bbox.left, y);
+                ctx.lineTo(u.bbox.left + u.bbox.width, y);
+                ctx.stroke();
+              });
+              ctx.restore();
+            },
+          ],
+        },
         axes: [
           { stroke: css("--fg-3"), grid: { stroke: css("--line") } },
           {

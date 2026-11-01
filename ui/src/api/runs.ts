@@ -1,14 +1,6 @@
 import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type {
-  Diagnostic,
-  Forces,
-  HistoryRecord,
-  LogLine,
-  Run,
-  RunRegistry,
-  RunStart,
-} from "./contracts";
+import type { Diagnostic, Forces, HistoryRecord, LogLine, Run, RunRegistry } from "./contracts";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -176,45 +168,57 @@ function column<T>(map: Map<string, T>, name: string, create: () => T): T {
 // (case-schema.md#time); the SDK's autan.restart.FLOOR.
 const FLOOR = 1e-12;
 
-/** Appends in place, so a long history is never copied; returns a new handle for React. */
+/** A drop as a display shows it: one with every equation converged reads as the target. */
+export function shownOrders(orders: number | undefined, target: number | undefined): number {
+  if (orders === Number.POSITIVE_INFINITY) return target ?? Number.NaN;
+  return orders ?? Number.NaN;
+}
+
+/** Appends in place, so a long history is never copied; returns a new handle for React.
+ * `orders` follows the steady convergence rule of case-schema.md#time, as the server's
+ * residual_orders does: the drop of the slowest equation not yet converged, +Infinity once
+ * every equation is, NaN when one cannot be compared. */
 export function appendHistory(
   columns: HistoryColumns,
   records: HistoryRecord[],
-  /** `start` of a steady continued run: the drop is measured from its `residual_reference`,
-   * and the equations of its `woken` are no longer exempt. */
-  start?: Pick<RunStart, "residual_reference" | "woken"> | null,
+  /** The run: its `start` (the reference residuals and woken equations of a continued run)
+   * and its `convergence` floors. */
+  run?: Pick<Run, "start" | "convergence"> | null,
 ): HistoryColumns {
-  const reference = start?.residual_reference ?? null;
-  if (!columns.iteration.length) for (const name of start?.woken ?? []) columns.woken.add(name);
+  const reference = run?.start?.residual_reference ?? null;
+  const floors = run?.convergence?.floor ?? {};
+  if (!columns.iteration.length)
+    for (const name of run?.start?.woken ?? []) columns.woken.add(name);
   for (const record of records) {
     columns.iteration.push(record.iteration);
-    let slowest = Number.POSITIVE_INFINITY;
-    let comparable = true;
-    const firsts: Record<string, number> = reference
-      ? { ...reference }
-      : Object.fromEntries([...columns.residuals].map(([name, series]) => [name, series[0] ?? 0]));
     for (const [name, value] of Object.entries(record.residuals)) {
-      const series = column(columns.residuals, name, () => []);
-      series.push(value);
-      if (!(name in firsts)) firsts[name] = series[0] ?? 0;
+      column(columns.residuals, name, () => []).push(value);
     }
+    const firsts: Record<string, number> =
+      reference ??
+      Object.fromEntries([...columns.residuals].map(([name, series]) => [name, series[0] ?? 0]));
     const floor =
       FLOOR * Math.max(0, ...Object.values(firsts).filter((v) => v > 0 && v < Infinity));
+    let slowest = Number.POSITIVE_INFINITY;
+    let comparable = Object.keys(record.residuals).length > 0;
     for (const [name, value] of Object.entries(record.residuals)) {
-      const first = firsts[name] ?? 0;
+      const first = firsts[name];
+      if (first === undefined) {
+        comparable = false;
+        continue;
+      }
       if (!columns.woken.has(name) && first >= 0 && first < floor) {
         if (value >= 0 && value <= floor) continue;
         columns.woken.add(name);
       }
+      const limit = floors[name];
+      if (limit !== undefined && value >= 0 && value <= limit) continue;
       if (value === 0 && first >= 0) continue;
-      if (first > 0 && value > 0)
+      if (first > 0 && value > 0 && first < Infinity && value < Infinity)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
       else comparable = false;
     }
-    // Same rule as the server's residual_orders: an identically zero equation is exempt at its
-    // floor, a residual at exactly zero does not limit the drop; one grown from an exact zero,
-    // or not positive, leaves it undefined.
-    columns.orders.push(comparable && Number.isFinite(slowest) ? slowest : Number.NaN);
+    columns.orders.push(comparable ? slowest : Number.NaN);
     for (const [name, forces] of Object.entries(record.monitors ?? {})) {
       columns.monitors.set(name, forces);
       if (forces.cl === undefined || forces.cd === undefined) continue;
@@ -257,21 +261,21 @@ export function useLiveRun(runId: string): LiveRun {
   }));
   useEffect(() => {
     let history = emptyColumns();
-    let start: Run["start"] = null;
+    let run: Run | null = null;
     const log: LogLines = { lines: [], version: 0 };
     setState({ run: null, history, log, connected: false, invalid: null });
     const source = new EventSource(`/api/runs/${runId}/history/events`);
     source.onopen = () => setState((s) => ({ ...s, connected: true }));
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
     source.addEventListener("run", (e) => {
-      const run = JSON.parse(e.data) as Run;
-      start = run.start;
-      setState((s) => ({ ...s, run }));
+      const next = JSON.parse(e.data) as Run;
+      run = next;
+      setState((s) => ({ ...s, run: next }));
     });
     source.addEventListener("history", (e) => {
       const records = JSON.parse(e.data) as HistoryRecord[];
       if (!records.length) return;
-      history = appendHistory(history, records, start);
+      history = appendHistory(history, records, run);
       const next = history;
       setState((s) => ({ ...s, history: next }));
     });
@@ -316,12 +320,12 @@ export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> 
         next.set(runId, change(old));
         return next;
       });
-    const starts = new Map<string, Run["start"]>();
+    const starts = new Map<string, Run>();
     const query = runIds.map((id) => `run=${encodeURIComponent(id)}`).join("&");
     const source = new EventSource(`/api/runs/history/events?${query}`);
     source.addEventListener("run", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: Run };
-      starts.set(run_id, data.start);
+      starts.set(run_id, data);
       set(run_id, (old) => ({ ...old, run: data }));
     });
     source.addEventListener("history", (e) => {
