@@ -46,6 +46,7 @@ from autan.schema import (
 from autan.solver_input import (
     SolidInitial,
     SolidMedium,
+    given_state,
     initial_state,
     medium_input,
     turbulence_input,
@@ -343,7 +344,7 @@ class FakeBackend:
                 )
         info = writer.info.model_copy(update=changes)
         staging = writer.path / ".solution.cgns.tmp"
-        _write_solution(staging, spec, plan, history.state, box, layout, info)
+        _write_solution(staging, spec, plan, box, layout, info)
         staging.rename(writer.path / "solution.cgns")
         writer.finish(**changes)
 
@@ -426,7 +427,6 @@ def _write_solution(
     path: Path,
     spec: CaseSpec,
     plan: Plan,
-    state: dict[str, Any],
     box: Box,
     layout: list[str],
     info: RunInfo,
@@ -540,7 +540,9 @@ def _write_solution(
             region = cgns.node(zone, "WallSolution", "ZoneSubRegion_t", np.array([2], np.int32))
             _point_list(region, walls + 1)
             cgns.node(region, "GridLocation", "GridLocation_t", "FaceCenter")
-            cgns.data_array(region, "Pressure", np.full(walls.size, state["pressure"]))
+            owner = {abs(face) - 1: cell for cell, faces in enumerate(cells) for face in faces}
+            cells_of_walls = np.array([owner[int(face)] for face in walls])
+            cgns.data_array(region, "Pressure", fields["Pressure"][cells_of_walls])
             for axis in "XYZ":
                 cgns.data_array(region, f"WallShearStress{axis}", np.zeros(walls.size))
 
@@ -572,7 +574,10 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
     freestream, turbulence = closed_freestream(spec), turbulence_input(spec)
     initial = {
         z.zone: initial_state(
-            medium_input(MEDIUM.validate_python(z.medium)), freestream, turbulence
+            medium_input(MEDIUM.validate_python(z.medium)),
+            freestream,
+            turbulence,
+            given_state(MEDIUM.validate_python(z.medium)),
         )
         for z in plan.cell_zones
     }
