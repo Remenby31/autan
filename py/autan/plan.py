@@ -649,11 +649,23 @@ def _properties(material: dict[str, Any]) -> dict[str, Any]:
 
 
 def _check_monitors(case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]) -> None:
-    names = [zone.name for zone in mesh.boundary_zones]
+    partners = _partners(mesh)
+    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
     seen: set[str] = set()
     for index, monitor in enumerate(spec.monitors):
         where = case.locate(f"monitors[{index}]")
-        if not _matches(monitor.surfaces, names):
+        if monitor.surfaces in partners and not any(c in monitor.surfaces for c in "*?["):
+            found.append(
+                diagnostic(
+                    "E0603",
+                    f"monitor {monitor.name!r}: boundary zone {monitor.surfaces!r} is periodic "
+                    "and carries no load",
+                    location=where,
+                    monitor=monitor.name,
+                    zone=monitor.surfaces,
+                )
+            )
+        elif not _matches(monitor.surfaces, names):
             found.append(
                 diagnostic(
                     "E0601",

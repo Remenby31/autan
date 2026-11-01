@@ -16,6 +16,7 @@ from pathlib import Path
 
 import autan
 import pytest
+from autan import cgns
 from autan.cli import main
 
 from tests.conftest import ROOT
@@ -289,27 +290,58 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
     assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
 
 
-def test_the_runtime_takes_the_periodic_pairs_of_the_solver_input(tmp_path: Path) -> None:
+PERIODIC_BOX = ROOT / "tests" / "data" / "mesh" / "periodic-box" / "periodic-box.binary.msh"
+
+
+def _box(tmp_path: Path, turbulence: str) -> tuple[autan.Case, autan.MeshInfo]:
     assert MESH_INFO is not None
-    source = ROOT / "tests" / "data" / "mesh" / "periodic-box" / "periodic-box.binary.msh"
     info = tmp_path / "box.meshinfo.json"
     info.write_text(
         subprocess.run(
-            [str(MESH_INFO), "--json", str(source)], capture_output=True, text=True, check=True
+            [str(MESH_INFO), "--json", str(PERIODIC_BOX)],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     )
     case = tmp_path / "box.py"
     case.write_text(
         "import autan\nfrom autan.units import K, Pa\n"
-        f"case = autan.Case('box', mesh={str(source)!r})\n"
-        "case.physics = autan.Compressible(turbulence=autan.Laminar())\n"
+        f"case = autan.Case('box', mesh={str(PERIODIC_BOX)!r})\n"
+        f"case.physics = autan.Compressible(turbulence=autan.{turbulence}())\n"
         "case.freestream(mach=0.2, pressure=101325 * Pa, temperature=300 * K)\n"
         "case.boundary('z*').slip()\n"
+        "case.monitor(autan.forces('*'), every=7)\n"
     )
+    return autan.load(case), autan.MeshInfo.load(info)
+
+
+def test_a_periodic_run_reads_back_through_the_results_contract(tmp_path: Path) -> None:
+    case, mesh = _box(tmp_path, "Laminar")
+    result = case.run(
+        mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / "runs"
+    )
+    assert result.run.status == "converged"
+    assert result.field("Density").size == mesh.counts.cells  # checks solution.cgns
+    zone = cgns.read(result.path / "solution.cgns").child("Base").child("Zone")
+    connectivity = zone.child("ZoneGridConnectivity")
+    assert {"xmin", "xmax", "ymin", "ymax"} == set(connectivity.children)
+    for pair in mesh.periodic:
+        a, b = pair.zones
+        vector = list(pair.transform.vector)
+        side_a, side_b = connectivity.child(a), connectivity.child(b)
+        assert json.loads(side_a.child("PeriodicTranslation").text()) == vector
+        assert json.loads(side_b.child("PeriodicTranslation").text()) == [-v for v in vector]
+        assert side_a.child("PointList").data.size == pair.faces
+    # The monitor integrates over the slip walls only, every 7 iterations.
+    iterations = result.history.monitor("forces")["iteration"].tolist()
+    assert iterations == list(range(7, result.run.iterations + 1, 7))
+
+
+def test_euler_refuses_a_periodic_mesh(tmp_path: Path) -> None:
+    case, mesh = _box(tmp_path, "Inviscid")
     with pytest.raises(autan.CaseError) as error:
-        autan.load(case).run(
-            autan.MeshInfo.load(info),
-            backend=autan.SolverBackend(executable=RELAXATION),
-            runs=tmp_path / "runs",
-        )
-    assert error.value.codes == ["E0706"]  # accepted (not E0705), then not implemented
+        case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
+    [found] = error.value.diagnostics
+    assert (found.code, found.data.get("path")) == ("E0706", "periodic")  # not missing physics
+    assert not any((tmp_path / "runs").iterdir())

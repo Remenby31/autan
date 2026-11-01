@@ -242,3 +242,39 @@ def test_a_big_endian_r4_translation_is_valid(
         ),
     )
     assert autan.Results.open(result.path).field("Density").size > 0
+
+
+def test_a_monitor_on_a_periodic_zone_is_e0603(
+    write_case: Callable[..., Path], mesh: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    info = autan.MeshInfo.load(mesh)
+    named = autan.load(write_case(CRM_HL + "case.monitor(autan.forces('fuselage', name='f'))\n"))
+    assert [d.code for d in named.plan(info).diagnostics if d.severity == "error"] == ["E0603"]
+    every = write_case(
+        CRM_HL + "case.monitor(autan.forces('f*', name='f'))\n", name="every.py"
+    )  # farfield and the periodic fuselage
+    assert main(["prepare", str(every), "--mesh-info", str(mesh)]) == 0
+    document = json.loads(capsys.readouterr().out)
+    [monitor] = [m for m in document["monitors"] if m["name"] == "f"]
+    assert monitor["zones"] == ["farfield"]
+    monitor["zones"] = ["farfield", "fuselage"]
+    with pytest.raises(pydantic.ValidationError):
+        autan.solver_input.SolverInput.model_validate(document)
+    monitor["zones"] = []
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+
+    only = autan.load(write_case(CRM_HL + "case.monitor(autan.forces('fuse*', name='f'))\n"))
+    assert [d.code for d in only.plan(info).diagnostics if d.severity == "error"] == ["E0601"]
+
+
+def test_a_monitor_wildcard_that_spells_a_periodic_zone_is_still_a_wildcard(
+    mesh_variant: Callable[..., autan.MeshInfo], write_case: Callable[..., Path]
+) -> None:
+    def rename(document: dict[str, Any]) -> None:
+        periodic(document, PAIR | {"zones": ["fuse*", "empennage"]})
+        document["boundary_zones"][3]["name"] = "fuse*"
+
+    case = autan.load(write_case(CRM_HL + "case.monitor(autan.forces('fuse*', name='f'))\n"))
+    codes = [d.code for d in case.plan(mesh_variant("crm-hl", rename)).diagnostics]
+    assert [c for c in codes if c.startswith("E")] == ["E0601"]
