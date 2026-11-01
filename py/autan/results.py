@@ -10,10 +10,10 @@ import secrets
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
@@ -63,6 +63,32 @@ class Averaging(_Strict):
     to_time: float
 
 
+EQUATIONS = (
+    "density",
+    "pressure",
+    "momentum-x",
+    "momentum-y",
+    "momentum-z",
+    "energy",
+    "nu-tilde",
+    "k",
+    "omega",
+)
+# What a JSON Schema can say of ``woken``; membership and order are checked by the readers.
+WOKEN_SCHEMA = {"type": "array", "items": {"enum": list(EQUATIONS)}, "uniqueItems": True}
+
+
+def woken_problem(reference: dict[str, float] | None, woken: list[str] | None) -> str | None:
+    """Why ``woken`` does not go with ``residual_reference`` (results.md#runjson, ``start``)."""
+    if (woken is None) != (reference is None):
+        return "start.woken is given exactly with start.residual_reference"
+    if woken is not None and (
+        woken != sorted(set(woken)) or not set(woken) <= set(reference or {})
+    ):
+        return "start.woken lists sorted, distinct equations of residual_reference"
+    return None
+
+
 class StartInfo(_Strict):
     """Where a restarted run started from (results.md#runjson, ``start``)."""
 
@@ -73,13 +99,22 @@ class StartInfo(_Strict):
     time: float | None
     solution_sha256: Hex
     residual_reference: dict[str, float] | None
-    woken: list[str] | None
+    woken: Annotated[
+        list[str] | None, Field(json_schema_extra={"anyOf": [WOKEN_SCHEMA, {"type": "null"}]})
+    ]
+
+    @model_validator(mode="after")
+    def _woken(self) -> Self:
+        problem = woken_problem(self.residual_reference, self.woken)
+        if problem:
+            raise ValueError(problem)
+        return self
 
 
 class Convergence(_Strict):
     """The round-off floor of each equation of an fp32+acc64 steady run (case-schema.md#time)."""
 
-    floor: dict[str, Annotated[float, Field(gt=0, allow_inf_nan=False)]]
+    floor: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
 
 
 class RunInfo(_Strict):

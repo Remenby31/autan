@@ -21,7 +21,11 @@ from autan.meshinfo import (
     Translation,
     shared_zones,
 )
-from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
+from autan.results import (
+    WOKEN_SCHEMA,
+    Devices,
+    woken_problem,
+)
 from autan.schema import (
     DDES,
     SA,
@@ -304,15 +308,9 @@ class StartInput(_Strict):
 
     @model_validator(mode="after")
     def _woken_names(self) -> Self:
-        reference = self.residual_reference
-        if (self.woken is None) != (reference is None):
-            message = "start.woken is given exactly with start.residual_reference"
-            raise ValueError(message)
-        if self.woken is not None and (
-            self.woken != sorted(set(self.woken)) or not set(self.woken) <= set(reference or {})
-        ):
-            message = "start.woken lists sorted, distinct equations of residual_reference"
-            raise ValueError(message)
+        problem = woken_problem(self.residual_reference, self.woken)
+        if problem:
+            raise ValueError(problem)
         return self
 
 
@@ -733,7 +731,7 @@ def json_schema() -> dict[str, Any]:
     ]
     defs["StartInput"]["oneOf"] = [
         {"properties": {"residual_reference": {"type": "null"}, "woken": {"type": "null"}}},
-        {"properties": {"residual_reference": {"type": "object"}, "woken": {"type": "array"}}},
+        {"properties": {"residual_reference": {"type": "object"}, "woken": WOKEN_SCHEMA}},
     ]
     defs["UnsteadyInput"]["oneOf"] = [
         {"properties": {"dt": {"type": "number"}, "cfl": {"type": "null"}}},

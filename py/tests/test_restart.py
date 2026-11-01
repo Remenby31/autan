@@ -320,7 +320,9 @@ def test_a_continuation_carries_the_woken_equations(
     assert warm.run.start.woken is None
 
 
-@pytest.mark.parametrize("woken", [None, ["bogus"], ["momentum-y", "density"]])
+@pytest.mark.parametrize(
+    "woken", [None, ["bogus"], ["momentum-y", "momentum-y"], ["momentum-y", "density"]]
+)
 def test_woken_must_name_reference_equations_in_order(
     woken: list[str] | None,
     case: autan.Case,
@@ -342,3 +344,21 @@ def test_woken_must_name_reference_equations_in_order(
     document["start"]["woken"] = woken
     with pytest.raises(ValueError, match="woken"):
         autan.solver_input.SolverInput.model_validate(document)
+    if woken is None or woken[-1] != "density":  # order is the readers' check only
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+
+
+def test_a_run_whose_start_lost_its_woken_equations_is_rejected(
+    case: autan.Case, crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    first = case.run(crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path)
+    second = case.run(
+        crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path, start=first
+    )
+    document = json.loads((second.path / "run.json").read_text())
+    document["start"]["woken"] = None
+    (second.path / "run.json").write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(second.path)
+    assert error.value.codes == ["E0701"]
