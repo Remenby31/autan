@@ -29,7 +29,7 @@ struct Graph {
   std::vector<double> boundary_area;           // sum of their magnitudes
   std::vector<Normal> centroid;
   std::vector<double> volume;
-  // Level 0: weakest and strongest coupling of each cell through its faces, boundary faces
+  // Level 0: weakest and strongest coupling of each cell through its interior faces (boundary faces
   // included (A_f over twice the distance to the face: the distance to the mirror cell).
   std::vector<double> weakest, strongest;
   std::vector<offset_t> line_offsets{0};
@@ -122,28 +122,31 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
     g.boundary_area[c] += gm.face_area[f];
   }
   for (auto& zones : g.boundary) std::sort(zones.begin(), zones.end());
-  // A cell's typical coupling is the median over its faces: the faces of the extra dimension of
-  // a one-cell-thick mesh (two-dimensional cases) are then neither weak nor strong references.
-  std::vector<std::vector<double>> couplings(g.n);
+  // Weakest and strongest coupling over the interior faces. Boundary faces count only for a cell
+  // with at most two interior faces, whose anisotropy they alone show (a column of cells): the
+  // side planes of a one-cell-thick mesh have couplings far below any interior one and would
+  // make every cell anisotropic.
+  std::vector<int> interior(g.n, 0);
+  g.weakest.assign(g.n, std::numeric_limits<double>::infinity());
+  g.strongest.assign(g.n, 0.0);
+  auto couple = [&](std::size_t c, double w) {
+    g.weakest[c] = std::min(g.weakest[c], w);
+    g.strongest[c] = std::max(g.strongest[c], w);
+  };
   for (std::size_t f = 0; f < ni; ++f) {
-    couplings[static_cast<std::size_t>(g.owner[f])].push_back(g.weight[f]);
-    couplings[static_cast<std::size_t>(g.neighbour[f])].push_back(g.weight[f]);
+    for (const auto c :
+         {static_cast<std::size_t>(g.owner[f]), static_cast<std::size_t>(g.neighbour[f])}) {
+      couple(c, g.weight[f]);
+      ++interior[c];
+    }
   }
   for (std::size_t f = ni; f < nf; ++f) {
     const auto c = static_cast<std::size_t>(mesh.owner()[f]);
+    if (interior[c] > 2) continue;
     const double dx = gm.face_centroid_x[f] - gm.cell_centroid_x[c];
     const double dy = gm.face_centroid_y[f] - gm.cell_centroid_y[c];
     const double dz = gm.face_centroid_z[f] - gm.cell_centroid_z[c];
-    couplings[c].push_back(gm.face_area[f] / (2.0 * std::sqrt(dx * dx + dy * dy + dz * dz)));
-  }
-  g.weakest.assign(g.n, 0.0);
-  g.strongest.assign(g.n, 0.0);
-  for (std::size_t c = 0; c < g.n; ++c) {
-    auto& w = couplings[c];
-    std::sort(w.begin(), w.end());
-    const std::size_t k = w.size();
-    g.weakest[c] = k % 2 == 1 ? w[k / 2] : 0.5 * (w[k / 2 - 1] + w[k / 2]);
-    g.strongest[c] = w.back();
+    couple(c, gm.face_area[f] / (2.0 * std::sqrt(dx * dx + dy * dy + dz * dz)));
   }
   g.build_adjacency();
   return g;

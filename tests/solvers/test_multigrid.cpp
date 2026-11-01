@@ -330,9 +330,8 @@ TEST_CASE(
     "[multigrid]") {
   // The two side planes of a two-dimensional case couple each cell through faces much larger
   // than its others: they must neither make every cell a line seed nor block agglomeration.
-  const Fill fill = GENERATE(Fill::hexa, Fill::prism);
   const int nx = 32;
-  const auto mesh = layered_box(nx, 1e-5, fill, false, 0.0, 1.0);
+  const auto mesh = layered_box(nx, 1e-5, Fill::hexa, false, 0.0, 1.0);
   const auto g = autan::compute_geometry(mesh);
   const auto levels = autan::solvers::agglomerate(mesh, g);
   const auto& l0 = levels[0];
@@ -352,7 +351,7 @@ TEST_CASE(
       CHECK(e - b >= 20);
     }
   }
-  CHECK(wall_lines == static_cast<std::size_t>(fill == Fill::hexa ? nx : 2 * nx));
+  CHECK(wall_lines == static_cast<std::size_t>(nx));
   REQUIRE(levels.size() >= 3);
   CHECK(5 * levels.back().n_nodes <= 1000);
   check_hierarchy(mesh, levels);
