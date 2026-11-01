@@ -130,6 +130,11 @@ void check_entities(const MeshInput& in) {
     }
   }
 
+  for (const auto& t : in.ghost_translation) {
+    if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2])) {
+      fail(ErrorCode::mesh_inconsistent_sizes, "a ghost translation is not finite");
+    }
+  }
   // A cell is its global id and its translation: a periodic image repeats
   // the id of the cell it copies, elsewhere.
   if (!in.cell_global_id.empty()) {
@@ -144,11 +149,6 @@ void check_entities(const MeshInput& in) {
     if (ids.front().first < 0 || std::ranges::adjacent_find(ids) != ids.end()) {
       fail(ErrorCode::mesh_duplicate_global_id,
            "cells must differ by global id or translation, and ids must be >= 0");
-    }
-  }
-  for (const auto& t : in.ghost_translation) {
-    if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2])) {
-      fail(ErrorCode::mesh_inconsistent_sizes, "a ghost translation is not finite");
     }
   }
 }

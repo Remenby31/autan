@@ -362,7 +362,7 @@ TEST_CASE("Image ghosts sit one cell across periodic faces; a z-linear field kee
 
 TEST_CASE("Periodic sides split into several pairs share their direction",
           "[partition][periodic]") {
-  // The unit box in 2^3 hexahedra, periodic in x and y, with each x side cut
+  // The unit box in 2^3 hexahedra, periodic in x, y and z, with each x side cut
   // in two zones at y = 1/2: two pairs along x, of equal or opposite
   // translations, and one along y.
   const bool opposite = GENERATE(false, true);
@@ -387,6 +387,9 @@ TEST_CASE("Periodic sides split into several pairs share their direction",
       opposite ? autan::PeriodicPair{.zone_a = 7, .zone_b = 6, .translation = {-1.0, 0.0, 0.0}}
                : autan::PeriodicPair{.zone_a = 6, .zone_b = 7, .translation = {1.0, 0.0, 0.0}});
   cells.periodic.push_back({.zone_a = 2, .zone_b = 3, .translation = {0.0, 1.0, 0.0}});
+  // A fourth pair, along z: four pairs, three directions.
+  for (const int z : {4, 5}) cells.face_zones[at(z)].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 4, .zone_b = 5, .translation = {0.0, 0.0, 1.0}});
   const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
   const autan::Geometry gg = autan::compute_geometry(global);
   for (const auto& lp : check_split(global, slabs(gg, n_parts, 1.0), n_parts)) {

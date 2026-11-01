@@ -299,6 +299,10 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto in = two_cubes();
     in.cell_global_id = {7, 7};
     require_error(ErrorCode::mesh_duplicate_global_id, [&] { (void)autan::assemble(in); });
+    // A translation that is not a number is rejected before any comparison.
+    in.n_ghost_cells = 1;
+    in.ghost_translation = {{std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0}};
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(in); });
     // A ghost with the same id and the same (zero) translation is the same cell.
     in.n_ghost_cells = 1;
     in.ghost_translation = {{0.0, 0.0, 0.0}};

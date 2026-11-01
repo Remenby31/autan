@@ -34,10 +34,6 @@ void check_request(const Mesh& global, const Geometry& geometry,
   if (global.n_owned_cells() != global.n_cells()) {
     throw Error(ErrorCode::partition_input_has_ghosts, "the mesh to split already has ghost cells");
   }
-  if (global.periodic_pairs().size() > max_pairs) {
-    throw Error(ErrorCode::partition_invalid_request,
-                "more than " + std::to_string(max_pairs) + " periodic pairs");
-  }
   if (layers != 1 && layers != 2) {
     throw Error(ErrorCode::partition_invalid_request, "a halo of 1 or 2 layers");
   }
