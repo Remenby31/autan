@@ -80,7 +80,7 @@ class Follower:
         self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
         self.read = dict(self.offsets)
         self.run: dict[str, Any] | None = None
-        self.run_mtime: int | None = None
+        self.version: tuple[object, ...] | None = None
         self.sent = False
         self.done = False
 
@@ -89,10 +89,10 @@ class Follower:
         the stream calls `delivered` once it has sent it, so that a reconnection resumes from
         what the client received, not from what was read."""
         events: list[tuple[str, Any]] = []
-        mtime = _mtime(self.folder)
-        if self.run is None or mtime != self.run_mtime:
+        version = _version(self.folder)
+        if self.run is None or version != self.version:
             try:
-                self.run_mtime, self.run = mtime, read_run(self.folder)
+                self.version, self.run = version, read_run(self.folder)
             except ValueError as error:
                 self.done = True
                 return [("invalid", str(error))]
@@ -155,9 +155,11 @@ def _file_offsets(value: object) -> dict[str, int]:
     return {k: v for k, v in value.items() if k in STREAMED and type(v) is int and v >= 0}
 
 
-def _mtime(folder: Folder) -> int | None:
-    stat = folder.stat("run.json")
-    return stat.st_mtime_ns if stat else None
+def _version(folder: Folder) -> tuple[object, ...]:
+    # Every file run.json is checked against: a change to any of them, even one that keeps the
+    # modification time and size, can change the verdict (ctime moves with any write).
+    stats = (folder.stat(name) for name in ("run.json", "case.toml", "mesh-info.json"))
+    return tuple((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats)
 
 
 def _open_build(static: Path | None) -> Folder | None:

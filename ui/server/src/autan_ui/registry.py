@@ -207,12 +207,14 @@ def _settings(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stat(path: Path) -> tuple[int, int] | None:
+def _stat(path: Path) -> tuple[int, int, int, int] | None:
+    # The inode and change time too: a replacement that keeps the modification time and size
+    # still changes them.
     try:
         stat = path.stat()
     except OSError:
         return None
-    return (stat.st_mtime_ns, stat.st_size)
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
 
 
 def read_run(folder: Folder) -> dict[str, Any]:

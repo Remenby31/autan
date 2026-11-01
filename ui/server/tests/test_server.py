@@ -2,6 +2,7 @@ import hashlib
 import http.client
 import json
 import math
+import os
 import shutil
 import socket
 import threading
@@ -188,9 +189,13 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
 def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: str) -> None:
     directory = next(runs.iterdir())
     run_id = directory.name
+    ended = (directory / "run.json").read_text()
+    running = json.loads(ended) | {"status": "running", "finished": None, "monitors": None}
+    (directory / "run.json").write_text(json.dumps(running))
     with httpx.stream("GET", f"{server}/api/runs/{run_id}/history/events", timeout=10) as response:
         events = (e for e in sse_events(response) if e[0] != "log")
-        assert next(events)[0] == "run"
+        kind, data = next(events)
+        assert (kind, data["status"]) == ("run", "running")
         kind, records = next(events)
         assert kind == "history"
         assert len(records) == 30
@@ -200,12 +205,45 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
         kind, records = next(events)
         assert (kind, [r["iteration"] for r in records]) == ("history", [31])
 
-        run = json.loads((directory / "run.json").read_text())
-        run["status"] = "stopped"  # A valid change: the final monitors still apply.
-        (directory / ".run.json").write_text(json.dumps(run))
+        (directory / ".run.json").write_text(ended)
         (directory / ".run.json").replace(directory / "run.json")
         kind, data = next(events)
         assert (kind, data["status"]) == ("run", "stopped")
+
+
+def test_a_stream_ends_when_the_case_its_run_is_checked_against_changes(
+    runs: Path, server: str
+) -> None:
+    directory = next(runs.iterdir())
+    with httpx.stream(
+        "GET", f"{server}/api/runs/{directory.name}/history/events", timeout=10
+    ) as response:
+        events = (e for e in sse_events(response) if e[0] not in ("log", "history"))
+        assert next(events)[0] == "run"
+
+        # results.md: run.json's case.sha256 is the stored case's hash; this case is another.
+        case = (directory / "case.toml").read_text()
+        (directory / "case.toml").write_text(case.replace('name = "crm-hl"', 'name = "other"'))
+        kind, _ = next(events)
+        assert kind == "invalid"
+
+
+def test_a_replaced_run_json_is_checked_again_whatever_its_time_and_size(runs: Path) -> None:
+    directory = next(runs.iterdir())
+    registry = Registry(runs)
+    assert directory.name in registry.scan().runs
+    path = directory / "run.json"
+    before = path.stat()
+    text = path.read_text()
+    identity = json.loads(text)["identity"]
+    # Another identity of the same length: run.json no longer matches its definition.
+    other = ("0" if identity[0] != "0" else "1") + identity[1:]
+    (directory / ".run.json").write_text(text.replace(identity, other))
+    (directory / ".run.json").replace(path)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert (path.stat().st_mtime_ns, path.stat().st_size) == (before.st_mtime_ns, before.st_size)
+
+    assert directory.name in registry.scan().rejected
 
 
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:
