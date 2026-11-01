@@ -39,7 +39,15 @@ export const meshesQuery = queryOptions({
 
 /** The SDK's reading of a case document (`POST /api/cases/render`). */
 export type Rendered =
-  | { ok: true; python: string; toml: string; plan: Plan | null; diagnostics: [] }
+  | {
+      ok: true;
+      python: string;
+      toml: string;
+      /** The SDK's document of the case, every default filled in. */
+      document: CaseDocument;
+      plan: Plan | null;
+      diagnostics: [];
+    }
   | { ok: false; diagnostics: Diagnostic[] };
 
 export const renderQuery = (document: CaseDocument, mesh: string | null) =>
@@ -101,6 +109,8 @@ export interface CellZoneForm {
 }
 
 export interface MonitorForm {
+  /** Empty: "forces" for the first monitor, "forces-<k>" for the k-th. */
+  name: string;
   surfaces: string;
   ref_area: string;
   every: string;
@@ -214,7 +224,8 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
           sparse({
             kind: "forces",
             // Names are unique in a case; the first keeps the SDK's default, "forces".
-            name: k === 0 ? undefined : `forces-${k + 1}`,
+            // A name given is kept verbatim: " loads " and "loads" are two monitors.
+            name: m.name.trim() !== "" ? m.name : k === 0 ? undefined : `forces-${k + 1}`,
             surfaces: m.surfaces,
             ref_area: quantity(m.ref_area),
             every: number(m.every),
@@ -222,4 +233,122 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
         )
       : undefined,
   });
+}
+
+const str = (value: unknown) =>
+  value === undefined || value === null ? "" : typeof value === "string" ? value : String(value);
+const record = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+const list = (value: unknown): Record<string, unknown>[] =>
+  Array.isArray(value) ? value.map(record) : [];
+
+/** The form a case document reads as, as far as the form can say it; what it cannot (an
+ * unsteady time, a condition or material outside the editor's choices) is found by comparing
+ * the SDK's reading of both documents, not here. A material is named when it equals a
+ * library one. */
+export function formFromDocument(document: CaseDocument, materials: Material[]): CaseForm {
+  const physics = record(document.physics);
+  const freestream = record(document.freestream);
+  const time = record(document.time);
+  const libraryName = (value: unknown) =>
+    materials.find((m) => sameValue(m.document, value))?.name ?? "";
+  const kinds = Object.keys(CONDITIONS);
+  return {
+    name: str(document.name),
+    mesh: "",
+    meshFile: str(document.mesh),
+    physics: {
+      kind: "compressible",
+      turbulence: str(record(physics.turbulence).model),
+      precision: str(physics.precision),
+      gas: physics.gas === undefined ? "" : libraryName(physics.gas),
+    },
+    freestream: {
+      mach: str(freestream.mach),
+      aoa: str(freestream.aoa),
+      sideslip: str(freestream.sideslip),
+      re: str(freestream.re),
+      ref_length: str(freestream.ref_length),
+      pressure: str(freestream.pressure),
+      temperature: str(freestream.temperature),
+    },
+    time: {
+      max_iterations: str(time.max_iterations),
+      residual_orders: str(time.residual_orders),
+    },
+    cellZones: list(document.cell_zones).map((zone) => {
+      const medium = record(zone.medium);
+      return {
+        zones: str(zone.zones),
+        kind: medium.kind === "solid" ? "solid" : "fluid",
+        material: libraryName(medium.material),
+      };
+    }),
+    boundaries: list(document.boundaries).map((rule) => {
+      const condition = record(rule.condition);
+      const kind = (kinds.includes(str(condition.kind)) ? condition.kind : "wall") as ConditionKind;
+      return {
+        zones: str(rule.zones),
+        kind,
+        values: Object.fromEntries(CONDITIONS[kind].map(({ key }) => [key, str(condition[key])])),
+      };
+    }),
+    monitors: list(document.monitors)
+      .filter((m) => m.kind === "forces")
+      .map((m) => ({
+        name: str(m.name),
+        surfaces: str(m.surfaces),
+        ref_area: str(m.ref_area),
+        every: str(m.every),
+      })),
+  };
+}
+
+/** Whether two JSON values are equal, whatever the order of their keys. */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, k) => sameValue(v, b[k]))
+    );
+  }
+  if (a !== null && b !== null && typeof a === "object" && typeof b === "object") {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    return (
+      ka.length === kb.length &&
+      ka.every((k) =>
+        sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+      )
+    );
+  }
+  return a === b;
+}
+
+/** Where two SDK documents of a case differ, path by path (`physics.gas.gamma`,
+ * `boundaries[2].condition.kind`), with the value in each. */
+export function differences(
+  a: unknown,
+  b: unknown,
+  path = "",
+): { path: string; before: unknown; after: unknown }[] {
+  const object = (v: unknown) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const out = [];
+    for (let k = 0; k < Math.max(a.length, b.length); k++)
+      out.push(...differences(a[k], b[k], `${path}[${k}]`));
+    return out;
+  }
+  if (object(a) && object(b)) {
+    const ra = a as Record<string, unknown>;
+    const rb = b as Record<string, unknown>;
+    return [...new Set([...Object.keys(ra), ...Object.keys(rb)])]
+      .sort()
+      .flatMap((k) => differences(ra[k], rb[k], path ? `${path}.${k}` : k));
+  }
+  return sameValue(a, b) ? [] : [{ path, before: a, after: b }];
 }
