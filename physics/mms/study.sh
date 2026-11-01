@@ -47,7 +47,7 @@ pressure = "100000.0 Pa"
 
 [time]
 kind = "steady"
-max_iterations = 2000
+max_iterations = ${MAX_ITERATIONS:-2000}
 residual_orders = 10.0
 
 [verification.manufactured]
