@@ -25,7 +25,7 @@ function slowestEquation(history: HistoryColumns, k: number): string {
     const first = values[0] ?? 0;
     const value = values[k] ?? 0;
     if (first > 0 && value > 0) {
-      const drop = Math.log10(first / value);
+      const drop = Math.log10(first) - Math.log10(value);
       if (drop < worst) [worst, name] = [drop, equation];
     }
   }
@@ -46,6 +46,9 @@ export function LogView({
   height?: number;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  // Set while the view scrolls itself to follow new lines, so that only a reader's own scroll
+  // (wheel, keys, scrollbar) pauses Live.
+  const following = useRef(false);
   const [live, setLive] = useState(true);
   const count = history.iteration.length;
   const forces = history.forces.size === 1 ? [...history.forces.values()][0] : undefined;
@@ -101,7 +104,9 @@ export function LogView({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: follow on every append while live
   useEffect(() => {
-    if (live && count) virtualizer.scrollToIndex(count - 1, { align: "end" });
+    if (!live || !count) return;
+    following.current = true;
+    virtualizer.scrollToIndex(count - 1, { align: "end" });
   }, [history.version, live, count]);
 
   useEffect(() => {
@@ -177,7 +182,12 @@ export function LogView({
         style={{ height }}
         className="overflow-auto font-mono text-sm"
         data-testid="log"
-        onWheel={(e) => e.deltaY < 0 && setLive(false)}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < ROW;
+          if (following.current) following.current = atEnd ? false : following.current;
+          else if (!atEnd) setLive(false);
+        }}
       >
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((item) => {

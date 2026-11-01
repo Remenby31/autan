@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { RunStatus } from "../../api/contracts";
 import { StateGlyph } from "./StateGlyph";
 
@@ -30,4 +31,14 @@ export function formatDuration(ms: number): string {
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m ${String(sec).padStart(2, "0")}s`;
   return sec ? `${sec}s` : "<1s";
+}
+
+/** Re-render every second while `active`, for durations that run on the wall clock. */
+export function useTicker(active: boolean): void {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
 }

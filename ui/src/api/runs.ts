@@ -166,13 +166,19 @@ export function appendHistory(columns: HistoryColumns, records: HistoryRecord[])
   for (const record of records) {
     columns.iteration.push(record.iteration);
     let slowest = Number.POSITIVE_INFINITY;
+    let comparable = true;
     for (const [name, value] of Object.entries(record.residuals)) {
       const series = column(columns.residuals, name, () => []);
       series.push(value);
       const first = series[0] ?? 0;
-      if (first > 0 && value > 0) slowest = Math.min(slowest, Math.log10(first / value));
+      if (first === 0 && value === 0) continue;
+      if (first > 0 && value > 0)
+        slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
+      else comparable = false;
     }
-    columns.orders.push(Number.isFinite(slowest) ? slowest : Number.NaN);
+    // Same rule as the server's residual_orders: a residual grown from an exact zero, or not
+    // positive, leaves the drop undefined.
+    columns.orders.push(comparable && Number.isFinite(slowest) ? slowest : Number.NaN);
     for (const [name, forces] of Object.entries(record.monitors ?? {})) {
       columns.monitors.set(name, forces);
       if (forces.cl === undefined || forces.cd === undefined) continue;

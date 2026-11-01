@@ -44,20 +44,30 @@ const ABSOLUTE = {
   second: "2-digit",
 } as const;
 
-/** "3m ago", kept current; hovering shows the instant in UTC and local time. */
-export function RelativeTime({ iso }: { iso: string }) {
+/** "3m ago", kept current; hovering or focusing shows the instant in UTC and local time.
+ * Inside a link (`card={false}`), the absolute UTC time is the native title instead, since a
+ * control cannot nest in a link. */
+export function RelativeTime({ iso, card = true }: { iso: string; card?: boolean }) {
   const reference = useNow();
   const date = new Date(iso);
+  const relativeText = formatRelative(date, reference);
   const utc = date.toLocaleString("en-GB", { ...ABSOLUTE, timeZone: "UTC" });
   const local = date.toLocaleString("en-GB", { ...ABSOLUTE, timeZoneName: "short" });
+  if (!card) {
+    return (
+      <time dateTime={iso} title={`${utc} UTC`} className="whitespace-nowrap tabular-nums">
+        {relativeText}
+      </time>
+    );
+  }
   return (
     <PreviewCard.Root>
       <PreviewCard.Trigger
-        render={<time dateTime={iso} />}
+        render={<button type="button" aria-label={`${relativeText}, ${utc} UTC`} />}
         delay={400}
-        className="cursor-default whitespace-nowrap tabular-nums"
+        className="cursor-default whitespace-nowrap rounded-xs tabular-nums"
       >
-        {formatRelative(date, reference)}
+        <time dateTime={iso}>{relativeText}</time>
       </PreviewCard.Trigger>
       <PreviewCard.Portal>
         <PreviewCard.Positioner sideOffset={6} className="z-50">

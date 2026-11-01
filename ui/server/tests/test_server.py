@@ -1,3 +1,4 @@
+import hashlib
 import http.client
 import json
 import math
@@ -20,6 +21,7 @@ from autan_ui import create_app
 from autan_ui.confine import Folder
 from autan_ui.history import read_history
 from autan_ui.registry import Registry
+from autan_ui.summary import residual_orders
 from autan_ui.surface import synthetic_wing
 from fastapi import FastAPI
 
@@ -350,3 +352,42 @@ def test_a_stream_keeps_reading_the_run_it_opened(runs: Path, server: str, tmp_p
 
         _, records = next(e for e in events if e[0] == "history")
         assert [r["iteration"] for r in records] == [31]
+
+
+def test_a_manufactured_solution_run_plans_against_its_archive(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    fixture = PY / "tests" / "fixtures" / "euler.mms.json"
+    digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    case = tmp_path / "mms.py"
+    case.write_text(
+        "import autan\nfrom autan.units import K, Pa, kg, mol, s\n"
+        f"gas = autan.IdealGas(name='mms', molar_mass={8.314462618 / 287.0!r} * kg / mol,"
+        " gamma=1.4, prandtl=0.72, viscosity=autan.ConstantViscosity(mu=1e-3 * Pa * s))\n"
+        "case = autan.Case('mms', mesh='crm-hl.cgns')\n"
+        "case.physics = autan.Compressible(turbulence=autan.Inviscid(), gas=gas)\n"
+        "case.freestream(mach=0.3, pressure=101325 * Pa, temperature=300 * K)\n"
+        f"case.verification = autan.Manufactured(path='euler.mms.json', sha256={digest!r})\n"
+    )
+    shutil.copy(fixture, tmp_path / "euler.mms.json")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    result = autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs)
+
+    plan = httpx.get(f"{server}/api/runs/{result.path.name}/plan").json()
+
+    assert plan["ok"] is True, plan
+
+
+@pytest.mark.parametrize(
+    ("first", "now", "expected"),
+    [
+        ({"density": 1e-300, "energy": 1.0}, {"density": 1e-310, "energy": 1e-8}, 8.0),
+        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 0.0}, 8.0),
+        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 1.0}, None),
+    ],
+)
+def test_residual_drop_is_the_slowest_equation(
+    first: dict[str, float], now: dict[str, float], expected: float | None
+) -> None:
+    orders = residual_orders(first, now)
+    assert orders == (None if expected is None else pytest.approx(expected))

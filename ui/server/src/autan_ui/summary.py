@@ -18,12 +18,17 @@ class _Trend:
 
 def residual_orders(first: dict[str, float], residuals: dict[str, float]) -> float | None:
     """Orders of magnitude the slowest equation has dropped since iteration 1: the quantity
-    the steady convergence criterion (`time.residual_orders`, case-schema.md) compares."""
+    the steady convergence criterion (`time.residual_orders`, case-schema.md) compares. None
+    when an equation cannot be compared: a residual that is not a positive finite number, or
+    that grew from an exact zero at iteration 1."""
     drops = []
     for name, value in residuals.items():
         start = first.get(name)
-        if isinstance(start, float | int) and _positive(start) and _positive(value):
-            drops.append(math.log10(start / value))
+        if start == 0 and value == 0:
+            continue
+        if not (_positive(start) and _positive(value)):
+            return None
+        drops.append(math.log10(start) - math.log10(value))  # type: ignore[arg-type]
     return min(drops) if drops else None
 
 

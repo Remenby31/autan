@@ -19,7 +19,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { Snippet } from "../components/ui/Snippet";
 import { Sparkline } from "../components/ui/Sparkline";
 import { StateGlyph } from "../components/ui/StateGlyph";
-import { formatDuration, Status } from "../components/ui/Status";
+import { formatDuration, Status, useTicker } from "../components/ui/Status";
 import { useToast } from "../components/ui/Toast";
 import { Tooltip } from "../components/ui/Tooltip";
 
@@ -116,6 +116,7 @@ function Runs() {
               value={search.q ?? ""}
               onChange={(q) => setSearch({ q: q || undefined })}
               placeholder="Search runs…"
+              label="Search runs"
               shortcut="/"
             />
             <FilterChip
@@ -253,11 +254,13 @@ function Runs() {
 
 function TableFrame({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-bg-0">
-      {header}
-      <ul aria-label="Runs" data-testid="runs" className="m-0 list-none p-0">
-        {children}
-      </ul>
+    <div className="overflow-x-auto rounded-lg border border-line bg-bg-0">
+      <div className="min-w-[980px]">
+        {header}
+        <ul aria-label="Runs" data-testid="runs" className="m-0 list-none p-0">
+          {children}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -291,7 +294,8 @@ function Group({
         <span className="text-fg-3">{runs.length} runs</span>
         {latest && (
           <span className="ml-auto flex items-center gap-2 text-fg-3">
-            latest <StateGlyph status={latest.status} /> <RelativeTime iso={latest.started} />
+            latest <StateGlyph status={latest.status} />{" "}
+            <RelativeTime iso={latest.started} card={false} />
           </span>
         )}
       </button>
@@ -322,6 +326,7 @@ function RunRow({
   grouped?: boolean;
 }) {
   const toast = useToast();
+  useTicker(run.status === "running");
   const iteration = summary?.iteration ?? run.iterations;
   const target = summary?.target_orders ?? undefined;
   return (
@@ -387,7 +392,7 @@ function RunRow({
           )}
         </span>
         <span className="text-right text-fg-2 text-sm">
-          <RelativeTime iso={run.started} />
+          <RelativeTime iso={run.started} card={false} />
         </span>
         <span />
       </Link>

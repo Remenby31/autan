@@ -93,7 +93,8 @@ class Registry:
                             with Folder(child) as folder:
                                 live = outcome["status"] == "running"
                                 summary = self._summaries.update(child.name, folder, live=live)
-                        except OSError:
+                        except (OSError, ValueError, ArithmeticError) as error:
+                            log.warning("no summary for %s: %s", child, error)
                             summary = None
                         if summary is not None:
                             budget = self._budgets.get(child.name, {})
@@ -148,7 +149,7 @@ class Registry:
             }
 
 
-RUN_FILES = (*CHECKED_FILES, "history.jsonl")
+RUN_FILES = (*CHECKED_FILES, "history.jsonl", "manufactured.json")
 
 
 def _inside(root: Path, directory: Path) -> bool:

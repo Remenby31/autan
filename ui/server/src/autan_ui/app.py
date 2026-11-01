@@ -2,6 +2,8 @@ import asyncio
 import logging
 import mimetypes
 import os
+import tempfile
+import tomllib
 import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -156,16 +158,38 @@ def create_app(
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         """`autan plan --json` of the run's stored case against its stored MeshInfo."""
-        directory = find_run(run_id)
-        with Folder(directory) as folder:
+        with Folder(find_run(run_id)) as folder:
             run = read_run(folder)
-        try:
-            case = autan.load(directory / "case.toml")
-            mesh_info = autan.MeshInfo.load(directory / "mesh-info.json")
-            return case.plan(mesh_info, gpus=run["devices"]["count"]).document()
-        except CaseError as error:
-            detail = [d.model_dump(mode="json") for d in error.diagnostics]
-            raise HTTPException(422, detail) from error
+            case_toml = folder.read("case.toml")
+            mesh_info = folder.read("mesh-info.json")
+            manufactured = (
+                folder.read("manufactured.json") if folder.stat("manufactured.json") else None
+            )
+        # The stored case is planned from a scratch copy: its files came through the pinned
+        # folder, and a verification case finds its archived manufactured solution under the
+        # name the case declares, as when it was run.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "case.toml").write_bytes(case_toml)
+            (root / "mesh-info.json").write_bytes(mesh_info)
+            try:
+                declared = tomllib.loads(case_toml.decode())["verification"]["manufactured"]["path"]
+            except (KeyError, TypeError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+                declared = None
+            if manufactured is not None and isinstance(declared, str):
+                target = (root / declared).resolve()
+                if target.is_relative_to(root.resolve()):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(manufactured)
+            try:
+                case = autan.load(root / "case.toml")
+                plan = case.plan(
+                    autan.MeshInfo.load(root / "mesh-info.json"), gpus=run["devices"]["count"]
+                )
+            except CaseError as error:
+                detail = [d.model_dump(mode="json") for d in error.diagnostics]
+                raise HTTPException(422, detail) from error
+            return plan.document()
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(

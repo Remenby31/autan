@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Box, Copy } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
 import { type HistoryColumns, planQuery, runQuery, soleForces, useLiveRun } from "../api/runs";
 import { ResidualChart } from "../components/ResidualChart";
@@ -49,7 +49,16 @@ function RunView() {
   const { tab = "run" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const { run, history, connected, invalid } = useLiveRun(runId);
-  const details = useQuery(runQuery(runId));
+  const details = useQuery({
+    ...runQuery(runId),
+    // Outputs grow while the run writes them; the status change brings solution.cgns.
+    refetchInterval: run?.status === "running" ? 5000 : false,
+  });
+  const client = useQueryClient();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch once per status change
+  useEffect(() => {
+    void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
+  }, [run?.status]);
   const plan = useQuery(planQuery(runId));
   const toast = useToast();
   const now = useSyncExternalStore(second.subscribe, second.now);

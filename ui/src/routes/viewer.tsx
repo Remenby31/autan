@@ -124,7 +124,10 @@ function Viewer() {
         />
         {error && <p className="absolute top-4 left-4 m-0 text-danger">{error}</p>}
         {surface && (
-          <aside data-testid="zones" className="absolute top-4 left-4 flex w-60 flex-col gap-1 rounded-lg border border-line bg-glass p-2 backdrop-blur">
+          <aside
+            data-testid="zones"
+            className="absolute top-4 left-4 flex w-60 flex-col gap-1 rounded-lg border border-line bg-glass p-2 backdrop-blur"
+          >
             {surface.zones.map((zone, k) => (
               <button
                 type="button"

@@ -25,3 +25,29 @@ test("reads the forces monitor under whatever name the case gave it", () => {
   const two = appendHistory(history, [record(5, { tail: forces(0.1, 0.01) })]);
   expect(soleForces(two)).toBeNull();
 });
+
+test("the residual drop is the slowest equation's, undefined once a zero residual grows", () => {
+  const drop = (rows: Record<string, number>[]) =>
+    appendHistory(
+      empty(),
+      rows.map((residuals, k) => ({ iteration: k + 1, time: null, residuals })),
+    ).orders.at(-1);
+  expect(
+    drop([
+      { density: 1e-300, energy: 1 },
+      { density: 1e-310, energy: 1e-8 },
+    ]),
+  ).toBeCloseTo(8);
+  expect(
+    drop([
+      { density: 1, energy: 0 },
+      { density: 1e-8, energy: 0 },
+    ]),
+  ).toBeCloseTo(8);
+  expect(
+    drop([
+      { density: 1, energy: 0 },
+      { density: 1e-8, energy: 1 },
+    ]),
+  ).toBeNaN();
+});
