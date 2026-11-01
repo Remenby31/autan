@@ -80,6 +80,7 @@ class Meshes:
                     "counts": info["counts"],
                     "boundary_zones": info["boundary_zones"],
                     "cell_zones": info["cell_zones"],
+                    "groups": info["groups"],
                 }
             )
         return out

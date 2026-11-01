@@ -20,14 +20,14 @@ const HEAT_EXCHANGER = withoutDocstring(readFileSync("../py/examples/heat_exchan
 async function rule(page: Page, k: number, zones: string, kind: string) {
   await page.getByRole("button", { name: "Add rule" }).click();
   const fieldset = page.getByRole("group", { name: `Boundary rule ${k}` });
-  await fieldset.getByLabel("Zones").fill(zones);
+  await fieldset.getByLabel("Zones", { exact: true }).fill(zones);
   await fieldset.getByLabel("Condition").selectOption(kind);
 }
 
 async function forces(page: Page, k: number, surfaces: string, area: string, every: string) {
   await page.getByRole("button", { name: "Add forces" }).click();
   const monitor = page.getByRole("group", { name: `Forces monitor ${k}` });
-  await monitor.getByLabel("Surfaces").fill(surfaces);
+  await monitor.getByLabel("Surfaces", { exact: true }).fill(surfaces);
   await monitor.getByLabel("Reference area", { exact: true }).fill(area);
   await monitor.getByLabel("Every").fill(every);
 }
@@ -211,7 +211,7 @@ test("an inviscid case walls a picked wall with slip", async ({ page }) => {
 async function cellZone(page: Page, k: number, zones: string, kind: string, material: string) {
   await page.getByRole("button", { name: "Add zone" }).click();
   const fieldset = page.getByRole("group", { name: `Cell zone ${k}` });
-  await fieldset.getByLabel("Zones").fill(zones);
+  await fieldset.getByLabel("Zones", { exact: true }).fill(zones);
   await fieldset.getByLabel("Medium").selectOption(kind);
   await fieldset.getByLabel("Material").selectOption(material);
 }
@@ -361,4 +361,55 @@ test("the form waits for the copy, and a run it cannot read says so", async ({ p
   ).toBeVisible({
     timeout: 15_000,
   });
+});
+
+// server/tests/data/surface/grouped: the unit cube's polyMesh with the groups of
+// ui/scripts/surface-fixtures.sh: plates = ymin, ymax; box.x = xmin, xmax; walls = ymin.
+test("rules and monitors select the mesh's zone groups", async ({ page }) => {
+  await page.goto("/cases/new");
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("grouped");
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mach").fill("0.3");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+  await page.getByRole("button", { name: "Add rule" }).click();
+  const plates = page.getByRole("group", { name: "Boundary rule 1" });
+  await plates.getByLabel("Zones by").selectOption("group");
+  await plates.getByLabel("Zones", { exact: true }).fill("plates");
+  await plates.getByLabel("Condition").selectOption("symmetry");
+  await rule(page, 2, "[xz]*", "farfield");
+  await page.getByRole("button", { name: "Add forces" }).click();
+  const monitor = page.getByRole("group", { name: "Forces monitor 1" });
+  await monitor.getByLabel("Surfaces by").selectOption("group");
+  await monitor.getByLabel("Surfaces", { exact: true }).fill("wall?");
+  await monitor.getByLabel("Reference area", { exact: true }).fill("1");
+
+  // case-schema.md#boundaries: a group glob is the `group` keyword.
+  const code = page.getByTestId("case-py");
+  await expect(code).toContainText('case.boundary(group="plates").symmetry()');
+  await expect(code).toContainText('autan.forces(group="wall?"');
+  await expect(page.getByTestId("plan")).toContainText("6 of 6 zones covered");
+
+  await plates.getByLabel("Zones", { exact: true }).fill("plate");
+  await expect(page.getByTestId("plan-diagnostics")).toContainText("E0426");
+});
+
+test("a picked zone's rule can select a group holding it instead", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("grouped");
+  await clickCentre(page);
+
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(rule.getByLabel("Zones", { exact: true })).toHaveValue("ymin");
+  const offer = page.getByTestId("group-offer");
+  await expect(offer.getByRole("button")).toHaveText(["plates", "walls"]);
+  await offer.getByRole("button", { name: "plates" }).click();
+
+  await expect(rule.getByLabel("Zones by")).toHaveValue("group");
+  await expect(rule.getByLabel("Zones", { exact: true })).toHaveValue("plates");
+  await expect(offer).toHaveCount(0);
+  await page.getByLabel("Name").focus();
+  await clickCentre(page);
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+  await expect(rule.getByLabel("Zones", { exact: true })).toBeFocused();
 });

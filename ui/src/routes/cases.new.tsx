@@ -16,16 +16,24 @@ import {
   materialsQuery,
   meshesQuery,
   renderQuery,
+  selectedZones,
   UNITS,
 } from "../api/cases";
 import type { Diagnostic } from "../api/contracts";
-import { globEscape, globMatches } from "../api/glob";
+import { globEscape } from "../api/glob";
 import { type Plan, runQuery } from "../api/runs";
 import { MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
-import { Field, NumberInput, QuantityInput, SelectInput, TextInput } from "../components/ui/Field";
+import {
+  Field,
+  NumberInput,
+  QuantityInput,
+  SelectInput,
+  SelectorInput,
+  TextInput,
+} from "../components/ui/Field";
 import { Note } from "../components/ui/Note";
 import { TabList, TabPanel, TabsRoot } from "../components/ui/Tabs";
 
@@ -123,6 +131,7 @@ function CaseEditor() {
   const rendered = useQuery(renderQuery(caseDocument(settled, library), settled.mesh || null));
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
+  const groups = mesh?.groups.map((g) => g.name) ?? [];
   const [picked, setPicked] = useState<string | null>(null);
 
   // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
@@ -130,9 +139,12 @@ function CaseEditor() {
   // no condition (case-schema.md#boundaries): nothing is added.
   const [focusRule, setFocusRule] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The groups holding a zone just picked into a new rule, which the rule may select instead.
+  const [offer, setOffer] = useState<{ rule: number; zone: string; groups: string[] } | null>(null);
   const pick = (zone: string) => {
     setPicked(zone);
     setNotice(null);
+    setOffer(null);
     const type = mesh?.boundary_zones.find((z) => z.name === zone)?.type ?? "";
     if (type === "periodic") {
       setNotice(
@@ -140,7 +152,9 @@ function CaseEditor() {
       );
       return;
     }
-    const index = form.boundaries.findIndex((r) => globMatches(r.zones, zone));
+    const index = mesh
+      ? form.boundaries.findIndex((r) => selectedZones(r.by, r.zones, mesh).has(zone))
+      : -1;
     if (index >= 0) {
       setFocusRule(index);
       return;
@@ -148,8 +162,13 @@ function CaseEditor() {
     const typed: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
     // A no-slip wall needs viscous flow (E0414): an inviscid case walls it with slip.
     const kind = typed === "wall" && form.physics.turbulence === "inviscid" ? "slip" : typed;
-    set("boundaries", [...form.boundaries, { zones: globEscape(zone), kind, values: {} }]);
+    set("boundaries", [
+      ...form.boundaries,
+      { by: "zones", zones: globEscape(zone), kind, values: {} },
+    ]);
     setFocusRule(form.boundaries.length);
+    const holding = mesh?.groups.filter((g) => g.zones.includes(zone)).map((g) => g.name) ?? [];
+    if (holding.length) setOffer({ rule: form.boundaries.length, zone, groups: holding });
   };
   // Focused once React has committed the rule's fieldset.
   useEffect(() => {
@@ -406,7 +425,10 @@ function CaseEditor() {
                   size="sm"
                   icon={<Plus className="size-4" />}
                   onClick={() =>
-                    set("boundaries", [...form.boundaries, { zones: "", kind: "wall", values: {} }])
+                    set("boundaries", [
+                      ...form.boundaries,
+                      { by: "zones", zones: "", kind: "wall", values: {} },
+                    ])
                   }
                 >
                   Add rule
@@ -421,12 +443,12 @@ function CaseEditor() {
                   className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
                 >
                   <Field label="Zones">
-                    <TextInput
-                      value={rule.zones}
-                      onChange={(v) => setRule(k, { ...rule, zones: v })}
-                      placeholder="wing.*"
-                      mono
-                      options={{ id: `zones-${k}`, values: zones }}
+                    <SelectorInput
+                      by={rule.by}
+                      pattern={rule.zones}
+                      onChange={(by, v) => setRule(k, { ...rule, by, zones: v })}
+                      placeholder={rule.by === "group" ? "WING" : "wing.*"}
+                      names={{ id: `zones-${k}`, zones, groups }}
                     />
                   </Field>
                   <Field label="Condition">
@@ -476,7 +498,7 @@ function CaseEditor() {
                   onClick={() =>
                     set("monitors", [
                       ...form.monitors,
-                      { name: "", surfaces: "", ref_area: "", every: "" },
+                      { name: "", by: "zones", surfaces: "", ref_area: "", every: "" },
                     ])
                   }
                 >
@@ -505,17 +527,17 @@ function CaseEditor() {
                     />
                   </Field>
                   <Field label="Surfaces">
-                    <TextInput
-                      value={monitor.surfaces}
-                      onChange={(v) =>
+                    <SelectorInput
+                      by={monitor.by}
+                      pattern={monitor.surfaces}
+                      onChange={(by, v) =>
                         set(
                           "monitors",
-                          form.monitors.map((m, i) => (i === k ? { ...m, surfaces: v } : m)),
+                          form.monitors.map((m, i) => (i === k ? { ...m, by, surfaces: v } : m)),
                         )
                       }
-                      placeholder="wing.*"
-                      mono
-                      options={{ id: `surfaces-${k}`, values: zones }}
+                      placeholder={monitor.by === "group" ? "WING" : "wing.*"}
+                      names={{ id: `surfaces-${k}`, zones, groups }}
                     />
                   </Field>
                   <Field label="Reference area">
@@ -565,6 +587,34 @@ function CaseEditor() {
             <Note tone="info" title="Periodic zone">
               {notice}
             </Note>
+          )}
+          {offer && form.boundaries[offer.rule]?.zones === globEscape(offer.zone) && (
+            <div
+              data-testid="group-offer"
+              className="flex flex-wrap items-center gap-2 text-fg-2 text-sm"
+            >
+              <span>
+                Rule {offer.rule + 1} could select a group holding{" "}
+                <span className="font-mono">{offer.zone}</span>:
+              </span>
+              {offer.groups.map((g) => (
+                <Button
+                  key={g}
+                  size="sm"
+                  onClick={() => {
+                    setForm((f) => ({
+                      ...f,
+                      boundaries: f.boundaries.map((r, i) =>
+                        i === offer.rule ? { ...r, by: "group", zones: globEscape(g) } : r,
+                      ),
+                    }));
+                    setOffer(null);
+                  }}
+                >
+                  <span className="font-mono">{g}</span>
+                </Button>
+              ))}
+            </div>
           )}
           {rendered.isError && (
             <Note tone="error" title="The SDK could not be reached">
@@ -741,8 +791,11 @@ function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
         Planned against the MeshInfo; the mesh file itself is read when the case runs.
       </p>
       <Diagnostics
-        // The editor plans without the mesh file by design: W0205 says so of every case.
-        items={plan.diagnostics.filter((d) => !(d.code === "W0205" && d.location?.path === "mesh"))}
+        // The editor plans without the mesh file and its groups file by design: W0205 and W0211
+        // say so of every case.
+        items={plan.diagnostics.filter(
+          (d) => !((d.code === "W0205" || d.code === "W0211") && d.location?.path === "mesh"),
+        )}
         testId="plan-diagnostics"
       />
     </section>

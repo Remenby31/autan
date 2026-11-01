@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import type { Diagnostic } from "./contracts";
+import { globMatches } from "./glob";
 import type { MeshInfo, Plan } from "./runs";
 
 /** A MeshInfo the server lists for planning (`GET /api/meshes`). */
@@ -9,7 +10,13 @@ export interface MeshSummary {
   counts: MeshInfo["counts"];
   boundary_zones: { name: string; faces: number; type?: string | null }[];
   cell_zones: { name: string; cells: number }[];
+  /** The mesh's zone groups (mesh-info.md#zone-groups): each its boundary zones, in order. */
+  groups: { name: string; zones: string[] }[];
 }
+
+/** What a selection of boundary zones matches: their names, or the names of the mesh's zone
+ * groups (case-schema.md#boundaries). */
+export type Selector = "zones" | "group";
 
 /** A material of the SDK's libraries (`GET /api/materials`): `autan.<library>.<name>`. */
 export interface Material {
@@ -96,6 +103,8 @@ export const UNITS = {
 export type Dimension = keyof typeof UNITS;
 
 export interface BoundaryForm {
+  by: Selector;
+  /** A glob over zone names, or over group names when `by` is "group". */
   zones: string;
   kind: ConditionKind;
   values: Record<string, string>;
@@ -111,6 +120,7 @@ export interface CellZoneForm {
 export interface MonitorForm {
   /** Empty: "forces" for the first monitor, "forces-<k>" for the k-th. */
   name: string;
+  by: Selector;
   surfaces: string;
   ref_area: string;
   every: string;
@@ -210,7 +220,7 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
       : undefined,
     boundaries: form.boundaries.length
       ? form.boundaries.map((rule) => ({
-          zones: rule.zones,
+          [rule.by]: rule.zones,
           condition: sparse({
             kind: rule.kind,
             ...Object.fromEntries(
@@ -226,7 +236,7 @@ export function caseDocument(form: CaseForm, materials: Material[] = []): CaseDo
             // Names are unique in a case; the first keeps the SDK's default, "forces".
             // A name given is kept verbatim: " loads " and "loads" are two monitors.
             name: m.name.trim() !== "" ? m.name : k === 0 ? undefined : `forces-${k + 1}`,
-            surfaces: m.surfaces,
+            [m.by === "group" ? "group" : "surfaces"]: m.surfaces,
             ref_area: quantity(m.ref_area),
             every: number(m.every),
           }),
@@ -290,7 +300,8 @@ export function formFromDocument(document: CaseDocument, materials: Material[]):
       const condition = record(rule.condition);
       const kind = (kinds.includes(str(condition.kind)) ? condition.kind : "wall") as ConditionKind;
       return {
-        zones: str(rule.zones),
+        by: rule.group === undefined ? "zones" : "group",
+        zones: str(rule.group ?? rule.zones),
         kind,
         values: Object.fromEntries(CONDITIONS[kind].map(({ key }) => [key, str(condition[key])])),
       };
@@ -299,11 +310,20 @@ export function formFromDocument(document: CaseDocument, materials: Material[]):
       .filter((m) => m.kind === "forces")
       .map((m) => ({
         name: str(m.name),
-        surfaces: str(m.surfaces),
+        by: m.group === undefined ? "zones" : "group",
+        surfaces: str(m.group ?? m.surfaces),
         ref_area: str(m.ref_area),
         every: str(m.every),
       })),
   };
+}
+
+/** The boundary zones a selection takes, as the SDK resolves it (`autan.plan.selected`): those
+ * whose name matches the glob, or every zone of the groups whose name matches it. */
+export function selectedZones(by: Selector, pattern: string, mesh: MeshSummary): Set<string> {
+  if (by === "zones")
+    return new Set(mesh.boundary_zones.map((z) => z.name).filter((n) => globMatches(pattern, n)));
+  return new Set(mesh.groups.filter((g) => globMatches(pattern, g.name)).flatMap((g) => g.zones));
 }
 
 /** Whether two JSON values are equal, whatever the order of their keys. */

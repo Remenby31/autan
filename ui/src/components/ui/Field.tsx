@@ -188,3 +188,54 @@ export function QuantityInput({
     </span>
   );
 }
+
+/** A glob selecting boundary zones by name or, when the mesh has zone groups, by group name:
+ * the leading choice says which, and the suggestions follow it. */
+export function SelectorInput({
+  by,
+  pattern,
+  onChange,
+  names,
+  placeholder,
+}: {
+  by: "zones" | "group";
+  pattern: string;
+  onChange: (by: "zones" | "group", pattern: string) => void;
+  /** Suggestions: the mesh's zone names and group names; no choice without groups. */
+  names: { id: string; zones: string[]; groups: string[] };
+  placeholder?: string;
+}) {
+  const control = useControl();
+  const choose = names.groups.length > 0 || by === "group";
+  const values = by === "group" ? names.groups : names.zones;
+  return (
+    <span className={cn("flex", BOX)}>
+      {choose && (
+        <select
+          value={by}
+          onChange={(e) => onChange(e.target.value as "zones" | "group", pattern)}
+          aria-label={control.label ? `${control.label} by` : "Select by"}
+          className="cursor-pointer border-line border-r bg-transparent px-2 text-fg-2 text-sm outline-none"
+        >
+          <option value="zones">name</option>
+          <option value="group">group</option>
+        </select>
+      )}
+      <input
+        id={control.id}
+        aria-describedby={control.hint}
+        value={pattern}
+        onChange={(e) => onChange(by, e.target.value)}
+        placeholder={placeholder}
+        list={names.id}
+        spellCheck={false}
+        className={cn(INPUT, "font-mono")}
+      />
+      <datalist id={names.id}>
+        {values.map((v) => (
+          <option key={v} value={v} />
+        ))}
+      </datalist>
+    </span>
+  );
+}
