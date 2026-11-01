@@ -34,6 +34,10 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
+      - name: Install the libraries the Gmsh wheel loads
+        run: >-
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
+          libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
       - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
         run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
