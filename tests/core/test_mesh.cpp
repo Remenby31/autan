@@ -508,6 +508,11 @@ TEST_CASE("A scaled mesh keeps its topology, scales lengths and periodic transla
     CHECK_THAT(g1.cell_volume[c], WithinRel(g0.cell_volume[c] * scale * scale * scale, 1e-13));
   for (const double bad : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
     CAPTURE(bad);
-    CHECK_THROWS_AS(autan::scaled(mesh, bad), autan::Error);
+    try {
+      (void)autan::scaled(mesh, bad);
+      FAIL("expected E0102");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::mesh_index_out_of_range);
+    }
   }
 }
