@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -94,13 +93,12 @@ class EulerPhysics final : public runtime::Physics {
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
       multigrid_.emplace(mesh, ctx.geometry);
-      std::string levels;
-      for (const auto& l : multigrid_->levels()) {
-        levels += (levels.empty() ? "" : ", ") + std::to_string(l.n_nodes);
-      }
+      nlohmann::json nodes = nlohmann::json::array();
+      for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
       ctx.log.write("info", "linear", "agglomeration multigrid", {},
-                    "{\"nodes\": [" + levels + "], \"coarsest\": \"" +
-                        (multigrid_->direct_coarsest() ? "lu" : "sweeps") + "\"}");
+                    nlohmann::json{{"nodes", nodes},
+                                   {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
+                        .dump());
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -467,7 +465,10 @@ class EulerPhysics final : public runtime::Physics {
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
     penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
-    if (drop > 0.0) cfl_ = std::clamp(penalty_ * cfl_start / drop, cfl_min, cfl_max);
+    if (drop > 0.0) {
+      cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
+    }
+    cfl_cap_ = cfl_max;
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
@@ -482,20 +483,18 @@ class EulerPhysics final : public runtime::Physics {
     }
     const bool failed = !(linear.residual_drop <= linear_failure);
     if (!(linear.residual_drop <= linear_tolerance)) {
-      std::array<char, 32> text{};
-      std::snprintf(text.data(), text.size(), "%.6g", linear.residual_drop);
+      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
+      if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
       ctx_.log.write("warning", "linear",
                      failed ? "the implicit step's linear solve failed: step rejected"
                             : "the implicit step's linear solve stopped above its tolerance",
-                     {},
-                     std::string("{\"cycles\": ") + std::to_string(linear.cycles) +
-                         ", \"residual_drop\": " +
-                         (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
+                     {}, data.dump());
     }
     if (failed) {
       // As a step with no admissible length: the state is kept and the next CFL number is half
       // this one, also when this one was clamped; at the smallest CFL number the run diverged.
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
       shortened_ = true;
       if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
       return;
@@ -504,13 +503,12 @@ class EulerPhysics final : public runtime::Physics {
     shortened_ = alpha < 1.0;
     // The next step halves the penalty; starting from the CFL number actually used, so that the
     // CFL number halves also when it was clamped.
-    if (shortened_ && drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
     if (shortened_) {
-      std::array<char, 64> text{};
-      std::snprintf(text.data(), text.size(), "{\"alpha\": %.6g, \"cfl\": %.6g}", alpha, cfl_);
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
       ctx_.log.write("warning", "solver",
                      alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
-                     text.data());
+                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
     }
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
@@ -632,6 +630,7 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;
+  double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;
