@@ -5,7 +5,7 @@ variables W = (rho, u, v, w, p), ideal gas with ratio of specific heats `gamma`.
 
 Residual R_c = sum over the faces of c of F(W_L, W_R) . S - s_c V_c, with
 - gradients of W by weighted least squares over face neighbours and boundary states,
-- the Venkatakrishnan (1995) limiter, J. Comput. Phys. 118:120-130, eq. 5, with the per-component
+- the Venkatakrishnan (1995) limiter with bounds over the gradient stencil, J. Comput. Phys. 118:120-130, eq. 5, with the per-component
   threshold eps^2 = scale_k V_c (scale_k = K^3 q_k^2 / L^3, set by the caller),
 - face states W_f = W_c + phi (grad W) (x_f - x_c),
 - one of three numerical fluxes: Roe with Harten's entropy fix, HLLC, AUSM+-up,
@@ -414,7 +414,7 @@ def lsq_term(wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3) -> Grad.Mat53:
 
 # Least squares over the cell stencil (vertex or face2 neighbours, Topology::stencil): over face
 # neighbours alone the second-order scheme is linearly unstable on tetrahedra (docs/design/
-# euler.md). The limiter's bounds stay on the face neighbours.
+# euler.md). The limiter's bounds are taken over the same stencil.
 gradients = cell_reduce(
     lsq_term,
     over=STENCIL,
@@ -439,6 +439,7 @@ def include_own_value(
 
 bounds = cell_reduce(
     neighbour_bounds,
+    over=STENCIL,
     wn=prim.other(boundary=prim_b),
     acc=[Min(wmin), Max(wmax)],
     finalise=include_own_value,
