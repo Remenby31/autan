@@ -575,7 +575,12 @@ TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") 
 
 #ifdef AUTAN_HAVE_CUDA
 TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]") {
-  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }));
+  // On a periodic mesh too, where the relaxation physics checks that the
+  // device exchange fills each image ghost on the run's stream.
+  const bool periodic = GENERATE(false, true);
+  CAPTURE(periodic);
+  const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
+  const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
   REQUIRE(o.status == ExitStatus::finished);
   std::ifstream log_in(o.run / "log.jsonl");
   Json ready, cuda;
@@ -1434,6 +1439,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#ifdef AUTAN_HAVE_CUDA
+  // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
+  // physics checks at every step that the exchange fills its ghosts in
+  // device memory, through a CUDA-aware MPI; the history stays that of one rank.
+  Json on_gpu = doc;
+  on_gpu["devices"]["kind"] = "cuda";
+  const fs::path gpu = run_on_ranks(on_gpu, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                     "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+  CHECK(lines_of(gpu / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#endif
   const Json a = Json::parse(read(one.run / "run.json"));
   const Json b = Json::parse(read(many / "run.json"));
   for (const char* key : {"status", "iterations", "time", "diagnostics"}) {

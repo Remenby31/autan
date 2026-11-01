@@ -5,7 +5,8 @@ import { appendHistory, emptyColumns as empty, soleForces } from "./runs";
 const record = (iteration: number, monitors?: HistoryRecord["monitors"]): HistoryRecord => ({
   iteration,
   time: null,
-  residuals: { density: 10 ** -iteration },
+  // Parsed, as the literal 1e-k is: 10 ** -k is not correctly rounded on every platform.
+  residuals: { density: Number(`1e-${iteration}`) },
   ...(monitors ? { monitors } : {}),
 });
 
@@ -24,6 +25,15 @@ const run = (
   },
   convergence: floor ? { floor } : null,
 });
+
+// Drops in orders of magnitude, to round-off of log10 on the platform.
+const expectOrders = (actual: number[], expected: number[]) => {
+  expect(actual).toHaveLength(expected.length);
+  for (const [k, value] of expected.entries()) {
+    if (Number.isFinite(value)) expect(actual[k]).toBeCloseTo(value, 12);
+    else expect(actual[k]).toBe(value);
+  }
+};
 
 const forces = (cl: number, cd: number) => ({ fx: 0, fy: 0, fz: 0, mx: 0, my: 0, mz: 0, cl, cd });
 
@@ -90,11 +100,11 @@ test("an identically zero equation is exempt at its floor and woken above it, fo
     my.map((v, k) => ({
       iteration: k + 1,
       time: null,
-      residuals: { density: 10 ** -(4 * k), my: v },
+      residuals: { density: Number(`1e-${4 * k}`), my: v },
     }));
   const drops = (my: number[], woken: string[] = []) =>
     appendHistory(empty(), rows(...my), run({ residual_reference: null, woken })).orders;
-  expect(drops([0, 1e-12, 1e-33])).toEqual([0, 4, 8]);
+  expectOrders(drops([0, 1e-12, 1e-33]), [0, 4, 8]);
   const exempt = (my: number[]) =>
     appendHistory(empty(), rows(...my), run({ residual_reference: null, woken: [] })).exempt;
   expect([...exempt([0, 1e-33])]).toEqual(["my"]);
@@ -114,7 +124,7 @@ test("an equation at its round-off floor has converged; all of them, and the dro
     { iteration: 3, time: null, residuals: { density: 1e-4, energy: 1e-8 } },
   ];
   const floors = run({ residual_reference: null, woken: null }, { density: 1e-4, energy: 1e-8 });
-  expect(appendHistory(empty(), rows, floors).orders).toEqual([0, 6, Number.POSITIVE_INFINITY]);
+  expectOrders(appendHistory(empty(), rows, floors).orders, [0, 6, Number.POSITIVE_INFINITY]);
 });
 
 test("an equation missing from a continued run's reference leaves the drop undefined", () => {
