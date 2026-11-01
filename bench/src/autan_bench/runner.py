@@ -77,6 +77,7 @@ def run(
     ``kernels``, each {name, bytes_per_rep, seconds[], optional cells, optional params}.
     """
     with gpu.gpu_lock(lock, lock_timeout_s) as waited:
+        gpu.require_campaigns_frozen(lock)
         idle = gpu.require_idle()
         before = gpu.host_load()
         per_cpu = before["runnable"] / before["cpus"]

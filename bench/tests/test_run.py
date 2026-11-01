@@ -77,16 +77,20 @@ def raw_output(verified: bool, backend: str) -> dict:
 
 
 def fake_runnable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int) -> None:
-    """The kernel's count of runnable threads, observer included: /proc/stat and `ps -A -M`."""
+    """The kernel's count of runnable threads, observer included: /proc/stat, and on macOS
+    `ps -A -M -o stat=`, which appends each thread's state after the truncated command (here
+    with a sleeping process whose arguments look like a state, and a localised %CPU)."""
     stat_file = tmp_path / "proc-stat"
     stat_file.write_text(f"cpu  1 2 3 4\nprocs_running {count}\nprocs_blocked 0\n")
     monkeypatch.setattr(gpu, "PROC_STAT", stat_file)
     ps = tmp_path / "ps"
-    line = "admin  4242   ??    9.0 R    31T   0:00.01   0:00.02 spin"
-    ps.write_text("#!/bin/sh\necho 'USER PID TT %CPU STAT PRI STIME UTIME COMMAND'\n")
-    with ps.open("a") as handle:
-        handle.write(f"i=0; while [ $i -lt {count} ]; do echo '{line}'; i=$((i+1)); done\n")
-        handle.write("echo '       4242         0.0 S    31T   0:00.00   0:00.00 '\n")
+    running = "admin  4242   ??    9,0 R    31T   0:00.01   0:00.02 spin       R"
+    sleeping = "admin  4243   ??    0,0 S    31T   0:00.00   0:00.00 x 1 R 2    S"
+    ps.write_text(
+        "#!/bin/sh\necho 'USER PID TT %CPU STAT PRI STIME UTIME COMMAND'\n"
+        f"i=0; while [ $i -lt {count} ]; do echo '{running}'; i=$((i+1)); done\n"
+        f"echo '{sleeping}'\n"
+    )
     ps.chmod(ps.stat().st_mode | stat.S_IEXEC)
 
 

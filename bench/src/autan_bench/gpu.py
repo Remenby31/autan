@@ -158,6 +158,37 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+CAMPAIGN_HEARTBEAT_S = 90.0
+
+
+def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
+    """Wait until every live CPU campaign (bench/campaign/) reads frozen.
+
+    Its watcher writes ``campaigns/NAME.state`` next to the lock ("running" before any start or
+    thaw, "frozen" once frozen) and touches ``NAME.heartbeat``; a campaign whose heartbeat is
+    older than CAMPAIGN_HEARTBEAT_S has stopped by itself and is ignored. Still running after
+    ``timeout_s``: ``HOST_BUSY``.
+    """
+    states = lock.parent / "campaigns"
+    deadline = time.monotonic() + timeout_s
+    while True:
+        running = []
+        for state in states.glob("*.state"):
+            try:
+                live = time.time() - state.with_suffix(".heartbeat").stat().st_mtime
+                if state.read_text().strip() != "frozen" and live < CAMPAIGN_HEARTBEAT_S:
+                    running.append(state.stem)
+            except FileNotFoundError:
+                continue
+        if not running:
+            return
+        if time.monotonic() > deadline:
+            raise BenchError(
+                Code.HOST_BUSY, f"CPU campaigns still running under the GPU lock: {running}"
+            )
+        time.sleep(0.1)
+
+
 def require_idle(
     gpu_index: int = 0, window: int = 5, interval_s: float = 0.2, timeout_s: float = 5.0
 ) -> dict[str, float | int]:
@@ -270,18 +301,25 @@ LOAD_WARN_PER_CPU = 1.0
 
 
 PROC_STAT = Path("/proc/stat")
-# A thread line of `ps -A -M` whose STAT column, after %CPU, starts with R.
-_PS_RUNNING = re.compile(r"\s[0-9.]+\s+R\S*\s+[0-9]")
 
 
 def _runnable_now() -> int:
     """Threads runnable on the host now, the observer included (global, also in a container)."""
-    if sys.platform == "darwin":
-        out = subprocess.run(["ps", "-A", "-M"], capture_output=True, text=True, check=True)
-        return sum(1 for line in out.stdout.splitlines() if _PS_RUNNING.search(line))
-    for line in PROC_STAT.read_text().splitlines():
-        if line.startswith("procs_running "):
-            return int(line.split()[1])
+    try:
+        if sys.platform == "darwin":
+            # -o stat= appends the state as the last column of every thread line, after the
+            # truncated command; the C locale keeps the other columns' numbers unlocalised.
+            out = subprocess.run(
+                ["ps", "-A", "-M", "-o", "stat="], capture_output=True, text=True, check=True,
+                env={**os.environ, "LC_ALL": "C"}, timeout=10,
+            )  # fmt: skip
+            rows = out.stdout.splitlines()[1:]
+            return sum(1 for row in rows if row.split() and row.split()[-1].startswith("R"))
+        for line in PROC_STAT.read_text().splitlines():
+            if line.startswith("procs_running "):
+                return int(line.split()[1])
+    except (OSError, subprocess.SubprocessError) as err:
+        raise BenchError(Code.TELEMETRY_FAILED, f"cannot count runnable threads: {err}") from err
     raise BenchError(Code.TELEMETRY_FAILED, f"{PROC_STAT} has no procs_running line")
 
 
