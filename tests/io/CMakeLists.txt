@@ -10,8 +10,7 @@ target_compile_definitions(
 if(AUTAN_ENABLE_CGNS)
   find_program(AUTAN_CGNSCHECK cgnscheck REQUIRED)
   target_sources(autan_io_tests PRIVATE test_cgns.cpp)
-  target_include_directories(autan_io_tests SYSTEM PRIVATE ${CGNS_INCLUDE_DIR})
-  target_link_libraries(autan_io_tests PRIVATE ${CGNS_LIBRARY})
+  target_link_libraries(autan_io_tests PRIVATE autan_cgns)
   target_compile_definitions(
     autan_io_tests
     PRIVATE AUTAN_HAVE_CGNS AUTAN_CGNSCHECK="${AUTAN_CGNSCHECK}"

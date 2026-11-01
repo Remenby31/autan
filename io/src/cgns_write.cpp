@@ -123,7 +123,8 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
   }
   for (std::size_t i = 0; i < cell_names.size(); ++i)
     zone_names["cell"][nodes.cell[i]] = cell_names[i];
-  cgns_check(cg_descriptor_write("ZoneNames", zone_names.dump().c_str()), "write ZoneNames");
+  cgns_check(cg_descriptor_write("ZoneNames", zone_names.dump(-1, ' ', true).c_str()),
+             "write ZoneNames");
 
   for (std::size_t i = 0; i < zones.boundary.size(); ++i) {
     int family = 0;
