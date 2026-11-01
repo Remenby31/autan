@@ -16,6 +16,16 @@ void check(cudaError_t e) {
   if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
 }
 
+struct CountedTerms {
+  const double* a;
+  const double* b;
+  unsigned long long* calls;
+  __device__ double operator()(std::int64_t i, int k) const {
+    atomicAdd(calls, 1ULL);
+    return k == 0 ? a[i] : b[i];
+  }
+};
+
 __global__ void round_on_device(const autan::runtime::gpu::ExactWords* sums, double* values) {
   values[0] = autan::runtime::gpu::exact_value(sums[0]);
   values[1] = autan::runtime::gpu::exact_value(sums[1]);
@@ -74,6 +84,37 @@ double device_value(const autan::runtime::ExactSum& sum) {
   check(cudaFree(dw));
   check(cudaFree(dv));
   return value;
+}
+
+std::array<autan::runtime::ExactSum, 2> device_sums_if(const std::vector<double>& a,
+                                                       const std::vector<double>& b, int active,
+                                                       unsigned long long& evaluated) {
+  const auto n = a.size();
+  double *da = nullptr, *db = nullptr;
+  int* flag = nullptr;
+  unsigned long long* calls = nullptr;
+  autan::runtime::gpu::ExactWords* out = nullptr;
+  check(cudaMalloc(&da, n * sizeof(double)));
+  check(cudaMalloc(&db, n * sizeof(double)));
+  check(cudaMalloc(&flag, sizeof(int)));
+  check(cudaMalloc(&calls, sizeof(unsigned long long)));
+  check(cudaMalloc(&out, 2 * sizeof(autan::runtime::gpu::ExactWords)));
+  check(cudaMemcpy(da, a.data(), n * sizeof(double), cudaMemcpyHostToDevice));
+  check(cudaMemcpy(db, b.data(), n * sizeof(double), cudaMemcpyHostToDevice));
+  check(cudaMemcpy(flag, &active, sizeof(int), cudaMemcpyHostToDevice));
+  check(cudaMemset(calls, 0, sizeof(unsigned long long)));
+  check(cudaMemset(out, 0x5a, 2 * sizeof(autan::runtime::gpu::ExactWords)));
+  cudaStream_t stream = nullptr;
+  check(cudaStreamCreate(&stream));
+  autan::runtime::gpu::exact_sums<2>(static_cast<std::int64_t>(n), CountedTerms{da, db, calls}, out,
+                                     stream, 0, flag);
+  const auto sums = autan::runtime::gpu::to_host<2>(out, stream);
+  check(cudaMemcpy(&evaluated, calls, sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+  check(cudaStreamDestroy(stream));
+  for (void* p : {static_cast<void*>(da), static_cast<void*>(db), static_cast<void*>(flag),
+                  static_cast<void*>(calls), static_cast<void*>(out)})
+    check(cudaFree(p));
+  return sums;
 }
 
 }  // namespace autan_test

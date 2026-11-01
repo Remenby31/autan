@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -157,5 +158,30 @@ TEST_CASE("A device exact sum rounds on the device as ExactSum::value()",
         autan_test::device_sums(terms, std::vector<double>(terms.size(), 0.0), 0, &on_device);
     CHECK(same_bits(sums[0].value(), expected));
     CHECK(same_bits(on_device[0], expected));
+  }
+}
+
+TEST_CASE("A device predicate skips the exact sums or does them unchanged",
+          "[runtime][exact-sum][gpu]") {
+  // Clear: the sums keep their earlier words and no term is evaluated. Set:
+  // every term once each, and the bits of the unconditional sums.
+  const std::size_t n = 300001;
+  std::vector<double> a(n), b(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    a[i] = std::ldexp(1.0 + static_cast<double>(i % 7), static_cast<int>(i % 200) - 100);
+    b[i] = (i % 2 == 0 ? 1.0 : -1.0) * static_cast<double>(i);
+  }
+  unsigned long long evaluated = 0;
+  auto skipped = autan_test::device_sums_if(a, b, 0, evaluated);
+  CHECK(evaluated == 0);
+  for (auto& s : skipped) {
+    for (const std::int64_t w : s.data()) CHECK(w == 0x5a5a5a5a5a5a5a5aLL);
+  }
+  const auto done = autan_test::device_sums_if(a, b, 1, evaluated);
+  CHECK(evaluated == 2 * n);
+  const auto always = autan_test::device_sums(a, b, 0);
+  for (std::size_t k = 0; k < 2; ++k) {
+    auto x = done[k], y = always[k];
+    CHECK(std::ranges::equal(x.data(), y.data()));
   }
 }

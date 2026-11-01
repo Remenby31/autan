@@ -106,10 +106,13 @@ __device__ inline void exact_add_warp(ExactWords& acc, double term, bool active)
 namespace detail {
 
 // K exact sums over n items, term(i, k) the k-th term of item i; each block
-// adds its normalized sums into `out` (zeroed beforehand).
+// adds its normalized sums into `out` (zeroed beforehand). Nothing when
+// `active` is given and holds 0: every thread leaves before any barrier.
 template <int K, class Term>
 __global__ void __launch_bounds__(block_size) exact_sums_kernel(std::int64_t n, Term term,
-                                                                ExactWords* out) {
+                                                                ExactWords* out,
+                                                                const int* active) {
+  if (active != nullptr && *active == 0) return;
   constexpr int max_warps = block_size / 32;
   __shared__ ExactWords acc[max_warps][K];
   const int warps = static_cast<int>(blockDim.x) / warpSize;
@@ -161,6 +164,15 @@ __global__ void __launch_bounds__(block_size) exact_sums_kernel(std::int64_t n, 
   }
 }
 
+// Zeroes the K sums of `out` unless `*active` holds 0.
+template <int K>
+__global__ void clear_if_kernel(ExactWords* out, const int* active) {
+  if (*active == 0) return;
+  for (int t = static_cast<int>(threadIdx.x); t < K * ExactSum::words;
+       t += static_cast<int>(blockDim.x))
+    out[t / ExactSum::words].w[t % ExactSum::words] = 0;
+}
+
 inline void check(
 #if defined(__HIPCC__)
     hipError_t e,
@@ -180,16 +192,24 @@ inline void check(
 /// K exact sums over n items: `out[k]` (device memory, K entries, zeroed
 /// here) receives the sum over i of term(i, k), a __device__ functor
 /// returning double. Asynchronous on `stream`; `blocks` 0 picks 4 per
-/// multiprocessor. Up to 2^30 items per block and 2^31 blocks.
+/// multiprocessor. Up to 2^30 items per block and 2^31 blocks. With
+/// `active` (device memory), the work is done only when `*active` is not 0
+/// when it runs; otherwise `out` is left as it was and no term is evaluated,
+/// so that a branch decided on the device needs no host read.
 template <int K, class Term>
-void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int blocks = 0) {
+void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int blocks = 0,
+                const int* active = nullptr) {
   static_assert(K >= 1 && K * ExactSum::words * 8 * (detail::block_size / 32) <= 48 * 1024,
                 "K sums per warp must fit in 48 KB of shared memory");
+  if (active != nullptr) {
+    detail::clear_if_kernel<K><<<1, detail::block_size, 0, stream>>>(out, active);
+  } else {
 #if defined(__HIPCC__)
-  detail::check(hipMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "hipMemsetAsync");
+    detail::check(hipMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "hipMemsetAsync");
 #else
-  detail::check(cudaMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "cudaMemsetAsync");
+    detail::check(cudaMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "cudaMemsetAsync");
 #endif
+  }
   if (blocks <= 0) {
     int device = 0, units = 0;
 #if defined(__HIPCC__)
@@ -203,7 +223,7 @@ void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int
 #endif
     blocks = 4 * units;
   }
-  detail::exact_sums_kernel<K><<<blocks, detail::block_size, 0, stream>>>(n, term, out);
+  detail::exact_sums_kernel<K><<<blocks, detail::block_size, 0, stream>>>(n, term, out, active);
 #if defined(__HIPCC__)
   detail::check(hipGetLastError(), "exact_sums");
 #else
