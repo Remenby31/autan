@@ -460,7 +460,7 @@
     "E0804": {
       "severity": "error",
       "title": "No solver backend",
-      "fix": "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
+      "fix": "Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run installed, or `autan.FakeBackend()` for synthetic results.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0804"
     },
     "E0805": {

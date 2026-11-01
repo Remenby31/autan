@@ -1,8 +1,14 @@
-# `autan run` and the fake backend
+# `autan run`
 
-`autan run CASE --mesh-info MESHINFO [--runs DIR] [--json]` plans the case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`). In Python: `case.run(mesh_info, backend=autan.FakeBackend(), runs="runs")`, which returns `autan.Results`.
+`autan run CASE --mesh-info MESHINFO [--backend fake|cpu|cuda|hip] [--device-count N] [--deterministic] [--runs DIR] [--json]` plans the case, refuses it on any error, then writes a run directory as specified in [results.md](../contracts/results.md) under `DIR` (default `./runs`). In Python: `case.run(mesh_info, backend=..., runs="runs")`, which returns `autan.Results`.
 
-Until the C++ core is built, the only backend is `fake` (`autan.FakeBackend`). It writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
+## Solver backend
+
+`--backend cpu|cuda|hip` (Python: `autan.SolverBackend(devices=autan.Devices(kind="cuda", count=8))`) writes the case's [solver input](../contracts/solver-input.md) and runs the solver runtime `autan-run`, found through `$AUTAN_RUN` or the PATH (`E0804` if neither). The runtime's input errors come back as their own coded diagnostics: today every case gets `E0706`, since `autan-run` registers no physics yet. Ctrl-C or SIGTERM is passed on to the runtime, which finalizes the run as `stopped`.
+
+## Fake backend
+
+`--backend fake` (the default; Python: `autan.FakeBackend()`) writes contract-conforming, deterministic, **synthetic** results so the UI and V&V can be built against the real formats; `run.json` records `"backend": "fake"`, and these results must never be used as reference data.
 
 | What | Fake backend |
 |---|---|

@@ -616,9 +616,9 @@ Fix: Build the C++ core (see README) to run real computations.
 
 **No solver backend** (error)
 
-`case.run()` needs a backend. The C++ core is not part of this build, so only the `fake` backend exists; it writes synthetic results.
+`case.run()` needs a backend, and the solver backend needs the runtime `autan-run`, found through `$AUTAN_RUN` or the PATH.
 
-Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
+Fix: Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run installed, or `autan.FakeBackend()` for synthetic results.
 
 ## E0805
 
