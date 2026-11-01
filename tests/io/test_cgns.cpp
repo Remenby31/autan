@@ -254,7 +254,7 @@ TEST_CASE("Periodic pairs round-trip through solution.cgns", "[cgns][periodic]")
       cgsize_t count = 0, donor_count = 0;
       REQUIRE(cg_conn_info(fn, 1, 1, i, name, &location, &type, &set, &count, donor_name,
                            &donor_zone, &donor_set, &donor_type, &donor_count) == CG_OK);
-      std::vector<cgsize_t> points(static_cast<std::size_t>(n)),
+      std::vector<cgsize_t> points(static_cast<std::size_t>(count)),
           donor(static_cast<std::size_t>(donor_count));
       REQUIRE(cg_conn_read(fn, 1, 1, i, points.data(), CGNS_ENUMV(LongInteger), donor.data()) ==
               CG_OK);
