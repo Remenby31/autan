@@ -788,6 +788,14 @@ _CODES = [
         "in its place, or no permission.",
         "Give a writable file path.",
     ),
+    Code(
+        "E0807",
+        "No GPU device",
+        "The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA, but "
+        "the process sees no CUDA device (`data.visible`, `data.needed`).",
+        "Run on a host with a GPU visible to the process (`docker --gpus`), or use "
+        "`devices.kind = cpu`.",
+    ),
 ]
 
 REGISTRY: dict[str, Code] = {code.code: code for code in _CODES}
