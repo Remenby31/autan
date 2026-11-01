@@ -33,7 +33,7 @@ The gradient's boundary values are the boundary states of the first-order interi
 
 ### Point vortex
 
-A lifting 2D body leaves the circulation's vortex in the far field, so a uniform farfield state makes the lift depend on the outer radius. With `point_vortex`, each farfield face takes the freestream plus the compressible vortex of Thomas and Salas (1986, AIAA J. 24(7)) centred at `center`, in the x–z lift plane (zero sideslip, subsonic freestream). The velocity is the Prandtl-Glauert vortex (β = √(1 − M∞²)):
+A lifting 2D body leaves the circulation's vortex in the far field, so a uniform farfield state makes the lift depend on the outer radius. With `point_vortex`, each farfield face takes the freestream plus the compressible vortex of Thomas and Salas (1986, AIAA J. 24(7)) centred at `center`, in the x–z lift plane (steady cases, zero sideslip, subsonic freestream). The velocity is the Prandtl-Glauert vortex (β = √(1 − M∞²)):
 
 u = u∞ + q sin θ, w = w∞ − q cos θ, q = Γβ / (2πr (1 − M∞² sin²(θ − α))).
 

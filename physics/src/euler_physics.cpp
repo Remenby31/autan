@@ -648,7 +648,6 @@ class EulerPhysics final : public runtime::Physics {
     const auto& t = ctx_.input.time;
     const auto& g = ctx_.geometry;
     residual_of(u_);
-    measure_circulation();
     record_norms(report);
     double dt = t.dt.value_or(0.0);
     if (t.cfl) {
@@ -813,15 +812,23 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }
     if (!b.point_vortex || first == nullptr) continue;
-    // The vortex is planar in x-z (the lift plane at zero sideslip) and subsonic.
+    // A steady far-field model (lagged by one step in the circulation), planar in x-z (the lift
+    // plane at zero sideslip) and subsonic.
     const auto& fs = in.freestream;
+    if (in.time.kind != "steady") {
+      return runtime::PhysicsRefusal{
+          .message = "a point vortex needs a steady case; boundary zone '" + b.zone + "'",
+          .path = "time.kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"time", in.time.kind}}.dump()};
+    }
     if (fs.sideslip != 0.0) {
       return runtime::PhysicsRefusal{
           .message = "a point vortex needs zero sideslip; boundary zone '" + b.zone + "'",
           .path = "freestream.sideslip",
           .data_json = nlohmann::json{{"zone", b.zone}, {"sideslip", fs.sideslip}}.dump()};
     }
-    const double mach = fs.speed / std::sqrt(*first->gamma * fs.pressure / fs.density);
+    const double mach =
+        fs.mach.value_or(fs.speed / std::sqrt(*first->gamma * fs.pressure / fs.density));
     if (!(mach < 1.0)) {
       return runtime::PhysicsRefusal{
           .message = "a point vortex needs a subsonic freestream; boundary zone '" + b.zone + "'",
