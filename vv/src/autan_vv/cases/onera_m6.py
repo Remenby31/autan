@@ -36,7 +36,7 @@ GAMMA = 1.4
 RESIDUAL_ORDERS = 10.0
 SHOCK_TOLERANCE = 0.03
 SHOCK_STATIONS = (0.20, 0.44, 0.65)
-# Taps closer than this to a shock (x/c) are left out of the Cp RMS.
+# Taps closer than this to a shock (x/c) of their surface are left out of the Cp RMS.
 SHOCK_EXCLUSION = 0.05
 
 
@@ -189,11 +189,14 @@ def compare(
         cfd = computed[eta]
         s_exp = shock_positions(exp.upper[:, 0], exp.upper[:, 1], cp_star)
         s_cfd = shock_positions(cfd.upper[:, 0], cfd.upper[:, 1], cp_star)
+        lower_shocks = shock_positions(exp.lower[:, 0], exp.lower[:, 1], cp_star) + shock_positions(
+            cfd.lower[:, 0], cfd.lower[:, 1], cp_star
+        )
         gap = abs(s_cfd[-1] - s_exp[-1]) if s_exp and s_cfd else None
         residuals = []
         for surf_exp, surf_cfd, shocks in (
             (exp.upper, cfd.upper, s_exp + s_cfd),
-            (exp.lower, cfd.lower, []),
+            (exp.lower, cfd.lower, lower_shocks),
         ):
             x = surf_exp[:, 0]
             keep = (
@@ -217,50 +220,82 @@ def compare(
     return rows
 
 
-def residual_drop(results: autan.Results) -> dict[str, float]:
-    """Orders of magnitude each residual fell from iteration 1 to the last recorded iteration."""
+def residual_drop(results: autan.Results) -> dict[str, float | None]:
+    """Orders each residual fell from its reference (iteration 1 of the original run, results.md
+    `start.residual_reference` for a continued one) to the last recorded iteration; None where
+    either value is zero, the drop being then undefined."""
     history = results.history
-    out = {}
+    start = results.run.start
+    reference = start.residual_reference if start is not None else None
+    out: dict[str, float | None] = {}
     for name in history.equations:
         r = history.residual(name)
-        out[name] = float(math.log10(r[0] / r[-1])) if r[-1] > 0.0 else math.inf
+        first = reference[name] if reference is not None else float(r[0])
+        out[name] = float(math.log10(first / r[-1])) if first > 0.0 and r[-1] > 0.0 else None
     return out
 
 
+def _check_case(run: Path, spec: autan.CaseSpec, precision: str) -> None:
+    """The run's case must be `case` on its mesh up to precision, iteration budget and monitors,
+    which do not change the solution (V0801)."""
+    document = spec.model_dump(mode="json", by_alias=True)
+    expected = case(document["mesh"], precision=precision)  # type: ignore[arg-type]
+    reference = expected.spec.model_dump(mode="json", by_alias=True)
+    strip = {"time": None, "monitors": None}
+    if {**document, **strip} != {**reference, **strip} or document["time"]["kind"] != "steady":
+        msg = f"run {run} is not the ONERA M6 run 2308 case (conditions, physics or boundaries)"
+        raise VVError(msg, code="V0801")
+
+
 def study(run: Path, experiment_file: Path) -> dict[str, Any]:
-    """Residual-drop gate and the section report of one ONERA M6 run against `case_2308.dat`."""
+    """Residual-drop gate and the section report of one ONERA M6 run against `case_2308.dat`.
+
+    The run must be `case` on its mesh up to precision, iteration budget and monitors (V0801). The
+    gate holds
+    in fp64 only (acceptance.md): the run ended `converged` under a criterion of at least 10 orders,
+    which the runtime applies with its reference residuals and exemptions (case-schema.md, Time).
+    In fp32+acc64 the gate is the comparison with fp64, not this one: `gate` is then None.
+    """
     results = autan.Results.open(run)
     spec = results.case
     c = conditions()
-    if spec.freestream.mach is None or not math.isclose(spec.freestream.mach, c["mach"]):
-        msg = f"run {run} is not at the Mach number of run 2308 ({c['mach']})"
+    _check_case(run, spec, results.run.precision)
+    pressure_inf = spec.freestream.pressure
+    if pressure_inf is None:  # excluded by _check_case: the case gives the pressure
+        msg = f"run {run} gives no freestream pressure"
         raise VVError(msg, code="V0801")
-    if spec.freestream.pressure is None:
-        msg = f"run {run} gives no freestream pressure; Cp needs it"
-        raise VVError(msg, code="V0801")
-    p_inf = float(si(spec.freestream.pressure, "Pa"))
+    p_inf = float(si(pressure_inf, "Pa"))
     mesh = read_geometry(results)
     faces, pressure = results.wall("Pressure")
     cp = (pressure - p_inf) / (0.5 * GAMMA * p_inf * c["mach"] ** 2)
     polygons = [mesh.face(int(f)) for f in faces]
     computed = computed_sections(mesh.points, polygons, cp, c["eta"])
     measured = experiment(experiment_file)
-    drop = residual_drop(results)
     rows = compare(computed, measured, c["mach"])
+    fp64 = results.run.precision == "fp64"
+    orders = getattr(spec.time, "residual_orders", 0.0)
+    gate = (
+        {
+            "id": "onera-m6-residual-drop",
+            "pass": results.run.status == "converged" and orders >= RESIDUAL_ORDERS,
+        }
+        if fp64
+        else None
+    )
     return {
         "schema": STUDY_SCHEMA,
         "run": results.run.run_id,
         "status": results.run.status,
-        "residual_drop": drop,
-        "gate": {
-            "id": "onera-m6-residual-drop",
-            "pass": results.run.status == "converged" and min(drop.values()) >= RESIDUAL_ORDERS,
-        },
+        "precision": results.run.precision,
+        "case_sha256": results.run.case.sha256,
+        "mesh_sha256": results.run.mesh.sha256,
+        "commit": results.run.solver.commit,
+        "residual_drop": residual_drop(results),
+        "gate": gate,
         "sections": rows,
         "sections_cp": {
             str(eta): {"upper": sec.upper.tolist(), "lower": sec.lower.tolist()}
             for eta, sec in computed.items()
         },
-        # acceptance.md: the ten-order drop is measured in fp64.
-        "evidence": results.run.solver.backend != "fake" and results.run.precision == "fp64",
+        "evidence": results.run.solver.backend != "fake" and fp64,
     }

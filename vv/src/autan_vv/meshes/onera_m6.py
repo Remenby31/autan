@@ -209,6 +209,9 @@ def _mesh(gmsh: ModuleType, n: int) -> tuple[FloatArray, dict[str, IntArray], di
             gmsh.model.mesh.setAlgorithm(2, tag, 1)
     gmsh.option.setNumber("Mesh.Algorithm", 6)
     gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+    # Netgen's optimiser removes the flat tetrahedra Delaunay leaves (max non-orthogonality 70 -> 53
+    # deg at n = 24).
+    gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
     gmsh.model.mesh.generate(3)
     tags, coords, _ = gmsh.model.mesh.getNodes()
     order = np.argsort(tags)

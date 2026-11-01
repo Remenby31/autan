@@ -125,19 +125,27 @@ def _cmd_sections(args: argparse.Namespace) -> None:
     if args.out is not None:
         args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     drop = report["residual_drop"]
-    _say("residual drop: " + ", ".join(f"{k} {v:.1f}" for k, v in drop.items()))
+    _say(
+        "residual drop: "
+        + ", ".join(f"{k} {'-' if v is None else f'{v:.1f}'}" for k, v in drop.items())
+    )
     for row in report["sections"]:
         gap = row["rear_shock_gap"]
         rms = row["cp_rms_off_shocks"]
         _say(
-            f"eta {row['eta']:.2f}: shocks experiment {row['shocks_experiment']}, "
+            f"eta {row['eta']:.2f}: shocks experiment "
+            f"{[round(v, 3) for v in row['shocks_experiment']]}, "
             f"computed {[round(v, 3) for v in row['shocks_computed']]}, "
             f"rear gap {'-' if gap is None else f'{gap:.3f}'}, "
             f"Cp RMS {'-' if rms is None else f'{rms:.3f}'}"
         )
-    note = "" if report["evidence"] else " (not evidence: fake backend or not fp64)"
-    _say(f"gate {report['gate']['id']}: {'PASS' if report['gate']['pass'] else 'FAIL'}{note}")
-    if not report["gate"]["pass"]:
+    gate = report["gate"]
+    if gate is None:
+        _say(f"no residual gate in {report['precision']}: compare forces and Cp with fp64")
+        return
+    note = "" if report["evidence"] else " (not evidence: fake backend)"
+    _say(f"gate {gate['id']}: {'PASS' if gate['pass'] else 'FAIL'}{note}")
+    if not gate["pass"]:
         raise SystemExit(1)
 
 

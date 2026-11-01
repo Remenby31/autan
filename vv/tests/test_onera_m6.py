@@ -3,11 +3,12 @@
 
 import math
 from pathlib import Path
+from typing import Literal
 
 import autan
 import numpy as np
 import pytest
-from autan.units import deg
+from autan.units import Pa, deg, m
 from autan_vv.cases import fetch, get_case, read_columns
 from autan_vv.cases import onera_m6 as cases
 from autan_vv.errors import VVError
@@ -35,6 +36,23 @@ def test_planform_reproduces_the_published_figures() -> None:
     assert mac == pytest.approx(onera_m6.MEAN_AERODYNAMIC_CHORD, abs=5e-5)
     # The sharp trailing edge extends the chord by about 0.55 % (TMR model).
     assert onera_m6.sharp_section()[-1, 0] - 1.0 == pytest.approx(0.0055, abs=4e-4)
+
+
+# Rows of AGARD AR-138 table B1-1 typed from Destarac and Dumont (2016), table 1.
+TABLE_ROWS = [
+    (0.0098413, 0.0168984),
+    (0.1649976, 0.0419089),
+    (0.3761446, 0.0489296),
+    (0.6268104, 0.0387613),
+    (0.8868235, 0.0145051),
+    (1.0000000, 0.0007052),
+]
+
+
+def test_section_holds_the_published_rows() -> None:
+    for row in TABLE_ROWS:
+        assert np.any(np.all(row == onera_m6.SECTION, axis=1)), row
+    assert onera_m6.SECTION.shape == (72, 2)
 
 
 @pytest.fixture(scope="module")
@@ -130,10 +148,14 @@ def test_cut_interpolates_linear_fields_exactly(coarse: FaceMesh) -> None:
     assert nodes.size == np.unique(np.concatenate(faces)).size
 
 
-def _case_without_monitor(path: Path, mach: float) -> autan.Case:
+def _case_without_monitor(
+    path: Path, alpha: float = 3.06, precision: Literal["fp64", "fp32+acc64"] = "fp64"
+) -> autan.Case:
+    """Run 2308 as `cases.case` writes it, without the forces monitor that write_run refuses."""
     case = autan.Case("onera-m6-2308", mesh=str(path))
-    case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
-    case.freestream(mach=mach, aoa=3.06 * deg, pressure=101325.0 * autan.units.ureg.Pa)
+    case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision=precision)
+    case.freestream(mach=0.8395, aoa=alpha * deg, pressure=101325.0 * Pa, ref_length=0.64607 * m)
+    case.time = autan.Steady(max_iterations=10, residual_orders=10.0)
     case.boundary("wing").slip()
     case.boundary("symmetry").symmetry()
     case.boundary("farfield").farfield()
@@ -153,7 +175,7 @@ def test_study_cuts_the_wing_of_a_run(tmp_path: Path) -> None:
         "Temperature": np.ones(mesh.n_cells),
     }
     mach = cases.conditions()["mach"]
-    run = write_run(tmp_path / "runs", _case_without_monitor(path, mach), mesh, info, fields)
+    run = write_run(tmp_path / "runs", _case_without_monitor(path), mesh, info, fields)
     experiment = tmp_path / "case_2308.dat"
     lines = ['VARIABLES = "Section", "Tap", "X/L", "Z/L", "CP"']
     for k in range(7):
@@ -166,7 +188,9 @@ def test_study_cuts_the_wing_of_a_run(tmp_path: Path) -> None:
         ]
     experiment.write_text("\n".join(lines) + "\n")
     report = cases.study(run.path, experiment)
-    assert not report["gate"]["pass"]
+    # write_run marks the run converged; its case asks for 10 orders, so the fp64 gate passes.
+    assert report["gate"] == {"id": "onera-m6-residual-drop", "pass": True}
+    assert report["residual_drop"] == dict.fromkeys(report["residual_drop"], 0.0)
     assert [row["eta"] for row in report["sections"]] == cases.conditions()["eta"]
     # The experiment's rise through Cp* between taps 0.1 and 0.5 (linear interpolation).
     cp_star = cases.critical_cp(mach)
@@ -180,10 +204,20 @@ def test_study_cuts_the_wing_of_a_run(tmp_path: Path) -> None:
             np.testing.assert_allclose(xc_cp[:, 1], -2.0 / (1.4 * mach**2), rtol=1e-12)
             assert xc_cp[:, 0].min() < 0.1
             assert xc_cp[:, 0].max() > 0.9
-    other = write_run(tmp_path / "runs", _case_without_monitor(path, 0.5), mesh, info, fields)
-    with pytest.raises(VVError) as err:
-        cases.study(other.path, experiment)
-    assert err.value.code == "V0801"
+    mixed = _case_without_monitor(path, precision="fp32+acc64")
+    mixed_run = write_run(tmp_path / "runs", mixed, mesh, info, fields)
+    assert cases.study(mixed_run.path, experiment)["gate"] is None
+    for alpha in (0.0, -3.06, 6.06):
+        other = write_run(tmp_path / "runs", _case_without_monitor(path, alpha), mesh, info, fields)
+        with pytest.raises(VVError) as err:
+            cases.study(other.path, experiment)
+        assert err.value.code == "V0801"
+
+
+@pytest.mark.network
+def test_section_is_the_nparc_table(tmp_path: Path) -> None:
+    paths = {p.name: p for p in fetch(get_case("onera-m6"), tmp_path, ("grid",))}
+    np.testing.assert_array_equal(read_columns(paths["airfoil.txt"]).data, onera_m6.SECTION)
 
 
 @pytest.mark.network
