@@ -5,10 +5,12 @@ import { type ReactNode, useDeferredValue, useEffect, useRef, useState } from "r
 import {
   type BoundaryForm,
   type CaseForm,
+  type CellZoneForm,
   CONDITIONS,
   type ConditionKind,
   caseDocument,
   EMPTY_CASE,
+  materialsQuery,
   meshesQuery,
   renderQuery,
   UNITS,
@@ -55,6 +57,10 @@ const LABEL: Record<string, string> = {
 /** A case built field by field against a mesh, read back by the SDK as it is typed. */
 function CaseEditor() {
   const meshes = useQuery(meshesQuery);
+  const materials = useQuery(materialsQuery);
+  const library = materials.data ?? [];
+  const gases = library.filter((m) => m.document.kind === "ideal-gas");
+  const solids = library.filter((m) => m.document.kind === "solid");
   const [form, setForm] = useState<CaseForm>(EMPTY_CASE);
   const deferred = useDeferredValue(form);
   const [settled, setSettled] = useState(form);
@@ -62,7 +68,7 @@ function CaseEditor() {
     const timer = setTimeout(() => setSettled(deferred), 250);
     return () => clearTimeout(timer);
   }, [deferred]);
-  const rendered = useQuery(renderQuery(caseDocument(settled), settled.mesh || null));
+  const rendered = useQuery(renderQuery(caseDocument(settled, library), settled.mesh || null));
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
   const { webgl = false } = Route.useSearch();
@@ -112,6 +118,12 @@ function CaseEditor() {
     field: keyof CaseForm[K],
     value: string,
   ) => setForm((f) => ({ ...f, [key]: { ...f[key], [field]: value } }));
+  const cellZones = mesh?.cell_zones.map((z) => z.name) ?? [];
+  const setCellZone = (k: number, zone: CellZoneForm) =>
+    set(
+      "cellZones",
+      form.cellZones.map((z, i) => (i === k ? zone : z)),
+    );
   const setRule = (k: number, rule: BoundaryForm) =>
     set(
       "boundaries",
@@ -127,6 +139,19 @@ function CaseEditor() {
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
+          {materials.isError && (
+            <Note
+              tone="error"
+              title="The material libraries could not be listed"
+              action={
+                <Button size="sm" onClick={() => materials.refetch()}>
+                  Retry
+                </Button>
+              }
+            >
+              Gases and solids come from the SDK: {materials.error.message}
+            </Note>
+          )}
           {meshes.isError && (
             <Note tone="error" title="The meshes could not be listed">
               {meshes.error.message}
@@ -170,6 +195,81 @@ function CaseEditor() {
                 placeholder="Default (fp32 + fp64 accumulation)"
               />
             </Field>
+            <Field label="Gas">
+              <SelectInput
+                value={form.physics.gas}
+                onChange={(v) => setIn("physics", "gas", v)}
+                options={gases.map((m) => ({ value: m.name, label: m.document.name }))}
+                placeholder="Default (air)"
+              />
+            </Field>
+          </Section>
+
+          <Section
+            title="Cell zones"
+            action={
+              <Button
+                size="sm"
+                icon={<Plus className="size-4" />}
+                onClick={() =>
+                  set("cellZones", [...form.cellZones, { zones: "", kind: "fluid", material: "" }])
+                }
+              >
+                Add zone
+              </Button>
+            }
+          >
+            {form.cellZones.map((zone, k) => (
+              <fieldset
+                // biome-ignore lint/suspicious/noArrayIndexKey: rules have no identity but their place
+                key={k}
+                aria-label={`Cell zone ${k + 1}`}
+                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)_auto] items-end gap-3 border-0 p-0"
+              >
+                <Field label="Zones">
+                  <TextInput
+                    value={zone.zones}
+                    onChange={(v) => setCellZone(k, { ...zone, zones: v })}
+                    placeholder="plate"
+                    mono
+                    options={{ id: `cells-${k}`, values: cellZones }}
+                  />
+                </Field>
+                <Field label="Medium">
+                  <SelectInput
+                    value={zone.kind}
+                    onChange={(v) => v && setCellZone(k, { ...zone, kind: v, material: "" })}
+                    options={[
+                      { value: "fluid", label: "fluid" },
+                      { value: "solid", label: "solid" },
+                    ]}
+                  />
+                </Field>
+                <Field label="Material">
+                  <SelectInput
+                    value={zone.material}
+                    onChange={(v) => setCellZone(k, { ...zone, material: v })}
+                    options={(zone.kind === "fluid" ? gases : solids).map((m) => ({
+                      value: m.name,
+                      label: m.document.name,
+                    }))}
+                    placeholder="Choose…"
+                  />
+                </Field>
+                <Button
+                  square
+                  variant="tertiary"
+                  aria-label={`Remove cell zone ${k + 1}`}
+                  icon={<Trash2 className="size-4" />}
+                  onClick={() =>
+                    set(
+                      "cellZones",
+                      form.cellZones.filter((_, i) => i !== k),
+                    )
+                  }
+                />
+              </fieldset>
+            ))}
           </Section>
 
           <Section title="Freestream">
