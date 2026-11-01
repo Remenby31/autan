@@ -784,8 +784,7 @@ TEST_CASE("on a device, a verification case converges to the host's discrete sol
       INFO("difference " << diff / error << " of the discretisation error");
       CHECK(diff <= 1e-3 * error);
     } else {
-      const double scale =
-          k >= 1 && k <= 3 ? speed : l2(a, std::vector<double>(n, 0.0));
+      const double scale = k >= 1 && k <= 3 ? speed : l2(a, std::vector<double>(n, 0.0));
       INFO("difference " << diff / scale / std::numeric_limits<float>::epsilon() << " eps32");
       CHECK(diff <= 500.0 * std::numeric_limits<float>::epsilon() * scale);
     }
@@ -805,8 +804,11 @@ TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[
       auto& init = d["cell_zones"].back()["initial"];
       init["density"] = 1.2 * init["density"].get<double>();
       init["pressure"] = 1.3 * init["pressure"].get<double>();
-      d["time"] = {
-          {"kind", "unsteady"}, {"steps", steps}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 2}};
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", steps},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", 2}};
     });
   };
   const auto whole = run(doc(12));

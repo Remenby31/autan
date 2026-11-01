@@ -100,10 +100,7 @@ if(AUTAN_ENABLE_CGNS)
       ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
     )
     target_include_directories(autan_physics_device PRIVATE ${AUTAN_PHYSICS_GENERATED})
-    target_link_libraries(
-      autan_physics_device
-      PRIVATE autan::physics autan::runtime CUDA::cudart
-    )
+    target_link_libraries(autan_physics_device PRIVATE autan::physics autan::runtime CUDA::cudart)
     set_target_properties(
       autan_physics_device
       PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON

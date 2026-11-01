@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "autan/kernels/device.cuh"
-#include "autan/runtime/exact_sum.cuh"
 #include "autan/physics/euler_device.hpp"
+#include "autan/runtime/exact_sum.cuh"
 #include "euler_gpu.cuh"
 
 namespace autan::physics {
@@ -137,8 +137,8 @@ __global__ void invalid_residuals(index_t count, index_t n, const R* res, std::u
   if (c >= count) return;
   bool bad = false;
   for (int k = 0; k < 5; ++k) {
-    bad = bad ||
-          !isfinite(static_cast<double>(res[static_cast<std::size_t>(k) * static_cast<std::size_t>(n) + c]));
+    bad = bad || !isfinite(static_cast<double>(
+                     res[static_cast<std::size_t>(k) * static_cast<std::size_t>(n) + c]));
   }
   flag[c] = bad;
 }
@@ -243,8 +243,8 @@ class CudaStepper final : public DeviceStepper<P> {
     const double* local_dt = nullptr;
     if (!dt) {
       ek::gpu_loops::spectral_radius(d_, mesh_.schedule());
-      local_time_step<<<blocks(n_), block, 0, stream_>>>(index(n_), cfl, volume_.get(),
-                                                         lam_.get(), dt_.get());
+      local_time_step<<<blocks(n_), block, 0, stream_>>>(index(n_), cfl, volume_.get(), lam_.get(),
+                                                         dt_.get());
       check(cudaGetLastError(), "local_time_step");
       h = gpu::min(index(n_), dt_.get(), stream_);
       if (local) local_dt = dt_.get();
@@ -252,14 +252,14 @@ class CudaStepper final : public DeviceStepper<P> {
     // Shu and Osher (1988), J. Comput. Phys. 77:439-471, eq. 2.18.
     constexpr std::array<std::array<double, 2>, 3> weights{
         {{0.0, 1.0}, {0.75, 0.25}, {1.0 / 3.0, 2.0 / 3.0}}};
-    check(cudaMemcpyAsync(stage_.get(), u_.get(), 5 * n_ * sizeof(double),
-                          cudaMemcpyDeviceToDevice, stream_),
+    check(cudaMemcpyAsync(stage_.get(), u_.get(), 5 * n_ * sizeof(double), cudaMemcpyDeviceToDevice,
+                          stream_),
           "stage");
     for (std::size_t s = 0; s < 3; ++s) {
       if (s > 0) residual(stage_.get());
-      rk_stage<<<blocks(n_), block, 0, stream_>>>(index(n_), weights[s][0], weights[s][1],
-                                                  u_.get(), res_.get(), volume_.get(), local_dt,
-                                                  h, stage_.get());
+      rk_stage<<<blocks(n_), block, 0, stream_>>>(index(n_), weights[s][0], weights[s][1], u_.get(),
+                                                  res_.get(), volume_.get(), local_dt, h,
+                                                  stage_.get());
       check(cudaGetLastError(), "rk_stage");
     }
     std::swap(u_, stage_);
@@ -331,13 +331,13 @@ class CudaStepper final : public DeviceStepper<P> {
   }
 
   std::optional<index_t> invalid() {
-    invalid_states<P><<<blocks(owned_), block, 0, stream_>>>(
-        index(owned_), index(n_), u_.get(), ref_, gamma_, p_ref_, flag_.get());
+    invalid_states<P><<<blocks(owned_), block, 0, stream_>>>(index(owned_), index(n_), u_.get(),
+                                                             ref_, gamma_, p_ref_, flag_.get());
     check(cudaGetLastError(), "invalid_states");
     auto c = gpu::first_index(index(owned_), flag_.get(), stream_);
     if (c < index(owned_)) return c;
-    invalid_residuals<<<blocks(owned_), block, 0, stream_>>>(index(owned_), index(n_),
-                                                             res_.get(), flag_.get());
+    invalid_residuals<<<blocks(owned_), block, 0, stream_>>>(index(owned_), index(n_), res_.get(),
+                                                             flag_.get());
     check(cudaGetLastError(), "invalid_residuals");
     c = gpu::first_index(index(owned_), flag_.get(), stream_);
     if (c < index(owned_)) return c;
@@ -375,15 +375,14 @@ std::unique_ptr<DeviceStepper<P>> make_device_stepper(const Mesh& mesh, const Ge
                                                       const Euler<P>& host, double gamma,
                                                       bool second_order, runtime::Ranks& ranks,
                                                       void* stream) {
-  return std::make_unique<CudaStepper<P>>(mesh, geometry, host, gamma, second_order, ranks,
-                                          stream);
+  return std::make_unique<CudaStepper<P>>(mesh, geometry, host, gamma, second_order, ranks, stream);
 }
 
 template std::unique_ptr<DeviceStepper<kernels::fp64>> make_device_stepper(
     const Mesh&, const Geometry&, const Euler<kernels::fp64>&, double, bool, runtime::Ranks&,
     void*);
 template std::unique_ptr<DeviceStepper<kernels::fp32_acc64>> make_device_stepper(
-    const Mesh&, const Geometry&, const Euler<kernels::fp32_acc64>&, double, bool,
-    runtime::Ranks&, void*);
+    const Mesh&, const Geometry&, const Euler<kernels::fp32_acc64>&, double, bool, runtime::Ranks&,
+    void*);
 
 }  // namespace autan::physics

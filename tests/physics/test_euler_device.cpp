@@ -46,8 +46,7 @@ std::array<double, 5> flow(double x, double y, double z) {
 
 std::array<double, 5> conserved(const std::array<double, 5>& w) {
   const double q2 = w[1] * w[1] + w[2] * w[2] + w[3] * w[3];
-  return {w[0], w[0] * w[1], w[0] * w[2], w[0] * w[3],
-          w[4] / (air.gamma - 1.0) + 0.5 * w[0] * q2};
+  return {w[0], w[0] * w[1], w[0] * w[2], w[0] * w[3], w[4] / (air.gamma - 1.0) + 0.5 * w[0] * q2};
 }
 
 }  // namespace
@@ -97,7 +96,8 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   host.set_boundary(kind, data);
   std::vector<double> source(5 * n), u(5 * n);
   for (std::size_t c = 0; c < n; ++c) {
-    const auto w = conserved(flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]));
+    const auto w =
+        conserved(flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]));
     for (std::size_t k = 0; k < 5; ++k) {
       u[k * n + c] = w[k];
       source[k * n + c] = 1e-3 * w[k];
@@ -111,8 +111,8 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   host.residual(stored, r_host);
 
   autan::runtime::OneRank rank;
-  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank,
-                                                         nullptr);
+  auto device =
+      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, nullptr);
   std::vector<double> r_device(5 * n);
   device->residual(u, r_device);
 

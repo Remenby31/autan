@@ -17,9 +17,9 @@
 
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan/physics/euler_device.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/solvers/multigrid.hpp"
-#include "autan/physics/euler_device.hpp"
 
 namespace autan::physics {
 
@@ -133,7 +133,10 @@ class EulerPhysics final : public runtime::Physics {
         ctx.log.write("warning", "solver",
                       "steady case on the device: explicit SSP-RK3 with local time steps, not "
                       "the implicit solver",
-                      {}, nlohmann::json{{"cfl", device_steady_cfl}}.dump());
+                      {}, nlohmann::json{{
+                            "cfl",
+                            device_steady_cfl
+                          }}.dump());
       }
 #else
       throw std::logic_error("the Euler physics was built without CUDA");
@@ -826,8 +829,8 @@ void register_euler(runtime::PhysicsRegistry& registry) {
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"}, factory<kernels::fp64>(),
                euler_device_scope);
-  registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
-               factory<kernels::fp32_acc64>(), euler_device_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"}, factory<kernels::fp32_acc64>(),
+               euler_device_scope);
 #endif
 }
 
