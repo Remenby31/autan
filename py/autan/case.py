@@ -31,6 +31,7 @@ from autan.schema import (
     Manufactured,
     OracleState,
     Outlet,
+    PointVortex,
     Slip,
     Solid,
     SolidZone,
@@ -356,9 +357,10 @@ class BoundarySelector:
     def symmetry(self) -> None:
         self._add(Symmetry())
 
-    def farfield(self) -> None:
-        """Characteristic farfield at the freestream state."""
-        self._add(Farfield())
+    def farfield(self, *, point_vortex: PointVortex | None = None) -> None:
+        """Characteristic farfield at the freestream state, corrected by ``point_vortex`` for
+        a 2D lifting body."""
+        self._add(Farfield(point_vortex=point_vortex))
 
     def inlet(self, *, total_pressure: pint.Quantity, total_temperature: pint.Quantity) -> None:
         """Subsonic inlet at total conditions (compressible)."""

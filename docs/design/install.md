@@ -18,7 +18,7 @@ The only system requirement is the GPU driver: NVIDIA driver ≥ 580 on Linux fo
 |---|---|---|
 | 0:00 | `curl … \| sh` | The script is one function called on its last line: a truncated download runs nothing. |
 | 0:01 | `autan-install: NVIDIA GPU: NVIDIA GB10, 580.173.02` | Platform checks run before any download: glibc ≥ 2.28, x86_64 or aarch64, macOS ≥ 14 on Apple Silicon. Refusals are one line saying what to use instead. The GPU is reported, never installed. |
-| 0:03 | `downloading uv 0.13.1` | A pinned uv is fetched over HTTPS (TLS ≥ 1.2) into `~/.local/share/autan/uv-<version>/` and checked against the SHA-256 written in the script. No checksum tool means no install. The user's own uv, if any, is left alone. |
+| 0:03 | `downloading uv 0.13.6` | A pinned uv is fetched over HTTPS (TLS ≥ 1.2) into `~/.local/share/autan/uv-<version>/` and checked against the SHA-256 written in the script. No checksum tool means no install. The user's own uv, if any, is left alone. |
 | 0:05 | `installing autan` | `uv tool install autan` into an isolated environment; uv downloads a managed Python 3.13 if the system lacks it. The command lands in `~/.local/bin`. |
 | 0:40 | `restart your shell, or run: export PATH=…` | `uv tool update-shell` adds `~/.local/bin` to the shell profile, unless it is on `PATH` already or `AUTAN_NO_MODIFY_PATH=1`. In GitHub Actions it appends to `$GITHUB_PATH`. |
 | 0:45 | `autan doctor` output | Every check prints `ok`, `warn` or `fail` with the fix. A failure never undoes the install. |

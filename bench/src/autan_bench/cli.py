@@ -202,7 +202,7 @@ def parser() -> argparse.ArgumentParser:
         "--max-load",
         type=float,
         metavar="PER_CPU",
-        help="refuse to run when the host's 1-minute load per CPU exceeds this (HOST_BUSY)",
+        help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
     )
     s.set_defaults(func=_stream)
 
@@ -230,7 +230,7 @@ def parser() -> argparse.ArgumentParser:
         "--max-load",
         type=float,
         metavar="PER_CPU",
-        help="refuse to run when the host's 1-minute load per CPU exceeds this (HOST_BUSY)",
+        help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
     )
     r.add_argument("binary_args", nargs=argparse.REMAINDER, help="-- then the binary's arguments")
     r.set_defaults(func=_run)

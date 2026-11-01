@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "autan/runtime/physics.hpp"
@@ -44,7 +46,11 @@ struct RelaxationOptions {
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
   bool one_rank = false;  ///< registered as running on one rank only
-  int expect_ranks = 0;   ///< its scope refuses a run on another number of ranks; 0: any
+  /// Symmetric sweeps per step of a smoother in the global colours (PhysicsContext::cell_colours):
+  /// each cell of a colour takes the mean of itself and its face neighbours, summed in increasing
+  /// global id, then the ghosts are exchanged; the residuals scale by 1 + 1e-3 of the field's RMS.
+  int colour_sweeps = 0;
+  int expect_ranks = 0;  ///< its scope refuses a run on another number of ranks; 0: any
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -68,6 +74,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROWTH", o.growth);
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
+    read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
@@ -165,8 +172,9 @@ class Relaxation final : public autan::runtime::Physics {
     // Equation e decays from e + 1, so that equations are told apart.
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
     const auto equations = autan::runtime::residual_names(context_.input).size();
+    const double smoothed = options_.colour_sweeps > 0 ? 1.0 + 1e-3 * sweep() : 1.0;
     for (std::size_t e = 0; e < equations; ++e)
-      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_);
+      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_ * smoothed);
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
@@ -245,6 +253,15 @@ class Relaxation final : public autan::runtime::Physics {
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
     if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");
+    if (!mean && !smooth_.empty()) {
+      // The swept field, for the tests to compare cell by cell.
+      auto out = state_;
+      for (auto& f : out) {
+        if (f.name == "TurbulentSANuTilde")
+          f.values.assign(smooth_.begin(), smooth_.begin() + context_.mesh.n_owned_cells());
+      }
+      return out;
+    }
     if (!mean) return state_;
     auto out = mean_;
     for (auto& f : out) {
@@ -323,6 +340,68 @@ class Relaxation final : public autan::runtime::Physics {
     return 0.0;
   }
 
+  // colour_sweeps symmetric sweeps over the colours, the ghosts exchanged
+  // after each colour; the RMS of the field over every rank's cells, exactly.
+  double sweep() {
+    const auto& mesh = context_.mesh;
+    const auto n = static_cast<std::size_t>(mesh.n_cells());
+    if (smooth_.empty()) {
+      smooth_.assign(n, 0.0);
+      for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c)
+        smooth_[c] = static_cast<double>(mesh.cell_global_id()[c] % 7);
+      exchange();
+    }
+    const auto ids = mesh.cell_global_id();
+    const auto colour_sweep = [&](std::int32_t k) {
+      for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+        if (context_.cell_colours[static_cast<std::size_t>(c)] != k) continue;
+        std::vector<std::pair<std::int64_t, double>> around{
+            {ids[static_cast<std::size_t>(c)], smooth_[static_cast<std::size_t>(c)]}};
+        for (const autan::index_t f : mesh.cell_faces(c)) {
+          if (f >= mesh.n_interior_faces()) continue;
+          const auto i = static_cast<std::size_t>(f);
+          const autan::index_t o = mesh.owner()[i] == c ? mesh.neighbour()[i] : mesh.owner()[i];
+          around.emplace_back(ids[static_cast<std::size_t>(o)],
+                              smooth_[static_cast<std::size_t>(o)]);
+        }
+        std::ranges::sort(around);
+        double sum = 0.0;
+        for (const auto& [id, value] : around) sum += value;
+        smooth_[static_cast<std::size_t>(c)] = sum / static_cast<double>(around.size());
+      }
+      exchange();
+    };
+    for (int s = 0; s < options_.colour_sweeps; ++s) {
+      for (std::int32_t k = 0; k < context_.n_colours; ++k) colour_sweep(k);
+      for (std::int32_t k = context_.n_colours - 1; k >= 0; --k) colour_sweep(k);
+    }
+    std::array<autan::runtime::ExactSum, 2> sums;
+    for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c) {
+      sums[0].add(smooth_[c] * smooth_[c]);
+      sums[1].add(1.0);
+    }
+    context_.ranks.sum(sums);
+    // The least value over the mesh and the least id holding it (values are
+    // repeated, so ties decide): its id enters the result too.
+    double least = std::numeric_limits<double>::infinity();
+    std::int64_t at_least = std::numeric_limits<std::int64_t>::max();
+    for (std::size_t c = 0; c < static_cast<std::size_t>(mesh.n_owned_cells()); ++c) {
+      if (smooth_[c] < least || (smooth_[c] == least && ids[c] < at_least)) {
+        least = smooth_[c];
+        at_least = ids[c];
+      }
+    }
+    const auto [value, id] = context_.ranks.argmin(least, at_least);
+    return std::sqrt(sums[0].value() / sums[1].value()) + 1e-6 * value +
+           1e-9 * static_cast<double>(id);
+  }
+
+  void exchange() {
+    double* const component = smooth_.data();
+    context_.ghosts.forward(std::span<double* const>(&component, 1), autan::MemorySpace::host,
+                            nullptr);
+  }
+
   [[nodiscard]] double scale(std::size_t cell) const {
     return 1.0 + 1e-6 * static_cast<double>(context_.mesh.cell_global_id()[cell]);
   }
@@ -330,6 +409,7 @@ class Relaxation final : public autan::runtime::Physics {
   autan::runtime::PhysicsContext context_;
   RelaxationOptions options_;
   double rms_ = 1.0;
+  std::vector<double> smooth_;  // the field colour_sweeps smooths
   std::int64_t last_stepped_iteration_ = 0;
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;

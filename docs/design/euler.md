@@ -24,12 +24,20 @@ Each boundary face carries a code and five values (`BoundaryKind`). The boundary
 | Kind | Values | Boundary state |
 |---|---|---|
 | `state` | W | given (manufactured solutions) |
-| `farfield` | freestream W | Riemann invariants normal to the face; entropy and tangential velocity from the upwind side; supersonic faces take the upwind state |
+| `farfield` | freestream W, or W plus a [point vortex](#point-vortex) | Riemann invariants normal to the face; entropy and tangential velocity from the upwind side; supersonic faces take the upwind state |
 | `slip` (slip wall, symmetry) | — | mirror state for the gradients; pressure flux |
 | `inlet` | p₀, T₀ | flow normal to the face; R⁺ from the interior and c_p T₀ give c_b (Carlson 2011) |
 | `outlet` | p | ρ and v from the outgoing characteristics; supersonic outflow extrapolates |
 
 The gradient's boundary values are the boundary states of the first-order interior state (`boundary_states`, a frozen loop: its derivatives are dropped, so the generated adjoint of the gradient is approximate at boundary faces). They enter the least-squares fit only on `state` faces, where the condition gives the value at the face; on the other kinds the value is the adjacent cell's, which belongs at the cell centroid, and the fit uses the interior stencil alone (a cell whose interior stencil cannot determine a gradient keeps every boundary face). Offset components within 64 ulps of the coordinates count as zero: across a one-cell-thick slab the centroids differ only by round-off, and the fit would otherwise turn it into a gradient across the layer. The fit is determined when det A > 10⁻¹⁰ A₁₁A₂₂A₃₃, which is independent of the cells' aspect ratio. Where the linear reconstruction would make ρ or p non-positive, the face takes the cell value. The warped-face correction applies to interior faces and to the pressure of slip faces.
+
+### Point vortex
+
+A lifting 2D body leaves the circulation's vortex in the far field, so a uniform farfield state makes the lift depend on the outer radius. With `point_vortex`, each farfield face takes the freestream plus the compressible vortex of Thomas and Salas (1986, AIAA J. 24(7)) centred at `center`, in the x–z lift plane (steady cases, zero sideslip, subsonic freestream). The velocity is the Prandtl-Glauert vortex (β = √(1 − M∞²)):
+
+u = u∞ + q sin θ, w = w∞ − q cos θ, q = Γβ / (2πr (1 − M∞² sin²(θ − α))).
+
+Here r and θ are the face centroid's distance and polar angle from the vortex in x–z. The speed of sound follows from the freestream total enthalpy; density and pressure are isentropic (`physics/include/autan/physics/point_vortex.hpp`). The circulation is Kutta–Joukowski's Γ = L′/(ρ∞V∞), where L′ is the lift on the `surfaces` zones per unit of their extent along y. It is measured on the residual of each step and applied from the next, so a converged solution satisfies it exactly. The implicit Jacobian omits it, and restarts carry it (`VortexCirculation<i>` in `RestartState`).
 
 ## Gradient stencil
 

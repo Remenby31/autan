@@ -18,6 +18,8 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/physics/point_vortex.hpp"
+#include "autan/runtime/exact_sum.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -125,6 +127,7 @@ class EulerPhysics final : public runtime::Physics {
     du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
+    apply_vortices();
   }
 
   StepReport step(std::int64_t /*iteration*/) override {
@@ -142,6 +145,8 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       unsteady_step(report);
     }
+    for (auto& v : vortices_) v.circulation = v.next;
+    apply_vortices();
     if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
     return report;
   }
@@ -172,6 +177,10 @@ class EulerPhysics final : public runtime::Physics {
       for (const auto& [name, value] : solver_state()) {
         out.push_back({.name = name, .values = std::vector<double>(owned_, value)});
       }
+    }
+    for (std::size_t i = 0; i < vortices_.size(); ++i) {
+      out.push_back({.name = "VortexCirculation" + std::to_string(i),
+                     .values = std::vector<double>(n_, vortices_[i].circulation)});
     }
     return out;
   }
@@ -239,11 +248,9 @@ class EulerPhysics final : public runtime::Physics {
     // The pressure force exactly as the residual integrates it, minus p_inf S (results.md).
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
-    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<double> p(nb), face_force(3 * nb);
     face_pressure(p, face_force);
-    const double p_inf = ctx_.input.freestream.pressure;
     const auto offsets = mesh.boundary_zone_offsets();
     // Exact sums over this rank's faces, then over the ranks: the same bits on any number of
     // ranks for the same face values.
@@ -252,10 +259,7 @@ class EulerPhysics final : public runtime::Physics {
       for (auto f = offsets[static_cast<std::size_t>(z)];
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
         const auto i = static_cast<std::size_t>(f);
-        const auto b = i - ni;
-        const std::array<double, 3> force{face_force[b] - p_inf * g.face_area_x[i],
-                                          face_force[nb + b] - p_inf * g.face_area_y[i],
-                                          face_force[2 * nb + b] - p_inf * g.face_area_z[i]};
+        const auto force = wall_force(face_force, i);
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
@@ -275,6 +279,15 @@ class EulerPhysics final : public runtime::Physics {
   }
 
  private:
+  struct Vortex {
+    const runtime::BoundaryInput* condition = nullptr;
+    std::array<double, 3> center{};
+    std::vector<index_t> zones;      // the surfaces whose lift gives the circulation
+    double span = 0.0;               // their extent along y
+    std::vector<std::size_t> faces;  // its farfield faces (boundary indices)
+    double circulation = 0.0, next = 0.0;
+  };
+
   static Scheme scheme(const runtime::SolverInput& in) {
     const auto& f = in.freestream;
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
@@ -312,6 +325,11 @@ class EulerPhysics final : public runtime::Physics {
       }
       for (const auto& f : start.restart_fields) {
         if (f.name == "AverageWeight") mean_weight_ = f.values.front();
+      }
+      for (std::size_t i = 0; i < vortices_.size(); ++i) {
+        vortices_[i].circulation =
+            find(start.restart_fields, "VortexCirculation" + std::to_string(i))->front();
+        vortices_[i].next = vortices_[i].circulation;
       }
       if (ctx_.input.time.kind == "steady") {
         auto state = solver_state();
@@ -368,6 +386,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void set_boundaries(const Manufactured* mms) {
+    make_vortices();
     const auto& mesh = ctx_.mesh;
     const auto& in = ctx_.input;
     const auto& g = ctx_.geometry;
@@ -398,6 +417,7 @@ class EulerPhysics final : public runtime::Physics {
         put(BoundaryKind::slip, {});
       } else if (bc.kind == "farfield") {
         put(BoundaryKind::farfield, freestream);
+        if (bc.point_vortex) vortex_of(bc).faces.push_back(b);
       } else if (bc.kind == "inlet") {
         put(BoundaryKind::inlet, {*bc.total_pressure, *bc.total_temperature, 0.0, 0.0, 0.0});
       } else if (bc.kind == "outlet") {
@@ -430,6 +450,107 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     euler_.set_boundary(kind, data);
+    boundary_data_ = std::move(data);
+  }
+
+  // One vortex per farfield condition that has one, in input order on every rank: the span is
+  // a collective reduction.
+  void make_vortices() {
+    const auto& mesh = ctx_.mesh;
+    const auto off = mesh.boundary_zone_offsets();
+    for (const auto& bc : ctx_.input.boundaries) {
+      if (!bc.point_vortex) continue;
+      Vortex v{.condition = &bc, .center = bc.point_vortex->center, .zones = {}, .faces = {}};
+      double lo = std::numeric_limits<double>::infinity();
+      double hi = -lo;
+      for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+        if (std::ranges::find(bc.point_vortex->zones, mesh.face_zones()[z].name) ==
+            bc.point_vortex->zones.end()) {
+          continue;
+        }
+        v.zones.push_back(static_cast<index_t>(z));
+        for (auto f = off[z]; f < off[z + 1]; ++f) {
+          for (const auto n : mesh.face_nodes(f)) {
+            lo = std::min(lo, mesh.y()[static_cast<std::size_t>(n)]);
+            hi = std::max(hi, mesh.y()[static_cast<std::size_t>(n)]);
+          }
+        }
+      }
+      v.span = -ctx_.ranks.min(-hi) - ctx_.ranks.min(lo);
+      if (!(v.span > 0.0)) {
+        throw std::invalid_argument("boundary zone '" + bc.zone +
+                                    "': the point vortex surfaces have no extent along y");
+      }
+      vortices_.push_back(std::move(v));
+    }
+  }
+
+  Vortex& vortex_of(const runtime::BoundaryInput& bc) {
+    return *std::ranges::find(vortices_, &bc, &Vortex::condition);
+  }
+
+  // The pressure force on boundary face i (global index) minus p_inf S (results.md).
+  [[nodiscard]] std::array<double, 3> wall_force(std::span<const double> face_force,
+                                                 std::size_t i) const {
+    const auto& g = ctx_.geometry;
+    const auto nb = static_cast<std::size_t>(ctx_.mesh.n_boundary_faces());
+    const auto b = i - static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
+    const double p_inf = ctx_.input.freestream.pressure;
+    return {face_force[b] - p_inf * g.face_area_x[i], face_force[nb + b] - p_inf * g.face_area_y[i],
+            face_force[2 * nb + b] - p_inf * g.face_area_z[i]};
+  }
+
+  // Each vortex's circulation from the lift of the residual just evaluated, Kutta-Joukowski
+  // L' = rho V Gamma; it takes effect at the end of the step.
+  void measure_circulation() {
+    if (vortices_.empty()) return;
+    const auto& mesh = ctx_.mesh;
+    const auto& fs = ctx_.input.freestream;
+    const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+    std::vector<double> p(nb), face_force(3 * nb);
+    euler_.boundary_pressure(p, face_force);
+    const auto off = mesh.boundary_zone_offsets();
+    for (auto& v : vortices_) {
+      std::array<runtime::ExactSum, 2> force;
+      for (const auto z : v.zones) {
+        for (auto f = off[static_cast<std::size_t>(z)]; f < off[static_cast<std::size_t>(z) + 1];
+             ++f) {
+          const auto load = wall_force(face_force, static_cast<std::size_t>(f));
+          force[0].add(load[0]);
+          force[1].add(load[2]);
+        }
+      }
+      ctx_.ranks.sum(force);
+      const double lift =
+          -std::sin(fs.aoa) * force[0].value() + std::cos(fs.aoa) * force[1].value();
+      v.next = lift / (v.span * fs.density * fs.speed);
+    }
+  }
+
+  // The farfield data: the freestream plus each vortex at the current circulation.
+  void apply_vortices() {
+    if (vortices_.empty()) return;
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    const auto& fs = ctx_.input.freestream;
+    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+    const std::array<double, 5> freestream{fs.density, fs.velocity[0], fs.velocity[1],
+                                           fs.velocity[2], fs.pressure};
+    std::vector<double> data = boundary_data_;
+    for (const auto& v : vortices_) {
+      for (const auto b : v.faces) {
+        const double dx = g.face_centroid_x[ni + b] - v.center[0];
+        const double dz = g.face_centroid_z[ni + b] - v.center[2];
+        if (dx == 0.0 && dz == 0.0) {
+          throw std::invalid_argument("boundary zone '" + v.condition->zone +
+                                      "': a farfield face lies on the point vortex");
+        }
+        const auto w = point_vortex_state(freestream, gas_.gamma, fs.aoa, v.circulation, dx, dz);
+        for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+      }
+    }
+    euler_.set_boundary_data(data);
   }
 
   void set_source(const Manufactured& mms) {
@@ -481,6 +602,7 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(false);
     }
     euler_.residual_and_jacobian(state_, res_);
+    measure_circulation();
     std::vector<double> norms = report.residuals;
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
@@ -726,6 +848,8 @@ class EulerPhysics final : public runtime::Physics {
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
   std::vector<Res> res_;
+  std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
+  std::vector<Vortex> vortices_;
 };
 
 template <class P>
@@ -801,6 +925,30 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
                      b.zone + "' needs slip, symmetry, farfield, inlet, outlet or oracle-state",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
+    }
+    if (!b.point_vortex || first == nullptr) continue;
+    // A steady far-field model (lagged by one step in the circulation), planar in x-z (the lift
+    // plane at zero sideslip) and subsonic.
+    const auto& fs = in.freestream;
+    if (in.time.kind != "steady") {
+      return runtime::PhysicsRefusal{
+          .message = "a point vortex needs a steady case; boundary zone '" + b.zone + "'",
+          .path = "time.kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"time", in.time.kind}}.dump()};
+    }
+    if (fs.sideslip != 0.0) {
+      return runtime::PhysicsRefusal{
+          .message = "a point vortex needs zero sideslip; boundary zone '" + b.zone + "'",
+          .path = "freestream.sideslip",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"sideslip", fs.sideslip}}.dump()};
+    }
+    const double mach =
+        fs.mach.value_or(fs.speed / std::sqrt(*first->gamma * fs.pressure / fs.density));
+    if (!(mach < 1.0)) {
+      return runtime::PhysicsRefusal{
+          .message = "a point vortex needs a subsonic freestream; boundary zone '" + b.zone + "'",
+          .path = "freestream.mach",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"mach", mach}}.dump()};
     }
   }
   return std::nullopt;

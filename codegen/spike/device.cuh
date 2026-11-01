@@ -18,6 +18,12 @@ using autan::kernels::offset_t;
 using autan::spike::GeomArray;
 namespace gpu = autan::kernels::gpu;
 
+/// Cells per slice of the stencil layout of every DeviceMesh built afterwards (0: CSR).
+inline int& stencil_slice() {
+  static int slice = 0;
+  return slice;
+}
+
 template <class T>
 class DeviceArray {
  public:
@@ -56,7 +62,7 @@ struct DeviceMesh {
 
   DeviceMesh(const SpikeMesh& m, int block)
       : mesh(m.mesh, m.packed, m.topo.stencil != nullptr ? &m.stencil : nullptr,
-             {block, kScratchWidth, kIncidenceScratchWidth, nullptr}),
+             {block, kScratchWidth, kIncidenceScratchWidth, nullptr, stencil_slice()}),
         topo(mesh.topology()),
         schedule(mesh.schedule()) {}
   template <class D>

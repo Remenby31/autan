@@ -315,8 +315,17 @@ class Symmetry(Spec):
     kind: Literal["symmetry"] = "symmetry"
 
 
+class PointVortex(Spec):
+    """The point-vortex correction of a 2D farfield: the far field of a vortex at ``center``
+    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``."""
+
+    surfaces: Pattern
+    center: tuple[Coordinate, Coordinate, Coordinate]
+
+
 class Farfield(Spec):
     kind: Literal["farfield"] = "farfield"
+    point_vortex: PointVortex | None = None
 
 
 class Inlet(Spec):
