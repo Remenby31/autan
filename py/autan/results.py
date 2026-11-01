@@ -447,7 +447,7 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        for key in ("start", "convergence", "monitors", "timing"):
+        for key in RUN_KEYS:
             if key not in document:
                 broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
@@ -492,7 +492,9 @@ class Results:
                 != case.verification.manufactured.sha256
             ):
                 broken("manufactured.json is missing or differs from the case", "manufactured.json")
-        for problem in run_problems(path, run, case, mesh_info):
+        if path.name != run.run_id:
+            broken(f"directory {path.name!r} is not named after run_id {run.run_id!r}", "run.json")
+        for problem in run_problems(run, case, mesh_info):
             broken(problem, "run.json")
         records = _read_history(path / "history.jsonl", run.status == "running", broken)
         if not (path / "log.jsonl").is_file():
@@ -503,8 +505,6 @@ class Results:
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
         for problem in final_monitor_problems(records, run, case):
-            broken(problem, "run.json")
-        for problem in timing_problems(run, mesh_info):
             broken(problem, "run.json")
         results = cls(
             path,
@@ -637,11 +637,29 @@ def _base(spec: CaseSpec) -> object:
 _TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
 
-def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
-    """Invariants of run.json against its directory, case and MeshInfo."""
+RUN_KEYS = ("start", "convergence", "monitors", "timing")
+
+
+def check_run_json(document: object, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
+    """Why a run.json document is not valid for its case and MeshInfo: the checks of
+    ``Results.open`` on run.json, without its directory, history, log or solution
+    (results.md#runjson). Empty when it is valid."""
+    if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
+        return [f"run.json schema is not {SCHEMA_ID!r}"]
+    missing = [key for key in RUN_KEYS if key not in document]
+    if missing:
+        return [f"run.json has no {', '.join(missing)} key (null when it does not apply)"]
+    try:
+        run = RunInfo.model_validate(document)
+    except ValidationError as error:
+        first = error.errors(include_url=False)[0]
+        return [f"run.json: {first['msg']} at {first['loc']}"]
+    return run_problems(run, case, mesh_info)
+
+
+def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
+    """Invariants of run.json against its case and MeshInfo."""
     found = []
-    if path.name != run.run_id:
-        found.append(f"directory {path.name!r} is not named after run_id {run.run_id!r}")
     if not _TIMESTAMP.fullmatch(run.started):
         found.append(f"started {run.started!r} is not a UTC ISO 8601 timestamp")
     elif run.run_id[4:20] != run.started.replace("-", "").replace(":", ""):
@@ -670,6 +688,7 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
         found.append("averaging is only for unsteady runs")
     if run.status == "diverged" and not any(d.code.startswith("D") for d in run.diagnostics):
         found.append("a diverged run must carry a D diagnostic")
+    found += timing_problems(run, mesh_info)
     return found
 
 
@@ -808,14 +827,19 @@ def final_monitor_problems(
 
 
 def timing_problems(run: RunInfo, mesh_info: MeshInfo) -> list[str]:
-    """run.json ``timing``: absent while running, and consistent with the run it times."""
+    """run.json ``timing``: given exactly when the run measured one, consistent with it."""
     timing = run.timing
-    if timing is None:
-        return []
-    if run.status == "running":
-        return ["timing must be null while the run is running"]
     continued = run.start is not None and run.start.mode == "continue"
     done = run.iterations - (run.start.iterations if run.start is not None and continued else 0)
+    measured = run.solver.backend != "fake" and run.status not in ("running", "failed") and done > 0
+    if (timing is not None) != measured:
+        message = (
+            "timing is given exactly for a run of the solver that ended other than failed, "
+            "after at least one iteration of its own"
+        )
+        return [message]
+    if timing is None:
+        return []
     found = []
     if timing.iterations != done:
         found.append(f"timing.iterations must be the {done} iterations of this run")

@@ -7,6 +7,7 @@ docs/contracts/results.md, which ``autan.Results`` reads back.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -38,7 +39,11 @@ def find_launcher() -> Path | None:
     """``$AUTAN_MPIEXEC`` if set, else ``mpiexec`` or ``mpirun`` on the PATH."""
     explicit = os.environ.get(LAUNCHER_VARIABLE)
     if explicit:
-        return Path(explicit)
+        # A path is taken as given, from the working directory; a bare name from the PATH.
+        if os.sep in explicit:
+            return Path(explicit).absolute()
+        found = shutil.which(explicit)
+        return Path(found) if found else Path(explicit).absolute()
     found = shutil.which("mpiexec") or shutil.which("mpirun")
     return Path(found) if found else None
 
@@ -89,10 +94,19 @@ class SolverBackend:
                     raise CaseError([diagnostic("E0808", message)])
                 command = [str(launcher), "-n", str(self.devices.count), *command]
             try:
+                # Its own session: the runtime, or the launcher and its local ranks, form one
+                # process group that the escalation below can signal as a whole.
                 process = subprocess.Popen(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
                 )
             except OSError as error:
+                if self.devices.count > 1:
+                    message = f"the MPI launcher {command[0]} cannot be started: {error}"
+                    raise CaseError([diagnostic("E0808", message)]) from None
                 raise CaseError([_not_installed(str(error))]) from None
             stdout, stderr, interrupted = _wait(process)
         if interrupted or process.returncode == 130:
@@ -144,6 +158,8 @@ class SolverBackend:
 FINISHED = frozenset({"converged", "completed", "stopped", "diverged"})
 # Seconds the runtime has to finalize a stopped run before it is terminated, then killed.
 GRACE = 60.0
+# Seconds left to read the pipes once the process group has been killed.
+DRAIN = 5.0
 
 
 def _not_installed(reason: str) -> Diagnostic:
@@ -186,12 +202,20 @@ def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
 
 
 def _terminate(process: subprocess.Popen[str]) -> tuple[str, str]:
-    process.terminate()
-    try:
-        return process.communicate(timeout=GRACE)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return process.communicate()
+    """Terminate, then kill, the runtime's whole process group; a descendant that left the
+    group and still holds the pipes cannot keep this waiting more than DRAIN seconds."""
+    for number, timeout in ((signal.SIGTERM, GRACE), (signal.SIGKILL, DRAIN)):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, number)
+        try:
+            return process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            continue
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()
+    process.wait()
+    return "", ""
 
 
 def _raise_interrupt(_signal: int, _frame: object) -> None:

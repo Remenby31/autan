@@ -102,6 +102,17 @@ def test_a_real_run_reads_back_through_the_results_contract(
     assert result.field("Density").size == mesh.counts.cells
     assert run.timing is not None  # measured by the runtime; checked by Results.open
     assert (run.timing.iterations, run.timing.solve_seconds > 0) == (run.iterations, True)
+    document = json.loads((result.path / "run.json").read_text())
+    timing = document["timing"]
+    for broken in (
+        timing | {"ns_per_cell_iteration": timing["ns_per_cell_iteration"] * 1.01},
+        timing | {"iterations": timing["iterations"] - 1},
+        timing | {"solve_seconds": timing["wall_seconds"] * 2},
+        None,  # a run of the solver that measured its timing
+    ):
+        assert autan.results.check_run_json(
+            document | {"timing": broken}, result.case, result.mesh_info
+        )
 
 
 def test_divergence_and_interruption_come_back_as_the_contract_says(
