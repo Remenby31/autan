@@ -40,7 +40,12 @@ test("each run in the list shows its Mach, angle and final coefficients", async 
       r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
   );
   expect(sweep.length).toBeGreaterThan(0);
+  await page.setViewportSize({ width: 1024, height: 768 });
   await page.goto("/");
+  // At 1024 px every row fits its frame: nothing scrolls sideways, nothing overlaps.
+  const first = page.locator("a[data-row]").first();
+  await expect(first).toBeVisible();
+  expect(await first.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   for (const run of sweep) {
     const row = page.locator(`a[data-run="${run.run_id}"]`);
     await expect(row.getByTestId("mach")).toHaveText("0.2");

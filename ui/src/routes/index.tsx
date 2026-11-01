@@ -80,7 +80,7 @@ function matches(run: Run, search: Search): boolean {
 }
 
 const COLUMNS =
-  "grid grid-cols-[minmax(160px,1.4fr)_minmax(120px,1fr)_48px_64px_64px_64px_minmax(120px,1fr)_72px_96px_40px] items-center gap-4";
+  "grid grid-cols-[minmax(140px,1.4fr)_minmax(140px,1fr)_40px_56px_64px_64px_minmax(100px,1fr)_64px_88px_40px] items-center gap-4";
 
 function Runs() {
   const search = Route.useSearch();
@@ -478,6 +478,7 @@ function RunRow({
   const iteration = summary?.iteration ?? run.iterations;
   const target = summary?.target_orders ?? undefined;
   const alpha = degrees(summary?.settings?.aoa);
+  const shownAlpha = alpha === null ? "" : String(Number(alpha.toFixed(2)));
   // The final coefficients once the run has ended (results.md#runjson); greyed unless converged.
   const coefficients = run.status === "running" ? "still running" : finalCoefficients(run);
   return (
@@ -512,22 +513,28 @@ function RunRow({
             </Tooltip>
           )}
         </span>
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="flex min-w-0 items-center gap-2 overflow-hidden">
           <Status status={run.status} duration={duration(run)} />
           {run.diagnostics[0] && (
             <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
           )}
         </span>
-        <span className="text-right font-mono text-sm tabular-nums" data-testid="mach">
-          {summary?.settings?.mach ?? "—"}
+        <span className="text-right font-mono text-sm tabular-nums">
+          <span className="sr-only">Mach </span>
+          <span data-testid="mach">{summary?.settings?.mach ?? "—"}</span>
         </span>
-        <span className="text-right font-mono text-sm tabular-nums" data-testid="alpha">
-          {alpha === null ? "—" : `${alpha}°`}
+        <span className="text-right font-mono text-sm tabular-nums">
+          <span className="sr-only">angle of attack </span>
+          <span data-testid="alpha">{alpha === null ? "—" : `${shownAlpha}°`}</span>
         </span>
         {typeof coefficients === "string" ? (
           <>
-            <span className="text-right text-fg-3">—</span>
-            <span className="text-right text-fg-3">—</span>
+            <span className="text-right text-fg-3">
+              —<span className="sr-only"> CL: {coefficients}</span>
+            </span>
+            <span className="text-right text-fg-3">
+              —<span className="sr-only"> CD: {coefficients}</span>
+            </span>
           </>
         ) : (
           <>
@@ -536,18 +543,20 @@ function RunRow({
                 "text-right font-mono text-sm tabular-nums",
                 run.status !== "converged" && "text-fg-3",
               )}
-              data-testid="cl"
             >
-              {coefficient(coefficients.cl)}
+              <span className="sr-only">CL </span>
+              <span data-testid="cl">{coefficient(coefficients.cl)}</span>
+              {run.status !== "converged" && <span className="sr-only">, not converged</span>}
             </span>
             <span
               className={cn(
                 "text-right font-mono text-sm tabular-nums",
                 run.status !== "converged" && "text-fg-3",
               )}
-              data-testid="cd"
             >
-              {coefficient(coefficients.cd)}
+              <span className="sr-only">CD </span>
+              <span data-testid="cd">{coefficient(coefficients.cd)}</span>
+              {run.status !== "converged" && <span className="sr-only">, not converged</span>}
             </span>
           </>
         )}
