@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import mimetypes
 import os
 import webbrowser
 from collections.abc import AsyncIterator
@@ -9,11 +10,11 @@ from typing import Annotated, Any
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
 
-from autan_ui.confine import is_link, real_file
+from autan_ui.confine import Folder, is_link
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
@@ -49,6 +50,33 @@ async def _until_disconnected(request: Request, stop: asyncio.Event) -> None:
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
+
+
+def _mtime(folder: Folder) -> int | None:
+    stat = folder.stat("run.json")
+    return stat.st_mtime_ns if stat else None
+
+
+def _open_build(static: Path | None) -> Folder | None:
+    if static is None:
+        return None
+    try:
+        build = Folder(static)
+        os.close(build.open("index.html"))
+    except OSError:
+        return None
+    return build
+
+
+def _list_build(build: Folder) -> set[str]:
+    names = set()
+    for folder, subfolders, files in os.walk(build.path):
+        here = Path(folder)
+        subfolders[:] = [name for name in subfolders if not is_link(here / name)]
+        for name in files:
+            if not is_link(here / name):
+                names.add((here / name).relative_to(build.path).as_posix())
+    return names
 
 
 def create_app(
@@ -112,18 +140,19 @@ def create_app(
         offset reached, so a reconnecting EventSource resumes where it stopped. A history that
         breaks the contract ends the stream with `invalid` and its reason."""
         offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
-        run_json = directory / "run.json"
-        run_mtime = run_json.stat().st_mtime_ns
-        run = read_run(directory)
-        yield ServerSentEvent(event="run", data=run)
+        # Pinned for the whole stream: replacing the directory later cannot redirect reads.
+        folder = Folder(directory)
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
         changes = _changes(directory, stop)
         try:
+            run_mtime = _mtime(folder)
+            run = read_run(folder)
+            yield ServerSentEvent(event="run", data=run)
             while True:
                 try:
-                    chunk = read_history(directory, offset, live=run["status"] == "running")
-                except ValueError as error:
+                    chunk = read_history(folder, offset, live=run["status"] == "running")
+                except (OSError, ValueError) as error:
                     yield ServerSentEvent(event="invalid", data=str(error))
                     return
                 if chunk.records or offset == 0:
@@ -133,10 +162,10 @@ def create_app(
                 # watcher starts is still picked up.
                 if await anext(changes, None) is None:
                     return
-                mtime = run_json.stat().st_mtime_ns
+                mtime = _mtime(folder)
                 if mtime != run_mtime:
                     try:
-                        run_mtime, run = mtime, read_run(directory)
+                        run_mtime, run = mtime, read_run(folder)
                     except ValueError as error:
                         yield ServerSentEvent(event="invalid", data=str(error))
                         return
@@ -144,6 +173,7 @@ def create_app(
         finally:
             stop.set()
             watcher.cancel()
+            folder.close()
 
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(
@@ -151,28 +181,26 @@ def create_app(
     ) -> Response:
         return Response(synthetic_wing(triangles), media_type="application/octet-stream")
 
-    root = static.resolve() if static is not None else None
-    if static is not None and root is not None and real_file(static / "index.html", root):
-        index = static / "index.html"
-        # The request only selects an entry by name: it never becomes a path. Each entry is
-        # checked again when served, since the build can change after start-up.
-        assets: dict[str, Path] = {}
-        for folder, subfolders, files in os.walk(static):
-            here = Path(folder)
-            subfolders[:] = [name for name in subfolders if not is_link(here / name)]
-            for name in files:
-                if real_file(here / name, root):
-                    assets[(here / name).relative_to(static).as_posix()] = here / name
+    build = _open_build(static)
+    if build is not None:
+        # The request only selects an entry by name: it never becomes a path. The file is
+        # opened beneath the pinned build directory without following any link, then served
+        # from that same descriptor, so a change after start-up cannot redirect it.
+        assets = _list_build(build)
 
         @app.get("/{path:path}", include_in_schema=False)
-        def spa(path: str) -> FileResponse:
+        def spa(path: str) -> Response:
             if path.startswith("api/"):
                 raise HTTPException(404)
-            entry = assets.get(path)
-            if entry is not None and real_file(entry, root):
-                return FileResponse(entry)
-            if real_file(index, root):
-                return FileResponse(index)
+            for name in (path if path in assets else None, "index.html"):
+                if name is None:
+                    continue
+                try:
+                    content = build.read(name)
+                except OSError:
+                    continue
+                media = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                return Response(content, media_type=media)
             raise HTTPException(404)
 
     else:

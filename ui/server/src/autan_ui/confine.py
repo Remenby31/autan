@@ -1,7 +1,11 @@
 import os
-from pathlib import Path
+import stat
+from pathlib import Path, PurePosixPath
+from types import TracebackType
+from typing import Self
 
-NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+NOFOLLOW = os.O_NOFOLLOW
+DIRECTORY = os.O_DIRECTORY
 
 
 def is_link(path: Path) -> bool:
@@ -9,18 +13,57 @@ def is_link(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
-def real_file(path: Path, root: Path) -> bool:
-    """A regular file, not a link, whose resolved location lies under `root` (resolved)."""
-    return path.is_file() and not is_link(path) and path.resolve().is_relative_to(root)
+class Folder:
+    """A directory opened once. Files are read relative to its descriptor, opening every path
+    component without following links, so replacing the directory or anything inside it by a
+    link after the check cannot redirect a read. POSIX only (`dir_fd`, `O_NOFOLLOW`)."""
 
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.fd = os.open(path, os.O_RDONLY | DIRECTORY | NOFOLLOW)
 
-def read_bytes(path: Path, offset: int = 0) -> bytes:
-    """The bytes of `path` from `offset`, refusing to open it through a symbolic link."""
-    descriptor = os.open(path, os.O_RDONLY | NOFOLLOW)
-    with os.fdopen(descriptor, "rb") as file:
-        file.seek(offset)
-        return file.read()
+    def __enter__(self) -> Self:
+        return self
 
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        trace: TracebackType | None,
+    ) -> None:
+        self.close()
 
-def read_text(path: Path) -> str:
-    return read_bytes(path).decode("utf-8")
+    def close(self) -> None:
+        os.close(self.fd)
+
+    def open(self, relative: str) -> int:
+        """Descriptor of the regular file at `relative` (POSIX separators); OSError otherwise."""
+        *folders, name = PurePosixPath(relative).parts
+        current = self.fd
+        try:
+            for part in folders:
+                if part in ("..", "/"):
+                    raise FileNotFoundError(relative)
+                parent = current
+                current = os.open(part, os.O_RDONLY | DIRECTORY | NOFOLLOW, dir_fd=parent)
+                if parent != self.fd:
+                    os.close(parent)
+            descriptor = os.open(name, os.O_RDONLY | NOFOLLOW, dir_fd=current)
+        finally:
+            if current != self.fd:
+                os.close(current)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise IsADirectoryError(relative)
+        return descriptor
+
+    def read(self, relative: str, offset: int = 0) -> bytes:
+        with os.fdopen(self.open(relative), "rb") as file:
+            file.seek(offset)
+            return file.read()
+
+    def stat(self, name: str) -> os.stat_result | None:
+        try:
+            return os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+        except OSError:
+            return None

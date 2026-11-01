@@ -1,3 +1,4 @@
+import contextlib
 import http.client
 import json
 import shutil
@@ -16,6 +17,7 @@ import numpy as np
 import pytest
 import uvicorn
 from autan_ui import create_app
+from autan_ui.confine import Folder
 from autan_ui.registry import Registry, read_history
 from autan_ui.surface import synthetic_wing
 from fastapi import FastAPI
@@ -53,9 +55,11 @@ def serving(app: FastAPI) -> Iterator[str]:
     thread.start()
     while not instance.started:
         time.sleep(0.01)
-    yield f"http://127.0.0.1:{port}"
-    instance.should_exit = True
-    thread.join()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        instance.should_exit = True
+        thread.join()
 
 
 @pytest.fixture
@@ -115,18 +119,18 @@ def test_an_unreadable_run_is_rejected_not_fatal(runs: Path) -> None:
 
 def test_history_holds_a_partial_line_only_while_live(runs: Path) -> None:
     directory = next(runs.iterdir())
-    first = read_history(directory, 0, live=False)
+    first = read_history(Folder(directory), 0, live=False)
     assert [r["iteration"] for r in first.records] == list(range(1, 31))
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
-    assert read_history(directory, first.offset, live=True).records == []
+    assert read_history(Folder(directory), first.offset, live=True).records == []
     with pytest.raises(ValueError, match="not terminated"):
-        read_history(directory, first.offset, live=False)
+        read_history(Folder(directory), first.offset, live=False)
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('uals": {"density": 1e-9}}\n')
-    chunk = read_history(directory, first.offset, live=True)
+    chunk = read_history(Folder(directory), first.offset, live=True)
     assert [r["iteration"] for r in chunk.records] == [31]
 
 
@@ -275,6 +279,13 @@ def test_static_files_are_checked_when_served(server: str, static: Path, tmp_pat
     (static / "assets" / "app.js").unlink()
     assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
 
+    elsewhere = tmp_path / "elsewhere-assets"
+    elsewhere.mkdir()
+    (elsewhere / "app.js").write_text("SECRET")
+    shutil.rmtree(static / "assets")
+    (static / "assets").symlink_to(elsewhere, target_is_directory=True)
+    assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
+
 
 def test_a_linked_index_disables_static_files(runs: Path, static: Path, tmp_path: Path) -> None:
     (static / "index.html").unlink()
@@ -300,3 +311,23 @@ def test_a_run_reached_through_a_link_is_refused(
     assert httpx.get(f"{server}/api/runs/{source.name}").status_code == 404
     assert httpx.get(f"{server}/api/runs/{source.name}/history/events").status_code == 404
     assert Registry(runs).scan().rejected == {source.name: "is or contains a symbolic link"}
+
+
+def test_a_stream_keeps_reading_the_run_it_opened(runs: Path, server: str, tmp_path: Path) -> None:
+    source = next(runs.iterdir())
+    outside = shutil.copytree(source, tmp_path / "elsewhere" / source.name)
+    url = f"{server}/api/runs/{source.name}/history/events"
+    with httpx.stream("GET", url, timeout=httpx.Timeout(10, read=2)) as response:
+        events = sse_events(response)
+        assert next(events)[0] == "run"
+        assert next(events)[0] == "history"
+
+        source.rename(tmp_path / "moved")
+        source.symlink_to(outside, target_is_directory=True)
+        with (outside / "history.jsonl").open("a") as history:
+            history.write(json.dumps({"iteration": 999, "time": None, "residuals": {}}) + "\n")
+
+        seen: list[tuple[str, Any]] = []
+        with contextlib.suppress(httpx.ReadTimeout):
+            seen.extend(next(events) for _ in range(3))
+        assert all(e[0] != "history" for e in seen)

@@ -11,7 +11,7 @@ from typing import Any
 import autan
 from autan.errors import CaseError
 
-from autan_ui.confine import NOFOLLOW, is_link, read_bytes, read_text
+from autan_ui.confine import Folder, is_link
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +92,11 @@ class Registry:
                     else:
                         snapshot.runs[child.name] = outcome
                         if outcome["status"] == "running":
-                            last = last_iteration(child)
+                            try:
+                                with Folder(child) as folder:
+                                    last = last_iteration(folder)
+                            except OSError:
+                                last = None
                             if last is not None:
                                 snapshot.progress[child.name] = last
             for gone in self._checked.keys() - names:
@@ -120,11 +124,12 @@ class Registry:
         return outcome
 
     def details(self, directory: Path) -> dict[str, Any]:
-        return {
-            "run": read_run(directory),
-            "case": tomllib.loads(read_text(directory / "case.toml")),
-            "mesh_info": json.loads(read_text(directory / "mesh-info.json")),
-        }
+        with Folder(directory) as folder:
+            return {
+                "run": read_run(folder),
+                "case": tomllib.loads(folder.read("case.toml").decode()),
+                "mesh_info": json.loads(folder.read("mesh-info.json")),
+            }
 
 
 RUN_FILES = (*CHECKED_FILES, "history.jsonl")
@@ -149,23 +154,22 @@ def _stat(path: Path) -> tuple[int, int] | None:
     return (stat.st_mtime_ns, stat.st_size)
 
 
-def read_run(directory: Path) -> dict[str, Any]:
+def read_run(folder: Folder) -> dict[str, Any]:
     """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
     try:
-        document = json.loads(read_text(directory / "run.json"))
+        document = json.loads(folder.read("run.json"))
         return autan.RunInfo.model_validate(document).document()
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
 
 
-def last_iteration(directory: Path) -> int | None:
+def last_iteration(folder: Folder) -> int | None:
     """Iteration of the last complete history line: run.json is rewritten only when the status
     changes, so this is how far a running run has got. Reads backwards until it has the whole
     line, however long."""
     try:
-        descriptor = os.open(directory / "history.jsonl", os.O_RDONLY | NOFOLLOW)
-        with os.fdopen(descriptor, "rb") as file:
+        with os.fdopen(folder.open("history.jsonl"), "rb") as file:
             end = file.seek(0, 2)
             tail = b""
             while end > 0:
@@ -188,16 +192,15 @@ def last_iteration(directory: Path) -> int | None:
     return iteration if type(iteration) is int else None
 
 
-def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:
+def read_history(folder: Folder, offset: int, *, live: bool) -> HistoryChunk:
     """Complete lines of history.jsonl after byte `offset`.
 
     While the run is live its last line may still be being written and waits; once the run has
     ended, an unterminated last line violates autan.results/1 and raises ValueError.
     """
-    path = directory / "history.jsonl"
-    if not path.is_file():
+    if folder.stat("history.jsonl") is None:
         return HistoryChunk([], offset)
-    data = read_bytes(path, offset)
+    data = folder.read("history.jsonl", offset)
     end = data.rfind(b"\n") + 1
     if end < len(data) and not live:
         msg = "history.jsonl: the last line is not terminated"
