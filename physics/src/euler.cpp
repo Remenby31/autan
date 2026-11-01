@@ -131,7 +131,9 @@ struct Euler<P>::Impl {
     for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
       const auto begin = static_cast<std::size_t>(stencil.offsets[c]);
       const auto end = static_cast<std::size_t>(stencil.offsets[c + 1]);
-      auto weights = [&](bool all_boundaries) {
+      // 0: state faces of the cell itself only; 1: every state face of the stencil; 2: every
+      // boundary face of the stencil.
+      auto weights = [&](int level) {
         std::array<double, 9> a{};
         std::vector<std::array<double, 4>> offs;  // offset and weight per entry, 0 if excluded
         for (std::size_t k = begin; k < end; ++k) {
@@ -144,7 +146,8 @@ struct Euler<P>::Impl {
             }
           } else {
             const auto f = static_cast<std::size_t>(-e - 1);
-            used = all_boundaries || kind[f - ni] == BoundaryKind::state;
+            const bool own = static_cast<std::size_t>(topo.owner[f]) == c;
+            used = level >= 2 || (kind[f - ni] == BoundaryKind::state && (level >= 1 || own));
             for (std::size_t j = 0; j < 3; ++j) {
               x[j] = static_cast<double>(face_centroid[j * nf + f]);
             }
@@ -184,7 +187,8 @@ struct Euler<P>::Impl {
         }
         return true;
       };
-      if (!weights(false)) weights(true);
+      const bool own_first = !scheme.neighbour_boundary_faces;
+      if (!(own_first && weights(0)) && !weights(1)) weights(2);
     }
     fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();

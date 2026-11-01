@@ -37,6 +37,10 @@ enum class GradientStencil : std::uint8_t { face2, vertex };
 struct Scheme {
   Flux flux = Flux::roe;
   GradientStencil gradient = GradientStencil::face2;
+  /// Whether a cell's gradient fit takes the `state` boundary faces of its stencil's other
+  /// cells. Off, a cell takes only its own boundary faces, as long as its other entries still
+  /// determine a gradient: next to a boundary, a neighbour's face sits on one side of the cell.
+  bool neighbour_boundary_faces = true;
   /// Linear reconstruction with least-squares gradients; first order otherwise.
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.

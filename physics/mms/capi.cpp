@@ -127,9 +127,9 @@ void autan_mms_mesh_arrays(const void* mesh, std::int32_t* owner, std::int32_t* 
 }
 
 /// scheme = {flux (0 Roe, 1 HLLC, 2 AUSM+-up), second_order, limiter, gradient stencil (0 face2,
-/// 1 vertex)}; real = {gamma,
-/// gas_constant, venkat_k, length, mach_ref, scale[5], reference[5]} (reference: the conserved
-/// state the cells store differences from); policy "fp64" or "fp32+acc64".
+/// 1 vertex), neighbours' boundary faces in the gradient (Scheme::neighbour_boundary_faces)}; real
+/// = {gamma, gas_constant, venkat_k, length, mach_ref, scale[5], reference[5]} (reference: the
+/// conserved state the cells store differences from); policy "fp64" or "fp32+acc64".
 int autan_mms_euler_create(const void* mesh, const char* policy, const std::int32_t* scheme,
                            const double* real, void** out, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
@@ -140,6 +140,7 @@ int autan_mms_euler_create(const void* mesh, const char* policy, const std::int3
     s.second_order = scheme[1] != 0;
     s.limiter = scheme[2] != 0;
     s.gradient = static_cast<autan::physics::GradientStencil>(scheme[3]);
+    s.neighbour_boundary_faces = scheme[4] != 0;
     s.venkat_k = real[2];
     s.length = real[3];
     s.mach_ref = real[4];

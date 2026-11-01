@@ -100,11 +100,15 @@ class Euler:
         reference: F64,
         stencil: str = "face2",
         venkat_k: float = 5.0,
+        neighbour_boundary_faces: bool = True,
     ) -> None:
         self.n = m.n_cells
         err = ctypes.create_string_buffer(512)
         h = ctypes.c_void_p()
-        scheme = np.array([FLUXES[flux], 1, int(limiter), STENCILS[stencil]], dtype=np.int32)
+        scheme = np.array(
+            [FLUXES[flux], 1, int(limiter), STENCILS[stencil], int(neighbour_boundary_faces)],
+            dtype=np.int32,
+        )
         gamma, rgas = 1.4, 287.0
         real = np.concatenate(
             [[gamma, rgas, venkat_k, 1.0, mach_ref, 1.0, 100.0, 100.0, 100.0, 1e5], reference]
@@ -222,6 +226,7 @@ def solve(
     tol: float,
     stencil: str = "face2",
     venkat_k: float = 5.0,
+    neighbour_boundary_faces: bool = True,
 ) -> Solution:
     """Newton-Krylov for R_P(u) = 0 from the exact solution; Jacobian-vector products by FD on
     the FP64 residual, preconditioned by ILU of the first-order Jacobian, so that the converged u
@@ -245,15 +250,21 @@ def solve(
     data = np.array([wb[k] for k in PRIMITIVE])
     # The cells store differences from the mean state, as autan-run's from the freestream.
     reference = u.mean(axis=1)
-    ep = Euler(m, policy, flux, limiter, mach, reference, stencil, venkat_k)
+    ep = Euler(
+        m, policy, flux, limiter, mach, reference, stencil, venkat_k, neighbour_boundary_faces
+    )
     e64 = (
         ep
         if policy == "fp64"
-        else Euler(m, "fp64", flux, limiter, mach, reference, stencil, venkat_k)
+        else Euler(
+            m, "fp64", flux, limiter, mach, reference, stencil, venkat_k, neighbour_boundary_faces
+        )
     )
     # The preconditioner is the first-order Roe Jacobian whatever the flux: its ILU stays stable
     # where HLLC's switches between wave branches make pivots vanish.
-    pre = Euler(m, "fp64", "roe", limiter, mach, reference, stencil, venkat_k)
+    pre = Euler(
+        m, "fp64", "roe", limiter, mach, reference, stencil, venkat_k, neighbour_boundary_faces
+    )
     for e in {id(ep): ep, id(e64): e64, id(pre): pre}.values():
         e.set_boundary(kind, data)
         e.set_source(src)
@@ -336,6 +347,11 @@ def main() -> None:
     ap.add_argument("--limiter", action="store_true")
     ap.add_argument("--stencil", default="face2", choices=sorted(STENCILS))
     ap.add_argument("--venkat-k", type=float, default=5.0)
+    ap.add_argument(
+        "--own-boundary-faces",
+        action="store_true",
+        help="gradient fits take only the cell's own boundary faces when that suffices",
+    )
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     lib().autan_mms_commit.restype = ctypes.c_char_p
@@ -350,7 +366,7 @@ def main() -> None:
         for policy in a.policies.split(","):
             for flux in a.fluxes.split(","):
                 config = {"solution": solution, "precision": policy, "flux": flux,
-                          "limiter": a.limiter, "venkat_k": a.venkat_k, "stencil": a.stencil}  # fmt: skip
+                          "limiter": a.limiter, "venkat_k": a.venkat_k, "stencil": a.stencil, "own_boundary_faces": a.own_boundary_faces}  # fmt: skip
                 case_sha = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
                 levels = []
                 for lv, m in meshes:
@@ -363,6 +379,7 @@ def main() -> None:
                         1e-10 if policy == "fp64" else 1e-5,
                         a.stencil,
                         a.venkat_k,
+                        not a.own_boundary_faces,
                     )
                     levels.append({
                         "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),
