@@ -1,6 +1,6 @@
 # Getting started with the Autan SDK
 
-Check a case against its mesh and write a run directory with the Python SDK, from a clone of the repository. The solver does not exist yet: the only backend is `fake`, which writes synthetic results in the real formats.
+Check a case against its mesh and write a run directory with the Python SDK, from a clone of the repository. The solver runtime `autan-run` has no physics yet and refuses every case with `E0706`, so this page uses the SDK's `fake` backend, which writes synthetic results in the real formats.
 
 > Results of the `fake` backend are synthetic. Never use them as reference data.
 
