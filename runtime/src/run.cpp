@@ -651,16 +651,30 @@ class Run final : public Log {
   // waiting in a collective call: that rank records E0704 and the failed
   // run.json, and ends every process with exit status 1.
   ExitStatus fail(const std::string& message, std::int64_t done) {
-    record_failure(message);
-    if (comm_.size() == 1) return finish("failed", done);
-    if (comm_.rank() != 0) {
-      const Json& entry = info_["diagnostics"].back();
-      dir_->append_log(log_line("error", "solver", message, "E0704", entry["data"].dump()));
+    if (comm_.size() == 1) {
+      record_failure(message);
+      return finish("failed", done);
     }
-    info_["iterations"] = done;
-    info_["status"] = "failed";
-    info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
-    dir_->write_run_json(info_.dump(2));
+    // The abort follows whatever these writes meet.
+    try {
+      record_failure(message);
+      if (comm_.rank() != 0) {
+        const Json& entry = info_["diagnostics"].back();
+        dir_->append_log(log_line("error", "solver", message, "E0704", entry["data"].dump()));
+      }
+      info_["iterations"] = done;
+      info_["status"] = "failed";
+      info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
+      dir_->write_run_json(info_.dump(2));
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s\n",
+                   Diagnostic{.code = "E0704",
+                              .message = message + "; recording it: " + e.what(),
+                              .path = "",
+                              .data_json = Json{{"rank", comm_.rank()}}.dump()}
+                       .json()
+                       .c_str());
+    }
     comm_.abort(static_cast<int>(ExitStatus::failed));
     return ExitStatus::failed;
   }
@@ -974,11 +988,19 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
             .c_str());
     return ExitStatus::invalid_input;
   }
+  // The ranks agree on whether the input can run before any collective
+  // call; the first rank that cannot prints why.
   std::optional<Prepared> prepared;
+  std::optional<InputError> refusal;
   try {
     prepared.emplace(prepare(input_file, registry, comm->size()));
   } catch (const InputError& e) {
-    if (comm->rank() == 0) std::fprintf(err, "%s\n", e.diagnostic().json().c_str());
+    refusal = e;
+  }
+  constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
+  const std::int64_t first = comm->max(refusal ? -std::int64_t{comm->rank()} : none);
+  if (first != none) {
+    if (-first == comm->rank()) std::fprintf(err, "%s\n", refusal->diagnostic().json().c_str());
     return ExitStatus::invalid_input;
   }
   stop_requested = 0;

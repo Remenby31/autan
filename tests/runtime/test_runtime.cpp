@@ -422,6 +422,11 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     const Outcome o = run(input());
     unsetenv("OMPI_COMM_WORLD_SIZE");
     require_error(o, "E0146");
+    // PMIx may give the rank alone: a rank other than 0 shows several.
+    REQUIRE(setenv("PMIX_RANK", "1", 1) == 0);
+    const Outcome pmix = run(input());
+    unsetenv("PMIX_RANK");
+    require_error(pmix, "E0146");
   }
 }
 
@@ -1016,7 +1021,8 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   }
   CHECK(owned == autan::io::read_mesh(doc["mesh"]["path"].get<std::string>()).n_cells());
 
-  // The diverged cell, wherever its owner, is the one a single rank names.
+  // Every cell from 7 on diverges, on several ranks: the least is reported,
+  // as a single rank names it.
   const Outcome diverged = run(doc, {.factor = 0.9, .diverge_at = 5, .diverge_cell = 7});
   const Json d = Json::parse(read(run_on_ranks(doc, ranks,
                                                {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_DIVERGE_AT=5",
@@ -1028,13 +1034,64 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   // A physics registered for one rank refuses several before any directory.
   CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_ONE_RANK=1"}, 2).empty());
 
-  // A physics failure ends every rank with status 1 and a failed run.json.
-  const Json f = Json::parse(
-      read(run_on_ranks(doc, ranks, {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_THROW_AT=4"}, 1) /
-           "run.json"));
+  // A physics failure on the last rank alone, the others waiting for it in a
+  // collective call, ends every rank with status 1 and a failed run.json.
+  const Json f =
+      Json::parse(read(run_on_ranks(doc, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_THROW_AT=4",
+                                     "AUTAN_TEST_THROW_RANK=" + std::to_string(ranks - 1)},
+                                    1) /
+                       "run.json"));
   CHECK(f["status"] == "failed");
   CHECK(f["iterations"] == 3);
   CHECK(f["diagnostics"][0]["code"] == "E0704");
-  CHECK(f["diagnostics"][0]["data"]["rank"].get<int>() < ranks);
+  CHECK(f["diagnostics"][0]["data"]["rank"] == ranks - 1);
+
+  // A signal reaching the last rank alone, after iteration 5, stops all of
+  // them before iteration 6, with the solution written.
+  const fs::path stopped = run_on_ranks(doc, ranks,
+                                        {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_SIGNAL_AT=5",
+                                         "AUTAN_TEST_SIGNAL_RANK=" + std::to_string(ranks - 1)},
+                                        130);
+  const Json st = Json::parse(read(stopped / "run.json"));
+  CHECK(st["status"] == "stopped");
+  CHECK(st["iterations"] == 5);
+  CHECK(fs::exists(stopped / "solution.cgns"));
+}
+
+TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
+  // Unsteady with averaging after step 3: two runs of 4 then 4 steps on
+  // several ranks, the second continuing the first, give the 8 steps of one
+  // rank: the start state is split among the ranks and the mean and restart
+  // fields gathered back.
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(ranks);
+  const auto steps = [](std::int64_t n) {
+    return [n](Json& d) {
+      d["deterministic"] = true;
+      d["monitors"][0]["every"] = 1;
+      d["time"]["steps"] = n;
+    };
+  };
+  const std::vector<std::string> env{"AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"};
+  const Outcome whole =
+      run(input(steps(8), "hybrid-unsteady.solver-input.json"), {.growth = 1e-3, .vary = true});
+  const fs::path a = run_on_ranks(input(steps(4), "hybrid-unsteady.solver-input.json"), ranks, env);
+  Json next = input(steps(8), "hybrid-unsteady.solver-input.json");
+  next["start"] = start_from(a, "continue");
+  const fs::path b = run_on_ranks(next, ranks, env);
+
+  auto chain = lines_of(a / "history.jsonl");
+  const auto more = lines_of(b / "history.jsonl");
+  chain.insert(chain.end(), more.begin(), more.end());
+  CHECK(chain == lines_of(whole.run / "history.jsonl"));
+  for (const char* solution : {"FlowSolution", "FlowSolutionMean"}) {
+    for (const char* field : {"Density", "Pressure"}) {
+      CAPTURE(solution, field);
+      const auto expected = solution_field(whole.run / "solution.cgns", solution, field);
+      CHECK(!expected.empty());
+      CHECK(solution_field(b / "solution.cgns", solution, field) == expected);
+    }
+  }
 }
 #endif

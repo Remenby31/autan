@@ -44,7 +44,9 @@ void rename_no_replace(const fs::path& from, const fs::path& to) {
 }  // namespace
 
 void write_atomically(const fs::path& path, const std::string& text) {
-  const fs::path staging = path.parent_path() / ("." + path.filename().string() + ".tmp");
+  // One staging file per process: the ranks of a run may write at once.
+  const fs::path staging = path.parent_path() / ("." + path.filename().string() + "." +
+                                                 std::to_string(::getpid()) + ".tmp");
   write_file(staging, text);
   if (std::rename(staging.c_str(), path.c_str()) != 0) fail("replace", path);
 }

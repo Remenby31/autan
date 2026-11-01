@@ -1,6 +1,7 @@
 #include "comm.hpp"
 
 #include <cstdlib>
+#include <initializer_list>
 #include <string_view>
 
 #include "autan/core/error.hpp"
@@ -14,14 +15,17 @@
 namespace autan::runtime {
 namespace {
 
-// The rank count a launcher announces in the environment: Open MPI, then
-// the PMI of MPICH, Intel MPI and Slurm.
-int launched_size() {
-  for (const char* name : {"OMPI_COMM_WORLD_SIZE", "PMI_SIZE", "PMIX_SIZE"}) {
+// What a launcher announces in the environment: Open MPI, the PMI of MPICH,
+// Intel MPI and Slurm, and PMIx (which gives the rank, not always the size).
+// -1 when absent.
+int environment(std::initializer_list<const char*> names) {
+  for (const char* name : names) {
     if (const char* v = std::getenv(name)) return std::atoi(v);
   }
-  return 0;
+  return -1;
 }
+int launched_size() { return environment({"OMPI_COMM_WORLD_SIZE", "PMI_SIZE"}); }
+int launched_rank() { return environment({"OMPI_COMM_WORLD_RANK", "PMI_RANK", "PMIX_RANK"}); }
 
 // Fills the periodic images of owned cells, the one ghost a part of a
 // single-rank run can hold (partitioning.md); without a part, nothing.
@@ -195,7 +199,7 @@ class World final : public Comm {
 
 }  // namespace
 
-bool launched_by_mpi() { return launched_size() > 0; }
+bool launched_by_mpi() { return launched_size() >= 0 || launched_rank() >= 0; }
 
 std::unique_ptr<Comm> make_comm() {
 #ifdef AUTAN_HAVE_MPI
@@ -203,10 +207,11 @@ std::unique_ptr<Comm> make_comm() {
   MPI_Initialized(&initialized);
   if (initialized != 0) return std::make_unique<World>();
 #endif
-  if (launched_size() > 1) {
-    throw Error(ErrorCode::mpi_unavailable, "a launcher started " +
-                                                std::to_string(launched_size()) +
-                                                " ranks, but this build of autan-run has no MPI");
+  // Several ranks show by their count or, when only the rank is known, by
+  // a rank other than 0.
+  if (launched_size() > 1 || launched_rank() > 0) {
+    throw Error(ErrorCode::mpi_unavailable,
+                "a launcher started several ranks, but this build of autan-run has no MPI");
   }
   return std::make_unique<Single>();
 }

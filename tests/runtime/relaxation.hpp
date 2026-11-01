@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -22,9 +23,12 @@ namespace autan_test {
 // cell turns non-finite or the physics throws, and a pause per iteration.
 struct RelaxationOptions {
   double factor = 0.5;
-  std::int64_t diverge_at = 0;  ///< 0: never
-  autan::index_t diverge_cell = 0;
-  std::int64_t throw_at = 0;  ///< 0: never
+  std::int64_t diverge_at = 0;      ///< 0: never
+  autan::index_t diverge_cell = 0;  ///< every cell from this mesh index on diverges
+  std::int64_t throw_at = 0;        ///< 0: never
+  int throw_rank = -1;              ///< the rank that throws; -1: every rank
+  std::int64_t signal_at = 0;  ///< iteration after which `signal_rank` raises SIGTERM; 0: never
+  int signal_rank = 0;
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
@@ -48,6 +52,9 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROWTH", o.growth);
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
+    read("AUTAN_TEST_THROW_RANK", o.throw_rank);
+    read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
+    read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
     return o;
   }
 };
@@ -117,7 +124,11 @@ class Relaxation final : public autan::runtime::Physics {
   autan::runtime::StepReport step(std::int64_t iteration) override {
     if (options_.pause_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(options_.pause_ms));
-    if (iteration == options_.throw_at) throw std::runtime_error("relaxation: requested failure");
+    if (iteration == options_.throw_at &&
+        (options_.throw_rank < 0 || options_.throw_rank == context_.ranks.rank()))
+      throw std::runtime_error("relaxation: requested failure");
+    if (iteration == options_.signal_at && options_.signal_rank == context_.ranks.rank())
+      std::raise(SIGTERM);
     autan::runtime::StepReport report;
     // Equation e decays from e + 1, so that equations are told apart.
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
@@ -130,13 +141,14 @@ class Relaxation final : public autan::runtime::Physics {
     check_ghosts();
     const auto& time = context_.input.time;
     if (time.kind == "unsteady") report.time_step = time.dt.value_or(1e-3);
-    // diverge_cell is a mesh index: on several ranks, its owner reports it.
+    // Cells diverge on every rank that owns one; each rank reports its
+    // least, owned cells being in mesh order.
     if (iteration == options_.diverge_at) {
       const auto& mesh = context_.mesh;
       for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
-        if (mesh.cell_global_id()[static_cast<std::size_t>(c)] != options_.diverge_cell) continue;
+        if (mesh.cell_global_id()[static_cast<std::size_t>(c)] < options_.diverge_cell) continue;
         state_[0].values[static_cast<std::size_t>(c)] = std::numeric_limits<double>::quiet_NaN();
-        report.diverged_cell = c;
+        if (!report.diverged_cell) report.diverged_cell = c;
       }
     }
     return report;

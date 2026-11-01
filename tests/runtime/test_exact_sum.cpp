@@ -86,6 +86,13 @@ TEST_CASE("ExactSum matches integer arithmetic whatever the order and grouping",
   ExactSum merged;
   for (const auto& p : parts) merged.merge(p);
   CHECK(same_bits(merged.value(), expected));
+  // Partial sums that do not round to themselves: {2^100, 1} and {-2^100}.
+  ExactSum left, right;
+  left.add(std::ldexp(1.0, 100));
+  left.add(1.0);
+  right.add(-std::ldexp(1.0, 100));
+  left.merge(right);
+  CHECK(left.value() == 1.0);
 
   // Widely spread magnitudes: no integer oracle, but every order agrees.
   std::uniform_real_distribution<double> exponent(-1000.0, 1000.0);
