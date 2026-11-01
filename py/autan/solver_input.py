@@ -650,7 +650,8 @@ def build(
         )
         for zone, rule in media
     )
-    zone_names = [b.zone for b in plan.boundaries]
+    periodic = {zone for pair in mesh_info.periodic for zone in pair.zones}
+    zone_names = [b.zone for b in plan.boundaries if b.zone not in periodic]
     monitors = tuple(
         ForcesInput(
             kind="forces",

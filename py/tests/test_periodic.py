@@ -242,3 +242,17 @@ def test_a_big_endian_r4_translation_is_valid(
         ),
     )
     assert autan.Results.open(result.path).field("Density").size > 0
+
+
+def test_a_monitor_on_a_periodic_zone_is_e0603(
+    write_case: Callable[..., Path], mesh: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    info = autan.MeshInfo.load(mesh)
+    named = autan.load(write_case(CRM_HL + "case.monitor(autan.forces('fuselage', name='f'))\n"))
+    assert [d.code for d in named.plan(info).diagnostics if d.severity == "error"] == ["E0603"]
+    every = write_case(
+        CRM_HL + "case.monitor(autan.forces('f*', name='f'))\n", name="every.py"
+    )  # farfield and the periodic fuselage
+    assert main(["prepare", str(every), "--mesh-info", str(mesh)]) == 0
+    [monitor] = [m for m in json.loads(capsys.readouterr().out)["monitors"] if m["name"] == "f"]
+    assert monitor["zones"] == ["farfield"]

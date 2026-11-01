@@ -596,6 +596,14 @@ Two monitors share a name; results are keyed by monitor name.
 
 Fix: Name them: `autan.forces("wing.*", name="wing")`.
 
+## E0603
+
+**Monitor on a periodic zone** (error)
+
+A monitor names a zone of a periodic pair: its faces are paired with those of its partner, so they carry no load. Patterns with wildcards skip periodic zones.
+
+Fix: Integrate over the walls instead, or change the mesh if the zone is not meant to be periodic.
+
 ## E0701
 
 **The run directory does not conform to autan.results/1** (error)
