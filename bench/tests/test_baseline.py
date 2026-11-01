@@ -22,6 +22,18 @@ def test_baseline_promotes_a_clean_low_noise_out_of_cache_result(write_json, tmp
     assert float(capsys.readouterr().out) == 210.0
 
 
+def test_baseline_keeps_only_the_selected_benchmarks(write_json, tmp_path, capsys):
+    out = tmp_path / "tracked.json"
+    doc = make_result([bench("stream.copy", QUIET), bench("stream.triad", NOISY)])
+    path = str(write_json("doc.json", doc))
+    assert main(["baseline", path, "--out", str(out), "--select", "stream.co*"]) == 0
+    assert [b["name"] for b in json.loads(out.read_text())["benchmarks"]] == ["stream.copy"]
+    out.unlink()
+    assert main(["baseline", path, "--out", str(out), "--select", "stream.nothing*"]) == 2
+    assert "error[MISSING_BENCHMARK]" in capsys.readouterr().err
+    assert not out.exists()
+
+
 @pytest.mark.parametrize(
     ("doc", "code"),
     [
@@ -107,3 +119,36 @@ def test_validate_binds_backend_device_and_telemetry(write_json, metal, path, va
     doc = make_result([bench("stream.copy", QUIET)])
     doc = set_path(as_metal(doc) if metal else doc, path, value)
     assert main(["validate", str(write_json("doc.json", doc))]) == (0 if valid else 2)
+
+
+def run_at(samples: list[float], minute: int, **kwargs) -> dict:
+    doc = make_result([bench("stream.copy", samples)], **kwargs)
+    doc["created"] = f"2026-11-01T12:{minute:02d}:00+00:00"
+    return doc
+
+
+def test_baseline_pools_several_runs_into_one_median(write_json, tmp_path, capsys):
+    out = tmp_path / "pooled.json"
+    runs = [run_at([100.0 + k, 101.0 + k, 99.0 + k], 10 * k) for k in range(3)]
+    paths = [str(write_json(f"r{k}.json", d)) for k, d in enumerate(runs)]
+    assert main(["baseline", *paths, "--out", str(out), "--min-runs", "3"]) == 0
+    pooled = json.loads(out.read_text())
+    copy = pooled["benchmarks"][0]
+    # The samples of the three runs, in run order: 99..103, whose median is 101.
+    assert copy["samples"] == [100.0, 101.0, 99.0, 101.0, 102.0, 100.0, 102.0, 103.0, 101.0]
+    assert copy["stats"]["median"] == 101.0
+    assert pooled["pooled_from"] == [r["created"] for r in runs]
+
+    assert main(["baseline", *paths[:2], "--out", str(out), "--min-runs", "3"]) == 2
+    assert "error[TOO_FEW_RUNS]" in capsys.readouterr().err
+    assert main(["baseline", paths[0], paths[0], "--out", str(out)]) == 2
+    assert "error[INCOMPATIBLE]" in capsys.readouterr().err
+    other = run_at(QUIET, 50, config={"elements": 1 << 27, "element_bytes": 8})
+    driver = run_at(QUIET, 51)
+    driver["provenance"]["driver_version"] = 13010
+    workload = run_at(QUIET, 52)
+    workload["benchmarks"][0]["bytes_per_rep"] = 2**31
+    for k, odd in enumerate((other, driver, workload, pooled)):
+        odd_path = str(write_json(f"odd{k}.json", odd))
+        assert main(["baseline", paths[0], odd_path, "--out", str(tmp_path / "x.json")]) == 2
+        assert "error[INCOMPATIBLE]" in capsys.readouterr().err
