@@ -1,0 +1,58 @@
+{
+ "label": "hybrid fp32",
+ "dim": 3,
+ "levels": [
+  {
+   "n_cells": 2240,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.0013226730792267516,
+    "L2": 0.0015924511073760346,
+    "Linf": 0.004676345817039795
+   },
+   "mesh_sha256": "0115f7094662795cbbd4ec2cbb1c751135f8cc05c94696e109799cbb322a1bb5",
+   "solver_commit": "66f4559a88656c95a56432045a504d624099ecb3",
+   "precision": "fp32",
+   "relative_residual": 1.6460655004736258e-07
+  },
+  {
+   "n_cells": 5904,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.0006358008121344958,
+    "L2": 0.0007789199352943643,
+    "Linf": 0.00236619827739859
+   },
+   "mesh_sha256": "fd962918211d038dfcd853ebffd3c751a063ab5e3637517bc55aa4f2406a12f8",
+   "solver_commit": "66f4559a88656c95a56432045a504d624099ecb3",
+   "precision": "fp32",
+   "relative_residual": 1.9452141723336759e-07
+  },
+  {
+   "n_cells": 14336,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.00034333530787848893,
+    "L2": 0.0004222555066799506,
+    "Linf": 0.0013332620043364773
+   },
+   "mesh_sha256": "0346b5a478e6719b9a220eb9a148d62dd9520c080d8c62c828aa9bfc9aea395c",
+   "solver_commit": "66f4559a88656c95a56432045a504d624099ecb3",
+   "precision": "fp32",
+   "relative_residual": 2.24351634558683e-07
+  },
+  {
+   "n_cells": 44352,
+   "volume": 1.0,
+   "errors": {
+    "L1": 0.00015242849880981813,
+    "L2": 0.00018895764839147112,
+    "Linf": 0.0006204277628372168
+   },
+   "mesh_sha256": "d5e0090cadf116bd028cac2a2e74b3825d547a7de66e7c85326f5772b41b9874",
+   "solver_commit": "66f4559a88656c95a56432045a504d624099ecb3",
+   "precision": "fp32",
+   "relative_residual": 2.7246997325637153e-07
+  }
+ ]
+}
