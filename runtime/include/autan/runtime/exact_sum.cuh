@@ -164,7 +164,6 @@ __global__ void __launch_bounds__(block_size) exact_sums_kernel(std::int64_t n, 
   }
 }
 
-// Zeroes the K sums of `out` unless `*active` holds 0.
 template <int K>
 __global__ void clear_if_kernel(ExactWords* out, const int* active) {
   if (*active == 0) return;
@@ -193,9 +192,12 @@ inline void check(
 /// here) receives the sum over i of term(i, k), a __device__ functor
 /// returning double. Asynchronous on `stream`; `blocks` 0 picks 4 per
 /// multiprocessor. Up to 2^30 items per block and 2^31 blocks. With
-/// `active` (device memory), the work is done only when `*active` is not 0
-/// when it runs; otherwise `out` is left as it was and no term is evaluated,
-/// so that a branch decided on the device needs no host read.
+/// `active` (device memory), the work is done only when `*active` is not 0;
+/// otherwise `out` is left as it was and no term is evaluated, so that a
+/// branch decided on the device needs no host read. `*active` must be written
+/// by work ordered before this call (on `stream`, or by an event) and stay
+/// unchanged until it completes: two kernels read it. A captured graph reads
+/// it at each replay.
 template <int K, class Term>
 void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int blocks = 0,
                 const int* active = nullptr) {
