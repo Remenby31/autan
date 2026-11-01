@@ -12,7 +12,7 @@ import rfc8785
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
-from autan.units import K, deg, fail, m, quantity, validate_number
+from autan.units import K, deg, fail, m, quantity, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
 # Largest integer RFC 8785 canonicalizes exactly (IEEE 754 double, 2**53 - 1).
@@ -35,6 +35,7 @@ Conductivity = Annotated[
 ]
 Angle = Annotated[pint.Quantity, *quantity("[angle]")]
 Coordinate = Annotated[pint.Quantity, *quantity("[length]")]
+Velocity = Annotated[pint.Quantity, *quantity("[length] / [time]")]
 PositiveNumber = Annotated[
     float, Field(gt=0), BeforeValidator(lambda v: validate_number(v, positive=True))
 ]
@@ -354,9 +355,19 @@ class BoundaryRule(Spec):
     condition: Condition
 
 
+class State(Spec):
+    """Initial state of a fluid zone: pressure (absolute for compressible flow, gauge for
+    incompressible), temperature (compressible only) and velocity in mesh axes."""
+
+    pressure: Annotated[pint.Quantity, *quantity("[pressure]")]
+    temperature: Temperature | None = None
+    velocity: tuple[Velocity, Velocity, Velocity]
+
+
 class Fluid(Spec):
     kind: Literal["fluid"] = "fluid"
     material: FluidMaterial
+    initial: State | None = None
 
 
 class SolidZone(Spec):
@@ -485,6 +496,22 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
             for key in ("mach", "re", "pressure", "temperature")
             if getattr(fs, key) is not None
         )
+    compressible = isinstance(physics, Compressible)
+    for index, rule in enumerate(spec.cell_zones):
+        state = rule.medium.initial if isinstance(rule.medium, Fluid) else None
+        if state is None:
+            continue
+        where = f"cell_zones[{index}].medium.initial"
+        if compressible and (state.temperature is None or si(state.pressure, "Pa") <= 0):
+            found.append(
+                (
+                    "E0507",
+                    where,
+                    "a compressible initial state needs a temperature and a pressure > 0",
+                )
+            )
+        if not compressible and state.temperature is not None:
+            found.append(("E0507", where, "an incompressible initial state takes no temperature"))
     if spec.verification is not None and spec.boundaries:
         found.append(
             (
@@ -532,7 +559,16 @@ def json_schema() -> dict[str, Any]:
     def absent(*keys: str) -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
 
+    def zone_states(rule: dict[str, Any]) -> dict[str, Any]:
+        initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
+        return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
+
     schema["allOf"] = [
+        {"if": physics("compressible"), "then": zone_states({"required": ["temperature"]})},
+        {
+            "if": physics("incompressible"),
+            "then": zone_states({"not": {"required": ["temperature"]}}),
+        },
         {
             "if": {
                 "required": ["verification"],

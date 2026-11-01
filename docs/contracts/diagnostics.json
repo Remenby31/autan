@@ -415,6 +415,12 @@
       "fix": "Use `autan.Compressible(...)`, or remove the solid zone from the mesh.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0506"
     },
+    "E0507": {
+      "severity": "error",
+      "title": "Initial state does not match the physics",
+      "fix": "Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0507"
+    },
     "E0601": {
       "severity": "error",
       "title": "Monitor surfaces match no boundary zone",

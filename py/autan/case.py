@@ -33,6 +33,7 @@ from autan.schema import (
     Slip,
     Solid,
     SolidZone,
+    State,
     Steady,
     Symmetry,
     Unsteady,
@@ -353,8 +354,16 @@ class CellZoneSelector:
     def __init__(self, case: Case, zones: str) -> None:
         self._case, self._zones = case, zones
 
-    def fluid(self, material: IdealGas | ConstantDensityFluid) -> None:
-        self._case._add_cell_zone(CellZoneRule(zones=self._zones, medium=Fluid(material=material)))
+    def fluid(
+        self, material: IdealGas | ConstantDensityFluid, *, initial: State | None = None
+    ) -> None:
+        """A fluid zone of ``material``, starting from ``initial`` (default: the freestream)."""
+        medium = (
+            Fluid(material=material)
+            if initial is None
+            else Fluid(material=material, initial=initial)
+        )
+        self._case._add_cell_zone(CellZoneRule(zones=self._zones, medium=medium))
 
     def solid(self, material: Solid) -> None:
         self._case._add_cell_zone(

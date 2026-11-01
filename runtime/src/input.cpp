@@ -247,11 +247,23 @@ InitialState parse_initial(const Json& value, const std::string& path, const Sol
 BoundaryInput parse_boundary(const Json& value, const std::string& path) {
   const Object o(value, path,
                  {"zone", "kind", "temperature", "total_pressure", "total_temperature", "velocity",
-                  "static_pressure"});
+                  "static_pressure", "states"});
   BoundaryInput b;
   b.zone = o.string("zone");
   b.kind = o.tag("kind", {"wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet",
-                          "outlet", "manufactured"});
+                          "outlet", "manufactured", "oracle-state"});
+  if (b.kind == "oracle-state") {
+    const Object s(o.get("states"), path + ".states", {"path", "sha256"});
+    BoundaryStates states;
+    states.path = s.string("path");
+    if (!std::filesystem::path(states.path).is_absolute()) {
+      invalid(path + ".states.path", "must be an absolute path");
+    }
+    states.sha256 = sha256(s, "sha256");
+    b.states = std::move(states);
+  } else if (!o.is_null("states")) {
+    invalid(path + ".states", "only an oracle-state boundary takes states");
+  }
   b.temperature = b.kind == "wall" ? (o.is_null("temperature")
                                           ? std::nullopt
                                           : std::optional<double>(o.positive("temperature")))

@@ -303,6 +303,21 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),
                   "E0705");
   }
+  SECTION("E0705 states on a condition that takes none") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["states"] = {{"path", "/s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 oracle-state without an absolute states path") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", "s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
   SECTION("E0705 zone absent from the mesh") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }

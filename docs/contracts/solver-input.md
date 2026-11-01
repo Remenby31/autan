@@ -44,7 +44,7 @@ The freestream closure is that of [case-schema.md](case-schema.md#freestream): w
 
 ## Initial state
 
-Each cell zone starts from the freestream pressure, temperature and velocity, closed with the zone's own medium, so zones of different gases or fluids start consistently:
+Each cell zone starts from its case `initial` state when the case gives one, otherwise from the freestream pressure, temperature and velocity; either is closed with the zone's own medium, so zones of different gases or fluids start consistently. Turbulence values use the freestream speed as reference:
 
-- fluid zone, `initial = {kind = "fluid", density, pressure, temperature, velocity, nu_tilde, k, omega}`: ideal gas ρ = p∞ / (R_zone T∞); constant-density fluid ρ = its density, p = 0; ν = μ_zone(T∞) / ρ; `nu_tilde` = `nu_tilde_ratio` ν, k = 1.5 (`intensity` V∞)², ω = k / (`viscosity_ratio` ν), each null when the model has none;
+- fluid zone, `initial = {kind = "fluid", density, pressure, temperature, velocity, nu_tilde, k, omega}`: with p, T, V the zone's state: ideal gas ρ = p / (R_zone T); constant-density fluid ρ = its density, and p = 0 when the state is the freestream; ν = μ_zone(T) / ρ; `nu_tilde` = `nu_tilde_ratio` ν, k = 1.5 (`intensity` V∞)², ω = k / (`viscosity_ratio` ν), each null when the model has none;
 - solid zone, `initial = {kind = "solid", temperature}`: T∞.
