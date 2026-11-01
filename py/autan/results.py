@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 SCHEMA_ID = "autan.results/1"
 Status = Literal["running", "converged", "completed", "stopped", "diverged", "failed"]
 SOLUTION_REQUIRED: frozenset[str] = frozenset({"converged", "completed", "stopped"})
-Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
 class _Strict(BaseModel):
@@ -111,7 +111,14 @@ class RunWriter:
     never sees a run without them.
     """
 
-    def __init__(self, runs: Path, info: RunInfo, spec: CaseSpec, mesh_info: MeshInfo) -> None:
+    def __init__(
+        self,
+        runs: Path,
+        info: RunInfo,
+        spec: CaseSpec,
+        mesh_info: MeshInfo,
+        manufactured: bytes | None = None,
+    ) -> None:
         runs.mkdir(parents=True, exist_ok=True)
         staging = runs / f".{info.run_id}.tmp"
         staging.mkdir()
@@ -119,6 +126,8 @@ class RunWriter:
         self.info = info
         (staging / "case.toml").write_text(_toml(spec))
         (staging / "mesh-info.json").write_text(json.dumps(mesh_info.document(), indent=2))
+        if manufactured is not None:
+            (staging / "manufactured.json").write_bytes(manufactured)
         self._write_info()
         final = runs / info.run_id
         if final.exists():
@@ -255,6 +264,14 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
+        if case.verification is not None:
+            archived = path / "manufactured.json"
+            if (
+                not archived.is_file()
+                or hashlib.sha256(archived.read_bytes()).hexdigest()
+                != case.verification.manufactured.sha256
+            ):
+                broken("manufactured.json is missing or differs from the case", "manufactured.json")
         for problem in run_problems(path, run, case, mesh_info):
             broken(problem, "run.json")
         records = _read_history(path / "history.jsonl", run.status == "running", broken)

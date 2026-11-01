@@ -1,17 +1,21 @@
 import asyncio
 import logging
+import mimetypes
+import os
 import webbrowser
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
 
+from autan_ui.confine import Folder, is_link
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
@@ -49,21 +53,68 @@ async def _until_disconnected(request: Request, stop: asyncio.Event) -> None:
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 
 
+def _mtime(folder: Folder) -> int | None:
+    stat = folder.stat("run.json")
+    return stat.st_mtime_ns if stat else None
+
+
+def _open_build(static: Path | None) -> Folder | None:
+    if static is None:
+        return None
+    try:
+        build = Folder(static)
+    except OSError:
+        return None
+    try:
+        os.close(build.open("index.html"))
+    except OSError:
+        build.close()
+        return None
+    return build
+
+
+def _list_build(build: Folder) -> set[str]:
+    names = set()
+    for folder, subfolders, files in os.walk(build.path):
+        here = Path(folder)
+        subfolders[:] = [name for name in subfolders if not is_link(here / name)]
+        for name in files:
+            if not is_link(here / name):
+                names.add((here / name).relative_to(build.path).as_posix())
+    return names
+
+
 def create_app(
     runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
 ) -> FastAPI:
     registry = Registry(runs_root)
-    app = FastAPI(title="Autan", docs_url=None, redoc_url=None)
+    build = _open_build(static)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if build is not None:
+                build.close()
+
+    app = FastAPI(title="Autan", docs_url=None, redoc_url=None, lifespan=lifespan)
     # A page on another origin that rebinds its DNS name to 127.0.0.1 sends its own Host header.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(hosts))
 
-    def existing_run(run_id: str) -> Path:
+    def find_run(run_id: str) -> Path:
         try:
             return registry.run_dir(run_id)
         except RunNotFoundError as error:
             raise HTTPException(404, f"no run {run_id}") from error
         except RunRejectedError as error:
             raise HTTPException(409, str(error)) from error
+
+    def existing_run(run_id: str) -> str:
+        """404 or 409 before a response starts. Handlers find the directory again by listing
+        the runs directory: an injected path would count as request input."""
+        find_run(run_id)
+        return run_id
 
     @app.get("/api/runs")
     async def list_runs() -> dict[str, Any]:
@@ -97,12 +148,12 @@ def create_app(
             watcher.cancel()
 
     @app.get("/api/runs/{run_id}")
-    def run_details(directory: Annotated[Path, Depends(existing_run)]) -> dict[str, Any]:
-        return registry.details(directory)
+    def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
+        return registry.details(find_run(run_id))
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(
-        directory: Annotated[Path, Depends(existing_run)],
+        run_id: Annotated[str, Depends(existing_run)],
         request: Request,
         last_event_id: Annotated[str | None, Header()] = None,
     ) -> AsyncIterator[ServerSentEvent]:
@@ -110,18 +161,24 @@ def create_app(
         offset reached, so a reconnecting EventSource resumes where it stopped. A history that
         breaks the contract ends the stream with `invalid` and its reason."""
         offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
-        run_json = directory / "run.json"
-        run_mtime = run_json.stat().st_mtime_ns
-        run = read_run(directory)
-        yield ServerSentEvent(event="run", data=run)
+        # Pinned for the whole stream: replacing the directory later cannot redirect reads.
+        try:
+            directory = registry.run_dir(run_id)
+            folder = Folder(directory)
+        except (LookupError, ValueError, OSError) as error:
+            yield ServerSentEvent(event="invalid", data=f"run {run_id} is gone: {error}")
+            return
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
         changes = _changes(directory, stop)
         try:
+            run_mtime = _mtime(folder)
+            run = read_run(folder)
+            yield ServerSentEvent(event="run", data=run)
             while True:
                 try:
-                    chunk = read_history(directory, offset, live=run["status"] == "running")
-                except ValueError as error:
+                    chunk = read_history(folder, offset, live=run["status"] == "running")
+                except (OSError, ValueError) as error:
                     yield ServerSentEvent(event="invalid", data=str(error))
                     return
                 if chunk.records or offset == 0:
@@ -131,10 +188,10 @@ def create_app(
                 # watcher starts is still picked up.
                 if await anext(changes, None) is None:
                     return
-                mtime = run_json.stat().st_mtime_ns
+                mtime = _mtime(folder)
                 if mtime != run_mtime:
                     try:
-                        run_mtime, run = mtime, read_run(directory)
+                        run_mtime, run = mtime, read_run(folder)
                     except ValueError as error:
                         yield ServerSentEvent(event="invalid", data=str(error))
                         return
@@ -142,6 +199,7 @@ def create_app(
         finally:
             stop.set()
             watcher.cancel()
+            folder.close()
 
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(
@@ -149,24 +207,31 @@ def create_app(
     ) -> Response:
         return Response(synthetic_wing(triangles), media_type="application/octet-stream")
 
-    if static is not None and (static / "index.html").is_file():
-        index = static / "index.html"
-        # Built once from the files on disk: a request selects an entry by name and never
-        # becomes a path, so `..`, absolute paths and links cannot reach outside the build.
-        assets = {
-            path.relative_to(static).as_posix(): path
-            for path in static.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        }
+    if build is not None:
+        # The request only selects an entry by name: it never becomes a path. The file is
+        # opened beneath the pinned build directory without following any link, then served
+        # from that same descriptor, so a change after start-up cannot redirect it.
+        assets = _list_build(build)
 
         @app.get("/{path:path}", include_in_schema=False)
-        def spa(path: str) -> FileResponse:
+        def spa(path: str) -> Response:
             if path.startswith("api/"):
                 raise HTTPException(404)
-            return FileResponse(assets.get(path, index))
+            for name in (path if path in assets else None, "index.html"):
+                if name is None:
+                    continue
+                try:
+                    content = build.read(name)
+                except OSError:
+                    continue
+                media = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                return Response(content, media_type=media)
+            raise HTTPException(404)
 
     else:
-        log.warning("no built web app in %s: serving the API only (run `bun run build`)", static)
+        log.warning(
+            "no built web app in %s (or its index.html is a link): serving the API only", static
+        )
 
     return app
 
