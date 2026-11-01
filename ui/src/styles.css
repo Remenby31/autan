@@ -59,9 +59,11 @@ h3 {
   letter-spacing: var(--tracking-heading);
 }
 
-:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+@layer base {
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
 }
 
 @keyframes halo {

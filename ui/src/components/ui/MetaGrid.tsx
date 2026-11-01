@@ -7,7 +7,9 @@ export function MetaGrid({ items }: { items: { label: string; value: ReactNode }
       {items.map((item) => (
         <div key={item.label} className="flex min-w-0 flex-col gap-1.5">
           <dt className="text-fg-3 text-sm">{item.label}</dt>
-          <dd className="m-0 flex min-h-6 min-w-0 items-center gap-2 truncate">{item.value}</dd>
+          <dd className="m-0 flex min-h-6 min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {item.value}
+          </dd>
         </div>
       ))}
     </dl>

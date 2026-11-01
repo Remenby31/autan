@@ -404,8 +404,9 @@ function Facts({
           label: "Forces",
           value:
             cl !== undefined && cd !== undefined ? (
-              <span className="font-mono tabular-nums">
-                CL {cl.toFixed(4)} · CD {cd.toFixed(5)}
+              <span className="flex flex-col font-mono tabular-nums">
+                <span>CL {cl.toFixed(4)}</span>
+                <span>CD {cd.toFixed(5)}</span>
               </span>
             ) : (
               "—"
@@ -415,8 +416,7 @@ function Facts({
           label: "Solver",
           value: (
             <span className="flex items-center gap-2">
-              <span className="font-mono">{run.solver.version}</span>
-              <MiddleTruncate value={run.solver.commit} keep={7} />
+              <MiddleTruncate value={run.solver.commit} keep={8} />
               {run.solver.backend === "fake" && <Badge tone="amber">fake</Badge>}
             </span>
           ),

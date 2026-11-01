@@ -18,7 +18,7 @@ export function Sidebar({ onFind }: { onFind: () => void }) {
   return (
     <aside className="flex w-60 flex-none flex-col gap-3 border-line border-r bg-bg-1 px-3 py-3">
       <Link to="/" className="flex h-8 items-center gap-2 px-2" aria-label="Autan, runs">
-        <img src={`/wordmark-${resolved}.svg`} alt="Autan" className="h-5" />
+        <img src={`/wordmark-${resolved}.svg`} alt="Autan" className="h-[18px]" />
       </Link>
       <button
         type="button"

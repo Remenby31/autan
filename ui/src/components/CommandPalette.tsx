@@ -171,7 +171,7 @@ function Preview({ run, orders }: { run: Run; orders: number[] }) {
       <Status status={run.status} />
       <Sparkline
         values={orders}
-        width={220}
+        width={200}
         height={48}
         label="Residual drop"
         color="var(--accent)"

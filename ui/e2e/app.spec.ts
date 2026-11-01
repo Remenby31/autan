@@ -10,9 +10,11 @@ async function runs(page: Page): Promise<Run[]> {
 
 test("home lists every run directory and filters by state", async ({ page }) => {
   await page.goto("/");
-  const rows = page.getByTestId("runs").locator("tbody tr");
+  const rows = page.locator("a[data-row]");
   await expect(rows).toHaveCount(4);
-  await page.getByRole("button", { name: /diverged/ }).click();
+  await page.getByRole("button", { name: "State" }).click();
+  await page.getByRole("menuitemcheckbox", { name: /diverged/ }).click();
+  await page.keyboard.press("Escape");
   await expect(rows).toHaveCount(1);
   await expect(page).toHaveURL(/status/);
   await expect(rows.first()).toContainText("D0107");
@@ -20,11 +22,12 @@ test("home lists every run directory and filters by state", async ({ page }) => 
 
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
-  const rows = page.getByTestId("runs").locator("tbody tr");
+  const rows = page.locator("a[data-row]");
   await expect(rows).toHaveCount(4);
 
   const source = (await runs(page))[0] as Run;
-  const runId = "run-20261031T235959Z-0123abcd";
+  const started = new Date(Date.now() + 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const runId = `run-${started.replace(/[-:]/g, "")}-0123abcd`;
   const directory = join(RUNS, runId);
   const staging = join(RUNS, ".staging");
   cpSync(join(RUNS, source.run_id), staging, { recursive: true });
@@ -32,7 +35,7 @@ test("a run written by another process appears and updates live", async ({ page 
     ...source,
     run_id: runId,
     status: "running",
-    started: "2026-10-31T23:59:59Z",
+    started,
     finished: null,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
@@ -58,17 +61,30 @@ test("a run written by another process appears and updates live", async ({ page 
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 2));
   const finished = { ...run, status: "converged", finished: "2026-11-01T00:10:00Z" };
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
-  await expect(page.getByTestId("status")).toContainText("converged");
+  await expect(page.getByTestId("status")).toContainText(/converged/i);
 });
 
 test("⌘K opens a run by name and state", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId("runs").locator("tbody tr").first()).toBeVisible();
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   await page.keyboard.type("diverged");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/runs\/run-/);
-  await expect(page.getByTestId("status")).toContainText("diverged");
+  await expect(page.getByTestId("status")).toContainText(/diverged/i);
+});
+
+test("a diverged run shows its diagnostic in the log and the plan of its case", async ({
+  page,
+}) => {
+  const diverged = (await runs(page)).find((r) => r.status === "diverged") as Run;
+  await page.goto(`/runs/${diverged.run_id}`);
+  await expect(page.getByRole("alert")).toContainText("D0107");
+  await page.getByRole("button", { name: /Plan/ }).click();
+  await expect(page.getByRole("cell", { name: "wing.main" })).toBeVisible();
+  await page.getByRole("tab", { name: "Log" }).click();
+  await expect(page).toHaveURL(/tab=log/);
+  await expect(page.getByTestId("log")).toContainText("D0107");
 });
 
 test("viewer renders on WebGPU and picks the zone under the cursor", async ({ page }) => {
@@ -79,7 +95,8 @@ test("viewer renders on WebGPU and picks the zone under the cursor", async ({ pa
   const box = await page.getByTestId("viewport").boundingBox();
   if (!box) throw new Error("no viewport");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  await expect(page.getByRole("button", { pressed: true })).toHaveText(/^wing\./);
+  const zones = page.getByTestId("zones");
+  await expect(zones.getByRole("button", { pressed: true })).toHaveText(/^wing\./);
   await page.mouse.click(box.x + 20, box.y + box.height - 20);
-  await expect(page.getByRole("button", { pressed: true })).toHaveCount(0);
+  await expect(zones.getByRole("button", { pressed: true })).toHaveCount(0);
 });

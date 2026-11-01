@@ -198,7 +198,7 @@ function Runs() {
                     aria-hidden
                     className={cn(COLUMNS, "h-10 border-line border-b px-4 text-fg-3 text-sm")}
                   >
-                    <span>Case</span>
+                    <span>{grouped && !filtered ? "Run" : "Case"}</span>
                     <span>State</span>
                     <span>Residuals</span>
                     <span className="text-right">Iteration</span>
@@ -299,7 +299,7 @@ function Group({
         <AnimatePresence initial={false}>
           {open &&
             runs.map((run) => (
-              <RunRow key={run.run_id} run={run} summary={summaries[run.run_id]} />
+              <RunRow key={run.run_id} run={run} summary={summaries[run.run_id]} grouped />
             ))}
         </AnimatePresence>
       </ul>
@@ -312,7 +312,15 @@ function duration(run: Run): string {
   return formatDuration(end - new Date(run.started).getTime());
 }
 
-function RunRow({ run, summary }: { run: Run; summary: RunSummary | undefined }) {
+function RunRow({
+  run,
+  summary,
+  grouped = false,
+}: {
+  run: Run;
+  summary: RunSummary | undefined;
+  grouped?: boolean;
+}) {
   const toast = useToast();
   const iteration = summary?.iteration ?? run.iterations;
   const target = summary?.target_orders ?? undefined;
@@ -330,12 +338,14 @@ function RunRow({ run, summary }: { run: Run; summary: RunSummary | undefined })
         data-row
         className={cn(
           COLUMNS,
-          "h-14 px-4 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-1 focus-visible:bg-bg-1 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
+          "h-12 px-4 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-1 focus-visible:bg-bg-1 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
         )}
       >
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate font-medium">{run.case.name}</span>
-          <span className="truncate font-mono text-fg-3 text-xs">{run.run_id.slice(-8)}</span>
+        <span className="flex min-w-0 items-baseline gap-2">
+          {!grouped && <span className="truncate font-medium">{run.case.name}</span>}
+          <span className={cn("truncate font-mono", grouped ? "text-fg" : "text-fg-3 text-sm")}>
+            {run.run_id.slice(-8)}
+          </span>
         </span>
         <span className="flex min-w-0 items-center gap-2">
           <Status status={run.status} duration={duration(run)} />

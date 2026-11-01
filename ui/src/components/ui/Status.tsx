@@ -29,5 +29,5 @@ export function formatDuration(ms: number): string {
   const sec = s % 60;
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m ${String(sec).padStart(2, "0")}s`;
-  return `${sec}s`;
+  return sec ? `${sec}s` : "<1s";
 }

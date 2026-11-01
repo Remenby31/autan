@@ -49,14 +49,27 @@ export function LogView({
   const [live, setLive] = useState(true);
   const count = history.iteration.length;
   const forces = history.forces.size === 1 ? [...history.forces.values()][0] : undefined;
+  // A diagnostic sits on the last recorded line at or before its iteration: a divergence is
+  // raised at an iteration that never reaches history.jsonl.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: columns grow in place, see forceAt
   const byIteration = useMemo(() => {
     const map = new Map<number, Diagnostic[]>();
+    const iterations = history.iteration;
     for (const d of diagnostics) {
       const at = d.data.iteration;
-      if (typeof at === "number") map.set(at, [...(map.get(at) ?? []), d]);
+      if (typeof at !== "number" || !iterations.length) continue;
+      let lo = 0;
+      let hi = iterations.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if ((iterations[mid] ?? 0) <= at) lo = mid;
+        else hi = mid - 1;
+      }
+      const line = iterations[lo] ?? at;
+      map.set(line, [...(map.get(line) ?? []), d]);
     }
     return map;
-  }, [diagnostics]);
+  }, [diagnostics, history.version]);
   // History columns grow in place: `history.version` is what changes on every append.
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const forceAt = useMemo(() => {
