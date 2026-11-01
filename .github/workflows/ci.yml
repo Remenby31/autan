@@ -125,7 +125,7 @@ jobs:
         run: |
           n=$(ctest --test-dir build -N -L mpi | sed -n 's/^Total Tests: //p')
           echo "$n multi-rank tests (CTest label mpi)"
-          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 tests labelled mpi, found $n"; exit 1; }
+          [ "$n" -ge 10 ] || { echo "::error::expected at least 10 tests labelled mpi, found $n"; exit 1; }
           # A test normally ends within 25 s: past 120 s the watchdog dumps every rank's stacks
           # and fails it (#304), instead of a hang holding the runner until CTest's timeout.
           bench/ci/ctest-watchdog.sh 120 "$RUNNER_TEMP/mpi-hang-stacks" -- \

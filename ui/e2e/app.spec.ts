@@ -241,15 +241,15 @@ test("polars keep each Mach number apart and every run, and say which runs are m
     await expect(page.getByTestId("polar-missing")).toHaveText(
       "Not on the polars: E diverged, not converged",
     );
-    // Each point is its run's final coefficients as run.json records them.
+    // Each point is its run's final coefficients as run.json records them, to four decimals.
     const recorded = await runs(page);
     const rows = page.getByTestId("polar-table").locator("tbody tr");
     await expect(rows).toHaveCount(4);
     for (const [k, id] of ids.slice(0, 4).entries()) {
       const forces = recorded.find((r) => r.run_id === id)?.monitors?.forces;
       const row = rows.filter({ hasText: new RegExp(`^${String.fromCharCode(65 + k)}`) });
-      await expect(row.locator("td").nth(2)).toHaveText(String(forces?.cl));
-      await expect(row.locator("td").nth(3)).toHaveText(String(forces?.cd));
+      await expect(row.locator("td").nth(2)).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
+      await expect(row.locator("td").nth(3)).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
     }
   } finally {
     for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
@@ -311,6 +311,92 @@ test("a converged run opens its wall surface in Analysis and switches fields", a
   await page.getByRole("tab", { name: "Cf" }).click();
   await expect(page.getByTestId("legend")).toHaveText("Cf");
   await expect(page).toHaveURL(/field=Cf/);
+});
+
+test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
+  // py/examples/crm_hl.py: M 0.2, α 19.57°, Re 5.49e6, SA, on crm-hl.cgns.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const all: Run[] = registry.runs;
+  const converged = all.find(
+    (r) => r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "19.57 deg",
+  ) as Run;
+  const fact = (label: string) =>
+    page
+      .locator("dt", { hasText: new RegExp(`^${label}$`) })
+      .locator("xpath=following-sibling::dd[1]");
+  // Coefficients to four decimals (one drag count), "-0.0000" written 0.0000.
+  const four = (v: number | undefined) => (v ?? Number.NaN).toFixed(4).replace(/^-(0\.0+)$/, "$1");
+  await page.goto(`/runs/${converged.run_id}`);
+
+  const conditions = page.getByTestId("conditions");
+  for (const part of ["M 0.2", "α 19.57°", "Re 5.49e+6", "sa", converged.precision])
+    await expect(conditions).toContainText(part);
+  await expect(page.getByTestId("mesh-name")).toHaveText("crm-hl.cgns");
+  await expect(fact("Mesh")).toContainText(converged.mesh.sha256.slice(0, 8));
+  await expect(fact("Devices")).toHaveText("1 CPU rank");
+  await expect(page.getByText("State", { exact: true })).toHaveCount(0);
+  const final = converged.monitors?.forces;
+  await expect(page.getByTestId("forces")).toHaveText(`CL ${four(final?.cl)}CD ${four(final?.cd)}`);
+
+  const table = page.getByTestId("monitor-table");
+  await expect(table.locator("th")).toHaveText(["Monitor", "cl", "cd", "CL trend"]);
+  const toggle = page.getByRole("button", { name: "Side force and moments" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(table.locator("th")).toHaveText([
+    "Monitor",
+    "cl",
+    "cd",
+    "cs",
+    "cmx",
+    "cmy",
+    "cmz",
+    "CL trend",
+  ]);
+  await expect(table.locator("tbody tr").first().locator("td").nth(3)).toHaveText(four(final?.cs));
+  await expect(table.locator("tbody tr").first().locator("td").nth(6)).toHaveText(four(final?.cmz));
+  await toggle.click();
+  await expect(table.locator("th")).toHaveCount(4);
+  await expect(page.getByTestId("monitor-caveat")).toHaveCount(0);
+
+  // A run stopped at its budget: its coefficients are there, said not to be converged ones.
+  const stopped = all.find((r) => r.status === "stopped") as Run;
+  await page.goto(`/runs/${stopped.run_id}`);
+  await expect(page.getByTestId("forces")).toContainText("not converged");
+  await expect(page.getByTestId("monitor-caveat")).toHaveText("not converged");
+
+  // An unsteady run of 40 steps sampling forces every 30: its final state is step 40's.
+  const dir = mkdtempSync(join(tmpdir(), "autan-unsteady-forces-"));
+  const name = `unsteady-forces-${Date.now()}`;
+  writeFileSync(
+    join(dir, "case.py"),
+    readFileSync("../py/examples/crm_hl.py", "utf8")
+      .replace('"crm-hl"', `"${name}"`)
+      .replace("every=10", "every=30") +
+      "case.time = autan.Unsteady(steps=40, dt=1e-3 * autan.units.s)\n",
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
+  ]);
+  const unsteady = (await runs(page)).find((r) => r.case.name === name) as Run;
+  try {
+    await page.goto(`/runs/${unsteady.run_id}`);
+    const last = unsteady.monitors?.forces;
+    await expect(page.getByTestId("forces")).toHaveText(
+      `CL ${four(last?.cl)}CD ${four(last?.cd)}last step of an unsteady run`,
+    );
+  } finally {
+    rmSync(join(RUNS, unsteady.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // py/examples/heat_exchanger.py: a pressure and a temperature, no Reynolds number.
+  const exchanger = all.find((r) => r.case.name === "heat-exchanger") as Run;
+  await page.goto(`/runs/${exchanger.run_id}`);
+  await expect(page.getByTestId("conditions")).toContainText(
+    "M 0.1 · α 0° · p 101325.0 Pa · T 300.0 K",
+  );
 });
 
 test("residuals at zero and far below 1 draw on the log chart", async ({ page }) => {
@@ -388,6 +474,55 @@ test("floors written while a run page is open recompute its residual drop", asyn
   await expect(orders).toHaveText(target.toFixed(2));
 });
 
+test("a run's iteration cost shows when run.json measured it", async ({ page }) => {
+  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const started = new Date(Date.now() - 14_400_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const suffix = Math.floor(Math.random() * 2 ** 32)
+    .toString(16)
+    .padStart(8, "0");
+  const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
+  // The fake backend measures nothing: a CUDA run, its identity as results.md defines it.
+  const solver = { ...source.solver, backend: "cuda" as const };
+  const devices = { kind: "cuda" as const, count: 1 };
+  const identity = createHash("sha256")
+    .update(
+      [
+        source.case.sha256,
+        source.mesh.sha256,
+        solver.commit,
+        source.precision,
+        solver.backend,
+        devices.kind,
+        devices.count,
+      ].join("\n"),
+    )
+    .digest("hex");
+  const cells = JSON.parse(readFileSync(join(RUNS, source.run_id, "mesh-info.json"), "utf8")).counts
+    .cells;
+  const timing = {
+    wall_seconds: 868.2,
+    solve_seconds: 851.7,
+    iterations: source.iterations,
+    ns_per_cell_iteration: (851.7 * 1e9) / (cells * source.iterations),
+  };
+  const staging = join(RUNS, `.staging-${suffix}`);
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  writeFileSync(
+    join(staging, "run.json"),
+    JSON.stringify({ ...source, run_id: runId, started, identity, solver, devices, timing }),
+  );
+  renameSync(staging, join(RUNS, runId));
+  await expect.poll(async () => (await runs(page)).some((r) => r.run_id === runId)).toBe(true);
+
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByTestId("timing")).toHaveText(
+    `${timing.ns_per_cell_iteration.toPrecision(3)} ns per cell852 s solving of 868 s`,
+  );
+  await page.goto(`/runs/${source.run_id}`);
+  await expect(page.getByTestId("status")).toBeVisible();
+  await expect(page.getByTestId("timing")).toHaveCount(0);
+});
+
 test("Compare lists where each run ran when that differs", async ({ page }) => {
   const source = (await runs(page)).find((r) => r.status === "converged") as Run;
   const started = new Date(Date.now() - 10_800_000).toISOString().replace(/\.\d+Z$/, "Z");
@@ -440,7 +575,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
 
   const diff = page.getByTestId("settings-diff");
   for (const [key, a, b] of [
-    ["run.devices", "1 CPU", "4 CUDA GPUs"],
+    ["run.devices", "1 CPU rank", "4 CUDA ranks"],
     ["run.backend", source.solver.backend, "cuda"],
     ["run.solver", source.solver.commit, solver.commit],
     ["run.deterministic", String(source.deterministic), String(!source.deterministic)],
