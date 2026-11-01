@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       bench: ${{ steps.filter.outputs.bench }}
       harness: ${{ steps.filter.outputs.harness }}
@@ -36,14 +37,20 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Find the last commit of main that was measured
+        id: measured
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bench/ci/last-measured.sh)" >> "$GITHUB_OUTPUT"
       - name: Decide whether anything measured changed
         id: filter
         env:
           EVENT: ${{ github.event_name }}
           DRAFT: ${{ github.event.pull_request.draft }}
-          BEFORE: ${{ github.event.before }}
+          MEASURED: ${{ steps.measured.outputs.sha }}
         # No pipe: the default shell has no pipefail, so a failing filter would pass unnoticed.
-        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$BEFORE" >> "$GITHUB_OUTPUT"
+        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$MEASURED" >> "$GITHUB_OUTPUT"
 
   mesh:
     needs: changes
@@ -60,6 +67,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Install the libraries the Gmsh wheel loads
         run: >-

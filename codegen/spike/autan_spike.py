@@ -481,6 +481,11 @@ def gpu_lsq_bounds_adjoint(
     return out
 
 
+def set_stencil_slice(slice_: int) -> None:
+    """Cells per slice of the device stencil layout of the following calls (0: CSR)."""
+    lib().autan_spike_set_stencil_slice(ctypes.c_int(slice_))
+
+
 def gpu_bind_check(m: Mesh) -> tuple[bool, bool]:
     """(built-in face_area bound, a physics' own writable cell_volume left alone) by DeviceMesh."""
     err = ctypes.create_string_buffer(512)

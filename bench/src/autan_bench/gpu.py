@@ -158,6 +158,37 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+CAMPAIGN_HEARTBEAT_S = 90.0
+
+
+def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
+    """Wait until every live CPU campaign (bench/campaign/) reads frozen.
+
+    Its watcher writes ``campaigns/NAME.state`` next to the lock ("running" before any start or
+    thaw, "frozen" once frozen) and touches ``NAME.heartbeat``; a campaign whose heartbeat is
+    older than CAMPAIGN_HEARTBEAT_S has stopped by itself and is ignored. Still running after
+    ``timeout_s``: ``HOST_BUSY``.
+    """
+    states = lock.parent / "campaigns"
+    deadline = time.monotonic() + timeout_s
+    while True:
+        running = []
+        for state in states.glob("*.state"):
+            try:
+                live = time.time() - state.with_suffix(".heartbeat").stat().st_mtime
+                if state.read_text().strip() != "frozen" and live < CAMPAIGN_HEARTBEAT_S:
+                    running.append(state.stem)
+            except FileNotFoundError:
+                continue
+        if not running:
+            return
+        if time.monotonic() > deadline:
+            raise BenchError(
+                Code.HOST_BUSY, f"CPU campaigns still running under the GPU lock: {running}"
+            )
+        time.sleep(0.1)
+
+
 def require_idle(
     gpu_index: int = 0, window: int = 5, interval_s: float = 0.2, timeout_s: float = 5.0
 ) -> dict[str, float | int]:
@@ -269,6 +300,47 @@ class Sampler:
 LOAD_WARN_PER_CPU = 1.0
 
 
+PROC_STAT = Path("/proc/stat")
+
+
+def _runnable_now() -> int:
+    """Threads runnable on the host now, the observer included (global, also in a container)."""
+    try:
+        if sys.platform == "darwin":
+            # -o stat= appends the state as the last column of every thread line, after the
+            # truncated command; the C locale keeps the other columns' numbers unlocalised.
+            out = subprocess.run(
+                ["ps", "-A", "-M", "-o", "stat="], capture_output=True, text=True, check=True,
+                env={**os.environ, "LC_ALL": "C"}, timeout=10,
+            )  # fmt: skip
+            rows = out.stdout.splitlines()[1:]
+            return sum(1 for row in rows if row.split() and row.split()[-1].startswith("R"))
+        for line in PROC_STAT.read_text().splitlines():
+            if line.startswith("procs_running "):
+                return int(line.split()[1])
+    except (OSError, subprocess.SubprocessError) as err:
+        raise BenchError(Code.TELEMETRY_FAILED, f"cannot count runnable threads: {err}") from err
+    raise BenchError(Code.TELEMETRY_FAILED, f"{PROC_STAT} has no procs_running line")
+
+
+def runnable_threads(window_s: float = 1.0, samples: int = 10) -> float:
+    """Median count of runnable threads over ``window_s``, the observer excluded.
+
+    Unlike the load average, it reacts at once: a campaign frozen when the GPU lock is taken
+    (bench/campaign/) no longer counts, while the 1-minute average would keep it for minutes.
+    The median ignores the threads that run for an instant.
+    """
+    counts = []
+    for _ in range(samples):
+        counts.append(max(0, _runnable_now() - 1))
+        time.sleep(window_s / samples)
+    return float(statistics.median(counts))
+
+
 def host_load() -> dict[str, float | int]:
-    """1-minute load average of the host (global, also inside a container) and its CPU count."""
-    return {"load_1m": os.getloadavg()[0], "cpus": os.cpu_count() or 1}
+    """Runnable threads and 1-minute load average of the host, and its CPU count."""
+    return {
+        "runnable": runnable_threads(),
+        "load_1m": os.getloadavg()[0],
+        "cpus": os.cpu_count() or 1,
+    }

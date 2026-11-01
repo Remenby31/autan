@@ -95,6 +95,19 @@ struct CellStencil {
 CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind,
                          const GlobalKeys* keys = nullptr);
 
+/// A cell stencil in sliced layout (Topology::stencil_stride): cells in slices of `slice`
+/// consecutive cells, entry j of the cell in lane l of slice s stored at start(s) + j * slice + l,
+/// start(s) the sum of slice * (longest row) over the slices before. Each cell keeps its entries
+/// in the same order, so a reduction gives the same bits. `position[k]` is where CSR entry k
+/// went; twins point at sliced positions; padding holds entry 0, twin -1, weights 0.
+struct SlicedStencil {
+  CellStencil stencil;  ///< offsets: n_cells + 1 starts (the last the total size)
+  std::vector<index_t> length;
+  std::vector<offset_t> position;
+  offset_t stride = 1;
+};
+SlicedStencil sliced(const CellStencil& csr, int slice);
+
 /// Copy of `v` converted to T (the storage type of a precision role).
 template <class T>
 std::vector<T> converted(const std::vector<double>& v) {

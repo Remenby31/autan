@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
 
 namespace autan::kernels {
 
@@ -245,6 +246,55 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
     store_lsq_weights(d, p.lsq_weight, ni, static_cast<std::size_t>(offsets[ci]));
   }
   return p;
+}
+
+SlicedStencil sliced(const CellStencil& csr, int slice) {
+  if (slice < 1) {
+    throw std::invalid_argument("E1101: stencil slice must be at least 1");
+  }
+  const std::size_t nc = csr.offsets.size() - 1;
+  const auto w = static_cast<std::size_t>(slice);
+  SlicedStencil out;
+  out.stride = slice;
+  out.length.resize(nc);
+  out.position.resize(csr.entries.size());
+  out.stencil.offsets.resize(nc + 1);
+  offset_t start = 0;
+  for (std::size_t s = 0; s * w < nc; ++s) {
+    offset_t longest = 0;
+    for (std::size_t l = 0; l < w && s * w + l < nc; ++l) {
+      const std::size_t c = s * w + l;
+      longest = std::max(longest, csr.offsets[c + 1] - csr.offsets[c]);
+    }
+    for (std::size_t l = 0; l < w && s * w + l < nc; ++l) {
+      const std::size_t c = s * w + l;
+      out.stencil.offsets[c] = start + static_cast<offset_t>(l);
+      out.length[c] = static_cast<index_t>(csr.offsets[c + 1] - csr.offsets[c]);
+      for (offset_t j = 0; j < out.length[c]; ++j) {
+        out.position[static_cast<std::size_t>(csr.offsets[c] + j)] =
+            out.stencil.offsets[c] + j * static_cast<offset_t>(slice);
+      }
+    }
+    start += longest * static_cast<offset_t>(slice);
+  }
+  out.stencil.offsets[nc] = start;
+  const auto n = static_cast<std::size_t>(start);
+  const std::size_t ne = csr.entries.size();
+  out.stencil.entries.assign(n, 0);
+  out.stencil.twin.assign(n, -1);
+  out.stencil.lsq_weight.assign(3 * n, 0.0);
+  for (std::size_t k = 0; k < ne; ++k) {
+    const auto p = static_cast<std::size_t>(out.position[k]);
+    out.stencil.entries[p] = csr.entries[k];
+    const offset_t t = csr.twin.empty() ? -1 : csr.twin[k];
+    out.stencil.twin[p] = t < 0 ? -1 : out.position[static_cast<std::size_t>(t)];
+    if (!csr.lsq_weight.empty()) {
+      for (std::size_t i = 0; i < 3; ++i) {
+        out.stencil.lsq_weight[i * n + p] = csr.lsq_weight[i * ne + k];
+      }
+    }
+  }
+  return out;
 }
 
 CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind kind,

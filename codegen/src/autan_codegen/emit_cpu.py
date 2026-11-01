@@ -81,7 +81,13 @@ def entry_loop(over: str, indent: str) -> list[str]:
     i2 = indent + "  "
     if over == dsl.STENCIL:
         return [
-            f"{indent}for (offset_t k = d.topo.stencil_offsets[c]; k < d.topo.stencil_offsets[c + 1]; ++k) {{",
+            # CSR (stride 1) or sliced layout: entry j at stencil_offsets[c] + j * stride.
+            (
+                f"{indent}for (offset_t k = d.topo.stencil_offsets[c], kn = d.topo.stencil_stride == 1 "
+                "? d.topo.stencil_offsets[c + 1] : d.topo.stencil_offsets[c] + "
+                "offset_t(d.topo.stencil_length[c]) * d.topo.stencil_stride; "
+                "k < kn; k += d.topo.stencil_stride) {"
+            ),
             f"{i2}const index_t e = d.topo.stencil[k];",
             f"{i2}[[maybe_unused]] const bool across = e >= 0;",
             f"{i2}[[maybe_unused]] const index_t nb = e;",
