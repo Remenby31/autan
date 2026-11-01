@@ -531,18 +531,27 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
 
 TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") {
   // Never a silent CPU run: a kind this build does not drive is E0706, and
-  // a CUDA build that sees no device is E0807, both before any directory.
-  require_error(run(input([](Json& d) { d["devices"]["kind"] = "hip"; })), "E0706");
+  // a CUDA build that sees no device is E0807, both before any directory,
+  // whatever the physics registered: here, one for the CPU only.
+  autan::runtime::PhysicsRegistry cpu_only;
+  cpu_only.add({.kind = "*", .turbulence = "*", .precision = "*", .device = "cpu"},
+               [](const autan::runtime::PhysicsContext& context) {
+                 return std::make_unique<autan_test::Relaxation>(context,
+                                                                 autan_test::RelaxationOptions{});
+               });
+  const Outcome hip = run(input([](Json& d) { d["devices"]["kind"] = "hip"; }), cpu_only);
+  require_error(hip, "E0706");
+  CHECK(Json::parse(hip.err)["data"]["path"] == "devices.kind");
 #ifdef AUTAN_HAVE_CUDA
   // As a host without a GPU: CUDA reads this before its first call, and
   // this test runs in a process of its own.
   REQUIRE(setenv("CUDA_VISIBLE_DEVICES", "-1", 1) == 0);
-  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }));
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
   require_error(o, "E0807");
   CHECK(Json::parse(o.err)["data"] ==
         Json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}});
 #else
-  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }));
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
   require_error(o, "E0706");
   CHECK(Json::parse(o.err)["data"]["path"] == "devices.kind");
 #endif

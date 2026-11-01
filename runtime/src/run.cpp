@@ -550,6 +550,26 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     p.monitor_zones.push_back(std::move(ids));
   }
   load_states(p);
+  // A device run needs a build that drives that device and a device to
+  // drive; neither falls back to the CPU.
+  if (p.input.device_kind != "cpu") {
+    const bool built = p.input.device_kind == "cuda" && gpu_build;
+    if (!built) {
+      throw InputError(Diagnostic{
+          .code = "E0706",
+          .message = "this build of autan-run does not drive " + p.input.device_kind + " devices",
+          .path = "devices.kind",
+          .data_json = nlohmann::json{{"path", "devices.kind"}}.dump()});
+    }
+    if (visible_gpus() == 0) {
+      throw InputError(Diagnostic{
+          .code = "E0807",
+          .message = "devices.kind is cuda, but this process sees no CUDA device",
+          .path = "devices.kind",
+          .data_json =
+              nlohmann::json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}}.dump()});
+    }
+  }
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   if (entry != nullptr && entry->scope) {
@@ -583,26 +603,6 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                                             {"precision", in.precision},
                                                             {"device", in.device_kind}}
                                                  .dump()});
-  }
-  // A device run needs a build that drives that device and a device to
-  // drive; neither falls back to the CPU.
-  if (p.input.device_kind != "cpu") {
-    const bool built = p.input.device_kind == "cuda" && gpu_build;
-    if (!built) {
-      throw InputError(Diagnostic{
-          .code = "E0706",
-          .message = "this build of autan-run does not drive " + p.input.device_kind + " devices",
-          .path = "devices.kind",
-          .data_json = nlohmann::json{{"path", "devices.kind"}}.dump()});
-    }
-    if (visible_gpus() == 0) {
-      throw InputError(Diagnostic{
-          .code = "E0807",
-          .message = "devices.kind is cuda, but this process sees no CUDA device",
-          .path = "devices.kind",
-          .data_json =
-              nlohmann::json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}}.dump()});
-    }
   }
   return p;
 }
