@@ -332,6 +332,38 @@ The case's mesh file does not exist where the case says, so `plan` cannot check 
 
 Fix: Put the mesh at the path the case gives, relative to the case file.
 
+## E0206
+
+**Manufactured solution differs from its hash** (error)
+
+The SHA-256 of the manufactured-solution file named by `verification.manufactured` differs from the `sha256` the case records, so the case would verify against another solution.
+
+Fix: Regenerate the file, or update the case's sha256 to the file the study uses.
+
+## E0207
+
+**Manufactured solution not found** (error)
+
+The file named by `verification.manufactured.path` does not exist, relative to the case file.
+
+Fix: Export the manufactured solution with autan-vv and give its path.
+
+## E0208
+
+**Not a manufactured solution** (error)
+
+The file named by `verification.manufactured.path` is not JSON with `"schema": "autan.mms/1"` (docs/validation/mms.md).
+
+Fix: Point the case at a manufactured solution exported by autan-vv.
+
+## E0209
+
+**Manufactured solution does not match the case** (error)
+
+The constants the manufactured solution declares (gamma, gas constant, viscosity, Prandtl number) differ from the case's gas, its declared model is not compressible flow with the case's turbulence model, or the case has cell zone rules a single-medium solution cannot cover. The message names the difference.
+
+Fix: Build the case gas from the solution's parameters, or export the solution the case needs.
+
 ## E0301
 
 **Quantity of the wrong dimension** (error)
@@ -427,6 +459,22 @@ Fix: Use the condition matching the physics: `slip()` for inviscid walls, `inlet
 The case applies a condition of another kind than the type stored in the mesh file. This is allowed; the warning makes the override visible.
 
 Fix: Check that the override is intended.
+
+## E0416
+
+**Boundary rules with a manufactured solution** (error)
+
+A case verified against a manufactured solution takes the data of every boundary zone from the exact solution; a `case.boundary(...)` rule would contradict it.
+
+Fix: Remove the boundary rules from the verification case.
+
+## E0417
+
+**Unsteady verification case** (error)
+
+Manufactured solutions are steady, and a run starting from the freestream would keep an initial-condition error at fixed time; `autan.case/1` verification cases are steady.
+
+Fix: Set `case.time = autan.Steady(...)` in the verification case.
 
 ## E0501
 
@@ -587,3 +635,139 @@ Fix: Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a check
 The file given to `-o`/`--output` cannot be written: missing directory, a directory in its place, or no permission.
 
 Fix: Give a writable file path.
+
+## E1001
+
+**Unsupported kernel construct** (error)
+
+A body uses a statement, expression or call outside the subset.
+
+Fix: Rewrite the body with the DSL subset of docs/design/kernel-generator.md.
+
+## E1002
+
+**Argument is not a DSL type** (error)
+
+An argument has no annotation, or one that is not a role type.
+
+Fix: Annotate every argument with a role type (Geom, State, Residual, Param, ...).
+
+## E1003
+
+**Invalid loop binding** (error)
+
+Loop bindings do not match the body's arguments, their types, or the loop kind.
+
+Fix: Make the loop's bindings match the body's arguments, their types and the loop kind.
+
+## E1004
+
+**Invalid loop output** (error)
+
+A loop's outputs do not fit its kind (`Inc` signs, `Write`, accumulators).
+
+Fix: Give the loop outputs that fit its kind (Inc with signs, Write, accumulators).
+
+## E1005
+
+**Invalid control flow in a kernel** (error)
+
+A name is assigned in one branch only, `return` is in one branch only, or code follows `return`.
+
+Fix: Assign each name and return on every branch, and put no code after return.
+
+## E1006
+
+**Type mismatch in a kernel** (error)
+
+Shapes or kinds of operands disagree.
+
+Fix: Make the operand shapes and kinds agree.
+
+## E1007
+
+**rel() of a computed value** (error)
+
+`rel()` receives something other than `Geom` arguments as loaded.
+
+Fix: Call rel() on Geom arguments as loaded, not on computed values.
+
+## E1008
+
+**Inc target is not an accumulation** (error)
+
+An `Inc` target does not have role `Residual`.
+
+Fix: Accumulate with Inc only into Residual datasets.
+
+## E1009
+
+**Invalid kernel module** (error)
+
+A kernel module cannot be imported or declares no loop.
+
+Fix: Fix the module so it imports and declares at least one loop.
+
+## E1010
+
+**Unknown backend** (error)
+
+`--backends` names an unknown backend.
+
+Fix: Use a backend listed by the generator's --help.
+
+## E1011
+
+**Unknown policy** (error)
+
+`--policies` names an unknown policy.
+
+Fix: Use a policy listed by the generator's --help.
+
+## E1012
+
+**Differentiation not supported** (error)
+
+A loop with several output datasets is differentiated.
+
+Fix: Differentiate loops with a single output dataset.
+
+## E1100
+
+**Generated loop failed** (error)
+
+A generated loop or the spike driver fails without a more specific code.
+
+Fix: Report the message with the kernel and the input that triggered it.
+
+## E1101
+
+**GPU runtime error** (error)
+
+A CUDA or HIP call or kernel launch fails.
+
+Fix: Check the driver and the device with `autan doctor`, then report the message.
+
+## E1102
+
+**Unknown precision policy** (error)
+
+A driver receives an unknown policy name.
+
+Fix: Use one of the precision policies the driver lists.
+
+## E1103
+
+**Unknown race strategy** (error)
+
+A driver receives an unknown strategy name.
+
+Fix: Use one of the race strategies the driver lists.
+
+## E1104
+
+**Face scratch too narrow** (error)
+
+Store-gather scratch has fewer components per face than the loop's outputs.
+
+Fix: Regenerate the loop so its scratch holds every output component per face.

@@ -53,6 +53,7 @@ class ManufacturedSolution:
     name: str
     equations: str
     description: str
+    model: Mapping[str, str | None]
     parameters: Mapping[str, float]
     fields: Mapping[str, sp.Expr]
     conserved: Mapping[str, sp.Expr]
@@ -152,6 +153,7 @@ def advection_diffusion(
     return ManufacturedSolution(
         name="advection_diffusion",
         equations="scalar advection-diffusion",
+        model={"physics": "scalar-advection-diffusion", "turbulence": None},
         description="div(a phi) - div(nu grad phi) = S, a and nu constant, smooth non-polynomial phi.",
         parameters={"ax": float(a[0]), "ay": float(a[1]), "az": float(a[2]), "nu": float(nu)},
         fields={"phi": phi},
@@ -279,6 +281,7 @@ def euler(flow: Flow = ROY_SUBSONIC_3D) -> ManufacturedSolution:
     ms = ManufacturedSolution(
         name="euler",
         equations="compressible Euler",
+        model={"physics": "compressible", "turbulence": "inviscid"},
         description="Subsonic 3D trigonometric fields in the form of Roy et al. (2004).",
         parameters={"gamma": float(GAMMA), "gas_constant": float(GAS_CONSTANT)},
         fields=flow.primitive(),
@@ -307,6 +310,7 @@ def navier_stokes(
     ms = ManufacturedSolution(
         name="navier_stokes",
         equations="compressible laminar Navier-Stokes",
+        model={"physics": "compressible", "turbulence": "laminar"},
         description="Subsonic 3D trigonometric fields in the form of Roy et al. (2004), constant viscosity.",
         parameters={
             "gamma": float(GAMMA),
@@ -444,6 +448,7 @@ def rans_sa(
     } | {k: float(v) for k, v in c.items()}
     ms = ManufacturedSolution(
         name="rans_sa" if ft2 else "rans_sa_noft2",
+        model={"physics": "compressible", "turbulence": "sa" if ft2 else "sa-noft2"},
         equations="compressible RANS, Spalart-Allmaras (SA-neg)"
         if ft2
         else "compressible RANS, SA-noft2",
