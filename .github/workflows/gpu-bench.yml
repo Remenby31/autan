@@ -114,6 +114,8 @@ jobs:
         run: cmake -S bench -B build/bench && cmake --build build/bench
       - name: Install the harness
         run: uv sync --project bench --locked
+      - name: Give this job priority on the GPU lock
+        run: bench/ci/priority.sh start 90
       - name: Harness tests on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
@@ -150,6 +152,9 @@ jobs:
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
+      - name: Release the GPU lock priority
+        if: always()
+        run: bench/ci/priority.sh stop
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
