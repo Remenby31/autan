@@ -1226,8 +1226,7 @@ class Run final : public Log {
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
         const auto& monitor = in.monitors[m];
         if (it % monitor.every != 0) continue;
-        record["monitors"][monitor.name] = forces_record(
-            physics_->loads(p_.monitor_zones[m], monitor.moment_center), monitor, in.freestream);
+        record["monitors"][monitor.name] = monitor_record(m, "at iteration " + std::to_string(it));
       }
       if (comm_.rank() == 0) dir_->append_history(record.dump());
       // `iterations` is the last completed (recorded) iteration: a diverging
@@ -1398,20 +1397,28 @@ class Run final : public Log {
 
   // The forces of every monitor on the final state, whether or not its last
   // iteration was a multiple of `every` (results.md, run.json `monitors`).
+  // The forces record of monitor m on the current state. A value that is not
+  // finite fails the run (E0704) rather than reaching history.jsonl or
+  // run.json as null (results.md, History).
+  [[nodiscard]] Json monitor_record(std::size_t m, const std::string& when) const {
+    const auto& in = p_.input;
+    Json record = forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
+                                in.monitors[m], in.freestream);
+    for (const auto& [key, value] : record.items()) {
+      if (!std::isfinite(value.get<double>())) {
+        throw std::runtime_error("monitor '" + in.monitors[m].name + "': " + key +
+                                 " is not finite " + when);
+      }
+    }
+    return record;
+  }
+
   void record_final_monitors(std::int64_t done) {
     const auto& in = p_.input;
     Json monitors = Json::object();
     try {
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
-        Json record =
-            forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
-                          in.monitors[m], in.freestream);
-        for (const auto& [key, value] : record.items()) {
-          if (!std::isfinite(value.get<double>())) {
-            throw std::runtime_error("monitor '" + in.monitors[m].name + "': " + key +
-                                     " is not finite on the final state");
-          }
-        }
+        Json record = monitor_record(m, "on the final state");
         record["iteration"] = done;
         monitors[in.monitors[m].name] = std::move(record);
       }
