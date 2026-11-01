@@ -76,7 +76,8 @@ struct PeriodicPair {
 /// `face_cell0` and into `face_cell1` (`no_cell` on the boundary). Every array
 /// is indexed by the entity it describes; `cell_zone` defines the number of
 /// cells. The last `n_ghost_cells` cells are halo copies of cells owned by
-/// another partition; `cell_global_id` is empty (identity) or gives the
+/// a partition, translated by `ghost_translation` (empty: none) when they are
+/// periodic images; `cell_global_id` is empty (identity) or gives the
 /// global index of every cell.
 struct MeshInput {
   std::vector<double> x, y, z;
@@ -88,6 +89,7 @@ struct MeshInput {
   std::vector<index_t> cell_zone;
   std::vector<std::int64_t> cell_global_id;
   index_t n_ghost_cells = 0;
+  std::vector<std::array<double, 3>> ghost_translation;
   std::vector<FaceZone> face_zones;
   std::vector<CellZone> cell_zones;
   std::vector<PeriodicPair> periodic;
@@ -111,6 +113,8 @@ struct MeshView {
   index_t n_owned_cells;
   index_t n_faces;
   index_t n_interior_faces;
+  index_t n_owned_interior_faces;
+  index_t n_owned_faces;
   index_t n_face_zones;
   index_t n_cell_zones;
   const double* x;
@@ -124,6 +128,7 @@ struct MeshView {
   const index_t* cell_zone;
   const std::int64_t* cell_global_id;
   const index_t* boundary_zone_offsets;
+  const index_t* halo_boundary_zone_offsets;
   const offset_t* cell_face_offsets;
   const index_t* cell_faces;
 };
@@ -156,8 +161,25 @@ class Mesh {
   [[nodiscard]] std::span<const std::int64_t> cell_global_id() const noexcept {
     return cell_global_id_;
   }
+  /// Interior faces [0, n_owned_interior_faces) touch an owned cell; the
+  /// others join two ghost cells.
+  [[nodiscard]] index_t n_owned_interior_faces() const noexcept { return n_owned_interior_faces_; }
+  /// Boundary faces [n_interior_faces, n_owned_faces) belong to owned cells;
+  /// [n_owned_faces, n_faces) to ghost cells.
+  [[nodiscard]] index_t n_owned_faces() const noexcept { return n_owned_faces_; }
+  /// Owned boundary faces of face zone z: [off[z], off[z+1]), from
+  /// n_interior_faces to n_owned_faces.
   [[nodiscard]] std::span<const index_t> boundary_zone_offsets() const noexcept {
     return boundary_zone_offsets_;
+  }
+  /// Ghost boundary faces of face zone z, from n_owned_faces to n_faces.
+  [[nodiscard]] std::span<const index_t> halo_boundary_zone_offsets() const noexcept {
+    return halo_boundary_zone_offsets_;
+  }
+  /// Translation of each ghost cell (index c - n_owned_cells): zero, or the
+  /// shift of a periodic image.
+  [[nodiscard]] std::span<const std::array<double, 3>> ghost_translation() const noexcept {
+    return ghost_translation_;
   }
   [[nodiscard]] std::span<const offset_t> cell_face_offsets() const noexcept {
     return cell_face_offsets_;
@@ -191,6 +213,10 @@ class Mesh {
   std::vector<std::int64_t> cell_global_id_;
   index_t n_owned_cells_ = 0;
   std::vector<index_t> boundary_zone_offsets_;
+  std::vector<index_t> halo_boundary_zone_offsets_;
+  std::vector<std::array<double, 3>> ghost_translation_;
+  index_t n_owned_interior_faces_ = 0;
+  index_t n_owned_faces_ = 0;
   std::vector<offset_t> cell_face_offsets_;
   std::vector<index_t> cell_faces_;
   std::vector<FaceZone> face_zones_;

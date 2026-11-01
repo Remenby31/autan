@@ -26,7 +26,9 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 | `face_zone` | n_faces | Index into `face_zones`. |
 | `cell_zone` | n_cells | Index into `cell_zones`. |
 | `cell_global_id` | n_cells | `int64` identity of the cell: its index in the mesh as first assembled (the identity then), kept through partitioning and renumbering. |
-| `boundary_zone_offsets` | n_face_zones + 1 | Boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_faces`. Interior zones have an empty range. |
+| `boundary_zone_offsets` | n_face_zones + 1 | Owned boundary faces of face zone `z` are `[off[z], off[z+1])`; `off[0] = n_interior_faces`, `off[n_face_zones] = n_owned_faces`. Interior zones have an empty range. |
+| `halo_boundary_zone_offsets` | n_face_zones + 1 | The same for the boundary faces of ghost cells, from `n_owned_faces` to `n_faces`. |
+| `ghost_translation` | n_cells − n_owned_cells | Translation of each ghost cell: zero, or the shift of a periodic image ([Periodic pairs](#periodic-pairs)). |
 | `cell_face_offsets`, `cell_faces` | n_cells + 1, 2·n_interior + n_boundary | CSR of the faces of each cell, in increasing face index. A face is outward for cell `c` iff `owner[f] == c`. |
 
 ## Invariants
@@ -35,11 +37,11 @@ All arrays are structure-of-arrays, indexed by the entity they describe, and exp
 
 1. Faces `[0, n_interior_faces)` are interior, faces `[n_interior_faces, n_faces)` are boundary.
 2. Interior faces have `owner < neighbour` and are sorted by `(owner, neighbour)`. Two cells may share several faces.
-3. Boundary faces are grouped by ascending zone index and sorted by owner within a zone.
+3. Boundary faces of owned cells come first, then those of ghost cells; each half is grouped by ascending zone index and sorted by owner within a zone.
 4. Each face has ≥ 3 distinct nodes; each owned cell has ≥ 4 faces; each ghost cell has ≥ 1 face.
-5. Every owned cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction. Ghost cells carry only the faces they share with owned cells.
-6. Every face touches an owned cell, so `owner[f] < n_owned_cells` for every face: a face loop over all faces visits each owned cell's faces, and its contributions to ghost cells (`neighbour[f] ≥ n_owned_cells`) are partial sums that a reverse halo exchange adds to the owning partition, as an adjoint (transposed) kernel needs.
-7. A face zone's `boundary` flag says whether it holds boundary or interior faces, and every face matches the role of its zone (a declared zone may be empty). Face-zone names are unique; cell-zone names are unique. Global ids are distinct and ≥ 0.
+5. Every owned cell surface is closed and consistently oriented: walking each face with its normal pointing out of the cell, every edge is traversed exactly twice, once in each direction. A ghost cell carries any subset of its faces.
+6. Faces that touch an owned cell come first: interior faces `[0, n_owned_interior_faces)` and boundary faces `[n_interior_faces, n_owned_faces)`; their owner is owned (orientation from the lower index puts the owned cell first). The others, halo faces, join ghost cells only, so that stencils of owned cells see the faces of their ghost neighbours. A face loop that writes residuals runs over the owned faces only: its contributions to ghost cells (`neighbour[f] ≥ n_owned_cells`) are partial sums that a reverse halo exchange adds to the owning partition, as an adjoint (transposed) kernel needs. An unpartitioned mesh has no halo faces.
+7. A face zone's `boundary` flag says whether it holds boundary or interior faces, and every face matches the role of its zone (a declared zone may be empty). Face-zone names are unique; cell-zone names are unique. Global ids are ≥ 0, and no two cells share both their global id and their translation (`ghost_translation`, zero for owned cells): a periodic image repeats the id of the cell it copies.
 8. Every point is referenced by a face (unreferenced points are removed).
 9. Cell order is the order of the input; `assemble` never renumbers cells. Sorting is stable, so the same input always yields the same arrays bit for bit. `assemble(input, &map)` returns, in a `autan::AssemblyMap`, the input face of each face, whether it was reversed, and the input point of each point.
 
@@ -135,7 +137,6 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0113 | `mesh_too_large` | A count exceeds the `index_t` range. |
 | E0114 | `mesh_shared_face_orientation` | Two cells list their common face with the same orientation (one is inverted). |
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
-| E0116 | `mesh_face_without_owned_cell` | A face touches only ghost cells. |
 | E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
 | E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite. |
 | E0119 | `mesh_periodic_unmatched` | The faces of a periodic pair do not match one to one under its translation. |
