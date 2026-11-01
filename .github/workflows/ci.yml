@@ -175,6 +175,13 @@ jobs:
           enable-cache: false
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check
+      # The Gmsh wheel links the system OpenGL utility library. Short network timeouts and a step
+      # timeout make a stalled Ubuntu mirror fail fast instead of eating the job's time.
+      - name: Install libGLU for Gmsh
+        timeout-minutes: 5
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install --yes --no-install-recommends libglu1-mesa
       - name: Install from the lock file, Gmsh included
         run: uv sync --locked --all-groups
       - name: Type-check
