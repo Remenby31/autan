@@ -190,7 +190,15 @@ def call_args(
                     f"(f < d.topo.n_interior_faces ? {at(b.dataset, 'nb', c, layout)} : {bnd})"
                 )
             else:
-                out.append(at(b.dataset, index_of[b.via], c, layout))
+                via = b.via
+                if (
+                    via == "direct"
+                    and isinstance(b.dataset, dsl.Dataset)
+                    and b.dataset.set is dsl.MeshSet.FACES
+                    and "face" in index_of
+                ):
+                    via = "face"
+                out.append(at(b.dataset, index_of[via], c, layout))
     return out
 
 

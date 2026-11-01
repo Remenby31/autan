@@ -74,10 +74,15 @@ ALLOWED_VIA = {
         dsl.MeshSet.CELLS: {"left"},
         dsl.MeshSet.FACES: {"direct"},
     },
+    "boundary_write": {
+        dsl.MeshSet.CELLS: {"left"},
+        dsl.MeshSet.FACES: {"direct"},
+    },
     "cell": {dsl.MeshSet.CELLS: {"direct"}},
     "reduce": {
         dsl.MeshSet.CELLS: {"self", "other"},
         dsl.MeshSet.INCIDENCES: {"direct"},
+        dsl.MeshSet.FACES: {"direct"},  # the face of the incidence
     },
 }
 
@@ -140,9 +145,10 @@ def _check_outputs(where: str, lm: LoopModel) -> None:
         )
     for t, o in zip(rets, loop.outputs, strict=True):
         ds = o.dataset
-        if ds.set is not dsl.MeshSet.CELLS or ds.geometry:
+        wanted = dsl.MeshSet.FACES if loop.kind == "boundary_write" else dsl.MeshSet.CELLS
+        if ds.set is not wanted or ds.geometry:
             raise CodegenError(
-                Code.INVALID_BINDING, f"output {ds.name} must be a cell dataset", where
+                Code.INVALID_BINDING, f"output {ds.name} must be a {wanted.value} dataset", where
             )
         if ds.type.shape != t.shape:
             raise CodegenError(

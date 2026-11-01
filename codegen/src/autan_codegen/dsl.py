@@ -276,12 +276,17 @@ def face_loop(body: Body, *, out: object, **args: object) -> Loop:
 
 
 def boundary_loop(body: Body, *, out: object, **args: object) -> Loop:
-    """Loop over boundary faces; `out` increments the owner cell."""
+    """Loop over boundary faces; `out` increments the owner cell (`Inc`) or writes face datasets
+    (`Write`, for example boundary states). Face datasets are passive: a writing boundary loop
+    has no tangent or adjoint."""
     outs = _outs(out)
+    if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
+        return Loop("boundary_write", body, _bindings(args), outs)
     for o in outs:
         if not isinstance(o, Inc) or o.right is not None:
             raise CodegenError(
-                Code.INVALID_LOOP_OUTPUT, "boundary loop outputs are Inc of the owner only"
+                Code.INVALID_LOOP_OUTPUT,
+                "boundary loop outputs are Inc of the owner only, or Write of face datasets only",
             )
     return Loop("boundary", body, _bindings(args), outs)
 
