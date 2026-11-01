@@ -608,7 +608,7 @@ Fix: Regenerate the input with `autan prepare` from the same Autan version as th
 
 **Physics not in this solver build** (error)
 
-The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind; `data` names the combination.
+The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind, or for the case's media and zones (a solid zone, several gases); `data` names the combination or the zone.
 
 Fix: Use a build that includes it, or change the case or the devices.
 
