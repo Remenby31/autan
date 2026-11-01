@@ -33,9 +33,9 @@ repo=https://github.com/Remenby31/autan.git
 ssh "$host" "set -e
   [ -d $remote_dir/.git ] || git clone -q $repo $remote_dir
   cd $remote_dir && git fetch -q origin
-  if git cat-file -e $head^{commit} 2>/dev/null; then git checkout -q --detach $head
+  if git cat-file -e $head^{commit} 2>/dev/null; then git checkout -q -f --detach $head
   else echo 'spark.sh: HEAD $head is not pushed; using origin/main (the build records a dirty tree)' >&2
-       git checkout -q --detach origin/main; fi"
+       git checkout -q -f --detach origin/main; fi"
 
 # Ignored files (build trees, venvs) are neither sent nor deleted on the Spark.
 git -C "$top" ls-files --cached --others --exclude-standard -z |
