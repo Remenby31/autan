@@ -114,21 +114,25 @@ struct Context::Impl {
 };
 
 Context::Context() : impl_(std::make_unique<Impl>()) {
-  impl_->device = MTLCreateSystemDefaultDevice();
-  if (impl_->device == nil) {
-    fail("no Metal device");
-  }
-  impl_->queue = [impl_->device newCommandQueue];
-  if (impl_->queue == nil) {
-    fail("cannot create a command queue");
+  @autoreleasepool {
+    impl_->device = MTLCreateSystemDefaultDevice();
+    if (impl_->device == nil) {
+      fail("no Metal device");
+    }
+    impl_->queue = [impl_->device newCommandQueue];
+    if (impl_->queue == nil) {
+      fail("cannot create a command queue");
+    }
   }
 }
 
 Context::~Context() {
-  if (impl_->commands != nil) {
-    [impl_->encoder endEncoding];
-    [impl_->commands commit];
-    [impl_->commands waitUntilCompleted];
+  @autoreleasepool {
+    if (impl_->commands != nil) {
+      [impl_->encoder endEncoding];
+      [impl_->commands commit];
+      [impl_->commands waitUntilCompleted];
+    }
   }
 }
 
@@ -161,74 +165,81 @@ Context::DeviceInfo Context::info() const {
 }
 
 Buffer Context::allocate(std::size_t bytes) {
-  const std::size_t n = bytes == 0 ? 1 : bytes;
-  id<MTLBuffer> buf = [impl_->device newBufferWithLength:n options:MTLResourceStorageModeShared];
-  if (buf == nil) {
-    fail("cannot allocate " + std::to_string(n) + " bytes");
+  // Metal returns autoreleased objects; a C++ host has no pool to drain them otherwise.
+  @autoreleasepool {
+    const std::size_t n = bytes == 0 ? 1 : bytes;
+    id<MTLBuffer> buf = [impl_->device newBufferWithLength:n options:MTLResourceStorageModeShared];
+    if (buf == nil) {
+      fail("cannot allocate " + std::to_string(n) + " bytes");
+    }
+    std::memset(buf.contents, 0, n);
+    Buffer b;
+    b.host_ = buf.contents;
+    b.gpu_ = buf.gpuAddress;
+    b.bytes_ = bytes;
+    b.handle_ = std::shared_ptr<void>((__bridge_retained void*)buf, [](void* p) { CFRelease(p); });
+    impl_->buffers.push_back(b.handle_);
+    if (impl_->encoder != nil) {
+      [impl_->encoder useResource:buf usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+    }
+    return b;
   }
-  std::memset(buf.contents, 0, n);
-  Buffer b;
-  b.host_ = buf.contents;
-  b.gpu_ = buf.gpuAddress;
-  b.bytes_ = bytes;
-  b.handle_ = std::shared_ptr<void>((__bridge_retained void*)buf, [](void* p) { CFRelease(p); });
-  impl_->buffers.push_back(b.handle_);
-  if (impl_->encoder != nil) {
-    [impl_->encoder useResource:buf usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-  }
-  return b;
 }
 
 void Context::dispatch_raw(const Library& lib, std::string_view kernel, const char* tag,
                            const void* d, std::size_t d_bytes, const void* args,
                            std::size_t args_bytes, index_t threads, int block) {
-  if (threads <= 0) {
-    return;
+  @autoreleasepool {
+    if (threads <= 0) {
+      return;
+    }
+    if (block <= 0 || block % 32 != 0) {
+      throw std::invalid_argument("E1107: the block size must be a positive multiple of 32");
+    }
+    std::string function(kernel);
+    function += "_";
+    function += tag;
+    id<MTLComputePipelineState> state = impl_->pipeline(lib, function);
+    if (static_cast<NSUInteger>(block) > state.maxTotalThreadsPerThreadgroup) {
+      fail(function + ": block " + std::to_string(block) + " exceeds the pipeline's maximum " +
+           std::to_string(state.maxTotalThreadsPerThreadgroup));
+    }
+    impl_->open();
+    id<MTLComputeCommandEncoder> enc = impl_->encoder;
+    if (!impl_->first_dispatch) {
+      // Each dispatch reads what the previous ones wrote (store, then gather; loop after loop).
+      [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    impl_->first_dispatch = false;
+    [enc setComputePipelineState:state];
+    [enc setBytes:d length:d_bytes atIndex:0];
+    if (args != nullptr) {
+      [enc setBytes:args length:args_bytes atIndex:1];
+    }
+    const auto width = static_cast<NSUInteger>(block);
+    const auto groups = (static_cast<NSUInteger>(threads) + width - 1) / width;
+    // Whole threadgroups, as CUDA grids: SIMD-group shuffles see every lane; kernels bound-check.
+    [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
   }
-  if (block <= 0 || block % 32 != 0) {
-    throw std::invalid_argument("E1107: the block size must be a positive multiple of 32");
-  }
-  std::string function(kernel);
-  function += "_";
-  function += tag;
-  id<MTLComputePipelineState> state = impl_->pipeline(lib, function);
-  if (static_cast<NSUInteger>(block) > state.maxTotalThreadsPerThreadgroup) {
-    fail(function + ": block " + std::to_string(block) + " exceeds the pipeline's maximum " +
-         std::to_string(state.maxTotalThreadsPerThreadgroup));
-  }
-  impl_->open();
-  id<MTLComputeCommandEncoder> enc = impl_->encoder;
-  if (!impl_->first_dispatch) {
-    // Each dispatch reads what the previous ones wrote (store, then gather; loop after loop).
-    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-  }
-  impl_->first_dispatch = false;
-  [enc setComputePipelineState:state];
-  [enc setBytes:d length:d_bytes atIndex:0];
-  if (args != nullptr) {
-    [enc setBytes:args length:args_bytes atIndex:1];
-  }
-  const auto width = static_cast<NSUInteger>(block);
-  const auto groups = (static_cast<NSUInteger>(threads) + width - 1) / width;
-  // Whole threadgroups, as CUDA grids: SIMD-group shuffles see every lane; kernels bound-check.
-  [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
-      threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
 }
 
 double Context::synchronise() {
-  if (impl_->commands == nil) {
-    return 0.0;
+  @autoreleasepool {
+    if (impl_->commands == nil) {
+      return 0.0;
+    }
+    id<MTLCommandBuffer> cb = impl_->commands;
+    [impl_->encoder endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    impl_->commands = nil;
+    impl_->encoder = nil;
+    if (cb.status != MTLCommandBufferStatusCompleted) {
+      fail("command buffer failed", cb.error);
+    }
+    return cb.GPUEndTime - cb.GPUStartTime;
   }
-  id<MTLCommandBuffer> cb = impl_->commands;
-  [impl_->encoder endEncoding];
-  [cb commit];
-  [cb waitUntilCompleted];
-  impl_->commands = nil;
-  impl_->encoder = nil;
-  if (cb.status != MTLCommandBufferStatusCompleted) {
-    fail("command buffer failed", cb.error);
-  }
-  return cb.GPUEndTime - cb.GPUStartTime;
 }
 
 double Context::compile_seconds() const { return impl_->compile_seconds; }
