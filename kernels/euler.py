@@ -20,6 +20,8 @@ from autan_codegen.dsl import (
     Geom,
     Grad,
     Inc,
+    Jac,
+    Jacobian,
     Max,
     Min,
     Param,
@@ -415,6 +417,12 @@ def primitive(q: State.Vec5, ur: Param.Vec5, g: Param) -> State.Vec5:
 
 primitives = cell_loop(primitive, q=u, ur=u_ref, g=gamma, out=Write(prim))
 
+# For the implicit solvers: dW/dU of every cell, written with the primitives.
+dwdu = cells.field("dwdu", Jac.shape(5, 5))
+primitives_jacobian = cell_loop(
+    primitive, q=u, ur=u_ref, g=gamma, out=[Write(prim), Jacobian(dwdu, wrt="q")]
+)
+
 
 @pointwise
 def boundary_primitive(
@@ -686,6 +694,14 @@ roe_faces = face_loop(roe_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 hllc_faces = face_loop(hllc_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 ausm_faces = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=Inc(res, left=+1, right=-1))
 
+# The same fluxes with their face Jacobians dF/dW_L and dF/dW_R, the reconstruction's gradients
+# and limiter held fixed: the approximate Jacobian of the implicit solvers, fused with the residual.
+face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
+FACE_JAC = [Inc(res, left=+1, right=-1), Jacobian(face_jac, wrt=("wl", "wr"))]
+roe_faces_jacobian = face_loop(roe_face, **FACE_ARGS, out=FACE_JAC)
+hllc_faces_jacobian = face_loop(hllc_face, **FACE_ARGS, out=FACE_JAC)
+ausm_faces_jacobian = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=FACE_JAC)
+
 
 @pointwise
 def wall_flux(wf: State.Vec5, n: Geom.Vec3) -> State.Vec5:
@@ -788,6 +804,14 @@ roe_boundaries = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=Inc(res, left=
 hllc_boundaries = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=Inc(res, left=+1))
 ausm_boundaries = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
+)
+
+bnd_jac = faces.field("bnd_jac", Jac.shape(5, 5))
+BOUNDARY_JAC = [Inc(res, left=+1), Jacobian(bnd_jac, wrt="wl")]
+roe_boundaries_jacobian = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
+hllc_boundaries_jacobian = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
+ausm_boundaries_jacobian = boundary_loop(
+    ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=BOUNDARY_JAC
 )
 
 

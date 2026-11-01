@@ -8,6 +8,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/physics/block_matrix.hpp"
 
 namespace autan::physics {
 
@@ -40,7 +41,7 @@ struct Scheme {
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.
   bool limiter = true;
-  double venkat_k = 5.0;
+  double venkat_k = 10.0;
   double length = 1.0;                                   ///< m
   std::array<double, 5> scale{1.0, 1.0, 1.0, 1.0, 1.0};  ///< W units: rho, u, v, w, p
   /// Cut-off Mach number of AUSM+-up's low-Mach scaling (the freestream Mach number).
@@ -70,6 +71,8 @@ class Euler {
 
   /// Sets each boundary face's condition and its data (5 x n_boundary_faces).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
+  /// Switches the linear reconstruction on or off (Scheme::second_order).
+  void set_second_order(bool on);
   /// The least-squares weights of the gradient over its stencil (layout of
   /// kernels::CellStencil::lsq_weight). They depend on set_boundary: boundary faces take part
   /// where their condition gives the state there, and in the cells whose interior stencil alone
@@ -82,6 +85,11 @@ class Euler {
   void state(std::span<const double> u, std::span<State> s) const;
   /// R(s) into res, s a stored state; both 5 x n_cells.
   void residual(std::span<const State> s, std::span<Res> res);
+  /// R(s) into res, and the approximate Jacobian's blocks: dF/dW of every face with the
+  /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
+  void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
+  void assemble(std::span<const double> shift, BlockMatrix& a) const;
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
   void first_order_tangent(std::span<const State> u, std::span<const State> du,
                            std::span<Res> dres);

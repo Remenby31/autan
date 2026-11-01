@@ -86,14 +86,16 @@ std::vector<Json> history(const fs::path& run) {
 }
 
 // The `start` the SDK writes to continue `previous` (solver-input.md).
-Json continue_from(const fs::path& previous) {
+Json continue_from(const fs::path& previous, const std::string& mode = "continue") {
   const Json info = Json::parse(read(previous / "run.json"));
   std::string hash;
   picosha2::hash256_hex_string(read(previous / "solution.cgns"), hash);
   Json reference = nullptr;
-  if (info["time"].is_null()) reference = history(previous)[0]["residuals"];
+  if (info["time"].is_null() && mode == "continue") {
+    reference = history(previous)[0]["residuals"];
+  }
   return Json{{"run", previous.string()},         {"run_id", info["run_id"]},
-              {"identity", info["identity"]},     {"mode", "continue"},
+              {"identity", info["identity"]},     {"mode", mode},
               {"iterations", info["iterations"]}, {"time", info["time"]},
               {"solution_sha256", hash},          {"residual_reference", reference}};
 }
@@ -255,6 +257,37 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
     CHECK(field(second.run, "AverageWeight", "RestartState") ==
           field(whole.run, "AverageWeight", "RestartState"));
   }
+}
+
+TEST_CASE("a steady run reports the residual of its second-order scheme from the start",
+          "[euler]") {
+  // The steady solver starts at first order, but convergence is judged on the history, which
+  // must hold the second-order residual: at iteration 1 it equals the unsteady run's, which is
+  // second order from its first step. Two zones at different states make the flow nonuniform.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  auto doc = [&](bool steady) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, precision);
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      if (steady) {
+        d["time"]["max_iterations"] = 1;
+      } else {
+        d["time"] = {{"kind", "unsteady"},
+                     {"steps", 1},
+                     {"dt", nullptr},
+                     {"cfl", 0.8},
+                     {"average_from", nullptr}};
+      }
+    });
+  };
+  const auto steady = run(doc(true));
+  const auto unsteady = run(doc(false));
+  REQUIRE(steady.status == ExitStatus::finished);
+  REQUIRE(unsteady.status == ExitStatus::finished);
+  CHECK(history(steady.run).front()["residuals"] == history(unsteady.run).front()["residuals"]);
 }
 
 TEST_CASE("a mesh with periodic pairs is refused before any directory exists", "[euler]") {
