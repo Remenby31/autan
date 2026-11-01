@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { createContext, type ReactNode, useContext, useId } from "react";
 import { cn } from "./cn";
 
@@ -132,6 +133,10 @@ export function SelectInput<T extends string>({
           </option>
         ))}
       </select>
+      <ChevronDown
+        aria-hidden
+        className="pointer-events-none -ml-7 size-4 flex-none self-center text-fg-3"
+      />
     </span>
   );
 }

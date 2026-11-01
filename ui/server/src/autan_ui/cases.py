@@ -62,8 +62,8 @@ class Meshes:
 
 
 def render(document: dict[str, Any], mesh_info: autan.MeshInfo | None) -> dict[str, Any]:
-    """A case document as the SDK reads it: its case.toml and, against `mesh_info`, its plan;
-    or the SDK's diagnostics when it refuses the document."""
+    """A case document as the SDK reads it: its canonical SDK code, its case.toml and, against
+    `mesh_info`, its plan; or the SDK's diagnostics when it refuses the document."""
     where = Location(file="case.json")
     try:
         case = autan.Case.from_spec(CaseSpec.from_document(document, where), file="case.json")
@@ -73,7 +73,13 @@ def render(document: dict[str, Any], mesh_info: autan.MeshInfo | None) -> dict[s
             "ok": False,
             "diagnostics": [d.model_dump(mode="json") for d in error.diagnostics],
         }
-    return {"ok": True, "toml": case.to_toml(), "plan": plan, "diagnostics": []}
+    return {
+        "ok": True,
+        "python": case.to_python(),
+        "toml": case.to_toml(),
+        "plan": plan,
+        "diagnostics": [],
+    }
 
 
 def _plan(document: dict[str, Any], mesh_info: autan.MeshInfo) -> dict[str, Any]:

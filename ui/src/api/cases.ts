@@ -22,7 +22,7 @@ export const meshesQuery = queryOptions({
 
 /** The SDK's reading of a case document (`POST /api/cases/render`). */
 export type Rendered =
-  | { ok: true; toml: string; plan: Plan | null; diagnostics: [] }
+  | { ok: true; python: string; toml: string; plan: Plan | null; diagnostics: [] }
   | { ok: false; diagnostics: Diagnostic[] };
 
 export const renderQuery = (document: CaseDocument, mesh: string | null) =>

@@ -18,6 +18,7 @@ import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { Field, NumberInput, QuantityInput, SelectInput, TextInput } from "../components/ui/Field";
 import { Note } from "../components/ui/Note";
+import { TabList, TabPanel, TabsRoot } from "../components/ui/Tabs";
 
 export const Route = createFileRoute("/cases/new")({ component: CaseEditor });
 
@@ -308,10 +309,6 @@ function CaseEditor() {
         </form>
 
         <aside className="flex min-h-0 flex-col gap-4 overflow-auto border-line border-l bg-bg-1 px-6 py-6">
-          <div className="flex items-center gap-2">
-            <h2 className="m-0 font-medium text-base">case.toml</h2>
-            <span className="text-fg-3 text-sm">as the SDK reads it</span>
-          </div>
           {rendered.data?.ok === false ? (
             <div className="flex flex-col gap-2" data-testid="diagnostics">
               {rendered.data.diagnostics.map((d) => (
@@ -325,17 +322,39 @@ function CaseEditor() {
               ))}
             </div>
           ) : (
-            <pre
-              className="m-0 overflow-auto rounded-lg border border-line bg-bg-0 p-4 font-mono text-sm leading-6"
-              data-testid="case-toml"
-            >
-              {rendered.data?.ok ? rendered.data.toml : ""}
-            </pre>
+            <TabsRoot defaultValue="python" className="flex min-h-0 flex-col gap-3">
+              <div className="flex items-center gap-3">
+                <TabList
+                  tabs={[
+                    { value: "python", label: <span className="font-mono">case.py</span> },
+                    { value: "toml", label: <span className="font-mono">case.toml</span> },
+                  ]}
+                />
+                <span className="text-fg-3 text-sm">written by the SDK</span>
+              </div>
+              <TabPanel value="python" className="outline-none">
+                <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
+              </TabPanel>
+              <TabPanel value="toml" className="outline-none">
+                <Code testId="case-toml" text={rendered.data?.ok ? rendered.data.toml : ""} />
+              </TabPanel>
+            </TabsRoot>
           )}
           {rendered.data?.ok && rendered.data.plan && <PlanSummary plan={rendered.data.plan} />}
         </aside>
       </div>
     </>
+  );
+}
+
+function Code({ text, testId }: { text: string; testId: string }) {
+  return (
+    <pre
+      className="m-0 overflow-auto rounded-lg border border-line bg-bg-0 p-4 font-mono text-sm leading-6"
+      data-testid={testId}
+    >
+      {text}
+    </pre>
   );
 }
 

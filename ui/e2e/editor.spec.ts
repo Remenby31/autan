@@ -1,20 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { expect, type Page, test } from "@playwright/test";
 
-// The SDK's own reading of py/examples/crm_hl.py: what the editor must produce.
-const CRM_HL_TOML = execFileSync(
-  "uv",
-  [
-    "run",
-    "--locked",
-    "--project",
-    "server",
-    "python",
-    "-c",
-    "import autan; print(autan.load('../py/examples/crm_hl.py').to_toml(), end='')",
-  ],
-  { encoding: "utf8" },
-);
+// py/examples/crm_hl.py without its module docstring and the blank line after it, as the
+// SDK's own gate compares it with Case.to_python (py/tests/test_render.py).
+function withoutDocstring(source: string): string {
+  const lines = source.split(/(?<=\n)/);
+  const end = lines.findIndex(
+    (line, k) => (k === 0 ? line.trim().length > 6 : true) && line.trimEnd().endsWith('"""'),
+  );
+  return lines.slice(end + 2).join("");
+}
+const CRM_HL = withoutDocstring(readFileSync("../py/examples/crm_hl.py", "utf8"));
 
 async function rule(page: Page, k: number, zones: string, kind: string) {
   await page.getByRole("button", { name: "Add rule" }).click();
@@ -23,7 +19,7 @@ async function rule(page: Page, k: number, zones: string, kind: string) {
   await fieldset.getByLabel("Condition").selectOption(kind);
 }
 
-test("the CRM-HL case built in the editor is the SDK's crm_hl.py", async ({ page }) => {
+test("the CRM-HL case built in the editor writes py/examples/crm_hl.py", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("a[data-row]").first()).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
@@ -34,7 +30,6 @@ test("the CRM-HL case built in the editor is the SDK's crm_hl.py", async ({ page
   await page.getByLabel("Name").fill("crm-hl");
   await page.getByLabel("Mesh").selectOption("crm-hl");
   await page.getByLabel("Turbulence").selectOption("sa");
-  await page.getByLabel("Precision").selectOption("fp32+acc64");
   await page.getByLabel("Mach").fill("0.2");
   await page.getByLabel("Angle of attack", { exact: true }).fill("19.57");
   await page.getByLabel("Reynolds number", { exact: true }).fill("5490000.0");
@@ -47,7 +42,8 @@ test("the CRM-HL case built in the editor is the SDK's crm_hl.py", async ({ page
   await forces.getByLabel("Reference area", { exact: true }).fill("191.84");
   await forces.getByLabel("Every").fill("10");
 
-  await expect(page.getByTestId("case-toml")).toHaveText(CRM_HL_TOML);
+  // Byte for byte: toHaveText would collapse whitespace.
+  await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(CRM_HL);
   await expect(page.getByTestId("plan")).toContainText("zones covered");
 });
 

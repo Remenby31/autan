@@ -445,8 +445,8 @@ def create_app(
     def render_case(
         case: Annotated[dict[str, Any], Body()], mesh: Annotated[str | None, Body()] = None
     ) -> dict[str, Any]:
-        """A case document as the SDK reads it (its case.toml, and its plan against `mesh`), or
-        the SDK's coded diagnostics. 404 for a mesh not listed by /api/meshes."""
+        """A case document as the SDK reads it (its SDK code, its case.toml and its plan against
+        `mesh`), or the SDK's coded diagnostics. 404 for a mesh not listed by /api/meshes."""
         try:
             mesh_info = meshes.read(mesh) if mesh is not None else None
         except LookupError as error:
