@@ -8,3 +8,8 @@ test("a signed field puts zero on the neutral colour of the diverging map", () =
   expect(Array.from(lut.slice(zero * 4, zero * 4 + 3))).toEqual([221, 221, 221]);
   expect(displayRange(0.2, 1.4)).toEqual({ min: 0.2, max: 1.4 });
 });
+
+test("a uniform field sits in the middle of the map", () => {
+  expect(displayRange(0, 0)).toEqual({ min: -1, max: 1 });
+  expect(displayRange(101325, 101325)).toEqual({ min: 101324, max: 101326 });
+});

@@ -31,6 +31,7 @@ from autan_ui.registry import (
     read_run,
 )
 from autan_ui.surface import synthetic_wing
+from autan_ui.wall import wall_surface
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +186,8 @@ def create_app(
     runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
 ) -> FastAPI:
     registry = Registry(runs_root)
+    # The last surface built: reopening a run in the viewer needs no new extraction.
+    surfaces: dict[tuple[str, int, int], bytes] = {}
     build = _open_build(static)
 
     @asynccontextmanager
@@ -375,6 +378,25 @@ def create_app(
             stop.set()
             watcher.cancel()
             follower.close()
+
+    @app.get("/api/runs/{run_id}/surface")
+    def run_surface(run_id: Annotated[str, Depends(existing_run)]) -> Response:
+        """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
+        directory = find_run(run_id)
+        with Folder(directory) as folder:
+            stat = folder.stat("solution.cgns")
+            if stat is None:
+                raise HTTPException(404, f"run {run_id} has no solution.cgns")
+            key = (run_id, stat.st_mtime_ns, stat.st_size)
+            message = surfaces.get(key)
+            if message is None:
+                try:
+                    message = wall_surface(folder)
+                except (OSError, ValueError, KeyError) as error:
+                    raise HTTPException(422, f"solution.cgns: {error}") from error
+                surfaces.clear()
+                surfaces[key] = message
+        return Response(message, media_type="application/octet-stream")
 
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(

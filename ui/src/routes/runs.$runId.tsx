@@ -64,6 +64,10 @@ function RunView() {
   }, [stale, client, runId]);
   const plan = useQuery(planQuery(runId));
   const toast = useToast();
+  // While running, solution.cgns is not a result yet (results.md); after, it is the one to show.
+  const hasSolution =
+    run?.status !== "running" &&
+    Boolean(details.data?.outputs.some((o) => o.name === "solution.cgns"));
   const now = useSyncExternalStore(second.subscribe, second.now);
   const time = details.data?.case.time;
   const targetOrders = time?.kind === "steady" ? time.residual_orders : undefined;
@@ -96,13 +100,23 @@ function RunView() {
             >
               Copy Run Id
             </Button>
-            <Tooltip content="3D fields arrive with solution.cgns surfaces">
-              <span>
-                <Button size="sm" icon={<Box className="size-4" />} disabled>
-                  Open in Analysis
-                </Button>
-              </span>
-            </Tooltip>
+            {hasSolution ? (
+              <Button
+                size="sm"
+                icon={<Box className="size-4" />}
+                onClick={() => void navigate({ to: "/viewer", search: { run: runId } })}
+              >
+                Open in Analysis
+              </Button>
+            ) : (
+              <Tooltip content="The run has no solution.cgns yet">
+                <span>
+                  <Button size="sm" icon={<Box className="size-4" />} disabled>
+                    Open in Analysis
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           </>
         }
       />
