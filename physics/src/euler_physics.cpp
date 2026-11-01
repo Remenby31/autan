@@ -52,8 +52,8 @@ constexpr double cfl_max = 1e6;
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
 constexpr int linear_max_cycles = 10;
-// linear_solver = "gauss-seidel" or "lines": symmetric sweeps over the global colours per implicit
-// step.
+// linear_solver = "gauss-seidel": symmetric sweeps over the global colours per implicit step;
+// "lines": as many line sweeps per iteration of the GCR outer iteration.
 constexpr int gauss_seidel_sweeps = 4;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
@@ -120,10 +120,11 @@ class EulerPhysics final : public runtime::Physics {
         lines_.emplace(mesh, ctx.group_offsets, ctx.group_cells,
                        grouped ? ctx.cell_group_colours : ctx.cell_colours,
                        grouped ? ctx.n_group_colours : ctx.n_colours);
-        ctx.log.write(
-            "info", "linear", "line-implicit block Gauss-Seidel", {},
-            nlohmann::json{{"colours", lines_->n_colours()}, {"sweeps", gauss_seidel_sweeps}}
-                .dump());
+        ctx.log.write("info", "linear", "line-implicit block Gauss-Seidel", {},
+                      nlohmann::json{{"colours", lines_->n_colours()},
+                                     {"sweeps", gauss_seidel_sweeps},
+                                     {"iterations", linear_max_cycles}}
+                          .dump());
       } else {
         // The runtime's colouring by global id: the same sweeps on any number of ranks.
         colours_.assign(static_cast<std::size_t>(ctx.n_colours), {});
@@ -668,10 +669,20 @@ class EulerPhysics final : public runtime::Physics {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
         linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
       } else if (lines_) {
+        // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
+        // products are exact sums over the owned cells of every rank.
         lines_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        lines_->sweep(rhs_, du_, gauss_seidel_sweeps,
-                      [this](std::span<double> x) { fill_ghosts(x); });
-        linear.residual_drop = 0.0;  // a fixed number of sweeps, as Gauss-Seidel
+        auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) { matrix_->multiply(v, y); },
+            [&](std::span<const double> r, std::span<double> z) {
+              lines_->sweep(r, z, gauss_seidel_sweeps, exchange);
+            },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance,
+            {.dot = [this](std::span<const double> u,
+                           std::span<const double> v) { return owned_dot(u, v); },
+             .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       } else {
         matrix_->factor(owned_);
         matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
@@ -758,6 +769,28 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   // Ghost cells take their owners' du (5 components).
+  // Sum of u v over the owned cells of every rank, exact: the same bits on any partition.
+  double owned_dot(std::span<const double> u, std::span<const double> v) {
+    std::array<runtime::ExactSum, 1> sum;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) sum[0].add(u[k * n_ + c] * v[k * n_ + c]);
+    }
+    ctx_.ranks.sum(sum);
+    return sum[0].value();
+  }
+
+  // Largest |u| over the owned cells of every rank; infinite when an entry is not a number.
+  double owned_max_abs(std::span<const double> u) {
+    double m = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double a = std::abs(u[k * n_ + c]);
+        m = std::isnan(a) ? std::numeric_limits<double>::infinity() : std::max(m, a);
+      }
+    }
+    return ctx_.ranks.max(m);
+  }
+
   void fill_ghosts(std::span<double> x) {
     std::array<double*, 5> c{};
     for (std::size_t k = 0; k < 5; ++k) c[k] = x.data() + k * n_;
@@ -895,9 +928,11 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  std::optional<BlockMatrix> matrix_;              // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;    // linear_solver = "multigrid"
-  std::optional<solvers::LineSmoother> lines_;     // linear_solver = "lines"
+  std::optional<BlockMatrix> matrix_;            // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
+  std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
+  solvers::Gcr gcr_;                             // and its outer iteration
+  std::vector<double> krylov_residual_;
   std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
