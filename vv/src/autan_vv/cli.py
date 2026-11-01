@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from autan import CaseError
@@ -116,6 +117,21 @@ def _cmd_su2(args: argparse.Namespace) -> None:
             stop_margin=args.stop_margin,
         ):
             _say(str(run.relative_to(args.out)))
+        return
+    if args.action == "history":
+        from autan_vv.su2 import history  # noqa: PLC0415
+
+        rows = {}
+        for run in args.runs:
+            conv = history.convergence(history.read_su2(run / "history.csv"), args.orders)
+            rows[str(run)] = asdict(conv)
+            state = "converged" if conv.converged else "NOT converged"
+            _say(
+                f"{run}: {state} in {conv.iterations} iterations, CL {conv.cl:.9f}, "
+                f"CD {conv.cd:.9f}, CM {conv.cmy:.9f}, drop {min(conv.drop.values()):.2f}"
+            )
+        if args.out is not None:
+            args.out.write_text(json.dumps(rows, indent=2, allow_nan=False) + "\n")
         return
     if not args.runs:
         msg = "su2 study takes the run directories of one condition"
@@ -287,14 +303,17 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_forces)
 
     p = sub.add_parser(
-        "su2", help="SU2 on the NACA 0012 family: prepare its cases, or study its runs"
+        "su2",
+        help="SU2 on the NACA 0012 family: prepare its cases, study its runs, or read any run's"
+        " history against the convergence criterion",
     )
-    p.add_argument("action", choices=("prepare", "study"))
+    p.add_argument("action", choices=("prepare", "study", "history"))
     p.add_argument("runs", type=Path, nargs="*", help="study: run directories of one condition")
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
     p.add_argument("--max-iterations", type=int, default=20000)
     p.add_argument("--stop-margin", type=float, default=2.0, help="prepare: orders SU2 runs on")
+    p.add_argument("--orders", type=float, default=10.0, help="history: residual drop criterion")
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
 

@@ -264,7 +264,7 @@ def test_criterion_is_the_drop_below_the_first_residual() -> None:
     assert history.converged_at(zero, 10.0) == 5 + math.ceil(12 / math.log10(2))
 
 
-def test_su2_history_columns_and_axes() -> None:
+def test_su2_history_columns_and_axes(tmp_path: Path) -> None:
     two = history.read_su2(DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv")
     three = history.read_su2(DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-3d.csv")
     with (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").open() as f:
@@ -283,6 +283,13 @@ def test_su2_history_columns_and_axes() -> None:
     assert three.cmy[-1] == pytest.approx(two.cmy[-1], rel=1e-8)
     assert two.wall_seconds is not None
     assert np.all(np.diff(two.wall_seconds) > 0.0)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "history.csv").write_text(
+        (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text()
+    )
+    assert main(["su2", "history", str(run), "--out", str(tmp_path / "h.json")]) == 0
+    assert json.loads((tmp_path / "h.json").read_text())[str(run)]["cl"] == two.cl[-1]
 
 
 # Vassberg and Jameson (2010), Table 3, FLO82 at M 0.8, alpha 1.25 deg, grids 1024, 2048, 4096,
