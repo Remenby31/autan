@@ -221,6 +221,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
        {{"cells", mesh.n_cells()},
         {"faces", mesh.n_faces()},
         {"nodes", mesh.n_points()},
+        {"face_nodes", mesh.face_nodes().size()},
         {"cells_by_type",
          {{"tetra", by_shape[0]},
           {"pyramid", by_shape[1]},
