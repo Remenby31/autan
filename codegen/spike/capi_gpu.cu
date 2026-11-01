@@ -298,19 +298,41 @@ int autan_spike_gpu_sum_of_squares(const double* x, std::int64_t n, double* out,
   });
 }
 
-/// gpu::min of n doubles and of the same values as floats; gpu::first_index of n flags.
+/// Binds a Data-like struct holding built-in face_area (read-only) and a physics' own writable
+/// cell_volume: out[0] = 1 if face_area was bound, out[1] = 1 if cell_volume was left alone.
+int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    struct Data {
+      autan::kernels::Topology topo;
+      const double* face_area = nullptr;
+      double* cell_volume = nullptr;
+    } d;
+    double own = 0.0;
+    d.cell_volume = &own;
+    DeviceMesh dm(*m, 128);
+    dm.bind(d);
+    out[0] = d.face_area != nullptr ? 1 : 0;
+    out[1] = d.cell_volume == &own ? 1 : 0;
+  });
+}
+
+/// gpu::min of n doubles and of the same values as floats; gpu::first_index of n flags, given
+/// as bytes and as doubles.
 int autan_spike_gpu_reductions(const double* x, const std::uint8_t* flags, std::int64_t n,
-                               double* min64, float* min32, std::int64_t* first, char* err,
-                               std::size_t err_len) {
+                               double* min64, float* min32, std::int64_t* first,
+                               std::int64_t* first64, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
     const auto count = static_cast<std::size_t>(n);
     std::vector<float> xf(x, x + count);
     DeviceArray<double> dx(x, count);
     DeviceArray<float> dxf(xf);
     DeviceArray<std::uint8_t> df(flags, count);
+    DeviceArray<double> df64(std::vector<double>(flags, flags + count));
     *min64 = gpu::min(static_cast<index_t>(n), dx.get());
     *min32 = gpu::min(static_cast<index_t>(n), dxf.get());
     *first = gpu::first_index(static_cast<index_t>(n), df.get());
+    *first64 = gpu::first_index(static_cast<index_t>(n), df64.get());
   });
 }
 
