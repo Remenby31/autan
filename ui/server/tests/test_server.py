@@ -515,3 +515,21 @@ def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, s
         assert z["triangles"] == int((counts - 2).sum())
     np.testing.assert_allclose(values("field:Cp"), 1.0, rtol=1e-5)
     np.testing.assert_allclose(values("field:Cf"), 1.0, rtol=1e-5)
+
+
+def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Path) -> None:
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    first = autan.Results.open(next(runs.iterdir()))
+    continued = case.run(
+        mesh_info, backend=autan.FakeBackend(iterations=60), runs=runs, start=first
+    )
+    run = json.loads((continued.path / "run.json").read_text())
+    reference = run["start"]["residual_reference"]
+    last = json.loads((continued.path / "history.jsonl").read_text().splitlines()[-1])["residuals"]
+
+    summary = Registry(runs).scan().summaries[continued.path.name]
+
+    expected = min(math.log10(reference[k] / last[k]) for k in reference)
+    assert summary["orders"] == pytest.approx(expected, abs=1e-3)
+    assert summary["trend"][0] > 0  # the first line of the continuation is already below

@@ -254,6 +254,8 @@ TEST_CASE("Ghost geometry arrives bit for bit from the owning rank", "[halo]") {
         same_bits(s.local.geometry.cell_volume[at(c)], s.global_geometry.cell_volume[global_cell]));
     CHECK(same_bits(s.local.geometry.cell_centroid_x[at(c)],
                     s.global_geometry.cell_centroid_x[global_cell] + t[0]));
+    CHECK(same_bits(s.local.geometry.cell_centroid_y[at(c)],
+                    s.global_geometry.cell_centroid_y[global_cell] + t[1]));
     CHECK(same_bits(s.local.geometry.cell_centroid_z[at(c)],
                     s.global_geometry.cell_centroid_z[global_cell] + t[2]));
   }

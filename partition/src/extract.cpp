@@ -34,10 +34,6 @@ void check_request(const Mesh& global, const Geometry& geometry,
   if (global.n_owned_cells() != global.n_cells()) {
     throw Error(ErrorCode::partition_input_has_ghosts, "the mesh to split already has ghost cells");
   }
-  if (global.periodic_pairs().size() > max_pairs) {
-    throw Error(ErrorCode::partition_invalid_request,
-                "more than " + std::to_string(max_pairs) + " periodic pairs");
-  }
   if (layers != 1 && layers != 2) {
     throw Error(ErrorCode::partition_invalid_request, "a halo of 1 or 2 layers");
   }
@@ -60,22 +56,50 @@ void check_request(const Mesh& global, const Geometry& geometry,
   }
 }
 
-// The periodic structure of the global mesh: for each face of a periodic
-// zone, its pair, its side and its partner face; for each node of a zone a,
-// per pair, the coinciding node of zone b.
+// The periodic covering of the global mesh. Pairs whose translations are
+// equal or opposite share one direction; directions must be linearly
+// independent, so a shift (one integer per direction) names one translation.
+// For each face of a periodic zone: its pair, side and partner face. Nodes
+// that coincide across pairs form classes (weighted union-find): node n at
+// shift k is its class root at shift k + offset[n].
 class Covering {
  public:
   explicit Covering(const Mesh& mesh) : mesh_(mesh) {
+    const auto pairs = mesh.periodic_pairs();
+    for (const auto& pair : pairs) {
+      const auto& t = pair.translation;
+      std::int8_t sign = 0;
+      std::size_t j = 0;
+      for (; j < directions_.size() && sign == 0; ++j) {
+        const auto& d = directions_[j];
+        if (d == t) sign = 1;
+        if (d == std::array<double, 3>{-t[0], -t[1], -t[2]}) sign = -1;
+      }
+      if (sign == 0) {
+        if (directions_.size() == max_pairs) {
+          throw Error(ErrorCode::partition_invalid_request, "more than three periodic directions");
+        }
+        directions_.push_back(t);
+        j = directions_.size();
+        sign = 1;
+      }
+      pair_direction_.push_back(j - 1);
+      pair_sign_.push_back(sign);
+    }
+    check_independent();
+
     const auto n_faces = at(mesh.n_faces());
     partner_.assign(n_faces, -1);
     pair_.assign(n_faces, -1);
     side_.assign(n_faces, 0);
+    parent_.resize(at(mesh.n_points()));
+    for (std::size_t n = 0; n < parent_.size(); ++n) parent_[n] = static_cast<index_t>(n);
+    offset_.assign(at(mesh.n_points()), Shift{});
     const auto off = mesh.boundary_zone_offsets();
     const auto x = mesh.x(), y = mesh.y(), z = mesh.z();
-    for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
-      const auto& pair = mesh.periodic_pairs()[p];
+    for (std::size_t p = 0; p < pairs.size(); ++p) {
+      const auto& pair = pairs[p];
       const auto partners = mesh.periodic_partners(p);
-      std::vector<index_t>& image = node_image_.emplace_back(at(mesh.n_points()), -1);
       for (std::size_t i = 0; i < partners.size(); ++i) {
         const auto fa = at(off[at(pair.zone_a)]) + i;
         const auto fb = at(partners[i]);
@@ -84,10 +108,12 @@ class Covering {
         pair_[fa] = pair_[fb] = static_cast<std::int8_t>(p);
         side_[fa] = 1;
         side_[fb] = -1;
-        // The core matched these faces node for node; recover the pairs.
+        // The core matched these faces node for node; recover the pairs:
+        // (na, k) is (nb, k - step(p)).
         for (const index_t na : mesh.face_nodes(static_cast<index_t>(fa))) {
           const auto a = at(na);
           double best = std::numeric_limits<double>::infinity();
+          index_t match = -1;
           for (const index_t nb : mesh.face_nodes(static_cast<index_t>(fb))) {
             const auto b = at(nb);
             const double d =
@@ -95,9 +121,12 @@ class Covering {
                            z[b] - z[a] - pair.translation[2]);
             if (d < best) {
               best = d;
-              image[a] = nb;
+              match = nb;
             }
           }
+          Shift delta{};
+          delta[pair_direction_[p]] = -pair_sign_[p];
+          unite(na, match, delta);
         }
       }
     }
@@ -106,27 +135,16 @@ class Covering {
   // Translation of a shift.
   [[nodiscard]] std::array<double, 3> translation(const Shift& k) const {
     std::array<double, 3> t{};
-    for (std::size_t p = 0; p < mesh_.periodic_pairs().size(); ++p) {
-      for (std::size_t d = 0; d < 3; ++d) t[d] += k[p] * mesh_.periodic_pairs()[p].translation[d];
+    for (std::size_t j = 0; j < directions_.size(); ++j) {
+      for (std::size_t d = 0; d < 3; ++d) t[d] += k[j] * directions_[j][d];
     }
     return t;
   }
 
-  // A node copy named by a node of zone b wherever it coincides with one:
-  // the two sides of a pair share their nodes in the covering.
-  [[nodiscard]] Key canonical_node(index_t node, Shift k) const {
-    for (bool moved = true; moved;) {
-      moved = false;
-      for (std::size_t p = 0; p < node_image_.size(); ++p) {
-        const index_t image = node_image_[p][at(node)];
-        if (image >= 0) {
-          node = image;
-          --k[p];
-          moved = true;
-        }
-      }
-    }
-    return {node, k};
+  // A node copy named by its class root.
+  [[nodiscard]] Key canonical_node(index_t node, const Shift& k) {
+    const auto [root, d] = find(node);
+    return {root, add(k, d)};
   }
 
   // One face of a cell copy seen from it: the face that represents it (the
@@ -145,15 +163,10 @@ class Covering {
       return {face, from.shift, {o == from.entity ? n : o, from.shift}};
     }
     if (pair_[f] < 0) return {face, from.shift, {no_cell, from.shift}};
-    const auto p = at(pair_[f]);
     const auto partner = at(partner_[f]);
-    Shift k = from.shift;
-    if (side_[f] > 0) {
-      --k[p];
-      return {face, from.shift, {mesh_.owner()[partner], k}};
-    }
-    ++k[p];
-    return {static_cast<index_t>(partner), k, {mesh_.owner()[partner], k}};
+    if (side_[f] > 0) return {face, from.shift, {mesh_.owner()[partner], sub(from.shift, step(f))}};
+    const Shift home = add(from.shift, step(f));
+    return {static_cast<index_t>(partner), home, {mesh_.owner()[partner], home}};
   }
 
   // The cell copy on the far side of a representing face from its home.
@@ -161,33 +174,112 @@ class Covering {
     const auto f = at(face);
     if (face < mesh_.n_interior_faces()) return {mesh_.neighbour()[f], home};
     if (pair_[f] < 0) return {no_cell, home};
-    Shift k = home;
-    --k[at(pair_[f])];
-    return {mesh_.owner()[at(partner_[f])], k};
+    return {mesh_.owner()[at(partner_[f])], sub(home, step(f))};
   }
 
-  [[nodiscard]] bool periodic(index_t face) const { return pair_[at(face)] >= 0; }
-
  private:
+  static Shift add(Shift a, const Shift& b) {
+    for (std::size_t j = 0; j < max_pairs; ++j) a[j] += b[j];
+    return a;
+  }
+  static Shift sub(Shift a, const Shift& b) {
+    for (std::size_t j = 0; j < max_pairs; ++j) a[j] -= b[j];
+    return a;
+  }
+  // The shift between zone a's side and zone b's side of the face's pair.
+  [[nodiscard]] Shift step(std::size_t f) const {
+    const auto p = at(pair_[f]);
+    Shift k{};
+    k[pair_direction_[p]] = pair_sign_[p];
+    return k;
+  }
+
+  void check_independent() const {
+    const auto cross = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+      return std::array<double, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                   a[0] * b[1] - a[1] * b[0]};
+    };
+    const auto norm = [](const std::array<double, 3>& a) { return std::hypot(a[0], a[1], a[2]); };
+    bool independent = true;
+    const auto& d = directions_;
+    if (d.size() == 2) independent = norm(cross(d[0], d[1])) > 1e-12 * norm(d[0]) * norm(d[1]);
+    if (d.size() == 3) {
+      const auto c = cross(d[0], d[1]);
+      const double volume = std::abs(c[0] * d[2][0] + c[1] * d[2][1] + c[2] * d[2][2]);
+      independent = volume > 1e-12 * norm(d[0]) * norm(d[1]) * norm(d[2]);
+    }
+    if (!independent) {
+      throw Error(ErrorCode::partition_invalid_request,
+                  "periodic translations that are not linearly independent");
+    }
+  }
+
+  std::pair<index_t, Shift> find(index_t n) {
+    Shift total{};
+    index_t r = n;
+    while (parent_[at(r)] != r) {
+      total = add(total, offset_[at(r)]);
+      r = parent_[at(r)];
+    }
+    // Path compression: point every node of the path at the root.
+    Shift rest = total;
+    for (index_t u = n; parent_[at(u)] != u;) {
+      const index_t next = parent_[at(u)];
+      const Shift own = offset_[at(u)];
+      parent_[at(u)] = r;
+      offset_[at(u)] = rest;
+      rest = sub(rest, own);
+      u = next;
+    }
+    return {r, total};
+  }
+
+  // Records (a, k) == (b, k + delta) for every k.
+  void unite(index_t a, index_t b, const Shift& delta) {
+    const auto [ra, da] = find(a);
+    const auto [rb, db] = find(b);
+    // (a, k) = (ra, k + da) and (b, k + delta) = (rb, k + delta + db).
+    const Shift need = sub(add(delta, db), da);  // (ra, j) == (rb, j + need)
+    if (ra == rb) {
+      if (need != Shift{}) {
+        throw Error(ErrorCode::partition_invalid_request,
+                    "periodic node pairs that contradict each other");
+      }
+      return;
+    }
+    // The lower index becomes the root, so classes are named the same way
+    // whatever the order of the pairs.
+    if (ra < rb) {
+      parent_[at(rb)] = ra;
+      offset_[at(rb)] = sub(Shift{}, need);
+    } else {
+      parent_[at(ra)] = rb;
+      offset_[at(ra)] = need;
+    }
+  }
+
   const Mesh& mesh_;
+  std::vector<std::array<double, 3>> directions_;
+  std::vector<std::size_t> pair_direction_;
+  std::vector<std::int8_t> pair_sign_;
   std::vector<index_t> partner_;
   std::vector<std::int8_t> pair_;
   std::vector<std::int8_t> side_;  // +1 zone a, -1 zone b
-  std::vector<std::vector<index_t>> node_image_;
+  std::vector<index_t> parent_;
+  std::vector<Shift> offset_;
 };
 
 // The ghost copies part `q` holds: cells of the covering within `layers`
 // faces of its owned cells, ordered by owning part, then global cell, then
 // shift. Ghosts in part q itself are periodic images of its own cells.
 std::vector<Key> ghosts_of(const Mesh& global, const Covering& cover,
-                           std::span<const std::int32_t> parts, std::int32_t q, int layers) {
+                           std::span<const std::int32_t> parts, std::span<const index_t> cells,
+                           int layers) {
   std::set<Key> seen;
   std::vector<Key> frontier;
-  for (std::size_t c = 0; c < parts.size(); ++c) {
-    if (parts[c] == q) {
-      seen.insert({static_cast<index_t>(c), Shift{}});
-      frontier.push_back({static_cast<index_t>(c), Shift{}});
-    }
+  for (const index_t c : cells) {
+    seen.insert({c, Shift{}});
+    frontier.push_back({c, Shift{}});
   }
   std::vector<Key> ghosts;
   for (int layer = 0; layer < layers; ++layer) {
@@ -215,22 +307,22 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
                                  std::int32_t rank, int layers) {
   check_request(global, global_geometry, parts, n_parts, rank, layers);
-  const Covering cover(global);
+  Covering cover(global);
 
   // Owned cells keep their relative global order; ghosts follow, by owning
   // part, global order and shift, so each neighbour's ghosts are contiguous.
   std::map<Key, index_t> local;
-  std::vector<index_t> owned;
-  for (std::size_t c = 0; c < parts.size(); ++c) {
-    if (parts[c] == rank) owned.push_back(static_cast<index_t>(c));
-  }
+  std::vector<std::vector<index_t>> cells_of(at(n_parts));
+  for (std::size_t c = 0; c < parts.size(); ++c)
+    cells_of[at(parts[c])].push_back(static_cast<index_t>(c));
+  const std::vector<index_t>& owned = cells_of[at(rank)];
   if (owned.empty()) {
     throw Error(ErrorCode::partition_invalid_request,
                 "rank " + std::to_string(rank) + " owns no cell");
   }
   for (std::size_t i = 0; i < owned.size(); ++i)
     local[{owned[i], Shift{}}] = static_cast<index_t>(i);
-  const std::vector<Key> ghosts = ghosts_of(global, cover, parts, rank, layers);
+  const std::vector<Key> ghosts = ghosts_of(global, cover, parts, owned, layers);
   const auto n_owned = static_cast<index_t>(owned.size());
   if (owned.size() + ghosts.size() > at(std::numeric_limits<index_t>::max())) {
     throw Error(ErrorCode::mesh_too_large, "the partition exceeds the index_t range");
@@ -363,12 +455,6 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
   HaloPattern& h = out.halo;
   h.rank = rank;
   h.n_ranks = n_parts;
-  std::map<std::int32_t, std::vector<index_t>> sends;
-  for (std::int32_t q = 0; q < n_parts; ++q) {
-    for (const Key& k : ghosts_of(global, cover, parts, q, layers)) {
-      if (parts[at(k.entity)] == rank) sends[q].push_back(local.at({k.entity, Shift{}}));
-    }
-  }
   for (std::size_t i = 0; i < ghosts.size(); ++i) {
     const std::int32_t q = parts[at(ghosts[i].entity)];
     if (h.neighbours.empty() || h.neighbours.back() != q) {
@@ -378,8 +464,9 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
   }
   if (!h.neighbours.empty()) h.recv_offsets.push_back(static_cast<index_t>(ghosts.size()));
   for (const std::int32_t q : h.neighbours) {
-    const auto& cells = sends[q];
-    h.send_cells.insert(h.send_cells.end(), cells.begin(), cells.end());
+    for (const Key& k : ghosts_of(global, cover, parts, cells_of[at(q)], layers)) {
+      if (parts[at(k.entity)] == rank) h.send_cells.push_back(local.at({k.entity, Shift{}}));
+    }
     h.send_offsets.push_back(static_cast<index_t>(h.send_cells.size()));
   }
 

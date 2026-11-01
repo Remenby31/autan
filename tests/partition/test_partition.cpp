@@ -359,3 +359,55 @@ TEST_CASE("Image ghosts sit one cell across periodic faces; a z-linear field kee
     }
   }
 }
+
+TEST_CASE("Periodic sides split into several pairs share their direction",
+          "[partition][periodic]") {
+  // The unit box in 2^3 hexahedra, periodic in x, y and z, with each x side cut
+  // in two zones at y = 1/2: two pairs along x, of equal or opposite
+  // translations, and one along y.
+  const bool opposite = GENERATE(false, true);
+  const std::int32_t n_parts = GENERATE(1, 2);
+  autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  for (const char* name : {"xmin_hi", "xmax_hi"}) {
+    cells.face_zones.push_back(
+        {.name = name, .bc_type = "", .kind = autan::BcKind::periodic, .provenance = {}});
+  }
+  for (std::size_t f = 0; f < cells.labelled_face_zone.size(); ++f) {
+    auto& zone = cells.labelled_face_zone[f];
+    if (zone > 1) continue;
+    bool high = true;
+    for (auto k = cells.labelled_face_node_offsets[f]; k < cells.labelled_face_node_offsets[f + 1];
+         ++k)
+      high = high && cells.y[at(cells.labelled_face_nodes[at(k)])] >= 0.5;
+    if (high) zone += 6;
+  }
+  for (const int z : {0, 1, 2, 3}) cells.face_zones[at(z)].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  cells.periodic.push_back(
+      opposite ? autan::PeriodicPair{.zone_a = 7, .zone_b = 6, .translation = {-1.0, 0.0, 0.0}}
+               : autan::PeriodicPair{.zone_a = 6, .zone_b = 7, .translation = {1.0, 0.0, 0.0}});
+  cells.periodic.push_back({.zone_a = 2, .zone_b = 3, .translation = {0.0, 1.0, 0.0}});
+  // A fourth pair, along z: four pairs, three directions.
+  for (const int z : {4, 5}) cells.face_zones[at(z)].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 4, .zone_b = 5, .translation = {0.0, 0.0, 1.0}});
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  for (const auto& lp : check_split(global, slabs(gg, n_parts, 1.0), n_parts)) {
+    const auto& m = lp.mesh;
+    // No physical cell twice: (id, translation) is unique, as assemble checked.
+    // Each owned cell has its six face neighbours, one cell away.
+    for (index_t c = 0; c < m.n_owned_cells(); ++c) CHECK(std::ssize(m.cell_faces(c)) == 6);
+    for (index_t face = 0; face < m.n_owned_interior_faces(); ++face) {
+      const auto u = m.cell_global_id()[at(m.owner()[at(face)])];
+      const auto v = m.cell_global_id()[at(m.neighbour()[at(face)])];
+      const auto shift = [&](index_t c) {
+        return c < m.n_owned_cells() ? std::array<double, 3>{}
+                                     : m.ghost_translation()[at(c - m.n_owned_cells())];
+      };
+      const auto tu = shift(m.owner()[at(face)]), tv = shift(m.neighbour()[at(face)]);
+      const double dx = gg.cell_centroid_x[at(v)] + tv[0] - gg.cell_centroid_x[at(u)] - tu[0];
+      const double dy = gg.cell_centroid_y[at(v)] + tv[1] - gg.cell_centroid_y[at(u)] - tu[1];
+      CHECK(std::hypot(dx, dy) < 0.75);
+    }
+  }
+}

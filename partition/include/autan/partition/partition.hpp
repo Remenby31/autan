@@ -99,8 +99,8 @@ struct LocalPartition {
 /// by the pair's translation (Mesh::ghost_translation), even on one part.
 /// `global_geometry` must be compute_geometry(global). Throws E0141 if
 /// `global` has ghosts and E0140 if `parts`, `n_parts`, `rank` or `layers`
-/// are out of range, `rank` owns no cell or `global` has more than three
-/// periodic pairs.
+/// are out of range, `rank` owns no cell, or the periodic translations of
+/// `global` span more than three directions or are not linearly independent.
 LocalPartition extract_partition(const Mesh& global, const Geometry& global_geometry,
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
                                  std::int32_t rank, int layers = 2);

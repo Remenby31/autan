@@ -64,12 +64,12 @@ Synthesised zones: `interior` for interior faces with no zone in the source, `un
 
 ## Periodic pairs
 
-`Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, empty, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a periodic zone in no pair, a translation that is zero or not finite) and matches the faces (E0119):
+`Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, empty, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a boundary zone of kind periodic in no pair, a translation that is zero or not finite) and matches the faces (E0119):
 
 - each node of zone a, translated, coincides with exactly one node of zone b: closer than 1e-4 of the shortest edge of zone a's faces at that node, far below any spacing and far above single-precision coordinates;
 - each face of zone a, so mapped, has the node set of exactly one face of zone b, the two zones have as many faces, and partners run through their nodes in opposite directions (both point out of the domain).
 
-`renumber_cells` keeps the pairs. A partition carries none: there each periodic face is an interior face to an image ghost cell, the cell across it translated (`ghost_translation`), and the pair's zones hold interior faces ([partitioning.md](../design/partitioning.md#periodic-images)). `write_solution` rejects a mesh with pairs (E0133) until pairs are written to CGNS. Rotations are reserved.
+`renumber_cells` keeps the pairs. A partition carries none: there each periodic face is an interior face to an image ghost cell, the cell across it translated (`ghost_translation`), and the pair's zones hold interior faces ([partitioning.md](../design/partitioning.md#periodic-images)). Both cells of such a face see the zone-a face: where the two zones coincide only within the matching tolerance, their closure across it holds to that tolerance, not to round-off. `write_solution` rejects a mesh with pairs (E0133) until pairs are written to CGNS. Rotations are reserved.
 
 ## Geometry
 
@@ -138,7 +138,7 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0114 | `mesh_shared_face_orientation` | Two cells list their common face with the same orientation (one is inverted). |
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
 | E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
-| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite. |
+| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a boundary zone of kind periodic in no pair, or a translation that is zero or not finite. |
 | E0119 | `mesh_periodic_unmatched` | The faces of a periodic pair do not match one to one under its translation. |
 | E0120 | `geometry_degenerate_face` | A face has zero or non-finite area. |
 | E0121 | `geometry_non_positive_volume` | An owned cell has zero, negative or non-finite volume. |
