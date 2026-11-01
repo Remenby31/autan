@@ -62,8 +62,12 @@ test("a run written by another process appears and updates live", async ({ page 
   await expect(budget).toBeVisible();
   append(last + 2);
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 2));
-  // The final record of every monitor (results.md#runjson): the appended line repeats the last.
-  const records = JSON.parse(lines[last - 1] as string).monitors ?? source.monitors ?? {};
+  // The final record of every monitor (results.md#runjson), equal to the last line where it
+  // carries one: the appended line repeats the last.
+  const records = {
+    ...source.monitors,
+    ...JSON.parse(lines[last - 1] as string).monitors,
+  };
   const monitors = Object.fromEntries(
     Object.entries(records).map(([name, record]) => [
       name,
@@ -79,6 +83,9 @@ test("a run written by another process appears and updates live", async ({ page 
   };
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
   await expect(page.getByTestId("status")).toContainText(/converged/i);
+  await expect
+    .poll(async () => (await runs(page)).find((r) => r.run_id === runId)?.status)
+    .toBe("converged");
   await expect(budget).toHaveCount(0);
   await expect(page.getByTestId("iteration").locator("..")).toHaveText(String(last + 2));
 });
