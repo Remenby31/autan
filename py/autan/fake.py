@@ -25,6 +25,7 @@ from autan.results import (
     Averaging,
     CaseIdentity,
     Devices,
+    FinalMonitor,
     MeshIdentity,
     Results,
     RunInfo,
@@ -34,6 +35,7 @@ from autan.results import (
     identity,
     iso,
     residual_names,
+    run_metadata,
     utc_now,
 )
 from autan.schema import (
@@ -353,9 +355,16 @@ class FakeBackend:
         layout = cell_layout(box, plan)
         changes: dict[str, Any] = {"status": status, "iterations": done, "time": history.time(done)}
         if status in ("converged", "completed", "stopped"):
-            changes["monitors"] = {
-                m.name: {"iteration": done, **history.forces(m, done)} for m in spec.monitors
-            }
+            final = {m.name: history.forces(m, done) for m in spec.monitors}
+            if all(math.isfinite(v) for record in final.values() for v in record.values()):
+                changes["monitors"] = {
+                    n: FinalMonitor.model_validate({"iteration": done, **r})
+                    for n, r in final.items()
+                }
+            else:
+                message = "a final monitor value is not finite"
+                status = "failed"
+                changes.update(status=status, diagnostics=(diagnostic("E0704", message),))
         if status == "diverged":
             assert self.diverge_at is not None
             cell = box.n**3 // 2
@@ -440,7 +449,8 @@ class _History:
         force = q * area * (cd * e_d + cl * e_l)
         length = si(fs.ref_length, "m") if fs.ref_length is not None else 1.0
         center = np.array([si(c, "m") for c in monitor.moment_center])
-        moment = np.cross(np.array([0.25 * length, 0.0, 0.0]) - center, force)
+        with np.errstate(over="ignore", invalid="ignore"):  # non-finite: the run fails
+            moment = np.cross(np.array([0.25 * length, 0.0, 0.0]) - center, force)
         values = {key: float(v) for key, v in zip(("fx", "fy", "fz"), force, strict=True)}
         values.update({key: float(v) for key, v in zip(("mx", "my", "mz"), moment, strict=True)})
         if monitor.ref_area is not None:
@@ -501,11 +511,7 @@ def _write_solution(
             .reshape(5, 32)
             .T,
         )
-        metadata = {
-            k: v
-            for k, v in info.document().items()
-            if k not in ("status", "finished", "iterations", "monitors", "diagnostics")
-        }
+        metadata = run_metadata(info)
         cgns.node(base, "RunMetadata", "Descriptor_t", json.dumps(metadata, sort_keys=True))
         cgns.node(
             base,

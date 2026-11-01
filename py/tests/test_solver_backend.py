@@ -359,5 +359,5 @@ def test_the_runtime_records_the_final_monitors(
     assert (result.run.status, result.run.iterations) == ("converged", 28)  # off cadence
     final = result.run.monitors
     assert final is not None
-    assert final["forces"]["iteration"] == 28
+    assert final["forces"].iteration == 28
     assert result.history.monitor("forces")["iteration"].tolist() == [10, 20]

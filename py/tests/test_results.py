@@ -20,10 +20,11 @@ from typing import Any
 
 import autan
 import h5py
+import jsonschema
 import numpy as np
 import pytest
 from autan import cgns
-from autan.cli import main
+from autan.cli import json_schema, main
 
 from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
 
@@ -719,12 +720,12 @@ def test_run_json_records_the_final_monitors(
         assert final is None
         return
     assert final is not None
-    assert final["forces"]["iteration"] == iteration
+    assert final["forces"].iteration == iteration
     history = result.path / "history.jsonl"  # absent before the first iteration
     lines = history.read_text().splitlines() if history.exists() else []
     last = json.loads(lines[-1])["monitors"] if lines else {}
     if iteration % every == 0 and "forces" in last:
-        assert {k: v for k, v in final["forces"].items() if k != "iteration"} == last["forces"]
+        assert final["forces"].model_extra == last["forces"]
 
 
 @pytest.mark.parametrize(
@@ -734,6 +735,7 @@ def test_run_json_records_the_final_monitors(
         lambda d: d["monitors"]["forces"].update(iteration=99),
         lambda d: d["monitors"]["forces"].update(cl=d["monitors"]["forces"]["cl"] + 1),
         lambda d: d.update(monitors=None),
+        lambda d: d["monitors"]["forces"].update(fx=10**400),  # beyond the double range
     ],
 )
 def test_the_reader_checks_the_final_monitors(
@@ -744,4 +746,48 @@ def test_the_reader_checks_the_final_monitors(
     (crm_run.path / "run.json").write_text(json.dumps(document))
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]
+
+
+@pytest.mark.parametrize(
+    "record", [{}, {"iteration": 100, "fx": "1.0"}, {"iteration": "100", "fx": 1.0}]
+)
+def test_the_published_schema_types_the_final_monitors(
+    record: dict[str, Any], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    validator = jsonschema.Draft202012Validator(json_schema("results"))
+    validator.validate(document)
+    document["monitors"] = {"forces": record}
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(document)
+
+
+def test_a_final_monitor_that_overflows_fails_the_run(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    body = CRM_HL.replace(
+        'autan.forces("wing.*", ref_area=191.84 * m**2)',
+        'autan.forces("wing.*", ref_area=191.84 * m**2, moment_center=(1e308 * m, 1e308 * m, 1e308 * m))',
+    )
+    assert body != CRM_HL
+    result = autan.load(write_case(body)).run(
+        crm_mesh, backend=autan.FakeBackend(iterations=5), runs=tmp_path
+    )
+    assert (result.run.status, result.run.monitors) == ("failed", None)
+    assert [d.code for d in result.run.diagnostics] == ["E0704"]
+
+
+def test_run_metadata_is_run_json_without_its_final_keys(crm_run: autan.Results) -> None:
+    path = crm_run.path / "solution.cgns"
+    with h5py.File(path, "r+") as handle:
+        node = handle["Base/RunMetadata"]
+        metadata = json.loads(bytes(node[" data"][...]).decode())
+        metadata["monitors"] = None
+        del node[" data"]
+        node.create_dataset(
+            " data", data=np.frombuffer(json.dumps(metadata).encode(), dtype=np.int8)
+        )
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path).field("Density")
     assert error.value.codes == ["E0701"]

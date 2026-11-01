@@ -75,6 +75,14 @@ class StartInfo(_Strict):
     residual_reference: dict[str, float] | None
 
 
+class FinalMonitor(BaseModel):
+    """A monitor's record on the final state: its History quantities and the iteration."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+    iteration: Annotated[int, Field(strict=True, ge=0)]
+    __pydantic_extra__: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
+
+
 class RunInfo(_Strict):
     """The content of ``run.json``."""
 
@@ -94,7 +102,7 @@ class RunInfo(_Strict):
     time: float | None
     averaging: Averaging | None
     start: StartInfo | None = None
-    monitors: dict[str, dict[str, Any]] | None = None
+    monitors: dict[str, FinalMonitor] | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -695,6 +703,14 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
 
 
 FINAL = frozenset({"converged", "completed", "stopped"})
+# run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
+# after the solution is written, or name its final state.
+NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "diagnostics")
+
+
+def run_metadata(info: RunInfo) -> dict[str, Any]:
+    """The RunMetadata descriptor of solution.cgns for ``info``."""
+    return {k: v for k, v in info.document().items() if k not in NOT_IN_METADATA}
 
 
 def final_monitor_problems(
@@ -712,10 +728,10 @@ def final_monitor_problems(
         return [f"monitors must be exactly {sorted(monitors)}"]
     found = []
     last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
-    for name, record in final.items():
-        values = {k: v for k, v in record.items() if k != "iteration"}
-        iteration = record.get("iteration")
-        if type(iteration) is not int or iteration != run.iterations:
+    for name, monitor in final.items():
+        values = dict(monitor.model_extra or {})
+        iteration = monitor.iteration
+        if iteration != run.iterations:
             found.append(f"monitor {name!r}: iteration must be {run.iterations}")
         elif set(values) != force_keys(monitors[name], case) or not all(
             _finite(v) for v in values.values()
@@ -727,7 +743,12 @@ def final_monitor_problems(
 
 
 def _finite(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an integer beyond the double range
+        return False
 
 
 UNITS = ("Kilogram", "Meter", "Second", "Kelvin", "Radian")
@@ -785,7 +806,7 @@ def _solution_problems(
             found.append(f"{node.name} is not a {label}")
     if base.child("DimensionalUnits").text_rows() != list(UNITS):
         found.append(f"DimensionalUnits must be {list(UNITS)}")
-    if json.loads(base.child("RunMetadata").text()).get("identity") != run.identity:
+    if json.loads(base.child("RunMetadata").text()) != run_metadata(run):
         found.append("RunMetadata does not match run.json")
     names = json.loads(base.child("ZoneNames").text())
     if sorted(names["boundary"].values()) != sorted(z.name for z in mesh_info.boundary_zones):
