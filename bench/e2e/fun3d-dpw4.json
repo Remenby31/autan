@@ -15,11 +15,36 @@
   "convergence": "machine zero (Fig. 2); 3000 iterations run",
   "cd": 0.01435840192,
   "runs": [
-    {"device": "NVIDIA 40 GB SXM A100", "kind": "gpu", "seconds": 430, "peak_GBps": 1555},
-    {"device": "NVIDIA 16 GB SXM V100", "kind": "gpu", "seconds": 720, "peak_GBps": 900},
-    {"device": "AMD MI210", "kind": "gpu", "seconds": 620, "peak_GBps": 1638.4},
-    {"device": "2x AMD EPYC 7742 (128 cores)", "kind": "cpu", "seconds": 1639, "peak_GBps": 409.6},
-    {"device": "2x Intel Skylake 6148 (40 cores)", "kind": "cpu", "seconds": 2818, "peak_GBps": 256}
+    {
+      "device": "NVIDIA 40 GB SXM A100",
+      "kind": "gpu",
+      "seconds": 430,
+      "peak_GBps": 1555
+    },
+    {
+      "device": "NVIDIA 16 GB SXM V100",
+      "kind": "gpu",
+      "seconds": 720,
+      "peak_GBps": 900
+    },
+    {
+      "device": "AMD MI210",
+      "kind": "gpu",
+      "seconds": 620,
+      "peak_GBps": 1638.4
+    },
+    {
+      "device": "2x AMD EPYC 7742 (128 cores)",
+      "kind": "cpu",
+      "seconds": 1639,
+      "peak_GBps": 409.6
+    },
+    {
+      "device": "2x Intel Skylake 6148 (40 cores)",
+      "kind": "cpu",
+      "seconds": 2818,
+      "peak_GBps": 256
+    }
   ],
   "pyfr": {
     "source": "F. Witherden, P. Vincent et al., PyFR v2.0.3, Computer Physics Communications 311 (2025) 109567, Tables 2-3",
@@ -27,5 +52,11 @@
     "gdof_per_s": 6.004,
     "peak_GBps": 4000,
     "case": "Taylor-Green vortex, 13.9M tetrahedra, p = 7, Navier-Stokes, explicit, fp64"
+  },
+  "declared": {
+    "statement": "Declared before the first run (2026-11-02): C_D is compared with FUN3D's only for a converged SA run, at the case's residual_orders, and agrees within 3 drag counts (2 % of FUN3D's 143.6 counts). The grids differ (public tetrahedra vs FUN3D's merged prisms), so a miss is reported, not hidden.",
+    "residual_orders": 8.0,
+    "cd_model": "sa",
+    "cd_tolerance": 0.0003
   }
 }

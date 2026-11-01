@@ -188,21 +188,28 @@ def _e2e_case(args: argparse.Namespace) -> int:
 def _e2e_run(args: argparse.Namespace) -> int:
     chain = e2e.run_chain(case=args.case, mesh_info=args.mesh_info, device_kind=args.device_kind,
                           runs=args.runs, autan=args.autan.split(), autan_run=args.autan_run,
-                          lock=[*args.lock.split(), "--"], budget_s=args.budget,
-                          max_runs=args.max_runs)  # fmt: skip
+                          lock=[*args.lock.split(), "--"], idle=args.idle.split(),
+                          budget_s=args.budget, max_runs=args.max_runs,
+                          cooldown_s=args.cooldown)  # fmt: skip
     for run_dir in chain:
         _say(str(run_dir))
     return 0
 
 
 def _e2e_report(args: argparse.Namespace) -> int:
-    counts = json.loads(args.mesh_info.read_text())["counts"]
+    mesh_info = json.loads(args.mesh_info.read_text())
     cpu = json.loads(args.cpu.read_text()) if args.cpu else None
-    doc = e2e.report([e2e.link(d) for d in args.runs], counts,
+    doc = e2e.report([e2e.link(d) for d in args.runs], mesh_info,
                      result.peak_bandwidth(result.load(args.stream)),
                      json.loads(args.reference.read_text()), stages=args.stages, cpu=cpu)  # fmt: skip
     args.out.write_text(json.dumps(doc, indent=1) + "\n")
     _say(e2e.summary(doc))
+    return 0
+
+
+def _idle(args: argparse.Namespace) -> int:
+    gpu.require_campaigns_frozen(args.lock)
+    gpu.require_idle()
     return 0
 
 
@@ -311,6 +318,10 @@ def parser() -> argparse.ArgumentParser:
     k.add_argument("baseline", type=Path)
     k.set_defaults(func=_peak)
 
+    i = sub.add_parser("idle", help="exit 0 once campaigns are frozen and the GPU idle, else 2")
+    i.add_argument("--lock", type=Path, default=gpu.DEFAULT_LOCK)
+    i.set_defaults(func=_idle)
+
     ec = sub.add_parser("e2e-case", help="write the DPW4 case for a mesh's MeshInfo")
     ec.add_argument("mesh_info", type=Path)
     ec.add_argument("--mesh", required=True, help="mesh path the case names")
@@ -331,6 +342,9 @@ def parser() -> argparse.ArgumentParser:
     er.add_argument("--lock", default="autan-gpu-lock -m e2e -t 600",
                     help="the lock command and its options, split on spaces")  # fmt: skip
     er.add_argument("--budget", type=int, default=420, help="seconds of a hold before stopping")
+    er.add_argument("--idle", default="autan-bench idle",
+                    help="command checking, inside the hold, that the GPU is idle")  # fmt: skip
+    er.add_argument("--cooldown", type=float, default=120.0, help="seconds between two holds")
     er.add_argument("--max-runs", type=int, default=40)
     er.set_defaults(func=_e2e_run)
 

@@ -12,7 +12,10 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import shlex
 import subprocess
+import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -104,50 +107,80 @@ GRID_LABEL = "different grid (public tetrahedra vs FUN3D's merged prisms)"
 
 
 def _density_drop(first: dict[str, Any], last: dict[str, Any]) -> float | None:
+    """Orders the density residual fell; None when either end is zero."""
     r0, r1 = first["residuals"].get("density"), last["residuals"].get("density")
     if not r0 or not r1:
         return None
     return math.log10(r0 / r1)
 
 
-def report(chain: list[dict[str, Any]], mesh: dict[str, int], stream_gbps: float,
-           reference: dict[str, Any], *, stages: int | None = None,
-           cpu: dict[str, Any] | None = None) -> dict[str, Any]:  # fmt: skip
-    """The end-to-end result of a chain of runs, oldest first.
-
-    Each element is {"run": run.json, "first": its first history line, "last": its last}.
-    `mesh` gives the grid's "cells" and "nodes"; `stream_gbps` the GB10 peak measured by
-    STREAM. `stages` (right-hand-side evaluations per iteration) adds the explicit-path
-    throughput in PyFR's metric; `cpu`, the report of the same case on the CPU, adds the
-    speedup per iteration.
-    """
-    runs = [link["run"] for link in chain]
+def _check_chain(runs: list[dict[str, Any]], mesh_sha256: str) -> None:
+    if runs[0]["start"] is not None:
+        msg = (
+            f"{runs[0]['run_id']} starts from another run: the chain must start from the freestream"
+        )
+        raise BenchError(Code.CHAIN_BROKEN, msg)
     for earlier, later in itertools.pairwise(runs):
-        if later["start"] is None or later["start"]["run_id"] != earlier["run_id"]:
+        start = later["start"]
+        if (start is None or start["run_id"] != earlier["run_id"] or start["mode"] != "continue"
+                or start["iterations"] != earlier["iterations"]):  # fmt: skip
             msg = f"{later['run_id']} does not continue {earlier['run_id']}"
             raise BenchError(Code.CHAIN_BROKEN, msg)
     if any(r["timing"] is None for r in runs):
         msg = "every run of the chain must record its timing"
         raise BenchError(Code.CHAIN_BROKEN, msg)
+    for r in runs:
+        if r["mesh"]["sha256"] != mesh_sha256:
+            msg = f"{r['run_id']} ran on mesh {r['mesh']['sha256']}, not the MeshInfo's"
+            raise BenchError(Code.CHAIN_BROKEN, msg)
+
+
+def report(chain: list[dict[str, Any]], mesh_info: dict[str, Any], stream_gbps: float,
+           reference: dict[str, Any], *, stages: int | None = None,
+           cpu: dict[str, Any] | None = None) -> dict[str, Any]:  # fmt: skip
+    """The end-to-end result of a chain of runs, oldest first.
+
+    Each element is {"run": run.json, "case": case.toml, "first": its first history line,
+    "last": its last}; the chain starts from the freestream and each run continues the one
+    before. `mesh_info` is the MeshInfo of the runs' mesh (its hash is checked against
+    theirs); `stream_gbps` the GB10 peak measured by STREAM. `stages` (right-hand-side
+    evaluations per iteration) adds the explicit throughput in PyFR's metric; `cpu`, the
+    report of the same case on the CPU, adds the speedup per iteration.
+    """
+    runs = [link["run"] for link in chain]
+    _check_chain(runs, mesh_info["source"]["sha256"])
     solve = math.fsum(r["timing"]["solve_seconds"] for r in runs)
+    wall = math.fsum(r["timing"]["wall_seconds"] for r in runs)
     iterations = sum(r["timing"]["iterations"] for r in runs)
-    setup = runs[0]["timing"]["wall_seconds"] - runs[0]["timing"]["solve_seconds"]
     status = runs[-1]["status"]
-    cells, nodes = mesh["cells"], mesh["nodes"]
+    converged = status == "converged"
+    cells, nodes = mesh_info["counts"]["cells"], mesh_info["counts"]["nodes"]
     ns_cell = solve * 1e9 / (cells * iterations)
     ns_node = solve * 1e9 / (nodes * iterations)
     monitors = runs[-1]["monitors"] or {}
+    cd = total_cd(monitors) if monitors else None
+    turbulence = chain[-1]["case"]["physics"]["turbulence"]["model"]
+    declared = reference["declared"]
+    drop = _density_drop(chain[0]["first"], chain[-1]["last"])
+    # Only a converged RANS run is compared: Euler has no friction drag.
+    cd_compared = converged and turbulence == declared["cd_model"] and cd is not None
     result: dict[str, Any] = {
         "status": status,
-        "converged": status == "converged",
+        "converged": converged,
         "runs": len(runs),
         "iterations": iterations,
-        "residual_drop_orders": _density_drop(chain[0]["first"], chain[-1]["last"]),
+        "residual_drop_orders": drop,
         "solve_seconds": solve,
-        "setup_seconds": setup,
-        # One setup, as the run would have taken uninterrupted; continuations' reads excluded.
-        "time_to_solution_seconds": solve + setup if status == "converged" else None,
-        "cd": total_cd(monitors) if monitors else None,
+        "wall_seconds": wall,
+        # An upper bound of the uninterrupted run: every continuation re-reads the mesh and
+        # writes its solution. The solve time is the lower bound.
+        "time_to_solution_seconds": wall if converged else None,
+        "cd": cd,
+        "cd_reference": reference["cd"],
+        "cd_tolerance": declared["cd_tolerance"],
+        "cd_within_tolerance": (
+            abs(cd - reference["cd"]) <= declared["cd_tolerance"] if cd_compared else None
+        ),
     }
     per_unit = {
         "ns_per_cell_iteration": ns_cell,
@@ -155,21 +188,21 @@ def report(chain: list[dict[str, Any]], mesh: dict[str, int], stream_gbps: float
         # Bytes the measured peak bandwidth moves in the time of one cell (vertex) iteration.
         "peak_bytes_per_cell_iteration": ns_cell * stream_gbps,
         "peak_bytes_per_vertex_iteration": ns_node * stream_gbps,
-        "percent_of_peak": None,
     }
     grid = reference["grid"]
-    rows = []
+    published, estimated = [], []
     for ref in reference["runs"]:
         ref_ns = ref["seconds"] * 1e9 / (grid["vertices"] * reference["iterations"])
         scale = ref["peak_GBps"] / stream_gbps
-        rows.append({
-            "device": ref["device"], "kind": ref["kind"], "seconds": ref["seconds"],
-            "peak_GBps": ref["peak_GBps"], "ns_per_vertex_iteration": ref_ns,
-            "peak_bytes_per_vertex_iteration": ref_ns * ref["peak_GBps"],
-            "gb10_equivalent_seconds": ref["seconds"] * scale,
-            "gb10_equivalent_ns_per_vertex_iteration": ref_ns * scale,
-        })  # fmt: skip
-    best = min((r for r in rows if r["kind"] == "gpu"), key=lambda r: r["gb10_equivalent_seconds"])
+        published.append({"device": ref["device"], "kind": ref["kind"],
+                          "seconds": ref["seconds"], "peak_GBps": ref["peak_GBps"],
+                          "ns_per_vertex_iteration": ref_ns,
+                          "peak_bytes_per_vertex_iteration": ref_ns * ref["peak_GBps"]})  # fmt: skip
+        estimated.append({"device": ref["device"], "kind": ref["kind"],
+                          "seconds": ref["seconds"] * scale,
+                          "ns_per_vertex_iteration": ref_ns * scale})  # fmt: skip
+    best = min((e for e in estimated if e["kind"] == "gpu"), key=lambda e: e["seconds"])
+    tts = result["time_to_solution_seconds"]
     fun3d = {
         "label": GRID_LABEL,
         "source": reference["source"],
@@ -184,21 +217,22 @@ def report(chain: list[dict[str, Any]], mesh: dict[str, int], stream_gbps: float
             f"unknowns ({cells / grid['vertices']:.2f}x); per-vertex costs divide "
             "Autan's time by its own grid's nodes"
         ),
-        "fun3d_cd": reference["cd"],
-        "fun3d_iterations": reference["iterations"],
-        "normalisation": f"time x device peak / GB10 STREAM ({stream_gbps:.1f} GB/s)",
-        "rows": rows,
-        "time_ratio_to_best_gpu": (
-            result["time_to_solution_seconds"] / best["gb10_equivalent_seconds"]
-            if result["time_to_solution_seconds"]
-            else None
-        ),
-        "per_vertex_iteration_ratio_to_best_gpu": ns_node
-        / best["gb10_equivalent_ns_per_vertex_iteration"],
+        "iterations": reference["iterations"],
+        "published": published,
+        "estimate_on_gb10": {
+            "label": "ESTIMATE, not a measurement",
+            "formula": "published time x device peak bandwidth (paper) / GB10 STREAM peak (measured)",
+            "gb10_stream_GBps": stream_gbps,
+            "rows": estimated,
+            "best_gpu": best["device"],
+            "autan_time_over_best": tts / best["seconds"] if tts is not None else None,
+            "autan_per_vertex_iteration_over_best": ns_node / best["ns_per_vertex_iteration"],
+        },
     }
     doc: dict[str, Any] = {
         "schema": SCHEMA_ID,
         "comparable": False,
+        "declared": declared,
         "result": result,
         "per_unit": per_unit,
         "bandwidth": {"gb10_stream_GBps": stream_gbps, "gb10_vendor_GBps": GB10_VENDOR_GBPS},
@@ -245,18 +279,22 @@ def _history_ends(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def link(run_dir: Path) -> dict[str, Any]:
     """One run of a chain, as `report` takes it."""
     first, last = _history_ends(run_dir)
-    return {"run": json.loads((run_dir / "run.json").read_text()), "first": first, "last": last}
+    return {"run": json.loads((run_dir / "run.json").read_text()),
+            "case": tomllib.loads((run_dir / "case.toml").read_text()),
+            "first": first, "last": last}  # fmt: skip
 
 
 def run_chain(*, case: Path, mesh_info: Path, device_kind: str, runs: Path, autan: list[str],
-              autan_run: Path, lock: list[str], budget_s: int, max_runs: int) -> list[Path]:  # fmt: skip
+              autan_run: Path, lock: list[str], idle: list[str], budget_s: int, max_runs: int,
+              cooldown_s: float = 120.0) -> list[Path]:  # fmt: skip
     """Run a case to its end as a chain of runs, each in one hold of the GPU lock.
 
     Each run is prepared with `autan prepare` (continuing the previous one), then started under
-    `lock` (the autan-gpu-lock command and its options, ending with `--`) with a stop file the
-    driver creates `budget_s` seconds into the hold. The chain ends when a run converges,
-    completes its iteration budget, diverges or fails, or after `max_runs` runs. Returns the
-    run directories, oldest first.
+    `lock` (the autan-gpu-lock command and its options, ending with `--`): inside the hold,
+    `idle` checks the GPU first, and the driver's timer creates the run's stop file `budget_s`
+    seconds in. Between holds it waits `cooldown_s`, as the lock's etiquette asks. The chain
+    ends when a run converges, completes its iteration budget, diverges or fails, or after
+    `max_runs` runs. Returns the run directories, oldest first.
     """
     runs.mkdir(parents=True, exist_ok=True)
     chain: list[Path] = []
@@ -266,16 +304,23 @@ def run_chain(*, case: Path, mesh_info: Path, device_kind: str, runs: Path, auta
                    "--device-kind", device_kind, "-o", str(solver_input)]  # fmt: skip
         if chain:
             prepare += ["--start", str(chain[-1])]
+            time.sleep(cooldown_s)
         subprocess.run(prepare, check=True)
         stop = runs / f"stop-{k}"
         stop.unlink(missing_ok=True)
-        # The stop file is created inside the hold, so the budget counts from the lock taken.
-        script = (f"(sleep {budget_s}; touch {stop}) & "
-                  f"exec {autan_run} --input {solver_input} --runs {runs} --stop-file {stop}")  # fmt: skip
+        q = shlex.quote
+        # The idle check and the timer run inside the hold; 75 marks a busy GPU.
+        script = (f"{shlex.join(idle)} || exit 75; (sleep {budget_s}; touch {q(str(stop))}) & "
+                  f"exec {q(str(autan_run))} --input {q(str(solver_input))} --runs {q(str(runs))} "
+                  f"--stop-file {q(str(stop))}")  # fmt: skip
         out = subprocess.run([*lock, "sh", "-c", script], check=False, capture_output=True,
                              text=True)  # fmt: skip
+        if out.returncode == 75:
+            msg = f"run {k}: the GPU was not idle: {out.stderr[-1000:]}"
+            raise BenchError(Code.GPU_BUSY, msg)
         lines = out.stdout.strip().splitlines()
-        if out.returncode != 0 or not lines:
+        # autan-run: 0 for an ended run, 130 for one stopped by its stop file.
+        if out.returncode not in (0, 130) or not lines:
             msg = f"run {k} ended with {out.returncode}: {out.stderr[-2000:]}"
             raise BenchError(Code.RUN_FAILED, msg)
         run_dir = Path(lines[-1])
@@ -287,35 +332,48 @@ def run_chain(*, case: Path, mesh_info: Path, device_kind: str, runs: Path, auta
 
 
 def summary(doc: dict[str, Any]) -> str:
-    """The report in a few lines, the grid caveat first."""
+    """The report in a few lines, the grid caveat first; estimates are named as such."""
     r, u, f = doc["result"], doc["per_unit"], doc["fun3d"]
-    best = min((row for row in f["rows"] if row["kind"] == "gpu"),
-               key=lambda row: row["gb10_equivalent_seconds"])  # fmt: skip
+    est = f["estimate_on_gb10"]
+    best = next(e for e in est["rows"] if e["device"] == est["best_gpu"])
+    published = next(p for p in f["published"] if p["device"] == est["best_gpu"])
     tts = r["time_to_solution_seconds"]
-    reached = f"{tts:.0f} s" if tts is not None else "not reached"
+    reached = f"{tts:.0f} s (upper bound)" if tts is not None else "not reached"
+    drop = r["residual_drop_orders"]
+    drop_text = f"{drop:.2f} orders" if drop is not None else "an unmeasurable drop"
     autan_cd = f"{r['cd']:.6f}" if r["cd"] is not None else "-"
+    verdict = {True: "within", False: "outside", None: "not compared"}[r["cd_within_tolerance"]]
     lines = [
         "NOT COMPARABLE" if not doc["comparable"] else "comparable",
         f"{f['label']}; {f['conversion']}",
         (
-            f"{r['status']} after {r['iterations']} iterations in {r['runs']} runs, density down "
-            f"{r['residual_drop_orders']:.2f} orders; time to solution {reached}"
+            f"measured: {r['status']} after {r['iterations']} iterations in {r['runs']} runs, "
+            f"density down {drop_text}; time to solution {reached}, solve {r['solve_seconds']:.0f} s"
         ),
         (
-            f"{u['ns_per_cell_iteration']:.2f} ns/cell/iter, {u['ns_per_vertex_iteration']:.2f} "
-            f"ns/vertex/iter, {u['peak_bytes_per_vertex_iteration'] / 1e3:.1f} kB peak-equivalent "
-            "per vertex and iteration"
+            f"measured: {u['ns_per_cell_iteration']:.2f} ns/cell/iter, "
+            f"{u['ns_per_vertex_iteration']:.2f} ns/vertex/iter, "
+            f"{u['peak_bytes_per_vertex_iteration'] / 1e3:.1f} kB peak-equivalent per vertex and iteration"
         ),
         (
-            f"FUN3D {best['device']}: {best['seconds']} s, on GB10 by bandwidth "
-            f"{best['gb10_equivalent_seconds']:.0f} s, "
-            f"{best['gb10_equivalent_ns_per_vertex_iteration']:.1f} ns/vertex/iter; C_D "
-            f"{f['fun3d_cd']:.6f}, Autan {autan_cd}"
+            f"published: FUN3D {published['device']} {published['seconds']} s for "
+            f"{f['iterations']} iterations, {published['ns_per_vertex_iteration']:.1f} ns/vertex/iter"
+        ),
+        (
+            f"ESTIMATE on GB10 ({est['formula']}, {published['peak_GBps']} / "
+            f"{est['gb10_stream_GBps']:.1f} GB/s): {best['seconds']:.0f} s, "
+            f"{best['ns_per_vertex_iteration']:.1f} ns/vertex/iter"
+        ),
+        (
+            f"C_D: Autan {autan_cd}, FUN3D {r['cd_reference']:.6f}, tolerance "
+            f"{r['cd_tolerance']} declared: {verdict}"
         ),
     ]
     if doc["explicit"]:
         x = doc["explicit"]
-        lines.append(f"explicit: {x['gdof_per_second']:.3f} GDoF/s, "
-                     f"{x['mdof_per_second_per_GBps']:.2f} MDoF/s per GB/s "
-                     f"(PyFR {x['pyfr_mdof_per_second_per_GBps']:.2f})")  # fmt: skip
+        lines.append(
+            f"measured explicit: {x['gdof_per_second']:.3f} GDoF/s, "
+            f"{x['mdof_per_second_per_GBps']:.2f} MDoF/s per GB/s "
+            f"(PyFR, published: {x['pyfr_mdof_per_second_per_GBps']:.2f})"
+        )
     return "\n".join(lines)
