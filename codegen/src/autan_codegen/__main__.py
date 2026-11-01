@@ -1,4 +1,4 @@
-"""`python -m autan_codegen KERNEL.py --out DIR [--backends cpu,cuda,hip]`."""
+"""`python -m autan_codegen KERNEL.py --out DIR [--backends cpu,gpu,metal]`."""
 
 from __future__ import annotations
 
@@ -20,7 +20,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--no-line", action="store_true", help="omit #line directives to the DSL source"
     )
-    ap.add_argument("--policies", default="fp64,fp32+acc64,fp32", help="policies to instantiate")
+    ap.add_argument(
+        "--policies",
+        default=None,
+        help="policies to instantiate (default: every policy the backends support)",
+    )
     ns = ap.parse_args(argv)
     try:
         for path in ns.kernels:
@@ -29,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
                 ns.out,
                 ns.backends.split(","),
                 line_directives=not ns.no_line,
-                policies=ns.policies.split(","),
+                policies=ns.policies.split(",") if ns.policies else None,
             )
     except CodegenError as exc:
         sys.stderr.write(f"error: {exc}\n")

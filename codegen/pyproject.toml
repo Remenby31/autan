@@ -28,7 +28,7 @@ pythonpath = ["spike"]
 addopts = ["--strict-markers", "-ra"]
 markers = [
     "slow: takes more than a few seconds",
-    "gpu: needs libautan_spike_gpu and a CUDA device",
+    "gpu: needs a device driver library (libautan_spike_gpu or libautan_spike_metal) and its device",
 ]
 
 [tool.mypy]
