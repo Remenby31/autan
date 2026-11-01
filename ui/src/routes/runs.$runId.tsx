@@ -48,20 +48,33 @@ function RunView() {
   const { runId } = Route.useParams();
   const { tab = "run" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { run, history, connected, invalid } = useLiveRun(runId);
+  const { run, history, log, connected, invalid } = useLiveRun(runId);
+  const warnings = log.lines.filter((line) => line.level === "warning").length;
+  const errors = log.lines.filter((line) => line.level === "error").length;
   const details = useQuery({
     ...runQuery(runId),
     // Outputs grow while the run writes them; the status change brings solution.cgns.
     refetchInterval: run?.status === "running" ? 5000 : false,
   });
   const client = useQueryClient();
-  // Refetch whenever the details lag the live status (a run that ended while they loaded).
+  // Refetch once the run has ended, or whenever the details lag its status: the registry
+  // stream updates the cached run.json but not the outputs (solution.cgns comes at the end).
+  const status = run?.status;
   const stale = Boolean(run && details.data && details.data.run.status !== run.status);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch on each status change
+  useEffect(() => {
+    if (status && status !== "running")
+      void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
+  }, [status]);
   useEffect(() => {
     if (stale) void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
   }, [stale, client, runId]);
   const plan = useQuery(planQuery(runId));
   const toast = useToast();
+  // While running, solution.cgns is not a result yet (results.md); after, it is the one to show.
+  const hasSolution =
+    run?.status !== "running" &&
+    Boolean(details.data?.outputs.some((o) => o.name === "solution.cgns"));
   const now = useSyncExternalStore(second.subscribe, second.now);
   const time = details.data?.case.time;
   const targetOrders = time?.kind === "steady" ? time.residual_orders : undefined;
@@ -94,13 +107,23 @@ function RunView() {
             >
               Copy Run Id
             </Button>
-            <Tooltip content="3D fields arrive with solution.cgns surfaces">
-              <span>
-                <Button size="sm" icon={<Box className="size-4" />} disabled>
-                  Open in Analysis
-                </Button>
-              </span>
-            </Tooltip>
+            {hasSolution ? (
+              <Button
+                size="sm"
+                icon={<Box className="size-4" />}
+                onClick={() => void navigate({ to: "/viewer", search: { run: runId } })}
+              >
+                Open in Analysis
+              </Button>
+            ) : (
+              <Tooltip content="The run has no solution.cgns yet">
+                <span>
+                  <Button size="sm" icon={<Box className="size-4" />} disabled>
+                    Open in Analysis
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           </>
         }
       />
@@ -227,7 +250,7 @@ function RunView() {
                 </Collapse>
                 <Collapse
                   title="Monitors"
-                  defaultOpen
+                  defaultOpen={history.monitors.size > 0 || !history.iteration.length}
                   meta={
                     <span className="font-mono text-fg-2 text-sm tabular-nums">
                       {forces
@@ -254,14 +277,16 @@ function RunView() {
                 <Collapse
                   title="Log"
                   meta={
-                    <span className="text-fg-2 text-sm tabular-nums">
-                      {history.iteration.length.toLocaleString("en")} lines
+                    <span className="flex items-center gap-2 text-fg-2 text-sm tabular-nums">
+                      {log.lines.length.toLocaleString("en")} lines
+                      {warnings > 0 && <Badge tone="amber">{warnings} warnings</Badge>}
+                      {errors > 0 && <Badge tone="red">{errors} errors</Badge>}
                     </span>
                   }
                 >
                   <LogView
                     history={history}
-                    diagnostics={run?.diagnostics ?? []}
+                    log={log}
                     running={run?.status === "running"}
                     height={240}
                   />
@@ -270,11 +295,7 @@ function RunView() {
             </TabPanel>
 
             <TabPanel value="log" className="outline-none">
-              <LogView
-                history={history}
-                diagnostics={run?.diagnostics ?? []}
-                running={run?.status === "running"}
-              />
+              <LogView history={history} log={log} running={run?.status === "running"} />
             </TabPanel>
 
             <TabPanel value="case" className="flex flex-col gap-4 outline-none">

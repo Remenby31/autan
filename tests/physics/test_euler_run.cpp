@@ -15,6 +15,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <cgnslib.h>
 #include <nlohmann/json.hpp>
+#include <picosha2.h>
 
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/run.hpp"
@@ -80,6 +81,19 @@ std::vector<Json> history(const fs::path& run) {
   std::ifstream in(run / "history.jsonl");
   for (std::string line; std::getline(in, line);) lines.push_back(Json::parse(line));
   return lines;
+}
+
+// The `start` the SDK writes to continue `previous` (solver-input.md).
+Json continue_from(const fs::path& previous) {
+  const Json info = Json::parse(read(previous / "run.json"));
+  std::string hash;
+  picosha2::hash256_hex_string(read(previous / "solution.cgns"), hash);
+  Json reference = nullptr;
+  if (info["time"].is_null()) reference = history(previous)[0]["residuals"];
+  return Json{{"run", previous.string()},         {"run_id", info["run_id"]},
+              {"identity", info["identity"]},     {"mode", "continue"},
+              {"iterations", info["iterations"]}, {"time", info["time"]},
+              {"solution_sha256", hash},          {"residual_reference", reference}};
 }
 
 std::vector<double> field(const fs::path& run, const char* name) {
@@ -167,4 +181,49 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const Json info = Json::parse(read(out.run / "run.json"));
   CHECK(info["status"] == "converged");
   CHECK(fs::exists(out.run / "manufactured.json"));
+}
+
+TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool steady = GENERATE(true, false);
+  INFO(precision << (steady ? " steady" : " unsteady"));
+  auto doc = [&](int budget) {
+    return input("hybrid-verification.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      if (steady) {
+        d["time"]["max_iterations"] = budget;
+        d["time"]["residual_orders"] = 30.0;
+      } else {
+        d["verification"] = nullptr;
+        for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+        d["time"] = {{"kind", "unsteady"},
+                     {"steps", budget},
+                     {"dt", nullptr},
+                     {"cfl", 0.8},
+                     {"average_from", 2}};
+      }
+    });
+  };
+  const auto whole = run(doc(12));
+  REQUIRE(whole.status == ExitStatus::finished);
+  const auto first = run(doc(6));
+  REQUIRE(first.status == ExitStatus::finished);
+  auto next = doc(12);
+  next["start"] = continue_from(first.run);
+  const auto second = run(next);
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  auto lines = [](const fs::path& f) {
+    std::vector<std::string> out;
+    std::ifstream in(f);
+    for (std::string l; std::getline(in, l);) out.push_back(l);
+    return out;
+  };
+  auto chain = lines(first.run / "history.jsonl");
+  const auto more = lines(second.run / "history.jsonl");
+  chain.insert(chain.end(), more.begin(), more.end());
+  CHECK(chain == lines(whole.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "Pressure"}) {
+    CHECK(field(second.run, name) == field(whole.run, name));
+  }
 }

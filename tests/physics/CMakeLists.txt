@@ -13,7 +13,9 @@ catch_discover_tests(autan_physics_tests)
 
 # The Euler physics through autan-run's run_case; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)
+  FetchContent_GetProperties(picosha2)
   add_executable(autan_euler_run_tests test_euler_run.cpp)
+  target_include_directories(autan_euler_run_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
   target_link_libraries(
     autan_euler_run_tests
     PRIVATE

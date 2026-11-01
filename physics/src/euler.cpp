@@ -230,7 +230,6 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res, bool froze
   if (m.scheme.second_order) {
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter) {
-      ek::cpu::bounds(m.d);
       ek::cpu::limiter(m.d);
     }
   }
