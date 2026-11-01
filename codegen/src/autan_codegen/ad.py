@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from autan_codegen.ir import Function, Instr, optimise
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 ZERO = None  # a structurally zero derivative
 
@@ -65,20 +65,11 @@ def _active(fn: Function, active_args: set[int]) -> set[int]:
     return act
 
 
-def tangent(fn: Function, active_args: Sequence[int]) -> Function:
-    """Inputs: the primal arguments, then one tangent argument per active argument (same size).
-    Outputs: the primal outputs, then their tangents."""
-    n_args = len(fn.arg_sizes)
-    out = Function(
-        f"{fn.name}_tangent",
-        [*fn.arg_names, *(f"{fn.arg_names[k]}_tan" for k in active_args)],
-        [*fn.arg_sizes, *(fn.arg_sizes[k] for k in active_args)],
-        source=fn.source,
-    )
-    _copy_primal(fn, out)
-    o = _Out(out)
-    tan_arg = {k: n_args + j for j, k in enumerate(active_args)}
-    act = _active(fn, set(active_args))
+def _forward(
+    fn: Function, o: _Out, act: set[int], seed: Callable[[int, Instr], int | None]
+) -> dict[int, int | None]:
+    """Forward derivative of every active value of `fn` (already copied into `o.fn`); `seed`
+    gives the derivative of each active input."""
     d: dict[int, int | None] = {}
     for v, ins in enumerate(fn.instrs):
         if v not in act:
@@ -88,9 +79,7 @@ def tangent(fn: Function, active_args: Sequence[int]) -> Function:
         ln = ins.line
         match ins.op:
             case "input":
-                attr = ins.attr
-                assert isinstance(attr, tuple)
-                d[v] = out.add(Instr("input", (), (tan_arg[attr[0]], attr[1]), ln))
+                d[v] = seed(v, ins)
             case "add":
                 d[v] = o.add(da[0], da[1], ln)
             case "sub":
@@ -105,11 +94,11 @@ def tangent(fn: Function, active_args: Sequence[int]) -> Function:
                 d[v] = o.neg(da[0], ln)
             case "sqrt":
                 two_v = o.op("mul", o.const(2.0), v, line=ln)
-                d[v] = o.op("div", da[0], two_v, line=ln)  # type: ignore[arg-type]
+                d[v] = None if da[0] is None else o.op("div", da[0], two_v, line=ln)
             case "exp":
                 d[v] = o.mul(da[0], v, ln)
             case "log":
-                d[v] = o.op("div", da[0], a[0], line=ln)  # type: ignore[arg-type]
+                d[v] = None if da[0] is None else o.op("div", da[0], a[0], line=ln)
             case "sin":
                 d[v] = o.mul(da[0], o.op("cos", a[0], line=ln), ln)
             case "cos":
@@ -123,7 +112,60 @@ def tangent(fn: Function, active_args: Sequence[int]) -> Function:
                 )
             case _:
                 raise AssertionError(ins.op)
+    return d
+
+
+def tangent(fn: Function, active_args: Sequence[int]) -> Function:
+    """Inputs: the primal arguments, then one tangent argument per active argument (same size).
+    Outputs: the primal outputs, then their tangents."""
+    n_args = len(fn.arg_sizes)
+    out = Function(
+        f"{fn.name}_tangent",
+        [*fn.arg_names, *(f"{fn.arg_names[k]}_tan" for k in active_args)],
+        [*fn.arg_sizes, *(fn.arg_sizes[k] for k in active_args)],
+        source=fn.source,
+    )
+    _copy_primal(fn, out)
+    o = _Out(out)
+    tan_arg = {k: n_args + j for j, k in enumerate(active_args)}
+
+    def seed(_: int, ins: Instr) -> int:
+        attr = ins.attr
+        assert isinstance(attr, tuple)
+        return out.add(Instr("input", (), (tan_arg[attr[0]], attr[1]), ins.line))
+
+    d = _forward(fn, o, _active(fn, set(active_args)), seed)
     out.outputs = [*fn.outputs, *(o.real(d.get(y)) for y in fn.outputs)]
+    return optimise(out)
+
+
+def jacobian(fn: Function, wrt: Sequence[int]) -> Function:
+    """Same inputs as `fn`. Outputs: d output i / d component j of argument wrt[a], ordered
+    (a, i, j), row-major: one forward pass per input component, sharing the primal, with the
+    structural zeros of each column folded away."""
+    out = Function(f"{fn.name}_jacobian", list(fn.arg_names), list(fn.arg_sizes), source=fn.source)
+    _copy_primal(fn, out)
+    o = _Out(out)
+    columns: list[list[int]] = []
+    for k in wrt:
+        for c in range(fn.arg_sizes[k]):
+            act = _active(fn, {k})
+            unit = o.const(1.0)
+
+            def seed(_: int, ins: Instr, k: int = k, c: int = c, unit: int = unit) -> int | None:
+                return unit if ins.attr == (k, c) else None
+
+            d = _forward(fn, o, act, seed)
+            columns.append([o.real(d.get(y)) for y in fn.outputs])
+    n_out = len(fn.outputs)
+    outputs = []
+    first = 0
+    for k in wrt:
+        n_in = fn.arg_sizes[k]
+        for i in range(n_out):
+            outputs += [columns[first + j][i] for j in range(n_in)]
+        first += n_in
+    out.outputs = outputs
     return optimise(out)
 
 
