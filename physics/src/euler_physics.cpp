@@ -91,7 +91,8 @@ class EulerPhysics final : public runtime::Physics {
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
         owned_(static_cast<std::size_t>(ctx.mesh.n_owned_cells())),
         ghost_fill_(ctx.ghosts),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        keys_(global_keys(ctx)),
+        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input), keys_ ? &*keys_ : nullptr),
         reference_(scheme(ctx.input).reference) {
     // On every rank: the exchange is collective, even for a part without ghosts.
     euler_.set_ghosts(&ghost_fill_);
@@ -225,10 +226,21 @@ class EulerPhysics final : public runtime::Physics {
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
     std::vector<double> surface(n_, 0.0);
-    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
-      surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
-      if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
-        surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+    if (keys_) {
+      // Each cell's faces in global order: the same bits on any number of ranks.
+      const auto faces = kernels::global_order(mesh, *keys_).cell_faces;
+      const auto off = mesh.cell_face_offsets();
+      for (std::size_t c = 0; c < owned_; ++c) {
+        for (auto k = off[c]; k < off[c + 1]; ++k) {
+          surface[c] += g.face_area[static_cast<std::size_t>(faces[static_cast<std::size_t>(k)])];
+        }
+      }
+    } else {
+      for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+        surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
+        if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+          surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+        }
       }
     }
     // Over the owned cells of every rank, as the history's norms.
@@ -928,6 +940,16 @@ class EulerPhysics final : public runtime::Physics {
     runtime::GhostExchange& ghosts_;
   };
 
+  // Under reproducibility "ranks", the keys that order every sum: the same bits on any number
+  // of ranks and in any cell order (solver-input.md).
+  static std::optional<kernels::GlobalKeys> global_keys(const PhysicsContext& ctx) {
+    if (ctx.input.reproducibility != "ranks") return std::nullopt;
+    return kernels::GlobalKeys{.cell = ctx.mesh.cell_global_id(),
+                               .face = ctx.face_global_id,
+                               .reversed = ctx.face_reversed,
+                               .shift = ctx.mesh.ghost_translation()};
+  }
+
   // Component k of `v` (laid out k * n_ + c) over the owned cells.
   [[nodiscard]] std::vector<double> owned(const std::vector<double>& v, std::size_t k) const {
     const auto begin = v.begin() + static_cast<std::ptrdiff_t>(k * n_);
@@ -939,6 +961,7 @@ class EulerPhysics final : public runtime::Physics {
   std::size_t n_;      // cells of the mesh: owned, then ghosts
   std::size_t owned_;  // owned cells: what this rank updates and reports
   HostGhosts ghost_fill_;
+  std::optional<kernels::GlobalKeys> keys_;  // reproducibility "ranks" only
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
@@ -975,15 +998,6 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and steady runs on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // Its face loops still sum in local face order (#199): the same bits on any number of ranks
-  // are not yet the physics' to give.
-  if (in.reproducibility == "ranks") {
-    return runtime::PhysicsRefusal{
-        .message = "the Euler physics does not give the same bits on any number of ranks yet",
-        .path = "reproducibility",
-        .data_json = "{}",
-        .code = "E1109"};
-  }
   // The steady solver's block Gauss-Seidel is coloured in the order of one mesh's cells: on a
   // partition, or with periodic image ghosts, it would be another algorithm.
   if (ranks > 1 && in.time.kind == "steady") {
@@ -1073,6 +1087,17 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
+  // The device loops sum in local order: the host's global-order gathers have no device
+  // counterpart in the Euler physics yet.
+  if (in.reproducibility == "ranks") {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Euler physics on a device does not give the same bits on any number of "
+            "ranks yet",
+        .path = "reproducibility",
+        .data_json = "{}",
+        .code = "E1109"};
+  }
   if (ranks > 1) {
     return runtime::PhysicsRefusal{
         .message = "the Euler physics runs on one device only, not " + std::to_string(ranks),

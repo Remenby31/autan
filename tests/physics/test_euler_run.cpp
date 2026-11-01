@@ -254,8 +254,12 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
+  // Under "ranks" the implicit step assembles its Jacobian in global order and orientation.
+  const char* reproducibility = GENERATE("run", "ranks");
+  CAPTURE(precision, reproducibility);
   const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
     d["precision"] = precision;
+    d["reproducibility"] = reproducibility;
     d["time"]["max_iterations"] = 20000;
     d["time"]["residual_orders"] = std::string(precision) == "fp64" ? 10.0 : 5.0;
   });
@@ -606,14 +610,17 @@ fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
 }  // namespace
 
 TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]") {
-  // runtime.md, Ranks: Euler on N ranks equals one rank to round-off (faces summed in local
-  // order, issue #199); at a fixed rank count, runs repeat bit for bit. Two zones at different
-  // states on the hybrid mesh (farfield around), or a flow through the periodic box's pairs.
+  // runtime.md, Ranks: Euler on N ranks equals one rank to round-off under reproducibility
+  // "run" (faces summed in local order), and bit for bit under "ranks"; at a fixed rank count,
+  // runs repeat bit for bit. Two zones at different states on the hybrid mesh (farfield
+  // around), or a flow through the periodic box's pairs.
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool periodic = GENERATE(false, true);
   const int ranks = GENERATE(2, 4);
-  CAPTURE(precision, periodic, ranks);
+  const char* reproducibility = GENERATE("run", "ranks");
+  CAPTURE(precision, periodic, ranks, reproducibility);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = reproducibility;
     if (periodic) {
       // Through both pairs and into the slip wall zmin, so that the flow evolves.
       periodic_box(d, precision);
@@ -674,10 +681,16 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
     const double scale = std::string(name).starts_with("Velocity") ? speed : magnitude(a);
     worst_field = std::max(worst_field, diff / (scale * eps));
   }
-  // Measured at most 7.5 eps on norms and 11.3 eps on fields over these 12 steps (fp64, 4 ranks).
+  // Under "run": measured at most 7.5 eps on norms and 11.3 eps on fields over these 12 steps
+  // (fp64, 4 ranks).
   INFO("norms " << worst_norm << " eps, fields " << worst_field << " eps");
-  CHECK(worst_norm <= 256.0);
-  CHECK(worst_field <= 256.0);
+  if (std::string(reproducibility) == "ranks") {
+    CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
+    CHECK(worst_field == 0.0);
+  } else {
+    CHECK(worst_norm <= 256.0);
+    CHECK(worst_field <= 256.0);
+  }
   // A fixed rank count repeats bit for bit.
   const fs::path again = run_on_ranks(doc, ranks);
   CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
@@ -1219,12 +1232,20 @@ TEST_CASE("on a device, a flow through periodic pairs follows the host's", "[eul
   CHECK(worst <= 256.0);
 }
 
-TEST_CASE("on a device, a point vortex is refused before any directory exists", "[euler][gpu]") {
+TEST_CASE("on a device, what the device steps cannot honour is refused before any directory",
+          "[euler][gpu]") {
   // The device steps take no circulation from the lift (the host's steady step measures it), so a
   // point vortex on a device would keep its initial circulation: E0706, not a silent mismatch.
+  // They sum in local order, so reproducibility "ranks" is E1109.
+  const bool vortex = GENERATE(true, false);
+  CAPTURE(vortex);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp64");
     on_device(d);
+    if (!vortex) {
+      d["reproducibility"] = "ranks";
+      return;
+    }
     for (auto& b : d["boundaries"]) {
       if (b["zone"] == "zmin") {
         b["kind"] = "slip";
@@ -1240,8 +1261,9 @@ TEST_CASE("on a device, a point vortex is refused before any directory exists", 
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["location"]["path"].get<std::string>().ends_with(".point_vortex"));
+  CHECK(diagnostic["code"] == (vortex ? "E0706" : "E1109"));
+  CHECK(diagnostic["location"]["path"].get<std::string>().ends_with(vortex ? ".point_vortex"
+                                                                           : "reproducibility"));
 }
 
 TEST_CASE("on a device, a diverged run names the cell whose stored state is not physical",
