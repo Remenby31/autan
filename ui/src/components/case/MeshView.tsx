@@ -21,35 +21,47 @@ export function MeshView({
   const [surface, setSurface] = useState<Surface | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // One renderer for the canvas's life: disposing it loses the WebGL context, which a new
+  // renderer on the same canvas cannot get back.
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
-    const abort = new AbortController();
     let disposed = false;
-    setSurface(null);
-    setError(null);
-    const request = fetchSurface(`/api/meshes/${encodeURIComponent(mesh)}/surface`, abort.signal);
-    request.catch(() => {});
-    (async () => {
-      const v = await SurfaceViewer.create(el, { forceWebGL: webgl });
-      if (disposed) {
-        v.dispose();
-        return;
-      }
-      viewer.current = v;
-      const s = await request;
-      setSurface(s);
-      v.setSurface(s, "");
-    })().catch((e: unknown) => {
-      if (!disposed) setError(e instanceof Error ? e.message : String(e));
-    });
+    SurfaceViewer.create(el, { forceWebGL: webgl })
+      .then((v) => {
+        if (disposed) {
+          v.dispose();
+          return;
+        }
+        viewer.current = v;
+        setReady(true);
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     return () => {
       disposed = true;
-      abort.abort();
       viewer.current?.dispose();
       viewer.current = null;
+      setReady(false);
     };
-  }, [mesh, webgl]);
+  }, [webgl]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const abort = new AbortController();
+    setSurface(null);
+    setError(null);
+    fetchSurface(`/api/meshes/${encodeURIComponent(mesh)}/surface`, abort.signal)
+      .then((s) => {
+        if (abort.signal.aborted) return;
+        viewer.current?.setSurface(s, "");
+        setSurface(s);
+      })
+      .catch((e: unknown) => {
+        if (!abort.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => abort.abort();
+  }, [mesh, ready]);
 
   useEffect(() => {
     const index = surface?.zones.findIndex((z) => z.name === selected) ?? -1;

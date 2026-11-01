@@ -14,6 +14,7 @@ import {
   UNITS,
 } from "../api/cases";
 import type { Diagnostic } from "../api/contracts";
+import { globMatches } from "../api/glob";
 import type { Plan } from "../api/runs";
 import { MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
@@ -67,23 +68,40 @@ function CaseEditor() {
   const { webgl = false } = Route.useSearch();
   const [picked, setPicked] = useState<string | null>(null);
 
-  // A zone picked in 3D: the rule naming it gets the focus, or a new rule for it, its
-  // condition suggested by the type the mesh file gives the zone.
+  // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
+  // it, its condition suggested by the type the mesh file gives the zone. A periodic zone takes
+  // no condition (case-schema.md#boundaries): nothing is added.
+  const [focusRule, setFocusRule] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const pick = (zone: string) => {
     setPicked(zone);
-    let index = form.boundaries.findIndex((r) => r.zones === zone);
-    if (index < 0) {
-      const type = mesh?.boundary_zones.find((z) => z.name === zone)?.type ?? "";
-      const kind: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
-      index = form.boundaries.length;
-      set("boundaries", [...form.boundaries, { zones: zone, kind, values: {} }]);
+    setNotice(null);
+    const type = mesh?.boundary_zones.find((z) => z.name === zone)?.type ?? "";
+    if (type === "periodic") {
+      setNotice(
+        `${zone} is periodic: it takes no condition, the solver pairs it with its partner.`,
+      );
+      return;
     }
-    requestAnimationFrame(() =>
-      document
-        .querySelector<HTMLInputElement>(`fieldset[aria-label="Boundary rule ${index + 1}"] input`)
-        ?.focus(),
-    );
+    const index = form.boundaries.findIndex((r) => globMatches(r.zones, zone));
+    if (index >= 0) {
+      setFocusRule(index);
+      return;
+    }
+    const kind: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
+    set("boundaries", [...form.boundaries, { zones: zone, kind, values: {} }]);
+    setFocusRule(form.boundaries.length);
   };
+  // Focused once React has committed the rule's fieldset.
+  useEffect(() => {
+    if (focusRule === null) return;
+    document
+      .querySelector<HTMLInputElement>(
+        `fieldset[aria-label="Boundary rule ${focusRule + 1}"] input`,
+      )
+      ?.focus();
+    setFocusRule(null);
+  }, [focusRule]);
 
   const set = <K extends keyof CaseForm>(key: K, value: CaseForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -355,6 +373,11 @@ function CaseEditor() {
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
           {form.mesh && <MeshView mesh={form.mesh} selected={picked} onPick={pick} webgl={webgl} />}
+          {notice && (
+            <Note tone="info" title="Periodic zone">
+              {notice}
+            </Note>
+          )}
           {rendered.isError && (
             <Note tone="error" title="The SDK could not be reached">
               The code below is from an earlier version of the case: {rendered.error.message}

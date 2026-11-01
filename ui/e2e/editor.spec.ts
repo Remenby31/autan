@@ -30,7 +30,7 @@ async function forces(page: Page, k: number, surfaces: string, area: string, eve
 // The CRM-HL case of py/examples/crm_hl.py, field by field.
 async function crmHl(page: Page) {
   await page.getByLabel("Name").fill("crm-hl");
-  await page.getByLabel("Mesh").selectOption("crm-hl");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
   await page.getByLabel("Turbulence").selectOption("sa");
   await page.getByLabel("Mach").fill("0.2");
   await page.getByLabel("Angle of attack", { exact: true }).fill("19.57");
@@ -122,25 +122,57 @@ test("a line longer than the code panel says so and scrolls to its end", async (
   await expect(page.getByTestId("case-py-more")).toHaveCount(0);
 });
 
-test("a zone clicked in 3D gets a boundary rule, its condition from the mesh", async ({ page }) => {
-  const webgl = process.env.AUTAN_UI_E2E_BACKEND === "webgl2" ? "?webgl=1" : "";
-  await page.goto(`/cases/new${webgl}`);
-  await page.getByLabel("Mesh").selectOption("polyMesh");
+const WEBGL = process.env.AUTAN_UI_E2E_BACKEND === "webgl2" ? "?webgl=1" : "";
+
+// The default view looks at the box centre from direction (-0.7, -1, 0.75) (SurfaceViewer
+// frameAll): the ray through the middle of the view enters the unit cube through ymin.
+async function clickCentre(page: Page) {
   const view = page.getByTestId("mesh-view");
   await expect(view).toHaveAttribute("data-ready", "true");
-
   const box = await view.boundingBox();
   if (!box) throw new Error("the mesh view has no box");
   await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
+}
 
-  // polyMesh.meshinfo.json: ymin is a wall, zmax a symmetry plane, the others untyped.
-  const types: Record<string, string> = { ymin: "wall", zmax: "symmetry" };
+test("a zone clicked in 3D gets a boundary rule, its condition from the mesh", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await clickCentre(page);
+
+  // polyMesh.meshinfo.json types ymin as a wall.
   const rule = page.getByRole("group", { name: "Boundary rule 1" });
-  const zone = await rule.getByLabel("Zones").inputValue();
-  expect(["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"]).toContain(zone);
-  await expect(rule.getByLabel("Condition")).toHaveValue(types[zone] ?? "wall");
+  await expect(rule.getByLabel("Zones")).toHaveValue("ymin");
+  await expect(rule.getByLabel("Condition")).toHaveValue("wall");
   await expect(rule.getByLabel("Zones")).toBeFocused();
 
-  await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await clickCentre(page);
   await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+});
+
+test("a zone a pattern already covers focuses that rule", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await rule(page, 1, "*", "slip");
+  await page.getByLabel("Name").focus();
+
+  await clickCentre(page);
+
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(1);
+  await expect(
+    page.getByRole("group", { name: "Boundary rule 1" }).getByLabel("Zones"),
+  ).toBeFocused();
+});
+
+test("picking keeps working on another mesh", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await expect(page.getByTestId("mesh-view")).toHaveAttribute("data-ready", "true");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("hybrid-cgns");
+
+  await clickCentre(page);
+
+  // hybrid.cgns gives its zones no type: the suggestion is a wall.
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(rule.getByLabel("Zones")).toHaveValue("ymin");
+  await expect(rule.getByLabel("Condition")).toHaveValue("wall");
 });

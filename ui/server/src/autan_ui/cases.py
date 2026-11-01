@@ -47,12 +47,20 @@ class Meshes:
         if self.root is None or name not in self.names():
             msg = f"no MeshInfo {name!r}"
             raise LookupError(msg)
+        try:
+            mesh_info = self.read(name).document()  # Checked as the SDK checks a MeshInfo.
+        except (OSError, ValueError, CaseError) as error:
+            msg = f"{name}{MESH_INFO} is not a valid MeshInfo: {error}"
+            raise ValueError(msg) from error
         with Folder(self.root) as folder:
             if folder.stat(name + SURFACE) is None:
                 msg = f"no surface for {name!r}: write it with autan-mesh-info --surface"
                 raise LookupError(msg)
-            data = folder.read(name + SURFACE)
-            mesh_info = json.loads(folder.read(name + MESH_INFO).decode())
+            try:
+                data = folder.read(name + SURFACE)
+            except OSError as error:
+                msg = f"{name}{SURFACE} is not a regular file: {error}"
+                raise ValueError(msg) from error
         return mesh_surface(data, mesh_info)
 
     def summaries(self) -> list[dict[str, Any]]:
