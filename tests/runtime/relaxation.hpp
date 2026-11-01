@@ -5,6 +5,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -29,6 +30,10 @@ struct RelaxationOptions {
   int throw_rank = -1;              ///< the rank that throws; -1: every rank
   std::int64_t signal_at = 0;  ///< iteration after which `signal_rank` raises SIGTERM; 0: never
   int signal_rank = 0;
+  std::int64_t touch_at = 0;  ///< iteration after which `touch_rank` creates `touch_file`; 0: never
+  int touch_rank = 0;
+  std::string touch_file{};
+  std::int64_t log_bytes = 0;  ///< a log event of this many bytes at every step; 0: none
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
@@ -69,6 +74,9 @@ struct RelaxationOptions {
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
     read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
+    read("AUTAN_TEST_TOUCH_AT", o.touch_at);
+    read("AUTAN_TEST_TOUCH_RANK", o.touch_rank);
+    if (const char* v = std::getenv("AUTAN_TEST_TOUCH_FILE")) o.touch_file = v;
     return o;
   }
 };
@@ -146,6 +154,13 @@ class Relaxation final : public autan::runtime::Physics {
       throw std::runtime_error("relaxation: requested failure");
     if (iteration == options_.signal_at && options_.signal_rank == context_.ranks.rank())
       std::raise(SIGTERM);
+    if (iteration == options_.touch_at && options_.touch_rank == context_.ranks.rank())
+      std::ofstream(options_.touch_file).put('\n');
+    if (options_.log_bytes > 0) {
+      context_.log.write(
+          "info", "solver", "bulk", "",
+          "{\"blob\": \"" + std::string(static_cast<std::size_t>(options_.log_bytes), 'x') + "\"}");
+    }
     autan::runtime::StepReport report;
     // Equation e decays from e + 1, so that equations are told apart.
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
