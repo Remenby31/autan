@@ -53,11 +53,17 @@ def acc_init(o: dsl.Accumulator) -> str:
     return "-::autan::kernels::infinity<A>()"
 
 
+def leads(accs: list[dsl.Accumulator], o: dsl.Accumulator) -> bool:
+    """Whether a Follow accumulator moves with `o`."""
+    return any(isinstance(f, dsl.Follow) and accs[f.leader] is o for f in accs)
+
+
 def _updates(
     accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str, sel: bool = False
 ) -> list[str]:
     """Accumulator updates for one incidence; Follow accumulators move with their leader. With
-    `sel`, Min/Max components also record the entry `k` they took (sel[...]), for team combines."""
+    `sel`, Min/Max components that lead a Follow also record the entry `k` they took (sel[...]),
+    for team combines."""
     lines = []
     for o, off in zip(accs, offs, strict=True):
         if isinstance(o, dsl.Follow):
@@ -71,7 +77,7 @@ def _updates(
             op = "lt" if isinstance(o, dsl.Min) else "gt"
             lines.append(f"{indent}if (::autan::kernels::{op}(A({src}[{k}]), acc[{k}])) {{")
             lines.append(f"{indent}  acc[{k}] = A({src}[{k}]);")
-            if sel:
+            if sel and leads(accs, o):
                 lines.append(f"{indent}  sel[{k}] = k;")
             for f, foff in zip(accs, offs, strict=True):
                 if isinstance(f, dsl.Follow) and accs[f.leader] is o:
@@ -112,7 +118,8 @@ def reduce_accumulate(
     lm: LoopModel, indent: str, layout: str = "soa", lane: str = "", step: str = ""
 ) -> list[str]:
     """Declares acc[] and accumulates cell c's entries into it; a team lane takes entries lane,
-    lane + step, ... and records in sel[] the entry each Min/Max component took."""
+    lane + step, ... and records in sel[] the entry each Min/Max component that leads a Follow
+    took (the only ones whose tie choice shows in the result)."""
     loop = lm.loop
     accs = loop.outputs
     offs = offsets(accs)
@@ -123,8 +130,8 @@ def reduce_accumulate(
         for o, off in zip(accs, offs, strict=True)
         for c in range(o.dataset.type.size)
     )
-    if lane:
-        lines.append(f"{indent}[[maybe_unused]] offset_t sel[{n}];")
+    if lane and any(leads(accs, o) for o in accs):  # type: ignore[arg-type]
+        lines.append(f"{indent}offset_t sel[{n}];")
         lines.extend(f"{indent}sel[{k}] = ::autan::kernels::no_entry;" for k in range(n))
     lines.extend(entry_loop(loop.over, indent, lane, step))
     i2 = indent + "  "

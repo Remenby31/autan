@@ -403,6 +403,13 @@ def _team_combine(lm: LoopModel, indent: str) -> list[str]:
             ]
             lines.append(f"{i2}{{")
             lines.append(f"{i2}  const A v = gpu::shfl_xor(acc[{k}], m);")
+            if not followers:
+                # No Follow: which tied entry wins does not show, the value alone is combined.
+                lines.append(f"{i2}  if (::autan::kernels::{op}(v, acc[{k}])) {{")
+                lines.append(f"{i2}    acc[{k}] = v;")
+                lines.append(f"{i2}  }}")
+                lines.append(f"{i2}}}")
+                continue
             lines.append(f"{i2}  const offset_t vs = gpu::shfl_xor(sel[{k}], m);")
             lines.extend(f"{i2}  const A v{j} = gpu::shfl_xor(acc[{j}], m);" for j in followers)
             lines.append(
