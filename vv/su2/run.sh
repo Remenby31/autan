@@ -26,12 +26,19 @@ docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp \
 run=$!
 # SU2 measures a residual's drop from its largest value, the protocol from its first: stop SU2
 # (SIGTERM: it ends the iteration and writes its output) once every rms[...] of history.csv is
-# ORDERS below its first value, so that it does not run on at its round-off floor.
+# ORDERS below its first value, so that it does not run on at its round-off floor, or once the
+# residuals have stalled: the worst equation's drop has not grown by 0.1 orders in STALL iterations.
 while kill -0 "$run" 2>/dev/null; do
-  if [ -f "$dir/history.csv" ] && awk -F, -v orders="${ORDERS:-10}" '
+  if [ -f "$dir/history.csv" ] && awk -F, -v orders="${ORDERS:-10}" -v stall="${STALL:-2000}" '
       NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /"rms\[/) col[i] = 1; next }
-      NR == 2 { for (i in col) first[i] = $i + 0; next }
-      { ok = 1; for (i in col) if ($i + 0 > first[i] - orders) ok = 0; if (ok) found = 1 }
+      NR == 2 { for (i in col) first[i] = $i + 0 }
+      {
+        worst = -1e300
+        for (i in col) if ($i + 0 - first[i] > worst) worst = $i + 0 - first[i]
+        if (worst <= -orders) found = 1
+        best[NR] = (NR == 2 || worst < best[NR - 1]) ? worst : best[NR - 1]
+        if (NR > stall + 2 && best[NR - stall] - best[NR] < 0.1) found = 1
+      }
       END { exit !found }' "$dir/history.csv"; then
     docker kill --signal TERM "$name" >/dev/null 2>&1 || true
     break
