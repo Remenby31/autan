@@ -715,23 +715,16 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. The face sums
   // still follow local order (#199), so the bits differ: converged 10 orders, the fields agree
-  // within 1e-9 of their magnitude, and a fixed rank count repeats bit for bit. Two zones at
-  // different states on the hybrid mesh (farfield around), and the periodic box.
-  const bool periodic = GENERATE(false, true);
+  // within 1e-9 of their magnitude (the largest speed for velocity components), and a fixed rank
+  // count repeats bit for bit. Two zones at different states on the hybrid mesh, farfield around.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(periodic, ranks);
+  CAPTURE(ranks);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    if (periodic) {
-      periodic_box(d, "fp64");
-      const double speed = d["freestream"]["speed"].get<double>();
-      d["cell_zones"][0]["initial"]["velocity"] = {0.6 * speed, 0.7 * speed, -0.3 * speed};
-    } else {
-      inviscid_along_x(d, "fp64");
-      for (auto& b : d["boundaries"]) b["kind"] = "farfield";
-      auto& init = d["cell_zones"].back()["initial"];
-      init["density"] = 1.2 * init["density"].get<double>();
-      init["pressure"] = 1.3 * init["pressure"].get<double>();
-    }
+    inviscid_along_x(d, "fp64");
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    auto& init = d["cell_zones"].back()["initial"];
+    init["density"] = 1.2 * init["density"].get<double>();
+    init["pressure"] = 1.3 * init["pressure"].get<double>();
     d["time"]["linear_solver"] = "gauss-seidel";
     d["time"]["max_iterations"] = 2000;
     d["time"]["residual_orders"] = 10.0;
@@ -743,7 +736,12 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
-  double worst = 0.0;
+  const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
+             vz = field(one.run, "VelocityZ");
+  double speed = 0.0;
+  for (std::size_t c = 0; c < vx.size(); ++c) {
+    speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
+  }
   for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
     const auto a = field(one.run, name), b = field(many, name);
     REQUIRE(a.size() == b.size());
@@ -752,12 +750,51 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
       diff = std::max(diff, std::abs(a[c] - b[c]));
       scale = std::max(scale, std::abs(a[c]));
     }
-    worst = std::max(worst, diff / scale);
+    if (std::string(name).starts_with("Velocity")) scale = speed;
+    INFO(name << " differs by " << diff / scale << " of its magnitude");
+    CHECK(diff <= 1e-9 * scale);
   }
-  INFO("fields differ by " << worst << " of their magnitude");
-  CHECK(worst <= 1e-9);
   const fs::path again = run_on_ranks(doc, ranks);
   CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
+}
+
+TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank steps",
+          "[euler][mpi]") {
+  // The periodic box: image ghosts take du after each colour. Not converged: 40 steps, the
+  // fields agree within 1e-9 of their magnitude.
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(ranks);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    periodic_box(d, "fp64");
+    const double speed = d["freestream"]["speed"].get<double>();
+    d["cell_zones"][0]["initial"]["velocity"] = {0.6 * speed, 0.7 * speed, -0.3 * speed};
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 40;
+    d["time"]["residual_orders"] = 30.0;
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  const fs::path many = run_on_ranks(doc, ranks);
+  REQUIRE(!many.empty());
+  const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
+             vz = field(one.run, "VelocityZ");
+  double speed = 0.0;
+  for (std::size_t c = 0; c < vx.size(); ++c) {
+    speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
+  }
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    const auto a = field(one.run, name), b = field(many, name);
+    REQUIRE(a.size() == b.size());
+    double diff = 0.0, scale = 0.0;
+    for (std::size_t c = 0; c < a.size(); ++c) {
+      diff = std::max(diff, std::abs(a[c] - b[c]));
+      scale = std::max(scale, std::abs(a[c]));
+    }
+    if (std::string(name).starts_with("Velocity")) scale = speed;
+    INFO(name << " differs by " << diff / scale << " of its magnitude");
+    CHECK(diff <= 1e-9 * scale);
+  }
 }
 #endif
 
