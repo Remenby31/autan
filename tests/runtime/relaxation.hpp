@@ -32,6 +32,9 @@ struct RelaxationOptions {
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
+  bool signal_on_start = false;  ///< raise SIGTERM once constructed, before iteration 1
+  bool throw_in_loads = false;
+  bool throw_in_fields = false;
   /// Every field and residual varies from cell to cell: values scaled by
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
@@ -60,6 +63,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
+    read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
     read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
     return o;
@@ -126,6 +130,7 @@ class Relaxation final : public autan::runtime::Physics {
         weight_ = restart.back().values.at(0);
       }
     }
+    if (options_.signal_on_start) std::raise(SIGTERM);
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
@@ -195,6 +200,7 @@ class Relaxation final : public autan::runtime::Physics {
   [[nodiscard]] std::vector<double> residual_scales() const override { return options_.scales; }
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
+    if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");
     if (!mean) return state_;
     auto out = mean_;
     for (auto& f : out) {
@@ -228,6 +234,9 @@ class Relaxation final : public autan::runtime::Physics {
                                             const std::array<double, 3>& center) const override {
     // Pressure force (p - p_inf) S over the zones' faces, its moment about
     // `center`; the cell's pressure stands for the face's.
+    if (options_.throw_in_loads &&
+        (options_.throw_rank < 0 || options_.throw_rank == context_.ranks.rank()))
+      throw std::runtime_error("relaxation: requested loads failure");
     // Exact sums over this rank's faces, then over the ranks: the same bits
     // on any number of ranks.
     std::array<autan::runtime::ExactSum, 6> sums;
