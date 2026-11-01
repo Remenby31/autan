@@ -106,6 +106,19 @@ def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, la
     return _wrap(h)
 
 
+def set_global_order(m: Mesh, stencil: str | None) -> None:
+    """Order `m` by its global numbering, with a cell stencil of `stencil` ordered the same way
+    (autan_spike_set_global_order): results then do not depend on the partition."""
+    err = ctypes.create_string_buffer(512)
+    kind = {"vertex": 0, "face2": 1, None: -1}[stencil]
+    _check(
+        lib().autan_spike_set_global_order(
+            m.handle, ctypes.c_int(kind), err, ctypes.c_size_t(len(err))
+        ),
+        err,
+    )
+
+
 def global_ids(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     """Global cell of each local cell and global face of each local face."""
     cells, faces = np.zeros(m.n_cells, np.int64), np.zeros(m.n_faces, np.int64)
@@ -189,14 +202,30 @@ def gradients(
     return grad.reshape(3, -1).T, qmin, qmax
 
 
-def advection(m: Mesh, policy: str, q: F64, grad: F64, velocity: tuple[float, float, float]) -> F64:
-    """Residual of the section 3.3 upwind face loop on the host."""
+def advection(
+    m: Mesh,
+    policy: str,
+    q: F64,
+    grad: F64,
+    velocity: tuple[float, float, float],
+    strategy: str = "scatter",
+) -> F64:
+    """Residual of the section 3.3 upwind face loop on the host: the face loop ("scatter") or a
+    per-cell gather ("gather-recompute", "store-gather")."""
     err = ctypes.create_string_buffer(512)
     res = np.zeros(m.n_cells)
     vel = np.array(velocity, dtype=np.float64)
     q, g = np.ascontiguousarray(q, dtype=np.float64), soa(grad)
     rc = lib().autan_spike_advection(
-        m.handle, policy.encode(), _p(q), _p(g), _p(vel), _p(res), err, ctypes.c_size_t(len(err))
+        m.handle,
+        policy.encode(),
+        strategy.encode(),
+        _p(q),
+        _p(g),
+        _p(vel),
+        _p(res),
+        err,
+        ctypes.c_size_t(len(err)),
     )
     _check(rc, err)
     return res

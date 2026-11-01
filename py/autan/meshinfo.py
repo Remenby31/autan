@@ -51,6 +51,32 @@ class Counts(_Strict):
     cells_by_type: CellsByType
 
 
+Point = tuple[
+    Annotated[float, Field(strict=True, allow_inf_nan=False)],
+    Annotated[float, Field(strict=True, allow_inf_nan=False)],
+    Annotated[float, Field(strict=True, allow_inf_nan=False)],
+]
+
+
+class Bounds(_Strict):
+    min: Point
+    max: Point
+
+
+GROUP_NAME = r"^[A-Za-z0-9_.][A-Za-z0-9_.-]*$"
+
+
+class Group(_Strict):
+    name: Annotated[str, Field(pattern=GROUP_NAME)]
+    zones: Annotated[tuple[Name, ...], Field(min_length=1)]
+
+
+class GroupsSource(_Strict):
+    path: Name
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    provenance: dict[str, str]
+
+
 class BoundaryZone(_Strict):
     name: Name
     type: BoundaryType | None
@@ -125,15 +151,20 @@ class MeshInfo(_Strict):
     schema_: Literal["autan.mesh-info/1"] = Field(alias="schema")
     source: Source
     counts: Counts
+    bounds: Bounds
     boundary_zones: tuple[BoundaryZone, ...]
     cell_zones: Annotated[tuple[CellZone, ...], Field(min_length=1)]
     interfaces: tuple[Interface, ...]
     periodic: tuple[PeriodicPair, ...]
     quality: Quality
+    groups: tuple[Group, ...]
+    groups_source: GroupsSource | None
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         problems = []
+        if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):
+            problems.append("bounds.min exceeds bounds.max")
         if sum(self.counts.cells_by_type.model_dump().values()) != self.counts.cells:
             problems.append("counts.cells_by_type does not sum to counts.cells")
         if sum(zone.cells for zone in self.cell_zones) != self.counts.cells:
@@ -160,9 +191,29 @@ class MeshInfo(_Strict):
         if len(set(pairs)) != len(pairs):
             problems.append("interfaces lists a pair twice")
         problems += self._periodic_problems()
+        problems += self._group_problems()
         if problems:
             fail("E0202", "{problems}", problems="; ".join(problems))
         return self
+
+    def _group_problems(self) -> list[str]:
+        order = {zone.name: i for i, zone in enumerate(self.boundary_zones)}
+        names = [group.name for group in self.groups]
+        problems = []
+        if names != sorted(set(names)):
+            problems.append("groups are not sorted by distinct names")
+        if self.groups and self.groups_source is None:
+            problems.append("groups without groups_source")
+        for group in self.groups:
+            if not set(group.zones) <= order.keys():
+                problems.append(f"group {group.name!r} names an unknown boundary zone")
+            elif [order[z] for z in group.zones] != sorted({order[z] for z in group.zones}):
+                problems.append(f"group {group.name!r} does not list distinct zones in order")
+        return problems
+
+    def groups_of(self, zone: str) -> tuple[str, ...]:
+        """Names of the groups holding boundary zone ``zone``, in name order."""
+        return tuple(group.name for group in self.groups if zone in group.zones)
 
     def _periodic_problems(self) -> list[str]:
         faces = {zone.name: zone.faces for zone in self.boundary_zones}

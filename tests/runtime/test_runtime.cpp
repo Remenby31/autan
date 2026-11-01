@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <random>
 #include <regex>
@@ -32,6 +33,7 @@
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/partition/partition.hpp"
+#include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
@@ -166,6 +168,21 @@ std::vector<double> solution_field(const fs::path& file, const char* solution, c
     REQUIRE(cg_field_read(fn, 1, 1, s, name, CGNS_ENUMV(RealDouble), &first, &size[1],
                           values.data()) == CG_OK);
   }
+  cg_close(fn);
+  return values;
+}
+
+// The node coordinates `axis` (CoordinateX, Y or Z) of a solution.cgns.
+std::vector<double> coordinates(const fs::path& file, const char* axis) {
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  char zone_name[33];
+  cgsize_t size[9];
+  REQUIRE(cg_zone_read(fn, 1, 1, zone_name, size) == CG_OK);
+  std::vector<double> values(static_cast<std::size_t>(size[0]));
+  const cgsize_t first = 1;
+  REQUIRE(cg_coord_read(fn, 1, 1, axis, CGNS_ENUMV(RealDouble), &first, &size[0], values.data()) ==
+          CG_OK);
   cg_close(fn);
   return values;
 }
@@ -314,11 +331,12 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
                          std::regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")));
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
   CHECK(info["solver"] == Json{{"version", "0.0.0"}, {"commit", build.commit}, {"backend", "cpu"}});
-  // identity: SHA-256 of the seven fields joined by "\n" (results.md).
+  // identity: SHA-256 of the eight fields joined by "\n" (results.md), the
+  // zone groups' hash empty without a sidecar.
   std::string expected;
   picosha2::hash256_hex_string(doc["case"]["sha256"].get<std::string>() + "\n" +
-                                   doc["mesh"]["sha256"].get<std::string>() + "\n" + build.commit +
-                                   "\nfp32+acc64\ncpu\ncpu\n1",
+                                   doc["mesh"]["sha256"].get<std::string>() + "\n\n" +
+                                   build.commit + "\nfp32+acc64\ncpu\ncpu\n1",
                                expected);
   CHECK(info["identity"] == expected);
   CHECK(read(o.run / "case.toml") == doc["case"]["toml"].get<std::string>());
@@ -807,6 +825,13 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                   })),
                   "E0705");
   }
+  SECTION("the mesh scale is finite and positive") {
+    for (const double scale : {0.0, -0.0254}) {
+      CAPTURE(scale);
+      require_error(run(input([&](Json& d) { d["mesh"]["scale"] = scale; })), "E0705");
+    }
+    require_error(run(input([](Json& d) { d["mesh"].erase("scale"); })), "E0705");
+  }
   SECTION("monitor names are unique") {
     require_error(run(input([](Json& d) { d["monitors"].push_back(d["monitors"][0]); })), "E0705");
   }
@@ -960,12 +985,12 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
-  // identity: the seven parts, then the start's identity, mode, iterations
+  // identity: the eight parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
   std::string identity;
   picosha2::hash256_hex_string(second["case"]["sha256"].get<std::string>() + "\n" +
-                                   second["mesh"]["sha256"].get<std::string>() + "\n" +
+                                   second["mesh"]["sha256"].get<std::string>() + "\n\n" +
                                    build.commit + "\nfp32+acc64\ncpu\ncpu\n1\n" +
                                    s["identity"].get<std::string>() + "\ncontinue\n" +
                                    std::to_string(s["iterations"].get<int>()) + "\n" +
@@ -1777,3 +1802,140 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   }
 }
 #endif
+
+TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime][unit]") {
+  // The hybrid mesh, and a copy whose points are divided by 0.0254 and
+  // declared in inches (mesh.scale = 0.0254, exactly one inch in metres):
+  // five explicit Euler steps of an inviscid flow at incidence give the same
+  // fields and forces to round-off of the precision, and the solution's
+  // coordinates in metres. (The SDK's test_solver_backend runs one file in m
+  // and in in through the SDK: its coordinates are then bit for bit.)
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  const fs::path inches = fresh_dir() / "polyMesh";
+  fs::copy(mesh_path, inches);
+  {
+    std::ifstream in(mesh_path / "points");
+    std::ostringstream out;
+    const std::regex point(R"(^\(([^ ]+) ([^ ]+) ([^ ]+)\)$)");
+    char buffer[96];
+    for (std::string line; std::getline(in, line);) {
+      std::smatch m;
+      if (std::regex_match(line, m, point)) {
+        std::snprintf(buffer, sizeof buffer, "(%.17g %.17g %.17g)", std::stod(m[1]) / 0.0254,
+                      std::stod(m[2]) / 0.0254, std::stod(m[3]) / 0.0254);
+        line = buffer;
+      }
+      out << line << '\n';
+    }
+    std::ofstream(inches / "points") << out.str();
+  }
+  const auto euler = [&](Json& d) {
+    d["precision"] = precision;
+    inviscid(d);
+    for (auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") b["kind"] = "slip";
+    }
+    d["monitors"][0]["every"] = 1;
+    d["time"] = {{"kind", "unsteady"},
+                 {"steps", 5},
+                 {"dt", nullptr},
+                 {"cfl", 0.8},
+                 {"average_from", nullptr}};
+  };
+  const Json metres = input(euler);
+  Json in_inches = metres;
+  {
+    std::string toml = in_inches["case"]["toml"];
+    const std::string unit = "mesh_unit = \"m\"";
+    REQUIRE(toml.find(unit) != std::string::npos);
+    in_inches["case"]["toml"] = toml.replace(toml.find(unit), unit.size(), "mesh_unit = \"in\"");
+  }
+  in_inches["mesh"]["path"] = inches.string();
+  in_inches["mesh"]["sha256"] = autan::io::mesh_hash(inches);
+  in_inches["mesh"]["scale"] = 0.0254;
+  autan::runtime::PhysicsRegistry registry;
+  autan::physics::register_euler(registry);
+  const Outcome a = run(metres, registry);
+  const Outcome b = run(in_inches, registry);
+  REQUIRE(a.status == ExitStatus::finished);
+  REQUIRE(b.status == ExitStatus::finished);
+  // The archived MeshInfo describes the file, in its units.
+  CHECK(read(b.run / "mesh-info.json") ==
+        autan::io::mesh_info_json(autan::io::read_mesh(inches), autan::io::mesh_hash(inches)));
+
+  // The fields' precision; the coordinates are FP64 in either.
+  double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
+  const auto close = [&](const std::vector<double>& x, const std::vector<double>& y) {
+    REQUIRE(x.size() == y.size());
+    double scale = 0.0, worst = 0.0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      scale = std::max(scale, std::abs(x[i]));
+      worst = std::max(worst, std::abs(x[i] - y[i]));
+    }
+    CAPTURE(worst / (eps * scale));
+    CHECK(worst <= 64 * eps * scale);
+  };
+  for (const char* field : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
+    CAPTURE(field);
+    close(solution_field(a.run / "solution.cgns", "FlowSolution", field),
+          solution_field(b.run / "solution.cgns", "FlowSolution", field));
+  }
+  const Json fa = history(a.run).back()["monitors"]["forces"];
+  const Json fb = history(b.run).back()["monitors"]["forces"];
+  const auto values = [](const Json& f, std::initializer_list<const char*> keys) {
+    std::vector<double> v;
+    for (const char* k : keys) v.push_back(f[k].get<double>());
+    return v;
+  };
+  close(values(fa, {"fx", "fy", "fz"}), values(fb, {"fx", "fy", "fz"}));
+  close(values(fa, {"mx", "my", "mz"}), values(fb, {"mx", "my", "mz"}));
+  close(values(fa, {"cd", "cs", "cl"}), values(fb, {"cd", "cs", "cl"}));
+  eps = 0x1p-52;
+  for (const char* axis : {"CoordinateX", "CoordinateY", "CoordinateZ"}) {
+    CAPTURE(axis);
+    close(coordinates(a.run / "solution.cgns", axis), coordinates(b.run / "solution.cgns", axis));
+  }
+}
+
+TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime][groups]") {
+  // The hybrid mesh copied with a zone-groups sidecar: the input names the
+  // sidecar's hash (mesh.groups_sha256); run.json records it, the identity
+  // covers it, the archived MeshInfo carries the groups. A sidecar that is not
+  // the one named, present or absent, is refused before any directory.
+  const fs::path mesh = fresh_dir() / "polyMesh";
+  fs::copy(mesh_path, mesh, fs::copy_options::recursive);
+  const std::string hash = autan::io::mesh_hash(mesh);
+  const fs::path sidecar = mesh.string() + ".zones.json";
+  std::ofstream(sidecar) << Json{{"schema", "autan.zone-groups/1"},
+                                 {"mesh_sha256", hash},
+                                 {"provenance", Json::object()},
+                                 {"groups", {{"walls", {"ymin", "zmax"}}}}}
+                                .dump();
+  const std::string groups_hash = autan::io::mesh_hash(sidecar);
+  const auto on = [&](const Json& groups_sha256) {
+    return input([&](Json& d) {
+      d["mesh"]["path"] = mesh.string();
+      d["mesh"]["sha256"] = hash;
+      d["mesh"]["groups_sha256"] = groups_sha256;
+    });
+  };
+  const Outcome o = run(on(groups_hash), {.factor = 0.5});
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["mesh"]["groups_sha256"] == groups_hash);
+  const Json archived = Json::parse(read(o.run / "mesh-info.json"));
+  CHECK(archived["groups"] == Json::parse(R"([{"name": "walls", "zones": ["ymin", "zmax"]}])"));
+  CHECK(archived["groups_source"]["sha256"] == groups_hash);
+  // The identity covers the groups' hash (results.md).
+  std::string expected;
+  picosha2::hash256_hex_string(info["case"]["sha256"].get<std::string>() + "\n" + hash + "\n" +
+                                   groups_hash + "\n" + build.commit + "\nfp32+acc64\ncpu\ncpu\n1",
+                               expected);
+  CHECK(info["identity"] == expected);
+
+  require_error(run(on(nullptr)), "E0137");               // a sidecar the input does not name
+  require_error(run(on(std::string(64, 'a'))), "E0137");  // another sidecar
+  fs::remove(sidecar);
+  require_error(run(on(groups_hash)), "E0137");  // the named sidecar is gone
+}

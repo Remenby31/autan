@@ -30,6 +30,7 @@ from autan_codegen.emit_cpp import (
 from autan_codegen.emit_cpu import (
     boundary_write_body,
     cell_stores,
+    global_left,
     n_out,
     offsets,
     other_targets,
@@ -231,7 +232,7 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
             for j in range(n):
                 e.w(f"    out[{j}] = A(a.scratch[offset_t({j}) * d.topo.n_faces + f]);")
             if lm.kind == "face":
-                e.w("    const bool left = d.topo.owner[f] == c;")
+                e.w(f"    const bool left = {global_left()} == c;")
         else:
             e.w(f"    typename P::compute out[{n}];")
             for s in _face_eval(lm, "    "):

@@ -1,6 +1,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/cellwise.hpp"
+#include "autan/core/error.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "fixtures.hpp"
@@ -77,6 +79,9 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
   CHECK(types["prism"] == 64);
   CHECK(types["hexa"] == 8);
   CHECK(types["polyhedron"] == 0);
+  // The unit cube of generate.py, in the file's units.
+  CHECK(doc["bounds"]["min"] == nlohmann::json::array({0.0, 0.0, 0.0}));
+  CHECK(doc["bounds"]["max"] == nlohmann::json::array({1.0, 1.0, 1.0}));
   REQUIRE(doc["boundary_zones"].size() == 6);
   CHECK(doc["boundary_zones"][0]["name"] == "xmin");
   CHECK(doc["boundary_zones"][0]["faces"] == 24);
@@ -170,4 +175,85 @@ TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh
     const bool periodic = zone["name"] == "xmin" || zone["name"] == "xmax";
     CHECK((zone["type"] == "periodic") == periodic);
   }
+}
+
+TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-info][groups]") {
+  // The hybrid mesh copied with a sidecar next to it (mesh-info.md, Zone
+  // groups): a Gmsh file's is <file>.zones.json, a polyMesh directory's
+  // <directory>.zones.json.
+  const bool directory = GENERATE(false, true);
+  CAPTURE(directory);
+  const fs::path dir = fresh_dir("groups");
+  const fs::path mesh_path = directory ? dir / "polyMesh" : dir / "hybrid.ascii.msh";
+  fs::copy(directory ? data_dir / "hybrid" / "polyMesh" : data_dir / "hybrid" / "hybrid.ascii.msh",
+           mesh_path, fs::copy_options::recursive);
+  const fs::path sidecar = mesh_path.string() + ".zones.json";
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+  const std::string hash = autan::io::mesh_hash(mesh_path);
+  const auto info = [&] {
+    return nlohmann::json::parse(
+        autan::io::mesh_info_json(mesh, hash, autan::io::read_zone_groups(mesh_path, mesh, hash)));
+  };
+
+  // No sidecar: no group.
+  CHECK(info()["groups"] == nlohmann::json::array());
+  CHECK(info()["groups_source"].is_null());
+
+  // Groups sorted by name, overlapping, zones in MeshInfo order whatever the
+  // file's; the source is the sidecar's path and the hash of its bytes.
+  nlohmann::json doc{
+      {"schema", "autan.zone-groups/1"},
+      {"mesh_sha256", hash},
+      {"provenance", {{"url", "https://example.org/grid"}, {"note", "test"}}},
+      {"groups",
+       {{"walls", {"zmin", "ymin"}}, {"x.sides", {"xmax", "xmin"}}, {"all-x_1", {"xmin"}}}}};
+  write(sidecar, doc.dump());
+  const auto with = info();
+  CHECK(with["groups"] == nlohmann::json::parse(R"([
+    {"name": "all-x_1", "zones": ["xmin"]},
+    {"name": "walls", "zones": ["ymin", "zmin"]},
+    {"name": "x.sides", "zones": ["xmin", "xmax"]}])"));
+  CHECK(with["groups_source"]["path"] == sidecar.string());
+  CHECK(with["groups_source"]["sha256"] == autan::io::mesh_hash(sidecar));
+  CHECK(with["groups_source"]["provenance"] == doc["provenance"]);
+
+  // Each fault, with its code.
+  const auto refused = [&](const std::string& text, autan::ErrorCode code) {
+    write(sidecar, text);
+    try {
+      (void)autan::io::read_zone_groups(mesh_path, mesh, hash);
+      FAIL("expected an error for " << text);
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == code);
+    }
+  };
+  const auto edited = [&](const std::function<void(nlohmann::json&)>& edit) {
+    nlohmann::json d = doc;
+    edit(d);
+    return d.dump();
+  };
+  using autan::ErrorCode;
+  refused("{not json", ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["extra"] = 1; }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d.erase("provenance"); }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["schema"] = "autan.zone-groups/2"; }),
+          ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["groups"]["walls"] = "ymin"; }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["mesh_sha256"] = std::string(64, '0'); }),
+          ErrorCode::zone_groups_other_mesh);
+  refused(edited([](auto& d) { d["groups"]["walls"] = {"ymin", "nowhere"}; }),
+          ErrorCode::zone_groups_bad_group);
+  refused(edited([](auto& d) { d["groups"]["walls"] = nlohmann::json::array(); }),
+          ErrorCode::zone_groups_bad_group);
+  refused(edited([](auto& d) { d["groups"]["walls"] = {"ymin", "ymin"}; }),
+          ErrorCode::zone_groups_bad_group);
+  for (const char* name : {"-walls", "wing*", "a b", ""}) {
+    CAPTURE(name);
+    refused(edited([&](auto& d) { d["groups"][name] = {"ymin"}; }),
+            ErrorCode::zone_groups_bad_group);
+  }
+  // A name given twice, which a JSON parser would merge.
+  refused(R"({"schema": "autan.zone-groups/1", "mesh_sha256": ")" + hash +
+              R"(", "provenance": {}, "groups": {"walls": ["ymin"], "walls": ["zmin"]}})",
+          ErrorCode::zone_groups_duplicate_name);
 }
