@@ -36,20 +36,21 @@ from autan.results import (
     utc_now,
 )
 from autan.schema import (
-    DDES,
-    SA,
-    SST,
     CaseSpec,
-    Compressible,
-    ConstantViscosity,
     Fluid,
-    IdealGas,
     Medium,
     SolidZone,
     Steady,
-    Sutherland,
     Unsteady,
 )
+from autan.solver_input import (
+    SolidInitial,
+    SolidMedium,
+    initial_state,
+    medium_input,
+    turbulence_input,
+)
+from autan.solver_input import freestream_state as closed_freestream
 from autan.units import si
 from autan.version import COMMIT, __version__
 
@@ -63,7 +64,6 @@ if TYPE_CHECKING:
     from autan.plan import Plan
 
 MEDIUM: TypeAdapter[Fluid | SolidZone] = TypeAdapter(Medium)
-GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact value
 
 BC_TYPES = {
     "slip": "BCWallInviscid",
@@ -193,56 +193,16 @@ class Box:
         ]
 
 
-def viscosity(gas: IdealGas, temperature: float) -> float:
-    law = gas.viscosity
-    if isinstance(law, ConstantViscosity):
-        return si(law.mu, "Pa * s")
-    assert isinstance(law, Sutherland)
-    t_ref, s = si(law.t_ref, "K"), si(law.s, "K")
-    # Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S)
-    mu_ref = si(law.mu_ref, "Pa * s")
-    return mu_ref * math.pow(temperature / t_ref, 1.5) * (t_ref + s) / (temperature + s)
-
-
 def freestream_state(spec: CaseSpec) -> dict[str, Any]:
-    """Density, pressure, temperature, speed, viscosity of the freestream (case-schema.md)."""
-    fs, physics = spec.freestream, spec.physics
-    alpha, beta = si(fs.aoa, "rad"), si(fs.sideslip, "rad")
-    direction = np.array(
-        [math.cos(alpha) * math.cos(beta), -math.sin(beta), math.sin(alpha) * math.cos(beta)]
-    )
-    if isinstance(physics, Compressible):
-        gas = physics.gas
-        assert fs.temperature is not None
-        assert fs.mach is not None
-        temperature = si(fs.temperature, "K")
-        r = GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
-        speed = fs.mach * math.sqrt(gas.gamma * r * temperature)
-        mu = viscosity(gas, temperature)
-        if fs.re is not None:
-            assert fs.ref_length is not None
-            density = fs.re * mu / (speed * si(fs.ref_length, "m"))
-            pressure = density * r * temperature
-        else:
-            assert fs.pressure is not None
-            pressure = si(fs.pressure, "Pa")
-            density = pressure / (r * temperature)
-        return {
-            "density": density,
-            "pressure": pressure,
-            "temperature": temperature,
-            "speed": speed,
-            "viscosity": mu,
-            "direction": direction,
-        }
-    assert fs.velocity is not None
+    """The closed freestream state of the solver input, as the fake's working values."""
+    state = closed_freestream(spec)
     return {
-        "density": si(physics.fluid.density, "kg / m**3"),
-        "pressure": 0.0,
-        "temperature": None,
-        "speed": si(fs.velocity, "m / s"),
-        "viscosity": si(physics.fluid.viscosity, "Pa * s"),
-        "direction": direction,
+        "density": state.density,
+        "pressure": state.pressure,
+        "temperature": state.temperature,
+        "speed": state.speed,
+        "viscosity": state.viscosity,
+        "direction": np.array(state.velocity) / state.speed,
     }
 
 
@@ -542,7 +502,7 @@ def _write_solution(
             cgns.node(region, "GridLocation", "GridLocation_t", "CellCenter")
             cgns.node(region, "FamilyName", "FamilyName_t", name)
 
-        fields = _fields(spec, plan, state, layout)
+        fields = _fields(spec, plan, layout)
         for solution_name in ("FlowSolution",) + (
             ("FlowSolutionMean",) if info.averaging is not None else ()
         ):
@@ -592,53 +552,40 @@ def _elements(zone: Any, name: str, kind: int, first: int, items: list[list[int]
     )
 
 
-def _fields(
-    spec: CaseSpec, plan: Plan, state: dict[str, Any], layout: list[str]
-) -> dict[str, NDArray[np.float64]]:
-    """Freestream state in every fluid cell, with each zone's own medium properties."""
-    media = {z.zone: MEDIUM.validate_python(z.medium) for z in plan.cell_zones}
-    count = len(layout)
-    density, velocity = np.zeros(count), np.zeros((3, count))
-    pressure, temperature = np.zeros(count), np.zeros(count)
-    kinematic = np.zeros(count)
-    for cell, zone in enumerate(layout):
-        medium = media[zone]
-        if isinstance(medium, SolidZone):
-            density[cell] = si(medium.material.density, "kg / m**3")
-            temperature[cell] = state["temperature"] or 0.0
-            continue
-        material = medium.material
-        if isinstance(material, IdealGas):
-            r = GAS_CONSTANT / si(material.molar_mass, "kg / mol")
-            density[cell] = state["pressure"] / (r * state["temperature"])
-            mu = viscosity(material, state["temperature"])
-            temperature[cell] = state["temperature"]
-        else:
-            density[cell] = si(material.density, "kg / m**3")
-            mu = si(material.viscosity, "Pa * s")
-        pressure[cell] = state["pressure"]
-        velocity[:, cell] = state["speed"] * state["direction"]
-        kinematic[cell] = mu / density[cell]
-    fields: dict[str, NDArray[np.float64]] = {
-        "Density": density,
-        "VelocityX": velocity[0],
-        "VelocityY": velocity[1],
-        "VelocityZ": velocity[2],
-        "Pressure": pressure,
-    }
-    if isinstance(spec.physics, Compressible):
-        fields["Temperature"] = temperature
-    turbulence = spec.physics.turbulence
-    if isinstance(turbulence, DDES):
-        turbulence = turbulence.base
-    fluid = kinematic > 0
-    if isinstance(turbulence, SA):
-        fields["TurbulentSANuTilde"] = turbulence.nu_tilde_ratio * kinematic
-    if isinstance(turbulence, SST):
-        k = 1.5 * (turbulence.intensity * state["speed"]) ** 2
-        fields["TurbulentEnergyKinetic"] = np.where(fluid, k, 0.0)
-        fields["TurbulentDissipationRate"] = np.divide(
-            k, turbulence.viscosity_ratio * kinematic, out=np.zeros(count), where=fluid
+def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[np.float64]]:
+    """Every cell holds the initial state of its zone (solver-input.md#initial-state)."""
+    freestream, turbulence = closed_freestream(spec), turbulence_input(spec)
+    initial = {
+        z.zone: initial_state(
+            medium_input(MEDIUM.validate_python(z.medium)), freestream, turbulence
         )
-    assert list(fields) == field_names(spec)
+        for z in plan.cell_zones
+    }
+    densities = {}
+    for z in plan.cell_zones:
+        medium = medium_input(MEDIUM.validate_python(z.medium))
+        if isinstance(medium, SolidMedium):
+            densities[z.zone] = medium.density
+    names = field_names(spec)
+    fields = {name: np.zeros(len(layout)) for name in names}
+    for cell, zone in enumerate(layout):
+        zone_state = initial[zone]
+        if isinstance(zone_state, SolidInitial):
+            fields["Density"][cell] = densities[zone]
+            if "Temperature" in fields:
+                fields["Temperature"][cell] = zone_state.temperature
+            continue
+        values = {
+            "Density": zone_state.density,
+            "Pressure": zone_state.pressure,
+            "VelocityX": zone_state.velocity[0],
+            "VelocityY": zone_state.velocity[1],
+            "VelocityZ": zone_state.velocity[2],
+            "Temperature": zone_state.temperature,
+            "TurbulentSANuTilde": zone_state.nu_tilde,
+            "TurbulentEnergyKinetic": zone_state.k,
+            "TurbulentDissipationRate": zone_state.omega,
+        }
+        for name in names:
+            fields[name][cell] = values[name]
     return fields

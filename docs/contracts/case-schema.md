@@ -218,7 +218,7 @@ Every problem is reported as a diagnostic, in this JSON shape wherever diagnosti
 ```json
 {"code": "E0412", "severity": "error", "message": "boundary zone 'empennage' has no condition",
  "location": {"file": "crm-hl.py", "line": 4, "path": "boundaries"},
- "fix": "case.boundary('empennage').wall()", "doc": "https://…/docs/sdk/errors.md#e0412",
+ "fix": "case.boundary('empennage').wall()", "doc": "https://remenby31.github.io/autan/sdk/errors/#e0412",
  "data": {"zone": "empennage"}}
 ```
 
@@ -231,4 +231,4 @@ Every problem is reported as a diagnostic, in this JSON shape wherever diagnosti
 | `fix`, `doc` | A suggested correction, and the code's documentation page. |
 | `data` | Machine-readable details. Mesh entities use `zone` (name), `cell` and `face` (0-based indices in the mesh's cell and face order, the order of `NFaceElements` and `NGonElements` in [results.md](results.md#solutioncgns)), `iteration`. |
 
-Codes are registered in `autan.errors`; their reference page `docs/sdk/errors.md` is generated from it.
+Codes are registered in `autan.errors`; their reference page `docs/sdk/errors.md` and the machine-readable export [`diagnostics.json`](diagnostics.json) (`autan explain --all --json`: severity, title, fix and doc of every code, embedded by the C++ runtime) are generated from it.
