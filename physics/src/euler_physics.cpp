@@ -15,6 +15,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
@@ -803,24 +805,107 @@ runtime::PhysicsFactory factory() {
   };
 }
 
+bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
+  const auto& va = *a.viscosity;
+  const auto& vb = *b.viscosity;
+  return a.gas_constant == b.gas_constant && a.gamma == b.gamma && a.prandtl == b.prandtl &&
+         va.law == vb.law && va.mu_ref == vb.mu_ref && va.t_ref == vb.t_ref && va.s == vb.s &&
+         va.mu == vb.mu;
+}
+
+// What the Euler physics runs beyond its key: every cell zone of one ideal gas, and boundary
+// conditions that apply to inviscid flow.
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+  const runtime::Medium* first = nullptr;
+  for (std::size_t i = 0; i < in.cell_zones.size(); ++i) {
+    const auto& z = in.cell_zones[i];
+    const std::string path = "cell_zones[" + std::to_string(i) + "].medium";
+    if (z.medium.kind != "ideal-gas") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes ideal gases only; cell zone '" + z.zone + "' is " +
+                     z.medium.kind + " '" + z.medium.name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.kind}}.dump()};
+    }
+    if (first == nullptr) {
+      first = &z.medium;
+    } else if (!same_gas(z.medium, *first)) {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes one gas in every cell zone; cell zone '" + z.zone +
+                     "' is '" + z.medium.name + "', not '" + first->name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.name}}.dump()};
+    }
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    const auto& b = in.boundaries[i];
+    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
+        b.kind != "outlet" && b.kind != "manufactured") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics has no '" + b.kind + "' condition; boundary zone '" +
+                     b.zone + "' needs slip, symmetry, farfield, inlet or outlet",
+          .path = "boundaries[" + std::to_string(i) + "].kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
+    }
+  }
+  return std::nullopt;
+}
+
+// The Navier-Stokes physics: one ideal gas as Euler, the Euler conditions and no-slip walls; SA runs
+// steady (its loosely coupled step is the steady solver's) and needs a wall to measure distances
+// from, unless a manufactured solution gives them.
+std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in) {
+  bool wall = false;
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    const auto& b = in.boundaries[i];
+    if (b.kind == "wall") {
+      wall = true;
+      continue;
+    }
+    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
+        b.kind != "outlet" && b.kind != "manufactured") {
+      return runtime::PhysicsRefusal{
+          .message = "the Navier-Stokes physics has no '" + b.kind + "' condition; boundary zone '" +
+                     b.zone + "' needs wall, slip, symmetry, farfield, inlet or outlet",
+          .path = "boundaries[" + std::to_string(i) + "].kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
+    }
+  }
+  if (in.turbulence.model == "sa") {
+    if (in.time.kind != "steady") {
+      return runtime::PhysicsRefusal{
+          .message = "the SA physics runs steady cases only", .path = "time.kind",
+          .data_json = nlohmann::json{{"time", in.time.kind}}.dump()};
+    }
+    if (!wall && !in.verification) {
+      return runtime::PhysicsRefusal{
+          .message = "the SA physics needs a wall boundary to measure the wall distance from",
+          .path = "boundaries", .data_json = "{}"};
+    }
+  }
+  // The gas checks are the Euler physics' own; its condition check is replaced above.
+  runtime::SolverInput gas_only = in;
+  gas_only.boundaries.clear();
+  return euler_scope(gas_only);
+}
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
-               factory<kernels::fp64, Euler<kernels::fp64>>());
+               factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
-               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>());
+               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope);
 }
 
 void register_navier_stokes(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "sa", "fp64", "cpu"},
-               factory<kernels::fp64, NavierStokes<kernels::fp64>>());
-  registry.add({"compressible", "sa", "fp32+acc64", "cpu"},
-               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>());
-  registry.add({"compressible", "laminar", "fp64", "cpu"},
-               factory<kernels::fp64, NavierStokes<kernels::fp64>>());
-  registry.add({"compressible", "laminar", "fp32+acc64", "cpu"},
-               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>());
+  for (const char* model : {"laminar", "sa"}) {
+    registry.add({"compressible", model, "fp64", "cpu"},
+                 factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope);
+    registry.add({"compressible", model, "fp32+acc64", "cpu"},
+                 factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
+                 navier_stokes_scope);
+  }
 }
 
 }  // namespace autan::physics

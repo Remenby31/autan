@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "autan/kernels/geometry.hpp"
@@ -17,14 +18,25 @@ namespace nk = autan::kernels::navier_stokes;
 
 template <class P>
 struct NavierStokes<P>::Impl {
-  using G = typename P::geom;
 
   Euler<P> euler;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
-      cell_volume;
+  // Each geometry array has the element type its Data<P> member stores (P::geom_value for
+  // geometry the bodies read only as values).
+  template <class Ptr>
+  using stored = std::vector<std::remove_cvref_t<std::remove_pointer_t<Ptr>>>;
+  using D = nk::Data<P>;
+  stored<decltype(D::face_normal)> face_normal;
+  stored<decltype(D::face_area_magnitude)> face_area_magnitude;
+  stored<decltype(D::face_centroid)> face_centroid;
+  stored<decltype(D::face_moment)> face_moment;
+  stored<decltype(D::cell_centroid)> cell_centroid;
+  stored<decltype(D::cell_volume)> cell_volume;
   std::vector<State> mu_t, mu_t_b, lam_v, traction, ut, ut_b;
-  std::vector<G> q_grad, q_hdiag, q_hoff, quad;
+  stored<decltype(D::q_grad)> q_grad;
+  stored<decltype(D::q_hdiag)> q_hdiag;
+  stored<decltype(D::q_hoff)> q_hoff;
+  stored<decltype(D::quad)> quad;
   // The quadratic fit's stencil: every cell sharing a node with a boundary cell, and their
   // boundary faces (kernels::StencilKind::vertex); empty for the other cells.
   std::vector<offset_t> fit_offsets;
@@ -61,10 +73,10 @@ struct NavierStokes<P>::Impl {
     const auto nc = static_cast<std::size_t>(t.n_cells);
     const auto ni = static_cast<std::size_t>(t.n_interior_faces);
     const auto nst = static_cast<std::size_t>(t.n_stencil);
-    q_grad.assign(3 * nst, G(0));
-    q_hdiag.assign(3 * nst, G(0));
-    q_hoff.assign(3 * nst, G(0));
-    std::fill(quad.begin(), quad.end(), G(0));
+    q_grad.assign(3 * nst, {});
+    q_hdiag.assign(3 * nst, {});
+    q_hoff.assign(3 * nst, {});
+    std::fill(quad.begin(), quad.end(), typename decltype(quad)::value_type(0));
     std::vector<char> boundary_cell(nc, 0);
     for (std::size_t f = ni; f < static_cast<std::size_t>(t.n_faces); ++f) {
       boundary_cell[static_cast<std::size_t>(t.owner[f])] = 1;
@@ -152,7 +164,7 @@ struct NavierStokes<P>::Impl {
         }
       }
       if (!regular) continue;
-      quad[c] = G(1);
+      quad[c] = typename decltype(quad)::value_type(1);
       for (std::size_t k = begin; k < end; ++k) {
         const double wk = w[k - begin];
         if (wk == 0.0) continue;
@@ -164,9 +176,9 @@ struct NavierStokes<P>::Impl {
           coef[i] /= unit[i];
         }
         for (std::size_t j = 0; j < 3; ++j) {
-          q_grad[j * nst + k] = G(coef[j]);
-          q_hdiag[j * nst + k] = G(coef[3 + j]);
-          q_hoff[j * nst + k] = G(coef[6 + j]);
+          q_grad[j * nst + k] = static_cast<typename decltype(q_grad)::value_type>(coef[j]);
+          q_hdiag[j * nst + k] = static_cast<typename decltype(q_hdiag)::value_type>(coef[3 + j]);
+          q_hoff[j * nst + k] = static_cast<typename decltype(q_hoff)::value_type>(coef[6 + j]);
         }
       }
     }
@@ -208,12 +220,12 @@ struct NavierStokes<P>::Impl {
         fit_offsets[c + 1] = static_cast<offset_t>(fit_entries.size());
       }
     }
-    face_normal = kernels::converted<G>(packed.face_normal);
-    face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<G>(packed.face_centroid);
-    face_moment = kernels::converted<G>(packed.face_moment);
-    cell_centroid = kernels::converted<G>(packed.cell_centroid);
-    cell_volume = kernels::converted<G>(packed.cell_volume);
+    face_normal = kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
+    face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(packed.face_area_magnitude);
+    face_centroid = kernels::converted<typename decltype(face_centroid)::value_type>(packed.face_centroid);
+    face_moment = kernels::converted<typename decltype(face_moment)::value_type>(packed.face_moment);
+    cell_centroid = kernels::converted<typename decltype(cell_centroid)::value_type>(packed.cell_centroid);
+    cell_volume = kernels::converted<typename decltype(cell_volume)::value_type>(packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     mu_t.assign(nc, State(0));
@@ -222,7 +234,7 @@ struct NavierStokes<P>::Impl {
     traction.assign(5 * nf, State(0));
     ut.assign(5 * nc, State(0));
     ut_b.assign(5 * nf, State(0));
-    quad.assign(nc, G(0));
+    quad.assign(nc, {});
     fit_g.assign(15 * nc, typename P::grad(0));
     fit_hd.assign(15 * nc, typename P::grad(0));
     fit_ho.assign(15 * nc, typename P::grad(0));

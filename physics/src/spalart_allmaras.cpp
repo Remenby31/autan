@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "autan/kernels/geometry.hpp"
@@ -15,13 +16,19 @@ namespace sk = autan::kernels::spalart_allmaras;
 
 template <class P>
 struct SpalartAllmaras<P>::Impl {
-  using G = typename P::geom;
   using J = typename P::jac;
 
   NavierStokes<P>& flow;
   std::size_t nc, nf, ni;
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, cell_centroid, cell_volume,
-      wall_distance;
+  template <class Ptr>
+  using stored = std::vector<std::remove_cvref_t<std::remove_pointer_t<Ptr>>>;
+  using D = sk::Data<P>;
+  stored<decltype(D::face_normal)> face_normal;
+  stored<decltype(D::face_area_magnitude)> face_area_magnitude;
+  stored<decltype(D::face_centroid)> face_centroid;
+  stored<decltype(D::cell_centroid)> cell_centroid;
+  stored<decltype(D::cell_volume)> cell_volume;
+  stored<decltype(D::wall_distance)> wall_distance;
   std::vector<State> nt, nt_b, nt_bc, source;
   std::vector<typename P::grad> nt_grad;
   std::vector<J> cell_jac, face_jac, bnd_jac;
@@ -36,12 +43,12 @@ struct SpalartAllmaras<P>::Impl {
         nf(static_cast<std::size_t>(mesh.n_faces())),
         ni(static_cast<std::size_t>(mesh.n_interior_faces())) {
     const auto packed = kernels::pack_geometry(mesh, geometry);
-    face_normal = kernels::converted<G>(packed.face_normal);
-    face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<G>(packed.face_centroid);
-    cell_centroid = kernels::converted<G>(packed.cell_centroid);
-    cell_volume = kernels::converted<G>(packed.cell_volume);
-    wall_distance.assign(nc, G(1));
+    face_normal = kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
+    face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(packed.face_area_magnitude);
+    face_centroid = kernels::converted<typename decltype(face_centroid)::value_type>(packed.face_centroid);
+    cell_centroid = kernels::converted<typename decltype(cell_centroid)::value_type>(packed.cell_centroid);
+    cell_volume = kernels::converted<typename decltype(cell_volume)::value_type>(packed.cell_volume);
+    wall_distance.assign(nc, typename decltype(wall_distance)::value_type(1));
     nt.assign(nc, State(0));
     nt_b.assign(nf, State(0));
     nt_bc.assign(nf, State(0));
@@ -136,7 +143,7 @@ void SpalartAllmaras<P>::set_wall_distance(std::span<const double> d) {
   if (d.size() != m.nc) throw std::invalid_argument("wall distance does not match the cells");
   for (std::size_t c = 0; c < m.nc; ++c) {
     if (!(d[c] > 0.0)) throw std::invalid_argument("wall distance must be positive");
-    m.wall_distance[c] = typename P::geom(d[c]);
+    m.wall_distance[c] = static_cast<typename decltype(m.wall_distance)::value_type>(d[c]);
   }
 }
 

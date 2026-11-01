@@ -92,7 +92,8 @@ struct Schedule {
   int block = 256;
   Colouring interior;
   Colouring boundary;
-  void* face_scratch = nullptr;  ///< store-gather: face_scratch_width x n_faces accumulation values
+  void* face_scratch = nullptr;  ///< store-gather: face_scratch_width x n_faces compute-type values
+                                 ///< (body outputs, summed in accumulation type by the gather)
   int face_scratch_width = 0;    ///< components per face the scratch holds
   /// Deterministic reduction adjoints: incidence_scratch_width x max(n_incidences, n_stencil)
   /// accumulation values (one column per entry of the widest list a reduction iterates).

@@ -43,7 +43,9 @@ On a Mac, `autan-bench run` reads GPU utilisation from the IOAccelerator registr
 
 `bench/stream/stream.cu` runs the four STREAM kernels (McCalpin 1995) on three FP64 arrays of 2²⁸ elements (2 GiB each, far beyond the 24 MiB L2), 16-byte loads, 256 threads per block, 10 warm-up and 100 timed samples per kernel, each sample the mean of 5 back-to-back launches (about 85 ms). On the shared Sparks, single launches are disturbed by other tenants' CPU traffic on the same LPDDR5x; batching five halves the CV and moves the median by less than 0.5 %. Bytes moved count each array read and each array written once, as STREAM does. Each kernel repeats on unchanged inputs, so the final arrays have exact values and the binary checks them bitwise.
 
-The **GB10 peak bandwidth** is the highest median of the four kernels in `bench/baselines/gb10.json` (`autan-bench peak bench/baselines/gb10.json`). It is the denominator of "% of peak" for every kernel, and it is a measured, achievable peak, below the 273 GB/s of the LPDDR5x datasheet.
+The **GB10 peak bandwidth** is the highest median of the four kernels in `bench/baselines/gb10.json` (`autan-bench peak bench/baselines/gb10.json`). It is the denominator of "% of peak" for every kernel, and it is a measured, achievable peak, below the 273 GB/s of the LPDDR5x datasheet. The baseline pools 5 STREAM runs on spark-5359, 10 minutes apart, each started with the GPU idle and a host load of at most 3 (`--max-load 0.15` on 20 CPUs); `host_load` and `pooled_from` in the file record each run's conditions.
+
+spark-5359 is never quiet: 2 to 5 threads are runnable at any moment (none waiting on I/O), from `dockerd`/`containerd`, Python daemons and about 40 containers of another project (Excalibur: APIs, PostgreSQL, daemons), 47 containers in all, so its load average stays near 2. That background traffic shares the memory with the GPU and is part of the reference: the peak is what a kernel can reach on this machine as it is used, not on an idle one. Never stop or touch those containers.
 
 ## Results, baselines and the regression gate
 

@@ -17,10 +17,10 @@ import autan
 import numpy as np
 from autan_vv.harness import read_geometry
 
-CASES = {  # Mach, Reynolds number per metre, cf station, wall x range
-    "flatplate": (0.2, 5.0e6, 0.970084071, (0.0, 2.0)),
-    "bump": (0.2, 3.0e6, 0.75, (0.0, 1.5)),
-    "naca0012": (0.15, 6.0e6, 0.5, (0.0, 1.0)),
+CASES = {  # Mach, Reynolds number per metre, cf station, wall x range, normal axis of the plane
+    "flatplate": (0.2, 5.0e6, 0.970084071, (0.0, 2.0), 1),
+    "bump": (0.2, 3.0e6, 0.75, (0.0, 1.5), 1),
+    "naca0012": (0.15, 6.0e6, 0.5, (0.0, 1.0), 2),
 }
 
 
@@ -32,14 +32,14 @@ def q_inf(mach: float, re: float) -> float:
 
 
 def main() -> None:
-    mach, re, station, (x0, x1) = CASES[sys.argv[1]]
+    mach, re, station, (x0, x1), up = CASES[sys.argv[1]]
     q = q_inf(mach, re)
     for path in sys.argv[2:]:
         r = autan.Results.open(Path(path))
         geometry = read_geometry(r).geometry
         faces, tau = r.wall("WallShearStressX")
         x = geometry.face_centroid[faces, 0]
-        y = geometry.face_centroid[faces, 1]
+        y = geometry.face_centroid[faces, up]
         # Wall faces only (WallSolution also holds slip faces, whose shear is zero), the upper
         # surface of an airfoil.
         on = (x > x0) & (x < x1) & (np.abs(tau) > 0.0) & (y >= 0.0)

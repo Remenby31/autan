@@ -6,9 +6,30 @@ const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const series = (k: number) => css(`--series-${(k % 8) + 1}`);
 
-// Ticks, labels and grid lines on decades only: a log axis is unreadable with every minor.
-const decades = (_: uPlot, splits: number[]) =>
-  splits.map((v) => (Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9 ? v : null));
+// An equation satisfied identically (the spanwise momentum of a one-cell-thick slab) leaves
+// round-off residuals near 1e-33, or exactly zero. The axis spans whole decades, at most DECADES
+// below its top; zero, which a log axis cannot place, is a gap.
+const DECADES = 20;
+const positive = (values: number[]) => values.map((v) => (v > 0 ? v : null));
+const range = (_: uPlot, min: number | null, max: number | null): uPlot.Range.MinMax => {
+  if (min == null || max == null || !(max > 0)) return [min, max];
+  const top = Math.ceil(Math.log10(max));
+  const bottom = Math.max(Math.floor(Math.log10(Math.max(min, Number.MIN_VALUE))), top - DECADES);
+  return [10 ** Math.min(bottom, top - 1), 10 ** top];
+};
+
+// Ticks, labels and grid lines on whole decades, every n-th past LABELS of them. uPlot's own
+// log splits are not used: they overflow on decades far below 1.
+const LABELS = 8;
+const decades = (_: uPlot, __: number, min: number, max: number) => {
+  if (!(min > 0 && max > min)) return [];
+  const low = Math.ceil(Math.log10(min) - 1e-9);
+  const high = Math.floor(Math.log10(max) + 1e-9);
+  const step = Math.ceil((high - low + 1) / LABELS);
+  const splits = [];
+  for (let k = Math.ceil(low / step) * step; k <= high; k += step) splits.push(10 ** k);
+  return splits;
+};
 
 /** Residuals on a log axis; redraws in place as the history grows. */
 export function ResidualChart({ history }: { history: HistoryColumns }) {
@@ -25,15 +46,14 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
       {
         width: el.clientWidth,
         height: el.clientHeight,
-        scales: { x: { time: false }, y: { distr: 3 } },
+        scales: { x: { time: false }, y: { distr: 3, range } },
         axes: [
           { stroke: css("--fg-3"), grid: { stroke: css("--line") } },
           {
             stroke: css("--fg-3"),
-            grid: { stroke: css("--line"), filter: decades },
-            ticks: { filter: decades },
+            grid: { stroke: css("--line") },
             size: 60,
-            filter: decades,
+            splits: decades,
             values: (_, splits) => splits.map((v) => (v == null ? "" : v.toExponential(0))),
           },
         ],
@@ -68,7 +88,7 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
   useEffect(() => {
     plot.current?.setData([
       history.iteration,
-      ...names.map((name) => history.residuals.get(name) ?? []),
+      ...names.map((name) => positive(history.residuals.get(name) ?? [])),
     ]);
   }, [history.version, key]);
 

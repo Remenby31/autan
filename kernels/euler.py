@@ -379,12 +379,12 @@ def mirror_state(wi: State.Vec5, n: Geom.Vec3) -> State.Vec5:
 
 
 @pointwise
-def wall_state(wi: State.Vec5, data: State.Vec5, rgas: Param) -> State.Vec5:
-    # No-slip wall at rest: zero velocity and the interior pressure (zero normal pressure gradient);
-    # the wall temperature sets the density when it is given (isothermal), the interior density
-    # otherwise (adiabatic).
-    rb = wi[4] / (rgas * data[0]) if data[0] > 0.0 else wi[0]
-    return Vec5(rb, 0.0, 0.0, 0.0, wi[4])
+def wall_state(wg: State.Vec5, data: State.Vec5, rgas: Param, pr: Param) -> State.Vec5:
+    # No-slip wall at rest: zero velocity and the interior pressure (zero normal pressure gradient),
+    # kept gauge like the mirror; the wall temperature sets the density when it is given
+    # (isothermal), the interior density otherwise (adiabatic).
+    rb = (wg[4] + pr) / (rgas * data[0]) if data[0] > 0.0 else wg[0]
+    return Vec5(rb, 0.0, 0.0, 0.0, wg[4])
 
 
 @pointwise
@@ -398,21 +398,26 @@ def boundary_value(
     pr: Param,
 ) -> State.Vec5:
     # Gauge interior state in, gauge boundary state out; the conditions and their data use the
-    # absolute pressure. Codes are whole numbers stored in FP64: compare with the midpoints.
+    # absolute pressure, except the mirror, which keeps the gauge pressure: a round trip through
+    # p_ref would round away the variations FP32 stores. Codes are whole numbers stored in FP64:
+    # compare with the midpoints.
     wi = Vec5(wg[0], wg[1], wg[2], wg[3], wg[4] + pr)
+    shift = pr
     if kind < BC_FARFIELD - 0.5:
         w = data
     elif kind < BC_SLIP - 0.5:
         w = farfield_state(wi, data, n, g)
     elif kind < BC_INLET - 0.5:
-        w = mirror_state(wi, n)
+        w = mirror_state(wg, n)
+        shift = 0.0 * pr
     elif kind < BC_OUTLET - 0.5:
         w = inlet_state(wi, data, n, g, rgas)
     elif kind < BC_WALL - 0.5:
         w = outlet_state(wi, data, n, g)
     else:
-        w = wall_state(wi, data, rgas)
-    return Vec5(w[0], w[1], w[2], w[3], w[4] - pr)
+        w = wall_state(wg, data, rgas, pr)
+        shift = 0.0 * pr
+    return Vec5(w[0], w[1], w[2], w[3], w[4] - shift)
 
 
 # ---------------------------------------------------------------------------- loops
