@@ -1535,6 +1535,10 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
                       int expected_status = 0, Json* diagnostic = nullptr) {
+  // The scenario, in any failure below: a launcher that a watchdog ends (#304) included.
+  std::string scenario;
+  for (const auto& o : options) scenario += o + " ";
+  INFO(ranks << " ranks: " << scenario);
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
