@@ -21,6 +21,7 @@ from pydantic import TypeAdapter
 
 from autan import cgns
 from autan.errors import CaseError, diagnostic
+from autan.plan import read_regular
 from autan.results import (
     Averaging,
     CaseIdentity,
@@ -272,14 +273,14 @@ class FakeBackend:
         )
         states = {
             rule.condition.sha256: _archived(
-                case.resolve(rule.condition.path), rule.condition.sha256
+                case.resolve(rule.condition.path), rule.condition.sha256, "E0420"
             )
             for rule in spec.boundaries
             if isinstance(rule.condition, OracleState)
         }
         if spec.initial_state is not None:
             states[spec.initial_state.sha256] = _archived(
-                case.resolve(spec.initial_state.path), spec.initial_state.sha256
+                case.resolve(spec.initial_state.path), spec.initial_state.sha256, "E0508"
             )
         writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake", states=states)
         for warning in result.diagnostics:
@@ -725,10 +726,14 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
     return fields
 
 
-def _archived(path: Path, sha256: str) -> bytes:
-    """The bytes of a face-state file, which must still be those the plan checked."""
-    data = path.read_bytes()
+def _archived(path: Path, sha256: str, code: str) -> bytes:
+    """The bytes of a file the plan checked, read the same way, which must not have changed."""
+    try:
+        data = read_regular(path)
+    except OSError as error:
+        message = f"{path} cannot be read: {error}"
+        raise CaseError([diagnostic(code, message, path=str(path))]) from None
     if hashlib.sha256(data).hexdigest() != sha256:
         message = f"{path} changed after it was checked: its SHA-256 differs from the case's"
-        raise CaseError([diagnostic("E0420", message, path=str(path))])
+        raise CaseError([diagnostic(code, message, path=str(path))])
     return data

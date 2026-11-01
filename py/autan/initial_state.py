@@ -23,7 +23,7 @@ Positive = Annotated[float, Field(strict=True, allow_inf_nan=False, gt=0)]
 class InitialState(BaseModel):
     """A validated ``autan.initial-state/1`` document."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_: Literal["autan.initial-state/1"] = Field(alias="schema")
     oracle: str

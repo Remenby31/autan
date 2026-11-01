@@ -199,3 +199,110 @@ def test_the_file_and_a_start_exclude_each_other(
             info, backend=autan.FakeBackend(), runs=tmp_path / "runs", start=previous
         )
     assert "E0512" in error.value.codes
+
+
+def test_the_written_file_is_the_documented_json(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    centroids = [[0.1, 0.2, 0.3], [-1.0, 2.0, 3.5]]
+    values = [[1.2, 30.0, -4.0, 0.5, 1e5], [0.9, -1.0, 2.0, 0.0, 9e4]]
+    autan.initial_state.write(
+        path, oracle="vortex", mesh_sha256="ab" * 32, centroids=centroids, values=values
+    )
+    assert json.loads(path.read_text()) == {
+        "schema": "autan.initial-state/1",
+        "oracle": "vortex",
+        "mesh_sha256": "ab" * 32,
+        "variables": ["density", "velocity-x", "velocity-y", "velocity-z", "pressure"],
+        "cells": 2,
+        "centroids": centroids,
+        "values": values,
+    }
+
+
+def test_the_schema_key_has_no_alias(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    autan.initial_state.write(
+        path, oracle="o", mesh_sha256="0" * 64, centroids=CENTROIDS, values=VALUES
+    )
+    document = json.loads(path.read_text())
+    document["schema_"] = document.pop("schema")
+    assert isinstance(autan.initial_state.parse(json.dumps(document).encode()), str)
+
+
+def _prepare(case: Path, mesh: Path, capsys: pytest.CaptureFixture[str], *extra: str) -> Any:
+    assert main(["prepare", str(case), "--mesh-info", str(mesh), *extra]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("change", ["start", "turbulence"])
+def test_both_solver_input_validators_keep_the_file_alone_with_its_physics(
+    change: str,
+    write_case: Callable[..., Path],
+    mesh: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    document = _prepare(with_state(write_case), mesh, capsys)
+    if change == "start":
+        plain = write_case(LAMINAR, name="plain.py")
+        previous = autan.load(plain).run(
+            autan.MeshInfo.load(mesh), backend=autan.FakeBackend(iterations=3), runs=tmp_path
+        )
+        document["start"] = _prepare(plain, mesh, capsys, "--start", str(previous.path))["start"]
+    else:
+        document["physics"]["turbulence"].update(model="sa", nu_tilde_ratio=3.0)
+        document["freestream"]["nu_tilde"] = 4.5e-5
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    with pytest.raises(pydantic.ValidationError):
+        autan.solver_input.SolverInput.model_validate(document)
+
+
+@pytest.mark.parametrize("change", ["turbulence", "zone"])
+def test_the_case_schema_refuses_what_e0512_refuses(
+    change: str, write_case: Callable[..., Path]
+) -> None:
+    document = autan.load(with_state(write_case)).spec.document()
+    validator = jsonschema.Draft202012Validator(json_schema("case"))
+    validator.validate(document)
+    if change == "turbulence":
+        document["physics"]["turbulence"] = {"model": "sa"}
+    else:
+        document["cell_zones"] = [
+            {
+                "zones": "fluid",
+                "medium": {
+                    "kind": "fluid",
+                    "material": document["physics"]["gas"],
+                    "initial": {
+                        "pressure": "100000.0 Pa",
+                        "temperature": "300.0 K",
+                        "velocity": ["0.0 m / s", "0.0 m / s", "0.0 m / s"],
+                    },
+                },
+            }
+        ]
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(document)
+    path = write_case("", name="case.json")
+    path.write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(path)
+    assert "E0512" in error.value.codes
+
+
+def test_an_unresolved_zone_does_not_count_as_fluid(
+    write_case: Callable[..., Path], mesh_variant: Callable[..., autan.MeshInfo]
+) -> None:
+    def with_solid(document: dict[str, Any]) -> None:
+        small(document)
+        document["counts"]["cells"] = CELLS + 1
+        document["counts"]["cells_by_type"]["hexa"] = CELLS + 1
+        document["cell_zones"].append(
+            {"name": "block", "type": "solid", "native_type": None, "cells": 1}
+        )
+
+    case = autan.load(with_state(write_case))
+    codes = [d.code for d in case.plan(mesh_variant("crm-hl", with_solid)).diagnostics]
+    assert "E0503" in codes
+    assert "E0510" not in codes

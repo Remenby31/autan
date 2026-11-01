@@ -227,7 +227,9 @@ def test_synthetic_surface_layout() -> None:
 def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    (source / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
     records = [json.loads(line) for line in (source / "history.jsonl").read_text().splitlines()]
     with (source / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
@@ -617,7 +619,9 @@ def test_stream_cursors_count_only_what_was_sent(runs: Path, server: str) -> Non
 def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server: str) -> None:
     directory = next(runs.iterdir())
     run = json.loads((directory / "run.json").read_text())
-    (directory / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
     url = f"{server}/api/runs/{directory.name}/history/events"
     with httpx.stream("GET", url, timeout=10) as response:
         events = sse_events(response)

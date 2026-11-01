@@ -42,6 +42,9 @@ export interface Run {
   start: RunStart | null;
   /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
   convergence: { floor: Record<string, number> } | null;
+  /** Every monitor's record on the final state, null while running and for diverged and
+   * failed runs (results.md#runjson). */
+  monitors: Record<string, Forces & { iteration: number }> | null;
 }
 
 export interface RunStart {

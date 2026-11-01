@@ -394,6 +394,11 @@ class SolverInput(_Strict):
         if self.initial_state is not None and self.start is not None:
             message = "an initial-state file and a start exclude each other"
             raise ValueError(message)
+        if self.initial_state is not None and (self.physics.kind, turbulence.model) not in {
+            ("compressible", m) for m in ORACLE_MODELS
+        }:
+            message = "an initial-state file needs compressible inviscid or laminar physics"
+            raise ValueError(message)
         recorded = case.verification.manufactured.sha256 if case.verification else None
         if recorded != (self.verification.sha256 if self.verification else None):
             message = "verification differs from the case's verification"
@@ -797,6 +802,20 @@ def json_schema() -> dict[str, Any]:
         return {"properties": {"boundaries": {"items": {"properties": {"kind": rule}}}}}
 
     schema["allOf"] = [
+        {
+            "if": {"properties": {"initial_state": {"type": "object"}}},
+            "then": {
+                "properties": {
+                    "start": {"type": "null"},
+                    "physics": {
+                        "properties": {
+                            "kind": {"const": "compressible"},
+                            "turbulence": {"properties": {"model": {"enum": list(ORACLE_MODELS)}}},
+                        }
+                    },
+                }
+            },
+        },
         {
             "if": {
                 "properties": {
