@@ -168,9 +168,9 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
     throw Error(ErrorCode::zone_groups_invalid, path.string() + ": not a readable file");
   }
   const auto invalid = [&](ErrorCode code, const std::string& why) -> Error {
-    return Error(code, path.string() + ": " + why);
+    return {code, path.string() + ": " + why};
   };
-  std::ifstream in(path, std::ios::binary);
+  const std::ifstream in(path, std::ios::binary);
   std::ostringstream bytes;
   bytes << in.rdbuf();
   if (!in && !in.eof()) throw invalid(ErrorCode::zone_groups_invalid, "cannot be read");
@@ -240,7 +240,11 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
   const std::regex name("[A-Za-z0-9_.][A-Za-z0-9_.-]*");
   for (const auto& [group, members] : doc["groups"].items()) {
     const auto bad = [&](const std::string& why) {
-      throw invalid(ErrorCode::zone_groups_bad_group, "group '" + group + "': " + why);
+      std::string message = "group '";
+      message += group;
+      message += "': ";
+      message += why;
+      throw invalid(ErrorCode::zone_groups_bad_group, message);
     };
     if (!std::regex_match(group, name)) bad("not a valid name");
     if (!members.is_array()) schema("group '" + group + "' is not a list");
@@ -257,6 +261,7 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
     }
     std::ranges::sort(found);
     std::vector<std::string> names;
+    names.reserve(found.size());
     for (const auto& [k, zone] : found) names.push_back(zone);
     out.groups.emplace_back(group, std::move(names));
   }
