@@ -951,3 +951,20 @@ TEST_CASE("line smoothing keeps the iterations bounded on wall layers of aspect 
     CHECK(without >= 2 * with_lines);
   }
 }
+
+TEST_CASE("GCR reports a preconditioned direction that is not finite as a failed solve",
+          "[multigrid]") {
+  // A = I, r = (1, 1): the first direction (1, 0) halves |r|^2, the second is (NaN, 0).
+  autan::solvers::Gcr gcr;
+  std::vector<double> r{1.0, 1.0}, x{0.0, 0.0};
+  int calls = 0;
+  const auto report =
+      gcr.solve([](std::span<const double> v,
+                   std::span<double> y) { std::copy(v.begin(), v.end(), y.begin()); },
+                [&](std::span<const double>, std::span<double> z) {
+                  z[0] = calls++ == 0 ? 1.0 : std::numeric_limits<double>::quiet_NaN();
+                  z[1] = 0.0;
+                },
+                r, x, 5, 1e-12);
+  CHECK(std::isnan(report.residual_drop));
+}

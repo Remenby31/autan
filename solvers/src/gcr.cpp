@@ -59,7 +59,10 @@ KrylovReport Gcr::solve(const Operator& apply, const Operator& precondition, std
     }
     const double ww = dot(w, w);
     report.cycles = static_cast<int>(k) + 1;
-    if (!(ww > 0.0)) break;
+    if (!(ww > 0.0)) {
+      if (!std::isfinite(ww)) rr = ww;  // a direction that is not finite: the solve failed
+      break;
+    }
     const double alpha = dot(r, w) / ww;
     for (std::size_t i = 0; i < m; ++i) {
       x[i] += scale * alpha * z[i];
