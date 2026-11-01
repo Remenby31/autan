@@ -15,7 +15,10 @@
            falls below it (exit 71); GB10's GPU allocates from host memory and a container's
            memory limit does not bound device allocations (autan_memfloor.py)
 
-The command runs in its own session, without the lock's descriptor. A signal to the wrapper
+The command runs in its own session, without the lock's descriptor. A command that is itself
+`docker run` gets a --cidfile: its container lives outside the session, so the container is
+killed with `docker kill` before the session whenever the command is stopped, and any still
+running at the end; a `docker run` nested in a shell is not seen. A signal to the wrapper
 stops it the same way (exit 143); a command that cannot start exits 127. Before the lock is
 released, every process left in the session is killed and waited for, so no worker outlives the
 hold; one that starts its own session escapes this, and one that survives SIGKILL (stuck in the
@@ -36,6 +39,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -168,6 +172,55 @@ def session_members(sid: int) -> list[int]:
     return members
 
 
+class Container:
+    """The container of a command that is `docker run`, which runs outside its session."""
+
+    def __init__(self) -> None:
+        self.cidfile: Path | None = None
+        self.id: str | None = None
+
+    def wrap(self, command: list[str]) -> list[str]:
+        if Path(command[0]).name != "docker" or command[1:2] != ["run"]:
+            return command
+        self.cidfile = Path(tempfile.mkdtemp(prefix="autan-gpu-lock-")) / "cid"
+        return [command[0], "run", "--cidfile", str(self.cidfile), *command[2:]]
+
+    def _cid(self) -> str | None:
+        if self.id is None and self.cidfile is not None:
+            with contextlib.suppress(OSError):
+                self.id = self.cidfile.read_text().strip() or None
+        return self.id
+
+    def running(self) -> bool:
+        cid = self._cid()
+        if cid is None:
+            return False
+        try:
+            out = subprocess.run(["docker", "ps", "-q", "--no-trunc", "--filter", f"id={cid}"],
+                                 capture_output=True, text=True, timeout=20, check=False).stdout  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            return True
+        return cid in out
+
+    def kill(self) -> None:
+        if self.cidfile is None:
+            return
+        if self._cid() is None:
+            sys.stderr.write("autan-gpu-lock: docker run has written no container id yet; "
+                             "its container cannot be stopped from here\n")  # fmt: skip
+            return
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["docker", "kill", self.id], capture_output=True, timeout=20, check=False
+            )
+
+    def remove_cidfile(self) -> None:
+        if self.cidfile is not None:
+            self.cidfile.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                self.cidfile.parent.rmdir()
+
+
 def kill_session(sid: int, sig: int) -> None:
     # The session, not the process group: a job-control shell puts workers in other groups.
     for pid in session_members(sid):
@@ -223,13 +276,14 @@ def main() -> int:
             sys.stderr.write(f"autan-gpu-lock: {memfloor.show(memfloor.available())} available, "
                              f"below the -f floor of {memfloor.show(floor)}; not started\n")  # fmt: skip
             return 71
+        container = Container()
         try:
-            proc = subprocess.Popen(command, start_new_session=True)
+            proc = subprocess.Popen(container.wrap(command), start_new_session=True)
         except OSError as err:
             log.record("failed", time.monotonic() - taken, 127)
             sys.stderr.write(f"autan-gpu-lock: cannot run {command[0]}: {err}\n")
             return 127
-        status, stop, leftover, low = supervise(proc, taken, hold_s, floor, cancel)
+        status, stop, leftover, low = supervise(proc, taken, hold_s, floor, cancel, container)
         held = time.monotonic() - taken
         fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -253,8 +307,9 @@ def main() -> int:
 
 
 def supervise(
-    proc: subprocess.Popen, taken: float, hold_s: int, floor: int, cancel: list[int]
-) -> tuple[int, str | None, int, int | None]:
+    proc: subprocess.Popen, taken: float, hold_s: int, floor: int, cancel: list[int],
+    container: Container,
+) -> tuple[int, str | None, int, int | None]:  # fmt: skip
     """Run the command's session to its end, its limit or the memory floor; returns its exit
     status, why it was stopped, how many of its processes outlived SIGKILL, and the lowest
     MemAvailable seen."""
@@ -273,6 +328,7 @@ def supervise(
         if stop is None and floor and (free is None or free < floor):
             # No TERM grace: under memory pressure every second counts for the host.
             stop = "memory"
+            container.kill()
             kill_session(sid, signal.SIGKILL)
         if stop is None and cancel:
             stop = "killed"
@@ -282,6 +338,8 @@ def supervise(
             break
         if stop is not None:
             if now >= hard or (termed_at is not None and now >= termed_at + grace):
+                # The container first: once its docker client is gone, nothing stops it.
+                container.kill()
                 kill_session(sid, signal.SIGKILL)
             elif termed_at is None:
                 kill_session(sid, signal.SIGTERM)
@@ -290,14 +348,17 @@ def supervise(
             if now >= hard + CLEANUP_S:
                 break
         time.sleep(POLL_S)
-    # Workers the command left in its session would outlive the hold.
+    # Workers the command left in its session, or its container, would outlive the hold.
+    if container.running():
+        container.kill()
     kill_session(sid, signal.SIGKILL)
     end = time.monotonic() + CLEANUP_S
-    while session_members(sid) and time.monotonic() < end:
+    while (session_members(sid) or container.running()) and time.monotonic() < end:
         time.sleep(POLL_S)
+    container.remove_cidfile()
     code = proc.returncode
     status = 128 - code if code is not None and code < 0 else (code if code is not None else 137)
-    return status, stop, len(session_members(sid)), low
+    return status, stop, len(session_members(sid)) + container.running(), low
 
 
 if __name__ == "__main__":

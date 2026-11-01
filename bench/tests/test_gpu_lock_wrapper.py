@@ -235,3 +235,54 @@ def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(loc
 def test_refuses_a_floor_that_is_not_a_size(lock, floor):
     proc = wrapper(lock, "-m", "test", "-f", floor, "--", "true")
     assert proc.wait(timeout=10) == 2
+
+
+# Test-only image, pinned: CPU allocation in a real container (not shipped).
+PYTHON_IMAGE = (
+    "python:3.12-alpine@sha256:e6dae589c1c05976188fd3bd019afd091445fc533ed2ea29001beddc7368a9c8"
+)
+
+
+def docker_works() -> bool:
+    try:
+        return (
+            subprocess.run(
+                ["docker", "info"], capture_output=True, timeout=30, check=False
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def containers(label: str) -> list[str]:
+    out = subprocess.run(["docker", "ps", "-aq", "--filter", f"label={label}"],
+                         capture_output=True, text=True, check=True).stdout  # fmt: skip
+    return out.split()
+
+
+@pytest.mark.skipif(not docker_works(), reason="needs a Docker daemon")
+def test_a_docker_run_command_has_its_container_killed_with_it(lock):
+    # A container lives outside the command's session: killing its docker client alone would
+    # leave it running, past the memory floor and past the hold limit.
+    subprocess.run(["docker", "pull", "-q", PYTHON_IMAGE], capture_output=True, check=True)
+    label = f"autan-gpu-lock-test={os.getpid()}-{time.monotonic_ns()}"
+    try:
+        floor = f"{(mem_available() - (3 << 29)) >> 20}M"
+        greedy = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--", "docker", "run",
+                         "--rm", "--label", label, PYTHON_IMAGE, "python", "-c", ALLOCATE, "24",
+                         "/tmp/done", "60")  # fmt: skip
+        assert greedy.wait(timeout=90) == 71
+        assert [r[1] for r in events(lock)][-1] == "memory"
+        # PID 1 of the container ignores TERM: only `docker kill` stops it at the limit.
+        stuck = wrapper(lock, "-m", "test", "-t", "4", "--", "docker", "run", "--rm", "--label",
+                        label, PYTHON_IMAGE, "sleep", "120")  # fmt: skip
+        assert stuck.wait(timeout=60) == 124
+        for _ in range(100):
+            if not containers(label):
+                break
+            time.sleep(0.2)
+        assert containers(label) == []
+    finally:
+        for cid in containers(label):
+            subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
