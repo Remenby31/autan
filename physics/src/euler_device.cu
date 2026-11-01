@@ -404,8 +404,8 @@ std::unique_ptr<DeviceStepper<P>> make_device_stepper(const Mesh& mesh, const Ge
                                                       bool second_order, runtime::Ranks& ranks,
                                                       runtime::GhostExchange& ghosts,
                                                       void* stream) {
-  return std::make_unique<CudaStepper<P>>(mesh, geometry, host, gamma, second_order, ranks,
-                                          ghosts, stream);
+  return std::make_unique<CudaStepper<P>>(mesh, geometry, host, gamma, second_order, ranks, ghosts,
+                                          stream);
 }
 
 template std::unique_ptr<DeviceStepper<kernels::fp64>> make_device_stepper(

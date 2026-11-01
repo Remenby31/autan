@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,15 @@ using autan::physics::Scheme;
 using Clock = std::chrono::steady_clock;
 
 constexpr Gas air{1.4, 287.0};
+
+// One rank, no periodic pairs: no ghost cells to fill.
+class NoGhosts final : public autan::runtime::GhostExchange {
+ public:
+  void forward(std::span<float* const> /*c*/, autan::MemorySpace /*s*/, void* /*stream*/) override {
+  }
+  void forward(std::span<double* const> /*c*/, autan::MemorySpace /*s*/,
+               void* /*stream*/) override {}
+};
 
 template <class P>
 int bench(const autan::Mesh& mesh, const char* precision, int steps, const char* lock) {
@@ -70,8 +80,9 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, const char*
   for (int i = 0; i < host_reps; ++i) host.residual(stored, res);
   const double host_s = std::chrono::duration<double>(Clock::now() - t1).count() / host_reps;
   autan::runtime::OneRank rank;
-  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank,
-                                                         nullptr);
+  NoGhosts ghosts;
+  auto device =
+      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
   device->upload(u);
   int fd = -1;
   if (lock != nullptr) {

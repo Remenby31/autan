@@ -1058,7 +1058,8 @@ TEST_CASE("on a device, a flow through periodic pairs follows the host's", "[eul
   const auto vx = field(host.run, "VelocityX"), vy = field(host.run, "VelocityY"),
              vz = field(host.run, "VelocityZ");
   double speed = 0.0;
-  for (std::size_t c = 0; c < vx.size(); ++c) speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
+  for (std::size_t c = 0; c < vx.size(); ++c)
+    speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
   double worst = 0.0;
   for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
     const auto a = field(host.run, name), b = field(dev.run, name);

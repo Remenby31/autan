@@ -37,6 +37,15 @@ const std::array<const char*, 4> meshes = {"tet-gmsh/tet-gmsh.ascii.msh", "hex/h
                                            "poly/polyMesh", "hybrid/hybrid.ascii.msh"};
 constexpr Gas air{1.4, 287.0};
 
+// One rank, no periodic pairs: no ghost cells to fill.
+class NoGhosts final : public autan::runtime::GhostExchange {
+ public:
+  void forward(std::span<float* const> /*c*/, autan::MemorySpace /*s*/, void* /*stream*/) override {
+  }
+  void forward(std::span<double* const> /*c*/, autan::MemorySpace /*s*/,
+               void* /*stream*/) override {}
+};
+
 // A smooth subsonic flow over the unit cube: rho, u, v, w, p at (x, y, z).
 std::array<double, 5> flow(double x, double y, double z) {
   return {1.2 + 0.1 * std::sin(2.0 * x + y), 80.0 + 15.0 * std::cos(x + 2.0 * z),
@@ -111,8 +120,9 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   host.residual(stored, r_host);
 
   autan::runtime::OneRank rank;
+  NoGhosts ghosts;
   auto device =
-      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, nullptr);
+      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
   std::vector<double> r_device(5 * n);
   device->residual(u, r_device);
 
