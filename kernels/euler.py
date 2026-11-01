@@ -17,12 +17,14 @@ faces.
 
 from autan_codegen.dsl import (
     STENCIL,
+    Dataset,
     Geom,
     Grad,
     Inc,
     Jac,
     Jacobian,
     Max,
+    MeshSet,
     Min,
     Param,
     Residual,
@@ -478,6 +480,41 @@ gradients = cell_reduce(
     finalise=include_own_value,
     finalise_args={"wc": prim},
 )
+
+
+# Gradient of the viscous terms (navier_stokes.py, spalart_allmaras.py; the convective
+# reconstruction keeps `grad`): within three face rings of the boundary (`band` = 1) that of a
+# quadratic least-squares fit over two vertex rings, where the linear fit over the one-sided face2
+# stencil is first order (docs/design/euler.md, Boundary band), `grad` elsewhere. The fit's weights
+# per entry of its own stencil (Topology::stencil of the band, empty outside it) make it a weighted
+# sum like `gradients`.
+band = cells.field("band", Geom)
+grad_band = cells.field("grad_band", Grad.Mat53)
+grad_v = cells.field("grad_v", Grad.Mat53)
+band_weight = Dataset("band_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+
+
+@pointwise
+def band_term(wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3) -> Grad.Mat53:
+    return outer(wn - wc, w)
+
+
+band_gradients = cell_reduce(
+    band_term,
+    over=STENCIL,
+    wc=prim.self_,
+    wn=prim.other(boundary=prim_b),
+    w=band_weight,
+    acc=Sum(grad_band),
+)
+
+
+@pointwise
+def viscous_gradient(g: Grad.Mat53, gb: Grad.Mat53, q: Geom) -> Grad.Mat53:
+    return gb if q > 0.5 else g
+
+
+viscous_gradients = cell_loop(viscous_gradient, g=grad, gb=grad_band, q=band, out=Write(grad_v))
 
 
 @pointwise

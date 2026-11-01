@@ -4,9 +4,13 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -35,10 +39,23 @@ struct Euler<P>::Impl {
   stored<decltype(D::cell_volume)> cell_volume;
   stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
+  // Boundary band: its quadratic fit's stencil (two vertex rings) and weights, as a topology of
+  // its own for band_gradients (empty outside the band).
+  kernels::CellStencil vertex;
+  stored<decltype(D::band)> band;
+  stored<decltype(D::band_weight)> band_weight;
+  std::vector<kernels::offset_t> band_offsets;
+  std::vector<index_t> band_entries;
+  kernels::Topology band_topo{};
+  std::vector<double> moments;   // per cell, xx yy zz xy xz yz about the centroid per unit volume
+  std::size_t linear_cells = 0;  // band cells that keep the linear fit
+  index_t first_linear = -1;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
-  std::vector<Gr> grad, zero_grad;
+  std::vector<Gr> grad, grad_band, grad_v, zero_grad;
+  bool viscous = false;  // enable_viscous_gradient: band_gradients and grad_v are computed
+  std::vector<BoundaryKind> kinds;  // the last set_boundary's
   ek::Data<P> d{};
 
   template <class T, class Source>
@@ -58,6 +75,8 @@ struct Euler<P>::Impl {
     topo.stencil = stencil.entries.data();
     topo.stencil_twin = stencil.twin.data();
     fill(stencil_lsq_weight, stencil.lsq_weight);
+    vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+    compute_moments(mesh, geometry);
     fill(face_normal, packed.face_normal);
     fill(face_area_magnitude, packed.face_area_magnitude);
     fill(face_centroid, packed.face_centroid);
@@ -77,7 +96,16 @@ struct Euler<P>::Impl {
     prim_tan.assign(5 * nc, State(0));
     zero_state.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
+    grad_band.assign(15 * nc, Gr(0));
+    grad_v.assign(15 * nc, Gr(0));
     zero_grad.assign(15 * nc, Gr(0));
+    band.assign(nc, typename decltype(band)::value_type(0));
+    band_offsets.assign(nc + 1, 0);
+    band_topo = topo;
+    band_topo.n_stencil = 0;
+    band_topo.stencil_offsets = band_offsets.data();
+    band_topo.stencil = band_entries.data();
+    band_topo.stencil_twin = nullptr;
 
     d.topo = topo;
     d.prim = prim.data();
@@ -96,6 +124,10 @@ struct Euler<P>::Impl {
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
     d.stencil_lsq_weight = stencil_lsq_weight.data();
+    d.band = band.data();
+    d.grad_band = grad_band.data();
+    d.grad_v = grad_v.data();
+    d.band_weight = band_weight.data();
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
     if (!(scheme.mach_ref > 0.0)) {
@@ -188,6 +220,298 @@ struct Euler<P>::Impl {
     }
     fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();
+    kinds.assign(kind.begin(), kind.end());
+    if (viscous) band_weights(kind);
+  }
+
+  // The boundary band's weights (kernels/euler.py, band_gradients): for every cell within three
+  // face rings of the boundary, the gradient at its centroid of the quadratic
+  // phi_c + g . d + d^T H d / 2 fitted, with weights 1/|d|^2, to the cell averages of the cells
+  // within two vertex rings (the quadratic's average over cell k adds H : M_k / 2, M_k its second
+  // moment about its centroid, and phi_c is cell c's average) and to the states of their boundary
+  // faces that give one (point values). Each unknown is scaled by the stencil's extent along its
+  // directions and the weights taken in those scaled coordinates; directions where no entry
+  // extends (the span of a one-cell-thick slab) are left out. Solved by Householder QR. A cell
+  // with fewer than 1.5 entries per unknown, or whose entries leave the fit undetermined, keeps
+  // the linear least-squares gradient: band_gradient() reports how many. Boundary faces are
+  // weighted entries, not equality constraints: as constraints (Ollivier-Gooch and Van Altena
+  // 2002) they made the implicit solution diverge on the hybrid manufactured-solution meshes.
+  void band_weights(std::span<const BoundaryKind> kind) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    std::vector<int> ring(nc, 0);
+    for (std::size_t f = ni; f < nf; ++f) ring[static_cast<std::size_t>(topo.owner[f])] = 1;
+    for (int depth = 2; depth <= 3; ++depth) {
+      auto next = ring;
+      for (std::size_t f = 0; f < ni; ++f) {
+        const auto o = static_cast<std::size_t>(topo.owner[f]);
+        const auto n = static_cast<std::size_t>(topo.neighbour[f]);
+        if (ring[o] == depth - 1 && ring[n] == 0) next[n] = depth;
+        if (ring[n] == depth - 1 && ring[o] == 0) next[o] = depth;
+      }
+      ring = std::move(next);
+    }
+    auto gives = [&](index_t e) {
+      return kind[static_cast<std::size_t>(-e - 1) - ni] == BoundaryKind::state;
+    };
+    auto around = [&](index_t c) {
+      const auto i = static_cast<std::size_t>(c);
+      return std::span<const index_t>(
+          vertex.entries.data() + vertex.offsets[i],
+          static_cast<std::size_t>(vertex.offsets[i + 1] - vertex.offsets[i]));
+    };
+    auto centre = [&](index_t e) {
+      std::array<double, 3> x{};
+      for (std::size_t j = 0; j < 3; ++j) {
+        x[j] = e >= 0
+                   ? static_cast<double>(cell_centroid[j * nc + static_cast<std::size_t>(e)])
+                   : static_cast<double>(face_centroid[j * nf + static_cast<std::size_t>(-e - 1)]);
+      }
+      return x;
+    };
+    // Quadratic monomials as (i, j) pairs of directions after the three linear ones.
+    constexpr std::size_t nt = 9;
+    constexpr std::array<std::array<int, 2>, nt> pair{
+        {{0, -1}, {1, -1}, {2, -1}, {0, 0}, {1, 1}, {2, 2}, {0, 1}, {0, 2}, {1, 2}}};
+    std::fill(band.begin(), band.end(), typename decltype(band)::value_type(0));
+    band_offsets.assign(nc + 1, 0);
+    band_entries.clear();
+    linear_cells = 0;
+    first_linear = -1;
+    std::vector<std::array<double, 3>> weights;
+    std::vector<index_t> cells, points;
+    for (std::size_t c = 0; c < nc; ++c) {
+      band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
+      if (ring[c] == 0) continue;
+      cells.assign(1, static_cast<index_t>(c));
+      points.clear();
+      for (int r = 0; r < 2; ++r) {
+        const auto reached = cells.size();
+        for (std::size_t k = 0; k < reached; ++k) {
+          for (const auto e : around(cells[k])) {
+            if (e >= 0)
+              cells.push_back(e);
+            else if (gives(e))
+              points.push_back(e);
+          }
+        }
+        std::sort(cells.begin(), cells.end());
+        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+      }
+      std::sort(points.begin(), points.end());
+      points.erase(std::unique(points.begin(), points.end()), points.end());
+      for (const auto e : cells) {
+        if (e != static_cast<index_t>(c)) points.push_back(e);
+      }
+      const auto xc = centre(static_cast<index_t>(c));
+      auto offset = [&](index_t e) {
+        const auto x = centre(e);
+        return std::array<double, 3>{x[0] - xc[0], x[1] - xc[1], x[2] - xc[2]};
+      };
+      std::array<double, 3> extent{};
+      for (const auto e : points) {
+        const auto dk = offset(e);
+        for (std::size_t j = 0; j < 3; ++j) extent[j] = std::max(extent[j], std::abs(dk[j]));
+      }
+      const double widest = std::max({extent[0], extent[1], extent[2]});
+      auto spans = [&](int j) {
+        return j < 0 || extent[static_cast<std::size_t>(j)] > 1e-12 * widest;
+      };
+      std::vector<std::size_t> used;
+      for (std::size_t i = 0; i < nt; ++i) {
+        if (spans(i < 3 ? static_cast<int>(i) : pair[i][0]) && spans(pair[i][1])) used.push_back(i);
+      }
+      const auto m = used.size();
+      // Scaled row of entry e: d / extent, and (d_i d_j + M_k,ij - M_c,ij) / (extent_i extent_j)
+      // for a cell k, (d_i d_j - M_c,ij) / (...) for a face (its state is a point value).
+      auto row = [&](index_t e) {
+        const auto dk = offset(e);
+        std::vector<double> r(m);
+        for (std::size_t u = 0; u < m; ++u) {
+          const auto i = used[u];
+          if (i < 3) {
+            r[u] = dk[i] / extent[i];
+          } else {
+            const auto a = static_cast<std::size_t>(pair[i][0]);
+            const auto b = static_cast<std::size_t>(pair[i][1]);
+            double v = dk[a] * dk[b] - moment(c, a, b);
+            if (e >= 0) v += moment(static_cast<std::size_t>(e), a, b);
+            r[u] = v / (extent[a] * extent[b]);
+          }
+        }
+        return r;
+      };
+      auto sqrt_weight = [&](index_t e) {
+        const auto dk = offset(e);
+        double s2 = 0.0;
+        for (std::size_t j = 0; j < 3; ++j) {
+          if (spans(static_cast<int>(j))) s2 += std::pow(dk[j] / extent[j], 2);
+        }
+        return 1.0 / std::sqrt(s2);
+      };
+      const auto n = points.size();
+      auto keep_linear = [&] {
+        ++linear_cells;
+        if (first_linear < 0) first_linear = static_cast<index_t>(c);
+      };
+      if (2 * n < 3 * m) {
+        keep_linear();
+        continue;
+      }
+      // theta = R^-1 Q^T W^1/2 y from W^1/2 A = Q R: the weights G = R^-1 Q^T W^1/2 (m x n).
+      std::vector<double> b(n * m), sw(n);
+      for (std::size_t k = 0; k < n; ++k) {
+        const auto r = row(points[k]);
+        sw[k] = sqrt_weight(points[k]);
+        for (std::size_t i = 0; i < m; ++i) b[i * n + k] = sw[k] * r[i];
+      }
+      std::vector<double> qb;
+      if (!householder(n, m, b, m, qb)) {
+        keep_linear();
+        continue;
+      }
+      std::vector<double> ga(m * n);  // column-major m x n
+      for (std::size_t k = 0; k < n; ++k) {
+        for (std::size_t ii = m; ii-- > 0;) {
+          double v = qb[ii * n + k];
+          for (std::size_t jj = ii + 1; jj < m; ++jj) v -= b[jj * n + ii] * ga[k * m + jj];
+          ga[k * m + ii] = v / b[ii * n + ii];
+        }
+        for (std::size_t i = 0; i < m; ++i) ga[k * m + i] *= sw[k];
+      }
+      auto gradient = [&](const double* col) {
+        std::array<double, 3> g{};
+        for (std::size_t u = 0; u < m; ++u) {
+          if (used[u] < 3) g[used[u]] = col[u] / extent[used[u]];
+        }
+        return g;
+      };
+      for (std::size_t k = 0; k < n; ++k) {
+        band_entries.push_back(points[k]);
+        weights.push_back(gradient(&ga[k * m]));
+      }
+      band[c] = typename decltype(band)::value_type(1);
+      band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
+    }
+    const auto nst = band_entries.size();
+    std::vector<double> w(3 * nst);
+    for (std::size_t k = 0; k < nst; ++k) {
+      for (std::size_t j = 0; j < 3; ++j) w[j * nst + k] = weights[k][j];
+    }
+    fill(band_weight, w);
+    d.band_weight = band_weight.data();
+    band_topo.n_stencil = static_cast<kernels::offset_t>(nst);
+    band_topo.stencil_offsets = band_offsets.data();
+    band_topo.stencil = band_entries.data();
+  }
+
+  // Second moment of cell c about its centroid per unit volume, component (a, b).
+  [[nodiscard]] double moment(std::size_t c, std::size_t a, std::size_t b) const {
+    static constexpr std::array<std::array<std::size_t, 3>, 3> slot{
+        {{0, 3, 4}, {3, 1, 5}, {4, 5, 2}}};
+    return moments[slot[a][b] * static_cast<std::size_t>(topo.n_cells) + c];
+  }
+
+  // Second moments (xx, yy, zz, xy, xz, yz) of every cell about its centroid per unit volume,
+  // from the tetrahedra (centroid, face node average, two consecutive face nodes):
+  // int x x^T dV = V / 20 (sum_i x_i x_i^T + (sum_i x_i)(sum_i x_i)^T) over each one's vertices.
+  void compute_moments(const Mesh& mesh, const Geometry& g) {
+    const auto nc = static_cast<std::size_t>(mesh.n_cells());
+    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    moments.assign(6 * nc, 0.0);
+    std::vector<double> volume(nc, 0.0);
+    const auto xs = mesh.x(), ys = mesh.y(), zs = mesh.z();
+    const auto offsets = mesh.face_node_offsets();
+    const auto nodes = mesh.face_nodes();
+    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+      const auto begin = static_cast<std::size_t>(offsets[f]);
+      const auto end = static_cast<std::size_t>(offsets[f + 1]);
+      std::array<double, 3> mid{};
+      for (auto k = begin; k < end; ++k) {
+        const auto v = static_cast<std::size_t>(nodes[k]);
+        mid = {mid[0] + xs[v], mid[1] + ys[v], mid[2] + zs[v]};
+      }
+      for (auto& x : mid) x /= static_cast<double>(end - begin);
+      for (int side = 0; side < (f < ni ? 2 : 1); ++side) {
+        const auto c = static_cast<std::size_t>(side == 0 ? mesh.owner()[f] : mesh.neighbour()[f]);
+        const std::array<double, 3> o{g.cell_centroid_x[c], g.cell_centroid_y[c],
+                                      g.cell_centroid_z[c]};
+        for (auto k = begin; k < end; ++k) {
+          const auto v0 = static_cast<std::size_t>(nodes[k]);
+          const auto v1 = static_cast<std::size_t>(nodes[k + 1 < end ? k + 1 : begin]);
+          const std::array<std::array<double, 3>, 3> t{
+              {{mid[0] - o[0], mid[1] - o[1], mid[2] - o[2]},
+               {xs[v0] - o[0], ys[v0] - o[1], zs[v0] - o[2]},
+               {xs[v1] - o[0], ys[v1] - o[1], zs[v1] - o[2]}}};
+          // Signed volume, positive for the owner (normals point out of it).
+          double vol = (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1]) -
+                        t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0]) +
+                        t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) /
+                       6.0;
+          if (side == 1) vol = -vol;
+          volume[c] += vol;
+          const std::array<double, 3> sum{t[0][0] + t[1][0] + t[2][0], t[0][1] + t[1][1] + t[2][1],
+                                          t[0][2] + t[1][2] + t[2][2]};
+          static constexpr std::array<std::array<std::size_t, 2>, 6> ab{
+              {{0, 0}, {1, 1}, {2, 2}, {0, 1}, {0, 2}, {1, 2}}};
+          for (std::size_t s = 0; s < 6; ++s) {
+            const auto [a, b] = ab[s];
+            double v = sum[a] * sum[b];
+            for (const auto& x : t) v += x[a] * x[b];
+            moments[s * nc + c] += vol / 20.0 * v;
+          }
+        }
+      }
+    }
+    for (std::size_t s = 0; s < 6; ++s) {
+      for (std::size_t c = 0; c < nc; ++c) moments[s * nc + c] /= volume[c];
+    }
+  }
+
+  // Householder QR of the column-major rows x cols matrix a: on return its upper triangle is R,
+  // and q the first qcols columns of Q (rows x qcols, column-major). False if a diagonal entry of
+  // R is below 1e-10 of the largest column norm (rank deficient).
+  static bool householder(std::size_t rows, std::size_t cols, std::vector<double>& a,
+                          std::size_t qcols, std::vector<double>& q) {
+    double largest = 0.0;
+    for (std::size_t j = 0; j < cols; ++j) {
+      double s = 0.0;
+      for (std::size_t i = 0; i < rows; ++i) s += a[j * rows + i] * a[j * rows + i];
+      largest = std::max(largest, std::sqrt(s));
+    }
+    std::vector<double> v(rows * cols, 0.0), vv(cols, 0.0);
+    auto reflect = [&](std::size_t j, double* col) {
+      double s = 0.0;
+      for (std::size_t i = j; i < rows; ++i) s += v[j * rows + i] * col[i];
+      s *= 2.0 / vv[j];
+      for (std::size_t i = j; i < rows; ++i) col[i] -= s * v[j * rows + i];
+    };
+    for (std::size_t j = 0; j < cols; ++j) {
+      double norm = 0.0;
+      for (std::size_t i = j; i < rows; ++i) norm += a[j * rows + i] * a[j * rows + i];
+      norm = std::sqrt(norm);
+      if (!(norm > 1e-10 * largest)) return false;
+      const double alpha = a[j * rows + j] > 0.0 ? -norm : norm;
+      for (std::size_t i = j; i < rows; ++i) v[j * rows + i] = a[j * rows + i];
+      v[j * rows + j] -= alpha;
+      for (std::size_t i = j; i < rows; ++i) vv[j] += v[j * rows + i] * v[j * rows + i];
+      for (std::size_t k = j; k < cols; ++k) reflect(j, &a[k * rows]);
+    }
+    // Q E = H_0 ... H_{cols-1} E, E the first qcols columns of the identity.
+    q.assign(rows * qcols, 0.0);
+    for (std::size_t k = 0; k < qcols; ++k) {
+      q[k * rows + k] = 1.0;
+      for (std::size_t j = cols; j-- > 0;) reflect(j, &q[k * rows]);
+    }
+    return true;
+  }
+
+  void viscous_gradients() {
+    auto b = d;
+    b.topo = band_topo;
+    ek::cpu::band_gradients(b);
+    ek::cpu::viscous_gradients(d);
   }
 
   void faces() {
@@ -284,6 +608,30 @@ std::vector<double> Euler<P>::gradient_weights() const {
 }
 
 template <class P>
+void Euler<P>::enable_viscous_gradient() {
+  auto& m = *impl_;
+  if (m.viscous) return;
+  m.viscous = true;
+  if (!m.kinds.empty()) m.band_weights(m.kinds);
+}
+
+template <class P>
+std::span<const typename P::grad> Euler<P>::viscous_gradient() const noexcept {
+  return impl_->grad_v;
+}
+
+template <class P>
+typename Euler<P>::BandGradient Euler<P>::band_gradient() const {
+  const auto& m = *impl_;
+  return {{m.band.begin(), m.band.end()},
+          {m.band_offsets.begin(), m.band_offsets.end()},
+          m.band_entries,
+          {m.band_weight.begin(), m.band_weight.end()},
+          m.linear_cells,
+          m.first_linear};
+}
+
+template <class P>
 void Euler<P>::set_second_order(bool on) {
   auto& m = *impl_;
   m.scheme.second_order = on;
@@ -327,6 +675,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
     }
+    if (m.viscous) m.viscous_gradients();
   }
   ek::cpu::sources(m.d);
   m.faces();
@@ -355,6 +704,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
     }
+    if (m.viscous) m.viscous_gradients();
   }
   ek::cpu::sources(m.d);
   m.faces_jacobian();

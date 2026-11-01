@@ -444,6 +444,12 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   e.residual(std::span<const typename P::state>(u), r);
   const double v = c.geometry.cell_volume[0];
   CHECK(std::abs(static_cast<double>(r[0]) - a * v) <= 64 * eps<P>() * a * c.cell_surface()[0]);
+  // Its only neighbours are its four faces: too few for the boundary band's quadratic fit, so it
+  // keeps the linear one, and says so.
+  e.enable_viscous_gradient();
+  const auto band = e.band_gradient();
+  CHECK(band.linear_cells == 1);
+  CHECK(band.first_linear == 0);
 }
 
 TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity planar", "[euler]",
@@ -565,4 +571,148 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
     // The y planes carry p A each way: their round-off bounds the y-momentum residual.
     CHECK(std::abs(static_cast<double>(r[2 * nc + i])) <= 64 * eps<P>() * 1.2 * p0 * surface[i]);
   }
+}
+
+// Within three face rings of the boundary the viscous terms' gradient is that of a quadratic fit
+// to the cell averages (Euler<P>::band_gradient): applied to a quadratic field's exact cell
+// averages and to its values at the boundary faces that give the state, its weights give the
+// field's exact gradient at each cell centroid, where the linear least-squares fit of a one-sided
+// stencil would be off by O(h). The averages are integrated here over the tetrahedra (centroid,
+// face node mean, two consecutive nodes) of the geometry's own decomposition, with a quadrature
+// exact for quadratics.
+TEMPLATE_TEST_CASE("the boundary band's gradient of a quadratic field is exact", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  Euler<P> e(mesh, g, air, Scheme{});
+  e.enable_viscous_gradient();
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), std::vector<double>(5 * nb));
+  auto phi = [](const std::array<double, 3>& x) {
+    return 1.0 + 2.0 * x[0] - 3.0 * x[1] + x[2] + 0.5 * x[0] * x[0] + x[0] * x[1] -
+           2.0 * x[1] * x[2] + 1.5 * x[2] * x[2] - 0.75 * x[1] * x[1] + 0.25 * x[0] * x[2];
+  };
+  auto exact = [](const std::array<double, 3>& x) {
+    return std::array<double, 3>{2.0 + x[0] + x[1] + 0.25 * x[2],
+                                 -3.0 + x[0] - 2.0 * x[2] - 1.5 * x[1],
+                                 1.0 - 2.0 * x[1] + 3.0 * x[2] + 0.25 * x[0]};
+  };
+  auto point = [&](autan::index_t v) {
+    const auto i = static_cast<std::size_t>(v);
+    return std::array<double, 3>{mesh.x()[i], mesh.y()[i], mesh.z()[i]};
+  };
+  auto average = [&](std::size_t c) {
+    const std::array<double, 3> o{g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]};
+    double sum = 0.0, volume = 0.0;
+    for (const auto f : mesh.cell_faces(static_cast<autan::index_t>(c))) {
+      const auto nodes = mesh.face_nodes(f);
+      std::array<double, 3> m{};
+      for (const auto v : nodes) {
+        const auto x = point(v);
+        for (std::size_t j = 0; j < 3; ++j) m[j] += x[j] / static_cast<double>(nodes.size());
+      }
+      const double sign =
+          static_cast<std::size_t>(mesh.owner()[static_cast<std::size_t>(f)]) == c ? 1.0 : -1.0;
+      for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const std::array<std::array<double, 3>, 4> t{o, m, point(nodes[i]),
+                                                     point(nodes[(i + 1) % nodes.size()])};
+        std::array<double, 3> u{}, v{}, w{};
+        for (std::size_t j = 0; j < 3; ++j) {
+          u[j] = t[1][j] - t[0][j];
+          v[j] = t[2][j] - t[0][j];
+          w[j] = t[3][j] - t[0][j];
+        }
+        const double vol =
+            sign *
+            (u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) +
+             u[2] * (v[0] * w[1] - v[1] * w[0])) /
+            6.0;
+        // Keast's degree-2 rule: four points at barycentric (a, b, b, b), equal weights.
+        constexpr double qa = 0.5854101966249685, qb = 0.1381966011250105;
+        for (std::size_t q = 0; q < 4; ++q) {
+          std::array<double, 3> x{};
+          for (std::size_t k = 0; k < 4; ++k) {
+            for (std::size_t j = 0; j < 3; ++j) x[j] += (k == q ? qa : qb) * t[k][j];
+          }
+          sum += vol / 4.0 * phi(x);
+        }
+        volume += vol;
+      }
+    }
+    return sum / volume;
+  };
+  std::vector<double> mean(n);
+  for (std::size_t c = 0; c < n; ++c) mean[c] = average(c);
+  const auto band = e.band_gradient();
+  CHECK(band.linear_cells == 0);
+  const auto nst = band.entries.size();
+  std::size_t in_band = 0;
+  double worst = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    if (band.band[c] == 0.0) continue;
+    ++in_band;
+    std::array<double, 3> grad{};
+    double magnitude = 0.0;  // sum_k |w_k| (|phi_k| + |phi_c|): the round-off the sum carries
+    for (auto k = static_cast<std::size_t>(band.offsets[c]);
+         k < static_cast<std::size_t>(band.offsets[c + 1]); ++k) {
+      const auto en = band.entries[k];
+      double pk = 0.0;
+      if (en >= 0) {
+        pk = mean[static_cast<std::size_t>(en)];
+      } else {
+        const auto f = static_cast<std::size_t>(-en - 1);
+        REQUIRE(f >= ni);
+        pk = phi({g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]});
+      }
+      for (std::size_t j = 0; j < 3; ++j) {
+        grad[j] += band.weights[j * nst + k] * (pk - mean[c]);
+        magnitude += std::abs(band.weights[j * nst + k]) * (std::abs(pk) + std::abs(mean[c]));
+      }
+    }
+    const auto expected = exact({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
+    for (std::size_t j = 0; j < 3; ++j) {
+      worst = std::max(worst, std::abs(grad[j] - expected[j]) / magnitude);
+    }
+  }
+  CHECK(in_band > 0);
+  // Round-off of the weights (QR in scaled coordinates, then stored in the policy's geometry
+  // type) and of the sum, relative to its terms.
+  CHECK(worst <= 1024 * eps<P>());
+}
+
+// The viscous terms' gradient is computed beside the reconstruction's and leaves the Euler
+// residual unchanged, bit for bit.
+TEMPLATE_TEST_CASE("the viscous gradient leaves the Euler residual unchanged", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> w{1.2, 80.0, -10.0, 5.0, 1e5};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  const Scheme s = second_order(Flux::roe, 0.3);
+  Euler<P> plain(c.mesh, c.geometry, air, s), viscous(c.mesh, c.geometry, air, s);
+  viscous.enable_viscous_gradient();
+  const std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  plain.set_boundary(kind, data);
+  viscous.set_boundary(kind, data);
+  auto u = uniform(Prim{1.2, {80.0, -10.0, 5.0}, 1e5}, nc);
+  for (std::size_t i = 0; i < u.size(); ++i)
+    u[i] *= 1.0 + 0.01 * std::sin(0.7 * static_cast<double>(i));
+  const auto st = stored(plain, u);
+  std::vector<typename P::residual> a(5 * nc), b(5 * nc);
+  plain.residual(std::span<const typename P::state>(st), a);
+  viscous.residual(std::span<const typename P::state>(st), b);
+  for (std::size_t i = 0; i < a.size(); ++i) CHECK(a[i] == b[i]);
+  CHECK(viscous.band_gradient().linear_cells == 0);
 }
