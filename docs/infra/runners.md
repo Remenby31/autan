@@ -13,7 +13,7 @@ The repository is public, so anyone can open a pull request, and a pull request 
 | Trigger | Only `push`, `workflow_dispatch`, `schedule`, and `pull_request` whose head is a branch of this repository run. Fork pull requests, `pull_request_target`, `workflow_run`, `issue_comment` and everything else are refused before the first step: the hook kills the job's `Runner.Worker`, because a failing hook alone would still let `if: always()` steps run. The allowed repository comes from a root-owned file in the image, never from the environment a workflow controls. | the job-started hook `docker/runner/job-started.sh`, baked into the runner image; a workflow cannot change or skip it |
 | Trigger | GPU jobs carry `if: github.event_name != 'pull_request' \|\| github.event.pull_request.head.repo.full_name == github.repository`, so fork runs are skipped rather than failed. | the workflow (convenience only: a fork can edit it) |
 | Trigger | Workflows from first-time and external contributors wait for a maintainer's approval (`fork-pr-contributor-approval: all_external_contributors`). Never approve a fork run that touches `.github/`. | repository setting |
-| Host | The runner runs in a container as an unprivileged user (uid 1001), with every capability dropped, `no-new-privileges`, 64 GiB memory, 8192 processes and rotated logs. No Docker socket, no host mount except its own volumes and `/tmp/cfd-gpu.lock`. A job cannot see or touch other containers. | `docker/runner/deploy.sh` |
+| Host | The runner runs in a container as an unprivileged user (uid 1001), with every capability dropped, `no-new-privileges`, 64 GiB memory, 8192 processes and rotated logs. No Docker socket, no host mount except its own volumes and, read-only, the GPU lock's directory. A job cannot see or touch other containers. | `docker/runner/deploy.sh` |
 | Network | The runner sits on an internal Docker network with no route out and an isolated gateway (the host has no address on it). Its only egress is a Squid proxy that allows ports 80 and 443 to public addresses and refuses, after DNS resolution, loopback, RFC 1918, Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), link-local and multicast destinations. `deploy.sh` replaces a proxy whose image is out of date and refuses an internal network without these properties. | `docker/runner/proxy/squid.conf`, `deploy.sh` |
 | Token | Workflows run with `permissions: contents: read` and `actions/checkout` with `persist-credentials: false`. The registration token is single-use and expires after one hour; it is piped on stdin and handed to the runner through its environment, never on a command line or on disk. | workflows, `deploy.sh register` |
 | Supply chain | Third-party actions are pinned by commit SHA; images by digest; downloads by SHA-256. | workflow and Dockerfile review |
@@ -24,13 +24,7 @@ Residual risks, accepted because only trusted triggers run code: jobs run as the
 
 ## Writing GPU jobs
 
-Jobs run directly in the runner container, which is the dev image with the GPU attached: no `docker run` inside a job. Take the GPU lock for any GPU work. Inside a job, `flock /tmp/cfd-gpu.lock <cmd>` fails (exit 66): `flock(1)` opens its file with `O_CREAT`, which the kernel's `fs.protected_regular` refuses on a file another user owns in `/tmp`. Open it read-only instead:
-
-```sh
-{ flock 9 && <cmd>; } 9</tmp/cfd-gpu.lock
-```
-
-`autan-bench` takes the lock itself.
+Jobs run directly in the runner container, which is the dev image with the GPU attached: no `docker run` inside a job. Wrap GPU work in `flock /home/admin/autan-gpu/gpu.lock <cmd>`; `autan-bench` takes the lock itself. The runner refuses to start if it cannot open the lock.
 
 ## Install or update a runner
 

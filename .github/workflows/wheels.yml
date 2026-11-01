@@ -172,7 +172,7 @@ jobs:
     needs: [sdk, probe]
     # Self-hosted runner (docs/infra/runners.md): never for pull requests from forks.
     if: >-
-      vars.AUTAN_SPARK_RUNNER == 'true' &&
+      vars.AUTAN_SPARK_WHEELS == 'true' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, ARM64, gpu, gb10]
@@ -191,15 +191,14 @@ jobs:
           path: wheelhouse
           merge-multiple: true
       - name: Install with install.sh in an empty home, and require native GPU code on GB10
-        # Jobs run in the runner container (no Docker); flock(1) cannot open another user's lock
-        # file with O_CREAT, so the lock is taken on a read-only descriptor.
+        # Jobs run in the runner container (no Docker); the GPU lock is mounted there.
         run: |
           home=$(mktemp -d "$RUNNER_TEMP/home.XXXXXX")
           echo "AUTAN_TEST_HOME=$home" >> "$GITHUB_ENV"
           # Like a user's machine: an empty home (and scratch space under it, removed with the
           # job's temp directory) and none of the dev image's uv settings.
-          { flock 9 && env -u UV_PYTHON -u UV_PYTHON_DOWNLOADS -u UV_CACHE_DIR -u XDG_DATA_HOME \
-              HOME="$home" TMPDIR="$home" REQUIRE_GPU=1 sh packaging/test-install.sh "$PWD"; } 9</tmp/cfd-gpu.lock
+          flock /home/admin/autan-gpu/gpu.lock env -u UV_PYTHON -u UV_PYTHON_DOWNLOADS -u UV_CACHE_DIR -u XDG_DATA_HOME \
+            HOME="$home" TMPDIR="$home" REQUIRE_GPU=1 sh packaging/test-install.sh "$PWD"
       - name: With no GPU visible, the probe falls back to the CPU and still passes
         run: |
           CUDA_VISIBLE_DEVICES="" HOME="$AUTAN_TEST_HOME" \
