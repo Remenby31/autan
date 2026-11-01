@@ -1,6 +1,7 @@
 // Time per cell of the device SSP-RK3 step (DeviceStepper::step: three residuals, the stages, the
 // norms and the D0107 check) and of the host residual, on a mesh given on the command line.
-// Usage: euler_step_bench MESH fp64|fp32+acc64 [STEPS]; prints one JSON object.
+// Usage: euler_step_bench MESH fp64|fp32+acc64 STEPS [LOCK]; prints one JSON object. With LOCK,
+// only the timed device steps hold that file's lock (docs/infra/bench.md).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -9,6 +10,10 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include "autan/core/geometry.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -28,7 +33,7 @@ using Clock = std::chrono::steady_clock;
 constexpr Gas air{1.4, 287.0};
 
 template <class P>
-int bench(const autan::Mesh& mesh, const char* precision, int steps) {
+int bench(const autan::Mesh& mesh, const char* precision, int steps, const char* lock) {
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
@@ -56,15 +61,6 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps) {
     u[2 * n + c] = u[3 * n + c] = 0.0;
     u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * q2;
   }
-  autan::runtime::OneRank rank;
-  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank,
-                                                         nullptr);
-  device->upload(u);
-  for (int i = 0; i < 5; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
-  const auto t0 = Clock::now();
-  for (int i = 0; i < steps; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
-  const double step_s = std::chrono::duration<double>(Clock::now() - t0).count() / steps;
-
   std::vector<typename P::state> stored(5 * n);
   std::vector<typename P::residual> res(5 * n);
   host.state(u, stored);
@@ -73,6 +69,24 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps) {
   const auto t1 = Clock::now();
   for (int i = 0; i < host_reps; ++i) host.residual(stored, res);
   const double host_s = std::chrono::duration<double>(Clock::now() - t1).count() / host_reps;
+  autan::runtime::OneRank rank;
+  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank,
+                                                         nullptr);
+  device->upload(u);
+  int fd = -1;
+  if (lock != nullptr) {
+    fd = ::open(lock, O_RDONLY);
+    if (fd < 0 || ::flock(fd, LOCK_EX) != 0) {
+      std::fprintf(stderr, "cannot lock %s\n", lock);
+      return 1;
+    }
+  }
+  for (int i = 0; i < 5; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
+  const auto t0 = Clock::now();
+  for (int i = 0; i < steps; ++i) static_cast<void>(device->step(0.5, std::nullopt, false));
+  const double step_s = std::chrono::duration<double>(Clock::now() - t0).count() / steps;
+  if (fd >= 0) ::close(fd);
+
   std::printf(
       "{\"precision\":\"%s\",\"cells\":%zu,\"steps\":%d,\"device_step_ns_per_cell\":%.4f,"
       "\"host_residual_ns_per_cell\":%.4f}\n",
@@ -84,15 +98,16 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 3) {
-    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 [STEPS]\n");
+  if (argc < 4) {
+    std::fprintf(stderr, "usage: euler_step_bench MESH fp64|fp32+acc64 STEPS [LOCK]\n");
     return 2;
   }
   const auto mesh = autan::io::read_mesh(argv[1]);
-  const int steps = argc > 3 ? std::atoi(argv[3]) : 50;
+  const int steps = std::atoi(argv[3]);
+  const char* lock = argc > 4 ? argv[4] : nullptr;
   const std::string p = argv[2];
-  if (p == "fp64") return bench<autan::kernels::fp64>(mesh, argv[2], steps);
-  if (p == "fp32+acc64") return bench<autan::kernels::fp32_acc64>(mesh, argv[2], steps);
+  if (p == "fp64") return bench<autan::kernels::fp64>(mesh, argv[2], steps, lock);
+  if (p == "fp32+acc64") return bench<autan::kernels::fp32_acc64>(mesh, argv[2], steps, lock);
   std::fprintf(stderr, "unknown precision %s\n", argv[2]);
   return 2;
 }
