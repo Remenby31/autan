@@ -79,11 +79,13 @@ export const runQuery = (runId: string) =>
     queryFn: () => getJson<RunDetails>(`/api/runs/${runId}`),
   });
 
+const EMPTY: RunRegistry = { runs: [], rejected: [], summaries: {}, solutions: [] };
+
 function upsert(registry: RunRegistry | undefined, run: Run): RunRegistry {
   const runs = (registry?.runs ?? []).filter((r) => r.run_id !== run.run_id);
   runs.push(run);
   runs.sort((a, b) => b.started.localeCompare(a.started));
-  return { runs, rejected: registry?.rejected ?? [], summaries: registry?.summaries ?? {} };
+  return { ...EMPTY, ...registry, runs };
 }
 
 /** Keeps the run registry query live from the server's event stream. */
@@ -109,11 +111,15 @@ export function subscribeRegistry(client: QueryClient): () => void {
   });
   source.addEventListener("rejected", (e) => {
     const rejected = JSON.parse(e.data) as RunRegistry["rejected"];
-    update((old) => ({ runs: old?.runs ?? [], rejected, summaries: old?.summaries ?? {} }));
+    update((old) => ({ ...EMPTY, ...old, rejected }));
   });
   source.addEventListener("summaries", (e) => {
     const summaries = JSON.parse(e.data) as RunRegistry["summaries"];
-    update((old) => ({ runs: old?.runs ?? [], rejected: old?.rejected ?? [], summaries }));
+    update((old) => ({ ...EMPTY, ...old, summaries }));
+  });
+  source.addEventListener("solutions", (e) => {
+    const solutions = JSON.parse(e.data) as RunRegistry["solutions"];
+    update((old) => ({ ...EMPTY, ...old, solutions }));
   });
   return () => source.close();
 }

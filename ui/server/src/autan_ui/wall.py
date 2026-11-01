@@ -29,15 +29,17 @@ def wall_surface(folder: Folder) -> bytes:
     """The wall and slip zones of the run's solution as an `autan-ui.surface/1` message.
 
     Fields per node, from `WallSolution` face values averaged with face-area weights: `Cp`
-    = (p - p_inf)/q_inf, `Cf` = |tau|/q_inf (0 on slip faces), `Pressure` (Pa), with q_inf =
-    rho_inf V_inf^2 / 2 from
-    the stored case's freestream. ValueError when the solution has no wall face.
+    = (p - p_inf)/q_inf, `Cf` = |tau|/q_inf (0 on slip faces) unless the case is inviscid,
+    `Pressure` (Pa), with q_inf = rho_inf V_inf^2 / 2 from the stored case's freestream.
+    ValueError when the solution has no wall face.
     """
     case = CaseSpec.from_document(
         tomllib.loads(folder.read("case.toml").decode()), Location(file="case.toml")
     )
     state = freestream_state(case)
     q_inf = 0.5 * state.density * state.speed**2
+    # An inviscid solution has no wall shear: its zero is not a skin friction to show.
+    viscous = case.physics.turbulence.model != "inviscid"
     with os.fdopen(folder.open("solution.cgns"), "rb") as file, h5py.File(file, "r") as tree:
         base = tree["Base"]
         zone = base["Zone"]
@@ -66,19 +68,18 @@ def wall_surface(folder: Folder) -> bytes:
         if not len(faces) or any(int(f) not in row for f in faces):
             continue
         rows = np.array([row[int(f)] for f in faces])
-        values = {
-            "Cp": (pressure[rows] - state.pressure) / q_inf,
-            "Cf": np.linalg.norm(shear[rows], axis=1) / q_inf,
-            "Pressure": pressure[rows],
-        }
-        zones.append(_zone(name, faces, start, connectivity, coords, values, origin))
+        values = {"Cp": (pressure[rows] - state.pressure) / q_inf}
+        if viscous:
+            values["Cf"] = np.linalg.norm(shear[rows], axis=1) / q_inf
+        values["Pressure"] = pressure[rows]
+        zones.append(polygon_zone(name, faces, start, connectivity, coords, values, origin))
     if not zones:
         msg = "the solution has no wall face"
         raise ValueError(msg)
     return encode(zones, origin=(float(origin[0]), float(origin[1]), float(origin[2])))
 
 
-def _zone(
+def polygon_zone(
     name: str,
     faces: npt.NDArray[np.int64],
     start: npt.NDArray[np.int64],

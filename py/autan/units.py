@@ -75,8 +75,7 @@ class Dimension:
             "x-autan-dimension": self.dimension,
         }
 
-    def validate(self, value: object) -> pint.Quantity:
-        quantity = _to_quantity(value, self.dimension)
+    def _check_dimension(self, quantity: pint.Quantity) -> None:
         if not _has_dimension(quantity, self.dimension):
             fail(
                 "E0301",
@@ -85,9 +84,16 @@ class Dimension:
                 got=repr(format_quantity(quantity)),
                 actual=_describe_dimension(quantity),
             )
-        magnitude = float(quantity.magnitude)
-        if not math.isfinite(magnitude):
+
+    def validate(self, value: object) -> pint.Quantity:
+        quantity = _to_quantity(value, self.dimension)
+        self._check_dimension(quantity)
+        if not math.isfinite(float(quantity.magnitude)):
             fail("E0304", "{got} is not finite", got=repr(format_quantity(quantity)))
+        # A case holds each quantity as its document text reads back, so that the case, its
+        # document and its hash agree; that text may round a unit's exponents.
+        quantity = parse(format_quantity(quantity), self.dimension)
+        self._check_dimension(quantity)
         if self.positive:
             absolute = quantity.to(ureg.kelvin) if self.dimension == "[temperature]" else quantity
             if float(absolute.magnitude) <= 0:

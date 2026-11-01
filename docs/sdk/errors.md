@@ -796,6 +796,14 @@ The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA
 
 Fix: Run on a host with a GPU visible to the process (`docker --gpus`), or use `devices.kind = cpu`.
 
+## E0808
+
+**No MPI launcher** (error)
+
+A run on several devices starts one rank per device through an MPI launcher, found through `$AUTAN_MPIEXEC`, or `mpiexec` then `mpirun` on the PATH.
+
+Fix: Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set `$AUTAN_MPIEXEC`, or run on one device.
+
 ## E1001
 
 **Unsupported kernel construct** (error)
@@ -971,3 +979,11 @@ Fix: Check that the Mac has an Apple GPU with `autan doctor`, then report the me
 A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.
 
 Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.
+
+## E1109
+
+**Strategy not rank-independent** (error)
+
+A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).
+
+Fix: Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.

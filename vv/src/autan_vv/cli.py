@@ -273,8 +273,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "meshes",
-        help="generate a seeded mesh family of the unit cube, of the Ringleb domain with its"
-        " face states, or the NACA 0012 O-meshes",
+        help="generate a seeded mesh family of the unit cube, of the Ringleb domain with its face"
+        " states, or the NACA 0012 O-meshes",
     )
     p.add_argument(
         "kind",
