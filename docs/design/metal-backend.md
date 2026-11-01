@@ -92,3 +92,4 @@ CI: `.github/workflows/metal.yml` on GitHub's `macos-26` arm64 runner builds the
 - **autan-bench on macOS.** The results above ran with the busy-sample fix of PR #107 (Apple's IO-registry utilisation stays at 3–18 % under a saturating load). Host load is not recorded yet, though it shares the DRAM (session B); proposed to CFD - HPC Spark.
 - **Shader compilation.** Libraries compile from source at first use (4 s for the spike modules, then the system cache); a precompiled `.metallib` (Metal Toolchain) is an option for packaged wheels.
 - **Hierarchical colouring and SIMD-group transposition** are not emitted, as on CUDA.
+- **Euler physics on Metal.** Only the test runs the Euler loops on Metal. A Metal physics path must take its gradient weights from `Euler<P>::gradient_weights()` and refresh them after every `set_boundary()`: they depend on the boundary kinds.
