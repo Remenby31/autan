@@ -6,15 +6,19 @@
 # Everything it creates is prefixed autan-runner; it never touches other containers.
 set -euo pipefail
 
-name=${AUTAN_RUNNER_NAME:-$(hostname)}
+# A second runner on the same Spark (e.g. AUTAN_RUNNER_INSTANCE=main, labels gpu,gb10,bench-main)
+# gets its own container and volumes; the proxy is shared.
+instance=${AUTAN_RUNNER_INSTANCE:+-$AUTAN_RUNNER_INSTANCE}
+name=${AUTAN_RUNNER_NAME:-$(hostname)$instance}
 repo_url=https://github.com/Remenby31/autan
 labels=${AUTAN_RUNNER_LABELS:-gpu,gb10}
+container=autan-runner$instance
 image=autan-runner:local
 proxy_image=autan-runner-proxy:local
 internal_net=autan-runner-internal
 egress_net=autan-runner-egress
-state=autan-runner-state
-work=autan-runner-work
+state=autan-runner-state$instance
+work=autan-runner-work$instance
 lock_dir=/home/admin/autan-gpu
 lock=$lock_dir/gpu.lock
 here=$(cd "$(dirname "$0")" && pwd)
@@ -25,7 +29,7 @@ prepare() {
   install -d -m 0755 "$lock_dir"
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
   local file
-  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock"; do
+  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock" "$lock_dir/main.lock"; do
     [[ -f $file ]] || { (set -C; : >"$file") 2>/dev/null && chmod 0666 "$file"; }
     [[ -f $file ]] || { echo "error: $file is not a regular file" >&2; exit 1; }
   done
@@ -106,12 +110,16 @@ case ${1:-} in
   start)
     prepare
     start_proxy
-    docker rm -f autan-runner >/dev/null 2>&1 || true
+    docker rm -f "$container" >/dev/null 2>&1 || true
     dev_image=$(docker image inspect -f '{{index .Config.Labels "org.autan.dev-image"}}' "$image")
-    docker run -d --name autan-runner --restart unless-stopped -e AUTAN_IMAGE="$dev_image" "${runner_args[@]}" "$image" run
+    docker run -d --name "$container" --restart unless-stopped -e AUTAN_IMAGE="$dev_image" "${runner_args[@]}" "$image" run
     ;;
-  stop) docker rm -f autan-runner autan-runner-proxy ;;
+  # The proxy goes with the last runner.
+  stop)
+    docker rm -f "$container"
+    docker ps -a --format '{{.Names}}' | grep -qE '^autan-runner(-[a-z0-9]+)?$' || docker rm -f autan-runner-proxy
+    ;;
   status) docker ps -a --filter name=^autan-runner --format '{{.Names}}\t{{.Status}}\t{{.Image}}' ;;
-  logs) docker logs --tail 100 autan-runner ;;
+  logs) docker logs --tail 100 "$container" ;;
   *) sed -n '2,7p' "$0"; exit 2 ;;
 esac

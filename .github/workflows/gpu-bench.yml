@@ -98,8 +98,10 @@ jobs:
       needs.changes.outputs.bench == 'true' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    # `bench`: runners whose GPU is not shared with another team's long-running process.
-    runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
+    # `bench`: runners whose GPU is not shared with another team's long-running process. Main has
+    # its own runner process on the same Spark (`bench-main`), so it never queues behind pull
+    # requests in GitHub; on the machine the GPU lock orders them, main first.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -112,12 +114,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build the benchmarks
-        run: cmake -S bench -B build/bench && cmake --build build/bench
-      - name: Install the harness
-        run: uv sync --project bench --locked
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
+      # Builds run under the GPU lock too, briefly: on the bench Spark no measurement ever runs
+      # beside a compilation.
+      - name: Build the benchmarks
+        run: >-
+          bench/lock/autan-gpu-lock -m "gpu-bench: build the benchmarks" -t 600 --
+          bash -c 'cmake -S bench -B build/bench && cmake --build build/bench'
+      - name: Install the harness
+        run: uv sync --project bench --locked
       - name: Harness tests on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
@@ -139,8 +145,9 @@ jobs:
           path: meshes
       - name: Build the generated loops
         run: >-
-          cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
-          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench
+          bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
+          bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
+          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
       - name: Generated loops, hex n = 128, fp32, RCM order
         run: >-
           uv run --project bench --locked autan-bench run --suite codegen

@@ -24,7 +24,10 @@ from pathlib import Path
 LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
 LOG = LOCK.parent / "holders.log"
 CI_LOCK = LOCK.parent / "ci.lock"
-RUNNER = os.environ.get("AUTAN_RUNNER_CONTAINER", "autan-runner")
+# Every runner of the Spark (autan-runner, autan-runner-main, ...), not their proxy.
+RUNNER = re.compile(
+    os.environ.get("AUTAN_RUNNER_CONTAINER", r"autan-runner(-(?!proxy$)[a-z0-9]+)?")
+)
 POLL_S = 0.5
 MAX_HOLD_S = 600
 REPEAT_S = 300
@@ -114,14 +117,14 @@ def main() -> int:
     st = LOCK.stat()
     key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
     containers = Containers()
-    say(f"watching {LOCK} ({key}); CI is the {RUNNER} container")
+    say(f"watching {LOCK} ({key}); CI is any container named {RUNNER.pattern}")
     ci = CI_LOCK.open()
     announcing = False
     seen: dict[int, dict] = {}
     while not stopping:
         containers.refresh()
         holders, waiters = lock_users(key, Path("/proc/locks").read_text())
-        runner = {c for c, n in containers.names.items() if n == RUNNER}
+        runner = {c for c, n in containers.names.items() if RUNNER.fullmatch(n)}
         ci_present = any(container_of(p) in runner for p in holders | waiters)
         if ci_present and not announcing:
             try:
