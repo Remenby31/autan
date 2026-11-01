@@ -43,7 +43,7 @@ def main() -> None:
                 })  # fmt: skip
             label = f"{family} {policy}"
             (out / f"{family}-{policy}.json").write_text(
-                json.dumps({"label": label, "dim": 3, "levels": levels}, indent=1)
+                json.dumps({"label": label, "dim": 3, "levels": levels}, indent=1) + "\n"
             )
             h = [(lv["volume"] / lv["n_cells"]) ** (1 / 3) for lv in levels]
             row = [label]
