@@ -116,9 +116,36 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 
 `autan::io::write_solution(file, mesh, solution)` writes `solution.cgns` with the layout of [results.md](results.md#solutioncgns) (node names by its rule, `autan::io::zone_node_names`); files it writes read back through `read_cgns` to the same mesh.
 
-`autan::io::mesh_hash(path)` computes the mesh hash and `autan::io::mesh_info_json(mesh, hash)` the MeshInfo document, both as [mesh-info.md](mesh-info.md) defines them. The `autan-mesh-info [--json] MESH` tool prints a summary (counts, zones, quality maxima, closure) or that document; it exits 1 with the E01xx code on a read error.
+`autan::io::mesh_hash(path)` computes the mesh hash and `autan::io::mesh_info_json(mesh, hash)` the MeshInfo document, both as [mesh-info.md](mesh-info.md) defines them. The `autan-mesh-info [--json | --surface OUT] MESH` tool prints a summary (counts, zones, quality maxima, closure) or that document, or writes the [boundary surface](#boundary-surface); it exits 1 with the E01xx code on a read or write error.
 
 The test meshes and how they are generated: [tests/data/mesh/README.md](../../tests/data/mesh/README.md).
+
+## Boundary surface
+
+`autan::io::surface_bytes(mesh, hash)`, which `autan-mesh-info --surface OUT MESH` writes to `OUT`, gives the mesh's boundary faces as an `autan.surface/1` file, for a viewer to draw them and pick zones. A boundary whose node count or total of face nodes (`face_offsets[F]`) exceeds 2³² − 1 is `E0113`.
+
+**Layout.** Little-endian: a `u32` byte length `n`, then `n` bytes of UTF-8 JSON (the header), padded with spaces so that `4 + n` is a multiple of 8, then the buffers. Buffer offsets count from byte `4 + n`, the end of the padded header; each is a multiple of 8.
+
+**Header.**
+
+| Key | Value |
+|---|---|
+| `schema` | `"autan.surface/1"` |
+| `source.sha256` | The mesh's `source.sha256`, as in its MeshInfo ([mesh-info.md](mesh-info.md)). |
+| `nodes` | Number of nodes N. |
+| `faces` | Number of boundary faces F, the sum of the zones' `faces`. |
+| `zones` | The MeshInfo `boundary_zones`, in their order, with their `name`, `type` and `native_type` ([mesh-info.md](mesh-info.md)), `first_face` and `faces`: zone k's faces are faces `first_face` to `first_face + faces − 1`, `faces` as in MeshInfo. |
+| `buffers` | `name`, `dtype` (`f64`, `u32`), `offset` (bytes), `length` (elements), for each buffer below. |
+
+**Buffers.**
+
+| Name | dtype | Length | Content |
+|---|---|---|---|
+| `positions` | `f64` | 3N | x, y, z of each node, nodes in the order the faces first use them. |
+| `face_offsets` | `u32` | F + 1 | `face_offsets[0] = 0`; face f's nodes are `face_nodes[face_offsets[f] .. face_offsets[f + 1])`. |
+| `face_nodes` | `u32` | `face_offsets[F]` | Node indices into `positions`. |
+
+Faces are the mesh's boundary faces, zone by zone, each zone's in mesh order. Each face is the polygon the mesh stores, not triangulated, its nodes in the mesh's order: by the right-hand rule its normal points out of the domain. Periodic zones are included; interior zones are not. For a closed domain, the surface is closed: every edge is shared by exactly two faces, and the area vectors sum to zero up to round-off.
 
 ## Errors
 

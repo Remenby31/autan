@@ -27,4 +27,10 @@ MeshInfoZones meshinfo_zones(const Mesh& mesh);
 /// of an assembled, unpartitioned mesh read from its source, as JSON text.
 std::string mesh_info_json(const Mesh& mesh, const std::string& sha256);
 
+/// The boundary surface of an assembled, unpartitioned mesh as an
+/// autan.surface/1 file (docs/contracts/mesh.md#boundary-surface): its
+/// boundary faces by zone, in MeshInfo zone order, polygons as stored, nodes
+/// in order of first use. Throws E0113 if a count exceeds 2^32 - 1.
+std::string surface_bytes(const Mesh& mesh, const std::string& sha256);
+
 }  // namespace autan::io
