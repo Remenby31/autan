@@ -159,6 +159,18 @@ TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "
     m.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {2.0, 0.0, 0.0}});
     require_code(ErrorCode::mesh_periodic_unmatched, autan::to_face_based(std::move(m)));
   }
+  SECTION("an empty zone") {
+    require_code(
+        ErrorCode::mesh_periodic_invalid,
+        periodic_box(2, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
+          // Two declared zones that label no face.
+          for (const char* name : {"left", "right"}) {
+            m.face_zones.push_back(
+                {.name = name, .bc_type = "", .kind = autan::BcKind::periodic, .provenance = {}});
+          }
+          m.periodic.push_back({.zone_a = 6, .zone_b = 7, .translation = {1.0, 0.0, 0.0}});
+        }));
+  }
   SECTION("a zero translation") {
     require_code(ErrorCode::mesh_periodic_invalid,
                  periodic_box(2, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {

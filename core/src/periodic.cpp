@@ -16,6 +16,13 @@ namespace {
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
+template <typename... Parts>
+std::string concat(const Parts&... parts) {
+  std::string out;
+  ((out += parts), ...);
+  return out;
+}
+
 [[noreturn]] void invalid(const std::string& message) {
   throw Error(ErrorCode::mesh_periodic_invalid, message);
 }
@@ -34,6 +41,9 @@ void check_declaration(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
     const std::string which = "periodic pair " + std::to_string(p);
     for (const index_t z : {pair.zone_a, pair.zone_b}) {
       if (z < 0 || at(z) >= zones.size()) invalid(which + " names no face zone");
+      const auto off = mesh.boundary_zone_offsets();
+      if (off[at(z) + 1] == off[at(z)])
+        invalid(which + ": zone '" + zones[at(z)].name + "' has no face");
       if (!zones[at(z)].boundary || zones[at(z)].kind != BcKind::periodic) {
         invalid(which + ": zone '" + zones[at(z)].name +
                 "' is not a boundary zone of kind periodic");
@@ -118,8 +128,8 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
   };
   const auto octave_of = [&](double h, index_t node, const std::string& zone) {
     if (!(h > 0.0) || !std::isfinite(h)) {
-      unmatched(
-          where("node " + std::to_string(node) + " of zone '" + zone + "' has a degenerate edge"));
+      unmatched(where(
+          concat("node ", std::to_string(node), " of zone '", zone, "' has a degenerate edge")));
     }
     return std::ilogb(h);
   };
@@ -172,9 +182,9 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
         }
       }
       if (count != 1) {
-        unmatched(where("node " + std::to_string(n) + " of zone '" + name_a +
-                        "', translated, coincides with " + std::to_string(count) +
-                        " nodes of zone '" + name_b + "'"));
+        unmatched(where(concat("node ", std::to_string(n), " of zone '", name_a,
+                               "', translated, coincides with ", std::to_string(count),
+                               " nodes of zone '", name_b, "'")));
       }
       image[at(n)] = found;
     }
@@ -195,8 +205,8 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     std::ranges::sort(sorted);
     const auto it = faces_b.find(sorted);
     if (it == faces_b.end() || used[at(it->second - b0)] != 0) {
-      unmatched("periodic pair " + std::to_string(p) + ": face " + std::to_string(f) +
-                " of zone '" + name_a + "', translated, is no face of zone '" + name_b + "'");
+      unmatched(where(concat("face ", std::to_string(f), " of zone '", name_a,
+                             "', translated, is no face of zone '", name_b, "'")));
     }
     // Both faces point out of the domain, so the translated face of zone a
     // runs through its nodes in the opposite direction to its partner.
