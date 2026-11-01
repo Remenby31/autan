@@ -197,6 +197,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   topo.stencil_offsets = buf.put<offset_t>(stencil.offsets);
   topo.stencil = buf.put<index_t>(stencil.entries);
   topo.stencil_twin = buf.put<offset_t>(stencil.twin);
+  topo.incidence_twin = buf.put<offset_t>(autan::kernels::incidence_twins(c.mesh));
   const auto interior =
       autan::kernels::colour_faces(host_topo, 0, host_topo.n_owned_interior_faces);
   const auto boundary =

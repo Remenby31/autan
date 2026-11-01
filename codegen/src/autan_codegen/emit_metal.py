@@ -231,7 +231,10 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
             for j in range(n):
                 e.w(f"    out[{j}] = A(a.scratch[offset_t({j}) * d.topo.n_faces + f]);")
             if lm.kind == "face":
-                e.w("    const bool left = d.topo.owner[f] == c;")
+                # c owns f iff its incidence precedes the twin: interior faces have
+                # owner < neighbour (docs/contracts/mesh.md, invariant 2) and cell c's incidences
+                # are [off[c], off[c + 1]). A sequential read instead of owner[f], at random.
+                e.w("    const bool left = k < d.topo.incidence_twin[k];")
         else:
             e.w(f"    typename P::compute out[{n}];")
             for s in _face_eval(lm, "    "):
@@ -380,6 +383,10 @@ def _face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w("      }")
     e.w("      break;")
     e.w("    case Strategy::store_gather: {")
+    if lm.kind == "face":
+        e.w("      if (d.topo.incidence_twin == nullptr) {")
+        e.w('        throw std::invalid_argument("E1106: store-gather needs incidence twins");')
+        e.w("      }")
     e.w(f"      if (s.face_scratch_width < {n_out(lm)}) {{")
     e.w(
         '        throw std::invalid_argument("E1104: face scratch narrower than the loop outputs");'
