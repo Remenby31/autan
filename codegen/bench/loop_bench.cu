@@ -274,6 +274,46 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
          time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds_adjoint(da, s, dm.schedule); })});
   }
 
+  // LSQ gradient over the wider cell stencils that make the unlimited scheme stable on
+  // tetrahedra. Analytic minimum: per entry its index and weight; per cell its offset, q, and
+  // the gradient written.
+  for (auto kind : {autan::kernels::StencilKind::vertex, autan::kernels::StencilKind::face2}) {
+    const auto t_build = std::chrono::steady_clock::now();
+    const auto st = autan::kernels::cell_stencil(m.mesh, m.packed, kind);
+    const double build_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+    const auto ns = st.entries.size();
+    DeviceArray<offset_t> st_off(st.offsets), st_twin(st.twin);
+    DeviceArray<index_t> st_entries(st.entries);
+    const auto w_host = autan::kernels::converted<
+        std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>>(st.lsq_weight);
+    DeviceArray<std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>> w_dev(
+        w_host);
+    gr::Data<P> dst = d;
+    dst.topo.n_stencil = static_cast<offset_t>(ns);
+    dst.topo.stencil_offsets = st_off.get();
+    dst.topo.stencil = st_entries.get();
+    dst.topo.stencil_twin = st_twin.get();
+    dst.stencil_lsq_weight = w_dev.get();
+    gr::Data<P> hst = dh;
+    hst.topo.n_stencil = static_cast<offset_t>(ns);
+    hst.topo.stencil_offsets = st.offsets.data();
+    hst.topo.stencil = st.entries.data();
+    hst.topo.stencil_twin = st.twin.data();
+    hst.stencil_lsq_weight = w_host.data();
+    gr::cpu::lsq_gradient_stencil(hst);
+    gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule);
+    gpu::check(cudaDeviceSynchronize(), "lsq stencil");
+    if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+    const double st_bytes = static_cast<double>(ns) * (sizeof(index_t) + 3.0 * sizeof(w_host[0])) +
+                            cells * (sizeof(offset_t) + sizeof(S) + 3.0 * sizeof(Gr));
+    const char* label = kind == autan::kernels::StencilKind::vertex ? "vertex" : "face2";
+    std::fprintf(stderr, "%s stencil: %zu entries (%.1f per cell), built in %.3f s\n", label, ns,
+                 static_cast<double>(ns) / cells, build_seconds);
+    out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
+                   time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
+  }
+
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
   namespace rf = autan::kernels::roe;
   std::vector<S> u(5 * nc);
@@ -330,7 +370,7 @@ int main(int argc, char** argv) {
   } else if (o.order != "input") {
     fail("--order is input or rcm");
   }
-  SpikeMesh m{std::move(mesh), {}, {}, {}, {}};
+  SpikeMesh m{std::move(mesh), {}, {}, {}, {}, {}};
   m.geometry = autan::compute_geometry(m.mesh);
   m.packed = autan::kernels::pack_geometry(m.mesh, m.geometry);
   m.topo = autan::kernels::topology(m.mesh.view());

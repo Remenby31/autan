@@ -49,6 +49,18 @@ void copy_out(const std::vector<T>& v, double* p) {
 
 namespace autan::spike {
 
+/// LSQ gradient of the advection-diffusion residual: over the cell stencil when the mesh has one
+/// (autan_spike_set_stencil), else over face neighbours.
+template <class D>
+void lsq(const D& d, const SpikeMesh& m) {
+  namespace ad = autan::kernels::advection_diffusion;
+  if (m.topo.stencil != nullptr) {
+    ad::cpu::lsq_gradient_stencil(d);
+  } else {
+    ad::cpu::lsq_gradient(d);
+  }
+}
+
 /// Residual of the advection-diffusion scheme (kernels/advection_diffusion.py) in policy P:
 /// LSQ gradient, then volume source, interior and boundary fluxes. Inputs and outputs in FP64.
 template <class P>
@@ -68,6 +80,7 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
   d.q = qs.data();
   d.q_b = qbs.data();
   d.lsq_weight = g.lsq_weight.data();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
   d.grad = gs.data();
   d.source = ss.data();
   d.cell_volume = g.cell_volume.data();
@@ -80,7 +93,7 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::cpu::lsq_gradient(d);
+  lsq(d, m);
   ad::cpu::init_residual(d);
   ad::cpu::flux(d);
   ad::cpu::boundary_flux(d);
@@ -116,6 +129,7 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
   d.q = qs.data();
   d.q_b = qbs.data();
   d.lsq_weight = g.lsq_weight.data();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
   d.grad = gs.data();
   d.source = ss.data();
   d.cell_volume = g.cell_volume.data();
@@ -136,12 +150,16 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::cpu::lsq_gradient(d);
+  lsq(d, m);
   if (mode == 0) {
     for (std::size_t c = 0; c < nc; ++c) {
       q_tan[c] = S(seed[c]);
     }
-    ad::cpu::lsq_gradient_tangent(d);
+    if (m.topo.stencil != nullptr) {
+      ad::cpu::lsq_gradient_stencil_tangent(d);
+    } else {
+      ad::cpu::lsq_gradient_tangent(d);
+    }
     ad::cpu::init_residual_tangent(d);
     ad::cpu::flux_tangent(d);
     ad::cpu::boundary_flux_tangent(d);
@@ -153,7 +171,11 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
     ad::cpu::boundary_flux_adjoint(d);
     ad::cpu::flux_adjoint(d);
     ad::cpu::init_residual_adjoint(d);
-    ad::cpu::lsq_gradient_adjoint(d);
+    if (m.topo.stencil != nullptr) {
+      ad::cpu::lsq_gradient_stencil_adjoint(d);
+    } else {
+      ad::cpu::lsq_gradient_adjoint(d);
+    }
     copy_out(q_adj, out);
   }
 }
@@ -178,6 +200,7 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
   d.q = qs.data();
   d.q_b = qbs.data();
   d.lsq_weight = g.lsq_weight.data();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
   d.grad = gs.data();
   d.source = ss.data();
   d.cell_volume = g.cell_volume.data();
@@ -190,7 +213,7 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
     d.velocity[i] = velocity[i];
   }
   d.nu[0] = nu;
-  ad::cpu::lsq_gradient(d);
+  lsq(d, m);
   ad::cpu::init_residual(d);
   ad::cpu::flux(d);
   ad::cpu::boundary_flux(d);
@@ -279,6 +302,7 @@ void lsq_bounds_derivative(const SpikeMesh& m, int mode, const double* q, const 
   d.qmin = lo.data();
   d.qmax = hi.data();
   d.lsq_weight = g.lsq_weight.data();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
   d.q_tan = q_tan.data();
   d.grad_tan = g_tan.data();
   d.qmin_tan = lo_tan.data();
@@ -367,6 +391,7 @@ void gradients(const SpikeMesh& m, const char* method, const double* q, const do
   d.qmax = maxs.data();
   d.gg_sum = acc.data();
   d.lsq_weight = g.lsq_weight.data();
+  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
   d.cell_volume = g.cell_volume.data();
   d.cell_centroid = g.cell_centroid.data();
   d.face_centroid = g.face_centroid.data();
@@ -424,7 +449,7 @@ int dispatch(const char* policy, char* err, std::size_t len, F&& f) {
 }
 
 std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
-  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}, {}});
+  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}, {}, {}});
   m->geometry = autan::compute_geometry(m->mesh);
   m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
   m->topo = autan::kernels::topology(m->mesh.view());
@@ -476,6 +501,39 @@ int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::i
 /// Reads a mesh file through the core readers (autan::io::read_mesh).
 int autan_spike_mesh_read(const char* path, void** out, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] { *out = finish(autan::io::read_mesh(path)).release(); });
+}
+
+/// Builds the cell stencil of `kind` (0 vertex, 1 face2) and its LSQ weights, so that the
+/// advection-diffusion residual takes its gradient over it; kind -1 removes it.
+int autan_spike_set_stencil(void* mesh, int kind, std::int64_t* size, char* err,
+                            std::size_t err_len) {
+  auto* m = static_cast<SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    if (kind < 0) {
+      m->stencil = {};
+      m->packed.stencil_lsq_weight.clear();
+      m->topo.n_stencil = 0;
+      m->topo.stencil_offsets = nullptr;
+      m->topo.stencil = nullptr;
+      m->topo.stencil_twin = nullptr;
+    } else {
+      m->stencil = autan::kernels::cell_stencil(
+          m->mesh, m->packed,
+          kind == 0 ? autan::kernels::StencilKind::vertex : autan::kernels::StencilKind::face2);
+      m->packed.stencil_lsq_weight = m->stencil.lsq_weight;
+      m->topo.n_stencil = static_cast<offset_t>(m->stencil.entries.size());
+      m->topo.stencil_offsets = m->stencil.offsets.data();
+      m->topo.stencil = m->stencil.entries.data();
+      m->topo.stencil_twin = m->stencil.twin.data();
+    }
+    *size = m->topo.n_stencil;
+  });
+}
+
+void autan_spike_stencil_arrays(const void* mesh, std::int64_t* offsets, std::int32_t* entries) {
+  const auto& st = static_cast<const SpikeMesh*>(mesh)->stencil;
+  std::copy(st.offsets.begin(), st.offsets.end(), offsets);
+  std::copy(st.entries.begin(), st.entries.end(), entries);
 }
 
 void autan_spike_mesh_free(void* mesh) { delete static_cast<SpikeMesh*>(mesh); }
