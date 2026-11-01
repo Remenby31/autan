@@ -347,6 +347,22 @@ def test_euler_refuses_a_periodic_mesh(tmp_path: Path) -> None:
     assert not any((tmp_path / "runs").iterdir())
 
 
+def test_the_runtime_records_the_final_monitors(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    _, mesh = hybrid
+    path = tmp_path / "monitored.py"
+    path.write_text(CASE + "case.monitor(autan.forces('*'), every=10)\n")
+    result = autan.load(path).run(
+        mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / "runs"
+    )
+    assert (result.run.status, result.run.iterations) == ("converged", 28)  # off cadence
+    final = result.run.monitors
+    assert final is not None
+    assert final["forces"].iteration == 28
+    assert result.history.monitor("forces")["iteration"].tolist() == [10, 20]
+
+
 def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:

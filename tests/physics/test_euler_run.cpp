@@ -630,6 +630,76 @@ TEST_CASE("a steady case on several ranks is refused before any directory exists
 }
 #endif
 
+TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
+  // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from
+  // the freestream that rounds to zero density, so the residual is not finite and the run
+  // diverges; D0107 must name a cell of that zone. In FP64 the state is representable; whatever
+  // happens, a divergence names its cell.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    for (auto& z : d["cell_zones"]) {
+      if (z["zone"] == "lower")
+        z["initial"]["density"] = 1e-9 * d["freestream"]["density"].get<double>();
+    }
+    d["time"]["max_iterations"] = 5;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(!out.run.empty());  // a run directory, whatever the exit status
+  const Json info = Json::parse(read(out.run / "run.json"));
+  INFO(info["diagnostics"].dump());
+  if (std::string(precision) == "fp32+acc64") {
+    CHECK(info["status"] == "diverged");
+  } else {
+    CHECK(info["status"] == "completed");  // FP64 represents the state and runs on
+  }
+  if (info["status"] == "diverged") {
+    const auto& diagnostics = info["diagnostics"];
+    const auto d107 = std::find_if(diagnostics.begin(), diagnostics.end(),
+                                   [](const Json& g) { return g["code"] == "D0107"; });
+    REQUIRE(d107 != diagnostics.end());
+    CHECK((*d107)["data"]["zone"] == "lower");
+  }
+}
+
+TEST_CASE("a fast flow at low pressure that the kernels resolve is not taken for divergence",
+          "[euler]") {
+  // rho = 1, |v| = 1e4, p = 0.7: the absolute energy rounds the pressure away in FP32, but the
+  // stored differences and the gauge pressure keep it; the check must judge the state as the
+  // kernels read it.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    auto& f = d["freestream"];
+    const double r = d["cell_zones"][0]["medium"]["gas_constant"].get<double>();
+    f["density"] = 1.0;
+    f["pressure"] = 0.7;
+    f["temperature"] = 0.7 / r;
+    f["speed"] = 1e4;
+    f["velocity"] = {1e4, 0.0, 0.0};
+    f["mach"] = 1e4 / std::sqrt(1.4 * 0.7);
+    for (auto& z : d["cell_zones"]) {
+      z["initial"]["density"] = 1.0;
+      z["initial"]["pressure"] = 0.7;
+      z["initial"]["temperature"] = 0.7 / r;
+      z["initial"]["velocity"] = f["velocity"];
+    }
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    d["time"] = {{"kind", "unsteady"},
+                 {"steps", 3},
+                 {"dt", nullptr},
+                 {"cfl", 0.5},
+                 {"average_from", nullptr}};
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  CHECK(Json::parse(read(out.run / "run.json"))["status"] == "completed");
+}
+
 TEST_CASE("oracle-state faces take their paired states, whatever the row order", "[euler]") {
   // tests/data/mesh/ringleb with the exact Ringleb states (autan-vv) on its four in-plane sides,
   // in the oracle's units (R = 1/gamma); the same rows in reverse order within each zone give
