@@ -700,12 +700,12 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
       INFO(name);
       const auto a = field(one.run, name), b = field(many, name);
       REQUIRE(std::ranges::all_of(a, [](double x) { return std::isfinite(x); }));
-      std::vector<std::uint64_t> ba(a.size()), bb(b.size());
-      std::ranges::transform(a, ba.begin(),
+      std::vector<std::uint64_t> bits_one(a.size()), bits_many(b.size());
+      std::ranges::transform(a, bits_one.begin(),
                              [](double x) { return std::bit_cast<std::uint64_t>(x); });
-      std::ranges::transform(b, bb.begin(),
+      std::ranges::transform(b, bits_many.begin(),
                              [](double x) { return std::bit_cast<std::uint64_t>(x); });
-      CHECK(ba == bb);
+      CHECK(bits_one == bits_many);
     }
   } else {
     CHECK(worst_norm <= 256.0);
