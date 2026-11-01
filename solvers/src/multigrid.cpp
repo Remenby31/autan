@@ -438,8 +438,8 @@ Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> 
   double scale = 0.0;
   for (const double v : residual_) scale = std::max(scale, std::abs(v));
   Report report;
-  if (!std::isfinite(scale) || std::any_of(residual_.begin(), residual_.end(),
-                                           [](double v) { return std::isnan(v); })) {
+  if (!std::isfinite(scale) ||
+      std::any_of(residual_.begin(), residual_.end(), [](double v) { return std::isnan(v); })) {
     report.residual_drop = std::numeric_limits<double>::quiet_NaN();
     return report;
   }
@@ -480,7 +480,8 @@ Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> 
     rr = dot(residual_, residual_);
     if (std::sqrt(rr) <= tolerance * r0) break;
   }
-  report.residual_drop = std::isfinite(rr) ? std::sqrt(rr) / r0 : std::numeric_limits<double>::quiet_NaN();
+  report.residual_drop =
+      std::isfinite(rr) ? std::sqrt(rr) / r0 : std::numeric_limits<double>::quiet_NaN();
   return report;
 }
 

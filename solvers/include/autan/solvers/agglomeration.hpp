@@ -34,9 +34,14 @@ struct AgglomerationOptions {
   /// A face joins two cells of a line when its coupling A_f / |x_N - x_O| is at least this many
   /// times the weakest coupling of both cells.
   double line_ratio = 4.0;
-  /// Most nodes of an isotropic agglomerate, and most lines grouped in the wall plane. A node
-  /// left alone joins a neighbouring agglomerate beyond this size rather than stay alone.
+  /// Most nodes of an isotropic agglomerate; a node left alone joins a neighbouring agglomerate
+  /// beyond this size rather than stay alone.
   std::size_t max_agglomerate = 8;
+  /// Most lines grouped in the wall plane.
+  std::size_t max_lines = 4;
+  /// Lines of fewer nodes are smoothed as lines but agglomerated as isotropic nodes (pairs of
+  /// cells across a large face are not wall layers).
+  std::size_t min_line = 4;
   /// Coarsening stops once a level has at most this many nodes, or when a level would keep more
   /// than `min_coarsening` of the finer level's nodes.
   std::size_t coarsest_nodes = 64;

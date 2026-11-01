@@ -114,14 +114,13 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
 }
 
 // Operator of the tests: a diffusion stencil (V shift + sum over faces of A_f / d_f) on every
-// component, coupled through a random positive diagonal block and a random face perturbation,
-// so that the 5 x 5 blocks are full.
+// component, coupled through a random face perturbation, so that the 5 x 5 blocks are full.
 struct System {
   std::vector<double> diag, upper, lower;
 };
 
 System diffusion(const Mesh& mesh, const autan::Geometry& g, double shift, double coupling,
-                 unsigned seed = 7) {
+                 bool directional = false, unsigned seed = 7) {
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
   std::mt19937 rng(seed);
@@ -140,11 +139,11 @@ System diffusion(const Mesh& mesh, const autan::Geometry& g, double shift, doubl
     const double dy = g.cell_centroid_y[nb] - g.cell_centroid_y[o];
     const double dz = g.cell_centroid_z[nb] - g.cell_centroid_z[o];
     const double w = g.face_area[f] / std::sqrt(dx * dx + dy * dy + dz * dz);
-    // Row o takes w a (x_o - x_n), row n takes w a' (x_n - x_o): A(o, n) != A(n, o).
+    // Row o takes w a (x_o - x_n), row n takes w b (x_n - x_o); `directional`: b != a.
     for (std::size_t i = 0; i < 5; ++i) {
       for (std::size_t j = 0; j < 5; ++j) {
         const double a = (i == j ? 1.0 : 0.0) + coupling * u(rng);
-        const double b = (i == j ? 1.0 : 0.0) + coupling * u(rng);
+        const double b = directional ? (i == j ? 1.0 : 0.0) + coupling * u(rng) : a;
         s.upper[25 * f + 5 * i + j] = -w * a;
         s.lower[25 * f + 5 * i + j] = -w * b;
         s.diag[25 * o + 5 * i + j] += w * a;
@@ -375,9 +374,11 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
 
 TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^-1 P^T",
           "[multigrid]") {
-  const char* file = GENERATE("hex/hex.ascii.msh", "hybrid/hybrid.ascii.msh");
+  // Meshes in RCM order, so that coarse edges of both orientations occur.
+  const char* file = GENERATE("hybrid/hybrid.ascii.msh", "poly/polyMesh");
   INFO(file);
-  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto read = autan::io::read_mesh(mesh_dir / file);
+  const auto mesh = autan::renumber_cells(read, autan::rcm_order(read));
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   MultigridOptions opt;
@@ -389,7 +390,7 @@ TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^
   REQUIRE(mg.levels().size() == 2);
   const std::size_t nc = mg.levels()[1].n_nodes;
   REQUIRE(5 * nc <= 1000);
-  const auto s = diffusion(mesh, g, 1.0, 0.3);
+  const auto s = diffusion(mesh, g, 1.0, 0.3, true);
   mg.set_operator(s.diag, s.upper, s.lower);
   std::vector<double> b(5 * n);
   for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::cos(0.11 * static_cast<double>(k));
@@ -477,6 +478,8 @@ TEST_CASE("multigrid iterations do not grow with refinement", "[multigrid]") {
     INFO("nx " << nx << ": " << counts.back() << " iterations");
     CHECK(counts.back() <= 9);
   }
+  INFO("fill " << static_cast<int>(fill) << ", iterations " << counts[0] << ", " << counts[1]
+               << ", " << counts[2]);
   CHECK(counts[2] <= counts[0] + 2);
 }
 
