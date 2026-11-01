@@ -313,6 +313,31 @@ test("a converged run opens its wall surface in Analysis and switches fields", a
   await expect(page).toHaveURL(/field=Cf/);
 });
 
+test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
+  // py/examples/crm_hl.py: M 0.2, α 19.57°, Re 5.49e6, SA, on crm-hl.cgns.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const all: Run[] = registry.runs;
+  const converged = all.find(
+    (r) => r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "19.57 deg",
+  ) as Run;
+  await page.goto(`/runs/${converged.run_id}`);
+
+  const conditions = page.getByTestId("conditions");
+  for (const part of ["M 0.2", "α 19.57°", "Re 5.49e+6", "sa", converged.precision])
+    await expect(conditions).toContainText(part);
+  await expect(page.getByTestId("mesh-name")).toHaveText("crm-hl.cgns");
+  await expect(page.getByText("State", { exact: true })).toHaveCount(0);
+  const header = page.getByTestId("monitor-table").locator("th");
+  await expect(header).toHaveText(["Monitor", "cl", "cd", "CL trend"]);
+  await page.getByRole("button", { name: "Side force and moments" }).click();
+  await expect(header).toHaveText(["Monitor", "cl", "cd", "cs", "cmx", "cmy", "cmz", "CL trend"]);
+  await expect(page.getByTestId("forces")).not.toContainText("not converged");
+
+  const diverged = all.find((r) => r.status === "diverged") as Run;
+  await page.goto(`/runs/${diverged.run_id}`);
+  await expect(page.getByTestId("forces")).toContainText("not converged");
+});
+
 test("residuals at zero and far below 1 draw on the log chart", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -440,7 +465,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
 
   const diff = page.getByTestId("settings-diff");
   for (const [key, a, b] of [
-    ["run.devices", "1 CPU", "4 CUDA GPUs"],
+    ["run.devices", "1 CPU rank", "4 CUDA ranks"],
     ["run.backend", source.solver.backend, "cuda"],
     ["run.solver", source.solver.commit, solver.commit],
     ["run.deterministic", String(source.deterministic), String(!source.deterministic)],

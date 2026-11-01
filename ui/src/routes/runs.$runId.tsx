@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy, FilePlus2 } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
-import type { Run } from "../api/contracts";
+import type { Run, RunSettings } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import {
   type HistoryColumns,
@@ -13,17 +13,19 @@ import {
   soleForces,
   useLiveRun,
 } from "../api/runs";
+import { degrees } from "../api/units";
 import { ResidualChart } from "../components/ResidualChart";
 import { formatBytes, formatCount, remainingMs } from "../components/run/format";
 import { LogView } from "../components/run/LogView";
 import { MiddleTruncate } from "../components/run/MiddleTruncate";
-import { MonitorTable } from "../components/run/MonitorTable";
+import { coefficient, MonitorTable } from "../components/run/MonitorTable";
 import { OutputList } from "../components/run/OutputList";
 import { PlanTable } from "../components/run/PlanTable";
 import { TopBar } from "../components/shell/TopBar";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Collapse } from "../components/ui/Collapse";
+import { cn } from "../components/ui/cn";
 import { Gauge } from "../components/ui/Gauge";
 import { LoadingDots } from "../components/ui/LoadingDots";
 import { MetaGrid } from "../components/ui/MetaGrid";
@@ -65,6 +67,7 @@ function RunView() {
     // Outputs grow while the run writes them; the status change brings solution.cgns.
     refetchInterval: run?.status === "running" ? 5000 : false,
   });
+  const registry = useQuery(runsQuery);
   const client = useQueryClient();
   // Refetch once the run has ended, or whenever the details lag its status: the registry
   // stream updates the cached run.json but not the outputs (solution.cgns comes at the end).
@@ -173,7 +176,7 @@ function RunView() {
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
-            <header className="flex items-center gap-4">
+            <header className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <h1 className="m-0 font-semibold text-xl">
                 {run?.case.name ?? <Skeleton className="h-8 w-40" />}
               </h1>
@@ -181,6 +184,13 @@ function RunView() {
                 <span data-testid="status">
                   <Status status={run.status} />
                 </span>
+              )}
+              {run && (
+                <Conditions
+                  run={run}
+                  settings={registry.data?.summaries[run.run_id]?.settings}
+                  cells={details.data?.mesh_info.counts.cells}
+                />
               )}
               {run?.status === "running" && (
                 <span className="flex items-center gap-2 text-fg-3 text-sm">
@@ -273,13 +283,13 @@ function RunView() {
                   defaultOpen={history.monitors.size > 0 || !history.iteration.length}
                   meta={
                     <span className="font-mono text-fg-2 text-sm tabular-nums">
-                      {forces
-                        ? `CL ${forces.cl.at(-1)?.toFixed(3)} · CD ${forces.cd.at(-1)?.toFixed(4)}`
+                      {forces?.cl.length
+                        ? `CL ${coefficient(forces.cl.at(-1) as number)} · CD ${coefficient(forces.cd.at(-1) as number)}`
                         : "—"}
                     </span>
                   }
                 >
-                  <MonitorTable history={history} />
+                  <MonitorTable history={history} converged={run?.status === "converged"} />
                 </Collapse>
                 <Collapse
                   title="Outputs"
@@ -379,8 +389,6 @@ function Facts({
   return (
     <MetaGrid
       items={[
-        { label: "Case", value: <span className="font-medium">{run.case.name}</span> },
-        { label: "State", value: <Status status={run.status} /> },
         {
           label: "Iteration",
           value:
@@ -435,11 +443,7 @@ function Facts({
         },
         {
           label: "Devices",
-          value: (
-            <span className="font-mono">
-              {devicesLabel(run.devices)} · {run.precision}
-            </span>
-          ),
+          value: <span className="font-mono">{devicesLabel(run.devices)}</span>,
         },
         { label: "Started", value: <RelativeTime iso={run.started} /> },
         ...(run.start
@@ -476,7 +480,11 @@ function Facts({
           label: "Mesh",
           value: (
             <>
-              <MiddleTruncate value={run.mesh.sha256} />
+              <Tooltip content={<span className="font-mono">{run.mesh.sha256}</span>}>
+                <span className="font-mono" data-testid="mesh-name">
+                  {run.mesh.path.split("/").pop()}
+                </span>
+              </Tooltip>
               {cells !== undefined && <span className="text-fg-3">{formatCount(cells)} cells</span>}
             </>
           ),
@@ -485,9 +493,20 @@ function Facts({
           label: "Forces",
           value:
             cl !== undefined && cd !== undefined ? (
-              <span className="flex flex-col font-mono tabular-nums">
-                <span>CL {cl.toFixed(4)}</span>
-                <span>CD {cd.toFixed(5)}</span>
+              <span
+                className={cn(
+                  "flex flex-col font-mono tabular-nums",
+                  run.status !== "converged" && "text-fg-3",
+                )}
+                data-testid="forces"
+              >
+                <span>CL {coefficient(cl)}</span>
+                <span>CD {coefficient(cd)}</span>
+                {run.status !== "converged" && (
+                  <span className="font-sans text-sm">
+                    {run.status === "running" ? "still running" : "not converged"}
+                  </span>
+                )}
               </span>
             ) : (
               "—"
@@ -504,5 +523,34 @@ function Facts({
         },
       ]}
     />
+  );
+}
+
+/** What the run computed, in a line: Mach, angles, Reynolds number, model, precision, cells,
+ * as its case writes them. */
+function Conditions({
+  run,
+  settings,
+  cells,
+}: {
+  run: Run;
+  settings: RunSettings | undefined;
+  cells: number | undefined;
+}) {
+  const alpha = degrees(settings?.aoa);
+  const beta = degrees(settings?.sideslip);
+  const parts = [
+    settings?.mach != null && `M ${settings.mach}`,
+    alpha !== null && `α ${alpha}°`,
+    beta !== null && beta !== 0 && `β ${beta}°`,
+    settings?.re != null && `Re ${settings.re.toExponential(2)}`,
+    settings?.turbulence,
+    run.precision,
+    cells !== undefined && `${formatCount(cells)} cells`,
+  ].filter(Boolean);
+  return (
+    <p className="m-0 basis-full font-mono text-fg-2 text-sm" data-testid="conditions">
+      {parts.join(" · ")}
+    </p>
   );
 }
