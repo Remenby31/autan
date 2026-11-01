@@ -395,7 +395,8 @@ def _family_problem(opened: list[autan.Results]) -> list[str]:
         doc: dict[str, Any] = results.case.model_dump(mode="json")
         doc.pop("mesh", None)
         doc.pop("name", None)
-        # Face states are exported per mesh: each level names its own file.
+        # Face states and initial states are exported per mesh: each level names its own file.
+        doc.pop("initial_state", None)
         for rule in doc.get("boundaries", []):
             condition = rule.get("condition") or {}
             if condition.get("kind") == "oracle-state":
