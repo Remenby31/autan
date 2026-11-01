@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -169,8 +170,8 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   for (const auto& entry : fs::directory_iterator(o.run))
     files.push_back(entry.path().filename().string());
   std::ranges::sort(files);
-  CHECK(files == std::vector<std::string>{"case.toml", "history.jsonl", "mesh-info.json",
-                                          "run.json", "solution.cgns"});
+  CHECK(files == std::vector<std::string>{"case.toml", "history.jsonl", "log.jsonl",
+                                          "mesh-info.json", "run.json", "solution.cgns"});
 
   const Json info = Json::parse(read(o.run / "run.json"));
   CHECK(info["schema"] == "autan.results/1");
@@ -489,4 +490,32 @@ TEST_CASE("A verification case archives its manufactured solution", "[runtime]")
                             "hybrid-verification.solver-input.json")),
                   "E0705");
   }
+}
+
+TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtime]") {
+  const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 4});
+  std::vector<Json> lines;
+  std::ifstream in(o.run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) lines.push_back(Json::parse(line));
+  REQUIRE(lines.size() >= 4);
+  const std::regex time("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z");
+  const std::regex source("[a-z][a-z0-9-]*");
+  for (const Json& l : lines) {
+    CHECK(l.size() == 7);
+    CHECK(std::regex_match(l["time"].get<std::string>(), time));
+    CHECK((l["iteration"].is_null() || l["iteration"].is_number_integer()));
+    CHECK((l["level"] == "info" || l["level"] == "warning" || l["level"] == "error"));
+    CHECK(std::regex_match(l["source"].get<std::string>(), source));
+    CHECK(l["data"].is_object());
+  }
+  CHECK(lines.front()["iteration"].is_null());
+  CHECK(lines[1]["message"] == "relaxation physics ready");  // the physics' own line
+  // The run.json diagnostic appears with its code and data.
+  const Json info = Json::parse(read(o.run / "run.json"));
+  const auto d0107 =
+      std::ranges::find_if(lines, [](const Json& l) { return l["code"] == "D0107"; });
+  REQUIRE(d0107 != lines.end());
+  CHECK((*d0107)["data"] == info["diagnostics"][0]["data"]);
+  CHECK((*d0107)["iteration"] == 4);
+  CHECK(lines.back()["data"]["status"] == "diverged");
 }
