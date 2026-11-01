@@ -75,6 +75,26 @@ def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str
     return lines
 
 
+def entry_loop(over: str, indent: str) -> list[str]:
+    """Opening of the loop over the entries k of cell c: the faces of c (`incidences`) or its
+    stencil (`stencil`). Defines `across` (the entry is a cell `nb`), else boundary face `f`."""
+    i2 = indent + "  "
+    if over == dsl.STENCIL:
+        return [
+            f"{indent}for (offset_t k = d.topo.stencil_offsets[c]; k < d.topo.stencil_offsets[c + 1]; ++k) {{",
+            f"{i2}const index_t e = d.topo.stencil[k];",
+            f"{i2}[[maybe_unused]] const bool across = e >= 0;",
+            f"{i2}[[maybe_unused]] const index_t nb = e;",
+            f"{i2}[[maybe_unused]] const index_t f = across ? -1 : -e - 1;",
+        ]
+    return [
+        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{",
+        f"{i2}const index_t f = d.topo.cell_faces[k];",
+        f"{i2}[[maybe_unused]] const bool across = f < d.topo.n_interior_faces;",
+        f"{i2}[[maybe_unused]] const index_t nb = across ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;",
+    ]
+
+
 def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     """Statements of one cell's reduction, given `c`; shared by the CPU and GPU cell kernels."""
     loop = lm.loop
@@ -87,14 +107,8 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
         for o, off in zip(accs, offs, strict=True)
         for c in range(o.dataset.type.size)
     )
-    lines.append(
-        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{"
-    )
+    lines.extend(entry_loop(loop.over, indent))
     i2 = indent + "  "
-    lines.append(f"{i2}const index_t f = d.topo.cell_faces[k];")
-    lines.append(
-        f"{i2}[[maybe_unused]] const index_t nb = f < d.topo.n_interior_faces ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;"
-    )
     lines.append(f"{i2}typename P::compute out[{n}];")
     args = call_args(
         lm.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"}, layout=layout
@@ -150,28 +164,31 @@ def other_targets(lm: LoopModel) -> list[tuple[int, int]]:
     ]
 
 
+def entries(over: str) -> str:
+    """Number of entries of all cells, the stride of per-entry data and scratch."""
+    return "d.topo.n_stencil" if over == dsl.STENCIL else "d.topo.n_incidences"
+
+
 def twin_gather_body(lm: LoopModel, indent: str) -> list[str]:
     """Second pass of the deterministic reduction adjoint, for cell c (owned or ghost): add, in
-    the order of c's incidences, what each owned neighbour stored for c on the shared face."""
+    the order of c's entries, what each owned neighbour stored for c on its twin entry (the same
+    face, or c in the neighbour's stencil)."""
     ra = lm.radj
     assert isinstance(ra, ReduceAdjoint)
     p = ra.primal
+    over = p.loop.over
     i2 = indent + "  "
+    twin = "d.topo.stencil_twin" if over == dsl.STENCIL else "d.topo.incidence_twin"
     lines = [
-        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{",
-        f"{i2}const index_t f = d.topo.cell_faces[k];",
-        f"{i2}if (f >= d.topo.n_interior_faces) {{",
+        *entry_loop(over, indent),
+        f"{i2}if (!across || nb >= d.topo.n_owned_cells) {{",
         f"{i2}  continue;",
         f"{i2}}}",
-        f"{i2}const index_t nb = d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f];",
-        f"{i2}if (nb >= d.topo.n_owned_cells) {{",
-        f"{i2}  continue;",
-        f"{i2}}}",
-        f"{i2}const offset_t kt = d.topo.incidence_twin[k];",
+        f"{i2}const offset_t kt = {twin}[k];",
     ]
     for m_other, (k, c) in enumerate(other_targets(lm)):
         a = adj_ds(p.loop.bindings[p.sig.names[k]].dataset)  # type: ignore[arg-type]
-        lines.append(f"{i2}{at(a, 'c', c)} += scratch[{m_other} * d.topo.n_incidences + kt];")
+        lines.append(f"{i2}{at(a, 'c', c)} += scratch[{m_other} * {entries(over)} + kt];")
     lines.append(f"{indent}}}")
     return lines
 
@@ -209,15 +226,9 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
             lines.append(f"{indent}acc[{off + c}] = {acc_init(o)};")  # type: ignore[arg-type]
             if selects:
                 lines.append(f"{indent}sel[{off + c}] = -1;")
-    loop_head = f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{"
-    nb_line = f"{i2}[[maybe_unused]] const index_t nb = f < d.topo.n_interior_faces ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;"
+    head = entry_loop(loop.over, indent)
     args = call_args(p.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"})
-    lines += [
-        loop_head,
-        f"{i2}const index_t f = d.topo.cell_faces[k];",
-        nb_line,
-        f"{i2}typename P::compute out[{n}];",
-    ]
+    lines += [*head, f"{i2}typename P::compute out[{n}];"]
     lines.append(f"{i2}{p.fn.name}<P>({', '.join([*args, 'out'])});")
     for o, off in zip(accs, offs, strict=True):
         for c in range(o.dataset.type.size):
@@ -255,7 +266,7 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
     for sd in seeds:
         lines.append(f"{indent}{sd} = 0;")
     # Reverse sweep over the incidences.
-    lines += [loop_head, f"{i2}const index_t f = d.topo.cell_faces[k];", nb_line]
+    lines += head
     seed_vals = []
     for o, off in zip(accs, offs, strict=True):
         for c in range(o.dataset.type.size):
@@ -275,9 +286,9 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
                 lines.append(add(at(a, "c", c), f"A(bar[{j}])", i2))
             elif scatter == "store":
                 m_other = len(other_targets(lm)[: other_targets(lm).index((k, c))])
-                lines.append(f"{i2}scratch[{m_other} * d.topo.n_incidences + k] = A(bar[{j}]);")
+                lines.append(f"{i2}scratch[{m_other} * {entries(loop.over)} + k] = A(bar[{j}]);")
             else:
-                lines.append(f"{i2}if (f < d.topo.n_interior_faces) {{")
+                lines.append(f"{i2}if (across) {{")
                 lines.append(add(at(a, "nb", c), f"A(bar[{j}])", i2 + "  "))
                 lines.append(f"{i2}}}")
             j += 1

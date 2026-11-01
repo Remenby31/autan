@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
+from autan_codegen.derive import ReduceAdjoint
 from autan_codegen.emit_cpp import Emitter, at, call_args
 from autan_codegen.emit_cpu import (
     boundary_write_body,
@@ -164,7 +165,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         e.w(s)
     for k in range(n):
         e.w(
-            f"  scratch[{k} * d.topo.n_faces + f] = A(out[{k}]);"
+            f"  scratch[offset_t({k}) * d.topo.n_faces + f] = A(out[{k}]);"
             if k
             else "  scratch[f] = A(out[0]);"
         )
@@ -194,7 +195,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
             e.w(f"    A out[{n}];")
             for k in range(n):
                 e.w(
-                    f"    out[{k}] = scratch[{k} * d.topo.n_faces + f];"
+                    f"    out[{k}] = scratch[offset_t({k}) * d.topo.n_faces + f];"
                     if k
                     else "    out[0] = scratch[f];"
                 )
@@ -380,7 +381,10 @@ def emit_reduce_adjoint_deterministic(e: Emitter, lm: LoopModel) -> None:
             '      throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
         )
         e.w("    }")
-        e.w("    if (d.topo.incidence_twin == nullptr) {")
+        assert isinstance(lm.radj, ReduceAdjoint)
+        over = lm.radj.primal.loop.over
+        twin = "stencil_twin" if over == dsl.STENCIL else "incidence_twin"
+        e.w(f"    if (d.topo.{twin} == nullptr) {{")
         e.w(
             '      throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
         )
