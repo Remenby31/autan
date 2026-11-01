@@ -266,6 +266,9 @@ BoundaryInput parse_boundary(const Json& value, const std::string& path) {
     const Object s(o.get("states"), path + ".states", {"path", "sha256"});
     BoundaryStates states;
     states.path = s.string("path");
+    if (states.path.find('\0') != std::string::npos) {
+      invalid(path + ".states.path", "contains a NUL character");
+    }
     if (!std::filesystem::path(states.path).is_absolute()) {
       invalid(path + ".states.path", "must be an absolute path");
     }
@@ -481,6 +484,15 @@ SolverInput parse_solver_input(const std::string& text) {
   }
   if (in.verification && in.time.kind != "steady")
     invalid("time.kind", "verification cases are steady");
+  // Per-face states carry no turbulence variables: compressible inviscid or laminar flow only.
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].kind == "oracle-state" &&
+        (in.physics_kind != "compressible" ||
+         (in.turbulence.model != "inviscid" && in.turbulence.model != "laminar"))) {
+      invalid(indexed("boundaries", i) + ".kind",
+              "oracle-state needs compressible inviscid or laminar flow");
+    }
+  }
   if ((in.turbulence.model == "ddes" || in.turbulence.model == "wmles") &&
       in.time.kind != "unsteady") {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");
