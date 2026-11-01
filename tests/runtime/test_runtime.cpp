@@ -267,6 +267,17 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(info["schema"] == "autan.results/1");
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
+  // results.md, timing: this run's 28 iterations, the loop within the
+  // process, and ns per cell and iteration by its definition.
+  const Json& t = info["timing"];
+  REQUIRE(t.is_object());
+  CHECK(t["iterations"] == 28);
+  CHECK(t["solve_seconds"].get<double>() > 0.0);
+  CHECK(t["solve_seconds"].get<double>() <= t["wall_seconds"].get<double>());
+  const double cells = static_cast<double>(autan::io::read_mesh(mesh_path).n_cells());
+  CHECK_THAT(
+      t["ns_per_cell_iteration"].get<double>(),
+      Catch::Matchers::WithinRel(t["solve_seconds"].get<double>() * 1e9 / (cells * 28), 1e-12));
   CHECK(std::regex_match(info["run_id"].get<std::string>(),
                          std::regex("run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")));
   CHECK(o.run.filename() == info["run_id"].get<std::string>());
@@ -363,6 +374,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "stopped");
     CHECK(info["iterations"] == 0);
+    CHECK(info["timing"].is_null());  // no iteration to time
     CHECK_FALSE(fs::exists(o.run / "history.jsonl"));
     const Json& f = info["monitors"]["forces"];
     CHECK(f["iteration"] == 0);
@@ -767,6 +779,11 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                   })),
                   "E0705");
   }
+  SECTION("one rank per device: devices.count is the rank count") {
+    const Outcome o = run(input([](Json& d) { d["devices"]["count"] = 2; }));
+    require_error(o, "E0705");
+    CHECK(Json::parse(o.err)["location"]["path"] == "devices.count");
+  }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
   }
@@ -901,6 +918,9 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
+  // timing counts this run's iterations only.
+  CHECK(info["timing"]["iterations"] ==
+        info["iterations"].get<std::int64_t>() - second["start"]["iterations"].get<std::int64_t>());
   // identity: the seven parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
@@ -1367,7 +1387,10 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
                       int expected_status = 0, Json* diagnostic = nullptr) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
-  std::ofstream(input_file) << doc.dump();
+  // One device per rank (solver-input.md, `devices`), unless a test sets it.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(input_file) << with_count.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),

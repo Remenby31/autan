@@ -477,6 +477,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
   check_periodic(p);
+  // solver-input.md, `devices`: one rank per device, as many as the launcher started.
+  if (p.input.device_count != ranks) {
+    invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
+                                 std::to_string(ranks) + " ranks run the case");
+  }
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
@@ -638,8 +643,13 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
 
 class Run final : public Log {
  public:
-  Run(Prepared& p, const SolverBuild& build, Comm& comm)
-      : p_(p), comm_(comm), geometry_(compute_geometry(p.mesh)), local_(make_part()) {
+  Run(Prepared& p, const SolverBuild& build, Comm& comm,
+      std::chrono::steady_clock::time_point launched)
+      : p_(p),
+        comm_(comm),
+        launched_(launched),
+        geometry_(compute_geometry(p.mesh)),
+        local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
     if (local_) {
       ghosts_ = comm_.ghost_exchange(*local_);
@@ -703,6 +713,7 @@ class Run final : public Log {
         {"convergence", nullptr},
         {"start", start},
         {"monitors", nullptr},
+        {"timing", nullptr},
         {"diagnostics", Json::array()}};
     if (continued()) {
       info_["iterations"] = in.start->iterations;
@@ -766,7 +777,14 @@ class Run final : public Log {
     try {
       physics_ = (*p_.factory)(context);
       set_floor();
-      status = std::string(iterate(done));
+      const auto loop = std::chrono::steady_clock::now();
+      try {
+        status = std::string(iterate(done));
+      } catch (...) {
+        solve_seconds_ = seconds_since(loop);
+        throw;
+      }
+      solve_seconds_ = seconds_since(loop);
     } catch (const std::exception& e) {
       return fail(e.what(), done);
     }
@@ -1121,7 +1139,8 @@ class Run final : public Log {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
-    for (const char* key : {"status", "finished", "iterations", "monitors", "diagnostics"})
+    for (const char* key :
+         {"status", "finished", "iterations", "monitors", "timing", "diagnostics"})
       metadata.erase(key);
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
@@ -1235,6 +1254,25 @@ class Run final : public Log {
     info_["monitors"] = std::move(monitors);
   }
 
+  static double seconds_since(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+  }
+
+  // results.md, run.json `timing`: the process's and the iteration loop's
+  // wall-clock seconds (the slowest rank's), for this run's iterations;
+  // null without any. Collective.
+  Json timing(std::int64_t done) {
+    const double solve = -comm_.min(-solve_seconds_);
+    const std::int64_t iterations = done - (continued() ? p_.input.start->iterations : 0);
+    if (iterations <= 0) return nullptr;
+    return Json{
+        {"wall_seconds", seconds_since(launched_)},
+        {"solve_seconds", solve},
+        {"iterations", iterations},
+        {"ns_per_cell_iteration",
+         solve * 1e9 / (static_cast<double>(p_.mesh.n_cells()) * static_cast<double>(iterations))}};
+  }
+
   ExitStatus finish(std::string status, std::int64_t done) {
     info_["iterations"] = done;
     if (physics_ && status != "failed" && status != "diverged") {
@@ -1266,6 +1304,7 @@ class Run final : public Log {
     }
     // Only rank 0 writes the solution: its status is the run's.
     status = comm_.broadcast(status);
+    info_["timing"] = timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
@@ -1278,6 +1317,8 @@ class Run final : public Log {
 
   Prepared& p_;
   Comm& comm_;
+  std::chrono::steady_clock::time_point launched_;  // run_case's entry
+  double solve_seconds_ = 0.0;                      // this rank's iteration loop
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;
@@ -1316,6 +1357,7 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
                     std::FILE* err) {
+  const auto launched = std::chrono::steady_clock::now();
   // Every rank reads and checks the same input, so all reach the same
   // verdict; rank 0 prints it.
   std::unique_ptr<Comm> comm;
@@ -1354,7 +1396,7 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   stop_requested = 0;
   const SignalGuard signals;
   try {
-    Run run(*prepared, build, *comm);
+    Run run(*prepared, build, *comm, launched);
     run.open(runs);
     if (comm->rank() == 0) {
       std::fprintf(out, "%s\n", run.path().string().c_str());
