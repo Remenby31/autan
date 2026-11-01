@@ -65,8 +65,9 @@ class Registry:
         """The directory of an accepted run."""
         if not RUN_ID.fullmatch(run_id):
             raise RunNotFoundError(run_id)
-        directory = self.root / run_id
-        if not _inside(self.root, directory):
+        # The path comes from listing the runs directory, never from the requested string.
+        directory = next((child for child in self.root.iterdir() if child.name == run_id), None)
+        if directory is None or not _inside(self.root, directory):
             raise RunNotFoundError(run_id)
         with self._lock:
             outcome = self._check(directory)
