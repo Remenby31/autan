@@ -2,7 +2,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { attribute, clamp, float, mix, texture, uniform, vec2, vec4 } from "three/tsl";
 import * as THREE from "three/webgpu";
 import type { Surface } from "../api/surface";
-import { COOL_WARM, displayRange, sampleColormap } from "./colormap";
+import { COOL_WARM, colormapFor, displayRange, sampleColormap } from "./colormap";
 
 export type Backend = "webgpu" | "webgl2";
 
@@ -26,6 +26,8 @@ export class SurfaceViewer {
   private readonly range = { min: uniform(0), span: uniform(1) };
   private readonly accent = uniform(new THREE.Color());
   private mesh: THREE.Mesh | null = null;
+  private surface: Surface | null = null;
+  private geometry: THREE.BufferGeometry | null = null;
   private zones: ZoneMaterial[] = [];
   private pickMaterials: THREE.MeshBasicNodeMaterial[] = [];
   private pickTarget = new THREE.RenderTarget(1, 1);
@@ -87,12 +89,9 @@ export class SurfaceViewer {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(surface.positions, 3));
     geometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
-    const field = surface.fields.find((f) => f.name === fieldName);
-    if (!field) throw new Error(`surface has no field ${fieldName}`);
-    geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
-    const range = displayRange(field.min, field.max);
-    this.range.min.value = range.min;
-    this.range.span.value = range.max - range.min || 1;
+    this.surface = surface;
+    this.geometry = geometry;
+    this.setField(fieldName);
     geometry.computeBoundingSphere();
 
     const t = clamp(
@@ -130,6 +129,20 @@ export class SurfaceViewer {
   applyTheme(): void {
     this.scene.background = token("--bg-0");
     this.accent.value.copy(token("--accent"));
+    this.requestRender();
+  }
+
+  /** Colour the surface by another of its fields: a new attribute, range and colormap, no
+   * geometry rebuild. */
+  setField(fieldName: string): void {
+    const field = this.surface?.fields.find((f) => f.name === fieldName);
+    if (!field || !this.geometry) return;
+    this.geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
+    const range = displayRange(field.min, field.max);
+    this.range.min.value = range.min;
+    this.range.span.value = range.max - range.min || 1;
+    (this.lut.image.data as Uint8Array).set(sampleColormap(colormapFor(field.min, field.max)));
+    this.lut.needsUpdate = true;
     this.requestRender();
   }
 

@@ -143,6 +143,7 @@ source = { editable = "." }
 dependencies = [
     { name = "autan" },
     { name = "fastapi" },
+    { name = "h5py" },
     { name = "numpy" },
     { name = "uvicorn" },
     { name = "watchfiles" },
@@ -160,6 +161,7 @@ dev = [
 requires-dist = [
     { name = "autan", editable = "../../" },
     { name = "fastapi", specifier = ">=0.162" },
+    { name = "h5py", specifier = ">=3.16" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "uvicorn", specifier = ">=0.54" },
     { name = "watchfiles", specifier = ">=1.3" },

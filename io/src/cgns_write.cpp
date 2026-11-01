@@ -45,8 +45,8 @@ ZoneNodeNames zone_node_names(const std::vector<std::string>& boundary,
   static const std::vector<std::string> base_children{"Zone", "ZoneNames", "RunMetadata",
                                                       "DataClass", "DimensionalUnits"};
   static const std::vector<std::string> zone_children{
-      "ZoneType", "GridCoordinates", "NGonElements",     "NFaceElements",
-      "ZoneBC",   "FlowSolution",    "FlowSolutionMean", "WallSolution"};
+      "ZoneType",     "GridCoordinates",  "NGonElements", "NFaceElements", "ZoneBC",
+      "FlowSolution", "FlowSolutionMean", "WallSolution", "RestartState"};
   static const std::regex generated("(boundary|cell-zone)-[0-9]{4}");
   std::vector<std::string> all(boundary);
   all.insert(all.end(), cell.begin(), cell.end());
@@ -95,6 +95,9 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
   };
   check_size(solution.boundary_bc_types.size(), zones.boundary.size(), "boundary_bc_types");
   for (const auto& f : solution.fields) check_size(f.values.size(), n_cells, "field " + f.name);
+  for (const auto& f : solution.restart_fields) {
+    check_size(f.values.size(), n_cells, "restart field " + f.name);
+  }
   for (const auto& f : solution.mean_fields)
     check_size(f.values.size(), n_cells, "mean field " + f.name);
   for (const auto& f : solution.wall_fields) {
@@ -225,7 +228,8 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
   }
 
   for (const auto& [name, fields] : {std::pair{"FlowSolution", &solution.fields},
-                                     std::pair{"FlowSolutionMean", &solution.mean_fields}}) {
+                                     std::pair{"FlowSolutionMean", &solution.mean_fields},
+                                     std::pair{"RestartState", &solution.restart_fields}}) {
     if (fields->empty()) continue;
     int sol = 0;
     cgns_check(cg_sol_write(fn, base, zone, name, CGNS_ENUMV(CellCenter), &sol), "write", name);
