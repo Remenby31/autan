@@ -426,7 +426,11 @@ TEST_CASE("Gmsh $Periodic surface links become periodic pairs", "[io][periodic]"
   // The xmin -> xmax link with a rotation by 90 degrees about z.
   require_error(autan::ErrorCode::io_unsupported,
                 edited("2 2 1\n16 1 0 0 1 0 1 0 0", "2 2 1\n16 0 -1 0 1 1 0 0 0"));
-  // The same link with a translation the faces do not follow.
-  require_error(autan::ErrorCode::mesh_periodic_unmatched,
+  // The same link with a translation its node pairs do not follow.
+  require_error(autan::ErrorCode::io_malformed,
                 edited("2 2 1\n16 1 0 0 1 0", "2 2 1\n16 1 0 0 1.01 0"));
+  // A node pair of that link swapped for another: it contradicts the link.
+  require_error(autan::ErrorCode::io_malformed, edited("58\n5 1\n6 2\n", "58\n5 2\n6 1\n"));
+  // A link of a dimension the format does not have.
+  require_error(autan::ErrorCode::io_malformed, edited("2 2 1\n16 1 0 0 1", "4 2 1\n16 1 0 0 1"));
 }
