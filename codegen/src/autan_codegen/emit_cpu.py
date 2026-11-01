@@ -96,7 +96,9 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
         f"{i2}[[maybe_unused]] const index_t nb = f < d.topo.n_interior_faces ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;"
     )
     lines.append(f"{i2}typename P::compute out[{n}];")
-    args = call_args(lm.sig, loop.bindings, {"self": "c", "direct": "k"}, layout=layout)
+    args = call_args(
+        lm.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"}, layout=layout
+    )
     lines.append(f"{i2}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
     lines.extend(_updates(accs, offs, "out", i2))  # type: ignore[arg-type]
     lines.append(f"{indent}}}")
@@ -209,7 +211,7 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
                 lines.append(f"{indent}sel[{off + c}] = -1;")
     loop_head = f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{"
     nb_line = f"{i2}[[maybe_unused]] const index_t nb = f < d.topo.n_interior_faces ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;"
-    args = call_args(p.sig, loop.bindings, {"self": "c", "direct": "k"})
+    args = call_args(p.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"})
     lines += [
         loop_head,
         f"{i2}const index_t f = d.topo.cell_faces[k];",
@@ -298,6 +300,20 @@ def cell_stores(lm: LoopModel, indent: str) -> list[str]:
     return lines
 
 
+def boundary_write_body(lm: LoopModel, indent: str) -> list[str]:
+    """Body of a boundary loop writing face datasets, for boundary face f."""
+    lines = [f"{indent}[[maybe_unused]] const index_t l = d.topo.owner[f];"]
+    lines.append(f"{indent}typename P::compute out[{n_out(lm)}];")
+    args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "direct": "f"})
+    lines.append(f"{indent}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
+    lines.extend(
+        f"{indent}{at(o.dataset, 'f', c)} = static_cast<{ctype(o.dataset.type.role)}>(out[{off + c}]);"
+        for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True)
+        for c in range(o.dataset.type.size)
+    )
+    return lines
+
+
 def emit_loop(e: Emitter, lm: LoopModel) -> None:
     loop = lm.loop
     e.w("template <class P>")
@@ -322,6 +338,11 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
         if lm.kind == "face":
             for s in inc_lines(lm, "right", "r"):
                 e.w(s)
+        e.w("  }")
+    elif lm.kind == "boundary_write":
+        e.w("  for (index_t f = d.topo.n_interior_faces; f < d.topo.n_faces; ++f) {")
+        for s in boundary_write_body(lm, "    "):
+            e.w(s)
         e.w("  }")
     elif lm.kind == "cell":
         e.w("  for (index_t c = 0; c < d.topo.n_owned_cells; ++c) {")

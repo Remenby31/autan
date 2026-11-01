@@ -56,3 +56,54 @@ def test_validate_rejects_documents_outside_the_schema(write_json, tmp_path, cap
     nan.write_text(json.dumps(doc).replace('"cv": ', '"cv": NaN, "x": ', 1))
     assert main(["validate", str(nan)]) == 2
     assert "error[RESULT_UNREADABLE]" in capsys.readouterr().err
+
+
+METAL_GPU = {
+    "name": "Apple M4 Pro",
+    "registry_id": "4294968922",
+    "gpu_cores": 20,
+    "recommended_max_working_set_bytes": 36 * 2**30,
+    "memory_bytes": 48 * 2**30,
+}
+
+
+def as_metal(doc: dict) -> dict:
+    doc["provenance"].update(backend="metal", precision="fp32", gpu=METAL_GPU)
+    doc["provenance"]["devices"]["kind"] = "metal"
+    doc["conditions"]["idle_check"]["compute_apps_max"] = None
+    doc["conditions"]["during_run"].update(compute_apps_max=None, clocks_event_reasons=None)
+    return doc
+
+
+def set_path(doc: dict, path: str, value: object) -> dict:
+    *parents, last = path.split(".")
+    node = doc
+    for key in parents:
+        node = node[key]
+    node[last] = value
+    return doc
+
+
+@pytest.mark.parametrize(
+    ("metal", "path", "value", "valid"),
+    [
+        (False, "provenance.backend", "cuda", True),
+        (True, "provenance.backend", "metal", True),
+        (True, "provenance.precision", "fp64", False),
+        (False, "conditions.idle_check.compute_apps_max", None, False),
+        (False, "conditions.during_run.compute_apps_max", None, False),
+        (False, "conditions.during_run.clocks_event_reasons", None, False),
+        (False, "provenance.gpu", METAL_GPU, False),
+        (
+            True,
+            "provenance.gpu",
+            make_result([bench("stream.copy", QUIET)])["provenance"]["gpu"],
+            False,
+        ),
+        (False, "provenance.devices.kind", "metal", False),
+    ],
+)
+def test_validate_binds_backend_device_and_telemetry(write_json, metal, path, value, valid):
+    doc = make_result([bench("stream.copy", QUIET)])
+    doc = set_path(as_metal(doc) if metal else doc, path, value)
+    assert main(["validate", str(write_json("doc.json", doc))]) == (0 if valid else 2)

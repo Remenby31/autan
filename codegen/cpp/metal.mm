@@ -81,6 +81,27 @@ struct Context::Impl {
   bool first_dispatch = true;
   double compile_seconds = 0.0;
 
+  id<MTLLibrary> library(const Library& lib) {
+    std::string text;
+    for (const char* const* piece = lib.source; *piece != nullptr; ++piece) {
+      text += *piece;
+      text += '\n';
+    }
+    MTLCompileOptions* options = [MTLCompileOptions new];
+    // No reassociation or contraction beyond the source: the double-float sums depend on it,
+    // and results must equal the CPU loops to rounding.
+    options.mathMode = MTLMathModeSafe;
+    options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+    NSError* error = nil;
+    id<MTLLibrary> compiled = [device newLibraryWithSource:@(text.c_str())
+                                                   options:options
+                                                     error:&error];
+    if (compiled == nil) {
+      fail(std::string("compiling the Metal library of module ") + lib.name, error);
+    }
+    return compiled;
+  }
+
   id<MTLComputePipelineState> pipeline(const Library& lib, const std::string& function) {
     const std::string key = std::string(lib.name) + "/" + function;
     if (auto it = pipelines.find(key); it != pipelines.end()) {
@@ -89,24 +110,7 @@ struct Context::Impl {
     const auto start = std::chrono::steady_clock::now();
     auto lit = libraries.find(lib.name);
     if (lit == libraries.end()) {
-      MTLCompileOptions* options = [MTLCompileOptions new];
-      // No reassociation or contraction beyond the source: the double-float sums depend on it,
-      // and results must equal the CPU loops to rounding.
-      options.mathMode = MTLMathModeSafe;
-      options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
-      NSError* error = nil;
-      std::string text;
-      for (const char* const* piece = lib.source; *piece != nullptr; ++piece) {
-        text += *piece;
-        text += '\n';
-      }
-      id<MTLLibrary> library = [device newLibraryWithSource:@(text.c_str())
-                                                    options:options
-                                                      error:&error];
-      if (library == nil) {
-        fail(std::string("compiling the Metal library of module ") + lib.name, error);
-      }
-      lit = libraries.emplace(lib.name, library).first;
+      lit = libraries.emplace(lib.name, library(lib)).first;
     }
     id<MTLFunction> fn = [lit->second newFunctionWithName:@(function.c_str())];
     if (fn == nil) {
@@ -275,6 +279,10 @@ double Context::synchronise() {
     }
     return cb.GPUEndTime - cb.GPUStartTime;
   });
+}
+
+void Context::compile(const Library& lib) {
+  pooled([&] { impl_->library(lib); });
 }
 
 void Context::discard() {

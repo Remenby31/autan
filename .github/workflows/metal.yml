@@ -20,7 +20,8 @@ concurrency:
 jobs:
   metal:
     name: Metal (macOS arm64)
-    runs-on: macos-15
+    # macOS 26 image: Xcode 26 libc++ has the floating-point std::from_chars the mesh readers use.
+    runs-on: macos-26
     timeout-minutes: 30
     permissions:
       contents: read # checkout

@@ -172,6 +172,8 @@ class Context {
   double synchronise();
   /// Drops the recorded dispatches without running them (after an error while recording).
   void discard();
+  /// Compiles `lib` (front end only: every instantiated kernel is checked); throws E1107.
+  void compile(const Library& lib);
   /// Seconds spent compiling libraries and pipelines so far (first use of each kernel).
   double compile_seconds() const;
 

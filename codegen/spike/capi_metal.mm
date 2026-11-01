@@ -326,6 +326,15 @@ int autan_spike_gpu_lsq_bounds_adjoint(const void* mesh, const char* policy, con
   });
 }
 
+/// Compiles a generated module's Metal source (NUL-terminated MSL text) without running it.
+int autan_spike_metal_compile(const char* name, const char* source, char* err,
+                              std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    const char* const pieces[] = {source, nullptr};
+    context().compile(mtl::Library{name, pieces});
+  });
+}
+
 /// FP64 sum of squares on the device: Metal has no FP64, so it is refused (the residual norm of
 /// autan_spike_gpu_advdiff_residual accumulates in double-float).
 int autan_spike_gpu_sum_of_squares(const double*, std::int64_t, double*, char* err,
