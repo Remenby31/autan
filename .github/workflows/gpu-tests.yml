@@ -15,9 +15,10 @@ on:
 
 permissions: {}
 
+# Pull requests cancel their older run; runs on main queue, each checking a merged commit.
 concurrency:
   group: gpu-tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tests:
