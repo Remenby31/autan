@@ -96,14 +96,23 @@ def _cmd_verify(args: argparse.Namespace) -> None:
     if args.out is not None:
         args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     for run in report["runs"]:
-        worst = max(run["errors"].items(), key=lambda kv: kv[1]["L2"] / max(kv[1]["scale"], 1e-300))
+        relative = {
+            name: e["L2"] / e["scale"] if e["L2"] is not None and e["scale"] else e["L2"]
+            for name, e in run["errors"].items()
+        }
+        worst = max(relative, key=lambda n: float("inf") if relative[n] is None else relative[n])
+        value = run["errors"][worst]["L2"]
+        shown = "non-finite" if value is None else f"{value:.3g}"
         _say(
-            f"{run['run_id']}: {run['n_cells']} cells, h = {run['h']:.4g}, worst L2 {worst[0]} {worst[1]['L2']:.3g}"
+            f"{run['run_id']}: {run['n_cells']} cells, h = {run['h']:.4g}, worst L2 {worst} {shown}"
         )
     for name, fit in report["fits"].items():
-        if "L2" in fit:
+        l2 = fit.get("L2", {})
+        if "order" in l2:
+            _say(f"{name}: L2 order {l2['order']:.3f}, finest pair {l2['pairwise_orders'][-1]:.3f}")
+        else:
             _say(
-                f"{name}: L2 order {fit['L2']['order']:.3f}, finest pair {fit['L2']['pairwise_orders'][-1]:.3f}"
+                f"{name}: L2 order not measured ({l2.get('levels', 0)} levels above the rounding floor)"
             )
     verdict = report["verdict"]
     if verdict is not None:

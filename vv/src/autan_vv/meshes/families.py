@@ -323,12 +323,21 @@ def _box_boundary(points: FloatArray, cells: dict[str, IntArray]) -> dict[str, I
     _, inverse, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     single = poly[counts[inverse.ravel()] == 1]
     out = {}
-    for name in BOX_ZONES:
+    zone_of = np.full(single.shape[0], -1)
+    for k, name in enumerate(BOX_ZONES):
         axis = "xyz".index(name[0])
         value = points[:, axis].min() if name.endswith("min") else points[:, axis].max()
-        tol = 1e-12 * max(1.0, float(np.ptp(points[:, axis])))
+        tol = 1e-12 * float(np.ptp(points[:, axis]))
         coord = np.where(single >= 0, points[np.maximum(single, 0), axis], value)
-        out[name] = single[np.all(np.abs(coord - value) < tol, axis=1)]
+        on = np.all(np.abs(coord - value) <= tol, axis=1)
+        if np.any(zone_of[on] >= 0):
+            msg = "a boundary face lies on two faces of the box: the box is degenerate"
+            raise VVError(msg, code="V0302")
+        zone_of[on] = k
+        out[name] = single[on]
+    if np.any(zone_of < 0):
+        msg = "a boundary face lies on no face of the box"
+        raise VVError(msg, code="V0302")
     return out
 
 

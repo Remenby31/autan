@@ -306,3 +306,99 @@ def test_every_gate_is_stated_in_acceptance_md() -> None:
             assert {gate.lower, gate.upper} <= numbers or centred <= numbers, gate.id
         else:
             assert gate.upper in numbers, gate.id
+
+
+def test_a_non_finite_error_fails_the_gate_instead_of_being_dropped(tmp_path: Path) -> None:
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12, 16))
+    runs = _runs(tmp_path, meshes[1:], "mms-euler", 2.0)
+    mesh, path, fmt = meshes[0]
+    case = _case(path, "mms-euler")
+    exact = get_oracle("mms-euler").fields(mesh.geometry.cell_centroid)
+    fields = {k: exact[k].copy() for k in field_names(case.spec)}
+    fields["Density"][0] = -1.0  # negative density: NaN entropy on the coarsest level
+    bad = write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, fmt), fields).path
+    report = verify([bad, *runs], "mms-euler", "euler-mms-order")
+    assert report["runs"][0]["errors"]["Entropy"]["L2"] is None
+    assert report["fits"]["Entropy"]["L2"]["non_finite"]
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "verify",
+                str(bad),
+                *map(str, runs),
+                "--against",
+                "mms-euler",
+                "--gate",
+                "euler-mms-order",
+            ]
+        )
+
+
+def test_families_must_refine_one_domain(tmp_path: Path) -> None:
+    meshes = []
+    for n, side in ((4, 0.04), (6, 0.03), (8, 0.02), (12, 0.01)):
+        mesh = cartesian((n, n, n), upper=(side, side, side))
+        path = tmp_path / f"box-{n}.msh"
+        write_fluent(mesh, path, "fluid")
+        meshes.append((mesh, path, "fluent"))
+    with pytest.raises(VVError) as err:
+        verify(_runs(tmp_path, meshes, "mms-euler", 2.0), "mms-euler")
+    assert err.value.code == "V0727"
+
+
+def test_cell_zone_materials_are_checked_too(tmp_path: Path) -> None:
+    mesh = cartesian((1, 4, 1))
+    path = tmp_path / "couette.msh"
+    write_fluent(mesh, path, "fluid")
+
+    def override(case: autan.Case) -> None:
+        gas = case.spec.physics.gas  # type: ignore[union-attr]
+        case.cell_zone("fluid").fluid(gas.model_copy(update={"prandtl": 0.9}))
+
+    (run,) = _runs(tmp_path, [(mesh, path, "fluent")], "couette", 2.0, edit=override)
+    with pytest.raises(VVError) as err:
+        verify([run], "couette")
+    assert err.value.code == "V0724"
+
+
+def test_couette_velocity_gate_checks_every_component(tmp_path: Path) -> None:
+    mesh = cartesian((1, 4, 1))
+    path = tmp_path / "couette.msh"
+    write_fluent(mesh, path, "fluid")
+    case = _case(path, "couette")
+    exact = get_oracle("couette").fields(mesh.geometry.cell_centroid)
+    fields = {k: exact[k].copy() for k in field_names(case.spec)}
+    fields["VelocityY"] += 10.0
+    run = write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, "fluent"), fields).path
+    verdict = verify([run], "couette", "couette-velocity-exact")["verdict"]
+    assert not next(c for c in verdict["checks"] if c["field"] == "VelocityY")["pass"]
+    assert next(c for c in verdict["checks"] if c["field"] == "VelocityX")["pass"]
+
+
+def test_malformed_fields_and_degenerate_boxes_are_coded_errors(tmp_path: Path) -> None:
+    ((mesh, path, fmt),) = _family(tmp_path, "hex", (2,))
+    case = _case(path, "mms-euler")
+    fields = {k: np.ones(mesh.n_cells) for k in field_names(case.spec)}
+    fields["Pressure"] = np.ones((2, mesh.n_cells // 2))
+    with pytest.raises(VVError) as err:
+        write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, fmt), fields)
+    assert err.value.code == "V0731"
+    with pytest.raises(VVError) as err:
+        cartesian((1, 1, 1), upper=(1e-13, 1e-13, 0.0))
+    assert err.value.code == "V0302"
+
+
+def test_cli_reports_fields_without_a_fit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    meshes = _planar(tmp_path, (16, 24, 32, 48))
+    runs = _runs(tmp_path, meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=40.0)
+    assert (
+        main(
+            ["verify", *map(str, runs), "--against", "isentropic-vortex", "--gate", "vortex-order"]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "VelocityZ: L2 order not measured" in out
+    assert "gate vortex-order: PASS" in out

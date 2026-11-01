@@ -15,11 +15,14 @@ from autan.schema import (
     SA,
     SST,
     Compressible,
+    ConstantDensityFluid,
     ConstantViscosity,
+    Fluid,
     IdealGas,
     Incompressible,
     Inviscid,
     Laminar,
+    SolidZone,
 )
 from autan.units import si
 
@@ -197,6 +200,8 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
         reasons.append(f"status {results.run.status}, not converged or completed")
     physics = spec.physics
     expected = {"euler": Inviscid, "navier-stokes": Laminar, "rans-sa": SA}
+    if any(isinstance(rule.medium, SolidZone) for rule in spec.cell_zones):
+        reasons.append("the case has solid zones; oracles describe one fluid")
     if oracle.physics in expected:
         if not isinstance(physics, Compressible) or not isinstance(
             physics.turbulence, expected[oracle.physics]
@@ -205,27 +210,58 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
                 f"physics {physics.kind}/{physics.turbulence.model}, oracle needs {oracle.physics}"
             )
         else:
-            gas = physics.gas
-            r = UNIVERSAL_GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
-            if not math.isclose(gas.gamma, oracle.gamma, rel_tol=1e-12):
-                reasons.append(f"gamma {gas.gamma}, oracle uses {oracle.gamma}")
-            if not math.isclose(r, oracle.gas_constant, rel_tol=1e-9):
-                reasons.append(
-                    f"gas constant {r:.9g} J/(kg K), oracle uses {oracle.gas_constant:.9g}"
-                )
-            if oracle.physics != "euler":
+            # Every fluid material the case uses: the default gas and each cell-zone override.
+            gases = [
+                physics.gas,
+                *(r.medium.material for r in spec.cell_zones if isinstance(r.medium, Fluid)),
+            ]
+            for gas in gases:
+                if not isinstance(gas, IdealGas):
+                    reasons.append(f"material {gas.name} is not an ideal gas")
+                    continue
+                r = UNIVERSAL_GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
+                if not math.isclose(gas.gamma, oracle.gamma, rel_tol=1e-12):
+                    reasons.append(f"{gas.name}: gamma {gas.gamma}, oracle uses {oracle.gamma}")
+                if not math.isclose(r, oracle.gas_constant, rel_tol=1e-9):
+                    reasons.append(
+                        f"{gas.name}: gas constant {r:.9g} J/(kg K), oracle uses {oracle.gas_constant:.9g}"
+                    )
+                if oracle.physics == "euler":
+                    continue
                 viscosity = oracle.parameters.get("viscosity")
                 law = gas.viscosity
                 if viscosity is not None and not (
                     isinstance(law, ConstantViscosity)
                     and math.isclose(si(law.mu, "Pa * s"), viscosity, rel_tol=1e-12)
                 ):
-                    reasons.append(f"oracle assumes a constant viscosity {viscosity} Pa s")
+                    reasons.append(
+                        f"{gas.name}: oracle assumes a constant viscosity {viscosity} Pa s"
+                    )
                 prandtl = oracle.parameters.get("prandtl")
                 if prandtl is not None and not math.isclose(gas.prandtl, prandtl, rel_tol=1e-12):
-                    reasons.append(f"Prandtl number {gas.prandtl}, oracle uses {prandtl}")
-    if oracle.physics == "incompressible-navier-stokes" and not isinstance(physics, Incompressible):
-        reasons.append("oracle needs an incompressible case")
+                    reasons.append(
+                        f"{gas.name}: Prandtl number {gas.prandtl}, oracle uses {prandtl}"
+                    )
+    if oracle.physics == "incompressible-navier-stokes":
+        if not isinstance(physics, Incompressible) or not isinstance(physics.turbulence, Laminar):
+            reasons.append("oracle needs a laminar incompressible case")
+        else:
+            fluids = [
+                physics.fluid,
+                *(r.medium.material for r in spec.cell_zones if isinstance(r.medium, Fluid)),
+            ]
+            for fluid in fluids:
+                if not isinstance(fluid, ConstantDensityFluid):
+                    reasons.append(f"material {fluid.name} is not a constant-density fluid")
+                    continue
+                for key, unit, value in (
+                    ("density", "kg / m**3", fluid.density),
+                    ("viscosity", "Pa * s", fluid.viscosity),
+                ):
+                    if not math.isclose(si(value, unit), oracle.parameters[key], rel_tol=1e-12):
+                        reasons.append(
+                            f"{fluid.name}: {key} {si(value, unit)}, oracle uses {oracle.parameters[key]}"
+                        )
     if oracle.unsteady and results.run.time is None:
         reasons.append("unsteady oracle but the run has no physical time")
     return reasons
@@ -288,6 +324,10 @@ def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
         name: results.field(name) for name in names
     }  # the Results API checks solution.cgns first
     mesh = read_geometry(results)
+    malformed = [n for n, v in run.items() if np.shape(v) != (mesh.n_cells,)]
+    if malformed:
+        msg = f"fields {malformed} do not hold one value per cell ({mesh.n_cells})"
+        raise VVError(msg, code="V0721")
     g = mesh.geometry
     exact = oracle.fields(g.cell_centroid, results.run.time)
     run = {name: value for name, value in run.items() if name in exact}
@@ -295,7 +335,9 @@ def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
         exact |= conserved(exact, oracle.gamma)
         run |= conserved(run, oracle.gamma)
         exact["Entropy"] = exact["Pressure"] / exact["Density"] ** oracle.gamma
-        run["Entropy"] = run["Pressure"] / run["Density"] ** oracle.gamma
+        # A non-physical run (rho <= 0) gives a NaN entropy: reported as a failed measurement.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            run["Entropy"] = run["Pressure"] / run["Density"] ** oracle.gamma
     weight = g.cell_volume / g.cell_volume.sum()
     errors = {}
     for name, value in run.items():
@@ -371,6 +413,10 @@ def _fits(runs: list[RunErrors], eps: float) -> dict[str, dict[str, Any]]:
     for name in runs[0].errors:
         fits[name] = {}
         for norm in ("L1", "L2", "Linf"):
+            values = [r.errors[name][norm] for r in runs]
+            if not all(math.isfinite(v) for v in values):
+                fits[name][norm] = {"levels": 0, "excluded": len(runs), "non_finite": True}
+                continue
             eligible = [
                 r for r in runs if r.errors[name][norm] >= FLOOR_FACTOR * eps * _scale(r, name)
             ]
@@ -420,6 +466,15 @@ def _gate_checks(
     for name in names:
         if any(name not in r.errors for r in runs):
             checks.append({"field": name, "pass": False, "reason": "not written by the runs"})
+            continue
+        if not all(math.isfinite(r.errors[name][gate.norm]) for r in runs):
+            checks.append(
+                {
+                    "field": name,
+                    "pass": False,
+                    "reason": "non-finite error (NaN or infinity) on a run",
+                }
+            )
             continue
         worst = max(r.errors[name][gate.norm] / _scale(r, name) / eps for r in runs)
         if gate.measure == "max-error":
@@ -512,6 +567,12 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
     oracle = freestream_oracle(opened[0].case) if against == "freestream" else get_oracle(against)
     runs = [run_errors(results, oracle) for results in opened]
     hs = [r.h for r in runs]
+    for r in runs[1:]:
+        for a in range(3):
+            extent = max(runs[0].bounds[a][1] - runs[0].bounds[a][0], 1e-300)
+            if any(abs(r.bounds[a][k] - runs[0].bounds[a][k]) > 1e-9 * extent for k in (0, 1)):
+                msg = f"run {r.provenance['run_id']} covers another domain along {'xyz'[a]}: a family refines one domain"
+                raise VVError(msg, code="V0727")
     if len(set(hs)) != len(hs) or len({r.provenance["mesh_sha256"] for r in runs}) != len(runs):
         msg = "a refinement family needs distinct meshes"
         raise VVError(msg, code="V0727")

@@ -78,7 +78,7 @@ GATES: dict[str, Gate] = {
             ("couette",),
             "max-error",
             "Linf",
-            ("VelocityX",),
+            ("VelocityX", "VelocityY", "VelocityZ"),
             0.0,
             64.0,
             "M3",

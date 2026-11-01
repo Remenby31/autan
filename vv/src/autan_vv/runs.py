@@ -243,7 +243,11 @@ def write_run(
     missing = set(field_names(spec)) ^ set(fields)
     if missing:
         msg = f"fields must be exactly {field_names(spec)}, differing in {sorted(missing)}"
-        raise ValueError(msg)
+        raise VVError(msg, code="V0731")
+    malformed = [k for k, v in fields.items() if np.shape(v) != (mesh.n_cells,)]
+    if malformed:
+        msg = f"fields {malformed} must hold one value per cell ({mesh.n_cells})"
+        raise VVError(msg, code="V0731")
     started = utc_now()
     solver = Solver(version=__version__, commit=COMMIT, backend=backend)
     devices = Devices(kind="cpu", count=1)
