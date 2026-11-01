@@ -1,4 +1,4 @@
-"""The revision benchmark binaries record (codegen/bench/revision.cmake)."""
+"""The revision benchmark binaries record (bench/cmake/revision.cmake)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def revision(tmp: Path, source: Path, commit: str = "") -> subprocess.CompletedP
     return subprocess.run(
         ["cmake", f"-DGIT={GIT}", f"-DSOURCE_DIR={source}", f"-DAUTAN_COMMIT={commit}",
          f"-DOUTPUT_FILE={tmp / 'revision.h'}", "-P",
-         str(ROOT / "codegen" / "bench" / "revision.cmake")],
+         str(ROOT / "bench" / "cmake" / "revision.cmake")],
         capture_output=True, text=True, check=False,
     )  # fmt: skip
 
