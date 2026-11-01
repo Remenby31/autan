@@ -6,7 +6,7 @@
 # Everything it creates is prefixed autan-runner; it never touches other containers.
 set -euo pipefail
 
-# A second runner on the same Spark (e.g. AUTAN_RUNNER_INSTANCE=main, labels gpu,gb10,bench-main)
+# A second runner on the same Spark (e.g. AUTAN_RUNNER_INSTANCE=main, labels bench-main)
 # gets its own container and volumes; the proxy is shared.
 instance=${AUTAN_RUNNER_INSTANCE:+-$AUTAN_RUNNER_INSTANCE}
 name=${AUTAN_RUNNER_NAME:-$(hostname)$instance}
@@ -37,6 +37,8 @@ prepare() {
   # runs from cron, one instance (flock -n), so it comes back within a minute and after a reboot.
   install -d -m 0755 "$lock_dir/bin" "$HOME/autan-gpu-guard"
   install -m 0755 "$here/../../bench/lock/autan-gpu-lock" "$here/../../bench/lock/autan-gpu-guard" "$lock_dir/bin/"
+  # A running guard keeps its old code: stop it, and cron starts the new one within a minute.
+  pkill -f "^python3 $lock_dir/bin/autan-gpu-guard" || true
   local cron="* * * * * flock -n $HOME/autan-gpu-guard/run.lock $lock_dir/bin/autan-gpu-guard >> $HOME/autan-gpu-guard/guard.log 2>&1"
   { crontab -l 2>/dev/null | grep -v autan-gpu-guard || true; echo "$cron"; } | crontab -
   # Internal: no route out. Isolated gateway: the host gets no address on this bridge, so a job
@@ -117,7 +119,8 @@ case ${1:-} in
   # The proxy goes with the last runner.
   stop)
     docker rm -f "$container"
-    docker ps -a --format '{{.Names}}' | grep -qE '^autan-runner(-[a-z0-9]+)?$' || docker rm -f autan-runner-proxy
+    docker ps -a --format '{{.Names}}' | grep -v '^autan-runner-proxy$' | grep -qE '^autan-runner(-[a-z0-9-]+)?$' ||
+      docker rm -f autan-runner-proxy
     ;;
   status) docker ps -a --filter name=^autan-runner --format '{{.Names}}\t{{.Status}}\t{{.Image}}' ;;
   logs) docker logs --tail 100 "$container" ;;

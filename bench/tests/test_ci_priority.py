@@ -17,9 +17,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="flock(1) and /p
 @pytest.fixture
 def spark(tmp_path: Path) -> dict[str, str]:
     """A lock directory as deploy.sh prepares it, and the environment of an agent outside CI."""
-    for name in ("gpu.lock", "ci.lock", "holders.log"):
+    for name in ("gpu.lock", "ci.lock", "main.lock", "holders.log"):
         (tmp_path / name).touch()
-    env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_ACTIONS", "GITHUB_REF")}
     env |= {"AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock"), "RUNNER_TEMP": str(tmp_path)}
     return env
 
@@ -153,7 +153,6 @@ def test_a_main_job_goes_before_a_pull_request_s(spark, tmp_path):
     order = tmp_path / "order"
     main_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main"}
     pr_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
-    (Path(spark["AUTAN_GPU_LOCK"]).parent / "main.lock").touch()
     priority(main_env, "start", "5")
     pr = agent(pr_env, "pr", order)
     time.sleep(1)

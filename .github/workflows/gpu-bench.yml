@@ -101,9 +101,10 @@ jobs:
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     # `bench`: runners whose GPU is not shared with another team's long-running process. Main has
-    # its own runner process on the same Spark (`bench-main`), so it never queues behind pull
-    # requests in GitHub; on the machine the GPU lock orders them, main first.
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
+    # its own runner process on the same Spark (`bench-main`, its only label, so no other job can
+    # take it), so it never queues behind pull requests in GitHub; on the machine the GPU lock
+    # orders them, main first.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
     # A bisection on main measures up to 8 commits in this job (bench/ci/bisect.py).
     timeout-minutes: ${{ github.event_name == 'pull_request' && 90 || 240 }}
     permissions:
@@ -136,9 +137,8 @@ jobs:
       - name: Image smoke test on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: >-
-          REQUIRE_GPU=1 flock --timeout "$AUTAN_BENCH_LOCK_TIMEOUT" --conflict-exit-code 75
-          /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
-          || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
+          REQUIRE_GPU=1 bench/lock/autan-gpu-lock -m "gpu-bench: image smoke test"
+          -w "$AUTAN_BENCH_LOCK_TIMEOUT" -t 600 -- docker/dev/smoke/run.sh build/smoke
       - name: STREAM bandwidth
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)
