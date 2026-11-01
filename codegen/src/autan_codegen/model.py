@@ -299,6 +299,12 @@ def load(path: Path) -> Module:
                         Code.INVALID_BINDING, f"two different data named {d.name}", str(path)
                     )
                 target.append(d)  # type: ignore[arg-type]
+    # A reversed face reads face_r_left from face_r_right and back (Topology::face_reversed).
+    pairs = {"face_r_left": dsl.geometry.face_r_right, "face_r_right": dsl.geometry.face_r_left}
+    for d in list(datasets):
+        partner = pairs.get(d.name) if d.geometry else None
+        if partner is not None and all(partner is not x for x in datasets):
+            datasets.append(partner)
     bodies: list[tuple[Function, Signature]] = []
     for lm in loops:
         bodies.append((lm.fn, lm.sig))
