@@ -296,7 +296,8 @@ HaloExchange::HaloExchange(const HaloPattern& pattern, index_t n_owned_cells, MP
   std::vector<int> expected(at(size), 0);
   for (std::size_t i = 0; shape_ok && i < n_neighbours; ++i) {
     const std::int32_t q = pattern.neighbours[i];
-    shape_ok = q >= 0 && q < size && q != rank && (i == 0 || q > pattern.neighbours[i - 1]);
+    // q == rank: periodic images of own cells, moved by a message to self.
+    shape_ok = q >= 0 && q < size && (i == 0 || q > pattern.neighbours[i - 1]);
     if (!shape_ok) break;
     send_count[at(q)] = pattern.send_offsets[i + 1] - pattern.send_offsets[i];
     expected[at(q)] = pattern.recv_offsets[i + 1] - pattern.recv_offsets[i];
@@ -388,7 +389,7 @@ template void HaloExchange::begin_forward<double>(std::span<double* const>, void
 template void HaloExchange::begin_reverse<float>(std::span<float* const>, void*);
 template void HaloExchange::begin_reverse<double>(std::span<double* const>, void*);
 
-void exchange_ghost_geometry(HaloExchange& exchange, Geometry& geometry) {
+void exchange_ghost_geometry(HaloExchange& exchange, const Mesh& mesh, Geometry& geometry) {
   if (exchange.space() != MemorySpace::host) {
     throw Error(ErrorCode::partition_invalid_request,
                 "exchange_ghost_geometry moves a host Geometry; this exchange works on the device");
@@ -397,6 +398,14 @@ void exchange_ghost_geometry(HaloExchange& exchange, Geometry& geometry) {
                                       geometry.cell_centroid_y.data(),
                                       geometry.cell_centroid_z.data()};
   exchange.forward(std::span<double* const>(fields));
+  // A periodic image sits at its original's centroid plus its translation.
+  const auto n_owned = static_cast<std::size_t>(mesh.n_owned_cells());
+  const auto t = mesh.ghost_translation();
+  for (std::size_t g = 0; g < t.size(); ++g) {
+    geometry.cell_centroid_x[n_owned + g] += t[g][0];
+    geometry.cell_centroid_y[n_owned + g] += t[g][1];
+    geometry.cell_centroid_z[n_owned + g] += t[g][2];
+  }
 }
 
 }  // namespace autan

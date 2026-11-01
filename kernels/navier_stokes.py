@@ -47,7 +47,7 @@ from autan_codegen.dsl import (
 )
 
 sys.path.insert(0, str(Path(__file__).parent))
-from euler import (  # noqa: E402
+from euler import (
     BC_SLIP,
     BC_WALL,
     bc,
@@ -80,9 +80,7 @@ def temperature(w: State.Vec5, rgas: Param, pref: Param) -> State:
 
 
 @pointwise
-def temperature_gradient(
-    w: State.Vec5, gw: Grad.Mat53, rgas: Param, pref: Param
-) -> Grad.Vec3:
+def temperature_gradient(w: State.Vec5, gw: Grad.Mat53, rgas: Param, pref: Param) -> Grad.Vec3:
     # T = p / (rho R): grad T = (grad p - R T grad rho) / (rho R).
     t = temperature(w, rgas, pref)
     gr = Vec3(gw[0, 0], gw[0, 1], gw[0, 2])
@@ -117,10 +115,39 @@ def viscous_flux(
 ) -> State.Vec5:
     # F_v . n with (tau n)_i = mu (grad u_i . n + d(u . n)/dx_i) - 2/3 mu div u n_i.
     div = gu[0] + gv[1] + gwz[2]
-    tn = mu * (
-        Vec3(dot(gu, n), dot(gv, n), dot(gwz, n)) + n[0] * gu + n[1] * gv + n[2] * gwz
-    ) - (2.0 / 3.0 * mu * div) * n
+    tn = (
+        mu * (Vec3(dot(gu, n), dot(gv, n), dot(gwz, n)) + n[0] * gu + n[1] * gv + n[2] * gwz)
+        - (2.0 / 3.0 * mu * div) * n
+    )
     return Vec5(0.0, tn[0], tn[1], tn[2], dot(v, tn) + k * dot(gt, n))
+
+
+@pointwise
+def warp_work(gu: Grad.Vec3, gv: Grad.Vec3, gwz: Grad.Vec3, m: Geom.Mat3, mu: State) -> State:
+    # Work of the stress through the fan triangles t of a warped face beyond its centroid value:
+    # sum_t (u(c_t) - u(x_f)) . tau S_t = tau : (grad u M), M = sum_t (c_t - x_f) (x) S_t, zero
+    # on a planar face. The stress and the heat flux are uniform over the face to this order.
+    m0 = Vec3(m[0, 0], m[1, 0], m[2, 0])
+    m1 = Vec3(m[0, 1], m[1, 1], m[2, 1])
+    m2 = Vec3(m[0, 2], m[1, 2], m[2, 2])
+    div = gu[0] + gv[1] + gwz[2]
+    t00 = mu * (2.0 * gu[0] - 2.0 / 3.0 * div)
+    t11 = mu * (2.0 * gv[1] - 2.0 / 3.0 * div)
+    t22 = mu * (2.0 * gwz[2] - 2.0 / 3.0 * div)
+    t01 = mu * (gu[1] + gv[0])
+    t02 = mu * (gu[2] + gwz[0])
+    t12 = mu * (gv[2] + gwz[1])
+    return (
+        t00 * dot(gu, m0)
+        + t01 * dot(gu, m1)
+        + t02 * dot(gu, m2)
+        + t01 * dot(gv, m0)
+        + t11 * dot(gv, m1)
+        + t12 * dot(gv, m2)
+        + t02 * dot(gwz, m0)
+        + t12 * dot(gwz, m1)
+        + t22 * dot(gwz, m2)
+    )
 
 
 @pointwise
@@ -143,6 +170,7 @@ def viscous_face(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     rgas: Param,
     pref: Param,
@@ -164,12 +192,15 @@ def viscous_face(
     gu = corrected(Vec3(gm[1, 0], gm[1, 1], gm[1, 2]), wr[1] - wl[1], e, inv_d)
     gv = corrected(Vec3(gm[2, 0], gm[2, 1], gm[2, 2]), wr[2] - wl[2], e, inv_d)
     gwz = corrected(Vec3(gm[3, 0], gm[3, 1], gm[3, 2]), wr[3] - wl[3], e, inv_d)
-    gtm = 0.5 * (temperature_gradient(wl, gl, rgas, pref) + temperature_gradient(wr, gr, rgas, pref))
+    gtm = 0.5 * (
+        temperature_gradient(wl, gl, rgas, pref) + temperature_gradient(wr, gr, rgas, pref)
+    )
     gt = corrected(gtm, tr - tl, e, inv_d)
     mu = viscosity(temperature(wf, rgas, pref), mref, tref, s, law)
     mt = 0.5 * (ml + mr)
     k = g * rgas / (g - 1.0) * (mu / prl + mt / prt)
-    return -area * viscous_flux(velocity(wf), gu, gv, gwz, gt, mu + mt, k, n)
+    f = area * viscous_flux(velocity(wf), gu, gv, gwz, gt, mu + mt, k, n)
+    return -(f + Vec5(0.0, 0.0, 0.0, 0.0, warp_work(gu, gv, gwz, m, mu + mt)))
 
 
 @pointwise
@@ -184,6 +215,7 @@ def viscous_boundary(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     rgas: Param,
     pref: Param,
@@ -212,7 +244,8 @@ def viscous_boundary(
     gt = corrected(gtl, tb - tl, e, inv_d)
     mu = viscosity(tb, mref, tref, s, law)
     k = 0.0 if adiabatic else g * rgas / (g - 1.0) * (mu / prl + mb / prt)
-    f = -area * viscous_flux(velocity(wb), gu, gv, gwz, gt, mu + mb, k, n)
+    fv = area * viscous_flux(velocity(wb), gu, gv, gwz, gt, mu + mb, k, n)
+    f = -(fv + Vec5(0.0, 0.0, 0.0, 0.0, warp_work(gu, gv, gwz, m, mu + mb)))
     slip = kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
     return 0.0 * f if slip else f
 
@@ -241,6 +274,7 @@ FACE_ARGS = {
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
+    "m": geometry.face_moment,
     **VISCOUS,
 }
 
@@ -255,6 +289,7 @@ BOUNDARY_ARGS = {
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
+    "m": geometry.face_moment,
     **VISCOUS,
 }
 
@@ -320,6 +355,7 @@ def viscous_traction(
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
+    m: Geom.Mat3,
     g: Param,
     rgas: Param,
     pref: Param,
@@ -332,7 +368,7 @@ def viscous_traction(
 ) -> State.Vec5:
     # Per unit area: components 1-3 are -tau n, the viscous force on the wall.
     f = viscous_boundary(
-        wl, gl, xl, wb, mb, kind, data, xf, n, area, g, rgas, pref, mref, tref, s, law, prl, prt
+        wl, gl, xl, wb, mb, kind, data, xf, n, area, m, g, rgas, pref, mref, tref, s, law, prl, prt
     )
     return f / area
 

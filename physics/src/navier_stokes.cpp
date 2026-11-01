@@ -19,11 +19,23 @@ struct NavierStokes<P>::Impl {
 
   Euler<P> euler;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, cell_centroid, cell_volume;
+  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
+      cell_volume;
   std::vector<State> mu_t, mu_t_b, lam_v, traction;
   std::vector<typename P::jac> visc_jac, visc_bnd_jac;
   nk::Data<P> d{};
   const typename P::jac* dwdu = nullptr;
+
+  // The Euler arrays this residual reads; Euler<P> allocates its Jacobian blocks on first use.
+  void share() {
+    const auto a = euler.arrays();
+    d.prim = a.prim;
+    d.grad = a.grad;
+    d.prim_b = a.prim_b;
+    d.bc_kind = a.bc_kind;
+    d.bc = a.bc;
+    dwdu = a.dwdu;
+  }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t)
       : euler(mesh, geometry, gas, scheme) {
@@ -36,6 +48,7 @@ struct NavierStokes<P>::Impl {
     face_normal = kernels::converted<G>(packed.face_normal);
     face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
     face_centroid = kernels::converted<G>(packed.face_centroid);
+    face_moment = kernels::converted<G>(packed.face_moment);
     cell_centroid = kernels::converted<G>(packed.cell_centroid);
     cell_volume = kernels::converted<G>(packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
@@ -48,13 +61,7 @@ struct NavierStokes<P>::Impl {
     visc_bnd_jac.assign(25 * nf, typename P::jac(0));
 
     d.topo = topo;
-    const auto a = euler.arrays();
-    d.prim = a.prim;
-    d.grad = a.grad;
-    d.prim_b = a.prim_b;
-    d.bc_kind = a.bc_kind;
-    d.bc = a.bc;
-    dwdu = a.dwdu;
+    share();
     d.mu_t = mu_t.data();
     d.mu_t_b = mu_t_b.data();
     d.lam_v = lam_v.data();
@@ -64,14 +71,15 @@ struct NavierStokes<P>::Impl {
     d.face_normal = face_normal.data();
     d.face_area_magnitude = face_area_magnitude.data();
     d.face_centroid = face_centroid.data();
+    d.face_moment = face_moment.data();
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
     using Pa = typename P::param;
     d.gamma[0] = Pa(gas.gamma);
     d.gas_constant[0] = Pa(gas.gas_constant);
     const auto& r = scheme.reference;
-    d.p_ref[0] = Pa((gas.gamma - 1.0) *
-                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
+    d.p_ref[0] =
+        Pa((gas.gamma - 1.0) * (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     d.mu_ref[0] = Pa(t.mu_ref);
     d.t_ref[0] = Pa(t.sutherland ? t.t_ref : 1.0);
     d.sutherland_s[0] = Pa(t.sutherland ? t.s : 0.0);
@@ -129,15 +137,22 @@ void NavierStokes<P>::set_eddy_viscosity(std::span<const double> cells,
 }
 
 template <class P>
+typename NavierStokes<P>::Arrays NavierStokes<P>::arrays() noexcept {
+  auto& m = *impl_;
+  return {m.euler.arrays(), m.mu_t.data(), m.mu_t_b.data(), static_cast<double>(m.d.p_ref[0]),
+          static_cast<double>(m.d.gas_constant[0])};
+}
+
+template <class P>
 void NavierStokes<P>::state(std::span<const double> u, std::span<State> s) const {
   impl_->euler.state(u, s);
 }
 
 template <class P>
-void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res,
-                               bool frozen_limiter) {
+void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
-  m.euler.residual(s, res, frozen_limiter);
+  m.euler.residual(s, res);
+  m.share();
   m.d.res = res.data();
   nk::cpu::viscous_faces(m.d);
   nk::cpu::viscous_boundaries(m.d);
@@ -147,6 +162,7 @@ template <class P>
 void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
   m.euler.residual_and_jacobian(s, res);
+  m.share();
   m.d.res = res.data();
   nk::cpu::viscous_faces_jacobian(m.d);
   nk::cpu::viscous_boundaries_jacobian(m.d);
@@ -162,14 +178,14 @@ void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) co
   const auto* dwdu = m.dwdu;
   // Entry (i, j) of block k of entity e of an n-entity Jac dataset: (k * 25 + i * 5 + j) * n + e.
   auto add = [](double* out, const typename P::jac* j, std::size_t nj, std::size_t ej,
-                std::size_t kj, const typename P::jac* dm, std::size_t nd, std::size_t ed,
+                std::size_t kj, const typename P::jac* dm, std::size_t n_dm, std::size_t ed,
                 double sign) {
     for (std::size_t r = 0; r < 5; ++r) {
       for (std::size_t c = 0; c < 5; ++c) {
         double t = 0.0;
         for (std::size_t k = 0; k < 5; ++k) {
           t += static_cast<double>(j[(25 * kj + 5 * r + k) * nj + ej]) *
-               static_cast<double>(dm[(5 * k + c) * nd + ed]);
+               static_cast<double>(dm[(5 * k + c) * n_dm + ed]);
         }
         out[5 * r + c] += sign * t;
       }
@@ -199,8 +215,8 @@ void NavierStokes<P>::spectral_radius(std::span<State> lambda) {
 }
 
 template <class P>
-void NavierStokes<P>::boundary_pressure(std::span<double> p) const {
-  impl_->euler.boundary_pressure(p);
+void NavierStokes<P>::boundary_pressure(std::span<double> p, std::span<double> force) const {
+  impl_->euler.boundary_pressure(p, force);
 }
 
 template <class P>

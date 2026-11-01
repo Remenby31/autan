@@ -8,6 +8,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/runtime.hpp"
 #include "autan/physics/block_matrix.hpp"
 
 namespace autan::physics {
@@ -104,6 +105,8 @@ class Euler {
     typename P::geom* bc_kind;
     State* bc;
     const typename P::jac* dwdu;
+    kernels::Topology topo;  ///< with the gradient stencil
+    const typename P::geom* stencil_lsq_weight;
   };
   [[nodiscard]] Arrays arrays() noexcept;
 

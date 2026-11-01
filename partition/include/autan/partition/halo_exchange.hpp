@@ -70,7 +70,8 @@ class HaloExchange {
 };
 
 /// Fills the ghost cell volumes and centroids of a host Geometry from their
-/// owners, with a forward exchange on the host.
-void exchange_ghost_geometry(HaloExchange& exchange, Geometry& geometry);
+/// owners, with a forward exchange on the host, and moves the centroids of
+/// periodic images by their translation (Mesh::ghost_translation).
+void exchange_ghost_geometry(HaloExchange& exchange, const Mesh& mesh, Geometry& geometry);
 
 }  // namespace autan

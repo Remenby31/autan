@@ -15,10 +15,12 @@
 #include <type_traits>
 #include <vector>
 
+#include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/spalart_allmaras.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
@@ -47,6 +49,8 @@ constexpr double cfl_max = 1e6;
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
 constexpr int linear_max_cycles = 10;
+// The loosely coupled SA equation's scalar system: symmetric Gauss-Seidel sweeps.
+constexpr int gauss_seidel_sweeps = 4;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
@@ -85,11 +89,30 @@ Transport transport_of(const runtime::SolverInput& in) {
     const auto& w = *z.medium.viscosity;
     if (w.law != v.law || w.mu_ref != v.mu_ref || w.t_ref != v.t_ref || w.s != v.s ||
         w.mu != v.mu || z.medium.prandtl != m.prandtl) {
-      throw std::invalid_argument("the Navier-Stokes physics takes a single gas for every cell zone");
+      throw std::invalid_argument(
+          "the Navier-Stokes physics takes a single gas for every cell zone");
     }
   }
   return t;
 }
+
+// Spalart-Allmaras (SA-neg) beside a NavierStokes<P> flow: its state rho nt in FP64 and the
+// arrays of its loosely coupled implicit step.
+template <class P>
+struct SaState {
+  SaState(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& flow, const Transport& t,
+          bool ft2)
+      : model(mesh, geometry, flow, t, ft2) {}
+  SpalartAllmaras<P> model;
+  std::vector<double> rnu, rhs, dx;
+  std::vector<typename P::state> s;
+  std::vector<typename P::residual> res;
+
+  std::span<const typename P::state> stored(const std::vector<double>& v) {
+    for (std::size_t c = 0; c < v.size(); ++c) s[c] = typename P::state(v[c]);
+    return s;
+  }
+};
 
 template <class P, class Flow>
 class EulerPhysics final : public runtime::Physics {
@@ -131,6 +154,9 @@ class EulerPhysics final : public runtime::Physics {
     rhs_.assign(5 * n_, 0.0);
     du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
+    if constexpr (is_viscous) {
+      if (in.turbulence.model == "sa") init_sa(mms ? &*mms : nullptr);
+    }
     if (ctx.start != nullptr) start_from(*ctx.start);
   }
 
@@ -171,6 +197,7 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(n_, mean_weight_)});
     }
+    if (sa_) out.push_back({.name = "DensityNuTilde", .values = sa_->rnu});
     // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
     if (ctx_.input.time.kind == "steady") {
       for (const auto& [name, value] : solver_state()) {
@@ -189,6 +216,12 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) field.values[c] = mean_[k * n_ + c] / mean_weight_;
       }
       out.push_back(std::move(field));
+    }
+    if (sa_) {
+      if (mean) throw std::invalid_argument("time averages of SA runs are not supported");
+      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(n_)};
+      for (std::size_t c = 0; c < n_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
+      out.push_back(std::move(nt));
     }
     return out;
   }
@@ -209,9 +242,9 @@ class EulerPhysics final : public runtime::Physics {
       const auto b = i - ni;
       out[0].values.push_back(p[b]);
       // The tangential part of the viscous traction (results.md, WallSolution).
-      const double a = std::sqrt(g.face_area_x[i] * g.face_area_x[i] +
-                                 g.face_area_y[i] * g.face_area_y[i] +
-                                 g.face_area_z[i] * g.face_area_z[i]);
+      const double a =
+          std::sqrt(g.face_area_x[i] * g.face_area_x[i] + g.face_area_y[i] * g.face_area_y[i] +
+                    g.face_area_z[i] * g.face_area_z[i]);
       const std::array<double, 3> n{g.face_area_x[i] / a, g.face_area_y[i] / a,
                                     g.face_area_z[i] / a};
       const std::array<double, 3> tv{t[b], t[nb + b], t[2 * nb + b]};
@@ -240,13 +273,13 @@ class EulerPhysics final : public runtime::Physics {
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
         const auto i = static_cast<std::size_t>(f);
         const auto b = i - ni;
-        const double a = std::sqrt(g.face_area_x[i] * g.face_area_x[i] +
-                                   g.face_area_y[i] * g.face_area_y[i] +
-                                   g.face_area_z[i] * g.face_area_z[i]);
-        const std::array<double, 3> force{face_force[b] - p_inf * g.face_area_x[i] + a * t[b],
-                                          face_force[nb + b] - p_inf * g.face_area_y[i] + a * t[nb + b],
-                                          face_force[2 * nb + b] - p_inf * g.face_area_z[i] +
-                                              a * t[2 * nb + b]};
+        const double a =
+            std::sqrt(g.face_area_x[i] * g.face_area_x[i] + g.face_area_y[i] * g.face_area_y[i] +
+                      g.face_area_z[i] * g.face_area_z[i]);
+        const std::array<double, 3> force{
+            face_force[b] - p_inf * g.face_area_x[i] + a * t[b],
+            face_force[nb + b] - p_inf * g.face_area_y[i] + a * t[nb + b],
+            face_force[2 * nb + b] - p_inf * g.face_area_z[i] + a * t[2 * nb + b]};
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
@@ -312,6 +345,7 @@ class EulerPhysics final : public runtime::Physics {
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
       }
+      if (sa_) sa_->rnu = *find(start.restart_fields, "DensityNuTilde");
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -326,6 +360,10 @@ class EulerPhysics final : public runtime::Physics {
     const auto& vz = *find(start.fields, "VelocityZ");
     const auto& p = *find(start.fields, "Pressure");
     for (std::size_t c = 0; c < n_; ++c) set_cell(c, rho[c], {vx[c], vy[c], vz[c]}, p[c]);
+    if (sa_) {
+      const auto& nt = *find(start.fields, "TurbulentSANuTilde");
+      for (std::size_t c = 0; c < n_; ++c) sa_->rnu[c] = rho[c] * nt[c];
+    }
   }
 
   [[nodiscard]] std::vector<std::pair<std::string, double>> solver_state() const {
@@ -351,6 +389,62 @@ class EulerPhysics final : public runtime::Physics {
     if (v[4].second >= 0.0) {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
+  }
+
+  // SA-neg: rho nt from the zones' initial nt, nt at the boundary faces that give it, the wall
+  // distance; a manufactured solution gives its own nt, wall distance and source.
+  void init_sa(const Manufactured* mms) {
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    const auto& in = ctx_.input;
+    if (in.time.kind != "steady") {
+      throw std::invalid_argument("the SA physics runs steady cases only");
+    }
+    sa_ = std::make_unique<SaState<P>>(mesh, g, euler_, transport_of(in),
+                                       mms == nullptr || mms->turbulence() != "sa-noft2");
+    auto& t = *sa_;
+    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+    std::vector<std::array<double, 3>> cells(n_), bfaces(nb);
+    for (std::size_t c = 0; c < n_; ++c) {
+      cells[c] = {g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]};
+    }
+    for (std::size_t b = 0; b < nb; ++b) {
+      bfaces[b] = {g.face_centroid_x[ni + b], g.face_centroid_y[ni + b], g.face_centroid_z[ni + b]};
+    }
+    std::vector<double> nt_b(nb, in.freestream.nu_tilde.value_or(0.0));
+    std::vector<double> d;
+    if (mms != nullptr) {
+      static const std::array<std::string, 1> nt_name = {"nu_hat"};
+      static const std::array<std::string, 1> d_name = {"wall_distance"};
+      static const std::array<std::string, 1> s_name = {"rhonu"};
+      nt_b = mms->evaluate("fields", nt_name, bfaces)[0];
+      d = mms->evaluate("auxiliary", d_name, cells)[0];
+      t.model.set_source(mms->evaluate("sources", s_name, cells)[0]);
+    } else {
+      std::map<std::string, std::string> kinds;
+      for (const auto& b : in.boundaries) kinds[b.zone] = b.kind;
+      std::vector<index_t> walls;
+      for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+        const auto it = kinds.find(mesh.face_zones()[z].name);
+        if (it != kinds.end() && it->second == "wall") walls.push_back(static_cast<index_t>(z));
+      }
+      if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
+      d = wall_distance(mesh, g, walls);
+    }
+    t.model.set_boundary(nt_b);
+    t.model.set_wall_distance(d);
+    std::map<std::string, const runtime::CellZoneInput*> zones;
+    for (const auto& z : in.cell_zones) zones[z.zone] = &z;
+    t.rnu.assign(n_, 0.0);
+    for (std::size_t c = 0; c < n_; ++c) {
+      const auto zi = static_cast<std::size_t>(mesh.cell_zone()[c]);
+      t.rnu[c] = u_[c] * zones.at(mesh.cell_zones()[zi].name)->initial.nu_tilde.value_or(0.0);
+    }
+    t.rhs.assign(n_, 0.0);
+    t.dx.assign(n_, 0.0);
+    t.s.assign(n_, typename P::state(0));
+    t.res.assign(n_, typename P::residual(0));
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -463,6 +557,14 @@ class EulerPhysics final : public runtime::Physics {
     std::vector<double> norms = report.residuals;
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
+    if (sa_) {
+      // Loosely coupled: the SA residual at the same state, after the flow's evaluation.
+      auto& t = *sa_;
+      t.model.residual_and_jacobian(t.stored(t.rnu), t.res);
+      double sum = 0.0;
+      for (const auto r : t.res) sum += static_cast<double>(r) * static_cast<double>(r);
+      report.residuals.push_back(std::sqrt(sum / static_cast<double>(n_)));
+    }
     euler_.spectral_radius(lambda_);
     // Largest relative residual over the equations, of the order being solved.
     const std::vector<double>& current = norms.empty() ? report.residuals : norms;
@@ -508,6 +610,18 @@ class EulerPhysics final : public runtime::Physics {
       return;
     }
     for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+    if (sa_) {
+      // The first-order start has no velocity gradients, hence no production: SA waits for the
+      // second order.
+      auto& t = *sa_;
+      if (second_order_) {
+        for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
+        std::fill(t.dx.begin(), t.dx.end(), 0.0);
+        t.model.solve(shift, t.rhs, t.dx, gauss_seidel_sweeps);
+        for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
+      }
+      t.model.eddy_viscosity(t.stored(t.rnu));
+    }
   }
 
   // The cell whose density or pressure the full step lowers the most, relatively.
@@ -626,6 +740,7 @@ class EulerPhysics final : public runtime::Physics {
   Gas gas_;
   std::size_t n_;
   Flow euler_;
+  std::unique_ptr<SaState<P>> sa_;  // SA-neg runs only
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;
@@ -656,6 +771,10 @@ void register_euler(runtime::PhysicsRegistry& registry) {
 }
 
 void register_navier_stokes(runtime::PhysicsRegistry& registry) {
+  registry.add({"compressible", "sa", "fp64", "cpu"},
+               factory<kernels::fp64, NavierStokes<kernels::fp64>>());
+  registry.add({"compressible", "sa", "fp32+acc64", "cpu"},
+               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>());
   registry.add({"compressible", "laminar", "fp64", "cpu"},
                factory<kernels::fp64, NavierStokes<kernels::fp64>>());
   registry.add({"compressible", "laminar", "fp32+acc64", "cpu"},

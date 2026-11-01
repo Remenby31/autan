@@ -20,10 +20,16 @@ if(AUTAN_ENABLE_CUDA)
     ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
   )
 endif()
+if(AUTAN_ENABLE_METAL)
+  string(APPEND backends ",metal")
+  list(APPEND AUTAN_PHYSICS_KERNELS ${AUTAN_PHYSICS_GENERATED}/euler_metal.hpp)
+endif()
 set(
   AUTAN_NS_KERNELS
   ${AUTAN_PHYSICS_GENERATED}/navier_stokes.hpp
   ${AUTAN_PHYSICS_GENERATED}/navier_stokes_cpu.hpp
+  ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras.hpp
+  ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_cpu.hpp
 )
 add_custom_command(
   OUTPUT ${AUTAN_NS_KERNELS}
@@ -31,7 +37,12 @@ add_custom_command(
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
     autan_codegen ${PROJECT_SOURCE_DIR}/kernels/navier_stokes.py --out ${AUTAN_PHYSICS_GENERATED}
     --backends cpu
+  COMMAND
+    ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
+    autan_codegen ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py --out
+    ${AUTAN_PHYSICS_GENERATED} --backends cpu
   DEPENDS
+    ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py
     ${PROJECT_SOURCE_DIR}/kernels/navier_stokes.py
     ${PROJECT_SOURCE_DIR}/kernels/euler.py
     ${AUTAN_CODEGEN_SOURCES}
@@ -44,7 +55,10 @@ add_custom_command(
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
     autan_codegen ${PROJECT_SOURCE_DIR}/kernels/euler.py --out ${AUTAN_PHYSICS_GENERATED} --backends
     ${backends}
-  DEPENDS ${PROJECT_SOURCE_DIR}/kernels/euler.py ${AUTAN_CODEGEN_SOURCES}
+  DEPENDS
+    ${PROJECT_SOURCE_DIR}/kernels/euler.py
+    ${AUTAN_CODEGEN_SOURCES}
+    ${PROJECT_SOURCE_DIR}/codegen/src/autan_codegen/metal_prelude.metal
   COMMENT "Generating kernels from kernels/euler.py"
   VERBATIM
 )
@@ -55,6 +69,7 @@ add_library(
   src/euler.cpp
   src/manufactured.cpp
   src/navier_stokes.cpp
+  src/spalart_allmaras.cpp
   ${AUTAN_PHYSICS_GENERATED}/euler.hpp
   ${AUTAN_PHYSICS_GENERATED}/euler_cpu.hpp
   ${AUTAN_NS_KERNELS}
