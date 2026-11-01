@@ -202,6 +202,7 @@ def save(name, out):
         gmsh.option.setNumber("Mesh.MshFileVersion", version)
         gmsh.option.setNumber("Mesh.Binary", binary)
         gmsh.write(str(out / f"{name}.{suffix}.msh"))
+    gmsh.write(str(out / f"{name}.cgns"))
     gmsh.model.remove()
 
 

@@ -10,6 +10,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(AUTAN_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(AUTAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(AUTAN_ENABLE_CGNS "Read CGNS meshes and write solution.cgns (needs the CGNS library)" ON)
 option(AUTAN_ENABLE_METIS "Partition with METIS" OFF)
 option(AUTAN_ENABLE_SCOTCH "Partition with Scotch" OFF)
 option(AUTAN_ENABLE_MPI "Build the MPI halo exchange" OFF)
