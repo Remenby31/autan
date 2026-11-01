@@ -439,7 +439,7 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   s.limiter = false;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
-  const auto u = uniform<P>(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1);
+  const auto u = stored(e, uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1));
   std::vector<typename P::residual> r(5);
   e.residual(std::span<const typename P::state>(u), r);
   const double v = c.geometry.cell_volume[0];
@@ -556,9 +556,9 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
     const auto uc = conserved(flow(c.geometry.cell_centroid_x[i], c.geometry.cell_centroid_z[i]));
     for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
   }
-  const std::vector<typename P::state> st(u.begin(), u.end());
+  const auto st = stored(e, u);
   std::vector<typename P::residual> r(5 * nc);
-  e.residual(st, r);
+  e.residual(std::span<const typename P::state>(st), r);
   const auto surface = c.cell_surface();
   for (std::size_t i = 0; i < nc; ++i) {
     INFO("cell " << i);
