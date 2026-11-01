@@ -336,15 +336,15 @@ def create_app(
                 if not isinstance(condition, dict) or condition.get("kind") != "oracle-state":
                     continue
                 sha256 = condition.get("sha256")
-                if not (isinstance(sha256, str) and SHA256.fullmatch(sha256)):
-                    continue  # Not a valid case: plan reports it.
-                name = f"states/{sha256}.json"
-                if sha256 not in states:
-                    try:
-                        states[sha256] = folder.read(name)
-                    except OSError:
-                        continue  # Missing: plan reports the file it cannot read.
-                condition["path"] = f"{sha256}.json"
+                valid = isinstance(sha256, str) and SHA256.fullmatch(sha256) is not None
+                # Repointed first, whatever follows: the source the case names is never read.
+                condition["path"] = f"{sha256}.json" if valid else "states.json"
+                if not valid or sha256 in states:
+                    continue  # An invalid case, or staged already: plan reports the former.
+                try:
+                    states[sha256] = folder.read(f"states/{sha256}.json")
+                except OSError:
+                    continue  # Missing or not a regular file: plan reports it cannot read it.
         document["mesh"] = PurePosixPath(str(document.get("mesh", ""))).name or "mesh"
         verification = document.get("verification")
         if isinstance(verification, dict) and isinstance(verification.get("manufactured"), dict):

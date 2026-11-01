@@ -399,9 +399,9 @@ def test_residual_drop_is_the_slowest_equation(
     assert orders == (None if expected is None else pytest.approx(expected))
 
 
-def test_an_oracle_state_run_plans_against_its_archived_face_states(
-    runs: Path, server: str, tmp_path: Path
-) -> None:
+def _oracle_state_run(runs: Path, tmp_path: Path) -> Path:
+    """A run whose farfield takes an oracle-state condition, written by the SDK from face
+    states the case names by their absolute path, tmp_path/ringleb.json."""
     mesh = json.loads((PY / "tests" / "fixtures" / "crm-hl.meshinfo.json").read_text())
     for zone in mesh["boundary_zones"]:
         if zone["name"] == "farfield":
@@ -426,16 +426,36 @@ def test_an_oracle_state_run_plans_against_its_archived_face_states(
     case = tmp_path / "oracle.py"
     case.write_text(
         (PY / "examples" / "crm_hl.py").read_text().replace("autan.SA()", "autan.Laminar()")
-        + "case.boundary('farfield').oracle_state(path='ringleb.json', "
+        + f"case.boundary('farfield').oracle_state(path={str(tmp_path / 'ringleb.json')!r}, "
         + f"sha256={hashlib.sha256(states).hexdigest()!r})\n"
     )
     mesh_info = autan.MeshInfo.load(tmp_path / "mesh.meshinfo.json")
-    result = autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs)
+    return autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs).path
+
+
+def test_an_oracle_state_run_plans_against_its_archived_face_states(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    run = _oracle_state_run(runs, tmp_path)
     (tmp_path / "ringleb.json").unlink()  # The plan reads the run's archive, not the source.
 
-    plan = httpx.get(f"{server}/api/runs/{result.path.name}/plan").json()
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
 
     assert plan["ok"] is True, plan
+
+
+def test_a_missing_face_state_archive_is_never_replaced_by_its_source(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    run = _oracle_state_run(runs, tmp_path)
+    assert httpx.get(f"{server}/api/runs/{run.name}/plan").json()["ok"] is True
+    for archive in (run / "states").iterdir():
+        archive.unlink()  # After the run was accepted: its source is still at tmp_path.
+
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
+
+    assert plan["ok"] is False
+    assert "E0420" in {d["code"] for d in plan["diagnostics"]}
 
 
 def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
