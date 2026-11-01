@@ -1,10 +1,12 @@
 """SU2 configuration of an Autan case, under the fairness protocol of docs/validation/su2.md.
 
 The physical setup (gas, freestream, boundaries, force reference) is read from the Autan case, so
-both codes solve one problem. The scheme is the closest SU2 has to Autan's (docs/design/euler.md):
-Roe, MUSCL on primitive variables with weighted least-squares gradients, Venkatakrishnan's limiter
-with its threshold matched to Autan's (`venkat_coefficient`). The solver controls are those SU2
-publishes for this case (TestCases/euler/naca0012/inv_NACA0012_Roe.cfg at the pinned tag).
+both codes solve one problem. SU2 runs in two schemes, each with the solver controls SU2 publishes
+for this case at the pinned tag: `roe`, the closest to Autan's (docs/design/euler.md): Roe, MUSCL
+on primitive variables with weighted least-squares gradients, Venkatakrishnan's limiter with its
+threshold matched to Autan's (`venkat_coefficient`), controls of
+TestCases/euler/naca0012/inv_NACA0012_Roe.cfg; and `jst`, SU2's reference scheme for this case
+(TestCases/euler/naca0012/inv_NACA0012.cfg and QuickStart/inv_NACA0012.cfg).
 """
 
 from __future__ import annotations
@@ -28,21 +30,53 @@ MATCH_CENTRE = (0.5, 0.0)
 MATCH_RADIUS = 1.0
 STOP_MARGIN = 2.0
 
-# SU2's published controls for the inviscid NACA 0012 (inv_NACA0012_Roe.cfg, SU2 v8.6.0).
-SOLVER_CONTROLS = {
-    "TIME_DISCRE_FLOW": "EULER_IMPLICIT",
-    "CFL_NUMBER": "30.0",
-    "CFL_ADAPT": "NO",
-    "LINEAR_SOLVER": "BCGSTAB",
-    "LINEAR_SOLVER_ERROR": "1E-1",
-    "LINEAR_SOLVER_ITER": "3",
-    "MGLEVEL": "3",
-    "MGCYCLE": "W_CYCLE",
-    "MG_PRE_SMOOTH": "( 1, 2, 2, 2 )",
-    "MG_POST_SMOOTH": "( 1, 1, 1, 1 )",
-    "MG_CORRECTION_SMOOTH": "( 1, 1, 1, 1 )",
-    "MG_DAMP_RESTRICTION": "0.80",
-    "MG_DAMP_PROLONGATION": "0.80",
+# SU2's published settings for the inviscid NACA 0012 (SU2 v8.6.0, TestCases/euler/naca0012).
+SCHEMES: dict[str, dict[str, str]] = {
+    # inv_NACA0012_Roe.cfg; the limiter coefficient is set by `config`.
+    "roe": {
+        "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES",
+        "CONV_NUM_METHOD_FLOW": "ROE",
+        "ENTROPY_FIX_COEFF": "0.001",
+        "MUSCL_FLOW": "YES",
+        "MUSCL_KAPPA_FLOW": "0.0",
+        "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+        "TIME_DISCRE_FLOW": "EULER_IMPLICIT",
+        "CFL_NUMBER": "30.0",
+        "CFL_ADAPT": "NO",
+        "LINEAR_SOLVER": "BCGSTAB",
+        "LINEAR_SOLVER_ERROR": "1E-1",
+        "LINEAR_SOLVER_ITER": "3",
+        "MGLEVEL": "3",
+        "MGCYCLE": "W_CYCLE",
+        "MG_PRE_SMOOTH": "( 1, 2, 2, 2 )",
+        "MG_POST_SMOOTH": "( 1, 1, 1, 1 )",
+        "MG_CORRECTION_SMOOTH": "( 1, 1, 1, 1 )",
+        "MG_DAMP_RESTRICTION": "0.80",
+        "MG_DAMP_PROLONGATION": "0.80",
+    },
+    # inv_NACA0012.cfg (full multigrid start).
+    "jst": {
+        "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES",
+        "CONV_NUM_METHOD_FLOW": "JST",
+        "JST_SENSOR_COEFF": "( 0.5, 0.02 )",
+        "TIME_DISCRE_FLOW": "EULER_IMPLICIT",
+        "CFL_NUMBER": "1000.0",
+        "CFL_ADAPT": "NO",
+        "LINEAR_SOLVER": "FGMRES",
+        "LINEAR_SOLVER_PREC": "LU_SGS",
+        "LINEAR_SOLVER_ERROR": "1E-3",
+        "LINEAR_SOLVER_ITER": "5",
+        "MGLEVEL": "3",
+        "MGCYCLE": "FULLMG_CYCLE",
+        "MG_STARTUP_STAGNATION": "0.99",
+        "MG_STARTUP_ITER": "10",
+        "MG_STARTUP_CONVERGENCE": "-2",
+        "MG_PRE_SMOOTH": "( 1, 2, 3, 4 )",
+        "MG_POST_SMOOTH": "( 0, 0, 0, 0 )",
+        "MG_CORRECTION_SMOOTH": "( 0, 0, 0, 0 )",
+        "MG_DAMP_RESTRICTION": "1.0",
+        "MG_DAMP_PROLONGATION": "1.0",
+    },
 }
 
 
@@ -81,8 +115,10 @@ def config(
     max_iterations: int = 20000,
     residual_orders: float = 10.0,
     stop_margin: float = STOP_MARGIN,
+    scheme: str = "roe",
 ) -> str:
-    """The SU2 configuration of `case` on the converted `mesh`.
+    """The SU2 configuration of `case` on the converted `mesh`, in `scheme` (a key of SCHEMES;
+    `venkat` is used by `roe` only).
 
     The case must be inviscid compressible with slip, far-field and symmetry boundaries and one
     forces monitor (V0903). In 2D, Autan's (x, z) is SU2's (x, y), the symmetry zones are not in the
@@ -92,6 +128,9 @@ def config(
     rule is a backstop `stop_margin` orders beyond, and the criterion's iteration is read from the
     history.
     """
+    if scheme not in SCHEMES:
+        msg = f"unknown SU2 scheme {scheme!r}; expected one of {sorted(SCHEMES)}"
+        raise VVError(msg, code="V0903")
     spec = case.spec
     physics = spec.physics
     if not isinstance(physics, autan.Compressible) or not isinstance(
@@ -157,14 +196,8 @@ def config(
         ),
         "MARKER_MONITORING": f"( {', '.join(surfaces)} )",
         "MARKER_PLOTTING": f"( {', '.join(surfaces)} )",
-        "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES",
-        "CONV_NUM_METHOD_FLOW": "ROE",
-        "ENTROPY_FIX_COEFF": "0.001",
-        "MUSCL_FLOW": "YES",
-        "MUSCL_KAPPA_FLOW": "0.0",
-        "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
-        "VENKAT_LIMITER_COEFF": repr(venkat),
-        **SOLVER_CONTROLS,
+        **SCHEMES[scheme],
+        **({"VENKAT_LIMITER_COEFF": repr(venkat)} if scheme == "roe" else {}),
         "ITER": str(max_iterations),
         # The slab's transverse momentum (y) is zero in exact arithmetic and sits at round-off.
         "CONV_FIELD": "( "

@@ -216,6 +216,15 @@ def test_configuration_is_the_autan_case() -> None:
     assert cfg3["MARKER_SYM"] == "( back, front )"
     assert float(cfg3["REF_AREA"]) == 1.0
     assert "MOMENTUM-Y" not in cfg3["CONV_FIELD"]
+    # SU2's reference scheme for this case: JST with the controls of inv_NACA0012.cfg, no limiter.
+    jst = _cfg(config.config(case, record, 0.5, span=2.0, scheme="jst"))
+    assert jst["CONV_NUM_METHOD_FLOW"] == "JST"
+    assert jst["MGCYCLE"] == "FULLMG_CYCLE"
+    assert "VENKAT_LIMITER_COEFF" not in jst
+    assert "MUSCL_FLOW" not in jst
+    with pytest.raises(VVError) as err:
+        config.config(case, record, 0.5, span=2.0, scheme="hllc")
+    assert err.value.code == "V0903"
     bad = cases.case("m080-a125", "s.msh")
     bad.boundary("airfoil").wall()
     with pytest.raises(VVError) as err:
@@ -418,6 +427,13 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     # A level that did not reach the criterion leaves too few levels for an estimate.
     _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=False)
     assert su2.study(runs)["continuum"] is None
+    # Runs of two schemes are not one family.
+    level = json.loads((runs[0] / "level.json").read_text())
+    (runs[0] / "level.json").write_text(json.dumps({**level, "scheme": "jst"}))
+    with pytest.raises(VVError) as err:
+        su2.study(runs)
+    assert err.value.code == "V0905"
+    (runs[0] / "level.json").write_text(json.dumps(level))
     # A run of another configuration, or of an edited one, is not the prepared case.
     _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=True)
     prov = json.loads((runs[0] / "provenance.json").read_text())
