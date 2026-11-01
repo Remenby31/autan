@@ -289,6 +289,21 @@ _CODES = [
         "Put the mesh at the path the case gives, relative to the case file.",
     ),
     Code(
+        "E0210",
+        "The MeshInfo's zone groups describe another groups file",
+        "The SHA-256 of the mesh's `<mesh>.zones.json` differs from the MeshInfo "
+        "`groups_source.sha256`, or the file exists and the MeshInfo has no groups: the groups "
+        "the case selects would not be the ones the MeshInfo lists.",
+        "Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.",
+    ),
+    Code(
+        "W0211",
+        "Zone groups file not found",
+        "The MeshInfo has zone groups but the `<mesh>.zones.json` next to the case's mesh does "
+        "not exist, so `plan` cannot check that they still describe it.",
+        "Put the groups file next to the mesh.",
+    ),
+    Code(
         "E0206",
         "Manufactured solution differs from its hash",
         "The SHA-256 of the manufactured-solution file named by `verification.manufactured` "
@@ -469,6 +484,13 @@ _CODES = [
         "circulation comes from the lift on the body. Patterns with wildcards skip periodic "
         "zones.",
         'Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.',
+    ),
+    Code(
+        "E0426",
+        "Zone group pattern matches no group",
+        "A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) "
+        "matches no group. Groups come from the mesh's `<mesh>.zones.json`.",
+        "Use one of the group names the message lists, or select zones by name.",
     ),
     Code(
         "E0501",

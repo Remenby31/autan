@@ -380,6 +380,22 @@ The constants the manufactured solution declares (gamma, gas constant, viscosity
 
 Fix: Build the case gas from the solution's parameters, or export the solution the case needs.
 
+## E0210
+
+**The MeshInfo's zone groups describe another groups file** (error)
+
+The SHA-256 of the mesh's `<mesh>.zones.json` differs from the MeshInfo `groups_source.sha256`, or the file exists and the MeshInfo has no groups: the groups the case selects would not be the ones the MeshInfo lists.
+
+Fix: Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.
+
+## W0211
+
+**Zone groups file not found** (warning)
+
+The MeshInfo has zone groups but the `<mesh>.zones.json` next to the case's mesh does not exist, so `plan` cannot check that they still describe it.
+
+Fix: Put the groups file next to the mesh.
+
 ## E0301
 
 **Quantity of the wrong dimension** (error)
@@ -539,6 +555,14 @@ Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic
 The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of a periodic pair, or match zones that are not wall or slip zones: the vortex's circulation comes from the lift on the body. Patterns with wildcards skip periodic zones.
 
 Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.
+
+## E0426
+
+**Zone group pattern matches no group** (error)
+
+A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) matches no group. Groups come from the mesh's `<mesh>.zones.json`.
+
+Fix: Use one of the group names the message lists, or select zones by name.
 
 ## E0501
 

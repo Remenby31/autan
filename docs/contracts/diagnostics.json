@@ -283,6 +283,18 @@
       "fix": "Build the case gas from the solution's parameters, or export the solution the case needs.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0209"
     },
+    "E0210": {
+      "severity": "error",
+      "title": "The MeshInfo's zone groups describe another groups file",
+      "fix": "Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0210"
+    },
+    "W0211": {
+      "severity": "warning",
+      "title": "Zone groups file not found",
+      "fix": "Put the groups file next to the mesh.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0211"
+    },
     "E0301": {
       "severity": "error",
       "title": "Quantity of the wrong dimension",
@@ -402,6 +414,12 @@
       "title": "Point-vortex surfaces match no wall",
       "fix": "Give a pattern that matches the walls of the lifting body, e.g. `surfaces=\"wing.*\"`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0425"
+    },
+    "E0426": {
+      "severity": "error",
+      "title": "Zone group pattern matches no group",
+      "fix": "Use one of the group names the message lists, or select zones by name.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0426"
     },
     "E0501": {
       "severity": "error",
