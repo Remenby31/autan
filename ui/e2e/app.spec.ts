@@ -37,6 +37,7 @@ test("a run written by another process appears and updates live", async ({ page 
     status: "running",
     started,
     finished: null,
+    monitors: null,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
   renameSync(staging, directory);
@@ -61,7 +62,21 @@ test("a run written by another process appears and updates live", async ({ page 
   await expect(budget).toBeVisible();
   append(last + 2);
   await expect(page.getByTestId("iteration")).toHaveText(String(last + 2));
-  const finished = { ...run, status: "converged", finished: "2026-11-01T00:10:00Z" };
+  // The final record of every monitor (results.md#runjson): the appended line repeats the last.
+  const records = JSON.parse(lines[last - 1] as string).monitors ?? source.monitors ?? {};
+  const monitors = Object.fromEntries(
+    Object.entries(records).map(([name, record]) => [
+      name,
+      { ...(record as object), iteration: last + 2 },
+    ]),
+  );
+  const finished = {
+    ...run,
+    status: "converged",
+    finished: "2026-11-01T00:10:00Z",
+    iterations: last + 2,
+    monitors,
+  };
   writeFileSync(join(directory, "run.json"), JSON.stringify(finished));
   await expect(page.getByTestId("status")).toContainText(/converged/i);
   await expect(budget).toHaveCount(0);
@@ -196,7 +211,10 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
 });
 
 test("floors written while a run page is open recompute its residual drop", async ({ page }) => {
-  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  // One monitor, recorded every 10 iterations: line 30 carries its final record.
+  const source = (await runs(page)).find(
+    (r) => r.status === "converged" && Object.keys(r.monitors ?? {}).join() === "forces",
+  ) as Run;
   const started = new Date(Date.now() - 7_200_000).toISOString().replace(/\.\d+Z$/, "Z");
   const suffix = Math.floor(Math.random() * 2 ** 32)
     .toString(16)
@@ -210,7 +228,11 @@ test("floors written while a run page is open recompute its residual drop", asyn
     .split("\n")
     .slice(0, 30);
   writeFileSync(join(staging, "history.jsonl"), `${lines.join("\n")}\n`);
-  const run = { ...source, run_id: runId, started, status: "completed", iterations: 30 };
+  const at30 = JSON.parse(lines.at(-1) as string).monitors ?? {};
+  const monitors = Object.fromEntries(
+    Object.entries(at30).map(([name, record]) => [name, { ...(record as object), iteration: 30 }]),
+  );
+  const run = { ...source, run_id: runId, started, status: "completed", iterations: 30, monitors };
   writeFileSync(join(staging, "run.json"), JSON.stringify({ ...run, convergence: null }));
   renameSync(staging, join(RUNS, runId));
   const last = JSON.parse(lines.at(-1) as string).residuals;
