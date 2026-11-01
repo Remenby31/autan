@@ -175,7 +175,7 @@ class World final : public Comm {
           "MPI_Gatherv");
     if (rank_ != 0) return {};
     std::vector<double> out(static_cast<std::size_t>(n));
-    for (std::size_t i = 0; i < all_ids.size(); ++i)
+    for (std::size_t i = 0; i + static_cast<std::size_t>(counts.back()) < all_ids.size(); ++i)
       out[static_cast<std::size_t>(all_ids[i])] = all_values[i];
     return out;
   }
