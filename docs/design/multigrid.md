@@ -59,13 +59,15 @@ Steps of `autan-run` to ten orders, `fp64`, cpu backend, from the freestream; ma
 
 | Case | Solver | 16³ | 24³ | 32³ | 48³ | 96³ |
 |---|---|---|---|---|---|---|
-| MMS `euler` | Gauss-Seidel | 87 | 121 | 157 | 232 | GS_E96 |
+| MMS `euler` | Gauss-Seidel | 87 | 121 | 157 | 232 | 657 |
 | | multigrid | 40 | 47 | 51 | 60 | 78 |
-| MMS `navier_stokes` (μ = 10) | Gauss-Seidel | 111 | 214 | 347 | 700 | GS_N96 |
+| MMS `navier_stokes` (μ = 10) | Gauss-Seidel | 111 | 214 | 347 | 700 | > 395 ¹ |
 | | multigrid, CFL = 10 / drop | 51 | 76 | 112 | 200 | |
 | | multigrid | 24 | 25 | 25 | 28 | 36 |
 | MMS `rans_sa` | Gauss-Seidel | | 369 | | 1057 | |
 | | multigrid (ν̃ still by Gauss-Seidel, #162) | | 65 | | 176 | |
+
+¹ Still running after 395 steps (about 5 s per step); the study stops at 2000. After the merge of the viscous discretisation of 309f82e (quadratic boundary-cell fit), the multigrid takes 28 and 32 steps on 24³ and 48³.
 
 The converged solutions of both solvers differ by at most 7.5 × 10⁻⁹ of each field's range (16³ to 48³, Euler and Navier-Stokes), the residual tolerance's share: the observed orders are those of the discretisation (Euler gate `euler-mms-order` PASS, 1.95–2.18). Two runs of the same case give the same history and solution bit for bit.
 
@@ -85,7 +87,7 @@ Time to ten orders on a quiet GB10 (spark-5359, one Grace core, the run alone un
 | `euler` 48³ | 73.5 s (232) | 28.9 s (60) | 2.5 × |
 | `navier_stokes` 24³ | 10.4 s (214) | 1.8 s (25) | 5.8 × |
 | `navier_stokes` 48³ | 323.6 s (700) | 20.3 s (28) | 15.9 × |
-| `navier_stokes` 96³ | | T_N96 | |
-| `euler` 96³ | | T_E96 | |
+| `navier_stokes` 96³ | | 215.5 s (36) | |
+| `euler` 96³ | | 367.9 s (78) | |
 
 A multigrid step costs about 1.5 Gauss-Seidel steps (Euler 48³: 0.48 s against 0.32 s). The remaining growth of the Euler steps (40 → 78) is the outer defect correction's: a linear tolerance of 0.01 gives the same counts.
