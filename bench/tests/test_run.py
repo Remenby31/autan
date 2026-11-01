@@ -8,9 +8,10 @@ import pytest
 from autan_bench.cli import main
 
 # The binary and the GPU telemetry tools are external processes; all are faked here. The fake
-# GPU reads busy (90 %; on Linux one compute process) while the fake binary runs, idle otherwise.
+# GPU reads busy while the fake binary runs (Linux: 90 % and one compute process; macOS: 12 %, what
+# ioreg shows under a bandwidth-bound Metal kernel), idle otherwise.
 FAKE_IOREG = """#!/bin/sh
-if [ -e "{busy}" ]; then util=90; else util=3; fi
+if [ -e "{busy}" ]; then util=12; else util=3; fi
 echo '"PerformanceStatistics" = {{"Device Utilization %"='$util',"Tiler Utilization %"=2}}'
 """
 FAKE_SMI = """#!/bin/sh
