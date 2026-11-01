@@ -30,8 +30,7 @@ struct SpalartAllmaras<P>::Impl {
   std::vector<index_t> cell_faces;
   sk::Data<P> d{};
 
-  Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t,
-       bool ft2)
+  Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t, bool ft2)
       : flow(f),
         nc(static_cast<std::size_t>(mesh.n_cells())),
         nf(static_cast<std::size_t>(mesh.n_faces())),
@@ -167,12 +166,10 @@ void SpalartAllmaras<P>::residual_and_jacobian(std::span<const State> s, std::sp
 }
 
 template <class P>
-void SpalartAllmaras<P>::solve(std::span<const double> shift, std::span<const double> b,
-                               std::span<double> dx, int sweeps) const {
+void SpalartAllmaras<P>::assemble(std::span<const double> shift, std::span<double> diag,
+                                  std::span<double> upper, std::span<double> lower) const {
   const auto& m = *impl_;
-  const auto nc = m.nc;
-  std::vector<double> diag(nc), upper(m.ni), lower(m.ni);
-  for (std::size_t c = 0; c < nc; ++c) {
+  for (std::size_t c = 0; c < m.nc; ++c) {
     diag[c] = shift[c] + std::max(0.0, static_cast<double>(m.cell_jac[c]));
   }
   // R_o += F, R_n -= F; F depends on rho nt of the owner (block 0) and the neighbour (block 1).
@@ -189,6 +186,13 @@ void SpalartAllmaras<P>::solve(std::span<const double> shift, std::span<const do
   for (std::size_t f = m.ni; f < m.nf; ++f) {
     diag[static_cast<std::size_t>(m.owner[f])] += static_cast<double>(m.bnd_jac[f]);
   }
+}
+
+template <class P>
+void SpalartAllmaras<P>::solve(std::span<const double> diag, std::span<const double> upper,
+                               std::span<const double> lower, std::span<const double> b,
+                               std::span<double> dx, int sweeps) const {
+  const auto& m = *impl_;
   auto relax = [&](std::size_t c) {
     double r = b[c];
     for (auto k = m.cell_offsets[c]; k < m.cell_offsets[c + 1]; ++k) {
@@ -200,8 +204,8 @@ void SpalartAllmaras<P>::solve(std::span<const double> shift, std::span<const do
     dx[c] = r / diag[c];
   };
   for (int s = 0; s < sweeps; ++s) {
-    for (std::size_t c = 0; c < nc; ++c) relax(c);
-    for (std::size_t c = nc; c-- > 0;) relax(c);
+    for (std::size_t c = 0; c < m.nc; ++c) relax(c);
+    for (std::size_t c = m.nc; c-- > 0;) relax(c);
   }
 }
 

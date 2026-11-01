@@ -65,6 +65,7 @@ from euler import (
 )
 from navier_stokes import (
     corrected,
+    corrected_boundary,
     face_value,
     mu_ref,
     mu_t,
@@ -103,7 +104,9 @@ ft2_on = param("ft2_on", Param)  # 1: SA-neg; 0: SA-noft2 (manufactured solution
 
 
 @pointwise
-def lam_nu(w: State.Vec5, rgas: Param, pref: Param, mref: Param, tref: Param, s: Param, law: Param) -> State:
+def lam_nu(
+    w: State.Vec5, rgas: Param, pref: Param, mref: Param, tref: Param, s: Param, law: Param
+) -> State:
     return viscosity(temperature(w, rgas, pref), mref, tref, s, law) / w[0]
 
 
@@ -147,7 +150,9 @@ def sa_source(nt: State, nu: State, omega: State, d: Geom, ft2s: Param) -> State
     c6 = CW3**6
     fw = g * exp(log((1.0 + c6) / (g**6 + c6)) / 6.0)
     ft2 = ft2s * CT3 * exp(-CT4 * chi * chi)
-    pos = CB1 * (1.0 - ft2) * st * nt - (CW1 * fw - CB1 / (KAPPA * KAPPA) * ft2) * (nt / d) * (nt / d)
+    pos = CB1 * (1.0 - ft2) * st * nt - (CW1 * fw - CB1 / (KAPPA * KAPPA) * ft2) * (nt / d) * (
+        nt / d
+    )
     neg = CB1 * (1.0 - CT3) * omega * nt + CW1 * (nt / d) * (nt / d)
     return pos if nt >= 0.0 else neg
 
@@ -171,7 +176,14 @@ VISCOSITY = {
 
 @pointwise
 def eddy_viscosity(
-    rn: State, w: State.Vec5, rgas: Param, pref: Param, mref: Param, tref: Param, s: Param, law: Param
+    rn: State,
+    w: State.Vec5,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
 ) -> State:
     nt = rn / w[0]
     chi = nt / lam_nu(w, rgas, pref, mref, tref, s, law)
@@ -204,7 +216,14 @@ boundary_values = boundary_loop(
 
 @pointwise
 def boundary_eddy_viscosity(
-    nt: State, w: State.Vec5, rgas: Param, pref: Param, mref: Param, tref: Param, s: Param, law: Param
+    nt: State,
+    w: State.Vec5,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
 ) -> State:
     chi = nt / lam_nu(w, rgas, pref, mref, tref, s, law)
     return w[0] * nt * fv1(chi) if nt > 0.0 else 0.0 * nt
@@ -307,7 +326,7 @@ def nt_boundary(
     ntf_l = ntl + dot(tl, r)
     conv = mdot * ntf_l if mdot > 0.0 else mdot * ntb
     nu = lam_nu(wb, rgas, pref, mref, tref, s, law)
-    gn = corrected(tl, ntb - ntl, e, inv_d)
+    gn = corrected_boundary(tl, ntb - ntl, e, inv_d)
     diff = wb[0] * (nu + ntb * fn(ntb / nu)) / SIGMA * dot(gn, n) * area
     wall = kind > BC_WALL - 0.5
     return 0.0 * conv - diff if wall else conv - diff
@@ -334,9 +353,10 @@ def nt_cell_source(
     nt = rc / w[0]
     nu = lam_nu(w, rgas, pref, mref, tref, s, law)
     grho = Vec3(gw[0, 0], gw[0, 1], gw[0, 2])
-    q = w[0] * sa_source(nt, nu, vorticity(gw), d, ft2s) + (
-        w[0] * CB2 * dot(tg, tg) - (nu + nt * fn(nt / nu)) * dot(grho, tg)
-    ) / SIGMA
+    q = (
+        w[0] * sa_source(nt, nu, vorticity(gw), d, ft2s)
+        + (w[0] * CB2 * dot(tg, tg) - (nu + nt * fn(nt / nu)) * dot(grho, tg)) / SIGMA
+    )
     return -vol * (q + ext)
 
 

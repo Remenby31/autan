@@ -39,10 +39,16 @@ class SpalartAllmaras {
   void residual(std::span<const State> s, std::span<Res> res);
   /// The same, with the scalar Jacobian blocks of the implicit step.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
-  /// After residual_and_jacobian: solves (diag(shift) + J) dx = b with `sweeps` symmetric
-  /// Gauss-Seidel sweeps in cell order (deterministic), J the Jacobian with the negative part of
-  /// each cell's source derivative dropped so that J stays an M-matrix-like operator.
-  void solve(std::span<const double> shift, std::span<const double> b, std::span<double> dx,
+  /// After residual_and_jacobian: the implicit operator diag(shift) + J, J the Jacobian with the
+  /// negative part of each cell's source derivative dropped (production does not lower the
+  /// diagonal): `diag` per cell, `upper` (row owner, column neighbour) and `lower` (row
+  /// neighbour, column owner) per interior face, in mesh face order, as BlockMatrix.
+  void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
+                std::span<double> lower) const;
+  /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps in cell
+  /// order (deterministic).
+  void solve(std::span<const double> diag, std::span<const double> upper,
+             std::span<const double> lower, std::span<const double> b, std::span<double> dx,
              int sweeps) const;
   /// Writes the eddy viscosity of s to the flow, per cell and per boundary face.
   void eddy_viscosity(std::span<const State> s);
