@@ -1,0 +1,5 @@
+# LeakSanitizer suppressions for the fuzz harnesses (LSAN_OPTIONS=suppressions=<this file>).
+# CGNS 4.5.2: cg_open -> cg_version returns CG_ERROR without freeing the node-id array of
+# cgi_get_nodes when the root holds more than one CGNSLibraryVersion_t node (16 bytes).
+# Remove once a fixed CGNS version is in use.
+leak:cg_version
