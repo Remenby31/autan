@@ -749,3 +749,20 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["start"]["residual_reference"].erase("energy"); }), "E0705");
   }
 }
+
+TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "[runtime]") {
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  const auto with_pairs = [&](double tx) {
+    return input([&](Json& d) {
+      d["mesh"]["path"] = fs::absolute(box).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+      d["periodic"] = Json::array(
+          {Json{{"zones", {"xmin", "xmax"}},
+                {"transform", {{"kind", "translation"}, {"vector", {tx, 0.0, 0.0}}}}},
+           Json{{"zones", {"ymin", "ymax"}},
+                {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    });
+  };
+  require_error(run(with_pairs(1.0)), "E0706");
+  require_error(run(with_pairs(2.0)), "E0705");
+}

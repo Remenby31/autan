@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <numeric>
 #include <random>
@@ -390,4 +391,42 @@ TEST_CASE("Hostile or contradictory sizes are coded errors, not crashes", "[io]"
     fs::rename(dir / "cellZones", dir / "cellZones.gz");
     require_error(ErrorCode::io_unsupported, dir);
   }
+}
+
+TEST_CASE("Gmsh $Periodic surface links become periodic pairs", "[io][periodic]") {
+  // periodic-box (generate.py): unstructured tetrahedra in the unit cube,
+  // xmax meshed as xmin translated by (1, 0, 0), ymax as ymin by (0, 1, 0).
+  const std::string file = GENERATE("periodic-box.ascii.msh", "periodic-box.binary.msh");
+  CAPTURE(file);
+  const autan::Mesh mesh = autan::io::read_mesh(data_dir / "periodic-box" / file);
+  require_valid_box(mesh, 1.0);
+  REQUIRE(mesh.periodic_pairs().size() == 2);
+  const std::map<std::pair<std::string, std::string>, std::array<double, 3>> expected{
+      {{"xmin", "xmax"}, {1.0, 0.0, 0.0}}, {{"ymin", "ymax"}, {0.0, 1.0, 0.0}}};
+  for (const auto& pair : mesh.periodic_pairs()) {
+    const auto key =
+        std::pair{mesh.face_zones()[at(pair.zone_a)].name, mesh.face_zones()[at(pair.zone_b)].name};
+    REQUIRE(expected.contains(key));
+    CHECK(pair.translation == expected.at(key));
+  }
+  for (const char* name : {"xmin", "xmax", "ymin", "ymax"})
+    CHECK(zone_named(mesh, name).kind == autan::BcKind::periodic);
+  for (const char* name : {"zmin", "zmax"})
+    CHECK(zone_named(mesh, name).kind == autan::BcKind::unspecified);
+
+  std::ifstream in(data_dir / "periodic-box" / "periodic-box.ascii.msh", std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto edited = [&](const std::string& from, const std::string& to) {
+    std::string copy = text;
+    const auto at_link = copy.find(from);
+    REQUIRE(at_link != std::string::npos);
+    copy.replace(at_link, from.size(), to);
+    return write_temp("periodic-edited.msh", copy);
+  };
+  // The xmin -> xmax link with a rotation by 90 degrees about z.
+  require_error(autan::ErrorCode::io_unsupported,
+                edited("2 2 1\n16 1 0 0 1 0 1 0 0", "2 2 1\n16 0 -1 0 1 1 0 0 0"));
+  // The same link with a translation the faces do not follow.
+  require_error(autan::ErrorCode::mesh_periodic_unmatched,
+                edited("2 2 1\n16 1 0 0 1 0", "2 2 1\n16 1 0 0 1.01 0"));
 }
