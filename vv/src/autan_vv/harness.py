@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -517,17 +518,31 @@ def _gate_checks(
             )
             continue
         fitted, finest = fit["order"], fit["pairwise_orders"][-1]
-        checks.append(
-            {
-                "field": name,
-                "fitted_order": fitted,
-                "finest_pair_order": finest,
-                "levels": fit["levels"],
-                "lower": gate.lower,
-                "upper": gate.upper,
-                "pass": all(gate.lower <= v <= gate.upper for v in (fitted, finest)),
-            }
-        )
+        orders = (fitted, finest)
+        above = max(orders) > gate.upper
+        check: dict[str, Any] = {
+            "field": name,
+            "fitted_order": fitted,
+            "finest_pair_order": finest,
+            "levels": fit["levels"],
+            "lower": gate.lower,
+            "upper": gate.upper,
+            "pass": min(orders) >= gate.lower and (not above or not gate.upper_blocks),
+        }
+        if above and not gate.upper_blocks:
+            check["warning"] = f"order above {gate.upper:g}"
+            if gate.investigate_above is not None and max(orders) > gate.investigate_above:
+                check["investigate"] = True
+        if gate.monotone:
+            errors = [
+                r.errors[name][gate.norm]
+                for r in runs
+                if r.errors[name][gate.norm] >= FLOOR_FACTOR * eps * _scale(r, name)
+            ]
+            decreasing = all(b < a for a, b in itertools.pairwise(errors))
+            check["errors_decrease"] = decreasing
+            check["pass"] = check["pass"] and decreasing
+        checks.append(check)
     return checks
 
 
@@ -623,6 +638,8 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
             "milestone": gate.milestone,
             "checks": checks,
             "pass": all(c["pass"] for c in checks),
+            "warnings": [f"{c['field']}: {c['warning']}" for c in checks if "warning" in c],
+            "investigate": any(c.get("investigate", False) for c in checks),
             "evidence": not not_evidence,
             "not_evidence_because": not_evidence,
         }

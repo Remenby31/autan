@@ -117,6 +117,10 @@ def _cmd_verify(args: argparse.Namespace) -> None:
     verdict = report["verdict"]
     if verdict is not None:
         state = "PASS" if verdict["pass"] else "FAIL"
+        if verdict["pass"] and verdict["investigate"]:
+            state = "PASS, TO INVESTIGATE"
+        for warning in verdict["warnings"]:
+            _say(f"warning: {warning}")
         note = (
             ""
             if verdict["evidence"]
