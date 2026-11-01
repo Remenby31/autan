@@ -8,7 +8,7 @@
       "dirty": false
     },
     "binary_sha256": "9b842b309038f24438e0d34962c590f1a803376b01854233f31fbcad652a2ece",
-    "host": "MacBook-Pro-BaptisteCruvellier",
+    "host": "apple-m4-pro-dev",
     "image": null,
     "image_revision": null,
     "backend": "metal",
@@ -29,7 +29,7 @@
     "os_version": "26.7.1"
   },
   "conditions": {
-    "lock": "/Users/baptistec/.autan-gpu.lock",
+    "lock": "~/.autan-gpu.lock",
     "lock_wait_s": 6.875023245811462e-06,
     "idle_check": {
       "samples": 5,
