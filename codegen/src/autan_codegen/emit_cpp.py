@@ -187,6 +187,10 @@ def rel_datasets(m: Module) -> set[int]:
                         out.add(id(b.dataset))
                         if b.boundary is not None:
                             out.add(id(b.boundary))
+    # Members of a swapped pair (a reversed face reads one for the other) share their storage.
+    for name, other in SWAPPED.items():
+        if id(getattr(dsl.geometry, name)) in out:
+            out.add(id(getattr(dsl.geometry, other)))
     return out
 
 
@@ -220,14 +224,22 @@ def emit_data_struct(e: Emitter, m: Module) -> None:
     e.w()
 
 
+# Built-in face geometry that changes with the face's orientation: negated, or swapped in pairs.
+ORIENTED = {"face_area", "face_normal", "face_moment"}
+SWAPPED = {"face_r_left": "face_r_right", "face_r_right": "face_r_left"}
+
+
 def call_args(
     sig: Signature,
     bindings: dict[str, dsl.Binding],
     index_of: dict[str, str],
     skip: int = 0,
     layout: str = "soa",
+    reversible: bool = False,
 ) -> list[str]:
-    """Loads of each scalar argument; `index_of[via]` is the index expression of that binding."""
+    """Loads of each scalar argument; `index_of[via]` is the index expression of that binding.
+    With `reversible`, face geometry is read in the face's global orientation when the C++
+    boolean `rev` holds (Topology::face_reversed)."""
     out = []
     for name, t in zip(sig.names[skip:], sig.types[skip:], strict=True):
         b = bindings[name]
@@ -237,8 +249,13 @@ def call_args(
                 if b.via == "on_boundary":
                     out.append(f"(across ? {zero} : {at(b.dataset, 'f', c, layout)})")
                     continue
-                # Half 0 of the face's (2, ...) data for its owner, half 1 for its neighbour.
-                first = "d.topo.owner[f] == c" if b.via == "near" else "d.topo.owner[f] != c"
+                # Half 0 of the face's (2, ...) data for its left cell, half 1 for its right one,
+                # in the face's global orientation (Topology::face_reversed).
+                left = (
+                    "(d.topo.owner[f] == c) != "
+                    "(d.topo.face_reversed != nullptr && d.topo.face_reversed[f] != 0)"
+                )
+                first = left if b.via == "near" else f"!({left})"
                 comp = f"(({first}) ? {c} : {t.size + c})"
                 out.append(f"(across ? {at_dynamic(b.dataset, 'f', comp, layout)} : {zero})")
                 continue
@@ -258,7 +275,15 @@ def call_args(
                     and "face" in index_of
                 ):
                     via = "face"
-                out.append(at(b.dataset, index_of[via], c, layout))
+                load = at(b.dataset, index_of[via], c, layout)
+                ds = b.dataset
+                if reversible and isinstance(ds, dsl.Dataset) and ds.geometry:
+                    if ds.name in ORIENTED:
+                        load = f"(rev ? -{load} : {load})"
+                    elif ds.name in SWAPPED:
+                        other = getattr(dsl.geometry, SWAPPED[ds.name])
+                        load = f"(rev ? {at(other, index_of[via], c, layout)} : {load})"
+                out.append(load)
     return out
 
 

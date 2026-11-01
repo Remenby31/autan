@@ -739,7 +739,7 @@ _CODES = [
     Code(
         "E1013",
         "Policy not available on the backend",
-        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).",
         "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
     ),
     Code(
@@ -795,6 +795,12 @@ _CODES = [
         "Strategy not available",
         "A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.",
         "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
+    ),
+    Code(
+        "E1109",
+        "Strategy not rank-independent",
+        "A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).",
+        "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
     ),
     Code(
         "W0801",

@@ -275,6 +275,7 @@ def test_diagonal_blocks_invert_as_the_host_block_matrix(
 # kernels/blocks.py `assemble` then `multiply` on a mesh's topology, CSR or sliced, every input
 # given as doubles and stored in the type the policy gives its dataset (component-major).
 MATRIX_DRIVER = r"""
+#include <cstdint>
 #include <type_traits>
 #include <vector>
 #include "blocks.hpp"
@@ -309,7 +310,7 @@ template <class T> void give(const std::vector<T>& v, double* out) {
 extern "C" void run(int nc, int nf, int ni, long long nk, long long stride, const index_t* owner,
                     const index_t* neighbour, const offset_t* offsets, const index_t* length,
                     const index_t* cell_faces, const index_t* cell, const double* side,
-                    const double* face_jac, const double* bnd_jac, const double* shift,
+                    const std::uint8_t* reversed, const double* face_jac, const double* bnd_jac, const double* shift,
                     const double* x, double* diag, double* off, double* y) {
   D d{};
   auto o = std::vector<index_t>(owner, owner + nf);
@@ -318,6 +319,7 @@ extern "C" void run(int nc, int nf, int ni, long long nk, long long stride, cons
   auto ln = std::vector<index_t>(length, length + (stride == 1 ? 0 : nc));
   auto cf = std::vector<index_t>(cell_faces, cell_faces + nk);
   auto cl = std::vector<index_t>(cell, cell + (stride == 1 ? 0 : nk));
+  auto rv = std::vector<std::uint8_t>(reversed, reversed + nf);
   auto sd = as<Of<decltype(*d.incidence_side)>>(side, nk);
   auto fj = as<Of<decltype(*d.face_jac)>>(face_jac, 50 * nf);
   auto bj = as<Of<decltype(*d.bnd_jac)>>(bnd_jac, 25 * nf);
@@ -335,6 +337,7 @@ extern "C" void run(int nc, int nf, int ni, long long nk, long long stride, cons
   t.neighbour = place(n);
   t.cell_face_offsets = place(of);
   t.cell_faces = place(cf);
+  t.face_reversed = place(rv);
   if (stride != 1) {
     t.incidence_stride = stride;
     t.incidence_length = place(ln);
@@ -410,15 +413,16 @@ def _sliced(m: s.Mesh, slice_: int) -> dict[str, np.ndarray | int]:
 
 
 def _matrix(
-    lib: ctypes.CDLL, m: s.Mesh, layout: dict | None, face_jac, bnd_jac, shift, x
+    lib: ctypes.CDLL, m: s.Mesh, layout: dict | None, reversed_, side, face_jac, bnd_jac, shift, x
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """diag (cells, 5, 5), off (CSR incidences, 5, 5) and y (cells, 5) from the generated loops."""
+    """diag (cells, 5, 5), off (CSR incidences, 5, 5) and y (cells, 5) from the generated loops,
+    `reversed_` flagging the faces whose global orientation is the reverse of the local one."""
 
     def p(a: np.ndarray) -> ctypes.c_void_p:
         return a.ctypes.data_as(ctypes.c_void_p)
 
     nc, nk = m.n_cells, m.n_incidences
-    side = m.incidence_side
+    csr_side = side
     if layout is None:
         offsets, length, faces, cell, total, stride = (
             m.cell_face_offsets, np.zeros(1, np.int32), m.cell_faces, np.zeros(1, np.int32), nk, 1,
@@ -429,14 +433,14 @@ def _matrix(
         )
         total, stride = layout["total"], layout["stride"]
         side = np.zeros(total)
-        side[layout["position"]] = m.incidence_side
+        side[layout["position"]] = csr_side
     soa = lambda a: np.ascontiguousarray(a.reshape(len(a), -1).T)
     diag, off, y = np.zeros(25 * nc), np.zeros(25 * total), np.zeros(5 * nc)
     lib.run(
         ctypes.c_int(nc), ctypes.c_int(m.n_faces), ctypes.c_int(m.n_interior),
         ctypes.c_longlong(total), ctypes.c_longlong(stride), p(m.owner), p(m.neighbour),
         p(offsets), p(length), p(faces), p(cell), p(np.ascontiguousarray(side)),
-        p(soa(face_jac)), p(soa(bnd_jac)), p(shift), p(soa(x)), p(diag), p(off), p(y),
+        p(reversed_.astype(np.uint8)), p(soa(face_jac)), p(soa(bnd_jac)), p(shift), p(soa(x)), p(diag), p(off), p(y),
     )  # fmt: skip
     off = off.reshape(25, total).T
     if layout is not None:
@@ -463,49 +467,56 @@ def test_block_matrix_assembles_and_multiplies_as_the_host_block_matrix(
     face_jac[ni:] = np.nan
     bnd_jac[:ni] = np.nan
     shift, x = rng.uniform(1.0, 2.0, nc), rng.standard_normal((nc, 5))
-    # The host assembly (physics Euler::assemble, BlockMatrix): per cell, in the order of its
-    # faces, owner +face_jac[0], neighbour -face_jac[1], boundary bnd_jac, then the shift;
-    # off-diagonal owner +face_jac[1], neighbour -face_jac[0], zero on a boundary face.
-    diag, off = np.zeros((nc, 5, 5)), np.zeros((m.n_incidences, 5, 5))
-    size = np.zeros((nc, 5, 5))  # sum of the magnitudes of the diagonal's terms
-    a = np.zeros((nc, 5, nc, 5))
-    for c in range(nc):
-        for k in range(m.cell_face_offsets[c], m.cell_face_offsets[c + 1]):
-            f = m.cell_faces[k]
-            size[c] += np.abs(bnd_jac[f] if f >= ni else face_jac[f, 0 if m.owner[f] == c else 1])
-            if f >= ni:
-                diag[c] = diag[c] + bnd_jac[f]
-            elif m.owner[f] == c:
-                diag[c] = diag[c] + face_jac[f, 0]
-                off[k] = face_jac[f, 1]
-                a[c, :, m.neighbour[f], :] += off[k]
-            else:
-                diag[c] = diag[c] - face_jac[f, 1]
-                off[k] = -face_jac[f, 0]
-                a[c, :, m.owner[f], :] += off[k]
-        diag[c] = diag[c] + shift[c] * np.eye(5)
-        size[c] += shift[c] * np.eye(5)
-        a[c, :, c, :] += diag[c]
-    a = a.reshape(5 * nc, 5 * nc)
-    expect = (a @ x.ravel()).reshape(nc, 5)
-    bound = 64 * eps(policy) * (np.abs(a) @ np.abs(x.ravel())).reshape(nc, 5)
     lib = _build_matrix(tmp_path, "cpu", policy)
-    runs = [_matrix(lib, m, None, face_jac, bnd_jac, shift, x)]
-    runs.append(_matrix(lib, m, _sliced(m, 4), face_jac, bnd_jac, shift, x))
-    if backend == "gpu":
-        lib = _build_matrix(tmp_path, "gpu", policy)
-        runs += [
-            _matrix(lib, m, layout, face_jac, bnd_jac, shift, x)
-            for layout in (None, _sliced(m, 32))
-        ]
-    for got_diag, got_off, y in runs:
-        np.testing.assert_array_equal(got_off, off)
-        if policy == "fp32":  # the diagonal sums in FP32
-            assert (np.abs(got_diag - diag) <= 64 * eps(policy) * size).all()
-        else:
-            np.testing.assert_array_equal(got_diag, diag)
-        assert (np.abs(y - expect) <= bound).all()
-    # The sliced layout visits each cell's faces in the same order: the same bits as CSR.
-    for sliced, csr in ((runs[1], runs[0]), *(((runs[3], runs[2]),) if backend == "gpu" else ())):
-        for got, ref in zip(sliced, csr, strict=True):
-            np.testing.assert_array_equal(got, ref)
+    dev = _build_matrix(tmp_path, "gpu", policy) if backend == "gpu" else None
+    # Local orientation, then random interior faces reversed (a partition's faces under the
+    # global order, runtime.md): the matrix follows each face's global left and right cells.
+    flips = np.zeros(nf, bool)
+    flips[:ni] = rng.random(ni) < 0.5
+    for reversed_ in (np.zeros(nf, bool), flips):
+        # The host assembly (physics Euler::assemble, BlockMatrix): per cell, in the order of
+        # its faces, left +face_jac[0], right -face_jac[1], boundary bnd_jac, then the shift;
+        # off-diagonal left +face_jac[1], right -face_jac[0], zero on a boundary face.
+        diag, off = np.zeros((nc, 5, 5)), np.zeros((m.n_incidences, 5, 5))
+        size = np.zeros((nc, 5, 5))  # sum of the magnitudes of the diagonal's terms
+        side = np.ones(m.n_incidences)
+        a = np.zeros((nc, 5, nc, 5))
+        for c in range(nc):
+            for k in range(m.cell_face_offsets[c], m.cell_face_offsets[c + 1]):
+                f = m.cell_faces[k]
+                if f >= ni:
+                    diag[c] = diag[c] + bnd_jac[f]
+                    size[c] += np.abs(bnd_jac[f])
+                    continue
+                other = m.neighbour[f] if m.owner[f] == c else m.owner[f]
+                if (m.owner[f] == c) != reversed_[f]:
+                    diag[c] = diag[c] + face_jac[f, 0]
+                    size[c] += np.abs(face_jac[f, 0])
+                    off[k] = face_jac[f, 1]
+                else:
+                    side[k] = -1.0
+                    diag[c] = diag[c] - face_jac[f, 1]
+                    size[c] += np.abs(face_jac[f, 1])
+                    off[k] = -face_jac[f, 0]
+                a[c, :, other, :] += off[k]
+            diag[c] = diag[c] + shift[c] * np.eye(5)
+            size[c] += shift[c] * np.eye(5)
+            a[c, :, c, :] += diag[c]
+        a = a.reshape(5 * nc, 5 * nc)
+        expect = (a @ x.ravel()).reshape(nc, 5)
+        bound = 64 * eps(policy) * (np.abs(a) @ np.abs(x.ravel())).reshape(nc, 5)
+        inputs = (reversed_, side, face_jac, bnd_jac, shift, x)
+        runs = [_matrix(lib, m, None, *inputs), _matrix(lib, m, _sliced(m, 4), *inputs)]
+        if dev is not None:
+            runs += [_matrix(dev, m, None, *inputs), _matrix(dev, m, _sliced(m, 32), *inputs)]
+        for got_diag, got_off, y in runs:
+            np.testing.assert_array_equal(got_off, off)
+            if policy == "fp32":  # the diagonal sums in FP32
+                assert (np.abs(got_diag - diag) <= 64 * eps(policy) * size).all()
+            else:
+                np.testing.assert_array_equal(got_diag, diag)
+            assert (np.abs(y - expect) <= bound).all()
+        # The sliced layout visits each cell's faces in the same order: the same bits as CSR.
+        for sliced, csr in zip(runs[1::2], runs[::2], strict=True):
+            for got, ref in zip(sliced, csr, strict=True):
+                np.testing.assert_array_equal(got, ref)

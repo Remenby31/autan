@@ -58,6 +58,7 @@ struct DeviceMesh {
   Array<offset_t> stencil_offsets;
   Array<index_t> stencil;
   Array<offset_t> stencil_twin;
+  Array<std::uint8_t> reversed;
   Array<typename P::accum> incidence_scratch;
   autan::kernels::Topology topo;
   mtl::Schedule schedule;
@@ -79,6 +80,8 @@ struct DeviceMesh {
             m.topo.stencil_offsets != nullptr ? static_cast<std::size_t>(m.topo.n_cells) + 1 : 0),
         stencil(ctx, m.topo.stencil, static_cast<std::size_t>(m.topo.n_stencil)),
         stencil_twin(ctx, m.topo.stencil_twin, static_cast<std::size_t>(m.topo.n_stencil)),
+        reversed(ctx, m.topo.face_reversed,
+                 m.topo.face_reversed != nullptr ? static_cast<std::size_t>(m.topo.n_faces) : 0),
         incidence_scratch(
             ctx, kIncidenceScratchWidth *
                      static_cast<std::size_t>(std::max(m.topo.n_incidences, m.topo.n_stencil))),
@@ -95,6 +98,7 @@ struct DeviceMesh {
     schedule.incidence_scratch = incidence_scratch.get();
     schedule.incidence_scratch_width = kIncidenceScratchWidth;
     topo.incidence_twin = twin.get();
+    topo.face_reversed = m.topo.face_reversed != nullptr ? reversed.get() : nullptr;
     if (m.topo.stencil != nullptr) {
       topo.stencil_offsets = stencil_offsets.get();
       topo.stencil = stencil.get();

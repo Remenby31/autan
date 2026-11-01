@@ -66,10 +66,11 @@ struct DeviceMesh {
   autan::kernels::Topology topo;
   gpu::Schedule schedule;
 
-  DeviceMesh(const SpikeMesh& m, int block)
+  DeviceMesh(const SpikeMesh& m, int block) : DeviceMesh(m, block, m.keys()) {}
+  DeviceMesh(const SpikeMesh& m, int block, const autan::kernels::GlobalKeys& keys)
       : mesh(m.mesh, m.packed, m.topo.stencil != nullptr ? &m.stencil : nullptr,
              {block, kScratchWidth, kIncidenceScratchWidth, nullptr, stencil_slice(),
-              incidence_slice()}),
+              m.global ? &keys : nullptr, incidence_slice()}),
         topo(mesh.topology()),
         schedule(mesh.schedule()) {}
   template <class D>

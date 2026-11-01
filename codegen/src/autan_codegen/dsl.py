@@ -123,12 +123,13 @@ class Dataset:
     @property
     def near(self) -> Binding:
         """In an incidence reduction, half [0] of a face dataset of shape (2, ...) if the cell is
-        the face's owner, half [1] if it is the neighbour; zero on boundary faces."""
+        the face's left cell, half [1] if it is the right one, in the face's global orientation
+        (Topology::face_reversed); zero on boundary faces."""
         return Binding(self, "near")
 
     @property
     def far(self) -> Binding:
-        """The half `near` does not take: [1] for the owner, [0] for the neighbour; zero on
+        """The half `near` does not take: [1] for the left cell, [0] for the right one; zero on
         boundary faces."""
         return Binding(self, "far")
 

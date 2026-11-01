@@ -237,7 +237,9 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
 def test_memory_estimate_follows_the_documented_model(
     precision: str, expected_bytes: int, write_case: Callable[[str], Path]
 ) -> None:
-    body = CRM_HL.replace('"crm-hl.cgns"', '"m.cgns"').replace('"fp32+acc64"', f'"{precision}"')
+    body = CRM_HL.replace('"crm-hl.cgns"', '"m.cgns"').replace(
+        "autan.SA())", f'autan.SA(), precision="{precision}")'
+    )
     body = body.replace(
         'case.boundary("wing.*").wall()\ncase.boundary("symmetry").symmetry()\n', ""
     ).replace('autan.forces("wing.*"', 'autan.forces("farfield"')
