@@ -506,7 +506,7 @@ class Run final : public Log {
 
  private:
   // case-schema.md#time: in fp32+acc64, a steady run counts an equation
-  // converged at floor_k = 0.25 * 2^-23 * Phi_k at the latest, Phi_k the
+  // converged at floor_k = round_off_floor * Phi_k at the latest, Phi_k the
   // physics' constant flux scale; run.json records the floors.
   void set_floor() {
     const auto& in = p_.input;
@@ -525,7 +525,7 @@ class Run final : public Log {
     if (in.time.kind != "steady" || in.precision != "fp32+acc64") return;
     Json floors = Json::object();
     for (std::size_t e = 0; e < equations.size(); ++e) {
-      floor_.push_back(0.25 * 0x1p-23 * scales[e]);
+      floor_.push_back(round_off_floor * scales[e]);
       floors[equations[e]] = floor_.back();
     }
     info_["convergence"] = Json{{"floor", floors}};

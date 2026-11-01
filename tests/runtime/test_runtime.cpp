@@ -925,7 +925,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
 
 TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
   // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
-  // 0.25 2^-23 1e4 (e + 1) = 2.98e-4 (e + 1), reached at k = 13 for every
+  // 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1), reached at k = 12 for every
   // equation, before the 8-order drop at k = 28 (case-schema.md#time).
   const std::string precision = GENERATE("fp32+acc64", "fp64");
   CAPTURE(precision);
@@ -940,13 +940,13 @@ TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[ru
     CHECK(info["convergence"].is_null());
     return;
   }
-  CHECK(info["iterations"] == 13);
+  CHECK(info["iterations"] == 12);
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
   REQUIRE(info["convergence"]["floor"].size() == equations.size());
   for (std::size_t e = 0; e < equations.size(); ++e) {
     CHECK(info["convergence"]["floor"][equations[e]] ==
-          std::ldexp(0.25, -23) * 1e4 * static_cast<double>(e + 1));
+          std::ldexp(0.5, -23) * 1e4 * static_cast<double>(e + 1));
   }
 
   // A physics without scales has no floor; one with the wrong count fails.

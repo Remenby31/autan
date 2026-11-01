@@ -206,7 +206,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto& forces = lines.back()["monitors"]["forces"];
   for (const char* k : {"fx", "fy", "fz"}) CHECK(std::abs(forces[k].get<double>()) <= 64 * eps * p);
   if (!steady) CHECK(info["time"].get<double>() > 0.0);
-  // case-schema.md#time: a steady fp32+acc64 run converges at 0.25 * 2^-23 * Phi_k at the
+  // case-schema.md#time: a steady fp32+acc64 run converges at 0.5 * 2^-23 * Phi_k at the
   // latest, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the cell surfaces.
   if (!steady || std::string(precision) == "fp64") {
     CHECK(info["convergence"].is_null());
@@ -228,7 +228,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const double c = std::sqrt(gamma * p / rho);
   const double q = speed + c;
   const double h = c * c / (gamma - 1.0) + 0.5 * speed * speed;
-  const double unit = 0.25 * 0x1p-23 * area;
+  const double unit = 0.5 * 0x1p-23 * area;
   const Json expected = {{"density", unit * rho * q},
                          {"momentum-x", unit * rho * q * q},
                          {"momentum-y", unit * rho * q * q},
