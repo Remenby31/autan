@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(AUTAN_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(AUTAN_BUILD_FUZZERS "Build the libFuzzer harnesses of the mesh readers (clang)" OFF)
 option(AUTAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(AUTAN_ENABLE_CGNS "Read CGNS meshes and write solution.cgns (needs the CGNS library)" ON)
 option(AUTAN_ENABLE_METIS "Partition with METIS" OFF)
@@ -56,4 +57,9 @@ if(AUTAN_BUILD_TESTS)
   add_subdirectory(tests/core)
   add_subdirectory(tests/io)
   add_subdirectory(tests/partition)
+endif()
+
+if(AUTAN_BUILD_FUZZERS)
+  # The whole build is instrumented so that the readers are too.
+  add_subdirectory(tests/fuzz)
 endif()
