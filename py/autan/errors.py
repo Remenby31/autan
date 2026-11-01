@@ -639,6 +639,12 @@ _CODES = [
         "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
     ),
     Code(
+        "E1013",
+        "Policy not available on the backend",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+    ),
+    Code(
         "E1100",
         "Generated loop failed",
         "A generated loop or the spike driver fails without a more specific code.",
@@ -679,6 +685,18 @@ _CODES = [
         "Incidence twins missing",
         "The deterministic adjoint of a cell reduction runs on a topology without incidence twins.",
         "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
+    ),
+    Code(
+        "E1107",
+        "Metal runtime error",
+        "A Metal call, library compilation or command buffer fails.",
+        "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+    ),
+    Code(
+        "E1108",
+        "Strategy not available",
+        "A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.",
+        "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
         "W0801",
