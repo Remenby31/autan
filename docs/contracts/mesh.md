@@ -51,7 +51,7 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 |---|---|---|
 | `name` | Name in the source (Fluent zone name, Gmsh physical name, OpenFOAM patch). | Same. |
 | `bc_type` / `type` | Type exactly as written in the source; empty if the format has none. | Same. |
-| `kind` | `BcKind`: `unspecified`, `wall`, `thermal_wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
+| `kind` | `BcKind`: `unspecified`, `wall`, `thermal_wall`, `slip`, `symmetry`, `far_field`, `inlet`, `outlet`, `periodic`, normalised with the table of [mesh-info.md](mesh-info.md#normalized-boundary-types). | `CellKind`: `unspecified`, `fluid`, `solid`. |
 | `boundary` | Role: boundary (true) or interior (false) faces. | — |
 | `provenance.source_id` | Identifier in the source file, or −1 for a zone the reader synthesised. | Same. |
 | `provenance.detail` | Human-readable origin. | Same. |
@@ -59,6 +59,15 @@ Every face belongs to exactly one face zone and every cell to exactly one cell z
 Synthesised zones: `interior` for interior faces with no zone in the source, `unassigned` for boundary faces with no zone in the source (so `autan plan` reports the missing condition), `fluid` (kind `unspecified`) for cells with no zone in the source. A source zone with one of these names collides and is rejected with E0110.
 
 `Mesh::source()` records the format (`gmsh`, `fluent`, `polymesh`, `cgns`, or `memory` for meshes built in code) and the path as given.
+
+## Periodic pairs
+
+`Mesh::periodic_pairs()` lists the periodic pairs: two boundary zones of kind `periodic` whose faces coincide under a translation, `x_b = x_a + translation` for every node of zone a's faces (`MeshInput::periodic`, `CellwiseMesh::periodic`). Each pair stays two boundary zones in the mesh, so every invariant above holds unchanged; `Mesh::periodic_partners(p)` gives, for each face of zone a in order, its partner face in zone b. `assemble` checks the declaration (E0118: zones out of range, not boundary zones of kind `periodic`, a zone paired with itself or in two pairs, a periodic zone in no pair, a translation that is zero or not finite) and matches the faces (E0119):
+
+- each node of zone a, translated, coincides with exactly one node of zone b: closer than 1e-4 of the shortest edge of zone a's faces at that node, far below any spacing and far above single-precision coordinates;
+- each face of zone a, so mapped, has the node set of exactly one face of zone b, and the two zones have as many faces. Partners then point in opposite directions, both out of the domain.
+
+`renumber_cells` keeps the pairs. A partition carries none: `extract_partition` rejects a mesh with periodic pairs (E0140) until periodic faces become interior faces to image ghost cells there. Rotations are reserved.
 
 ## Geometry
 
@@ -128,6 +137,8 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0115 | `mesh_face_labelled_twice` | A face carries two labels. |
 | E0116 | `mesh_face_without_owned_cell` | A face touches only ghost cells. |
 | E0117 | `mesh_duplicate_global_id` | Two cells share a global id, or one is negative. |
+| E0118 | `mesh_periodic_invalid` | A periodic pair is declared wrongly ([Periodic pairs](#periodic-pairs)). |
+| E0119 | `mesh_periodic_unmatched` | The faces of a periodic pair do not match one to one under its translation. |
 | E0120 | `geometry_degenerate_face` | A face has zero or non-finite area. |
 | E0121 | `geometry_non_positive_volume` | An owned cell has zero, negative or non-finite volume. |
 | E0130 | `io_cannot_open` | The file or directory cannot be opened or read. |

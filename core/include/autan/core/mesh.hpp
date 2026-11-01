@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -28,6 +29,7 @@ enum class BcKind : std::uint8_t {
   far_field,
   inlet,
   outlet,
+  periodic,  ///< one side of a periodic pair (Mesh::periodic_pairs()); takes no condition
 };
 
 enum class CellKind : std::uint8_t { unspecified, fluid, solid };
@@ -68,6 +70,14 @@ struct MeshSource {
 /// cells. The last `n_ghost_cells` cells are halo copies of cells owned by
 /// another partition; `cell_global_id` is empty (identity) or gives the
 /// global index of every cell.
+/// Two boundary zones of kind `periodic` whose faces coincide under a
+/// translation: x_b = x_a + translation for every node of zone a's faces.
+struct PeriodicPair {
+  index_t zone_a = 0;
+  index_t zone_b = 0;
+  std::array<double, 3> translation{};
+};
+
 struct MeshInput {
   std::vector<double> x, y, z;
   std::vector<offset_t> face_node_offsets;  ///< size n_faces + 1, starts at 0
@@ -80,6 +90,7 @@ struct MeshInput {
   index_t n_ghost_cells = 0;
   std::vector<FaceZone> face_zones;
   std::vector<CellZone> cell_zones;
+  std::vector<PeriodicPair> periodic;
   MeshSource source;
 };
 
@@ -156,6 +167,14 @@ class Mesh {
   [[nodiscard]] std::span<const FaceZone> face_zones() const noexcept { return face_zones_; }
   [[nodiscard]] std::span<const CellZone> cell_zones() const noexcept { return cell_zones_; }
   [[nodiscard]] const MeshSource& source() const noexcept { return source_; }
+  [[nodiscard]] std::span<const PeriodicPair> periodic_pairs() const noexcept {
+    return periodic_pairs_;
+  }
+  /// Faces of pair `pair`'s zone b matched to the faces of its zone a, in
+  /// the order of zone a's faces.
+  [[nodiscard]] std::span<const index_t> periodic_partners(std::size_t pair) const noexcept {
+    return periodic_partners_[pair];
+  }
 
   [[nodiscard]] MeshView view() const noexcept;
 
@@ -176,8 +195,17 @@ class Mesh {
   std::vector<index_t> cell_faces_;
   std::vector<FaceZone> face_zones_;
   std::vector<CellZone> cell_zones_;
+  std::vector<PeriodicPair> periodic_pairs_;
+  std::vector<std::vector<index_t>> periodic_partners_;
   MeshSource source_;
 };
+
+/// Matches the faces of each periodic pair of `mesh` (zone a's faces onto
+/// zone b's) and returns, per pair, the face of zone b for each face of zone
+/// a. Throws E0118 for a malformed declaration and E0119 for faces that do
+/// not match one to one. Called by assemble().
+std::vector<std::vector<index_t>> match_periodic_faces(const Mesh& mesh,
+                                                       std::span<const PeriodicPair> pairs);
 
 /// Validates `input` and returns it in canonical order: owner < neighbour on
 /// interior faces, interior faces first sorted by (owner, neighbour), then

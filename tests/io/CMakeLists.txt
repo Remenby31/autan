@@ -1,4 +1,10 @@
-add_executable(autan_io_tests test_readers.cpp test_mesh_info.cpp)
+add_executable(
+  autan_io_tests
+  test_readers.cpp
+  test_mesh_info.cpp
+  ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
+)
+target_include_directories(autan_io_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
 target_link_libraries(
   autan_io_tests
   PRIVATE autan::io nlohmann_json::nlohmann_json Catch2::Catch2WithMain autan_compile_options

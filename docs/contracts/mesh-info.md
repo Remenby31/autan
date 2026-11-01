@@ -20,6 +20,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   ],
   "cell_zones": [{"name": "fluid", "type": null, "native_type": null, "cells": 48200000}],
   "interfaces": [],
+  "periodic": [],
   "quality": {"max_non_orthogonality_deg": 62.0, "max_faces_per_cell": 214}
 }
 ```
@@ -44,6 +45,10 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `interfaces[]` | list | One entry per pair of cell zones that share at least one face. |
 | `interfaces[].zones` | two distinct cell-zone names, sorted | The pair. Each pair appears once. |
 | `interfaces[].faces` | integer ≥ 1 | Shared faces. |
+| `periodic[]` | list | One entry per periodic pair of boundary zones; each zone of type `periodic` is in exactly one pair, and no other zone is. |
+| `periodic[].zones` | two distinct boundary-zone names | The pair `[a, b]`: the transform maps the faces of `a` onto those of `b`, face for face. |
+| `periodic[].transform` | `{"kind": "translation", "vector": [x, y, z]}` | `x_b = x_a + vector`, in mesh units. Other kinds (rotation) are reserved. |
+| `periodic[].faces` | integer ≥ 1 | Faces of each zone of the pair. |
 | `quality.max_non_orthogonality_deg` | number in [0, 180] | Max over interior faces of the angle between the face normal and the vector joining the two cell centroids; over boundary faces, between the normal and the vector from the cell centroid to the face centroid. |
 | `quality.max_faces_per_cell` | integer ≥ 4 | Largest face count of any cell. |
 
@@ -60,7 +65,10 @@ Unknown fields are rejected. Readers fill every field; there are no optional fie
 | `farfield` | `pressure-far-field` | `BCFarfield` | — | — |
 | `inlet` | `velocity-inlet`, `pressure-inlet`, `mass-flow-inlet` | `BCInflow`, `BCInflowSubsonic`, `BCInflowSupersonic`, `BCTunnelInflow` | — | — |
 | `outlet` | `pressure-outlet`, `outflow` | `BCOutflow`, `BCOutflowSubsonic`, `BCOutflowSupersonic`, `BCTunnelOutflow` | — | — |
+| `periodic` | — | — | — | — |
 | `null` | every other type | every other type, `FamilySpecified` resolved to the family's type first | every other type (`patch`, `empty`, `cyclic`, …) | every physical group |
+
+`periodic` marks the two zones of a periodic pair (`periodic[]`), whose faces the core matches ([mesh.md](mesh.md#periodic-pairs)); a periodic zone takes no condition.
 
 `wall` carries no thermal condition: the case resolves it to an adiabatic wall. `thermal-wall` declares one whose value the case must give, so it is never resolved silently.
 

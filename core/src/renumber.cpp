@@ -186,6 +186,7 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old) {
   in.n_ghost_cells = mesh.n_cells() - mesh.n_owned_cells();
   in.face_zones.assign(mesh.face_zones().begin(), mesh.face_zones().end());
   in.cell_zones.assign(mesh.cell_zones().begin(), mesh.cell_zones().end());
+  in.periodic.assign(mesh.periodic_pairs().begin(), mesh.periodic_pairs().end());
   in.source = mesh.source();
   return assemble(std::move(in));
 }
