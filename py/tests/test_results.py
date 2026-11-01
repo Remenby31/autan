@@ -244,7 +244,7 @@ def test_unsteady_run_records_time_and_average(
     np.testing.assert_array_equal(result.field("Density", mean=True), result.field("Density"))
 
 
-def test_deterministic_runs_produce_identical_data(
+def test_runs_of_one_identity_produce_identical_data(
     tmp_path: Path, crm_mesh: autan.MeshInfo
 ) -> None:
     case = autan.load(EXAMPLES / "crm_hl.py")

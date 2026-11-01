@@ -355,7 +355,7 @@ class SolverInput(_Strict):
     case: CaseRef
     mesh: MeshRef
     precision: Literal["fp32+acc64", "fp64"]
-    deterministic: bool
+    reproducibility: Literal["none", "run", "ranks"]
     devices: Devices
     physics: PhysicsInput
     freestream: FreestreamInput
@@ -675,7 +675,6 @@ def build(
     mesh_info: MeshInfo,
     *,
     devices: Devices,
-    deterministic: bool,
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
@@ -757,7 +756,7 @@ def build(
         case=CaseRef(name=spec.name, sha256=spec.hash(), toml=case.to_toml()),
         mesh=MeshRef(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
         precision=spec.physics.precision,
-        deterministic=deterministic,
+        reproducibility=spec.physics.reproducibility,
         devices=devices,
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,
