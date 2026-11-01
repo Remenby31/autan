@@ -20,10 +20,11 @@ from typing import Any
 
 import autan
 import h5py
+import jsonschema
 import numpy as np
 import pytest
 from autan import cgns
-from autan.cli import main
+from autan.cli import json_schema, main
 
 from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
 
@@ -704,9 +705,13 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
 ) -> None:
     names = autan.results.residual_names(crm_run.case)
-    floors = {"floor": dict.fromkeys(names, 1e-6)}
+    floors = {"floor": dict.fromkeys(names, 1e-6) | {names[0]: 0.0}}  # a zero scale: no floor
     _set_convergence(crm_run.path, floors)
     assert autan.Results.open(crm_run.path).run.convergence is not None
+    run_json = json.loads((crm_run.path / "run.json").read_text())
+    del run_json["convergence"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("results")).validate(run_json)
     for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
         _set_convergence(crm_run.path, value)
         with pytest.raises(autan.CaseError) as error:

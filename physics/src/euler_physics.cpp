@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
@@ -124,8 +126,30 @@ class EulerPhysics final : public runtime::Physics {
     return out;
   }
 
-  // Replaced by the flux scales of the Euler equations (CFD - Euler).
-  [[nodiscard]] std::vector<double> residual_scales() const override { return {}; }
+  // Phi_k = f_k sqrt(sum_i A_i^2 / N), A_i the surface of cell i and f_k the face flux magnitude
+  // of the freestream with q = |v| + c: rho q, rho q^2 (each momentum) and rho H q
+  // (docs/design/euler.md, Precision).
+  [[nodiscard]] std::vector<double> residual_scales() const override {
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    std::vector<double> surface(n_, 0.0);
+    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+      surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
+      if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+        surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+      }
+    }
+    double sum = 0.0;
+    for (const double a : surface) sum += a * a;
+    const double area = std::sqrt(sum / static_cast<double>(n_));
+    const auto& fs = ctx_.input.freestream;
+    const double c = std::sqrt(gas_.gamma * fs.pressure / fs.density);
+    const double q = fs.speed + c;
+    const double h = c * c / (gas_.gamma - 1.0) + 0.5 * fs.speed * fs.speed;
+    const double mass = fs.density * q * area;
+    const double momentum = mass * q;
+    return {mass, momentum, momentum, momentum, mass * h};
+  }
 
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
     std::vector<io::Field> out;
@@ -438,11 +462,58 @@ runtime::PhysicsFactory factory() {
   };
 }
 
+bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
+  const auto& va = *a.viscosity;
+  const auto& vb = *b.viscosity;
+  return a.gas_constant == b.gas_constant && a.gamma == b.gamma && a.prandtl == b.prandtl &&
+         va.law == vb.law && va.mu_ref == vb.mu_ref && va.t_ref == vb.t_ref && va.s == vb.s &&
+         va.mu == vb.mu;
+}
+
+// What the Euler physics runs beyond its key: every cell zone of one ideal gas, and boundary
+// conditions that apply to inviscid flow.
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+  const runtime::Medium* first = nullptr;
+  for (std::size_t i = 0; i < in.cell_zones.size(); ++i) {
+    const auto& z = in.cell_zones[i];
+    const std::string path = "cell_zones[" + std::to_string(i) + "].medium";
+    if (z.medium.kind != "ideal-gas") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes ideal gases only; cell zone '" + z.zone + "' is " +
+                     z.medium.kind + " '" + z.medium.name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.kind}}.dump()};
+    }
+    if (first == nullptr) {
+      first = &z.medium;
+    } else if (!same_gas(z.medium, *first)) {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes one gas in every cell zone; cell zone '" + z.zone +
+                     "' is '" + z.medium.name + "', not '" + first->name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.name}}.dump()};
+    }
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    const auto& b = in.boundaries[i];
+    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
+        b.kind != "outlet" && b.kind != "manufactured") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics has no '" + b.kind + "' condition; boundary zone '" +
+                     b.zone + "' needs slip, symmetry, farfield, inlet or outlet",
+          .path = "boundaries[" + std::to_string(i) + "].kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>());
-  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>());
+  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
+               euler_scope);
 }
 
 }  // namespace autan::physics

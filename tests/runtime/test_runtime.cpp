@@ -359,6 +359,41 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),
                   "E0705");
   }
+  SECTION("E0705 states on a condition that takes none") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["states"] = {{"path", "/s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 oracle-state without an absolute states path") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", "s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 oracle-state with a turbulence model") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", "/s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 NUL in a states path") {
+    require_error(run(input([](Json& d) {
+                    d["physics"]["turbulence"]["model"] = "inviscid";
+                    d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+                    d["freestream"]["nu_tilde"] = nullptr;
+                    for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", std::string("/s\0.json", 8)},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
   SECTION("E0705 zone absent from the mesh") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }
@@ -368,6 +403,35 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   SECTION("E0706 no physics in the build") {
     require_error(run(input(), autan::runtime::PhysicsRegistry{}), "E0706");
   }
+}
+
+TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
+  const bool refuse = GENERATE(true, false);
+  autan::runtime::PhysicsRegistry registry;
+  registry.add(
+      {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
+      [](const autan::runtime::PhysicsContext& context) {
+        return std::make_unique<autan_test::Relaxation>(context, autan_test::RelaxationOptions{});
+      },
+      [refuse](
+          const autan::runtime::SolverInput& in) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (!refuse) return std::nullopt;
+        return autan::runtime::PhysicsRefusal{
+            .message = "refused",
+            .path = "cell_zones[1].medium",
+            .data_json = Json{{"zone", in.cell_zones[1].zone}}.dump()};
+      });
+  const Json doc = input();
+  const Outcome o = run(doc, registry);
+  if (!refuse) {
+    CHECK(o.status == ExitStatus::finished);
+    return;
+  }
+  require_error(o, "E0706");
+  const Json d = Json::parse(o.err);
+  CHECK(d["location"]["path"] == "cell_zones[1].medium");
+  CHECK(d["data"] ==
+        Json{{"zone", doc["cell_zones"][1]["zone"]}, {"path", "cell_zones[1].medium"}});
 }
 
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
@@ -861,7 +925,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
 
 TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
   // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
-  // 0.25 2^-23 1e4 (e + 1) = 2.98e-4 (e + 1), reached at k = 13 for every
+  // 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1), reached at k = 12 for every
   // equation, before the 8-order drop at k = 28 (case-schema.md#time).
   const std::string precision = GENERATE("fp32+acc64", "fp64");
   CAPTURE(precision);
@@ -876,13 +940,13 @@ TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[ru
     CHECK(info["convergence"].is_null());
     return;
   }
-  CHECK(info["iterations"] == 13);
+  CHECK(info["iterations"] == 12);
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
   REQUIRE(info["convergence"]["floor"].size() == equations.size());
   for (std::size_t e = 0; e < equations.size(); ++e) {
     CHECK(info["convergence"]["floor"][equations[e]] ==
-          std::ldexp(0.25, -23) * 1e4 * static_cast<double>(e + 1));
+          std::ldexp(0.5, -23) * 1e4 * static_cast<double>(e + 1));
   }
 
   // A physics without scales has no floor; one with the wrong count fails.

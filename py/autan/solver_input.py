@@ -21,7 +21,11 @@ from autan.meshinfo import (
     Translation,
     shared_zones,
 )
-from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
+from autan.results import (
+    WOKEN_SCHEMA,
+    Devices,
+    woken_problem,
+)
 from autan.schema import (
     DDES,
     SA,
@@ -34,6 +38,7 @@ from autan.schema import (
     Fluid,
     IdealGas,
     Medium,
+    OracleState,
     Solid,
     SolidZone,
     Steady,
@@ -71,6 +76,7 @@ BOUNDARY_VALUES: dict[str, frozenset[str]] = {
     "velocity-inlet": frozenset({"velocity"}),
     "outlet": frozenset({"static_pressure"}),
     "manufactured": frozenset(),
+    "oracle-state": frozenset({"states"}),
 }
 BOUNDARY_KEYS = (
     "temperature",
@@ -78,7 +84,10 @@ BOUNDARY_KEYS = (
     "total_temperature",
     "velocity",
     "static_pressure",
+    "states",
 )
+# The face states carry no turbulence variable (face-states.md).
+ORACLE_MODELS = ("inviscid", "laminar")
 # Turbulence parameters each (model, base) requires; every other parameter is null.
 TURBULENCE_VALUES: dict[tuple[str, str | None], frozenset[str]] = {
     ("inviscid", None): frozenset(),
@@ -196,16 +205,30 @@ class FreestreamInput(_Strict):
     omega: Positive | None
 
 
+class StatesRef(_Strict):
+    path: AbsolutePath
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 class BoundaryInput(_Strict):
     zone: str
     kind: Literal[
-        "wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet", "outlet", "manufactured"
+        "wall",
+        "slip",
+        "symmetry",
+        "farfield",
+        "inlet",
+        "velocity-inlet",
+        "outlet",
+        "manufactured",
+        "oracle-state",
     ]
     temperature: Positive | None
     total_pressure: Positive | None
     total_temperature: Positive | None
     velocity: Positive | None
     static_pressure: Positive | None
+    states: StatesRef | None
 
     @model_validator(mode="after")
     def _values_match_kind(self) -> Self:
@@ -304,15 +327,9 @@ class StartInput(_Strict):
 
     @model_validator(mode="after")
     def _woken_names(self) -> Self:
-        reference = self.residual_reference
-        if (self.woken is None) != (reference is None):
-            message = "start.woken is given exactly with start.residual_reference"
-            raise ValueError(message)
-        if self.woken is not None and (
-            self.woken != sorted(set(self.woken)) or not set(self.woken) <= set(reference or {})
-        ):
-            message = "start.woken lists sorted, distinct equations of residual_reference"
-            raise ValueError(message)
+        problem = woken_problem(self.residual_reference, self.woken)
+        if problem:
+            raise ValueError(problem)
         return self
 
 
@@ -370,6 +387,18 @@ class SolverInput(_Strict):
         if recorded != (self.verification.sha256 if self.verification else None):
             message = "verification differs from the case's verification"
             raise ValueError(message)
+        if any(b.kind == "oracle-state" for b in self.boundaries) and (
+            self.physics.kind,
+            turbulence.model,
+        ) not in {("compressible", m) for m in ORACLE_MODELS}:
+            message = "oracle-state needs compressible inviscid or laminar physics"
+            raise ValueError(message)
+        for boundary in self.boundaries:
+            rules = [r.condition for r in case.boundaries if fnmatchcase(boundary.zone, r.zones)]
+            oracle = rules[0] if len(rules) == 1 and isinstance(rules[0], OracleState) else None
+            if (boundary.states and boundary.states.sha256) != (oracle and oracle.sha256):
+                message = f"boundary {boundary.zone!r}: states differ from the case's rule"
+                raise ValueError(message)
         manufactured = {b.kind == "manufactured" for b in self.boundaries}
         if manufactured and manufactured != {self.verification is not None}:
             message = "with verification every boundary is manufactured; without, none is"
@@ -616,6 +645,11 @@ def build(
                 total_temperature=_si(condition, "total_temperature", "K"),
                 velocity=_si(condition, "velocity", "m / s"),
                 static_pressure=_si(condition, "static_pressure", "Pa"),
+                states=(
+                    StatesRef(path=str(case.resolve(condition["path"])), sha256=condition["sha256"])
+                    if condition["kind"] == "oracle-state"
+                    else None
+                ),
             )
         )
     freestream, turbulence = freestream_state(spec), turbulence_input(spec)
@@ -733,7 +767,7 @@ def json_schema() -> dict[str, Any]:
     ]
     defs["StartInput"]["oneOf"] = [
         {"properties": {"residual_reference": {"type": "null"}, "woken": {"type": "null"}}},
-        {"properties": {"residual_reference": {"type": "object"}, "woken": {"type": "array"}}},
+        {"properties": {"residual_reference": {"type": "object"}, "woken": WOKEN_SCHEMA}},
     ]
     defs["UnsteadyInput"]["oneOf"] = [
         {"properties": {"dt": {"type": "number"}, "cfl": {"type": "null"}}},
@@ -744,6 +778,23 @@ def json_schema() -> dict[str, Any]:
         return {"properties": {"boundaries": {"items": {"properties": {"kind": rule}}}}}
 
     schema["allOf"] = [
+        {
+            "if": {
+                "properties": {
+                    "physics": {
+                        "not": {
+                            "properties": {
+                                "kind": {"const": "compressible"},
+                                "turbulence": {
+                                    "properties": {"model": {"enum": list(ORACLE_MODELS)}}
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+            "then": boundary_kinds({"not": {"const": "oracle-state"}}),
+        },
         {
             "if": {"properties": {"verification": {"type": "object"}}},
             "then": boundary_kinds({"const": "manufactured"}),

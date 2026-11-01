@@ -18,6 +18,8 @@
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 
+#include "autan/core/geometry.hpp"
+#include "autan/io/read_mesh.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/run.hpp"
 
@@ -51,6 +53,7 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
 struct Outcome {
   ExitStatus status;
   fs::path run;
+  fs::path runs;  // the runs directory passed to run_case
   std::string err;
 };
 
@@ -74,7 +77,7 @@ Outcome run(const Json& doc) {
   };
   std::string printed = text(out);
   if (!printed.empty() && printed.back() == '\n') printed.pop_back();
-  return Outcome{.status = status, .run = printed, .err = text(err)};
+  return Outcome{.status = status, .run = printed, .runs = dir / "runs", .err = text(err)};
 }
 
 std::vector<Json> history(const fs::path& run) {
@@ -173,6 +176,8 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   INFO(precision << (steady ? " steady" : " unsteady"));
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
+    // fp32+acc64 starts at its convergence floor (round-off only) and stops at iteration 1.
+    d["monitors"][0]["every"] = 1;
     if (steady) {
       d["time"]["max_iterations"] = 20;
     } else {
@@ -201,6 +206,40 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto& forces = lines.back()["monitors"]["forces"];
   for (const char* k : {"fx", "fy", "fz"}) CHECK(std::abs(forces[k].get<double>()) <= 64 * eps * p);
   if (!steady) CHECK(info["time"].get<double>() > 0.0);
+  // case-schema.md#time: a steady fp32+acc64 run converges at 0.5 * 2^-23 * Phi_k at the
+  // latest, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the cell surfaces.
+  if (!steady || std::string(precision) == "fp64") {
+    CHECK(info["convergence"].is_null());
+    return;
+  }
+  CHECK(info["status"] == "converged");
+  const auto mesh = autan::io::read_mesh(mesh_path);
+  const auto g = autan::compute_geometry(mesh);
+  std::vector<double> surface(static_cast<std::size_t>(mesh.n_cells()), 0.0);
+  for (std::size_t face = 0; face < static_cast<std::size_t>(mesh.n_faces()); ++face) {
+    surface[static_cast<std::size_t>(mesh.owner()[face])] += g.face_area[face];
+    if (face < static_cast<std::size_t>(mesh.n_interior_faces()))
+      surface[static_cast<std::size_t>(mesh.neighbour()[face])] += g.face_area[face];
+  }
+  double sum = 0.0;
+  for (const double a : surface) sum += a * a;
+  const double area = std::sqrt(sum / static_cast<double>(surface.size()));
+  const double gamma = doc["cell_zones"][0]["medium"]["gamma"].get<double>();
+  const double c = std::sqrt(gamma * p / rho);
+  const double q = speed + c;
+  const double h = c * c / (gamma - 1.0) + 0.5 * speed * speed;
+  const double unit = 0.5 * 0x1p-23 * area;
+  const Json expected = {{"density", unit * rho * q},
+                         {"momentum-x", unit * rho * q * q},
+                         {"momentum-y", unit * rho * q * q},
+                         {"momentum-z", unit * rho * q * q},
+                         {"energy", unit * rho * h * q}};
+  const auto& floor = info["convergence"]["floor"];
+  REQUIRE(floor.size() == expected.size());
+  for (const auto& [name, value] : expected.items()) {
+    INFO(name);
+    CHECK(std::abs(floor[name].get<double>() - value.get<double>()) <= 1e-12 * value.get<double>());
+  }
 }
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
@@ -276,4 +315,50 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
     CHECK(field(second.run, "AverageWeight", "RestartState") ==
           field(whole.run, "AverageWeight", "RestartState"));
   }
+}
+
+TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
+  // E0706 on stderr, exit 2, no run directory; data names the zone and what it holds.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const std::string refused = GENERATE("solid", "second gas", "transport", "wall");
+  INFO(precision << " " << refused);
+  std::string path = "cell_zones[1].medium";
+  std::string field = "medium";
+  std::string value = "helium";
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    auto& z = d["cell_zones"][1];
+    if (refused == "solid") {
+      z["medium"] = {{"kind", "solid"},
+                     {"name", "steel"},
+                     {"density", 7800.0},
+                     {"specific_heat", 500.0},
+                     {"conductivity", 40.0}};
+      z["initial"] = {{"kind", "solid"}, {"temperature", 300.0}};
+      value = "solid";
+    } else if (refused == "second gas") {
+      z["medium"]["name"] = "helium";
+      z["medium"]["gas_constant"] = 2077.1;
+      z["medium"]["gamma"] = 5.0 / 3.0;
+    } else if (refused == "transport") {
+      z["medium"]["name"] = "helium";
+      z["medium"]["prandtl"] = 0.67;
+    } else {
+      d["boundaries"][2]["kind"] = "wall";
+      path = "boundaries[2].kind";
+      field = "condition";
+      value = "wall";
+    }
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(out.run.empty());
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["data"]["path"] == path);
+  CHECK(diagnostic["data"][field] == value);
+  CHECK(diagnostic["data"]["zone"] ==
+        (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][2]["zone"]));
 }

@@ -67,6 +67,10 @@ struct PhysicsContext {
   const StartState* start;  ///< null unless input.start
 };
 
+// case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
+// measured on a NACA 0012 slice, manufactured solutions and Ni's transonic bump.
+inline constexpr double round_off_floor = 0.5 * 0x1p-23;
+
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
 /// arrays (host or device), its kernels and their schedule. Constructed from
@@ -87,7 +91,7 @@ class Physics {
   /// A constant flux scale per equation of residual_names(input), in that
   /// order, finite and >= 0; empty for none. Called once, after
   /// construction: in fp32+acc64, an equation converges at a residual of
-  /// 0.25 * 2^-23 times its scale at the latest (docs/contracts/runtime.md).
+  /// round_off_floor times its scale at the latest (docs/contracts/runtime.md).
   [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
@@ -111,15 +115,31 @@ struct PhysicsKey {
 
 using PhysicsFactory = std::function<std::unique_ptr<Physics>(const PhysicsContext&)>;
 
+/// Why a physics whose key matches an input cannot run it: the runtime reports it as E0706,
+/// before any directory exists.
+struct PhysicsRefusal {
+  std::string message;
+  std::string path;              ///< document path of the offending key; also `data.path`
+  std::string data_json = "{}";  ///< machine-readable details: the text of a JSON object
+};
+
+/// What a physics supports beyond its key (media, zones, conditions): nullopt when it can run
+/// the input. A scope must not throw: it reports what it refuses as a PhysicsRefusal.
+using PhysicsScope = std::function<std::optional<PhysicsRefusal>(const SolverInput&)>;
+
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
  public:
-  void add(PhysicsKey key, PhysicsFactory factory);
-  /// The factory for `input`, or null when this build has none (E0706).
-  [[nodiscard]] const PhysicsFactory* find(const SolverInput& input) const;
+  struct Entry {
+    PhysicsFactory factory;
+    PhysicsScope scope;  ///< empty: every input the key matches
+  };
+  void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {});
+  /// The entry for `input`, or null when this build has none (E0706).
+  [[nodiscard]] const Entry* find(const SolverInput& input) const;
 
  private:
-  std::vector<std::pair<PhysicsKey, PhysicsFactory>> entries_;
+  std::vector<std::pair<PhysicsKey, Entry>> entries_;
 };
 
 }  // namespace autan::runtime
