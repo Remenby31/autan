@@ -46,6 +46,7 @@ from autan.schema import (
 from autan.solver_input import (
     SolidInitial,
     SolidMedium,
+    given_state,
     initial_state,
     medium_input,
     turbulence_input,
@@ -572,7 +573,10 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
     freestream, turbulence = closed_freestream(spec), turbulence_input(spec)
     initial = {
         z.zone: initial_state(
-            medium_input(MEDIUM.validate_python(z.medium)), freestream, turbulence
+            medium_input(MEDIUM.validate_python(z.medium)),
+            freestream,
+            turbulence,
+            given_state(MEDIUM.validate_python(z.medium)),
         )
         for z in plan.cell_zones
     }

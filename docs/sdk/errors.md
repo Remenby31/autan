@@ -524,6 +524,14 @@ Conjugate heat transfer needs an energy equation in the fluid, which incompressi
 
 Fix: Use `autan.Compressible(...)`, or remove the solid zone from the mesh.
 
+## E0507
+
+**Initial state does not match the physics** (error)
+
+A compressible fluid zone starts from an absolute pressure > 0, a temperature and a velocity; an incompressible one from a gauge pressure and a velocity, without temperature.
+
+Fix: Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.
+
 ## E0601
 
 **Monitor surfaces match no boundary zone** (error)

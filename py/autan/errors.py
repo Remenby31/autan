@@ -449,6 +449,15 @@ _CODES = [
         "Use `autan.Compressible(...)`, or remove the solid zone from the mesh.",
     ),
     Code(
+        "E0507",
+        "Initial state does not match the physics",
+        "A compressible fluid zone starts from an absolute pressure > 0, a temperature and a "
+        "velocity; an incompressible one from a gauge pressure and a velocity, without "
+        "temperature.",
+        "Give the state the physics needs: `autan.State(pressure=..., temperature=..., "
+        "velocity=(u, v, w))`.",
+    ),
+    Code(
         "E0601",
         "Monitor surfaces match no boundary zone",
         "The `surfaces` pattern of a monitor matches no boundary zone of the mesh.",
