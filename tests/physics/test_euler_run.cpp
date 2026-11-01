@@ -269,6 +269,21 @@ TEST_CASE("a mesh with periodic pairs is refused before any directory exists", "
                           {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}},
                      Json{{"zones", {"ymin", "ymax"}},
                           {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    // Periodic zones take no condition: zmin a slip wall, zmax its symmetry plane.
+    Json kept = Json::array();
+    for (const auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") {
+        Json wall = b;
+        wall["zone"] = "zmin";
+        kept.push_back(wall);
+      }
+      if (b["zone"] == "zmax") kept.push_back(b);
+    }
+    d["boundaries"] = kept;
+    d["monitors"][0]["zones"] = {"zmin"};
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
   });
   const auto out = run(doc);
   INFO(out.err);
