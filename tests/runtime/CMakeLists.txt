@@ -21,7 +21,22 @@ target_compile_definitions(
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
+if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
+  target_compile_definitions(
+    autan_runtime_tests
+    PRIVATE
+      AUTAN_MPIEXEC="${MPIEXEC_EXECUTABLE}"
+      AUTAN_MPIEXEC_NUMPROC_FLAG="${MPIEXEC_NUMPROC_FLAG}"
+  )
+endif()
 catch_discover_tests(autan_runtime_tests)
+
+add_executable(autan_exact_sum_tests test_exact_sum.cpp)
+target_link_libraries(
+  autan_exact_sum_tests
+  PRIVATE autan::runtime Catch2::Catch2WithMain autan_compile_options
+)
+catch_discover_tests(autan_exact_sum_tests)
 
 # autan-run as shipped, through its output and exit status: no physics yet.
 set_property(

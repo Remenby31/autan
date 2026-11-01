@@ -42,6 +42,7 @@ enum class ErrorCode : std::uint16_t {
   partition_empty_part = 143,
   halo_inconsistent = 144,
   halo_device_unsupported = 145,
+  mpi_unavailable = 146,
 };
 
 /// Returns the registry form of a code, for example "E0107".

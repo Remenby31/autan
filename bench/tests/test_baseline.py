@@ -39,7 +39,7 @@ def test_baseline_keeps_only_the_selected_benchmarks(write_json, tmp_path, capsy
     [
         (make_result([bench("stream.copy", QUIET), bench("stream.triad", NOISY)]), "CV_TOO_HIGH"),
         (make_result([bench("stream.copy", QUIET)], dirty=True), "DIRTY_TREE"),
-        (make_result([bench("stream.copy", QUIET)], image=None), "IMAGE_UNKNOWN"),
+        (make_result([bench("stream.copy", QUIET)], image=None), "ENVIRONMENT_UNKNOWN"),
         (make_result([bench("stream.copy", QUIET)], config=IN_CACHE), "FOOTPRINT_TOO_SMALL"),
     ],
 )
@@ -152,3 +152,13 @@ def test_baseline_pools_several_runs_into_one_median(write_json, tmp_path, capsy
         odd_path = str(write_json(f"odd{k}.json", odd))
         assert main(["baseline", paths[0], odd_path, "--out", str(tmp_path / "x.json")]) == 2
         assert "error[INCOMPATIBLE]" in capsys.readouterr().err
+
+
+def test_a_metal_baseline_records_the_os_instead_of_an_image(write_json, tmp_path, capsys):
+    out = tmp_path / "m4pro.json"
+    doc = as_metal(make_result([bench("stream.copy", QUIET)], image=None))
+    doc["provenance"]["gpu"] = {**METAL_GPU, "l2_bytes": 16 * 2**20}
+    assert main(["baseline", str(write_json("no-os.json", doc)), "--out", str(out)]) == 2
+    assert "error[ENVIRONMENT_UNKNOWN]" in capsys.readouterr().err
+    doc["provenance"]["os_version"] = "26.7.1"
+    assert main(["baseline", str(write_json("os.json", doc)), "--out", str(out)]) == 0
