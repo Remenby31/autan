@@ -28,7 +28,7 @@ template <typename T> AUTAN_MMS_HD void sources(T x, T y, T z, T* out);   // out
 
 `AUTAN_MMS_HD` is `__host__ __device__` under CUDA or HIP. Literals are written `T(p)/T(q)` and π as `std::numbers::pi_v<T>`, so one body serves `float` and `double` without promotion. Common subexpressions are shared.
 
-**JSON** (`<name>.json`, schema `autan.mms/1`): `name`, `equations`, `coordinates` (`x, y, z`), `domain`, `parameters`, `validity`, `references`, and one object per group with `subexpressions` (ordered `[name, expr]` pairs, each may use earlier ones) and `outputs` (`{name: expr}`). Expressions use C99 syntax restricted to `+ - * /`, unary minus, `pow`, `sqrt`, `sin`, `cos`, `exp`, `log`, decimal literals and the constant `pi`. `autan_vv.mms.parse_json_expressions` is a reference reader: it builds expressions from that grammar only and rejects anything else with `V0202`, executing nothing.
+**JSON** (`<name>.json`, schema `autan.mms/1`): `name`, `equations`, `model` (`physics`: `compressible` or `scalar-advection-diffusion`; `turbulence`: `inviscid`, `laminar`, `sa` — the case schema's SA-neg — `sa-noft2`, or null), `coordinates` (`x, y, z`), `domain`, `parameters`, `validity`, `references`, and one object per group with `subexpressions` (ordered `[name, expr]` pairs, each may use earlier ones) and `outputs` (`{name: expr}`). Expressions use C99 syntax restricted to `+ - * /`, unary minus, `pow`, `sqrt`, `sin`, `cos`, `exp`, `log`, decimal literals and the constant `pi`. `autan_vv.mms.parse_json_expressions` is a reference reader: it builds expressions from that grammar only and rejects anything else with `V0202`, executing nothing.
 
 ## Verification of the generator
 
