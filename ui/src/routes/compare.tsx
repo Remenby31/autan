@@ -108,7 +108,11 @@ function Compare() {
       <TopBar crumbs={[{ label: "Runs", to: "/" }, { label: "Compare" }]} />
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
-          <h1 ref={heading} tabIndex={-1} className="m-0 font-semibold text-xl outline-none">
+          <h1
+            ref={heading}
+            tabIndex={-1}
+            className="m-0 font-semibold text-xl outline-none focus-visible:shadow-none"
+          >
             Compare
           </h1>
           <div className="flex flex-wrap items-center gap-2" data-testid="compared">

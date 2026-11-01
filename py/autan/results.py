@@ -184,6 +184,7 @@ class RunWriter:
         mesh_info: MeshInfo,
         manufactured: bytes | None = None,
         source: str = "solver",
+        states: dict[str, bytes] | None = None,
     ) -> None:
         self.source = source
         runs.mkdir(parents=True, exist_ok=True)
@@ -195,6 +196,10 @@ class RunWriter:
         (staging / "mesh-info.json").write_text(json.dumps(mesh_info.document(), indent=2))
         if manufactured is not None:
             (staging / "manufactured.json").write_bytes(manufactured)
+        if states:
+            (staging / "states").mkdir()
+            for digest, content in states.items():
+                (staging / "states" / f"{digest}.json").write_bytes(content)
         # The log is written before the metadata that refers to it (results.md#log).
         self.log("info", f"run {info.run_id} started", source=self.source)
         for found in info.diagnostics:
@@ -392,6 +397,14 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
+        for rule in case.boundaries:
+            if rule.condition.kind == "oracle-state":
+                archived = path / "states" / f"{rule.condition.sha256}.json"
+                if (
+                    not archived.is_file()
+                    or hashlib.sha256(archived.read_bytes()).hexdigest() != rule.condition.sha256
+                ):
+                    broken(f"{archived.name} is missing or differs from the case", "states")
         if case.verification is not None:
             archived = path / "manufactured.json"
             if (

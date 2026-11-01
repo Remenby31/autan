@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
@@ -568,11 +570,58 @@ runtime::PhysicsFactory factory() {
   };
 }
 
+bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
+  const auto& va = *a.viscosity;
+  const auto& vb = *b.viscosity;
+  return a.gas_constant == b.gas_constant && a.gamma == b.gamma && a.prandtl == b.prandtl &&
+         va.law == vb.law && va.mu_ref == vb.mu_ref && va.t_ref == vb.t_ref && va.s == vb.s &&
+         va.mu == vb.mu;
+}
+
+// What the Euler physics runs beyond its key: every cell zone of one ideal gas, and boundary
+// conditions that apply to inviscid flow.
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+  const runtime::Medium* first = nullptr;
+  for (std::size_t i = 0; i < in.cell_zones.size(); ++i) {
+    const auto& z = in.cell_zones[i];
+    const std::string path = "cell_zones[" + std::to_string(i) + "].medium";
+    if (z.medium.kind != "ideal-gas") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes ideal gases only; cell zone '" + z.zone + "' is " +
+                     z.medium.kind + " '" + z.medium.name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.kind}}.dump()};
+    }
+    if (first == nullptr) {
+      first = &z.medium;
+    } else if (!same_gas(z.medium, *first)) {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics takes one gas in every cell zone; cell zone '" + z.zone +
+                     "' is '" + z.medium.name + "', not '" + first->name + "'",
+          .path = path,
+          .data_json = nlohmann::json{{"zone", z.zone}, {"medium", z.medium.name}}.dump()};
+    }
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    const auto& b = in.boundaries[i];
+    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
+        b.kind != "outlet" && b.kind != "manufactured") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics has no '" + b.kind + "' condition; boundary zone '" +
+                     b.zone + "' needs slip, symmetry, farfield, inlet or outlet",
+          .path = "boundaries[" + std::to_string(i) + "].kind",
+          .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>());
-  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>());
+  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope);
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
+               euler_scope);
 }
 
 }  // namespace autan::physics
