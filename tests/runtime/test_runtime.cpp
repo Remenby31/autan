@@ -8,6 +8,7 @@
 #include <functional>
 #include <random>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -167,13 +168,30 @@ std::string file_sha256(const fs::path& file) {
 
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
-// steady `continue`, the residuals at iteration 1 of the chain's first run.
+// steady `continue`, the residuals at iteration 1 of the chain's first run
+// and the equations exempt from them that went above their floor in the
+// chain (case-schema.md#time).
 Json start_from(const fs::path& previous, const std::string& mode) {
   const Json info = Json::parse(read(previous / "run.json"));
   Json reference = nullptr;
+  Json woken = nullptr;
   if (mode == "continue" && info["time"].is_null()) {
     const bool chained = !info["start"].is_null() && info["start"]["mode"] == "continue";
     reference = chained ? info["start"]["residual_reference"] : history(previous)[0]["residuals"];
+    double largest = 0.0;
+    for (const auto& [name, f] : reference.items()) largest = std::max(largest, f.get<double>());
+    const double floor = 1e-12 * largest;
+    std::set<std::string> names;
+    if (chained) {
+      for (const auto& n : info["start"]["woken"]) names.insert(n.get<std::string>());
+    }
+    for (const auto& line : history(previous)) {
+      for (const auto& [name, f] : reference.items()) {
+        if (f.get<double>() < floor && line["residuals"][name].get<double>() > floor)
+          names.insert(name);
+      }
+    }
+    woken = Json(std::vector<std::string>(names.begin(), names.end()));
   }
   return Json{{"run", previous.string()},
               {"run_id", info["run_id"]},
@@ -182,7 +200,8 @@ Json start_from(const fs::path& previous, const std::string& mode) {
               {"iterations", info["iterations"]},
               {"time", info["time"]},
               {"solution_sha256", file_sha256(previous / "solution.cgns")},
-              {"residual_reference", reference}};
+              {"residual_reference", reference},
+              {"woken", woken}};
 }
 
 std::vector<std::string> lines_of(const fs::path& file) {
@@ -690,6 +709,7 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) {
                     d["start"]["mode"] = "warm";
                     d["start"]["residual_reference"] = nullptr;
+                    d["start"]["woken"] = nullptr;
                     d["physics"]["turbulence"]["model"] = "laminar";
                     d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
                     for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
@@ -747,6 +767,10 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["time"]["max_iterations"] = 4; }), "E0705");
     require_error(from([](Json& d) { d["start"]["run"] = "relative/run"; }), "E0705");
     require_error(from([](Json& d) { d["start"]["residual_reference"].erase("energy"); }), "E0705");
+    require_error(from([](Json& d) { d["start"]["woken"] = nullptr; }), "E0705");
+    require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"vorticity"}); }), "E0705");
+    require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"energy", "density"}); }),
+                  "E0705");
   }
 }
 
@@ -785,6 +809,9 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   const Outcome w = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
   REQUIRE(w.status == ExitStatus::finished);
   CHECK(Json::parse(read(w.run / "run.json"))["status"] == "completed");
+  const Json info_w = Json::parse(read(w.run / "run.json"));
+  REQUIRE(info_w["diagnostics"].size() == 1);
+  CHECK(info_w["diagnostics"][0]["code"] == "W0710");
   std::vector<Json> warnings;
   std::ifstream in(w.run / "log.jsonl");
   for (std::string line; std::getline(in, line);) {
@@ -798,4 +825,36 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(warnings[0]["data"]["iteration"] == 10);
   CHECK(warnings[0]["data"]["residual"] == 1e-3);
   CHECK(warnings[0]["data"]["floor"] == 1e-12 * 6.0);
+}
+
+TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
+  // momentum-x leaves its floor at iterations 10-14, then falls back: it is
+  // no longer exempt, so the run cannot converge (budget 40). A run
+  // continued from iteration 20 must do the same, through start.woken.
+  autan_test::RelaxationOptions options;
+  options.silent_equation = 1;
+  options.wake_at = 10;
+  options.sleep_at = 15;
+  const auto doc = [](std::int64_t n) {
+    return input([n](Json& d) {
+      d["deterministic"] = true;
+      d["time"]["max_iterations"] = n;
+    });
+  };
+  const Outcome whole = run(doc(40), options);
+  const Outcome a = run(doc(20), options);
+  Json next = doc(40);
+  next["start"] = start_from(a.run, "continue");
+  CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
+  const Outcome b = run(next, options);
+  REQUIRE(b.status == ExitStatus::finished);
+  const Json info = Json::parse(read(b.run / "run.json"));
+  CHECK(info["status"] == "completed");
+  CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
+  // The equation woke in the first run: no new W0710 in the continuation.
+  CHECK(info["diagnostics"].empty());
+  auto chain = lines_of(a.run / "history.jsonl");
+  const auto rest = lines_of(b.run / "history.jsonl");
+  chain.insert(chain.end(), rest.begin(), rest.end());
+  CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }

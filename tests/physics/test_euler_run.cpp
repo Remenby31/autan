@@ -1,5 +1,6 @@
 // The Euler physics through autan-run's public entry point, run_case, on tests/data/mesh/hybrid:
 // solver inputs written by `autan prepare` (tests/data/runtime), edited per test.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -89,11 +90,33 @@ Json continue_from(const fs::path& previous) {
   std::string hash;
   picosha2::hash256_hex_string(read(previous / "solution.cgns"), hash);
   Json reference = nullptr;
-  if (info["time"].is_null()) reference = history(previous)[0]["residuals"];
-  return Json{{"run", previous.string()},         {"run_id", info["run_id"]},
-              {"identity", info["identity"]},     {"mode", "continue"},
-              {"iterations", info["iterations"]}, {"time", info["time"]},
-              {"solution_sha256", hash},          {"residual_reference", reference}};
+  Json woken = nullptr;
+  if (info["time"].is_null()) {
+    // case-schema.md#time: the equations below 1e-12 of the largest at
+    // iteration 1 that went above that floor.
+    const auto lines = history(previous);
+    reference = lines[0]["residuals"];
+    double largest = 0.0;
+    for (const auto& [name, f] : reference.items()) largest = std::max(largest, f.get<double>());
+    std::vector<std::string> names;
+    for (const auto& [name, f] : reference.items()) {
+      const bool left = std::ranges::any_of(lines, [&](const Json& line) {
+        return line["residuals"][name].get<double>() > 1e-12 * largest;
+      });
+      if (f.get<double>() < 1e-12 * largest && left) names.push_back(name);
+    }
+    std::ranges::sort(names);
+    woken = Json(names);
+  }
+  return Json{{"run", previous.string()},
+              {"run_id", info["run_id"]},
+              {"identity", info["identity"]},
+              {"mode", "continue"},
+              {"iterations", info["iterations"]},
+              {"time", info["time"]},
+              {"solution_sha256", hash},
+              {"residual_reference", reference},
+              {"woken", woken}};
 }
 
 // Field `name` of the cell-centred FlowSolution_t `solution` of a run's solution.cgns.

@@ -430,7 +430,8 @@ class Run final : public Log {
                    {"iterations", s.iterations},
                    {"time", s.time ? Json(*s.time) : Json(nullptr)},
                    {"solution_sha256", s.solution_sha256},
-                   {"residual_reference", reference}};
+                   {"residual_reference", reference},
+                   {"woken", s.woken ? Json(*s.woken) : Json(nullptr)}};
     }
     const std::string identity = sha256_hex(parts);
     info_ = Json{
@@ -509,7 +510,9 @@ class Run final : public Log {
   void add_diagnostic(const Diagnostic& d) {
     const Json entry = Json::parse(d.json());
     info_["diagnostics"].push_back(entry);
-    write("error", "solver", d.message, d.code, entry["data"].dump());
+    // The level follows the code's letter (results.md, Log).
+    write(d.code.starts_with('W') ? "warning" : "error", "solver", d.message, d.code,
+          entry["data"].dump());
   }
 
  public:
@@ -622,7 +625,14 @@ class Run final : public Log {
         // floor; once above, it must drop like the others (W0710, once).
         if (exempt.empty()) {
           floor = 1e-12 * *std::ranges::max_element(first);
-          for (const double f : first) exempt.push_back(f < floor ? 1 : 0);
+          // Equations that left their floor earlier in a continued chain
+          // stay subject to the drop (solver-input.md, `start.woken`).
+          const std::vector<std::string> woken =
+              continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{};
+          for (std::size_t e = 0; e < equations.size(); ++e) {
+            exempt.push_back(
+                first[e] < floor && std::ranges::find(woken, equations[e]) == woken.end() ? 1 : 0);
+          }
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
@@ -630,15 +640,17 @@ class Run final : public Log {
           const double r = report.residuals[e];
           if (exempt[e] != 0 && r > floor) {
             exempt[e] = 0;
-            write("warning", "solver",
-                  "equation " + equations[e] + " left its floor at iteration " +
-                      std::to_string(it) + ": it now has to converge like the others",
-                  "W0710",
-                  Json{{"equation", equations[e]},
-                       {"iteration", it},
-                       {"residual", r},
-                       {"floor", floor}}
-                      .dump());
+            add_diagnostic(Diagnostic{
+                .code = "W0710",
+                .message = "equation " + equations[e] + " left its floor at iteration " +
+                           std::to_string(it) + ": it now has to converge like the others",
+                .path = "",
+                .data_json = Json{
+                    {"equation", equations[e]},
+                    {"iteration", it},
+                    {"residual", r},
+                    {"floor",
+                     floor}}.dump()});
           }
           converged = converged && (exempt[e] != 0 || r <= first[e] * drop);
         }
