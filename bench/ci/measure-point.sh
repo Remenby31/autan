@@ -15,9 +15,11 @@ bench=(uv run --project bench --locked autan-bench)
 
 git worktree add --force --detach "$tree" "$sha" >/dev/null || exit 2
 trap 'git worktree remove --force "$tree" >/dev/null 2>&1' EXIT
-cmake -S "$tree" -B "$tree/build" -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF \
-  -DCMAKE_CUDA_ARCHITECTURES=121 >"$out/build.log" 2>&1 &&
-  cmake --build "$tree/build" --target autan_loop_bench >>"$out/build.log" 2>&1 || exit 2
+# Under the GPU lock: on the bench Spark no measurement runs beside a compilation.
+bench/lock/autan-gpu-lock -m "gpu-bench: build a bisection probe" -t 600 -- bash -c "
+  cmake -S '$tree' -B '$tree/build' -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF \
+    -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build '$tree/build' --target autan_loop_bench
+" >"$out/build.log" 2>&1 || exit 2
 
 stream=(stream --binary build/bench/stream --out "$out/stream.json")
 healthy=0

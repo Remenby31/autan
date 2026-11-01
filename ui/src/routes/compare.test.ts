@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
+import { flatten } from "../api/polars";
 import { degrees } from "../api/units";
-import { flatten } from "./compare";
 import { study } from "./index";
 
 test("angles are read in degrees from the case's units", () => {

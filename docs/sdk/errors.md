@@ -796,6 +796,14 @@ The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA
 
 Fix: Run on a host with a GPU visible to the process (`docker --gpus`), or use `devices.kind = cpu`.
 
+## E0808
+
+**No MPI launcher** (error)
+
+A run on several devices starts one rank per device through an MPI launcher, found through `$AUTAN_MPIEXEC`, or `mpiexec` then `mpirun` on the PATH.
+
+Fix: Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set `$AUTAN_MPIEXEC`, or run on one device.
+
 ## E1001
 
 **Unsupported kernel construct** (error)
