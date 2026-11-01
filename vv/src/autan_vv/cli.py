@@ -141,8 +141,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_mms)
 
-    p = sub.add_parser("meshes", help="generate a seeded mesh family of the unit cube")
-    p.add_argument("kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated"))
+    p = sub.add_parser(
+        "meshes",
+        help="generate a seeded mesh family of the unit cube, or of the Ringleb domain with its"
+        " face states",
+    )
+    p.add_argument(
+        "kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated", "ringleb")
+    )
     p.add_argument("--levels", type=_levels, default=(8, 16, 32, 64))
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
