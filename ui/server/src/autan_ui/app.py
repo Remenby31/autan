@@ -336,11 +336,13 @@ def create_app(
                 if not isinstance(spec, dict):
                     return
                 sha256 = spec.get("sha256")
-                valid = isinstance(sha256, str) and SHA256.fullmatch(sha256) is not None
+                if not isinstance(sha256, str) or SHA256.fullmatch(sha256) is None:
+                    spec["path"] = "states.json"  # Never the source: plan reports the case.
+                    return
                 # Repointed first, whatever follows: the source the case names is never read.
-                spec["path"] = f"{sha256}.json" if valid else "states.json"
-                if not valid or sha256 in states:
-                    return  # An invalid case, or staged already: plan reports the former.
+                spec["path"] = f"{sha256}.json"
+                if sha256 in states:
+                    return
                 try:
                     states[sha256] = folder.read(f"states/{sha256}.json")
                 except OSError:
