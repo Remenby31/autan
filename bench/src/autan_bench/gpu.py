@@ -118,12 +118,31 @@ def _sample_nvidia(gpu_index: int) -> GpuSample:
     )
 
 
+def ci_waiting(lock: Path) -> bool:
+    """Whether a CI job announces, by holding ``ci.lock`` next to the GPU lock (shared), that it
+    waits for or holds the GPU. A CI job itself never yields (docs/infra/bench.md)."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return False
+    try:
+        fd = os.open(lock.parent / "ci.lock", os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(fd) as ci:
+        try:
+            fcntl.flock(ci, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(ci, fcntl.LOCK_UN)
+        return False
+
+
 @contextlib.contextmanager
 def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Iterator[float]:
     """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it.
 
-    Waits as long as needed unless ``timeout_s`` is given, in which case a lock still held by
-    someone else after that long fails with ``LOCK_TIMEOUT``.
+    Outside CI, waits while a CI job announces itself (``ci_waiting``). Waits as long as needed
+    unless ``timeout_s`` is given, in which case a lock still unavailable after that long fails
+    with ``LOCK_TIMEOUT``.
     """
     # flock needs only a read-only descriptor, so the lock works on a file owned by another user.
     # O_CREAT is used only when the file is missing: in a sticky /tmp, fs.protected_regular
@@ -134,24 +153,27 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
         fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
     with os.fdopen(fd) as handle:
         start = time.monotonic()
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            _log.warning("waiting for %s", path)
-            if timeout_s is None:
-                fcntl.flock(handle, fcntl.LOCK_EX)
-            else:
-                while True:
-                    try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        warned = False
+        while True:
+            # CI goes first; a lock taken just as CI announced itself is given back.
+            if not ci_waiting(path):
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    if not ci_waiting(path):
                         break
-                    except BlockingIOError:
-                        if time.monotonic() - start > timeout_s:
-                            raise BenchError(
-                                Code.LOCK_TIMEOUT,
-                                f"{path} still held by another GPU job after {timeout_s:.0f} s",
-                            ) from None
-                        time.sleep(1.0)
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+            if not warned:
+                _log.warning("waiting for %s", path)
+                warned = True
+            if timeout_s is not None and time.monotonic() - start > timeout_s:
+                raise BenchError(
+                    Code.LOCK_TIMEOUT,
+                    f"{path} still held by another GPU job after {timeout_s:.0f} s",
+                )
+            time.sleep(0.2)
         try:
             yield time.monotonic() - start
         finally:
