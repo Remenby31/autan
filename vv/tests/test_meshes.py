@@ -1,5 +1,6 @@
 """Mesh families: validity, reproducibility, and files read back by independent consumers."""
 
+import itertools
 import json
 import re
 from pathlib import Path
@@ -268,3 +269,46 @@ def test_ringleb_family_carries_the_exact_states_of_its_boundary(tmp_path: Path)
                 # Streamlines: the flow runs along the side, to the chord's O(h).
                 tangential = np.abs(np.einsum("ij,ij->i", vel, normal)) / speed
                 assert tangential.max() < 4.0 * h
+
+
+def _zone_faces(mesh: FaceMesh, name: str, axis: int, shift: float) -> set[tuple[float, ...]]:
+    """The faces of zone `name`, each its sorted nodes moved by `shift` along `axis`."""
+    zone = next(z for z in mesh.zones if z.name == name)
+    out = set()
+    for f in range(zone.start, zone.start + zone.count):
+        p = mesh.points[mesh.face(f)].copy()
+        p[:, axis] += shift
+        out.add(tuple(sorted(map(tuple, p.round(12).tolist()))))
+    return out
+
+
+@pytest.mark.parametrize("kind", ["vortex-hex", "vortex-prism"])
+def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> None:
+    # The square [-10, 10]^2 of the isentropic vortex, one layer of thickness 20/n: each face of
+    # xmax (ymax) is a face of xmin (ymin) moved by 20 along x (y), the file declares both links,
+    # and each level holds the nodes of the coarser one in the plane, with four times its cells.
+    family, meshes = generate_family(kind, (8, 16, 32), tmp_path, seed=5)
+    for level, mesh in zip(family.levels, meshes, strict=True):
+        g = mesh.geometry
+        side, dz = 20.0, 20.0 / level.n
+        assert g.cell_volume.min() > 0.0
+        assert g.cell_volume.sum() == pytest.approx(side * side * dz, rel=1e-13)
+        # h = (V / N)^(1/3) proportional to 1/n: 2^(-1/3) dz with two triangles per square.
+        per_square = 1.0 if kind == "vortex-hex" else 2.0
+        assert level.h == pytest.approx(dz * per_square ** (-1.0 / 3.0), rel=1e-12)
+        for a, b, axis in (("xmin", "xmax", 0), ("ymin", "ymax", 1)):
+            moved = _zone_faces(mesh, a, axis, side)
+            assert moved
+            assert moved == _zone_faces(mesh, b, axis, 0.0)
+        text = (tmp_path / level.file).read_text()
+        links = re.search(r"\$Periodic\n(\d+)\n", text)
+        assert links is not None
+        assert int(links.group(1)) == 2
+    for coarse, fine in itertools.pairwise(meshes):
+        assert fine.n_cells == 4 * coarse.n_cells
+        plane = {tuple(p) for p in fine.points[fine.points[:, 2] == 0.0][:, :2].tolist()}
+        assert {
+            tuple(p) for p in coarse.points[coarse.points[:, 2] == 0.0][:, :2].tolist()
+        } <= plane
+    again, _ = generate_family(kind, (8,), tmp_path / "again", seed=5)
+    assert again.levels[0].file_sha256 == family.levels[0].file_sha256
