@@ -89,7 +89,7 @@ On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Gree
 
 ## Wall distance
 
-`autan::WallSurface(mesh, wall_zones)` (`core/include/autan/core/wall_distance.hpp`) holds the fan triangles of the zones' boundary faces, as `compute_geometry` splits them, plus their copies shifted by −1, 0 or +1 times each periodic translation; `distance(p)` is the exact distance from `p` to the nearest of them, FP64, through a bounding-volume tree. `autan::wall_distance(mesh, geometry, wall_zones)` gives it for every cell centroid. On a partition, build the surface from the global mesh: a part's nearest wall may lie in another. A zone out of range or holding interior faces is E0102.
+`autan::WallSurface(mesh, wall_zones)` (`core/include/autan/core/wall_distance.hpp`) holds the fan triangles of the zones' boundary faces, as `compute_geometry` splits them (a strongly non-convex face is represented by its fan); `distance(p)` is the exact distance from `p` to the nearest of them and of their periodic copies, as far as the mesh spans, FP64, through a bounding-volume tree. Errors: a wall node that is not finite is E0120; periodic translations that do not reduce to three independent directions are E0118. `autan::wall_distance(mesh, geometry, wall_zones)` gives it for every cell centroid. On a partition, build the surface from the global mesh: a part's nearest wall may lie in another. A zone out of range or holding interior faces is E0102.
 
 ## Quality and ordering
 

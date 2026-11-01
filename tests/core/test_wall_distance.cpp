@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <random>
 #include <vector>
@@ -24,8 +25,8 @@ namespace {
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
 // Distance from p to triangle abc, computed independently of the library:
-// the plane distance when the projection falls inside, else the nearest of
-// the three edges as clamped segments.
+// Ericson, Real-Time Collision Detection (2005), section 5.1.5, closest point
+// by Voronoi regions (well conditioned for the triangles of these tests).
 double triangle_distance(const Vec& p, const Vec& a, const Vec& b, const Vec& c) {
   const auto sub = [](const Vec& u, const Vec& v) {
     return Vec{u[0] - v[0], u[1] - v[1], u[2] - v[2]};
@@ -33,23 +34,43 @@ double triangle_distance(const Vec& p, const Vec& a, const Vec& b, const Vec& c)
   const auto dot = [](const Vec& u, const Vec& v) {
     return u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
   };
-  const auto cross = [](const Vec& u, const Vec& v) {
-    return Vec{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+  const auto along = [](const Vec& o, double t, const Vec& d) {
+    return Vec{o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]};
   };
-  const auto segment = [&](const Vec& u, const Vec& v) {
-    const Vec d = sub(v, u);
-    const double t = std::clamp(dot(sub(p, u), d) / dot(d, d), 0.0, 1.0);
-    const Vec q{u[0] + t * d[0], u[1] + t * d[1], u[2] + t * d[2]};
+  const auto dist = [&](const Vec& q) {
     const Vec e = sub(p, q);
     return std::sqrt(dot(e, e));
   };
-  const Vec n = cross(sub(b, a), sub(c, a));
-  const double nn = std::sqrt(dot(n, n));
-  const bool inside = dot(cross(sub(b, a), sub(p, a)), n) >= 0.0 &&
-                      dot(cross(sub(c, b), sub(p, b)), n) >= 0.0 &&
-                      dot(cross(sub(a, c), sub(p, c)), n) >= 0.0;
-  if (inside) return std::abs(dot(sub(p, a), n)) / nn;
-  return std::min({segment(a, b), segment(b, c), segment(c, a)});
+  const Vec ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+  const double d1 = dot(ab, ap), d2 = dot(ac, ap);
+  if (d1 <= 0 && d2 <= 0) return dist(a);
+  const Vec bp = sub(p, b);
+  const double d3 = dot(ab, bp), d4 = dot(ac, bp);
+  if (d3 >= 0 && d4 <= d3) return dist(b);
+  const double vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) return dist(along(a, d1 / (d1 - d3), ab));
+  const Vec cp = sub(p, c);
+  const double d5 = dot(ab, cp), d6 = dot(ac, cp);
+  if (d6 >= 0 && d5 <= d6) return dist(c);
+  const double vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) return dist(along(a, d2 / (d2 - d6), ac));
+  const double va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0)
+    return dist(along(b, (d4 - d3) / ((d4 - d3) + (d5 - d6)), sub(c, b)));
+  const double v = vb / (va + vb + vc), w = vc / (va + vb + vc);
+  return dist(Vec{a[0] + v * ab[0] + w * ac[0], a[1] + v * ab[1] + w * ac[1],
+                  a[2] + v * ab[2] + w * ac[2]});
+}
+
+// The box of `cells` with every node mapped by f.
+autan::Mesh mapped(autan::CellwiseMesh cells, const std::function<Vec(const Vec&)>& f) {
+  for (std::size_t i = 0; i < cells.x.size(); ++i) {
+    const Vec q = f({cells.x[i], cells.y[i], cells.z[i]});
+    cells.x[i] = q[0];
+    cells.y[i] = q[1];
+    cells.z[i] = q[2];
+  }
+  return autan::assemble(autan::to_face_based(std::move(cells)));
 }
 
 index_t zone(const autan::Mesh& mesh, const char* name) {
@@ -168,4 +189,83 @@ TEST_CASE("The search tree returns the brute-force nearest distance", "[wall]") 
       expected = std::min(expected, triangle_distance(p, t[0], t[1], t[2]));
     CHECK_THAT(surface.distance(p), WithinAbs(expected, 1e-13));
   }
+}
+
+TEST_CASE("Wall distance holds at any scale and position", "[wall]") {
+  // The unit box mapped by x -> s x + o, wall ymin: d = (y - o_y) exactly.
+  struct Case {
+    double scale;
+    Vec origin;
+  };
+  const Case c = GENERATE(Case{1e-9, {0, 0, 0}}, Case{1e80, {0, 0, 0}}, Case{1e-80, {0, 0, 0}},
+                          Case{1.0, {0, 1e7, 0}});
+  CAPTURE(c.scale, c.origin[1]);
+  const autan::Mesh mesh =
+      mapped(autan::test::box(3, autan::test::BoxFill::tetra, 0.2), [&](const Vec& q) {
+        return Vec{c.scale * q[0] + c.origin[0], c.scale * q[1] + c.origin[1],
+                   c.scale * q[2] + c.origin[2]};
+      });
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "ymin")});
+  for (std::size_t i = 0; i < d.size(); ++i) {
+    const double expected = g.cell_centroid_y[i] - c.origin[1];
+    CHECK_THAT(d[i], WithinAbs(expected, 1e-12 * c.scale + 1e-15 * std::abs(c.origin[1])));
+  }
+  // A thin box, 1 x 2e-9 x 1e-8: its wall triangles are slivers.
+  const autan::Mesh thin = mapped(autan::test::box(2, autan::test::BoxFill::hexa),
+                                  [](const Vec& q) { return Vec{q[0], 2e-9 * q[1], 1e-8 * q[2]}; });
+  const autan::WallSurface surface(thin, std::array<index_t, 1>{zone(thin, "ymin")});
+  CHECK_THAT(surface.distance({0.4, 1e-9, 3e-9}), WithinAbs(1e-9, 1e-21));
+}
+
+TEST_CASE("Wall faces with hanging nodes have degenerate fan triangles", "[wall]") {
+  // hanging_node_box: [0,2] x [0,1]^2, its unassigned sides are y = 0, 1,
+  // z = 0, 1 and x = 2; the big cell's side faces carry collinear hanging
+  // nodes, so some fan triangles have zero area.
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::hanging_node_box()));
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "unassigned")});
+  for (std::size_t i = 0; i < d.size(); ++i) {
+    const double y = g.cell_centroid_y[i], z = g.cell_centroid_z[i], x = g.cell_centroid_x[i];
+    CHECK_THAT(d[i], WithinAbs(std::min({y, 1 - y, z, 1 - z, 2 - x}), 1e-14));
+  }
+}
+
+TEST_CASE("A periodic wall is found however far the domain shears", "[wall][periodic]") {
+  // The unit box sheared by x -> x + 10 y, periodic in x by (1, 0, 0), wall
+  // ymin: the nearest wall point lies straight below, up to 10 periods away.
+  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::hexa);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh mesh =
+      mapped(std::move(cells), [](const Vec& q) { return Vec{q[0] + 10 * q[1], q[1], q[2]}; });
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "ymin")});
+  for (std::size_t i = 0; i < d.size(); ++i)
+    CHECK_THAT(d[i], WithinAbs(g.cell_centroid_y[i], 1e-14));
+}
+
+TEST_CASE("Wall inputs the surface cannot use are coded errors", "[wall]") {
+  autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cells));
+  const auto require_code = [](autan::ErrorCode code, const std::function<void()>& f) {
+    try {
+      f();
+      FAIL("expected " << autan::error_code_string(code));
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == code);
+    }
+  };
+  require_code(autan::ErrorCode::mesh_inconsistent_sizes, [&] {
+    (void)autan::wall_distance(mesh, autan::Geometry{}, std::array<index_t, 1>{zone(mesh, "ymin")});
+  });
+  for (std::size_t i = 0; i < cells.y.size(); ++i) {
+    if (cells.y[i] == 0.0 && cells.x[i] == 0.5)
+      cells.y[i] = std::numeric_limits<double>::infinity();
+  }
+  const autan::Mesh broken = autan::assemble(autan::to_face_based(cells));
+  require_code(autan::ErrorCode::geometry_degenerate_face, [&] {
+    (void)autan::WallSurface(broken, std::array<index_t, 1>{zone(broken, "ymin")});
+  });
 }
