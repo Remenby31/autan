@@ -4,6 +4,7 @@ add_library(
   src/extract.cpp
   src/self_exchange.cpp
   src/colouring.cpp
+  src/graph.cpp
 )
 add_library(autan::partition ALIAS autan_partition)
 target_include_directories(
