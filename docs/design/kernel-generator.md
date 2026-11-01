@@ -112,6 +112,7 @@ Built-in geometry that no body of the module reads through `rel()` (directly or 
 | E1106 | `incidence_twins_missing` | The deterministic adjoint of a cell reduction runs on a topology without incidence twins. |
 | E1107 | `metal_runtime_error` | A Metal call, library compilation or command buffer fails. |
 | E1108 | `strategy_unavailable` | A face-loop strategy needs atomics the backend lacks for the policy's accumulation type. |
+| E1109 | `reduction_team_invalid` | A cell reduction's team size is not 1, 2, 4, 8, 16 or 32, or a team runs with a block that is not a whole number of warps. |
 
 ## Spike (research §8)
 

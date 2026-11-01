@@ -891,3 +891,11 @@ Fix: Check that the Mac has an Apple GPU with `autan doctor`, then report the me
 A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.
 
 Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.
+
+## E1109
+
+**Reduction team invalid** (error)
+
+A cell reduction's team size is not 1, 2, 4, 8, 16 or 32, or a team runs with a block that is not a whole number of warps.
+
+Fix: Set Schedule::reduce_team to a power of two up to 32 and the block to a multiple of the warp size.

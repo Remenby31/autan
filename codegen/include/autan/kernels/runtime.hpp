@@ -14,6 +14,8 @@ namespace autan::kernels {
 
 using index_t = std::int32_t;
 using offset_t = std::int64_t;
+/// Larger than any entry index: the entry a team lane's Min/Max holds before it takes one.
+inline constexpr offset_t no_entry = INT64_MAX;
 
 /// Topology arrays that generated loops read; host or device pointers. Filled from
 /// autan::MeshView (docs/contracts/mesh.md). Incidence k is entry k of the cell -> face CSR.

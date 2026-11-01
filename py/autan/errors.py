@@ -725,6 +725,12 @@ _CODES = [
         "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
+        "E1109",
+        "Reduction team invalid",
+        "A cell reduction's team size is not 1, 2, 4, 8, 16 or 32, or a team runs with a block that is not a whole number of warps.",
+        "Set Schedule::reduce_team to a power of two up to 32 and the block to a multiple of the warp size.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",

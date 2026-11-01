@@ -18,6 +18,12 @@ using autan::kernels::offset_t;
 using autan::spike::GeomArray;
 namespace gpu = autan::kernels::gpu;
 
+/// Lanes per cell of the cell reductions of every DeviceMesh built afterwards (Schedule).
+inline int& reduce_team() {
+  static int team = 1;
+  return team;
+}
+
 template <class T>
 class DeviceArray {
  public:
@@ -93,6 +99,7 @@ struct DeviceMesh {
     schedule.face_scratch_width = kScratchWidth;
     schedule.incidence_scratch = incidence_scratch.get();
     schedule.incidence_scratch_width = kIncidenceScratchWidth;
+    schedule.reduce_team = reduce_team();
     topo.incidence_twin = twin.get();
     if (m.topo.stencil != nullptr) {
       topo.stencil_offsets = stencil_offsets.get();

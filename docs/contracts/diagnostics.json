@@ -666,6 +666,12 @@
       "title": "Strategy not available",
       "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
+    },
+    "E1109": {
+      "severity": "error",
+      "title": "Reduction team invalid",
+      "fix": "Set Schedule::reduce_team to a power of two up to 32 and the block to a multiple of the warp size.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1109"
     }
   }
 }

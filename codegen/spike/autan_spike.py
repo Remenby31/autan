@@ -430,6 +430,11 @@ def gpu_lsq_bounds_adjoint(
     return out
 
 
+def set_reduce_team(team: int) -> None:
+    """Lanes per cell of the device cell reductions of the following calls (1: a thread)."""
+    lib().autan_spike_set_reduce_team(ctypes.c_int(team))
+
+
 def gpu_sum_of_squares(x: F64) -> float:
     """Fixed-order FP64 sum of squares computed on the device."""
     err = ctypes.create_string_buffer(512)

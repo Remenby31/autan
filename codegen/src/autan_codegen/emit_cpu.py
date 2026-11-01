@@ -53,8 +53,11 @@ def acc_init(o: dsl.Accumulator) -> str:
     return "-::autan::kernels::infinity<A>()"
 
 
-def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str) -> list[str]:
-    """Accumulator updates for one incidence; Follow accumulators move with their leader."""
+def _updates(
+    accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str, sel: bool = False
+) -> list[str]:
+    """Accumulator updates for one incidence; Follow accumulators move with their leader. With
+    `sel`, Min/Max components also record the entry `k` they took (sel[...]), for team combines."""
     lines = []
     for o, off in zip(accs, offs, strict=True):
         if isinstance(o, dsl.Follow):
@@ -68,6 +71,8 @@ def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str
             op = "lt" if isinstance(o, dsl.Min) else "gt"
             lines.append(f"{indent}if (::autan::kernels::{op}(A({src}[{k}]), acc[{k}])) {{")
             lines.append(f"{indent}  acc[{k}] = A({src}[{k}]);")
+            if sel:
+                lines.append(f"{indent}  sel[{k}] = k;")
             for f, foff in zip(accs, offs, strict=True):
                 if isinstance(f, dsl.Follow) and accs[f.leader] is o:
                     lines.append(f"{indent}  acc[{foff + c}] = A({src}[{foff + c}]);")
@@ -75,20 +80,23 @@ def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str
     return lines
 
 
-def entry_loop(over: str, indent: str) -> list[str]:
+def entry_loop(over: str, indent: str, lane: str = "", step: str = "") -> list[str]:
     """Opening of the loop over the entries k of cell c: the faces of c (`incidences`) or its
-    stencil (`stencil`). Defines `across` (the entry is a cell `nb`), else boundary face `f`."""
+    stencil (`stencil`). Defines `across` (the entry is a cell `nb`), else boundary face `f`.
+    `lane` and `step` make a team lane visit entries lane, lane + step, ..."""
     i2 = indent + "  "
+    first = f" + {lane}" if lane else ""
+    inc = f"k += {step}" if step else "++k"
     if over == dsl.STENCIL:
         return [
-            f"{indent}for (offset_t k = d.topo.stencil_offsets[c]; k < d.topo.stencil_offsets[c + 1]; ++k) {{",
+            f"{indent}for (offset_t k = d.topo.stencil_offsets[c]{first}; k < d.topo.stencil_offsets[c + 1]; {inc}) {{",
             f"{i2}const index_t e = d.topo.stencil[k];",
             f"{i2}[[maybe_unused]] const bool across = e >= 0;",
             f"{i2}[[maybe_unused]] const index_t nb = e;",
             f"{i2}[[maybe_unused]] const index_t f = across ? -1 : -e - 1;",
         ]
     return [
-        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {{",
+        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c]{first}; k < d.topo.cell_face_offsets[c + 1]; {inc}) {{",
         f"{i2}const index_t f = d.topo.cell_faces[k];",
         f"{i2}[[maybe_unused]] const bool across = f < d.topo.n_interior_faces;",
         f"{i2}[[maybe_unused]] const index_t nb = across ? (d.topo.owner[f] == c ? d.topo.neighbour[f] : d.topo.owner[f]) : -1;",
@@ -97,6 +105,14 @@ def entry_loop(over: str, indent: str) -> list[str]:
 
 def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     """Statements of one cell's reduction, given `c`; shared by the CPU and GPU cell kernels."""
+    return reduce_accumulate(lm, indent, layout) + reduce_finish(lm, indent, layout)
+
+
+def reduce_accumulate(
+    lm: LoopModel, indent: str, layout: str = "soa", lane: str = "", step: str = ""
+) -> list[str]:
+    """Declares acc[] and accumulates cell c's entries into it; a team lane takes entries lane,
+    lane + step, ... and records in sel[] the entry each Min/Max component took."""
     loop = lm.loop
     accs = loop.outputs
     offs = offsets(accs)
@@ -107,15 +123,27 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
         for o, off in zip(accs, offs, strict=True)
         for c in range(o.dataset.type.size)
     )
-    lines.extend(entry_loop(loop.over, indent))
+    if lane:
+        lines.append(f"{indent}[[maybe_unused]] offset_t sel[{n}];")
+        lines.extend(f"{indent}sel[{k}] = ::autan::kernels::no_entry;" for k in range(n))
+    lines.extend(entry_loop(loop.over, indent, lane, step))
     i2 = indent + "  "
     lines.append(f"{i2}typename P::compute out[{n}];")
     args = call_args(
         lm.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"}, layout=layout
     )
     lines.append(f"{i2}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
-    lines.extend(_updates(accs, offs, "out", i2))  # type: ignore[arg-type]
+    lines.extend(_updates(accs, offs, "out", i2, sel=bool(lane)))  # type: ignore[arg-type]
     lines.append(f"{indent}}}")
+    return lines
+
+
+def reduce_finish(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
+    """Finalise body (if any) and stores of cell c's accumulators acc[]."""
+    loop = lm.loop
+    accs = loop.outputs
+    offs = offsets(accs)
+    lines: list[str] = []
     written = [(o, off) for o, off in zip(accs, offs, strict=True) if o.write]  # type: ignore[union-attr]
     if lm.fin_fn is not None and lm.fin_sig is not None:
         n_fin = len(lm.fin_fn.outputs)

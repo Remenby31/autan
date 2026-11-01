@@ -232,6 +232,17 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                            ni * 2 * sizeof(index_t) + nb * sizeof(S);
   out.push_back({"lsq_gradient_bounds", lsq_bytes, "cell",
                  time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule); })});
+  // The same with a team of lanes per cell (Schedule::reduce_team), verified against the host.
+  for (const int team : {4, 8}) {
+    gpu::Schedule ts = dm.schedule;
+    ts.reduce_team = team;
+    gr::gpu_loops::lsq_gradient_bounds(d, ts);
+    gpu::check(cudaDeviceSynchronize(), "lsq team");
+    if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+    out.push_back({"lsq_gradient_bounds_team" + std::to_string(team), lsq_bytes,
+                   "team" + std::to_string(team),
+                   time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, ts); })});
+  }
 
   // Its adjoint: atomic scatter against the deterministic two-pass form. Bytes: the primal's
   // reads, the 5 seeds per cell read and zeroed, q_adj read and written.
@@ -312,6 +323,16 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                  static_cast<double>(ns) / cells, build_seconds);
     out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
                    time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
+    for (const int team : {4, 8}) {
+      gpu::Schedule ts = dm.schedule;
+      ts.reduce_team = team;
+      gr::gpu_loops::lsq_gradient_stencil(dst, ts);
+      gpu::check(cudaDeviceSynchronize(), "lsq stencil team");
+      if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+      out.push_back({std::string("lsq_gradient_stencil_") + label + "_team" + std::to_string(team),
+                     st_bytes, "team" + std::to_string(team),
+                     time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, ts); })});
+    }
   }
 
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.

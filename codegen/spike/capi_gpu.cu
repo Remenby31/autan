@@ -299,6 +299,9 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
 
 extern "C" {
 
+/// Lanes per cell (1, 2, 4, 8, 16 or 32) of the cell reductions of the following calls.
+void autan_spike_set_reduce_team(int team) { autan::spike::reduce_team() = team; }
+
 int autan_spike_gpu_lsq_bounds_adjoint(const void* mesh, const char* policy, const char* strategy,
                                        int block, const double* q, const double* q_b,
                                        const double* seed, double* out, char* err,

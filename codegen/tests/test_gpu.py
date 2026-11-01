@@ -19,7 +19,7 @@ import pytest
 from conftest import KINDS, PRECISIONS, eps, refused
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 pytestmark = pytest.mark.gpu
 # The most accurate policy each backend runs.
@@ -73,10 +73,20 @@ def test_gpu_residual_equals_host_residual(
     assert np.abs(adv_dev - adv_host).max() <= 200 * eps(policy) * np.abs(adv_host).max()
 
 
+@pytest.fixture
+def team(request: pytest.FixtureRequest) -> Iterator[int]:
+    """Lanes per cell of device cell reductions for the test, then back to a thread per cell."""
+    s.set_reduce_team(request.param)
+    yield request.param
+    s.set_reduce_team(1)
+
+
+@pytest.mark.parametrize("team", [1, 4, 32], indirect=True)
 @pytest.mark.parametrize("strategy", s.STRATEGIES)
 def test_gpu_green_gauss_equals_host(
-    case: tuple[s.Mesh, dict[str, np.ndarray]], backend: str, strategy: str
+    case: tuple[s.Mesh, dict[str, np.ndarray]], backend: str, strategy: str, team: int
 ) -> None:
+    # Min/Max bounds equal the host's exactly, whatever the lanes per cell.
     m, d = case
     pol = TOP[backend]
     call = lambda: s.gpu_gradients(m, pol, "gg", strategy, 128, d["q"], d["q_b"], 3, d["grad"])
@@ -263,10 +273,11 @@ def test_device_residual_norm_holds_at_extreme_amplitudes(
     assert abs(norm - expected) <= 1e3 * eps("fp64") * expected
 
 
+@pytest.mark.parametrize("team", [1, 8], indirect=True)
 @pytest.mark.parametrize("stencil", ["vertex", "face2"])
 @pytest.mark.parametrize("strategy", s.STRATEGIES)
 def test_stencil_gradient_residual_and_adjoint_equal_host(
-    backend: str, stencil: str, strategy: str
+    backend: str, stencil: str, strategy: str, team: int
 ) -> None:
     pol = TOP[backend]
     m = s.mesh(meshes.build("tet", 5, 0.15, seed=12))

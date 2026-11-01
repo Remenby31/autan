@@ -18,8 +18,10 @@ from autan_codegen.emit_cpu import (
     n_out,
     offsets,
     other_targets,
+    reduce_accumulate,
     reduce_adjoint_body,
     reduce_body,
+    reduce_finish,
     twin_gather_body,
 )
 
@@ -327,15 +329,104 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     if lm.kind == "reduce_adjoint":
         emit_reduce_adjoint_deterministic(e, lm)
         return
+    reduce = lm.kind not in ("cell", "boundary_write")
+    if reduce:
+        emit_reduce_team_kernel(e, lm)
     e.w("template <class P>")
     e.w(f"void {lm.name}(const Data<P>& d, const gpu::Schedule& s) {{")
     e.w("  if (d.topo.n_owned_cells > 0) {")
-    e.w(
-        "    const auto grid = static_cast<unsigned>((d.topo.n_owned_cells + s.block - 1) / s.block);"
-    )
-    e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")
+    if reduce:
+        e.w("    const auto threads = static_cast<offset_t>(d.topo.n_owned_cells) * s.reduce_team;")
+        e.w("    const auto grid = static_cast<unsigned>((threads + s.block - 1) / s.block);")
+        e.w("    const auto block = static_cast<unsigned>(s.block);")
+        e.w("    if (s.reduce_team > 1 && s.block % gpu::warp_size != 0) {")
+        e.w('      throw std::invalid_argument("E1109: team reductions need whole warps per block");')
+        e.w("    }")
+        e.w("    switch (s.reduce_team) {")
+        e.w("      case 1:")
+        e.w(f"        {lm.name}_kernel<P><<<grid, block, 0, s.stream>>>(d);")
+        e.w("        break;")
+        for t in TEAMS:
+            e.w(f"      case {t}:")
+            e.w(f"        {lm.name}_team<P, {t}><<<grid, block, 0, s.stream>>>(d);")
+            e.w("        break;")
+        e.w("      default:")
+        e.w('        throw std::invalid_argument("E1109: reduce_team must be 1, 2, 4, 8, 16 or 32");')
+        e.w("    }")
+    else:
+        e.w(
+            "    const auto grid = static_cast<unsigned>((d.topo.n_owned_cells + s.block - 1) / s.block);"
+        )
+        e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")
     e.w("  }")
     e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
+    e.w("}")
+    e.w()
+
+
+TEAMS = (2, 4, 8, 16, 32)
+
+
+def _team_combine(lm: LoopModel, indent: str) -> list[str]:
+    """Butterfly combine of the T lanes of a team (xor masks T/2, ..., 1): Sum adds; Min/Max keep
+    the better value, on a tie the smaller entry index, which is the entry the sequential loop
+    keeps (first in list order); Follow components move with their leader. Every lane ends with
+    the cell's result, the same in every run."""
+    accs = lm.loop.outputs
+    offs = offsets(accs)
+    i2 = indent + "  "
+    lines = [f"{indent}for (int m = T / 2; m > 0; m /= 2) {{"]
+    for o, off in zip(accs, offs, strict=True):
+        if isinstance(o, dsl.Follow):
+            continue
+        for c in range(o.dataset.type.size):
+            k = off + c
+            if isinstance(o, dsl.Sum):
+                lines.append(f"{i2}acc[{k}] += gpu::shfl_xor(acc[{k}], m);")
+                continue
+            op = "lt" if isinstance(o, dsl.Min) else "gt"
+            followers = [
+                foff + c
+                for f, foff in zip(accs, offs, strict=True)
+                if isinstance(f, dsl.Follow) and accs[f.leader] is o
+            ]
+            lines.append(f"{i2}{{")
+            lines.append(f"{i2}  const A v = gpu::shfl_xor(acc[{k}], m);")
+            lines.append(f"{i2}  const offset_t vs = gpu::shfl_xor(sel[{k}], m);")
+            lines.extend(f"{i2}  const A v{j} = gpu::shfl_xor(acc[{j}], m);" for j in followers)
+            lines.append(
+                f"{i2}  if (::autan::kernels::{op}(v, acc[{k}]) || "
+                f"(!::autan::kernels::{op}(acc[{k}], v) && vs < sel[{k}])) {{"
+            )
+            lines.append(f"{i2}    acc[{k}] = v;")
+            lines.append(f"{i2}    sel[{k}] = vs;")
+            lines.extend(f"{i2}    acc[{j}] = v{j};" for j in followers)
+            lines.append(f"{i2}  }}")
+            lines.append(f"{i2}}}")
+    lines.append(f"{indent}}}")
+    return lines
+
+
+def emit_reduce_team_kernel(e: Emitter, lm: LoopModel) -> None:
+    """Cell reduction with a team of T lanes per cell: lane l takes entries l, l + T, ... of the
+    cell's list, so a warp reads 32 / T rows contiguously; then a fixed butterfly combine."""
+    e.w("template <class P, int T>")
+    e.w(f"__global__ void {lm.name}_team(const Data<P> d) {{")
+    e.w("  using A [[maybe_unused]] = typename P::accum;")
+    e.w("  const auto t = static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x);")
+    e.w("  const index_t team = t / T;")
+    e.w("  const auto lane = static_cast<offset_t>(t % T);")
+    # Teams past the last cell still take part in the shuffles: they redo cell 0, store nothing.
+    e.w("  const bool live = team < d.topo.n_owned_cells;")
+    e.w("  const index_t c = live ? team : 0;")
+    for s_ in reduce_accumulate(lm, "  ", lane="lane", step="T"):
+        e.w(s_)
+    for s_ in _team_combine(lm, "  "):
+        e.w(s_)
+    e.w("  if (live && lane == 0) {")
+    for s_ in reduce_finish(lm, "    "):
+        e.w(s_)
+    e.w("  }")
     e.w("}")
     e.w()
 

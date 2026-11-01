@@ -66,6 +66,11 @@ __device__ inline T shfl_up(T v, int delta) {
   return __shfl_up_sync(full_mask, v, delta);
 }
 
+template <class T>
+__device__ inline T shfl_xor(T v, int mask) {
+  return __shfl_xor_sync(full_mask, v, mask);
+}
+
 /// Index of the contiguous run of `head` flags this lane belongs to, within its warp: lanes with
 /// equal ids form one segment. Every lane of the warp must call it.
 __device__ inline int segment_id(bool head) {
@@ -99,6 +104,9 @@ struct Schedule {
   /// accumulation values (one column per entry of the widest list a reduction iterates).
   void* incidence_scratch = nullptr;
   int incidence_scratch_width = 0;
+  /// Lanes per cell of cell reductions: 1 (a thread per cell) or 2, 4, 8, 16, 32 (the lanes of a
+  /// team stride the cell's entries, then combine in a fixed butterfly order).
+  int reduce_team = 1;
   stream_t stream = nullptr;
 };
 
