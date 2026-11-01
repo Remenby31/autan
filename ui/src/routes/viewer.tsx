@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { fetchSurface, type Surface } from "../api/surface";
 import { TopBar } from "../components/shell/TopBar";
+import { useResolvedTheme } from "../components/shell/theme";
 import { COOL_WARM, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
 
@@ -95,6 +96,14 @@ function Viewer() {
   }, [triangles, webgl, bench]);
 
   useEffect(() => viewer.current?.setSelectedZone(selected), [selected]);
+
+  const theme = useResolvedTheme();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the displayed theme changes
+  useEffect(() => {
+    // After this commit the shell has set data-theme, so the tokens read below are current.
+    const frame = requestAnimationFrame(() => viewer.current?.applyTheme());
+    return () => cancelAnimationFrame(frame);
+  }, [theme]);
 
   const onClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
