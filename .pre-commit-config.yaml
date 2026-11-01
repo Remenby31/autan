@@ -14,6 +14,7 @@ repos:
       - id: check-json
       - id: check-toml
       - id: check-yaml
+        args: [--allow-multiple-documents] # .clang-format holds one document per language
       - id: end-of-file-fixer
         exclude: ^tests/data/
       - id: mixed-line-ending
