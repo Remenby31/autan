@@ -82,7 +82,7 @@ function Compare() {
           pending: details[k]?.isPending || !registry.data,
         })),
       ),
-    [ids, runs, details],
+    [ids, runs, details, registry.data],
   );
   const plotted = polar.series.flatMap((s) => s.points.map((p) => ({ ...p, series: s.label })));
   const runColor = (p: { role: string }) => seriesColor(p.role.charCodeAt(0) - 65);

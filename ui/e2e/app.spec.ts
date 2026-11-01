@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   appendFileSync,
   cpSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -256,6 +257,49 @@ test("polars keep each Mach number apart and every run, and say which runs are m
   }
 });
 
+test("Analysis without a run lists the runs it can show, never a stand-in surface", async ({
+  page,
+}) => {
+  // results.md: an ended run's solution.cgns is its result, read here from the run directories.
+  const solved = (await runs(page)).filter(
+    (r) => r.status !== "running" && existsSync(join(RUNS, r.run_id, "solution.cgns")),
+  );
+  const converged = solved.find((r) => r.status === "converged") as Run;
+  await page.goto("/");
+  await page.getByRole("link", { name: "Analysis" }).click();
+
+  const picker = page.getByTestId("run-picker");
+  await expect(picker.getByRole("link")).toHaveCount(solved.length);
+  await expect(page.getByTestId("viewport")).toHaveCount(0);
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByText("Synthetic surface · viewer benchmark")).toBeVisible();
+  await page.goBack();
+  await picker
+    .getByRole("link")
+    .filter({ hasText: converged.run_id.slice(-8) })
+    .click();
+
+  await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
+  const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
+  await expect(crumbs).toContainText(converged.case.name);
+  await expect(crumbs).toContainText(converged.run_id.slice(-8));
+  await expect(page.getByTestId("zones")).toBeVisible();
+});
+
+test("Analysis says when the runs cannot be listed, and retries", async ({ page }) => {
+  let fail = true;
+  await page.route("**/api/runs", (route) =>
+    fail ? route.fulfill({ status: 503 }) : route.continue(),
+  );
+  await page.route("**/api/runs/events", (route) => route.abort());
+  await page.goto("/viewer");
+
+  await expect(page.getByText("The runs could not be listed")).toBeVisible({ timeout: 15_000 });
+  fail = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("run-picker").getByRole("link").first()).toBeVisible();
+});
+
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
   const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
   await page.goto(`/runs/${converged.run_id}`);
@@ -367,6 +411,15 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       ].join("\n"),
     )
     .digest("hex");
+  // A run of the solver carries the timing it measured (results.md#runjson).
+  const cells = JSON.parse(readFileSync(join(RUNS, source.run_id, "mesh-info.json"), "utf8")).counts
+    .cells;
+  const timing = {
+    wall_seconds: 12.5,
+    solve_seconds: 10,
+    iterations: source.iterations,
+    ns_per_cell_iteration: (10 * 1e9) / (cells * source.iterations),
+  };
   const staging = join(RUNS, `.staging-${suffix}`);
   cpSync(join(RUNS, source.run_id), staging, { recursive: true });
   const run = {
@@ -376,6 +429,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     identity,
     solver,
     devices,
+    timing,
     deterministic: !source.deterministic,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
