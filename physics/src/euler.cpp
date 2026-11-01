@@ -1,9 +1,12 @@
 #include "autan/physics/euler.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -15,18 +18,32 @@ namespace ek = autan::kernels::euler;
 
 template <class P>
 struct Euler<P>::Impl {
-  using G = typename P::geom;
   using Gr = typename P::grad;
 
   Scheme scheme;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
-      cell_volume, stencil_lsq_weight;
+  // Each geometry array has the element type its Data<P> member stores (the generator stores
+  // geometry that bodies read only as values in P::geom_value).
+  template <class Ptr>
+  using stored = std::vector<std::remove_cvref_t<std::remove_pointer_t<Ptr>>>;
+  using D = ek::Data<P>;
+  stored<decltype(D::face_normal)> face_normal;
+  stored<decltype(D::face_area_magnitude)> face_area_magnitude;
+  stored<decltype(D::face_centroid)> face_centroid;
+  stored<decltype(D::face_moment)> face_moment;
+  stored<decltype(D::cell_centroid)> cell_centroid;
+  stored<decltype(D::cell_volume)> cell_volume;
+  stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
+
+  template <class T, class Source>
+  static void fill(std::vector<T>& to, const Source& from) {
+    to = kernels::converted<T>(from);
+  }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme s) : scheme(s) {
     const auto packed = kernels::pack_geometry(mesh, geometry);
@@ -39,13 +56,13 @@ struct Euler<P>::Impl {
     topo.stencil_offsets = stencil.offsets.data();
     topo.stencil = stencil.entries.data();
     topo.stencil_twin = stencil.twin.data();
-    stencil_lsq_weight = kernels::converted<G>(stencil.lsq_weight);
-    face_normal = kernels::converted<G>(packed.face_normal);
-    face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<G>(packed.face_centroid);
-    face_moment = kernels::converted<G>(packed.face_moment);
-    cell_centroid = kernels::converted<G>(packed.cell_centroid);
-    cell_volume = kernels::converted<G>(packed.cell_volume);
+    fill(stencil_lsq_weight, stencil.lsq_weight);
+    fill(face_normal, packed.face_normal);
+    fill(face_area_magnitude, packed.face_area_magnitude);
+    fill(face_centroid, packed.face_centroid);
+    fill(face_moment, packed.face_moment);
+    fill(cell_centroid, packed.cell_centroid);
+    fill(cell_volume, packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     bc_kind.assign(nf, 0.0);
@@ -108,6 +125,8 @@ struct Euler<P>::Impl {
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
     const auto nst = stencil.entries.size();
     std::vector<double> w(3 * nst, 0.0);
+    constexpr double coordinate_eps =
+        std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
     for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
       const auto begin = static_cast<std::size_t>(stencil.offsets[c]);
       const auto end = static_cast<std::size_t>(stencil.offsets[c + 1]);
@@ -129,9 +148,15 @@ struct Euler<P>::Impl {
               x[j] = static_cast<double>(face_centroid[j * nf + f]);
             }
           }
+          // Offsets within 64 ulps of the coordinates are round-off, not geometry: across a
+          // one-cell-thick slab the centroids differ only by them, and an offset kept at 1e-17
+          // would let the fit invert round-off into a gradient across the layer.
           std::array<double, 4> dk{};
           for (std::size_t j = 0; j < 3; ++j) {
-            dk[j] = x[j] - static_cast<double>(cell_centroid[j * nc + c]);
+            const double xc = static_cast<double>(cell_centroid[j * nc + c]);
+            const double round_off = 64 * coordinate_eps * std::max(std::abs(x[j]), std::abs(xc));
+            dk[j] = x[j] - xc;
+            if (std::abs(dk[j]) <= round_off) dk[j] = 0.0;
           }
           dk[3] = used ? 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]) : 0.0;
           for (std::size_t u = 0; u < 3; ++u) {
@@ -160,7 +185,7 @@ struct Euler<P>::Impl {
       };
       if (!weights(false)) weights(true);
     }
-    stencil_lsq_weight = kernels::converted<G>(w);
+    fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();
   }
 
