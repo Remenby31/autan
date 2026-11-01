@@ -11,7 +11,7 @@ async function runs(page: Page): Promise<Run[]> {
 test("home lists every run directory and filters by state", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(8);
   await page.getByRole("button", { name: "State" }).click();
   await page.getByRole("menuitemcheckbox", { name: /diverged/ }).click();
   await page.keyboard.press("Escape");
@@ -23,7 +23,7 @@ test("home lists every run directory and filters by state", async ({ page }) => 
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(8);
 
   const source = (await runs(page))[0] as Run;
   const started = new Date(Date.now() + 60_000).toISOString().replace(/\.\d+Z$/, "Z");
@@ -40,7 +40,7 @@ test("a run written by another process appears and updates live", async ({ page 
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
   renameSync(staging, directory);
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(9);
   await expect(rows.first().getByRole("img", { name: "running" })).toBeVisible();
 
   const history = join(directory, "history.jsonl");
@@ -84,7 +84,13 @@ test("a diverged run shows its diagnostic in the log and the plan of its case", 
   await expect(page.getByRole("cell", { name: "wing.main" })).toBeVisible();
   await page.getByRole("tab", { name: "Log" }).click();
   await expect(page).toHaveURL(/tab=log/);
-  await expect(page.getByTestId("log")).toContainText("D0107");
+  const log = page.getByTestId("log");
+  await expect(log.getByRole("link", { name: "D0107" })).toHaveAttribute("href", /#d0107$/);
+  const lines = log.locator("time");
+  const all = await lines.count();
+  await page.getByRole("button", { name: /^info/ }).click();
+  await expect(lines).not.toHaveCount(all);
+  await expect(log.getByRole("link", { name: "D0107" })).toBeVisible();
 });
 
 test("viewer renders on WebGPU and picks the zone under the cursor", async ({ page }) => {
@@ -107,4 +113,46 @@ test("viewer renders on WebGPU and picks the zone under the cursor", async ({ pa
   await expect
     .poll(async () => (await page.screenshot({ clip: corner })).equals(light))
     .toBe(false);
+});
+
+test("runs selected with x compare with c, with a polar for an angle sweep", async ({ page }) => {
+  await page.goto("/");
+  const group = page.locator("li", { has: page.getByTestId("study") });
+  await expect(group.getByTestId("study")).toContainText("α 7.05–21.47 deg");
+  const rows = group.locator("a[data-row]");
+  await rows.first().focus();
+  await page.keyboard.press(" ");
+  await expect(page.getByTestId("peek")).toBeVisible();
+  await page.keyboard.press(" ");
+  await expect(page.getByTestId("peek")).toHaveCount(0);
+  await page.keyboard.press("x");
+  await page.keyboard.press("j");
+  await page.keyboard.press("x");
+  await expect(page.getByTestId("selected-count")).toHaveText("2 selected");
+  await page.keyboard.press(" ");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("peek")).toHaveCount(0);
+  await expect(page.getByTestId("selected-count")).toHaveText("2 selected");
+  await page.keyboard.press("c");
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  await expect(page.getByTestId("compared").getByRole("link")).toHaveCount(2);
+  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+
+  await page.goto("/");
+  await group.getByRole("button", { name: "Compare" }).click();
+  await expect(page.getByTestId("polar")).toBeVisible();
+  await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
+});
+
+test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {
+  const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/runs/${converged.run_id}`);
+  await page.getByRole("button", { name: "Open in Analysis" }).click();
+  await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
+  await expect(page.getByTestId("zones")).toContainText("wing.main");
+  await expect(page.getByTestId("zones")).not.toContainText("farfield");
+  await expect(page.getByTestId("legend")).toHaveText("Cp");
+  await page.getByRole("tab", { name: "Cf" }).click();
+  await expect(page.getByTestId("legend")).toHaveText("Cf");
+  await expect(page).toHaveURL(/field=Cf/);
 });
