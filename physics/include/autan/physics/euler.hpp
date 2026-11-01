@@ -70,6 +70,13 @@ class Euler {
   void first_order_tangent(std::span<const State> u, std::span<const State> du,
                            std::span<Res> dres);
 
+  /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
+  /// CFL V / lambda is the cell's convective time step.
+  void spectral_radius(std::span<State> lambda);
+  /// After residual(u): pressure of the reconstruction at every boundary face's centroid, from
+  /// its owner cell (n_boundary_faces, FP64).
+  void boundary_pressure(std::span<double> p) const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

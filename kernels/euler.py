@@ -730,3 +730,25 @@ hllc_boundaries = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=Inc(res, lef
 ausm_boundaries = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
 )
+
+
+lam = cells.field("lam", State)
+
+
+@pointwise
+def wave_speed(wc: State.Vec5, wn: State.Vec5, n: Geom.Vec3, area: Geom, g: Param) -> State:
+    # Convective spectral radius of a face, (|v . n| + c) A at the arithmetic mean state
+    # (Blazek 2015, chapter 6): its sum over the faces of a cell bounds the local time step.
+    w = 0.5 * (wc + wn)
+    return (abs(dot(velocity(w), n)) + sqrt(g * w[4] / w[0])) * area
+
+
+spectral_radius = cell_reduce(
+    wave_speed,
+    wc=prim.self_,
+    wn=prim.other(boundary=prim_b),
+    n=geometry.face_normal,
+    area=geometry.face_area_magnitude,
+    g=gamma,
+    acc=Sum(lam),
+)

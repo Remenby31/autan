@@ -22,16 +22,35 @@ add_custom_command(
   VERBATIM
 )
 
-add_library(autan_physics src/euler.cpp ${AUTAN_PHYSICS_KERNELS})
+add_library(autan_physics src/euler.cpp src/manufactured.cpp ${AUTAN_PHYSICS_KERNELS})
 add_library(autan::physics ALIAS autan_physics)
 target_include_directories(
   autan_physics
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   PRIVATE ${AUTAN_PHYSICS_GENERATED}
 )
-target_link_libraries(autan_physics PUBLIC autan::core autan::kernels PRIVATE autan_compile_options)
+target_link_libraries(
+  autan_physics
+  PUBLIC autan::core autan::kernels
+  PRIVATE autan_compile_options nlohmann_json::nlohmann_json
+)
 set_target_properties(autan_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # C ABI over the residual, loaded through ctypes by the manufactured-solution study (mms/).
 add_library(autan_physics_mms SHARED mms/capi.cpp)
 target_link_libraries(autan_physics_mms PRIVATE autan::physics autan::io autan_compile_options)
+
+# The Euler physics behind autan-run's Physics interface; the runtime needs CGNS.
+if(AUTAN_ENABLE_CGNS)
+  add_library(autan_physics_runtime src/euler_physics.cpp)
+  add_library(autan::physics_runtime ALIAS autan_physics_runtime)
+  target_include_directories(
+    autan_physics_runtime
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(
+    autan_physics_runtime
+    PUBLIC autan::runtime
+    PRIVATE autan::physics autan_compile_options
+  )
+endif()

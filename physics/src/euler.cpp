@@ -165,8 +165,8 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
   ek::cpu::primitives(m.d);
+  ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
-    ek::cpu::boundary_states(m.d);
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
@@ -198,6 +198,33 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
   m.d = d;
   m.faces_tangent();
   m.d = saved;
+}
+
+template <class P>
+void Euler<P>::spectral_radius(std::span<State> lambda) {
+  auto& m = *impl_;
+  m.d.lam = lambda.data();
+  ek::cpu::spectral_radius(m.d);
+}
+
+template <class P>
+void Euler<P>::boundary_pressure(std::span<double> p) const {
+  const auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  for (std::size_t f = ni; f < nf; ++f) {
+    const auto c = static_cast<std::size_t>(m.topo.owner[f]);
+    double dp = 0.0;
+    for (std::size_t j = 0; j < 3; ++j) {
+      // grad is 5 x 3 per cell, component (4, j) at (4 * 3 + j) * n_cells + c.
+      dp += static_cast<double>(m.grad[(12 + j) * nc + c]) *
+            (static_cast<double>(m.face_centroid[j * nf + f]) -
+             static_cast<double>(m.cell_centroid[j * nc + c]));
+    }
+    p[f - ni] =
+        static_cast<double>(m.prim[4 * nc + c]) + static_cast<double>(m.phi[4 * nc + c]) * dp;
+  }
 }
 
 template class Euler<kernels::fp64>;
