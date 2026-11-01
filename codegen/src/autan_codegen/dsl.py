@@ -52,6 +52,7 @@ class RoleAnnotation:
         self.Vec5 = Type(role, (5,))
         self.Mat3 = Type(role, (3, 3))
         self.Mat5 = Type(role, (5, 5))
+        self.Mat53 = Type(role, (5, 3))  # gradient of a 5-component state: row i is grad of u_i
 
 
 State = RoleAnnotation(Role.STATE)
@@ -326,4 +327,6 @@ def _intrinsic(*_: object) -> object:
     raise CodegenError(Code.UNSUPPORTED_CONSTRUCT, "DSL intrinsics only exist inside parsed bodies")
 
 
-dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = Vec3 = Vec5 = _intrinsic
+dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = outer = Vec3 = Vec5 = (
+    _intrinsic
+)

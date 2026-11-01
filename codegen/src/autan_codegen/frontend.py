@@ -52,6 +52,7 @@ INTRINSICS = UNARY_MATH | {
     "Vec3",
     "Vec5",
     "transpose",
+    "outer",
     "abs",
     "min",
     "max",
@@ -373,6 +374,14 @@ class _Builder:
             if len(args) != n:
                 raise self.err(Code.TYPE_MISMATCH, f"{fname} takes {n} scalars")
             return Arr(tuple(self.real(a) for a in args), (n,))
+        if fname == "outer":
+            a, b = args
+            if not (
+                isinstance(a, Arr) and isinstance(b, Arr) and len(a.shape) == len(b.shape) == 1
+            ):
+                raise self.err(Code.TYPE_MISMATCH, "outer takes two vectors")
+            ids = tuple(self.emit("mul", x, y) for x in a.ids for y in b.ids)
+            return Arr(ids, (a.shape[0], b.shape[0]))
         if fname == "transpose":
             (a,) = args
             if not (isinstance(a, Arr) and len(a.shape) == 2):

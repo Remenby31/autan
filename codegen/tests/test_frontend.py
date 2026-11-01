@@ -8,7 +8,19 @@ import numpy as np
 import pytest
 from autan_codegen import dsl
 from autan_codegen.ad import adjoint, tangent
-from autan_codegen.dsl import Geom, Param, Residual, State, cells, dot, pointwise, rel, sqrt
+from autan_codegen.dsl import (
+    Geom,
+    Grad,
+    Param,
+    Residual,
+    State,
+    cells,
+    dot,
+    outer,
+    pointwise,
+    rel,
+    sqrt,
+)
 from autan_codegen.errors import CodegenError
 from autan_codegen.frontend import parse
 
@@ -202,3 +214,24 @@ def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.cell_loop(in_place, x=r, out=dsl.Write(r)))
     assert info.value.code == "E1003"
+
+
+@pointwise
+def state_gradient_step(
+    qc: State.Vec5, qn: State.Vec5, w: Geom.Vec3, r: Geom.Vec3
+) -> tuple[Grad.Mat53, State.Vec5]:
+    g = outer(qn - qc, w)
+    return g, qc + g @ r
+
+
+def test_matrix_gradients_of_vector_states() -> None:
+    # outer(a, b)[i, j] = a_i b_j; (5 x 3) @ (3,) gives row-wise dot products.
+    fn, sig = parse(state_gradient_step)
+    assert sig.returns is not None
+    assert sig.returns[0].shape == (5, 3)
+    qc, qn = (1.0, 2.0, 3.0, 4.0, 5.0), (2.0, 4.0, 6.0, 8.0, 10.0)
+    w, r = (1.0, 0.5, 0.0), (2.0, 2.0, 1.0)
+    out = run(fn, qc, qn, w, r)
+    d = np.subtract(qn, qc)
+    np.testing.assert_array_equal(out[:15], np.outer(d, w).ravel())
+    np.testing.assert_array_equal(out[15:], np.add(qc, np.outer(d, w) @ r))
