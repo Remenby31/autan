@@ -164,14 +164,6 @@ A face carries two labels.
 
 Fix: Assign each face to one zone in the meshing tool.
 
-## E0116
-
-**Face without an owned cell** (error)
-
-A face touches only ghost cells.
-
-Fix: Regenerate the partition; every face needs an owned cell.
-
 ## E0117
 
 **Duplicate or negative global cell id** (error)
@@ -179,6 +171,22 @@ Fix: Regenerate the partition; every face needs an owned cell.
 Two cells share a global id, or one is negative.
 
 Fix: Regenerate the partition; global cell ids must be unique and non-negative.
+
+## E0118
+
+**Invalid periodic pair** (error)
+
+A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a boundary zone of kind periodic in no pair, or a translation that is zero or not finite.
+
+Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.
+
+## E0119
+
+**Periodic faces do not match** (error)
+
+The faces of a periodic pair do not match one to one under its translation.
+
+Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
 
 ## E0120
 
@@ -448,7 +456,7 @@ Fix: Set them: `case.boundary("name").outlet(static_pressure=101325 * Pa)`.
 
 **Boundary condition not available for this physics** (error)
 
-`inlet` (total conditions) is compressible only, `velocity-inlet` incompressible only, and a no-slip `wall` needs viscous flow.
+`inlet` (total conditions) is compressible only, `velocity-inlet` incompressible only, a no-slip `wall` needs viscous flow, and `oracle-state` needs compressible inviscid or laminar physics.
 
 Fix: Use the condition matching the physics: `slip()` for inviscid walls, `inlet(...)` or `velocity_inlet(...)`.
 
@@ -475,6 +483,46 @@ Fix: Remove the boundary rules from the verification case.
 Manufactured solutions are steady, and a run starting from the freestream would keep an initial-condition error at fixed time; `autan.case/1` verification cases are steady.
 
 Fix: Set `case.time = autan.Steady(...)` in the verification case.
+
+## E0420
+
+**Face-state file missing or invalid** (error)
+
+The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the case's, or it is not a valid `autan.face-states/1` document: its variables, a row of 3 finite coordinates and 5 finite values per face, density and pressure > 0 (docs/contracts/face-states.md).
+
+Fix: Export the face states with autan-vv for this mesh and give their path and sha256.
+
+## E0421
+
+**Face states do not match the boundary faces** (error)
+
+The solver could not pair every boundary face of the zone with one face state by centroid, within 1e-9 times the largest extent of the zone's bounding box in the whole mesh.
+
+Fix: Export the face states from the mesh the case uses.
+
+## E0422
+
+**Face states exported for another mesh** (error)
+
+The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.
+
+Fix: Export the face states for the mesh the case uses.
+
+## E0423
+
+**Face states do not cover the zone** (error)
+
+A boundary zone that takes the `oracle_state` condition is missing from the file, or the file gives another number of faces than the mesh has in that zone.
+
+Fix: Export the face states for every zone the condition applies to.
+
+## E0424
+
+**Condition on a periodic zone** (error)
+
+A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.
+
+Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic.
 
 ## E0501
 
@@ -592,7 +640,7 @@ Fix: Regenerate the input with `autan prepare` from the same Autan version as th
 
 **Physics not in this solver build** (error)
 
-The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind; `data` names the combination.
+The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind, or for the case's media, zones and conditions (a solid zone, several gases, a condition the physics lacks); `data` names the combination or the zone.
 
 Fix: Use a build that includes it, or change the case or the devices.
 

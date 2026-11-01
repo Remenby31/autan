@@ -82,7 +82,7 @@ LSQ on hex in `fp32+acc64` misses the gate in both sessions, and its time barely
 
 ## Verification
 
-`pytest tests/test_gpu.py --backend metal` with `AUTAN_SPIKE_LIB=…/libautan_spike_metal.dylib` runs the CUDA device suite on Metal: every loop, strategy and policy against the host loops (residuals, gradients, Roe flux with its tangent and adjoint, adjoints of reductions with Min/Max ties, ghost-cell partial sums), bitwise reproducibility of the deterministic strategies over ten runs and two launch shapes, norms at amplitudes 10⁻²⁰ and 10²⁰, and refusals with their codes. `tests/test_metal.py` checks the generator's refusal and compiles every DSL shape with the device's Metal compiler.
+`pytest tests/test_gpu.py --backend metal` with `AUTAN_SPIKE_LIB=…/libautan_spike_metal.dylib` runs the CUDA device suite on Metal: every loop, strategy and policy against the host loops (residuals, gradients, Roe flux with its tangent and adjoint, adjoints of reductions with Min/Max ties, ghost-cell partial sums), bitwise reproducibility of the deterministic strategies over ten runs and two launch shapes, norms at amplitudes 10⁻²⁰ and 10²⁰, and refusals with their codes. `tests/physics/test_euler_metal.mm` evaluates the Euler residual of `kernels/euler.py` with the Metal loops and compares it with the CPU physics (`autan::physics::Euler`): Roe, HLLC and AUSM+-up, first and second order, all five boundary kinds with the physics' gradient weights, both policies, every strategy each policy has. `tests/test_metal.py` checks the generator's refusal and compiles every DSL shape with the device's Metal compiler.
 
 CI: `.github/workflows/metal.yml` on GitHub's `macos-26` arm64 runner builds the runtime, driver and benchmarks, then runs the device tests if the VM exposes a Metal device; if not, it says so in a warning and the step summary.
 
@@ -92,3 +92,4 @@ CI: `.github/workflows/metal.yml` on GitHub's `macos-26` arm64 runner builds the
 - **autan-bench on macOS.** The results above ran with the busy-sample fix of PR #107 (Apple's IO-registry utilisation stays at 3–18 % under a saturating load). Host load is not recorded yet, though it shares the DRAM (session B); proposed to CFD - HPC Spark.
 - **Shader compilation.** Libraries compile from source at first use (4 s for the spike modules, then the system cache); a precompiled `.metallib` (Metal Toolchain) is an option for packaged wheels.
 - **Hierarchical colouring and SIMD-group transposition** are not emitted, as on CUDA.
+- **Euler physics on Metal.** Only the test runs the Euler loops on Metal. A Metal physics path must take its gradient weights from `Euler<P>::gradient_weights()` and refresh them after every `set_boundary()`: they depend on the boundary kinds.

@@ -38,6 +38,18 @@ export interface Run {
   time: number | null;
   averaging: Record<string, number> | null;
   diagnostics: Diagnostic[];
+  /** Where the run started from, null from the freestream (results.md#runjson). */
+  start: RunStart | null;
+}
+
+export interface RunStart {
+  run_id: string;
+  identity: string;
+  mode: "continue" | "warm";
+  iterations: number;
+  time: number | null;
+  solution_sha256: string;
+  residual_reference: Record<string, number> | null;
 }
 
 export interface Forces {

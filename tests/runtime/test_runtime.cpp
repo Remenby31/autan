@@ -340,6 +340,41 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),
                   "E0705");
   }
+  SECTION("E0705 states on a condition that takes none") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["states"] = {{"path", "/s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 oracle-state without an absolute states path") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", "s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 oracle-state with a turbulence model") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", "/s.json"},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 NUL in a states path") {
+    require_error(run(input([](Json& d) {
+                    d["physics"]["turbulence"]["model"] = "inviscid";
+                    d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+                    d["freestream"]["nu_tilde"] = nullptr;
+                    for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+                    d["boundaries"][0]["kind"] = "oracle-state";
+                    d["boundaries"][0]["states"] = {{"path", std::string("/s\0.json", 8)},
+                                                    {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
   SECTION("E0705 zone absent from the mesh") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }
@@ -349,6 +384,35 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   SECTION("E0706 no physics in the build") {
     require_error(run(input(), autan::runtime::PhysicsRegistry{}), "E0706");
   }
+}
+
+TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
+  const bool refuse = GENERATE(true, false);
+  autan::runtime::PhysicsRegistry registry;
+  registry.add(
+      {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
+      [](const autan::runtime::PhysicsContext& context) {
+        return std::make_unique<autan_test::Relaxation>(context, autan_test::RelaxationOptions{});
+      },
+      [refuse](
+          const autan::runtime::SolverInput& in) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (!refuse) return std::nullopt;
+        return autan::runtime::PhysicsRefusal{
+            .message = "refused",
+            .path = "cell_zones[1].medium",
+            .data_json = Json{{"zone", in.cell_zones[1].zone}}.dump()};
+      });
+  const Json doc = input();
+  const Outcome o = run(doc, registry);
+  if (!refuse) {
+    CHECK(o.status == ExitStatus::finished);
+    return;
+  }
+  require_error(o, "E0706");
+  const Json d = Json::parse(o.err);
+  CHECK(d["location"]["path"] == "cell_zones[1].medium");
+  CHECK(d["data"] ==
+        Json{{"zone", doc["cell_zones"][1]["zone"]}, {"path", "cell_zones[1].medium"}});
 }
 
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
@@ -476,6 +540,18 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
   }
   SECTION("cell zones are described once") {
     require_error(run(input([](Json& d) { d["cell_zones"].push_back(d["cell_zones"][0]); })),
+                  "E0705");
+  }
+  SECTION("periodic pairs are the mesh's, well formed") {
+    const Json pair{{"zones", {"xmin", "xmax"}},
+                    {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}};
+    // The hybrid mesh has no periodic pair.
+    require_error(run(input([&](Json& d) { d["periodic"] = Json::array({pair}); })), "E0705");
+    require_error(run(input([&](Json& d) {
+                    Json bad = pair;
+                    bad["transform"]["kind"] = "rotation";
+                    d["periodic"] = Json::array({bad});
+                  })),
                   "E0705");
   }
   SECTION("mesh path is absolute") {
@@ -736,4 +812,21 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["start"]["run"] = "relative/run"; }), "E0705");
     require_error(from([](Json& d) { d["start"]["residual_reference"].erase("energy"); }), "E0705");
   }
+}
+
+TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "[runtime]") {
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  const auto with_pairs = [&](double tx) {
+    return input([&](Json& d) {
+      d["mesh"]["path"] = fs::absolute(box).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+      d["periodic"] = Json::array(
+          {Json{{"zones", {"xmin", "xmax"}},
+                {"transform", {{"kind", "translation"}, {"vector", {tx, 0.0, 0.0}}}}},
+           Json{{"zones", {"ymin", "ymax"}},
+                {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    });
+  };
+  require_error(run(with_pairs(1.0)), "E0706");
+  require_error(run(with_pairs(2.0)), "E0705");
 }

@@ -163,6 +163,7 @@ A rule applies a condition to every boundary zone whose name matches `zones`, a 
 | `"inlet"` | `total_pressure` (pressure > 0), `total_temperature` (temperature > 0) | compressible (`E0414` otherwise) |
 | `"velocity-inlet"` | `velocity` (speed > 0) | incompressible (`E0414` otherwise) |
 | `"outlet"` | `static_pressure` (pressure > 0) | all |
+| `"oracle-state"` | `path` (relative to the case file) and `sha256` of an `autan.face-states/1` file exported for this mesh ([face-states.md](face-states.md)): every face of the zone takes its state | compressible, inviscid or laminar (`E0414` otherwise) |
 
 `inlet`, `velocity-inlet` and `outlet` are subsonic conditions. Inlet flow is normal to the boundary face. Where the outflow is supersonic, the outlet extrapolates every variable and ignores `static_pressure`. The solver reports inlet faces with supersonic or reversed flow and outlet faces with reversed flow (codes defined with the M2 boundary conditions).
 
@@ -200,6 +201,8 @@ Coefficients are reported only when `ref_area` is set; moment coefficients also 
 ## Boundary resolution
 
 The solver needs one condition per boundary zone of the mesh. The SDK resolves them from the case and the mesh's [MeshInfo](mesh-info.md), and records where each comes from (its **provenance**):
+
+A zone of a periodic pair (MeshInfo `periodic`, [mesh-info.md](mesh-info.md)) takes no condition: the solver pairs its faces with those of its partner. Its provenance is `mesh` and `autan plan` shows `{"kind": "periodic", "partner": …}`. A rule naming it is an error (`E0424`); patterns with wildcards skip periodic zones. The rest of this section concerns the other zones.
 
 With `verification`, every boundary zone takes the manufactured solution's data, provenance `verification`, and the steps below do not apply.
 

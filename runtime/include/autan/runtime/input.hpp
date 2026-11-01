@@ -39,12 +39,19 @@ struct CellZoneInput {
   InitialState initial;
 };
 
+/// Per-face boundary states of an oracle (docs/contracts/face-states.md).
+struct BoundaryStates {
+  std::string path;    ///< absolute path of the autan.face-states/1 file
+  std::string sha256;  ///< its expected SHA-256
+};
+
 struct BoundaryInput {
   std::string zone;
-  std::string
-      kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet, manufactured
+  std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
+                     ///< manufactured, oracle-state
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<double> velocity;  ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<double> velocity;        ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<BoundaryStates> states;  ///< oracle-state only
 };
 
 struct Turbulence {
@@ -100,6 +107,13 @@ struct Start {
   std::optional<std::vector<double>> residual_reference;
 };
 
+/// A periodic pair of the mesh, as MeshInfo lists it (solver-input.md,
+/// `periodic`): zone a's faces map onto zone b's by the translation.
+struct PeriodicInput {
+  std::array<std::string, 2> zones;
+  std::array<double, 3> translation{};
+};
+
 struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
@@ -117,6 +131,7 @@ struct SolverInput {
   /// Present for verification cases: every boundary is then "manufactured".
   std::optional<Verification> verification;
   std::optional<Start> start;
+  std::vector<PeriodicInput> periodic;
 };
 
 /// Parses and checks a solver input: every key present, no unknown key,

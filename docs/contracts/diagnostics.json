@@ -121,17 +121,23 @@
       "fix": "Assign each face to one zone in the meshing tool.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0115"
     },
-    "E0116": {
-      "severity": "error",
-      "title": "Face without an owned cell",
-      "fix": "Regenerate the partition; every face needs an owned cell.",
-      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0116"
-    },
     "E0117": {
       "severity": "error",
       "title": "Duplicate or negative global cell id",
       "fix": "Regenerate the partition; global cell ids must be unique and non-negative.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0117"
+    },
+    "E0118": {
+      "severity": "error",
+      "title": "Invalid periodic pair",
+      "fix": "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0118"
+    },
+    "E0119": {
+      "severity": "error",
+      "title": "Periodic faces do not match",
+      "fix": "Regenerate the mesh with conforming periodic faces, and check the translation.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0119"
     },
     "E0120": {
       "severity": "error",
@@ -354,6 +360,36 @@
       "title": "Unsteady verification case",
       "fix": "Set `case.time = autan.Steady(...)` in the verification case.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0417"
+    },
+    "E0420": {
+      "severity": "error",
+      "title": "Face-state file missing or invalid",
+      "fix": "Export the face states with autan-vv for this mesh and give their path and sha256.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0420"
+    },
+    "E0421": {
+      "severity": "error",
+      "title": "Face states do not match the boundary faces",
+      "fix": "Export the face states from the mesh the case uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0421"
+    },
+    "E0422": {
+      "severity": "error",
+      "title": "Face states exported for another mesh",
+      "fix": "Export the face states for the mesh the case uses.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0422"
+    },
+    "E0423": {
+      "severity": "error",
+      "title": "Face states do not cover the zone",
+      "fix": "Export the face states for every zone the condition applies to.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0423"
+    },
+    "E0424": {
+      "severity": "error",
+      "title": "Condition on a periodic zone",
+      "fix": "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0424"
     },
     "E0501": {
       "severity": "error",

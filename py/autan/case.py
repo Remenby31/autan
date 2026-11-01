@@ -29,6 +29,7 @@ from autan.schema import (
     Incompressible,
     Inlet,
     Manufactured,
+    OracleState,
     Outlet,
     Slip,
     Solid,
@@ -346,6 +347,10 @@ class BoundarySelector:
     def outlet(self, *, static_pressure: pint.Quantity) -> None:
         """Subsonic outlet at a static pressure."""
         self._add(Outlet(static_pressure=static_pressure))
+
+    def oracle_state(self, *, path: str, sha256: str) -> None:
+        """Impose the per-face states of an ``autan.face-states/1`` file (compressible)."""
+        self._add(OracleState(path=path, sha256=sha256))
 
 
 class CellZoneSelector:

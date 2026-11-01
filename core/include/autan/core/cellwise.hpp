@@ -26,6 +26,7 @@ struct CellwiseMesh {
   std::vector<index_t> labelled_face_zone;
   std::vector<FaceZone> face_zones;
   std::vector<CellZone> cell_zones;
+  std::vector<PeriodicPair> periodic;
   MeshSource source;
 
   /// Appends a standard cell; `nodes` follows the Gmsh ordering of `shape`.

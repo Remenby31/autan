@@ -54,6 +54,9 @@ export const docs = defineDocs({
       }),
     mdxOptions: applyMdxPreset({
       remarkPlugins: (plugins) => [remarkRepoDocs, ...plugins],
+      // Remote images (README badges) keep their own size: measuring them would fetch them
+      // at build time, and the build must not depend on the network.
+      remarkImageOptions: { external: false },
     }),
     postprocess: { includeProcessedMarkdown: true },
   },

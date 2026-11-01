@@ -37,4 +37,4 @@ file(
 )
 
 add_executable(autan-run tools/autan_run.cpp)
-target_link_libraries(autan-run PRIVATE autan::runtime autan_compile_options)
+target_link_libraries(autan-run PRIVATE autan::runtime autan::physics_runtime autan_compile_options)

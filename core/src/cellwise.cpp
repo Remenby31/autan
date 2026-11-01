@@ -304,6 +304,7 @@ MeshInput to_face_based(CellwiseMesh mesh) {
   out.cell_zone = std::move(mesh.cell_zone);
   out.face_zones = std::move(mesh.face_zones);
   out.cell_zones = std::move(mesh.cell_zones);
+  out.periodic = std::move(mesh.periodic);
   out.source = std::move(mesh.source);
   return out;
 }

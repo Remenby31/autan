@@ -217,8 +217,11 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
             "  for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {"
         )
         e.w("    const index_t f = d.topo.cell_faces[k];")
+        # Faces outside the loop's range (halo faces, other kind) were not evaluated.
         cond = (
-            "f >= d.topo.n_interior_faces" if lm.kind == "face" else "f < d.topo.n_interior_faces"
+            "f >= d.topo.n_owned_interior_faces"
+            if lm.kind == "face"
+            else "f < d.topo.n_interior_faces || f >= d.topo.n_owned_faces"
         )
         e.w(f"    if ({cond}) {{")
         e.w("      continue;")
@@ -342,9 +345,9 @@ def emit_msl(m: Module, policies: list[str], line_directives: bool = True) -> st
 
 def _face_launcher(e: Emitter, lm: LoopModel) -> None:
     lo, hi = (
-        ("0", "d.topo.n_interior_faces")
+        ("0", "d.topo.n_owned_interior_faces")
         if lm.kind == "face"
-        else ("d.topo.n_interior_faces", "d.topo.n_faces")
+        else ("d.topo.n_interior_faces", "d.topo.n_owned_faces")
     )
     col = "interior" if lm.kind == "face" else "boundary"
     nm = lm.name

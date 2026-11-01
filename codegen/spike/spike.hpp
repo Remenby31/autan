@@ -25,6 +25,7 @@ struct SpikeMesh {
   std::vector<autan::kernels::offset_t> twins;
   autan::kernels::CellStencil stencil;
   autan::kernels::Topology topo{};
+  std::vector<std::int64_t> face_global_id;  ///< partitions: face of the global mesh
 };
 
 inline int fail(char* err, std::size_t len, std::string_view code, std::string_view what) {
