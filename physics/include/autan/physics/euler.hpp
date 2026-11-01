@@ -84,9 +84,10 @@ class Euler {
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
   void spectral_radius(std::span<State> lambda);
-  /// After residual(s): absolute pressure of the reconstruction at every boundary face's centroid,
-  /// from its owner cell (n_boundary_faces, FP64).
-  void boundary_pressure(std::span<double> p) const;
+  /// After residual(s): absolute pressure of the boundary flux's face state at every boundary face
+  /// (n_boundary_faces, FP64) and, unless `force` is empty, the pressure force on each face as
+  /// the residual integrates it, warped-face correction included (3 x n_boundary_faces).
+  void boundary_pressure(std::span<double> p, std::span<double> force = {}) const;
 
  private:
   struct Impl;

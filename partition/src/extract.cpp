@@ -19,6 +19,9 @@ void check_request(const Mesh& global, const Geometry& geometry,
   if (global.n_owned_cells() != global.n_cells()) {
     throw Error(ErrorCode::partition_input_has_ghosts, "the mesh to split already has ghost cells");
   }
+  if (!global.periodic_pairs().empty()) {
+    throw Error(ErrorCode::partition_invalid_request, "periodic meshes are not partitioned yet");
+  }
   if (parts.size() != at(global.n_cells()) || n_parts < 1 || rank < 0 || rank >= n_parts) {
     throw Error(ErrorCode::partition_invalid_request,
                 "parts has " + std::to_string(parts.size()) + " entries for " +

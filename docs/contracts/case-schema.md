@@ -201,6 +201,8 @@ Coefficients are reported only when `ref_area` is set; moment coefficients also 
 
 The solver needs one condition per boundary zone of the mesh. The SDK resolves them from the case and the mesh's [MeshInfo](mesh-info.md), and records where each comes from (its **provenance**):
 
+A zone of a periodic pair (MeshInfo `periodic`, [mesh-info.md](mesh-info.md)) takes no condition: the solver pairs its faces with those of its partner. Its provenance is `mesh` and `autan plan` shows `{"kind": "periodic", "partner": …}`. A rule naming it is an error (`E0424`); patterns with wildcards skip periodic zones. The rest of this section concerns the other zones.
+
 With `verification`, every boundary zone takes the manufactured solution's data, provenance `verification`, and the steps below do not apply.
 
 1. Each rule must match at least one zone (`E0410`). A zone matched by two rules is ambiguous (`E0411`): narrow the patterns.

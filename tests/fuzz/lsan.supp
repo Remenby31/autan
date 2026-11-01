@@ -1,5 +1,12 @@
 # LeakSanitizer suppressions for the fuzz harnesses (LSAN_OPTIONS=suppressions=<this file>).
-# A rule hides every leak with that function anywhere in its allocation stack.
-# CGNS 4.5.2: cg_version (called by cg_open) returns CG_ERROR without freeing its node ids and
-# node data. Remove once a fixed CGNS version is in use.
+# A rule hides every leak with that function anywhere in its allocation stack: one rule per
+# library function found leaking, never a broad entry point such as cg_open, under which a
+# missing cg_close of ours would also hide. Remove a rule once a fixed library is in use.
+# CGNS 4.5.2 returns CG_ERROR without freeing what it allocated on the way: the node ids of
+# cgi_get_nodes, and data read by cgi_read_node, in
 leak:^cg_version$
+leak:^cgi_read_zone$
+leak:^cgi_read_zonetype$
+leak:^cgi_read_zcoor$
+leak:^cgi_read_section$
+leak:^cgi_read_zboco$

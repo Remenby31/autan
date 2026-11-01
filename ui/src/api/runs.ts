@@ -162,7 +162,12 @@ function column<T>(map: Map<string, T>, name: string, create: () => T): T {
 }
 
 /** Appends in place, so a long history is never copied; returns a new handle for React. */
-export function appendHistory(columns: HistoryColumns, records: HistoryRecord[]): HistoryColumns {
+export function appendHistory(
+  columns: HistoryColumns,
+  records: HistoryRecord[],
+  /** `start.residual_reference` of a steady continued run: the drop is measured from it. */
+  reference?: Record<string, number> | null,
+): HistoryColumns {
   for (const record of records) {
     columns.iteration.push(record.iteration);
     let slowest = Number.POSITIVE_INFINITY;
@@ -170,7 +175,7 @@ export function appendHistory(columns: HistoryColumns, records: HistoryRecord[])
     for (const [name, value] of Object.entries(record.residuals)) {
       const series = column(columns.residuals, name, () => []);
       series.push(value);
-      const first = series[0] ?? 0;
+      const first = reference?.[name] ?? series[0] ?? 0;
       if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
@@ -221,6 +226,7 @@ export function useLiveRun(runId: string): LiveRun {
   }));
   useEffect(() => {
     let history = emptyColumns();
+    let reference: Record<string, number> | null = null;
     const log: LogLines = { lines: [], version: 0 };
     setState({ run: null, history, log, connected: false, invalid: null });
     const source = new EventSource(`/api/runs/${runId}/history/events`);
@@ -228,12 +234,13 @@ export function useLiveRun(runId: string): LiveRun {
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
     source.addEventListener("run", (e) => {
       const run = JSON.parse(e.data) as Run;
+      reference = run.start?.residual_reference ?? null;
       setState((s) => ({ ...s, run }));
     });
     source.addEventListener("history", (e) => {
       const records = JSON.parse(e.data) as HistoryRecord[];
       if (!records.length) return;
-      history = appendHistory(history, records);
+      history = appendHistory(history, records, reference);
       const next = history;
       setState((s) => ({ ...s, history: next }));
     });
@@ -278,17 +285,19 @@ export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> 
         next.set(runId, change(old));
         return next;
       });
+    const references = new Map<string, Record<string, number> | null>();
     const query = runIds.map((id) => `run=${encodeURIComponent(id)}`).join("&");
     const source = new EventSource(`/api/runs/history/events?${query}`);
     source.addEventListener("run", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: Run };
+      references.set(run_id, data.start?.residual_reference ?? null);
       set(run_id, (old) => ({ ...old, run: data }));
     });
     source.addEventListener("history", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: HistoryRecord[] };
       const history = histories.get(run_id);
       if (!history || !data.length) return;
-      const next = appendHistory(history, data);
+      const next = appendHistory(history, data, references.get(run_id));
       histories.set(run_id, next);
       set(run_id, (old) => ({ ...old, history: next }));
     });

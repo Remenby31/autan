@@ -333,6 +333,8 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   mesh.source_ = std::move(in.source);
 
   check_cells_closed(mesh);
+  mesh.periodic_partners_ = match_periodic_faces(mesh, in.periodic);
+  mesh.periodic_pairs_ = std::move(in.periodic);
   return mesh;
 }
 

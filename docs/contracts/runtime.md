@@ -27,4 +27,4 @@ For an input with a `start` ([solver-input.md](solver-input.md)), the runtime ch
 
 ## Registration
 
-A build of `autan-run` lists its physics in a `PhysicsRegistry`: each entry matches `physics.kind`, `physics.turbulence.model`, `precision` and `devices.kind` (or `*`). The first match runs the case; none is `E0706` before any directory exists. Implementations templated on precision register one entry per precision they instantiate.
+A build of `autan-run` lists its physics in a `PhysicsRegistry`: each entry matches `physics.kind`, `physics.turbulence.model`, `precision` and `devices.kind` (or `*`). The first match runs the case; none is `E0706` before any directory exists. The input's `periodic` pairs must be the mesh's (`E0705` otherwise); a mesh with periodic pairs is `E0706` until the runtime drives physics on a partition with image ghost cells. Implementations templated on precision register one entry per precision they instantiate.
