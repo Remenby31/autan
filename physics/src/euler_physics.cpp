@@ -209,7 +209,9 @@ class EulerPhysics final : public runtime::Physics {
     const double speed = std::max(f.speed, c);
     Scheme s;
     s.flux = Flux::roe;
-    s.limiter = true;
+    // A manufactured solution is smooth by construction: verification measures the design
+    // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
+    s.limiter = !in.verification.has_value();
     s.venkat_k = venkatakrishnan_k;
     s.length = f.ref_length.value_or(1.0);
     s.scale = {f.density, speed, speed, speed, f.pressure};
