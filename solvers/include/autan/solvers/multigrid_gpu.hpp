@@ -10,10 +10,11 @@ namespace autan::solvers::gpu {
 
 /// Restriction and prolongation between the levels of an agglomeration hierarchy, on the GPU
 /// (docs/design/multigrid-gpu.md#transfers). Vectors are device arrays of FP64 values in
-/// structure of arrays, 5 components, component c of node i at c * n + i. Each output value is
-/// written by one thread from a list in the host multigrid's order, so results are bitwise
-/// those of the host. Calls are asynchronous on `stream` (a cudaStream_t; null is the default
-/// stream). Throws std::out_of_range for a level without a coarser one.
+/// structure of arrays, 5 components, component c of node i at c * n + i, in the device
+/// numbering of their level (`order`). Each output value is written by one thread from a list in
+/// the host multigrid's order, so results are bitwise those of the host, permuted. Calls are
+/// asynchronous on `stream` (a cudaStream_t; null is the default stream). Throws
+/// std::out_of_range for a level without a coarser one.
 class Transfers {
  public:
   /// Uploads the lists of `levels`, finest first, as `agglomerate` returns them.
@@ -24,8 +25,11 @@ class Transfers {
   Transfers(const Transfers&) = delete;
   Transfers& operator=(const Transfers&) = delete;
 
+  /// Host index of each device node of level l: level 0 keeps the mesh's numbering, a coarse
+  /// node is ranked by its least child in the finer level's device numbering.
+  [[nodiscard]] std::span<const index_t> order(std::size_t l) const;
   /// b_c = Pᵀ r from level l to level l + 1: each coarse value is the sum, from +0.0, of its
-  /// children's values in increasing fine index.
+  /// children's values in increasing host fine index.
   void restrict_residual(std::size_t l, const double* r, double* b_coarse,
                          void* stream = nullptr) const;
   /// e = P x_c from level l + 1 to level l: e_i = x_c of the coarse node holding i.

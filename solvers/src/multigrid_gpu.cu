@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -59,10 +60,11 @@ struct Transfers::Impl {
   struct Pair {
     std::int64_t n_fine = 0, n_coarse = 0;
     kg::DeviceArray<offset_t> offsets;     // coarse node -> its children, CSR
-    kg::DeviceArray<index_t> children;     // in increasing fine index
+    kg::DeviceArray<index_t> children;     // in increasing host fine index
     kg::DeviceArray<index_t> coarse_node;  // fine node -> coarse node
   };
   std::vector<Pair> pairs;
+  std::vector<std::vector<index_t>> order;  // per level: host index of each device node
 
   const Pair& at(std::size_t l) const {
     if (l >= pairs.size()) {
@@ -73,27 +75,62 @@ struct Transfers::Impl {
   }
 };
 
+// Device numbering: level 0 keeps the mesh's; each coarse node takes the rank of its least child
+// in the finer level's device numbering, so that consecutive coarse nodes gather nearby fine
+// nodes. Lists keep the host's summation order (children by increasing host index), so every
+// value is the host's, only stored at another index.
 Transfers::Transfers(std::span<const Level> levels) : impl_(std::make_unique<Impl>()) {
+  if (levels.empty()) return;
+  std::vector<index_t> fine_order(levels[0].n_nodes), fine_rank(levels[0].n_nodes);
+  for (std::size_t i = 0; i < fine_order.size(); ++i) {
+    fine_order[i] = fine_rank[i] = static_cast<index_t>(i);
+  }
+  impl_->order.push_back(fine_order);
   for (std::size_t l = 0; l + 1 < levels.size(); ++l) {
     const Level& f = levels[l];
-    const std::size_t nc = levels[l + 1].n_nodes;
+    const std::size_t n = f.n_nodes, nc = levels[l + 1].n_nodes;
+    std::vector<index_t> least(nc, static_cast<index_t>(n));
+    for (std::size_t h = 0; h < n; ++h) {
+      index_t& m = least[static_cast<std::size_t>(f.coarse_node[h])];
+      m = std::min(m, fine_rank[h]);
+    }
+    std::vector<index_t> coarse_order(nc), coarse_rank(nc);
+    for (std::size_t H = 0; H < nc; ++H) coarse_order[H] = static_cast<index_t>(H);
+    std::sort(coarse_order.begin(), coarse_order.end(), [&](index_t a, index_t b) {
+      return least[static_cast<std::size_t>(a)] < least[static_cast<std::size_t>(b)];
+    });
+    for (std::size_t J = 0; J < nc; ++J) {
+      coarse_rank[static_cast<std::size_t>(coarse_order[J])] = static_cast<index_t>(J);
+    }
     std::vector<offset_t> offsets(nc + 1, 0);
-    for (const index_t c : f.coarse_node) ++offsets[static_cast<std::size_t>(c) + 1];
-    for (std::size_t c = 0; c < nc; ++c) offsets[c + 1] += offsets[c];
-    std::vector<index_t> children(f.n_nodes);
+    for (const index_t H : f.coarse_node) {
+      ++offsets[static_cast<std::size_t>(coarse_rank[static_cast<std::size_t>(H)]) + 1];
+    }
+    for (std::size_t J = 0; J < nc; ++J) offsets[J + 1] += offsets[J];
+    std::vector<index_t> children(n), coarse_node(n);
     std::vector<offset_t> fill(offsets.begin(), offsets.end() - 1);
-    for (std::size_t i = 0; i < f.n_nodes; ++i) {
-      children[static_cast<std::size_t>(fill[static_cast<std::size_t>(f.coarse_node[i])]++)] =
-          static_cast<index_t>(i);
+    for (std::size_t h = 0; h < n; ++h) {
+      const index_t J = coarse_rank[static_cast<std::size_t>(f.coarse_node[h])];
+      children[static_cast<std::size_t>(fill[static_cast<std::size_t>(J)]++)] = fine_rank[h];
+      coarse_node[static_cast<std::size_t>(fine_rank[h])] = J;
     }
     Impl::Pair p;
-    p.n_fine = static_cast<std::int64_t>(f.n_nodes);
+    p.n_fine = static_cast<std::int64_t>(n);
     p.n_coarse = static_cast<std::int64_t>(nc);
     p.offsets = kg::DeviceArray<offset_t>(std::span<const offset_t>(offsets));
     p.children = kg::DeviceArray<index_t>(std::span<const index_t>(children));
-    p.coarse_node = kg::DeviceArray<index_t>(std::span<const index_t>(f.coarse_node));
+    p.coarse_node = kg::DeviceArray<index_t>(std::span<const index_t>(coarse_node));
     impl_->pairs.push_back(std::move(p));
+    impl_->order.push_back(coarse_order);
+    fine_rank = std::move(coarse_rank);
   }
+}
+
+std::span<const index_t> Transfers::order(std::size_t l) const {
+  if (l >= impl_->order.size()) {
+    throw std::out_of_range("multigrid transfers: no level " + std::to_string(l));
+  }
+  return impl_->order[l];
 }
 
 Transfers::~Transfers() = default;

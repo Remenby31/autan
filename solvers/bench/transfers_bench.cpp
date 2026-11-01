@@ -169,14 +169,29 @@ int main(int argc, char** argv) {
 
   wait_for_go(o.gate);
   const autan::solvers::gpu::Transfers transfers(levels);
-  const Device dr(r), dxc(xc), dx(x0), dalpha(std::vector<double>{alpha});
+  const auto coarse = transfers.order(1);
+  // Level 0 keeps the mesh's numbering; level 1 is permuted on the device.
+  auto permuted = [&](const std::vector<double>& v, bool to_device) {
+    std::vector<double> d(v.size());
+    for (std::size_t c = 0; c < 5; ++c) {
+      for (std::size_t j = 0; j < nc; ++j) {
+        const std::size_t h = c * nc + static_cast<std::size_t>(coarse[j]);
+        if (to_device)
+          d[c * nc + j] = v[h];
+        else
+          d[h] = v[c * nc + j];
+      }
+    }
+    return d;
+  };
+  const Device dr(r), dxc(permuted(xc, true)), dx(x0), dalpha(std::vector<double>{alpha});
   const Device dbc(std::vector<double>(5 * nc)), de(std::vector<double>(5 * n));
   transfers.restrict_residual(0, dr.get(), dbc.get());
   transfers.prolong(0, dxc.get(), de.get());
   transfers.correct(0, dalpha.get(), dxc.get(), dx.get());
   check(cudaDeviceSynchronize(), "verify");
-  const bool verified =
-      same_bits(dbc.download(), bc) && same_bits(de.download(), e) && same_bits(dx.download(), x);
+  const bool verified = same_bits(permuted(dbc.download(), false), bc) &&
+                        same_bits(de.download(), e) && same_bits(dx.download(), x);
 
   const auto nf = static_cast<double>(n), ncd = static_cast<double>(nc);
   std::vector<Timed> timed;

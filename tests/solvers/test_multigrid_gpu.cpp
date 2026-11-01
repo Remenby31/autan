@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -73,6 +74,28 @@ bool same_bits(const std::vector<double>& a, const std::vector<double>& b) {
   return true;
 }
 
+// A host-numbered vector in a level's device numbering, and back: device node j is host node
+// order[j].
+std::vector<double> to_device(const std::vector<double>& v, std::span<const autan::index_t> order) {
+  const std::size_t n = order.size();
+  std::vector<double> d(v.size());
+  for (std::size_t c = 0; c < 5; ++c) {
+    for (std::size_t j = 0; j < n; ++j)
+      d[c * n + j] = v[c * n + static_cast<std::size_t>(order[j])];
+  }
+  return d;
+}
+
+std::vector<double> to_host(const std::vector<double>& d, std::span<const autan::index_t> order) {
+  const std::size_t n = order.size();
+  std::vector<double> v(d.size());
+  for (std::size_t c = 0; c < 5; ++c) {
+    for (std::size_t j = 0; j < n; ++j)
+      v[c * n + static_cast<std::size_t>(order[j])] = d[c * n + j];
+  }
+  return v;
+}
+
 std::vector<Level> hierarchy(const char* file) {
   const auto mesh = autan::io::read_mesh(mesh_dir / file);
   const auto g = autan::compute_geometry(mesh);
@@ -94,8 +117,11 @@ TEST_CASE("device transfers are bitwise the host multigrid's restriction and pro
     INFO("level " << l);
     const Level& f = levels[l];
     const std::size_t n = f.n_nodes, nc = levels[l + 1].n_nodes;
+    const auto fine = transfers.order(l), coarse = transfers.order(l + 1);
+    REQUIRE(fine.size() == n);
+    REQUIRE(coarse.size() == nc);
 
-    // Restriction: each coarse value from +0.0, children added in increasing fine index.
+    // Restriction: each coarse value from +0.0, children added in increasing host fine index.
     const auto r = spread(5 * n, static_cast<std::uint32_t>(17 + l));
     std::vector<double> bc(5 * nc, 0.0);
     for (std::size_t c = 0; c < 5; ++c) {
@@ -103,10 +129,10 @@ TEST_CASE("device transfers are bitwise the host multigrid's restriction and pro
         bc[c * nc + static_cast<std::size_t>(f.coarse_node[i])] += r[c * n + i];
       }
     }
-    const Device dr(r);
+    const Device dr(to_device(r, fine));
     const Device dbc(std::vector<double>(5 * nc, 1.0));
     transfers.restrict_residual(l, dr.get(), dbc.get());
-    CHECK(same_bits(dbc.host(), bc));
+    CHECK(same_bits(to_host(dbc.host(), coarse), bc));
 
     // Prolongation by injection, and the correction x + alpha * e without contraction.
     const auto xc = spread(5 * nc, static_cast<std::uint32_t>(91 + l));
@@ -116,21 +142,21 @@ TEST_CASE("device transfers are bitwise the host multigrid's restriction and pro
         e[c * n + i] = xc[c * nc + static_cast<std::size_t>(f.coarse_node[i])];
       }
     }
-    const Device dxc(xc);
+    const Device dxc(to_device(xc, coarse));
     const Device de(std::vector<double>(5 * n, 1.0));
     transfers.prolong(l, dxc.get(), de.get());
-    CHECK(same_bits(de.host(), e));
+    CHECK(same_bits(to_host(de.host(), fine), e));
 
     const double alpha = 0.7310585786300049;
     auto x = spread(5 * n, static_cast<std::uint32_t>(43 + l));
-    const Device dx(x);
+    const Device dx(to_device(x, fine));
     const Device dalpha(std::vector<double>{alpha});
     transfers.correct(l, dalpha.get(), dxc.get(), dx.get());
     for (std::size_t k = 0; k < x.size(); ++k) {
       const volatile double product = alpha * e[k];
       x[k] = x[k] + product;
     }
-    CHECK(same_bits(dx.host(), x));
+    CHECK(same_bits(to_host(dx.host(), fine), x));
   }
   CHECK_THROWS_AS(transfers.prolong(levels.size() - 1, nullptr, nullptr), std::out_of_range);
 }
