@@ -19,8 +19,10 @@ const range = (
   floors: number[],
 ): uPlot.Range.MinMax => {
   const min = Math.min(data ?? Number.POSITIVE_INFINITY, ...floors);
-  if (!Number.isFinite(min) || max == null || !(max > 0)) return [data, max];
-  const top = Math.ceil(Math.log10(max));
+  // A floor can sit above every curve once divided by its R₀: the axis reaches it too.
+  const highest = Math.max(max ?? 0, ...floors);
+  if (!Number.isFinite(min) || !(highest > 0)) return [data, max];
+  const top = Math.ceil(Math.log10(highest));
   const bottom = Math.max(Math.floor(Math.log10(Math.max(min, Number.MIN_VALUE))), top - DECADES);
   return [10 ** Math.min(bottom, top - 1), 10 ** top];
 };
