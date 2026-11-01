@@ -1851,8 +1851,9 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     REQUIRE(toml.find(unit) != std::string::npos);
     in_inches["case"]["toml"] = toml.replace(toml.find(unit), unit.size(), "mesh_unit = \"in\"");
   }
-  in_inches["mesh"] = {
-      {"path", inches.string()}, {"sha256", autan::io::mesh_hash(inches)}, {"scale", 0.0254}};
+  in_inches["mesh"]["path"] = inches.string();
+  in_inches["mesh"]["sha256"] = autan::io::mesh_hash(inches);
+  in_inches["mesh"]["scale"] = 0.0254;
   autan::runtime::PhysicsRegistry registry;
   autan::physics::register_euler(registry);
   const Outcome a = run(metres, registry);
