@@ -230,6 +230,11 @@ class FakeBackend:
         result = case.plan(mesh_info)
         if not result.ok:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
+        if mesh_info.periodic:
+            message = "the fake backend, like autan-run, does not implement periodic boundaries"
+            raise CaseError(
+                [diagnostic("E0706", message, path="periodic", pairs=len(mesh_info.periodic))]
+            )
         spec = case.spec
         started = utc_now()
         solver = Solver(version=__version__, commit=COMMIT, backend="fake")

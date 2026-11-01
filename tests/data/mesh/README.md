@@ -11,6 +11,7 @@ Small meshes read by `tests/io`. Each directory holds one mesh in every format t
 | `hybrid` | hexahedra, pyramids, prisms in two orientations, tetrahedra; cell zones `lower`, `upper` | yes | yes, also `polyMesh-binary/` | yes |
 | `tet-gmsh` | unstructured tetrahedra meshed by Gmsh | yes | yes | yes |
 | `poly` | polyhedral dual of `tet-gmsh` | — | yes, also `polyMesh-binary/` | yes |
+| `periodic-box` | unstructured tetrahedra meshed by Gmsh, periodic in x and y (`$Periodic`) | yes | — | — |
 | `hanging` | one 105-face polyhedron with hanging nodes facing 100 hexahedra; cell zones `coarse`, `fine` | — | yes | yes |
 
 Every mesh except `hanging` fills the unit cube with sides `xmin` … `zmax`; `ymin` is a wall and `zmax` a symmetry plane in the polyMesh and Fluent files. `hanging` fills [0,2]×[0,1]×[0,1] with patches `inlet`, `outlet` and `walls` (wall).

@@ -359,8 +359,8 @@ SolverInput parse_solver_input(const std::string& text) {
   }
   const Object root(
       doc, "",
-      {"schema", "case", "mesh", "verification", "start", "precision", "deterministic", "devices",
-       "physics", "freestream", "boundaries", "cell_zones", "time", "monitors"});
+      {"schema", "case", "mesh", "verification", "start", "periodic", "precision", "deterministic",
+       "devices", "physics", "freestream", "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -474,6 +474,19 @@ SolverInput parse_solver_input(const std::string& text) {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");
   }
   if (!root.is_null("start")) in.start = parse_start(root.get("start"), in);
+  const Json& periodic = *array_at(root, "periodic");
+  for (std::size_t i = 0; i < periodic.size(); ++i) {
+    const Object o(periodic[i], indexed("periodic", i), {"zones", "transform"});
+    const Json& names = o.get("zones");
+    if (!names.is_array() || names.size() != 2 || !names[0].is_string() || !names[1].is_string() ||
+        names[0] == names[1]) {
+      invalid(o.at("zones"), "expected two distinct zone names");
+    }
+    const Object t(o.get("transform"), o.at("transform"), {"kind", "vector"});
+    (void)t.tag("kind", {"translation"});
+    in.periodic.push_back({.zones = {names[0].get<std::string>(), names[1].get<std::string>()},
+                           .translation = t.vector3("vector")});
+  }
   const Json& monitors = *array_at(root, "monitors");
   for (std::size_t i = 0; i < monitors.size(); ++i) {
     const std::string path = indexed("monitors", i);

@@ -478,6 +478,18 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
     require_error(run(input([](Json& d) { d["cell_zones"].push_back(d["cell_zones"][0]); })),
                   "E0705");
   }
+  SECTION("periodic pairs are the mesh's, well formed") {
+    const Json pair{{"zones", {"xmin", "xmax"}},
+                    {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}};
+    // The hybrid mesh has no periodic pair.
+    require_error(run(input([&](Json& d) { d["periodic"] = Json::array({pair}); })), "E0705");
+    require_error(run(input([&](Json& d) {
+                    Json bad = pair;
+                    bad["transform"]["kind"] = "rotation";
+                    d["periodic"] = Json::array({bad});
+                  })),
+                  "E0705");
+  }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
   }
@@ -736,4 +748,21 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["start"]["run"] = "relative/run"; }), "E0705");
     require_error(from([](Json& d) { d["start"]["residual_reference"].erase("energy"); }), "E0705");
   }
+}
+
+TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "[runtime]") {
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  const auto with_pairs = [&](double tx) {
+    return input([&](Json& d) {
+      d["mesh"]["path"] = fs::absolute(box).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+      d["periodic"] = Json::array(
+          {Json{{"zones", {"xmin", "xmax"}},
+                {"transform", {{"kind", "translation"}, {"vector", {tx, 0.0, 0.0}}}}},
+           Json{{"zones", {"ymin", "ymax"}},
+                {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    });
+  };
+  require_error(run(with_pairs(1.0)), "E0706");
+  require_error(run(with_pairs(2.0)), "E0705");
 }

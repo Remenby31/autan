@@ -11,6 +11,7 @@
 
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
+#include "fixtures.hpp"
 #include "support.hpp"
 
 using autan::index_t;
@@ -201,6 +202,21 @@ TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
   }
+}
+
+TEST_CASE("The writer rejects a periodic mesh until CGNS records its pairs", "[cgns]") {
+  autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  try {
+    autan::io::write_solution(temp_dir() / "periodic.cgns", mesh, solution_for(mesh));
+    FAIL("expected E0133");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::io_unsupported);
+  }
+  CHECK(!fs::exists(temp_dir() / "periodic.cgns"));
 }
 
 namespace {

@@ -6,6 +6,7 @@ add_library(
   src/geometry.cpp
   src/quality.cpp
   src/renumber.cpp
+  src/periodic.cpp
 )
 add_library(autan::core ALIAS autan_core)
 
