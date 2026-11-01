@@ -246,6 +246,24 @@ def test_a_replaced_run_json_is_checked_again_whatever_its_time_and_size(runs: P
     assert directory.name in registry.scan().rejected
 
 
+def test_a_run_file_downloads_as_it_is_on_disk(runs: Path, server: str, tmp_path: Path) -> None:
+    directory = next(runs.iterdir())
+    (tmp_path / "secret.txt").write_text("SECRET")
+    (directory / "linked.txt").symlink_to(tmp_path / "secret.txt")
+    (directory / "states").mkdir(exist_ok=True)
+
+    for name in ("run.json", "case.toml", "history.jsonl", "solution.cgns"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}")
+        assert response.status_code == 200, name
+        assert response.content == (directory / name).read_bytes()
+        assert f'filename="{name}"' in response.headers["content-disposition"]
+
+    # Only the directory's own regular files: no link, no directory, no path, no other name.
+    for name in ("linked.txt", "states", "..%2Frun.json", "%2E%2E", "missing.json"):
+        status = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}").status_code
+        assert status == 404, name
+
+
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:
     unknown = "run-20261031T000000Z-deadbeef"
     assert httpx.get(f"{server}/api/runs/{unknown}").status_code == 404

@@ -77,6 +77,8 @@ export const runQuery = (runId: string) =>
   queryOptions({
     queryKey: ["run", runId],
     queryFn: () => getJson<RunDetails>(`/api/runs/${runId}`),
+    // A run the server does not have stays missing: no retry before saying so.
+    retry: (failures, error) => !error.message.endsWith("HTTP 404") && failures < 3,
   });
 
 const EMPTY: RunRegistry = { runs: [], rejected: [], summaries: {}, solutions: [] };

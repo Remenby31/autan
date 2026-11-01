@@ -599,3 +599,24 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     );
   }
 });
+
+test("an unknown run or address says so, and outputs download as they are", async ({ page }) => {
+  await page.goto("/runs/run-20200101T000000Z-deadbeef");
+  await expect(page.getByRole("heading", { name: "No such run" })).toBeVisible();
+  await page.goto("/no/such/page");
+  await expect(page.getByTestId("not-found")).toBeVisible();
+
+  const run = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/runs/${run.run_id}?tab=outputs`);
+  await page.getByRole("tab", { name: /Outputs/ }).click();
+  const link = page.getByRole("link", { name: "case.toml" }).first();
+  await expect(link).toBeVisible();
+  await expect(page.getByText("Log: warnings, errors and diagnostics").first()).toBeVisible();
+  const download = page.waitForEvent("download");
+  await link.click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("case.toml");
+  expect(readFileSync(await file.path(), "utf8")).toBe(
+    readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8"),
+  );
+});

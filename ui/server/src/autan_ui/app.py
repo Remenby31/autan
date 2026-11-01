@@ -7,7 +7,7 @@ import re
 import tempfile
 import tomllib
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
@@ -18,7 +18,7 @@ from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
 from watchfiles import Change, awatch
@@ -331,6 +331,43 @@ def create_app(
             return registry.details(find_run(run_id))
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
+
+    @app.get("/api/runs/{run_id}/files/{name}")
+    def run_file(run_id: Annotated[str, Depends(existing_run)], name: str) -> Response:
+        """A regular file of the run directory, as a download; 404 for any name the directory
+        does not list as one (names come from the listing, read through the pinned folder)."""
+        directory = find_run(run_id)
+        listed = {
+            entry.name: entry.name
+            for entry in directory.iterdir()
+            if not entry.name.startswith(".")
+        }.get(name)
+        if listed is None:
+            raise HTTPException(404, f"run {run_id} has no file {name}")
+        folder = Folder(directory)
+        try:
+            descriptor = folder.open(listed)
+        except OSError as error:
+            folder.close()
+            raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        size = os.fstat(descriptor).st_size
+
+        def chunks() -> Iterator[bytes]:
+            with os.fdopen(descriptor, "rb") as file:
+                try:
+                    while chunk := file.read(1 << 20):
+                        yield chunk
+                finally:
+                    folder.close()
+
+        return StreamingResponse(
+            chunks(),
+            media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{listed}"',
+                "Content-Length": str(size),
+            },
+        )
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
