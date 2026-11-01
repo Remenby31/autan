@@ -361,3 +361,26 @@ def test_the_runtime_records_the_final_monitors(
     assert final is not None
     assert final["forces"].iteration == 28
     assert result.history.monitor("forces")["iteration"].tolist() == [10, 20]
+
+
+def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    _, mesh = hybrid
+    manufactured = ROOT / "py" / "tests" / "fixtures" / "euler.mms.json"
+    digest = hashlib.sha256(manufactured.read_bytes()).hexdigest()
+    path = tmp_path / "mms.py"
+    path.write_text(
+        "import autan\nfrom autan.units import K, Pa, kg, mol, s\n"
+        "gas = autan.IdealGas(name='mms', molar_mass=8.314462618 / 287.0 * kg / mol, gamma=1.4,"
+        " prandtl=0.72, viscosity=autan.ConstantViscosity(mu=1e-3 * Pa * s))\n"
+        f"case = autan.Case('euler-mms', mesh={str(MESH)!r})\n"
+        "case.physics = autan.Compressible(turbulence=autan.Inviscid(), gas=gas)\n"
+        "case.freestream(mach=0.3, pressure=101325 * Pa, temperature=300 * K)\n"
+        f"case.verification = autan.Manufactured(path={str(manufactured)!r}, sha256={digest!r})\n"
+    )
+    case = autan.load(path)
+    assert isinstance(case.spec.time, autan.Steady)
+    assert case.spec.time.residual_orders == 8.0  # above the fp32+acc64 plateau
+    result = case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
+    assert result.run.status == "converged"
