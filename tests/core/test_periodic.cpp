@@ -132,8 +132,14 @@ TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "
     for (const double x0 : {0.0, 2.0}) {
       std::array<index_t, 8> nodes{};
       for (int k = 0; k < 8; ++k) {
-        static constexpr std::array<std::array<int, 3>, 8> corner{
-            {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}};
+        static constexpr std::array<std::array<int, 3>, 8> corner{{{0, 0, 0},
+                                                                   {1, 0, 0},
+                                                                   {1, 1, 0},
+                                                                   {0, 1, 0},
+                                                                   {0, 0, 1},
+                                                                   {1, 0, 1},
+                                                                   {1, 1, 1},
+                                                                   {0, 1, 1}}};
         const auto& c = corner[static_cast<std::size_t>(k)];
         m.x.push_back(x0 + c[0]);
         m.y.push_back(c[1]);
@@ -144,7 +150,8 @@ TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "
       const std::array<index_t, 4> left{nodes[0], nodes[4], nodes[7], nodes[3]};
       m.add_labelled_face(left, x0 == 0.0 ? 0 : 1);
     }
-    m.cell_zones.push_back({.name = "fluid", .type = "", .kind = autan::CellKind::fluid, .provenance = {}});
+    m.cell_zones.push_back(
+        {.name = "fluid", .type = "", .kind = autan::CellKind::fluid, .provenance = {}});
     for (const char* name : {"a", "b"}) {
       m.face_zones.push_back(
           {.name = name, .bc_type = "", .kind = autan::BcKind::periodic, .provenance = {}});

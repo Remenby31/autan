@@ -118,8 +118,8 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
   };
   const auto octave_of = [&](double h, index_t node, const std::string& zone) {
     if (!(h > 0.0) || !std::isfinite(h)) {
-      unmatched(where("node " + std::to_string(node) + " of zone '" + zone +
-                      "' has a degenerate edge"));
+      unmatched(
+          where("node " + std::to_string(node) + " of zone '" + zone + "' has a degenerate edge"));
     }
     return std::ilogb(h);
   };
