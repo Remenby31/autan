@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <string>
@@ -17,6 +18,7 @@
 #include "advection_cpu.hpp"
 #include "advection_gpu.cuh"
 #include "autan/core/renumber.hpp"
+#include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "device.cuh"
 #include "gradients_cpu.hpp"
@@ -324,14 +326,19 @@ int main(int argc, char** argv) {
               AUTAN_BENCH_DIRTY);
   std::printf("\"backend\":\"cuda\",\"runtime_version\":%d,\"driver_version\":%d,", runtime,
               driver);
+  // `config` identifies a run by content (mesh hash, not path) and holds no measurement, so that
+  // autan-bench compare can match runs; one-off host costs go to `setup_seconds`.
+  const std::string sha = autan::io::mesh_hash(o.mesh);
   std::printf(
-      "\"config\":{\"mesh\":\"%s\",\"policy\":\"%s\",\"order\":\"%s\",\"layout\":\"soa\","
-      "\"n_cells\":%d,\"n_faces\":%d,\"n_interior_faces\":%d,\"n_incidences\":%lld,"
-      "\"block\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,\"read_seconds\":%.3f,"
-      "\"renumber_seconds\":%.3f,\"tolerance\":%.1e},",
-      o.mesh.c_str(), o.policy.c_str(), o.order.c_str(), m.topo.n_cells, m.topo.n_faces,
-      m.topo.n_interior_faces, static_cast<long long>(m.topo.n_incidences), o.block, o.warmup,
-      o.reps, o.batch, read_seconds, renumber_seconds, tolerance);
+      "\"config\":{\"mesh_file\":\"%s\",\"mesh_sha256\":\"%s\",\"policy\":\"%s\","
+      "\"order\":\"%s\",\"layout\":\"soa\",\"n_cells\":%d,\"n_faces\":%d,"
+      "\"n_interior_faces\":%d,\"n_incidences\":%lld,\"block\":%d,\"warmup\":%d,\"reps\":%d,"
+      "\"batch\":%d,\"tolerance\":%.1e},",
+      std::filesystem::path(o.mesh).filename().string().c_str(), sha.c_str(), o.policy.c_str(),
+      o.order.c_str(), m.topo.n_cells, m.topo.n_faces, m.topo.n_interior_faces,
+      static_cast<long long>(m.topo.n_incidences), o.block, o.warmup, o.reps, o.batch, tolerance);
+  std::printf("\"setup_seconds\":{\"read\":%.3f,\"renumber\":%.3f},", read_seconds,
+              renumber_seconds);
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < timed.size(); ++k) {
     const auto& t = timed[k];

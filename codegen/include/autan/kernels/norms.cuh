@@ -25,8 +25,9 @@ __device__ inline void tree_sum(double* s) {
 }
 
 template <class T>
-__global__ void __launch_bounds__(norm_block)
-    squares_by_chunk(const T* __restrict__ x, std::int64_t n, double* __restrict__ partial) {
+__global__ void __launch_bounds__(norm_block) squares_by_chunk(const T* __restrict__ x,
+                                                               std::int64_t n,
+                                                               double* __restrict__ partial) {
   __shared__ double s[norm_block];
   const std::int64_t base = std::int64_t{blockIdx.x} * norm_chunk + threadIdx.x;
   double acc = 0.0;
@@ -45,8 +46,9 @@ __global__ void __launch_bounds__(norm_block)
   }
 }
 
-__global__ void __launch_bounds__(norm_block)
-    sum_partials(const double* __restrict__ partial, std::int64_t m, double* __restrict__ out) {
+__global__ void __launch_bounds__(norm_block) sum_partials(const double* __restrict__ partial,
+                                                           std::int64_t m,
+                                                           double* __restrict__ out) {
   __shared__ double s[norm_block];
   double acc = 0.0;
   for (std::int64_t i = threadIdx.x; i < m; i += norm_block) {

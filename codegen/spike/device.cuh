@@ -46,7 +46,7 @@ class DeviceArray {
 
 /// Topology, colourings and scratch of a spike mesh on the device.
 struct DeviceMesh {
-  static constexpr int kScratchWidth = 10;  // widest spike face loop: the Roe adjoint
+  static constexpr int kScratchWidth = 10;          // widest spike face loop: the Roe adjoint
   static constexpr int kIncidenceScratchWidth = 1;  // spike reductions gather one scalar
   DeviceArray<index_t> owner, neighbour, cell_faces;
   DeviceArray<offset_t> offsets;

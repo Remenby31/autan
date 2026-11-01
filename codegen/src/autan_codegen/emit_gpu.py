@@ -340,8 +340,12 @@ def emit_reduce_adjoint_deterministic(e: Emitter, lm: LoopModel) -> None:
     e.w("}")
     e.w()
     e.w("template <class P>")
-    e.w(f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{")
-    e.w("  const auto grid = [&](index_t n) { return static_cast<unsigned>((n + s.block - 1) / s.block); };")
+    e.w(
+        f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{"
+    )
+    e.w(
+        "  const auto grid = [&](index_t n) { return static_cast<unsigned>((n + s.block - 1) / s.block); };"
+    )
     e.w("  const auto block = static_cast<unsigned>(s.block);")
     e.w("  if (d.topo.n_owned_cells == 0) {")
     e.w("    return;")
@@ -351,15 +355,21 @@ def emit_reduce_adjoint_deterministic(e: Emitter, lm: LoopModel) -> None:
     e.w("  } else {")
     if width:
         e.w(f"    if (s.incidence_scratch_width < {width}) {{")
-        e.w('      throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");')
+        e.w(
+            '      throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
+        )
         e.w("    }")
         e.w("    if (d.topo.incidence_twin == nullptr) {")
-        e.w('      throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");')
+        e.w(
+            '      throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
+        )
         e.w("    }")
     e.w("    auto* scratch = static_cast<typename P::accum*>(s.incidence_scratch);")
     e.w(f"    {lm.name}_store<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d, scratch);")
     if width:
-        e.w(f"    {lm.name}_twin_gather<P><<<grid(d.topo.n_cells), block, 0, s.stream>>>(d, scratch);")
+        e.w(
+            f"    {lm.name}_twin_gather<P><<<grid(d.topo.n_cells), block, 0, s.stream>>>(d, scratch);"
+        )
     e.w("  }")
     e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
     e.w("}")

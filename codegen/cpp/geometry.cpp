@@ -56,8 +56,8 @@ std::vector<offset_t> incidence_twins(const Mesh& mesh) {
       if (fi >= nei.size()) {
         continue;
       }
-      const auto other = static_cast<std::size_t>(
-          static_cast<std::size_t>(own[fi]) == c ? nei[fi] : own[fi]);
+      const auto other =
+          static_cast<std::size_t>(static_cast<std::size_t>(own[fi]) == c ? nei[fi] : own[fi]);
       // Faces of a cell are listed in increasing order (mesh contract).
       const auto first = cf.begin() + off[other];
       const auto last = cf.begin() + off[other + 1];

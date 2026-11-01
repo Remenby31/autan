@@ -36,11 +36,13 @@ def test_gpu_residual_equals_host_residual(
 ) -> None:
     m, d = case
     host, hg = s.advdiff_residual(m, policy, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU)
-    dev, dg = s.gpu_advdiff_residual(
+    dev, dg, norm = s.gpu_advdiff_residual(
         m, policy, strategy, 128, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU
     )
     scale = np.abs(host).max()
     assert np.abs(dev - host).max() <= 200 * eps(policy) * scale
+    owned = dev[: m.n_cells]
+    assert abs(norm - np.sqrt(np.sum(owned * owned))) <= 1e-13 * norm
     assert np.abs(dg - hg).max() <= 200 * eps(policy) * np.abs(hg).max()
     adv_host = s.advection(m, policy, d["q"], d["grad"], mms.VELOCITY)
     adv_dev = s.gpu_advection(m, policy, strategy, 128, d["q"], d["grad"], mms.VELOCITY)
@@ -67,16 +69,22 @@ def test_gpu_green_gauss_equals_host(
 def test_deterministic_strategies_are_bitwise_reproducible(
     case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str
 ) -> None:
+    # Residual, gradients, the residual norm computed on the device, and the adjoint of the
+    # composed residual (whose LSQ-gradient reduction adjoint scatters to neighbours): bitwise
+    # equal over 10 runs and two launch shapes (research section 8, determinism).
     m, d = case
+    ybar = np.random.default_rng(6).standard_normal(m.n_cells)
     runs = []
     for k in range(10):
         block = 64 if k % 2 else 256
-        res, grad = s.gpu_advdiff_residual(
+        res, grad, norm = s.gpu_advdiff_residual(
             m, policy, strategy, block, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU
         )
         gg, _, _ = s.gpu_gradients(m, policy, "gg", strategy, block, d["q"], d["q_b"], 2, d["grad"])
-        norm = np.sqrt(np.sum(res * res))
-        runs.append((res.tobytes(), grad.tobytes(), gg.tobytes(), norm))
+        qbar = s.gpu_advdiff_adjoint(
+            m, policy, strategy, block, d["q"], d["q_b"], d["src"], mms.VELOCITY, mms.NU, ybar
+        )
+        runs.append((res.tobytes(), grad.tobytes(), gg.tobytes(), norm, qbar.tobytes()))
     assert len(set(runs)) == 1
 
 
