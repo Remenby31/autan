@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "autan/core/error.hpp"
+#include "autan/partition/device_self.hpp"
 
 #ifdef AUTAN_HAVE_MPI
 #include <mpi.h>
@@ -32,24 +33,29 @@ int launched_rank() { return environment({"OMPI_COMM_WORLD_RANK", "PMI_RANK", "P
 class SelfExchange final : public GhostExchange {
  public:
   explicit SelfExchange(const LocalPartition& part) : part_(part) {}
-  void forward(std::span<float* const> components, MemorySpace space, void* /*stream*/) override {
-    run(components, space);
+  void forward(std::span<float* const> components, MemorySpace space, void* stream) override {
+    run(components, space, stream);
   }
-  void forward(std::span<double* const> components, MemorySpace space, void* /*stream*/) override {
-    run(components, space);
+  void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
+    run(components, space, stream);
   }
 
  private:
+  // Device memory: the image pairs move to the device on first use (E0145
+  // in a build without CUDA).
   template <class T>
-  void run(std::span<T* const> components, MemorySpace space) const {
-    if (space != MemorySpace::host) {
-      throw Error(ErrorCode::halo_device_unsupported,
-                  "autan-run exchanges periodic images on the host only");
+  void run(std::span<T* const> components, MemorySpace space, void* stream) {
+    if (space == MemorySpace::host) {
+      forward_self(part_.halo, part_.mesh.n_owned_cells(), components);
+      return;
     }
-    forward_self(part_.halo, part_.mesh.n_owned_cells(), components);
+    if (!device_)
+      device_ = std::make_unique<DeviceSelfForward>(part_.halo, part_.mesh.n_owned_cells());
+    device_->forward(components, stream);
   }
 
   const LocalPartition& part_;
+  std::unique_ptr<DeviceSelfForward> device_;
 };
 
 class Single final : public Comm {
