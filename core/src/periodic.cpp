@@ -50,7 +50,7 @@ void check_declaration(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
   }
   for (std::size_t z = 0; z < zones.size(); ++z) {
     if (uses[z] > 1) invalid("zone '" + zones[z].name + "' is in several periodic pairs");
-    if (uses[z] == 0 && zones[z].kind == BcKind::periodic && !partitioned) {
+    if (uses[z] == 0 && zones[z].kind == BcKind::periodic) {
       invalid("zone '" + zones[z].name + "' is periodic but in no pair");
     }
   }
@@ -88,20 +88,40 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
 
   // Two nodes coincide when closer than 1e-4 of the shortest edge at the
   // node of zone a: far below any mesh spacing, far above coordinates
-  // written in single precision.
+  // written in single precision. Partners have the same shortest edge (the
+  // surfaces are translates), so zone b's nodes are binned by the octave of
+  // theirs, each octave in a grid at its own scale: a query looks at the
+  // octaves next to its own, whatever the grading.
   constexpr double relative_tolerance = 1e-4;
-  const std::vector<double> h = shortest_edges(mesh, pair.zone_a);
-  double cell = 0.0;
-  for (const double v : h) {
-    if (std::isfinite(v)) cell = std::max(cell, relative_tolerance * v);
+  constexpr double max_bins = 4.5e15;  // bin indices stay exact in double and int64
+  const auto where = [&](const std::string& what) {
+    return "periodic pair " + std::to_string(p) + ": " + what;
+  };
+  const std::vector<double> ha = shortest_edges(mesh, pair.zone_a);
+  const std::vector<double> hb = shortest_edges(mesh, pair.zone_b);
+  std::array<double, 3> origin{std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::infinity()};
+  for (index_t f = b0; f < b1; ++f) {
+    for (const index_t n : mesh.face_nodes(f)) {
+      origin = {std::min(origin[0], x[at(n)]), std::min(origin[1], y[at(n)]),
+                std::min(origin[2], z[at(n)])};
+    }
   }
-  if (!(cell > 0.0))
-    unmatched("periodic pair " + std::to_string(p) + ": zone '" + name_a + "' has no extent");
-  using Key = std::array<std::int64_t, 3>;
-  const auto key = [cell](double px, double py, double pz) {
-    return Key{static_cast<std::int64_t>(std::floor(px / cell)),
-               static_cast<std::int64_t>(std::floor(py / cell)),
-               static_cast<std::int64_t>(std::floor(pz / cell))};
+  using Key = std::array<std::int64_t, 4>;  // octave, then bin indices
+  const auto bin_size = [](int octave) { return std::ldexp(relative_tolerance, octave + 1); };
+  const auto bin = [&](double v, double origin_v, double size, std::int64_t& out) {
+    const double b = std::floor((v - origin_v) / size);
+    if (!(std::abs(b) <= max_bins)) return false;
+    out = static_cast<std::int64_t>(b);
+    return true;
+  };
+  const auto octave_of = [&](double h, index_t node, const std::string& zone) {
+    if (!(h > 0.0) || !std::isfinite(h)) {
+      unmatched(where("node " + std::to_string(node) + " of zone '" + zone +
+                      "' has a degenerate edge"));
+    }
+    return std::ilogb(h);
   };
   std::map<Key, std::vector<index_t>> grid;
   std::vector<char> seen(at(mesh.n_points()), 0);
@@ -109,7 +129,14 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     for (const index_t n : mesh.face_nodes(f)) {
       if (seen[at(n)] != 0) continue;
       seen[at(n)] = 1;
-      grid[key(x[at(n)], y[at(n)], z[at(n)])].push_back(n);
+      const int octave = octave_of(hb[at(n)], n, name_b);
+      const double size = bin_size(octave);
+      Key k{octave, 0, 0, 0};
+      if (!bin(x[at(n)], origin[0], size, k[1]) || !bin(y[at(n)], origin[1], size, k[2]) ||
+          !bin(z[at(n)], origin[2], size, k[3])) {
+        unmatched(where("zone '" + name_b + "' is too large for its spacing"));
+      }
+      grid[k].push_back(n);
     }
   }
 
@@ -117,30 +144,37 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
   for (index_t f = a0; f < a1; ++f) {
     for (const index_t n : mesh.face_nodes(f)) {
       if (image[at(n)] >= 0) continue;
-      const double qx = x[at(n)] + t[0], qy = y[at(n)] + t[1], qz = z[at(n)] + t[2];
-      const double tolerance = relative_tolerance * h[at(n)];
-      const Key k = key(qx, qy, qz);
+      const std::array<double, 3> q{x[at(n)] + t[0], y[at(n)] + t[1], z[at(n)] + t[2]};
+      const int own = octave_of(ha[at(n)], n, name_a);
+      const double tolerance = relative_tolerance * ha[at(n)];
       index_t found = -1;
       int count = 0;
-      for (std::int64_t i = -1; i <= 1; ++i) {
-        for (std::int64_t j = -1; j <= 1; ++j) {
-          for (std::int64_t l = -1; l <= 1; ++l) {
-            const auto it = grid.find(Key{k[0] + i, k[1] + j, k[2] + l});
-            if (it == grid.end()) continue;
-            for (const index_t m : it->second) {
-              const double d = std::hypot(x[at(m)] - qx, y[at(m)] - qy, z[at(m)] - qz);
-              if (d <= tolerance) {
-                found = m;
-                ++count;
+      for (int octave = own - 1; octave <= own + 1; ++octave) {
+        const double size = bin_size(octave);
+        const auto reach = static_cast<std::int64_t>(std::ceil(tolerance / size));
+        std::array<std::int64_t, 3> c{};
+        bool inside = true;
+        for (std::size_t d = 0; d < 3; ++d) inside = inside && bin(q[d], origin[d], size, c[d]);
+        if (!inside) continue;
+        for (std::int64_t i = -reach; i <= reach; ++i) {
+          for (std::int64_t j = -reach; j <= reach; ++j) {
+            for (std::int64_t l = -reach; l <= reach; ++l) {
+              const auto it = grid.find(Key{octave, c[0] + i, c[1] + j, c[2] + l});
+              if (it == grid.end()) continue;
+              for (const index_t m : it->second) {
+                if (std::hypot(x[at(m)] - q[0], y[at(m)] - q[1], z[at(m)] - q[2]) <= tolerance) {
+                  found = m;
+                  ++count;
+                }
               }
             }
           }
         }
       }
       if (count != 1) {
-        unmatched("periodic pair " + std::to_string(p) + ": node " + std::to_string(n) +
-                  " of zone '" + name_a + "', translated, coincides with " + std::to_string(count) +
-                  " nodes of zone '" + name_b + "'");
+        unmatched(where("node " + std::to_string(n) + " of zone '" + name_a +
+                        "', translated, coincides with " + std::to_string(count) +
+                        " nodes of zone '" + name_b + "'"));
       }
       image[at(n)] = found;
     }
@@ -163,6 +197,15 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     if (it == faces_b.end() || used[at(it->second - b0)] != 0) {
       unmatched("periodic pair " + std::to_string(p) + ": face " + std::to_string(f) +
                 " of zone '" + name_a + "', translated, is no face of zone '" + name_b + "'");
+    }
+    // Both faces point out of the domain, so the translated face of zone a
+    // runs through its nodes in the opposite direction to its partner.
+    const auto partner_nodes = mesh.face_nodes(it->second);
+    std::ranges::reverse(mapped);
+    std::ranges::rotate(mapped, std::ranges::find(mapped, partner_nodes[0]));
+    if (!std::ranges::equal(mapped, partner_nodes)) {
+      unmatched(where("face " + std::to_string(f) + " of zone '" + name_a +
+                      "' and its partner point the same way"));
     }
     used[at(it->second - b0)] = 1;
     partner[at(f - a0)] = it->second;

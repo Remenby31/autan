@@ -84,6 +84,26 @@ TEST_CASE("The faces of a periodic pair match one to one", "[periodic]") {
   check_partners(autan::renumber_cells(mesh, autan::rcm_order(mesh)));
 }
 
+TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[periodic]") {
+  // n = 3: every edge on the sides is 1/3 long, so the tolerance is 3.3e-5.
+  using autan::test::BoxFill;
+  const auto shifted = [](double dy, bool single) {
+    return periodic_box(3, BoxFill::hexa, {0}, [=](autan::CellwiseMesh& m) {
+      for (std::size_t i = 0; i < m.x.size(); ++i) {
+        if (m.x[i] != 1.0) continue;
+        m.y[i] += dy;
+        if (single) {
+          m.y[i] = static_cast<float>(m.y[i]);
+          m.z[i] = static_cast<float>(m.z[i]);
+        }
+      }
+    });
+  };
+  CHECK(autan::assemble(shifted(1e-5, false)).periodic_pairs().size() == 1);
+  CHECK(autan::assemble(shifted(0.0, true)).periodic_pairs().size() == 1);
+  require_code(autan::ErrorCode::mesh_periodic_unmatched, shifted(1e-4, false));
+}
+
 TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "[periodic]") {
   using autan::ErrorCode;
   using autan::test::BoxFill;
@@ -104,6 +124,33 @@ TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "
                      }
                    }
                  }));
+  }
+  SECTION("partners that point the same way") {
+    // Two unit cubes, [0,1]^3 and [2,3]x[0,1]^2: their x = 0 and x = 2 faces
+    // coincide under (2, 0, 0) but both point towards -x.
+    autan::CellwiseMesh m;
+    for (const double x0 : {0.0, 2.0}) {
+      std::array<index_t, 8> nodes{};
+      for (int k = 0; k < 8; ++k) {
+        static constexpr std::array<std::array<int, 3>, 8> corner{
+            {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}};
+        const auto& c = corner[static_cast<std::size_t>(k)];
+        m.x.push_back(x0 + c[0]);
+        m.y.push_back(c[1]);
+        m.z.push_back(c[2]);
+        nodes[static_cast<std::size_t>(k)] = static_cast<index_t>(m.x.size() - 1);
+      }
+      m.add_cell(autan::CellShape::hexa, nodes, 0);
+      const std::array<index_t, 4> left{nodes[0], nodes[4], nodes[7], nodes[3]};
+      m.add_labelled_face(left, x0 == 0.0 ? 0 : 1);
+    }
+    m.cell_zones.push_back({.name = "fluid", .type = "", .kind = autan::CellKind::fluid, .provenance = {}});
+    for (const char* name : {"a", "b"}) {
+      m.face_zones.push_back(
+          {.name = name, .bc_type = "", .kind = autan::BcKind::periodic, .provenance = {}});
+    }
+    m.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {2.0, 0.0, 0.0}});
+    require_code(ErrorCode::mesh_periodic_unmatched, autan::to_face_based(std::move(m)));
   }
   SECTION("a zero translation") {
     require_code(ErrorCode::mesh_periodic_invalid,
