@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -35,10 +36,23 @@ struct Loads {
   std::array<double, 3> moment{};
 };
 
+/// The run's log (log.jsonl of results.md): one event per call, stamped
+/// with the wall-clock time and the current iteration by the runtime.
+class Log {
+ public:
+  virtual ~Log() = default;
+  /// `level`: info, warning or error; `source`: [a-z][a-z0-9-]* (solver,
+  /// linear, io, mpi…); `code`: a registry code or empty; `data_json`: a
+  /// JSON object.
+  virtual void write(std::string_view level, std::string_view source, std::string_view message,
+                     std::string_view code = {}, std::string_view data_json = "{}") = 0;
+};
+
 struct PhysicsContext {
   const Mesh& mesh;
   const Geometry& geometry;
   const SolverInput& input;
+  Log& log;
 };
 
 /// A discretisation of the case's equations. The runtime owns the iteration
