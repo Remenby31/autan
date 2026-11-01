@@ -10,12 +10,14 @@ runs=${1:?usage: euler-runs.sh RUNS [NACA_MESH]}
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 hybrid="$repo/tests/data/mesh/hybrid/polyMesh"
-naca=$(cd "$(dirname "${2:-$repo/build/naca0012.msh}")" && pwd)/$(basename "${2:-$repo/build/naca0012.msh}")
+mesh=${2:-$repo/build/naca0012.msh}
+folder=$(CDPATH='' cd -- "$(dirname -- "$mesh")" && pwd)
+export NACA_MESH="$folder/$(basename -- "$mesh")"
 export AUTAN_RUN="$repo/build/runtime/autan-run"
 info() { "$repo/build/io/autan-mesh-info" --json "$1" > "$2"; }
 autan() { uv run --locked --project "$repo/ui/server" autan "$@"; }
 info "$hybrid" "$work/hybrid.meshinfo.json"
-info "$naca" "$work/naca.meshinfo.json"
+info "$NACA_MESH" "$work/naca.meshinfo.json"
 cp "$repo/py/tests/fixtures/euler.mms.json" "$work/"
 digest=$(sha256sum "$work/euler.mms.json" | cut -d' ' -f1)
 
@@ -45,9 +47,10 @@ CASE
 
 for aoa in 0 2 4 6; do
 cat > "$work/naca_$aoa.py" <<CASE
+import os
 import autan
 from autan.units import K, Pa, deg, m
-case = autan.Case("naca0012", mesh="$naca")
+case = autan.Case("naca0012", mesh=os.environ["NACA_MESH"])
 case.physics = autan.Compressible(turbulence=autan.Inviscid())
 case.freestream(mach=0.5, aoa=$aoa * deg, pressure=101325 * Pa, temperature=288.15 * K, ref_length=1.0 * m)
 case.time = autan.Steady(max_iterations=20000, residual_orders=2.4)
