@@ -178,7 +178,8 @@ export function QuantityInput({
         aria-label={control.label ? `${control.label} unit` : "Unit"}
         className="cursor-pointer border-line border-l bg-transparent px-2 font-mono text-fg-2 text-sm outline-none"
       >
-        {units.map((u) => (
+        {/* A unit the list lacks (read from a case) is kept and shown, never replaced. */}
+        {(units.includes(unit) ? units : [unit, ...units]).map((u) => (
           <option key={u} value={u}>
             {u}
           </option>

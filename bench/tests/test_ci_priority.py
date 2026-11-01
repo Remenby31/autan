@@ -17,9 +17,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="flock(1) and /p
 @pytest.fixture
 def spark(tmp_path: Path) -> dict[str, str]:
     """A lock directory as deploy.sh prepares it, and the environment of an agent outside CI."""
-    for name in ("gpu.lock", "ci.lock", "holders.log"):
+    for name in ("gpu.lock", "ci.lock", "main.lock", "holders.log"):
         (tmp_path / name).touch()
-    env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_ACTIONS", "GITHUB_REF")}
     env |= {"AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock"), "RUNNER_TEMP": str(tmp_path)}
     return env
 
@@ -145,6 +145,23 @@ def test_the_guard_reads_holders_and_waiters_from_proc_locks():
         "23: POSIX  ADVISORY  WRITE 99 103:02:1 0 EOF\n"
     )
     assert guard.lock_users(key, text) == ({4242}, {4343})
+
+
+def test_a_main_job_goes_before_a_pull_request_s(spark, tmp_path):
+    # The main job's priority.sh holds main.lock; a pull request's CI job (here the wrapper with
+    # GITHUB_ACTIONS and a pull request ref) waits for it, then runs.
+    order = tmp_path / "order"
+    main_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main"}
+    pr_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
+    priority(main_env, "start", "5")
+    pr = agent(pr_env, "pr", order)
+    time.sleep(1)
+    assert pr.poll() is None
+    main = agent(main_env, "main", order)
+    assert main.wait(timeout=20) == 0
+    priority(main_env, "stop")
+    assert pr.wait(timeout=20) == 0
+    assert lines(order) == ["main", "pr"]
 
 
 def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, monkeypatch):
