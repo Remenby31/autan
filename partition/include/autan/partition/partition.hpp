@@ -23,6 +23,11 @@ struct PartitionOptions {
   /// times the mean.
   double imbalance_tolerance = 0.03;
   std::int32_t seed = 0;
+  /// Groups of cells that must share a part (a smoother's lines), as CSR: group g holds
+  /// group_cells[group_offsets[g] .. group_offsets[g + 1]). Each group is one node of the graph
+  /// the method partitions, weighing the sum of its cells. Empty: no group.
+  std::span<const offset_t> group_offsets = {};
+  std::span<const index_t> group_cells = {};
 };
 
 /// Number of faces of each cell: the cost of a face loop, which dominates the
@@ -112,6 +117,56 @@ struct LocalPartition {
 LocalPartition extract_partition(const Mesh& global, const Geometry& global_geometry,
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
                                  std::int32_t rank, int layers = 2);
+
+/// One level of a graph hierarchy (a multigrid level): n_nodes nodes, edges owner -> neighbour
+/// (indices of nodes), and each node's global id.
+struct GraphLevel {
+  std::size_t n_nodes = 0;
+  std::span<const index_t> owner, neighbour;
+  std::span<const std::int64_t> global_id;
+};
+
+/// The part of each coarse node: that of its child with the least global id, so that every
+/// rank, holding the same hierarchy, agrees. `coarse_node` gives each fine node's coarse node
+/// (n_coarse of them). Throws E0140 for sizes that do not match or a coarse node without child.
+std::vector<std::int32_t> coarse_parts(std::span<const std::int32_t> parts,
+                                       std::span<const index_t> coarse_node,
+                                       std::span<const std::int64_t> global_id,
+                                       std::size_t n_coarse);
+
+/// The fine nodes that `rank` needs from other parts to restrict onto its coarse nodes: the
+/// children, owned elsewhere, of the coarse nodes it owns. Ascending node index.
+std::vector<index_t> remote_children(std::int32_t rank, std::span<const std::int32_t> parts,
+                                     std::span<const index_t> coarse_node,
+                                     std::span<const std::int32_t> coarse_parts);
+
+/// One rank's share of a graph level, as LocalPartition is a mesh's.
+struct LocalGraph {
+  /// Owned nodes in increasing global id, then ghost nodes ordered by owning part, then
+  /// global id: the edge neighbours of the owned nodes, the remote children (with coarse
+  /// parts given) and the edge neighbours of those.
+  std::size_t n_owned = 0;
+  std::vector<std::int64_t> node_global_id;
+  std::vector<index_t> node_source;  ///< node of the level of each local node
+  /// Local edges: those with an end owned or a remote child. An edge belongs to the part of its
+  /// owner node; owned edges first in level order, then ghost edges by owning part, then level
+  /// order. Local owner < local neighbour; `edge_reversed` 1 where that swaps the level's.
+  std::size_t n_owned_edges = 0;
+  std::vector<index_t> owner, neighbour;
+  std::vector<std::int64_t> edge_global_id;  ///< edge of the level
+  std::vector<std::uint8_t> edge_reversed;
+  /// HaloExchange patterns for per-node and per-edge data (owned items, then ghosts).
+  HaloPattern node_halo, edge_halo;
+};
+
+/// The part `rank` of a graph level partitioned by `parts` (each node's part), for exchanges
+/// with HaloExchange. With `coarse_node` and `coarse_parts`, it also holds the remote children
+/// (remote_children) and their edges. Every rank of a run, holding the same level, builds
+/// matching patterns. Throws E0140 for sizes that do not match, a part or node out of range.
+LocalGraph extract_graph(const GraphLevel& level, std::span<const std::int32_t> parts,
+                         std::int32_t n_parts, std::int32_t rank,
+                         std::span<const index_t> coarse_node = {},
+                         std::span<const std::int32_t> coarse_parts = {});
 
 /// The part of the forward exchange a rank does alone: copies each owned
 /// cell's values into the ghosts that are periodic images of it (the block

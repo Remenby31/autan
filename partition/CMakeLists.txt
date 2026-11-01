@@ -1,4 +1,4 @@
-add_library(autan_partition src/partition.cpp src/extract.cpp src/self_exchange.cpp)
+add_library(autan_partition src/partition.cpp src/extract.cpp src/self_exchange.cpp src/graph.cpp)
 add_library(autan::partition ALIAS autan_partition)
 target_include_directories(
   autan_partition
