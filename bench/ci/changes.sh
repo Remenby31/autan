@@ -26,8 +26,8 @@ printf 'changed files:\n%s\n' "$changed" >&2
 # Measured on the reference Spark: code that is timed or builds what is timed (readers in io/
 # fix the face and cell order of the measured mesh; the mesh generator feeds the loop
 # benchmark), the image it runs in, and the measurement method itself (bench/src: statistics,
-# timing, protocol; the STREAM binary; the baselines).
-measured_paths='^(runtime|codegen|kernels|physics|solvers|core|io)/|^docker/dev/|^bench/(src|stream|cmake|baselines)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
+# timing, protocol; the harness's dependencies; the STREAM binary; the baselines; the gate).
+measured_paths='^(runtime|codegen|kernels|physics|solvers|core|io)/|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
 # The harness's own GPU tests and the image smoke test: whenever the harness or an image changed.
 # Without a measured change they run on the tests runner, keeping the bench Spark for measurements.
 harness='^(bench|docker)/'

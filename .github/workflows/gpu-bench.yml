@@ -82,45 +82,18 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  harness:
-    needs: changes
-    # The harness or an image changed but nothing measured: its GPU tests run on the tests
-    # runner, and the bench Spark stays for measurements.
-    if: >-
-      needs.changes.outputs.bench != 'true' && needs.changes.outputs.harness == 'true' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, linux, ARM64, gpu, gb10, tests]
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    env:
-      AUTAN_BENCH_REQUIRE_GPU: "1"
-      AUTAN_BENCH_LOCK_TIMEOUT: "900"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build the benchmarks
-        run: cmake -S bench -B build/bench && cmake --build build/bench
-      - name: Install the harness
-        run: uv sync --project bench --locked
-      - name: Harness tests on the GPU
-        run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
-      - name: Image smoke test on the GPU
-        run: >-
-          REQUIRE_GPU=1 flock --timeout "$AUTAN_BENCH_LOCK_TIMEOUT" --conflict-exit-code 75
-          /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
-          || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
-
   bench:
     needs: [changes, mesh]
+    # One required check: it measures on the bench Spark, or, when only the harness or an image
+    # changed, runs the harness's GPU tests on the tests runner and leaves the bench Spark alone.
     if: >-
-      needs.changes.outputs.bench == 'true' &&
+      !cancelled() && needs.changes.result == 'success' &&
+      (needs.mesh.result == 'success' || needs.mesh.result == 'skipped') &&
+      (needs.changes.outputs.bench == 'true' || needs.changes.outputs.harness == 'true') &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     # `bench`: runners whose GPU is not shared with another team's long-running process.
-    runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
+    runs-on: ${{ fromJSON(needs.changes.outputs.bench == 'true' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "tests"]') }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -147,26 +120,32 @@ jobs:
           /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
           || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
       - name: STREAM bandwidth
+        if: needs.changes.outputs.bench == 'true'
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
           uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.changes.outputs.bench == 'true'
         with:
           name: mesh-hex-n128
           path: meshes
       - name: Build the generated loops
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
           -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench
       - name: Generated loops, hex n = 128, fp32, RCM order
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
       - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen
@@ -174,7 +153,7 @@ jobs:
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: always() && needs.changes.outputs.bench == 'true'
         with:
           name: gpu-bench-${{ github.sha }}
           path: results/
