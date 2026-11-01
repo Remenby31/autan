@@ -70,12 +70,11 @@ def ringleb_fields(points: FloatArray) -> dict[str, FloatArray]:
         i = int(np.argmin(inside))
         msg = f"point ({x[i]:.6g}, {y[i]:.6g}) is outside the Ringleb domain (V = {speed[i]:.4g}, k = {k[i]:.4g})"
         raise VVError(msg, code="V0706")
-    sin_t = np.minimum(speed / k, 1.0)
-    cos_t = np.sqrt(1.0 - sin_t**2)
+    # u = V cos(theta) sign(y) = y k rho V^2 (from y = cos(theta)/(k rho V)): no cancellation near y = 0.
     return {
         "Density": rho,
-        "VelocityX": speed * cos_t * np.sign(y),
-        "VelocityY": -speed * sin_t,
+        "VelocityX": y * k * rho * speed**2,
+        "VelocityY": -speed * np.minimum(speed / k, 1.0),
         "VelocityZ": np.zeros_like(rho),
         "Pressure": p,
     }
@@ -121,10 +120,14 @@ def isentropic_vortex(
         msg = f"vortex strength {strength} gives a non-positive temperature at the centre"
         raise VVError(msg, code="V0709")
     if period is not None:
-        # The nearest-image solution is exact to the size of the perturbation at half a period.
+        # The nearest-image solution is exact to the size of the perturbation at half a period,
+        # r e^((1-r^2)/2) beta/(2 pi), a bound on the omitted images for r >= 1 where it decreases.
+        if not all(math.isfinite(p) and p > 0.0 for p in period):
+            msg = f"vortex period {period} must be finite and positive"
+            raise VVError(msg, code="V0709")
         r = 0.5 * min(period)
         tail = abs(strength) / (2.0 * math.pi) * r * math.exp(0.5 * (1.0 - r * r))
-        if tail > 1e-15:
+        if r < 1.0 or tail > 1e-15:
             msg = f"period {period} truncates the vortex: perturbation {tail:.2g} at half a period"
             raise VVError(msg, code="V0709")
 

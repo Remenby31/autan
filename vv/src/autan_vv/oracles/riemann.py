@@ -48,7 +48,7 @@ def _f(p: float, s: State, gamma: float) -> tuple[float, float]:
         return (p - s.p) * root, root * (1.0 - 0.5 * (p - s.p) / (big_b + p))
     ratio = p / s.p
     exponent = (gamma - 1.0) / (2.0 * gamma)
-    value = 2.0 * a / (gamma - 1.0) * (ratio**exponent - 1.0)
+    value = 2.0 * a / (gamma - 1.0) * math.expm1(exponent * math.log(ratio))
     return value, ratio ** (-(gamma + 1.0) / (2.0 * gamma)) / (s.rho * a)
 
 
