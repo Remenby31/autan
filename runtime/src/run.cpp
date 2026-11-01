@@ -802,6 +802,7 @@ class Run final : public Log {
         }
       }
     }
+    if (status == "failed") info_["monitors"] = nullptr;
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     write(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",

@@ -290,6 +290,16 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(expected != history(o.run)[4]["monitors"]["forces"]);
     expected["iteration"] = 10;
     CHECK(info["monitors"] == Json{{"forces", expected}});
+
+    // Between two monitor iterations: ymin, the unit square y = 0 with
+    // outward normal -y, carries fy = -(p - p_inf), p = (p_inf + dp) 1.001^11.
+    const Json doc = input([](Json& d) { d["time"]["max_iterations"] = 11; });
+    const Outcome off = run(doc, {.factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3});
+    const Json f = Json::parse(read(off.run / "run.json"))["monitors"]["forces"];
+    CHECK(f["iteration"] == 11);
+    const double p_inf = doc["freestream"]["pressure"].get<double>();
+    CHECK_THAT(f["fy"].get<double>(),
+               WithinRel(-((p_inf + 1000.0) * std::pow(1.001, 11) - p_inf), 1e-12));
   }
   SECTION("stopped before iteration 1: the initial state at iteration 0") {
     // ymin, the unit square y = 0 with outward normal -y, under a pressure
@@ -313,6 +323,14 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
     CHECK(info["iterations"] == 28);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+  }
+  SECTION("failed writing the solution: E0704, no monitors") {
+    const Outcome o = run(input(), {.factor = 0.5, .throw_in_fields = true});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
   }

@@ -30,6 +30,7 @@ struct RelaxationOptions {
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
   bool signal_on_start = false;  ///< raise SIGTERM once constructed, before iteration 1
   bool throw_in_loads = false;
+  bool throw_in_fields = false;
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -146,6 +147,7 @@ class Relaxation final : public autan::runtime::Physics {
   }
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
+    if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");
     if (!mean) return state_;
     auto out = mean_;
     for (auto& f : out) {
