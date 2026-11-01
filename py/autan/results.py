@@ -63,6 +63,17 @@ class Averaging(_Strict):
     to_time: float
 
 
+class StartInfo(_Strict):
+    """Where a restarted run started from (results.md#runjson, ``start``)."""
+
+    run_id: Annotated[str, Field(pattern=r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")]
+    identity: Hex
+    mode: Literal["continue", "warm"]
+    iterations: Annotated[int, Field(ge=1)]
+    time: float | None
+    solution_sha256: Hex
+
+
 class RunInfo(_Strict):
     """The content of ``run.json``."""
 
@@ -81,6 +92,7 @@ class RunInfo(_Strict):
     iterations: Annotated[int, Field(ge=0)]
     time: float | None
     averaging: Averaging | None
+    start: StartInfo | None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -97,9 +109,18 @@ def iso(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def identity(case: str, mesh: str, solver: Solver, precision: str, devices: Devices) -> str:
+def identity(
+    case: str,
+    mesh: str,
+    solver: Solver,
+    precision: str,
+    devices: Devices,
+    start: StartInfo | None = None,
+) -> str:
     """The reproducibility fingerprint of a run (results.md, ``identity``)."""
     parts = [case, mesh, solver.commit, precision, solver.backend, devices.kind, str(devices.count)]
+    if start is not None:
+        parts += [start.identity, str(start.iterations), start.solution_sha256]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -531,7 +552,7 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
     if run.finished is not None and not _TIMESTAMP.fullmatch(run.finished):
         found.append(f"finished {run.finished!r} is not a UTC ISO 8601 timestamp")
     expected = identity(
-        case.hash(), mesh_info.source.sha256, run.solver, run.precision, run.devices
+        case.hash(), mesh_info.source.sha256, run.solver, run.precision, run.devices, run.start
     )
     if run.identity != expected:
         found.append("identity does not match its definition")
@@ -636,8 +657,12 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
                 found.append(f"{where}: monitor {name!r} has the wrong quantities")
             elif not all(_finite(v) for v in values.values()):
                 found.append(f"{where}: monitor {name!r} has non-finite values")
+    continued = run.start is not None and run.start.mode == "continue"
+    base = run.start.iterations if run.start is not None and continued else 0
+    if records and records[0].get("iteration") != base + 1 and continued:
+        found.append(f"a continued run's history starts at iteration {base + 1}")
     if run.status != "running":
-        last = records[-1]["iteration"] if records else 0
+        last = records[-1]["iteration"] if records else base
         if last != run.iterations:
             found.append(f"history ends at iteration {last}, run.json says {run.iterations}")
     return found

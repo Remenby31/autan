@@ -40,6 +40,7 @@ from autan.units import parse, si
 if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
+    from autan.restart import Start
 
 SCHEMA_ID = "autan.solver-input/1"
 GAS_CONSTANT = 8.314462618  # J/(mol K), CODATA 2018 exact value
@@ -279,6 +280,16 @@ class VerificationInput(_Strict):
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
+class StartInput(_Strict):
+    run: AbsolutePath
+    run_id: Annotated[str, Field(pattern=r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")]
+    identity: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+    mode: Literal["continue", "warm"]
+    iterations: Annotated[int, Field(ge=1)]
+    time: Number | None
+    solution_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
@@ -295,6 +306,7 @@ class SolverInput(_Strict):
     time: Annotated[SteadyInput | UnsteadyInput, Field(discriminator="kind")]
     monitors: tuple[ForcesInput, ...]
     verification: VerificationInput | None
+    start: StartInput | None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -521,7 +533,14 @@ def _si(condition: dict[str, Any], key: str, unit: str) -> float | None:
     return float(parse(condition[key], unit).to(unit).magnitude) if key in condition else None
 
 
-def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: bool) -> SolverInput:
+def build(
+    case: Case,
+    mesh_info: MeshInfo,
+    *,
+    devices: Devices,
+    deterministic: bool,
+    start: Start | None = None,
+) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
     plan = case.plan(mesh_info)
     if not plan.ok:
@@ -600,6 +619,9 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
         cell_zones=cell_zones,
         time=time,
         monitors=monitors,
+        start=(
+            StartInput(run=str(start.run), **start.info.model_dump()) if start is not None else None
+        ),
         verification=(
             VerificationInput(
                 path=str(case.resolve(spec.verification.manufactured.path)),

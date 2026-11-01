@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from autan.case import Case
     from autan.meshinfo import MeshInfo
     from autan.plan import Plan
+    from autan.restart import Start
 
 MEDIUM: TypeAdapter[Fluid | SolidZone] = TypeAdapter(Medium)
 
@@ -85,6 +86,7 @@ ZONE_CHILDREN = frozenset(
         "FlowSolution",
         "FlowSolutionMean",
         "WallSolution",
+        "RestartState",
     }
 )
 GENERATED = re.compile(r"(boundary|cell-zone)-\d{4}")
@@ -221,7 +223,9 @@ class FakeBackend:
     pace: float = 0.0
     diverge_at: int | None = None
 
-    def run(self, case: Case, mesh_info: MeshInfo, runs: Path) -> Results:
+    def run(
+        self, case: Case, mesh_info: MeshInfo, runs: Path, start: Start | None = None
+    ) -> Results:
         result = case.plan(mesh_info)
         if not result.ok:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
@@ -232,7 +236,12 @@ class FakeBackend:
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
             identity=identity(
-                spec.hash(), mesh_info.source.sha256, solver, spec.physics.precision, devices
+                spec.hash(),
+                mesh_info.source.sha256,
+                solver,
+                spec.physics.precision,
+                devices,
+                start.info if start is not None else None,
             ),
             status="running",
             case=CaseIdentity(name=spec.name, sha256=spec.hash()),
@@ -246,6 +255,7 @@ class FakeBackend:
             iterations=0,
             time=None,
             averaging=None,
+            start=start.info if start is not None else None,
             diagnostics=(),
         )
         manufactured = (
@@ -260,11 +270,14 @@ class FakeBackend:
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps
         end = min(budget, CONVERGED_AT) if steady else budget
-        diverges = self.diverge_at is not None and self.diverge_at <= min(end, self.iterations)
-        last = min(end, self.iterations, (self.diverge_at or end + 1) - 1)
-        done, status = 0, "running"
+        # A continued run goes on counting; its trajectory is that of an uninterrupted run.
+        offset = start.info.iterations if start and start.info.mode == "continue" else 0
+        cap = offset + self.iterations
+        diverges = self.diverge_at is not None and self.diverge_at <= min(end, cap)
+        last = min(end, cap, (self.diverge_at or end + 1) - 1)
+        done, status = offset, "running"
         try:
-            for iteration in range(1, last + 1):
+            for iteration in range(offset + 1, last + 1):
                 writer.append(history.record(iteration))
                 done = iteration
                 if iteration == CONVERGED_AT // 2:
