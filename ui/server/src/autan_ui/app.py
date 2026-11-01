@@ -102,13 +102,19 @@ def create_app(
     # A page on another origin that rebinds its DNS name to 127.0.0.1 sends its own Host header.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(hosts))
 
-    def existing_run(run_id: str) -> Path:
+    def find_run(run_id: str) -> Path:
         try:
             return registry.run_dir(run_id)
         except RunNotFoundError as error:
             raise HTTPException(404, f"no run {run_id}") from error
         except RunRejectedError as error:
             raise HTTPException(409, str(error)) from error
+
+    def existing_run(run_id: str) -> str:
+        """404 or 409 before a response starts. Handlers find the directory again by listing
+        the runs directory: an injected path would count as request input."""
+        find_run(run_id)
+        return run_id
 
     @app.get("/api/runs")
     async def list_runs() -> dict[str, Any]:
@@ -142,12 +148,12 @@ def create_app(
             watcher.cancel()
 
     @app.get("/api/runs/{run_id}")
-    def run_details(directory: Annotated[Path, Depends(existing_run)]) -> dict[str, Any]:
-        return registry.details(directory)
+    def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
+        return registry.details(find_run(run_id))
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(
-        directory: Annotated[Path, Depends(existing_run)],
+        run_id: Annotated[str, Depends(existing_run)],
         request: Request,
         last_event_id: Annotated[str | None, Header()] = None,
     ) -> AsyncIterator[ServerSentEvent]:
@@ -156,7 +162,12 @@ def create_app(
         breaks the contract ends the stream with `invalid` and its reason."""
         offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
         # Pinned for the whole stream: replacing the directory later cannot redirect reads.
-        folder = Folder(directory)
+        try:
+            directory = registry.run_dir(run_id)
+            folder = Folder(directory)
+        except (LookupError, ValueError, OSError) as error:
+            yield ServerSentEvent(event="invalid", data=f"run {run_id} is gone: {error}")
+            return
         stop = asyncio.Event()
         watcher = asyncio.create_task(_until_disconnected(request, stop))
         changes = _changes(directory, stop)
