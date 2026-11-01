@@ -125,6 +125,16 @@ class FinalMonitor(BaseModel):
     __pydantic_extra__: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
 
 
+class Timing(_Strict):
+    """Wall and solve time of a run (results.md#runjson, ``timing``): information, not a
+    benchmark."""
+
+    wall_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    solve_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    iterations: Annotated[int, Field(strict=True, ge=1)]
+    ns_per_cell_iteration: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
 class RunInfo(_Strict):
     """The content of ``run.json``."""
 
@@ -146,6 +156,7 @@ class RunInfo(_Strict):
     start: StartInfo | None = None
     convergence: Convergence | None = None
     monitors: dict[str, FinalMonitor] | None = None
+    timing: Timing | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -436,7 +447,7 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        for key in ("start", "convergence", "monitors"):
+        for key in ("start", "convergence", "monitors", "timing"):
             if key not in document:
                 broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
@@ -492,6 +503,8 @@ class Results:
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
         for problem in final_monitor_problems(records, run, case):
+            broken(problem, "run.json")
+        for problem in timing_problems(run, mesh_info):
             broken(problem, "run.json")
         results = cls(
             path,
@@ -757,7 +770,7 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
 FINAL = frozenset({"converged", "completed", "stopped"})
 # run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
 # after the solution is written, or name its final state.
-NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "diagnostics")
+NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "timing", "diagnostics")
 
 
 def run_metadata(info: RunInfo) -> dict[str, Any]:
@@ -791,6 +804,28 @@ def final_monitor_problems(
             found.append(f"monitor {name!r} has the wrong or non-finite quantities")
         elif last is not None and name in last["monitors"] and last["monitors"][name] != values:
             found.append(f"monitor {name!r} differs from the last history line")
+    return found
+
+
+def timing_problems(run: RunInfo, mesh_info: MeshInfo) -> list[str]:
+    """run.json ``timing``: absent while running, and consistent with the run it times."""
+    timing = run.timing
+    if timing is None:
+        return []
+    if run.status == "running":
+        return ["timing must be null while the run is running"]
+    continued = run.start is not None and run.start.mode == "continue"
+    done = run.iterations - (run.start.iterations if run.start is not None and continued else 0)
+    found = []
+    if timing.iterations != done:
+        found.append(f"timing.iterations must be the {done} iterations of this run")
+    expected = timing.solve_seconds * 1e9 / (mesh_info.counts.cells * timing.iterations)
+    if not math.isclose(timing.ns_per_cell_iteration, expected, rel_tol=1e-9, abs_tol=0.0):
+        found.append(
+            "timing.ns_per_cell_iteration must be solve_seconds * 1e9 / (cells * iterations)"
+        )
+    if timing.solve_seconds > timing.wall_seconds:
+        found.append("timing.solve_seconds cannot exceed wall_seconds")
     return found
 
 

@@ -31,6 +31,18 @@ if TYPE_CHECKING:
 EXECUTABLE_VARIABLE = "AUTAN_RUN"
 
 
+LAUNCHER_VARIABLE = "AUTAN_MPIEXEC"
+
+
+def find_launcher() -> Path | None:
+    """``$AUTAN_MPIEXEC`` if set, else ``mpiexec`` or ``mpirun`` on the PATH."""
+    explicit = os.environ.get(LAUNCHER_VARIABLE)
+    if explicit:
+        return Path(explicit)
+    found = shutil.which("mpiexec") or shutil.which("mpirun")
+    return Path(found) if found else None
+
+
 def find_executable() -> Path | None:
     """``$AUTAN_RUN`` if set, else ``autan-run`` on the PATH."""
     explicit = os.environ.get(EXECUTABLE_VARIABLE)
@@ -67,6 +79,15 @@ class SolverBackend:
             source = Path(folder) / "solver-input.json"
             source.write_text(json.dumps(document, indent=2) + "\n")
             command = [str(executable), "--input", str(source), "--runs", str(runs)]
+            if self.devices.count > 1:  # one rank per device (solver-input.md, devices)
+                launcher = find_launcher()
+                if launcher is None:
+                    message = (
+                        f"{self.devices.count} devices need an MPI launcher: set "
+                        f"${LAUNCHER_VARIABLE}, or put mpiexec or mpirun on the PATH"
+                    )
+                    raise CaseError([diagnostic("E0808", message)])
+                command = [str(launcher), "-n", str(self.devices.count), *command]
             try:
                 process = subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True

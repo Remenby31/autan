@@ -826,3 +826,47 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(result.path)
     assert error.value.codes == ["E0701"]
+
+
+def _set_timing(path: Path, change: Callable[[dict[str, Any]], object]) -> None:
+    document = json.loads((path / "run.json").read_text())
+    change(document)
+    (path / "run.json").write_text(json.dumps(document))
+
+
+def test_run_json_timing_is_consistent_with_its_run(crm_run: autan.Results) -> None:
+    assert crm_run.run.timing is None  # the fake backend measures nothing
+    cells = crm_run.mesh_info.counts.cells
+    iterations = crm_run.run.iterations
+    good = {
+        "wall_seconds": 12.0,
+        "solve_seconds": 10.0,
+        "iterations": iterations,
+        "ns_per_cell_iteration": 10.0 * 1e9 / (cells * iterations),
+    }
+    _set_timing(crm_run.path, lambda d: d.update(timing=good))
+    assert autan.Results.open(crm_run.path).run.timing is not None
+    for bad in (
+        good | {"ns_per_cell_iteration": good["ns_per_cell_iteration"] * 1.01},
+        good | {"iterations": iterations - 1},
+        good | {"solve_seconds": 13.0},
+    ):
+        document = json.loads((crm_run.path / "run.json").read_text())
+        document["timing"] = bad
+        (crm_run.path / "run.json").write_text(json.dumps(document))
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+    _set_timing(
+        crm_run.path,
+        lambda d: d.update(status="running", finished=None, monitors=None, timing=good),
+    )
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]
+    _set_timing(crm_run.path, lambda d: d.pop("timing"))
+    with pytest.raises(autan.CaseError):
+        autan.Results.open(crm_run.path)
+    document = json.loads((crm_run.path / "run.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("results")).validate(document)

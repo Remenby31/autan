@@ -559,6 +559,12 @@
       "fix": "Run on a host with a GPU visible to the process (`docker --gpus`), or use `devices.kind = cpu`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0807"
     },
+    "E0808": {
+      "severity": "error",
+      "title": "No MPI launcher",
+      "fix": "Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set `$AUTAN_MPIEXEC`, or run on one device.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0808"
+    },
     "E1001": {
       "severity": "error",
       "title": "Unsupported kernel construct",
