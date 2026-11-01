@@ -216,3 +216,35 @@ def _bricks(n: int) -> list[int]:
                 nxt += 1
     _, dense = np.unique(cell.transpose(2, 1, 0).ravel(), return_inverse=True)
     return [int(c) for c in dense]
+
+
+def with_ghost_layer(fa: FaceArrays, n: int) -> tuple[FaceArrays, int]:
+    """The hex mesh `fa` (n^3 cubes, i fastest) with its top layer of cells turned into ghosts:
+    ghosts move to the end, keep only the faces they share with owned cells (mesh contract,
+    invariant 5). Returns the mesh and the number of ghosts."""
+    n_ghost = n * n
+    first_ghost = fa.n_cells - n_ghost
+    keep = []
+    for f in range(len(fa.cell0)):
+        a, b = int(fa.cell0[f]), int(fa.cell1[f])
+        ghost_a, ghost_b = a >= first_ghost, b >= first_ghost
+        if ghost_a and (b < 0 or ghost_b):
+            continue
+        keep.append(f)
+    offsets = np.zeros(len(keep) + 1, dtype=np.int64)
+    nodes: list[int] = []
+    for k, f in enumerate(keep):
+        poly = fa.face_nodes[fa.face_offsets[f] : fa.face_offsets[f + 1]]
+        nodes.extend(int(x) for x in poly)
+        offsets[k + 1] = len(nodes)
+    return (
+        FaceArrays(
+            fa.points,
+            offsets,
+            np.array(nodes, dtype=np.int32),
+            fa.cell0[keep],
+            fa.cell1[keep],
+            fa.n_cells,
+        ),
+        n_ghost,
+    )

@@ -143,10 +143,26 @@ def adjoint(fn: Function, active_args: Sequence[int], seeds: Sequence[Sequence[f
     o = _Out(out)
     act = _active(fn, set(active_args))
     bar: dict[int, int | None] = {}
+    # Adjoints that a select may have zeroed (the branch it did not take). The primal of that
+    # branch may be NaN or infinite (sqrt of a negative, division by zero), so their products
+    # with partial derivatives are guarded: a zero adjoint contributes zero, never 0 * inf.
+    masked: set[int] = set()
 
-    def acc(x: int, contribution: int | None) -> None:
+    def acc(x: int, contribution: int | None, mask: bool = False) -> None:
         if x in act and contribution is not None:
             bar[x] = o.add(bar.get(x), contribution)
+            if mask or contribution in masked or bar.get(x) in masked:
+                masked.add(bar[x])  # type: ignore[arg-type]
+
+    def scaled(b: int, product: int) -> int:
+        """`product` (b times a partial) with b == 0 giving 0 when b may be a zeroed branch."""
+        if b not in masked:
+            return product
+        z = o.const(0.0)
+        nonzero = o.op("or", o.op("lt", b, z), o.op("gt", b, z))
+        r = o.op("select", nonzero, product, z)
+        masked.add(r)
+        return r
 
     for k, y in enumerate(fn.outputs):
         total: int | None = None
@@ -168,36 +184,42 @@ def adjoint(fn: Function, active_args: Sequence[int], seeds: Sequence[Sequence[f
             continue
         a = ins.args
         ln = ins.line
+        m = b in masked
         match ins.op:
             case "add":
-                acc(a[0], b)
-                acc(a[1], b)
+                acc(a[0], b, m)
+                acc(a[1], b, m)
             case "sub":
-                acc(a[0], b)
-                acc(a[1], o.neg(b, ln))
+                acc(a[0], b, m)
+                acc(a[1], o.neg(b, ln), m)
             case "mul":
-                acc(a[0], o.op("mul", b, a[1], line=ln))
-                acc(a[1], o.op("mul", b, a[0], line=ln))
+                acc(a[0], scaled(b, o.op("mul", b, a[1], line=ln)))
+                acc(a[1], scaled(b, o.op("mul", b, a[0], line=ln)))
             case "div":
-                q = o.op("div", b, a[1], line=ln)
+                q = scaled(b, o.op("div", b, a[1], line=ln))
                 acc(a[0], q)
-                acc(a[1], o.neg(o.op("mul", q, v, line=ln), ln))
+                acc(a[1], o.neg(scaled(b, o.op("mul", q, v, line=ln)), ln), b in masked)
             case "neg":
-                acc(a[0], o.neg(b, ln))
+                acc(a[0], o.neg(b, ln), m)
             case "sqrt":
-                acc(a[0], o.op("div", b, o.op("mul", o.const(2.0), v, line=ln), line=ln))
+                two_v = o.op("mul", o.const(2.0), v, line=ln)
+                acc(a[0], scaled(b, o.op("div", b, two_v, line=ln)))
             case "exp":
-                acc(a[0], o.op("mul", b, v, line=ln))
+                acc(a[0], scaled(b, o.op("mul", b, v, line=ln)))
             case "log":
-                acc(a[0], o.op("div", b, a[0], line=ln))
+                acc(a[0], scaled(b, o.op("div", b, a[0], line=ln)))
             case "sin":
-                acc(a[0], o.op("mul", b, o.op("cos", a[0], line=ln), line=ln))
+                acc(a[0], scaled(b, o.op("mul", b, o.op("cos", a[0], line=ln), line=ln)))
             case "cos":
-                acc(a[0], o.neg(o.op("mul", b, o.op("sin", a[0], line=ln), line=ln), ln))
+                acc(
+                    a[0],
+                    o.neg(scaled(b, o.op("mul", b, o.op("sin", a[0], line=ln), line=ln)), ln),
+                    b in masked,
+                )
             case "select":
                 z = o.const(0.0)
-                acc(a[1], o.op("select", a[0], b, z, line=ln))
-                acc(a[2], o.op("select", a[0], z, b, line=ln))
+                acc(a[1], o.op("select", a[0], b, z, line=ln), True)
+                acc(a[2], o.op("select", a[0], z, b, line=ln), True)
             case _:
                 raise AssertionError(ins.op)
     outputs = []

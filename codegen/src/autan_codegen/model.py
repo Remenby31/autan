@@ -180,6 +180,11 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         _check_bindings(where, "cell", fin_sig, loop.finalise_bindings, skip=n_acc)
     lm = LoopModel(name, loop, fn, sig, fin_fn, fin_sig)
     _check_outputs(where, lm)
+    read = {id(d) for d in lm.reads()}
+    for d in lm.writes():
+        if id(d) in read:
+            # In place updates would race between strategies and lose the adjoint of the input.
+            raise CodegenError(Code.INVALID_BINDING, f"{d.name} is both read and written", where)
     return lm
 
 

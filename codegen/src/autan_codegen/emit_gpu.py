@@ -161,12 +161,13 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         )
     e.w("}")
     e.w()
-    # store-gather pass 2 and gather-recompute: one thread per owned cell, incidence order.
+    # store-gather pass 2 and gather-recompute: one thread per cell, incidence order. Ghost cells
+    # too: their sums are the partial contributions a reverse halo exchange sends to their owner.
     for variant in ("gather", "gather_recompute"):
         extra = ", const typename P::accum* __restrict__ scratch" if variant == "gather" else ""
         _kernel_head(e, f"{lm.name}_{variant}", extra)
         e.w(f"  const index_t c = {tid};")
-        e.w("  if (c >= d.topo.n_owned_cells) {")
+        e.w("  if (c >= d.topo.n_cells) {")
         e.w("    return;")
         e.w("  }")
         e.w(f"  A acc[{n}] = {{}};")
@@ -257,15 +258,11 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w("      if (hi > lo) {")
     e.w(f"        {lm.name}_store<P><<<grid(hi - lo), block, 0, s.stream>>>(d, lo, hi, scratch);")
     e.w("      }")
-    e.w(
-        f"      {lm.name}_gather<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d, scratch);"
-    )
+    e.w(f"      {lm.name}_gather<P><<<grid(d.topo.n_cells), block, 0, s.stream>>>(d, scratch);")
     e.w("      break;")
     e.w("    }")
     e.w("    case gpu::Strategy::gather_recompute:")
-    e.w(
-        f"      {lm.name}_gather_recompute<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d);"
-    )
+    e.w(f"      {lm.name}_gather_recompute<P><<<grid(d.topo.n_cells), block, 0, s.stream>>>(d);")
     e.w("      break;")
     e.w("  }")
     e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')

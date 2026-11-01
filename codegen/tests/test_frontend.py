@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
 from autan_codegen import dsl
-from autan_codegen.dsl import Geom, Param, Residual, State, cells, dot, pointwise, rel
+from autan_codegen.ad import adjoint, tangent
+from autan_codegen.dsl import Geom, Param, Residual, State, cells, dot, pointwise, rel, sqrt
 from autan_codegen.errors import CodegenError
 from autan_codegen.frontend import parse
 
@@ -21,11 +22,11 @@ OPS = {
     "mul": lambda a, b: a * b,
     "div": lambda a, b: a / b,
     "neg": lambda a: -a,
-    "sqrt": math.sqrt,
-    "exp": math.exp,
-    "log": math.log,
-    "sin": math.sin,
-    "cos": math.cos,
+    "sqrt": np.sqrt,
+    "exp": np.exp,
+    "log": np.log,
+    "sin": np.sin,
+    "cos": np.cos,
     "rel": lambda a, b: a - b,
     "lt": lambda a, b: a < b,
     "le": lambda a, b: a <= b,
@@ -44,9 +45,9 @@ def run(fn: Function, *args: float | tuple[float, ...]) -> list[float]:
     for ins in fn.instrs:
         if ins.op == "input":
             k, c = ins.attr  # type: ignore[misc]
-            v.append(flat[k][c])
+            v.append(np.float64(flat[k][c]))
         elif ins.op == "const":
-            v.append(ins.attr)
+            v.append(np.float64(ins.attr))  # type: ignore[arg-type]
         else:
             v.append(OPS[ins.op](*(v[a] for a in ins.args)))
     return [v[o] for o in fn.outputs]  # type: ignore[misc]
@@ -137,6 +138,22 @@ def calls_python(x: State) -> State:
     return round(x)
 
 
+@pointwise
+def guarded_sqrt(x: State) -> State:
+    return sqrt(x) if x > 0.0 else x
+
+
+def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
+    # d/dx at x = -1 is 1 (the else branch); the sqrt branch evaluates to NaN and must not leak.
+    fn, _ = parse(guarded_sqrt)
+    adj = adjoint(fn, [0], [[1.0]])
+    tan = tangent(fn, [0])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        assert run(adj, -1.0, 1.0) == [1.0]
+        assert run(tan, -1.0, 1.0) == [-1.0, 1.0]
+        assert run(adj, 4.0, 1.0) == [0.25]
+
+
 @pytest.mark.parametrize(
     ("body", "code"),
     [
@@ -165,6 +182,11 @@ def flux(ql: State, qr: State) -> Residual:
     return ql - qr
 
 
+@pointwise
+def in_place(x: Residual) -> Residual:
+    return 2.0 * x
+
+
 def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.face_loop(flux, ql=q.left, out=dsl.Inc(r, left=1, right=-1)))
@@ -177,3 +199,6 @@ def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         dsl.face_loop(flux, ql=q.left, qr=q.right, out=dsl.Inc(r, left=1))
     assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.cell_loop(in_place, x=r, out=dsl.Write(r)))
+    assert info.value.code == "E1003"

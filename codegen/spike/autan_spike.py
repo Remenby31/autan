@@ -77,14 +77,14 @@ def read(path: str) -> Mesh:
     return _wrap(h)
 
 
-def mesh(fa: FaceArrays) -> Mesh:
+def mesh(fa: FaceArrays, n_ghost_cells: int = 0) -> Mesh:
     err = ctypes.create_string_buffer(512)
     h = ctypes.c_void_p()
     xyz = np.ascontiguousarray(fa.points, dtype=np.float64)
     rc = lib().autan_spike_mesh_from_faces(
         ctypes.c_int64(len(xyz)), _p(xyz), ctypes.c_int64(len(fa.cell0)), _p(fa.face_offsets),
         _p(fa.face_nodes), _p(fa.cell0), _p(fa.cell1), ctypes.c_int32(fa.n_cells),
-        ctypes.byref(h), err, ctypes.c_size_t(len(err)),
+        ctypes.c_int32(n_ghost_cells), ctypes.byref(h), err, ctypes.c_size_t(len(err)),
     )  # fmt: skip
     _check(rc, err)
     return _wrap(h)

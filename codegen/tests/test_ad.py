@@ -129,8 +129,6 @@ def test_roe_flux_is_consistent_and_conservative(mesh: s.Mesh) -> None:
 
 @pytest.mark.parametrize("policy", PRECISIONS)
 def test_min_max_reductions_with_ties_pass_the_dot_product_test(mesh: s.Mesh, policy: str) -> None:
-    # Values rounded to one decimal: many neighbours tie, and the tangent and the adjoint must
-    # select the same incidence (the first in list order).
     rng = np.random.default_rng(12)
     q = np.round(rng.standard_normal(mesh.n_cells), 1)
     q_b = np.round(rng.standard_normal(mesh.n_faces), 1)
@@ -138,5 +136,33 @@ def test_min_max_reductions_with_ties_pass_the_dot_product_test(mesh: s.Mesh, po
     jx = s.lsq_bounds_derivative(mesh, policy, "tangent", q, q_b, x)
     jty = s.lsq_bounds_derivative(mesh, policy, "adjoint", q, q_b, y)
     assert gap(y, jx, jty, x) <= GAP[policy]
-    # The bounds' tangents are tangents of selected values: each is dq of the cell or of a neighbour.
-    assert np.all(np.isin(jx[:, 3], x) | (jx[:, 3] == 0.0)) if policy == "fp64" else True
+
+
+def test_ties_select_the_first_incidence_in_list_order(mesh: s.Mesh) -> None:
+    # Every value is 0 or 1, so most minima and maxima tie. The specification (research section
+    # 4.3): the reduction keeps the first incidence of the cell's CSR list, boundary values are
+    # passive, and the finalise min(lo, q_c) keeps lo on a tie. Expected tangents are computed
+    # here from the topology alone.
+    rng = np.random.default_rng(13)
+    q = rng.integers(0, 2, mesh.n_cells).astype(float)
+    q_b = rng.integers(0, 2, mesh.n_faces).astype(float)
+    dq = rng.standard_normal(mesh.n_cells)
+    jx = s.lsq_bounds_derivative(mesh, "fp64", "tangent", q, q_b, dq)
+    ni = mesh.n_interior
+    for c in range(mesh.n_cells):
+        best = {"min": (np.inf, 0.0), "max": (-np.inf, 0.0)}
+        for k in range(mesh.cell_face_offsets[c], mesh.cell_face_offsets[c + 1]):
+            f = mesh.cell_faces[k]
+            if f < ni:
+                nb = mesh.neighbour[f] if mesh.owner[f] == c else mesh.owner[f]
+                val, tan = q[nb], dq[nb]
+            else:
+                val, tan = q_b[f], 0.0
+            if val < best["min"][0]:
+                best["min"] = (val, tan)
+            if val > best["max"][0]:
+                best["max"] = (val, tan)
+        lo = best["min"][1] if best["min"][0] <= q[c] else dq[c]
+        hi = best["max"][1] if best["max"][0] >= q[c] else dq[c]
+        assert jx[c, 3] == lo
+        assert jx[c, 4] == hi

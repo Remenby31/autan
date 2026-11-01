@@ -234,6 +234,13 @@ def derive(m: Module) -> None:
     """Append the tangent and adjoint loops of every loop of `m`, and the datasets they use."""
     derived: list[LoopModel] = []
     for lm in m.loops:
+        has_active = bool(_active(lm.sig, lm.loop.bindings)) or (
+            lm.fin_sig is not None
+            and bool(_active(lm.fin_sig, lm.loop.finalise_bindings, skip=len(lm.loop.outputs)))
+        )
+        if not has_active:
+            # Nothing active flows in: the tangent output is zero and there is no adjoint to send.
+            continue
         derived.append(tangent_loop(lm, m))
         derived.append(adjoint_loop(lm, m))
     for lm in derived:

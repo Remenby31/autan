@@ -63,13 +63,17 @@ int main() {
         ul[0], ul[1], ul[2], ul[3], ul[4], ur[0], ur[1], ur[2], ur[3], ur[4], n[0], n[1], n[2],
         area, outb[0], outb[1], outb[2], outb[3], outb[4], 0.0, 0.0, 0.0, 0.0, 0.0, ours);
     double scale = 0.0, diff = 0.0;
+    bool finite = true;
     for (int k = 0; k < 5; ++k) {
+      finite = finite && std::isfinite(ulb[k]) && std::isfinite(urb[k]) && std::isfinite(ours[k]) &&
+               std::isfinite(ours[5 + k]);
       scale = std::max({scale, std::abs(ulb[k]), std::abs(urb[k])});
       diff = std::max({diff, std::abs(ulb[k] - ours[k]), std::abs(urb[k] - ours[5 + k])});
     }
-    worst = std::max(worst, diff / scale);
+    const double rel = finite && scale > 0.0 ? diff / scale : HUGE_VAL;
+    worst = std::max(worst, rel);
   }
   std::printf("{\"samples\":%d,\"near_stagnation\":%d,\"max_rel_diff\":%.3e}\n", samples, fixed,
               worst);
-  return worst <= 1e-13 ? 0 : 1;
+  return std::isfinite(worst) && worst <= 1e-13 ? 0 : 1;
 }

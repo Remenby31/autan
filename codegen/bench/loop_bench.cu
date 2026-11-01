@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <random>
 #include <string>
 #include <string_view>
@@ -105,10 +106,13 @@ std::vector<double> time_it(const Options& o, Launch launch) {
 double max_rel_diff(const std::vector<double>& a, const std::vector<double>& b) {
   double num = 0.0, den = 0.0;
   for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!std::isfinite(a[i]) || !std::isfinite(b[i])) {
+      return std::numeric_limits<double>::infinity();
+    }
     num = std::max(num, std::abs(a[i] - b[i]));
     den = std::max(den, std::abs(b[i]));
   }
-  return num / den;
+  return den > 0.0 ? num / den : std::numeric_limits<double>::infinity();
 }
 
 template <class T>

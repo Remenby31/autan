@@ -394,13 +394,15 @@ std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
 
 extern "C" {
 
-/// Builds a mesh from face-based arrays (face_cell1 = -1 on the boundary); all boundary faces in
-/// one zone. Returns 0 and a handle in *out, or 1 with a coded message in err.
+/// Builds a mesh from face-based arrays (face_cell1 = -1 on the boundary), the last
+/// n_ghost_cells cells being ghosts; all boundary faces in one zone. Returns 0 and a handle in
+/// *out, or 1 with a coded message in err.
 int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::int64_t n_faces,
                                 const std::int64_t* face_node_offsets,
                                 const std::int32_t* face_nodes, const std::int32_t* face_cell0,
-                                const std::int32_t* face_cell1, std::int32_t n_cells, void** out,
-                                char* err, std::size_t err_len) {
+                                const std::int32_t* face_cell1, std::int32_t n_cells,
+                                std::int32_t n_ghost_cells, void** out, char* err,
+                                std::size_t err_len) {
   return guarded(err, err_len, [&] {
     autan::MeshInput in;
     const auto np = static_cast<std::size_t>(n_points);
@@ -419,6 +421,7 @@ int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::i
       in.face_zone[f] = face_cell1[f] < 0 ? 1 : 0;
     }
     in.cell_zone.assign(static_cast<std::size_t>(n_cells), 0);
+    in.n_ghost_cells = n_ghost_cells;
     in.face_zones = {{"interior", "", autan::BcKind::unspecified, false, {}},
                      {"boundary", "", autan::BcKind::unspecified, true, {}}};
     in.cell_zones = {{"fluid", "", autan::CellKind::unspecified, {}}};

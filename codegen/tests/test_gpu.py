@@ -123,3 +123,19 @@ def test_face_loop_adjoints_are_bitwise_reproducible(
         for k in range(10)
     }
     assert len(runs) == 1
+
+
+@pytest.mark.parametrize("strategy", s.STRATEGIES)
+def test_ghost_cells_receive_their_partial_sums_in_every_strategy(strategy: str) -> None:
+    # Faces between owned and ghost cells increment the ghost's residual (mesh contract,
+    # invariant 6): a reverse halo exchange sends those partial sums to the owner.
+    fa, n_ghost = meshes.with_ghost_layer(meshes.build("hex", 6), 6)
+    m = s.mesh(fa, n_ghost)
+    rng = np.random.default_rng(14)
+    u = np.column_stack([1.0 + 0.1 * rng.random(m.n_cells), 0.2 * rng.standard_normal((m.n_cells, 3)),
+                         2.5 + 0.1 * rng.random(m.n_cells)])  # fmt: skip
+    host = s.roe(m, "fp64", "residual", u)
+    dev = s.gpu_roe(m, "fp64", strategy, 64, "residual", u)
+    ghosts = slice(m.n_cells - n_ghost, m.n_cells)
+    assert np.abs(host[ghosts]).max() > 0.0
+    assert np.abs(dev - host).max() <= 500 * eps("fp64") * np.abs(host).max()

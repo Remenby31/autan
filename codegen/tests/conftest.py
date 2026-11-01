@@ -20,6 +20,26 @@ def eps(policy: str) -> float:
     return float(np.finfo(np.float64 if policy == "fp64" else np.float32).eps)
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--backend",
+        choices=["cpu", "gpu"],
+        default="cpu",
+        help="cpu: host library, GPU tests deselected; gpu: AUTAN_SPIKE_LIB must be libautan_spike_gpu",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--backend") == "gpu":
+        if "AUTAN_SPIKE_LIB" not in os.environ:
+            raise pytest.UsageError("--backend gpu needs AUTAN_SPIKE_LIB=.../libautan_spike_gpu.so")
+        return
+    gpu = [i for i in items if i.get_closest_marker("gpu")]
+    if gpu:
+        config.hook.pytest_deselected(items=gpu)
+        items[:] = [i for i in items if not i.get_closest_marker("gpu")]
+
+
 @pytest.fixture(scope="session", autouse=True)
 def spike_library(tmp_path_factory: pytest.TempPathFactory) -> str:
     if "AUTAN_SPIKE_LIB" not in os.environ:

@@ -71,11 +71,12 @@ __device__ inline int segment_id(bool head) {
   const int lane = static_cast<int>(threadIdx.x) % warp_size;
 #if defined(AUTAN_GPU_HIP)
   const lane_mask_t heads = __ballot_sync(full_mask, head);
-  const lane_mask_t upto = full_mask >> (warp_size - 1 - lane);
+  // Lanes 0..lane, whatever the wave size (32 on RDNA with a 64-bit mask type).
+  const lane_mask_t upto = full_mask >> (8 * sizeof(lane_mask_t) - 1 - lane);
   return __popcll(heads & upto);
 #else
   const lane_mask_t heads = __ballot_sync(full_mask, head);
-  const lane_mask_t upto = full_mask >> (warp_size - 1 - lane);
+  const lane_mask_t upto = full_mask >> (8 * sizeof(lane_mask_t) - 1 - lane);
   return __popc(heads & upto);
 #endif
 }
