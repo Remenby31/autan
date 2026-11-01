@@ -1,16 +1,15 @@
 # Runs the GPU tests, the STREAM benchmark and the tracked generated loops on a DGX Spark
-# runner, gates each on its GB10 baseline and uploads the results. Self-hosted runners never run fork pull requests:
-# the job condition below skips them, and the runner's job-started hook refuses them
-# even if a pull request edits this file (docs/infra/runners.md).
+# runner, gates each on its GB10 baseline and uploads the results. The workflow runs for every
+# change, but its jobs are skipped (which satisfies the required check) unless code that can
+# change a measurement changed. Self-hosted runners never run fork pull requests: the job
+# condition skips them, and the runner's job-started hook refuses them even if a pull request
+# edits this file (docs/infra/runners.md).
 name: gpu-bench
 
 on:
   push:
     branches: [main]
-    paths: &paths
-      [bench/**, docker/**, codegen/**, kernels/**, core/**, io/**, vv/**, CMakeLists.txt, .github/workflows/gpu-bench.yml]
   pull_request:
-    paths: *paths
   workflow_dispatch:
 
 permissions: {}
@@ -20,7 +19,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      bench: ${{ steps.filter.outputs.bench }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Decide whether anything measured changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ] || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "bench=true" >> "$GITHUB_OUTPUT"; echo "bench: forced ($EVENT)"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" "$GITHUB_SHA")
+          echo "changed files:"; echo "$changed"
+          # Code that is timed or builds what is timed; the mesh generator feeds the loop benchmark.
+          pattern='^(runtime|codegen|kernels|physics|solvers|core|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
+          if echo "$changed" | grep -q -E "$pattern"; then bench=true; else bench=false; fi
+          echo "bench=$bench" >> "$GITHUB_OUTPUT"; echo "bench: $bench"
+
   mesh:
+    needs: changes
+    if: needs.changes.outputs.bench == 'true'
     # Gmsh has no linux-aarch64 wheel (docs/validation/meshes.md): the mesh is generated here,
     # on a GitHub-hosted runner, and handed to the Spark job as an artifact.
     runs-on: ubuntu-24.04
@@ -48,15 +77,21 @@ jobs:
           if-no-files-found: error
 
   bench:
-    needs: mesh
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: [changes, mesh]
+    if: >-
+      needs.changes.outputs.bench == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     # `bench`: runners whose GPU is not shared with another team's long-running process.
     runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
+      # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
+      # behind other measurements on the shared Spark.
+      AUTAN_BENCH_LOCK_TIMEOUT: "900"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,7 +103,10 @@ jobs:
       - name: Tests (CPU and GPU)
         run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
       - name: Image smoke test on the GPU
-        run: REQUIRE_GPU=1 flock /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
+        run: >-
+          REQUIRE_GPU=1 flock --timeout "$AUTAN_BENCH_LOCK_TIMEOUT" --conflict-exit-code 75
+          /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
+          || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
       - name: STREAM bandwidth
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)

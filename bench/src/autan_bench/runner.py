@@ -67,6 +67,7 @@ def run(
     suite: str,
     precision: str,
     lock: Path = gpu.DEFAULT_LOCK,
+    lock_timeout_s: float | None = None,
     max_load_per_cpu: float | None = None,
 ) -> dict[str, Any]:
     """Run a benchmark binary under the GPU lock and return a validated result document.
@@ -75,7 +76,7 @@ def run(
     ``runtime_version``, ``driver_version``, ``device``, ``config``, ``verified`` and
     ``kernels``, each {name, bytes_per_rep, seconds[], optional cells, optional params}.
     """
-    with gpu.gpu_lock(lock) as waited:
+    with gpu.gpu_lock(lock, lock_timeout_s) as waited:
         idle = gpu.require_idle()
         before = gpu.host_load()
         per_cpu = before["load_1m"] / before["cpus"]
