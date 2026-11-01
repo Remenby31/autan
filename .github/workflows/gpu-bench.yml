@@ -71,8 +71,10 @@ jobs:
         run: REQUIRE_GPU=1 flock /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
       - name: STREAM bandwidth
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
-      - name: Compare with the GB10 baseline
-        run: uv run --project bench --locked autan-bench compare results/stream.json bench/baselines/gb10.json
+      - name: Compare with the GB10 baseline (one rerun if inconclusive)
+        run: >-
+          bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
+          uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mesh-hex-n128
@@ -87,10 +89,13 @@ jobs:
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
-      - name: Compare the tracked loops with their GB10 baseline
+      - name: Compare the tracked loops with their GB10 baseline (one rerun if inconclusive)
         run: >-
-          uv run --project bench --locked autan-bench compare results/codegen-hex-n128-fp32.json
-          bench/baselines/gb10-codegen-hex-n128-fp32.json
+          bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
+          uv run --project bench --locked autan-bench run --suite codegen
+          --binary build/autan/codegen/autan_loop_bench --precision fp32
+          --out results/codegen-hex-n128-fp32.json
+          -- meshes/hex-n128.msh --policy fp32 --order rcm
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
