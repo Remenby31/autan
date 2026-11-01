@@ -53,6 +53,25 @@ The faces of polyhedral duals are not planar. A one-point flux at the face centr
 
 Cells store U − U_ref, the reference being the freestream, and the primitive pressure is the gauge pressure p − p_ref, computed from the differences only: p − p_ref = (γ − 1)(ΔE − (|m|²/ρ − |m_ref|²/ρ_ref)/2), the kinetic difference written with Δm and Δρ. Momentum fluxes take the gauge pressure (p_ref sums to zero over a closed cell); every other use of p adds p_ref back. In `fp32+acc64` the residual evaluated in FP32 has a rounding floor: on the MMS (hex, n = 16, from the freestream) the residuals drop 5.9–6.0 orders with absolute storage and 6.3–6.4 orders with the reference state, then stay there. The rest of the floor is the FP32 rounding of the fluxes themselves. A ten-order drop is therefore measured in `fp64`; in `fp32+acc64` the gate is the plateau and the integrated forces against `fp64` ([acceptance.md](../validation/acceptance.md#m2--compressible-euler)). The surface pressure must then agree with `fp64` to max |ΔCp| ≤ 10⁻³ over the wall faces, shock cells excepted (reported there): the plateau leaves state differences of order 10⁻⁶–10⁻⁵ relative, so 10⁻³ is a margin of 100 or more, and it is ten times finer than the 0.01 to which Cp distributions are compared with experiment.
 
+## Time stepping
+
+Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R(U), Δt = CFL V / Σ_f (|v·n| + c) A local to each cell:
+
+- J̃ is the approximate Jacobian: dF/dW of every face with the reconstruction's gradients and limiter held fixed, written by the face loops in the same pass as the residual (`*_jacobian` loops of `kernels/euler.py`), times dW/dU of each cell; it is assembled in 5 × 5 blocks (`BlockMatrix`) and solved by four symmetric multicolour block Gauss-Seidel sweeps (cells of a colour share no face, so the sweep is deterministic).
+- The run starts at first order, where J̃ is the exact Jacobian, and switches to second order once the first-order residual has dropped three orders (at most 200 steps).
+- CFL = 10 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
+- A step is shortened so that no cell loses more than half its density or pressure.
+
+On the MMS (`autan-run`, `fp64`, ten orders from the freestream): hex 42–158 steps, poly 46–70, hybrid 64–192, tet 126–233. A Newton-Krylov variant (FGMRES on finite differences of the full residual, with these Gauss-Seidel sweeps as preconditioner) was less robust far from the solution, where its larger steps were shortened repeatedly; it is not used.
+
+Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `dt` or `cfl`.
+
+Restart: `restart_fields` holds the conserved variables bit for bit, the averaging sums, and the steady solver's state (penalty, order, reference residuals) as uniform fields, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
+
+## Limiter and verification
+
+Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips more as the mesh is refined: with it, the MMS order on tetrahedra falls to 1.82–1.94 (finest pairs, levels 12–32), against 1.97–2.05 without. A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) therefore run without the limiter. Every other case runs with it.
+
 ## Manufactured solution
 
 Steady `euler` solution of autan-vv (Roy et al. 2004 form), boundary faces at the exact state, cell sources at centroids; Newton-Krylov on the generated residual (`physics/mms/euler_mms.py`). The table is filled from the study of PR #99.
