@@ -11,7 +11,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   "schema": "autan.mesh-info/1",
   "source": {"path": "crm-hl.cgns", "format": "cgns", "sha256": "9f2c…"},
   "counts": {
-    "cells": 48200000, "faces": 151000000, "nodes": 52000000,
+    "cells": 48200000, "faces": 151000000, "nodes": 52000000, "face_nodes": 512000000,
     "cells_by_type": {"tetra": 964000, "pyramid": 0, "prism": 13014000, "hexa": 0, "polyhedron": 34222000}
   },
   "boundary_zones": [
@@ -32,6 +32,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `source.format` | `"cgns"` · `"gmsh"` · `"fluent"` · `"polymesh"` | Reader used. |
 | `source.sha256` | 64 lowercase hex chars | The **mesh hash** recorded by every run: SHA-256 of the mesh file bytes. For a polyMesh directory, SHA-256 of the concatenation, for each file in the order `points`, `faces`, `owner`, `neighbour`, `boundary`, `cellZones` (when present), of `<name>\n<byte length in decimal>\n<bytes>`. |
 | `counts.cells`, `counts.faces`, `counts.nodes` | integer ≥ 1 | Global counts after reading, before partitioning. `faces` counts each face once, interior and boundary. |
+| `counts.face_nodes` | integer ≥ 3 × `faces` | The nodes of every face, summed over the faces: the length of the face-to-node connectivity, which sizes the mesh in memory ([mesh.md](mesh.md)). |
 | `counts.cells_by_type` | object, keys `tetra` `pyramid` `prism` `hexa` `polyhedron`, integers ≥ 0 | Cells by shape. A cell is `polyhedron` unless it is exactly one of the four standard shapes. The values sum to `counts.cells`. |
 | `boundary_zones[]` | list, names unique | Every boundary face belongs to exactly one zone. Boundary faces the file leaves outside any group form a zone named `unassigned` with `type: null`; a file that also names a zone `unassigned` is rejected by the reader. |
 | `boundary_zones[].name` | non-empty string | Zone name from the file (Fluent zone name, Gmsh physical name, CGNS `BC_t` or family name). |

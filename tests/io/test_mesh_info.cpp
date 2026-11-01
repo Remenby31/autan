@@ -337,3 +337,16 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     CHECK(e.code() == autan::ErrorCode::geometry_non_positive_volume);
   }
 }
+
+TEST_CASE("MeshInfo counts the nodes of every face", "[mesh-info]") {
+  // Tetrahedra have triangular faces only, hexahedra quadrilateral ones.
+  for (const auto& [mesh, nodes_per_face] :
+       {std::pair{"tet/polyMesh", 3}, std::pair{"hex/polyMesh", 4}}) {
+    CAPTURE(mesh);
+    const fs::path path = data_dir / mesh;
+    const auto doc = nlohmann::json::parse(
+        autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+    CHECK(doc["counts"]["face_nodes"] ==
+          nodes_per_face * doc["counts"]["faces"].get<std::int64_t>());
+  }
+}
