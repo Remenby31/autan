@@ -151,15 +151,20 @@ def create_app(
 
     if static is not None and (static / "index.html").is_file():
         index = static / "index.html"
+        # Built once from the files on disk: a request selects an entry by name and never
+        # becomes a path, so `..`, absolute paths and links cannot reach outside the build.
+        assets = {
+            path.relative_to(static).as_posix(): path
+            for path in static.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa(path: str) -> FileResponse:
             if path.startswith("api/"):
                 raise HTTPException(404)
-            candidate = (static / path).resolve()
-            if candidate.is_file() and candidate.is_relative_to(static.resolve()):
-                return FileResponse(candidate)
-            return FileResponse(index)
+            return FileResponse(assets.get(path, index))
+
     else:
         log.warning("no built web app in %s: serving the API only (run `bun run build`)", static)
 
