@@ -851,3 +851,32 @@ def test_a_fake_run_measures_no_timing(crm_run: autan.Results) -> None:
         if "timing" not in broken:
             with pytest.raises(jsonschema.ValidationError):
                 jsonschema.Draft202012Validator(json_schema("results")).validate(broken)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda d: d.update(convergence={"floor": {}}),
+        lambda d: d.update(convergence={"floor": {"bogus": 1e-6}}),
+        lambda d: d.update(monitors=None),
+        lambda d: d["monitors"]["forces"].update(iteration=d["iterations"] - 1),
+        lambda d: d.update(
+            timing={
+                "wall_seconds": 1.0,
+                "solve_seconds": 1.0,
+                "iterations": 1,
+                "ns_per_cell_iteration": 1.0,
+            }
+        ),
+    ],
+)
+def test_check_run_json_refuses_what_results_open_refuses(
+    damage: Callable[[dict[str, Any]], object], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    damage(document)
+    assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info)
+    (crm_run.path / "run.json").write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]

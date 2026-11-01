@@ -467,15 +467,6 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
-        if run.convergence is not None and (
-            run.precision != "fp32+acc64"
-            or not isinstance(case.time, Steady)
-            or set(run.convergence.floor) != set(residual_names(case))
-        ):
-            broken(
-                "convergence floors exist only for a steady fp32+acc64 run, one per equation",
-                "run.json",
-            )
         for rule in case.boundaries:
             if rule.condition.kind == "oracle-state":
                 archived = path / "states" / f"{rule.condition.sha256}.json"
@@ -504,7 +495,7 @@ class Results:
             broken(problem, "log.jsonl")
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
-        for problem in final_monitor_problems(records, run, case):
+        for problem in final_monitor_history_problems(records, run):
             broken(problem, "run.json")
         results = cls(
             path,
@@ -688,6 +679,8 @@ def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]
         found.append("averaging is only for unsteady runs")
     if run.status == "diverged" and not any(d.code.startswith("D") for d in run.diagnostics):
         found.append("a diverged run must carry a D diagnostic")
+    found += convergence_problems(run, case)
+    found += final_monitor_problems(run, case)
     found += timing_problems(run, mesh_info)
     return found
 
@@ -797,11 +790,9 @@ def run_metadata(info: RunInfo) -> dict[str, Any]:
     return {k: v for k, v in info.document().items() if k not in NOT_IN_METADATA}
 
 
-def final_monitor_problems(
-    records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
-) -> list[str]:
-    """run.json ``monitors``: each monitor on the final state of a finished run, equal to the
-    last history line when that line carries it (results.md#runjson)."""
+def final_monitor_problems(run: RunInfo, case: CaseSpec) -> list[str]:
+    """run.json ``monitors``: each monitor of the case on the final state of a finished run
+    (results.md#runjson)."""
     final = run.monitors
     if (final is None) != (run.status not in FINAL):
         return ["monitors must be given exactly for converged, completed and stopped runs"]
@@ -811,19 +802,38 @@ def final_monitor_problems(
     if set(final) != set(monitors):
         return [f"monitors must be exactly {sorted(monitors)}"]
     found = []
-    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
     for name, monitor in final.items():
         values = dict(monitor.model_extra or {})
-        iteration = monitor.iteration
-        if iteration != run.iterations:
+        if monitor.iteration != run.iterations:
             found.append(f"monitor {name!r}: iteration must be {run.iterations}")
         elif set(values) != force_keys(monitors[name], case) or not all(
             _finite(v) for v in values.values()
         ):
             found.append(f"monitor {name!r} has the wrong or non-finite quantities")
-        elif last is not None and name in last["monitors"] and last["monitors"][name] != values:
-            found.append(f"monitor {name!r} differs from the last history line")
     return found
+
+
+def final_monitor_history_problems(records: list[dict[str, Any]], run: RunInfo) -> list[str]:
+    """The final monitors equal the last history line when that line carries them."""
+    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
+    if last is None or run.monitors is None:
+        return []
+    return [
+        f"monitor {name!r} differs from the last history line"
+        for name, monitor in run.monitors.items()
+        if name in last["monitors"] and last["monitors"][name] != dict(monitor.model_extra or {})
+    ]
+
+
+def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
+    """run.json ``convergence``: the floors of a steady fp32+acc64 run, one per equation."""
+    if run.convergence is not None and (
+        run.precision != "fp32+acc64"
+        or not isinstance(case.time, Steady)
+        or set(run.convergence.floor) != set(residual_names(case))
+    ):
+        return ["convergence floors exist only for a steady fp32+acc64 run, one per equation"]
+    return []
 
 
 def timing_problems(run: RunInfo, mesh_info: MeshInfo) -> list[str]:
