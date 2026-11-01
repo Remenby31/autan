@@ -39,6 +39,7 @@
     "during_run": {
       "samples": 987,
       "busy_samples": 31,
+      "busy_threshold_pct": 50.0,
       "sm_mhz": {
         "min": 201.0,
         "median": 2398.0,
