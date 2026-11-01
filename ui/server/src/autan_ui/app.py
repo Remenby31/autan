@@ -1,14 +1,19 @@
 import asyncio
+import json
 import logging
 import mimetypes
 import os
+import tempfile
+import tomllib
 import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
+import autan
 import uvicorn
+from autan.errors import CaseError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
@@ -16,11 +21,11 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
 
 from autan_ui.confine import Folder, is_link
+from autan_ui.history import read_history
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
     RunRejectedError,
-    read_history,
     read_run,
 )
 from autan_ui.surface import synthetic_wing
@@ -123,7 +128,7 @@ def create_app(
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
         """`runs` snapshot first, then `run` (upsert), `removed` (run id), `rejected` (the
-        whole list) and `progress` (last iteration of each running run) as they change.
+        whole list) and `summaries` (iteration and residual drop of each run) as they change.
         Every wake-up rescans, timeouts included, so a change made before the watcher starts is
         still reported."""
         previous = await asyncio.to_thread(registry.scan)
@@ -138,8 +143,8 @@ def create_app(
                         yield ServerSentEvent(event="run", data=run)
                 for run_id in sorted(previous.runs.keys() - current.runs.keys()):
                     yield ServerSentEvent(event="removed", data=run_id)
-                if current.progress != previous.progress:
-                    yield ServerSentEvent(event="progress", data=current.progress)
+                if current.summaries != previous.summaries:
+                    yield ServerSentEvent(event="summaries", data=current.summaries)
                 if current.rejected != previous.rejected:
                     yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
                 previous = current
@@ -150,6 +155,43 @@ def create_app(
     @app.get("/api/runs/{run_id}")
     def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         return registry.details(find_run(run_id))
+
+    @app.get("/api/runs/{run_id}/plan")
+    def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
+        """`autan plan --json` of the run's stored case against its stored MeshInfo."""
+        with Folder(find_run(run_id)) as folder:
+            run = read_run(folder)
+            case_toml = folder.read("case.toml")
+            mesh_info = folder.read("mesh-info.json")
+            manufactured = (
+                folder.read("manufactured.json") if folder.stat("manufactured.json") else None
+            )
+        # The stored case is planned from a scratch copy built from the pinned folder, so the
+        # SDK reads no file of the run directory, nor any file the case names: the mesh path is
+        # cut to its name (plan reads only the MeshInfo) and a verification case points at the
+        # archived manufactured solution.
+        try:
+            document = tomllib.loads(case_toml.decode())
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+            raise HTTPException(422, f"case.toml: {error}") from error
+        document["mesh"] = PurePosixPath(str(document.get("mesh", ""))).name or "mesh"
+        verification = document.get("verification")
+        if isinstance(verification, dict) and isinstance(verification.get("manufactured"), dict):
+            verification["manufactured"]["path"] = "manufactured.json"
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "case.json").write_text(json.dumps(document))
+            (root / "mesh.meshinfo").write_bytes(mesh_info)
+            if manufactured is not None:
+                (root / "manufactured.json").write_bytes(manufactured)
+            try:
+                case = autan.load(root / "case.json")
+                info = autan.MeshInfo.load(root / "mesh.meshinfo")
+                plan = case.plan(info, gpus=run["devices"]["count"])
+            except CaseError as error:
+                detail = [d.model_dump(mode="json") for d in error.diagnostics]
+                raise HTTPException(422, detail) from error
+            return plan.document()
 
     @app.get("/api/runs/{run_id}/history/events", response_class=EventSourceResponse)
     async def history_events(

@@ -1,12 +1,12 @@
 # Runs
 
-A run is one execution of a case on a mesh. It writes one directory with its results and what identifies them: the case as run, the mesh hash and the solver commit. The layout is the [results contract](../contracts/results.md); `autan.Results` reads it.
+A run is one execution of a case on a mesh. It writes one directory with its results and what identifies them: the case as run, the mesh hash and the solver commit. The solver runtime `autan-run` and the SDK's `fake` backend write the same layout, the [results contract](../contracts/results.md); `autan.Results` reads it.
 
 ## Run states
 
 ![Run states](../assets/diagrams/run-lifecycle.svg)
 
-`autan plan` runs first. If it finds an error, nothing is written. Otherwise the run starts in `running` and ends in one state:
+`autan plan` runs first. If it finds an error, nothing is written; nor does `autan-run` write anything when its build has no physics for the case (`E0706`). Otherwise the run starts in `running` and ends in one state:
 
 | State | Meaning |
 |---|---|
