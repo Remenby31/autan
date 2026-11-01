@@ -289,6 +289,22 @@ _CODES = [
         "Export the manufactured solution with autan-vv and give its path.",
     ),
     Code(
+        "E0208",
+        "Not a manufactured solution",
+        "The file named by `verification.manufactured.path` is not JSON with "
+        '`"schema": "autan.mms/1"` (docs/validation/mms.md).',
+        "Point the case at a manufactured solution exported by autan-vv.",
+    ),
+    Code(
+        "E0209",
+        "Manufactured solution does not match the case",
+        "The constants the manufactured solution declares (gamma, gas constant, viscosity, "
+        "Prandtl number) differ from the case's gas, its viscous model differs from the case's "
+        "turbulence model, or the case has cell zone rules a single-medium solution cannot "
+        "cover. The message names the difference.",
+        "Build the case gas from the solution's parameters, or export the solution the case needs.",
+    ),
+    Code(
         "W0204",
         "Highly non-orthogonal cells",
         "The maximum face non-orthogonality exceeds 70°, the threshold above which "
@@ -384,6 +400,14 @@ _CODES = [
         "A case verified against a manufactured solution takes the data of every boundary zone "
         "from the exact solution; a `case.boundary(...)` rule would contradict it.",
         "Remove the boundary rules from the verification case.",
+    ),
+    Code(
+        "E0417",
+        "Unsteady verification case",
+        "Manufactured solutions are steady, and a run starting from the freestream would keep "
+        "an initial-condition error at fixed time; `autan.case/1` verification cases are "
+        "steady.",
+        "Set `case.time = autan.Steady(...)` in the verification case.",
     ),
     Code(
         "E0501",

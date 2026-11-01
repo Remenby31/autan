@@ -6,6 +6,8 @@ Memory model: docs/sdk/plan.md.
 
 from __future__ import annotations
 
+import json
+import math
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -20,6 +22,7 @@ from autan.schema import (
     CaseSpec,
     Compressible,
     ConstantDensityFluid,
+    ConstantViscosity,
     Farfield,
     Fluid,
     IdealGas,
@@ -32,12 +35,16 @@ from autan.schema import (
     VelocityInlet,
     Wall,
 )
-from autan.units import parse
+from autan.solver_input import gas_constant
+from autan.units import parse, si
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from autan.case import Case
     from autan.meshinfo import MeshInfo
 
+MMS_SCHEMA = "autan.mms/1"
 Provenance = Literal["code", "mesh", "default", "verification"]
 NON_ORTHOGONALITY_WARNING_DEG = 70.0
 
@@ -178,9 +185,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         )
 
     if spec.verification is not None:
-        _check_manufactured(
-            case, spec.verification.manufactured.path, spec.verification.manufactured.sha256, found
-        )
+        _check_manufactured(case, spec, found)
         boundaries = _manufactured_boundaries(mesh)
     else:
         boundaries = _resolve_boundaries(case, spec, mesh, found)
@@ -209,8 +214,10 @@ def _matches(pattern: str, names: list[str]) -> list[str]:
     return [name for name in names if fnmatchcase(name, pattern)]
 
 
-def _check_manufactured(case: Case, path: str, expected: str, found: list[Diagnostic]) -> None:
-    source = case.resolve(path)
+def _check_manufactured(case: Case, spec: CaseSpec, found: list[Diagnostic]) -> None:
+    assert spec.verification is not None
+    expected = spec.verification.manufactured.sha256
+    source = case.resolve(spec.verification.manufactured.path)
     where = case.locate("verification.manufactured")
     if not source.is_file():
         found.append(
@@ -230,6 +237,60 @@ def _check_manufactured(case: Case, path: str, expected: str, found: list[Diagno
                 path=str(source),
             )
         )
+    elif (document := _document(source)) is None or document.get("schema") != MMS_SCHEMA:
+        found.append(
+            diagnostic(
+                "E0208",
+                f"{str(source)!r} is not an {MMS_SCHEMA} document",
+                location=where,
+                path=str(source),
+            )
+        )
+
+    else:
+        found.extend(
+            diagnostic("E0209", message, location=where, path=str(source))
+            for message in _mismatches(document, spec)
+        )
+
+
+def _document(path: Path) -> dict[str, Any] | None:
+    try:
+        document = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _mismatches(document: dict[str, Any], spec: CaseSpec) -> list[str]:
+    """Where the manufactured solution's declared constants differ from the case physics."""
+    physics = spec.physics
+    if not isinstance(physics, Compressible):
+        return ["manufactured solutions are compressible; the case is incompressible"]
+    gas, parameters = physics.gas, document.get("parameters", {})
+    law = gas.viscosity
+    case_values: dict[str, float | None] = {
+        "gamma": gas.gamma,
+        "gas_constant": gas_constant(gas),
+        "prandtl": gas.prandtl if "prandtl" in parameters else None,
+        "viscosity": (si(law.mu, "Pa * s") if isinstance(law, ConstantViscosity) else None)
+        if "viscosity" in parameters
+        else None,
+    }
+    found = []
+    for key, value in parameters.items():
+        if key not in case_values:
+            continue
+        mine = case_values[key]
+        if mine is None or not math.isclose(mine, value, rel_tol=1e-12):
+            found.append(f"{key} is {value!r} in the solution and {mine!r} in the case")
+    if "viscosity" not in parameters and not isinstance(physics.turbulence, Inviscid):
+        found.append("the solution is inviscid; the case is not")
+    if "viscosity" in parameters and isinstance(physics.turbulence, Inviscid):
+        found.append("the solution is viscous; the case is inviscid")
+    if spec.cell_zones:
+        found.append("a manufactured solution covers one fluid zone; remove the cell zone rules")
+    return found
 
 
 def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:

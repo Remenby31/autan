@@ -259,6 +259,18 @@
       "fix": "Export the manufactured solution with autan-vv and give its path.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0207"
     },
+    "E0208": {
+      "severity": "error",
+      "title": "Not a manufactured solution",
+      "fix": "Point the case at a manufactured solution exported by autan-vv.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0208"
+    },
+    "E0209": {
+      "severity": "error",
+      "title": "Manufactured solution does not match the case",
+      "fix": "Build the case gas from the solution's parameters, or export the solution the case needs.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0209"
+    },
     "E0301": {
       "severity": "error",
       "title": "Quantity of the wrong dimension",
@@ -336,6 +348,12 @@
       "title": "Boundary rules with a manufactured solution",
       "fix": "Remove the boundary rules from the verification case.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0416"
+    },
+    "E0417": {
+      "severity": "error",
+      "title": "Unsteady verification case",
+      "fix": "Set `case.time = autan.Steady(...)` in the verification case.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0417"
     },
     "E0501": {
       "severity": "error",

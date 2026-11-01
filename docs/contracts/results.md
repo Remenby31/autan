@@ -10,10 +10,11 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
   case.toml        the case document as run (case-schema.md), every default filled in
   mesh-info.json   the MeshInfo of the mesh read (mesh-info.md)
   history.jsonl    one line per recorded iteration, appended during the run
+  manufactured.json  verification runs only: the manufactured solution, byte for byte
   solution.cgns    solution (CGNS/HDF5), written when the run ends
 ```
 
-The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml` and `mesh-info.json` into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed before `run.json` leaves `running`; readers do not use it while the run is `running`. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
+The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml`, `mesh-info.json` and, for a verification case, `manufactured.json` (whose SHA-256 is the case's `verification.manufactured.sha256`) into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed before `run.json` leaves `running`; readers do not use it while the run is `running`. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
 
 `case.toml` keeps `mesh` as the case wrote it, since it is part of the case hash. The mesh actually read is `run.json` `mesh.path`, an absolute path, identified by `mesh.sha256`.
 
@@ -105,7 +106,7 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
     WallSolution         ZoneSubRegion_t GridLocation FaceCenter, PointList of every wall and slip face, one R8 DataArray per field
 ```
 
-There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node.
+There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`. Interfaces between cell zones are interior faces and need no node. `FlowSolution` holds each cell's discrete unknown, located at the cell centroid: compare it with point values of a reference solution there.
 
 Node names. A zone keeps its name as node name when it has 1 to 32 printable ASCII characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, is not itself of the form `boundary-NNNN` or `cell-zone-NNNN`, differs from the other children of `Base` listed above and, for cell zones, from the other children of `Zone`. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
 

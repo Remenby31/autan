@@ -248,7 +248,12 @@ class FakeBackend:
             averaging=None,
             diagnostics=(),
         )
-        writer = RunWriter(runs, info, spec, mesh_info)
+        manufactured = (
+            case.resolve(spec.verification.manufactured.path).read_bytes()
+            if spec.verification is not None
+            else None
+        )
+        writer = RunWriter(runs, info, spec, mesh_info, manufactured)
         history = _History(spec, freestream_state(spec))
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps

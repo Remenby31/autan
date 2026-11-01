@@ -8,12 +8,14 @@ closed. The runtime applies no unit, default or resolution rule of its own.
 from __future__ import annotations
 
 import math
+import tomllib
 from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from autan.errors import CaseError
+from autan.errors import CaseError, Location
 from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
 from autan.schema import (
     DDES,
@@ -85,13 +87,27 @@ TURBULENCE_KEYS = ("base", "wall_model", "nu_tilde_ratio", "intensity", "viscosi
 
 class CaseRef(_Strict):
     name: str
-    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
     toml: str
 
 
+def _absolute(path: str) -> str:
+    if "\0" in path or not Path(path).is_absolute():
+        message = f"{path!r} is not an absolute path"
+        raise ValueError(message)
+    return path
+
+
+AbsolutePath = Annotated[
+    str,
+    Field(min_length=1, pattern=r"^(/|[A-Za-z]:[\\/])[^\u0000]*$"),
+    AfterValidator(_absolute),
+]
+
+
 class MeshRef(_Strict):
-    path: str
-    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    path: AbsolutePath
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
 class SutherlandLaw(_Strict):
@@ -259,8 +275,8 @@ class ForcesInput(_Strict):
 
 
 class VerificationInput(_Strict):
-    path: str
-    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    path: AbsolutePath
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
 class SolverInput(_Strict):
@@ -295,6 +311,18 @@ class SolverInput(_Strict):
             sst,
         ):
             message = "freestream turbulence values do not match the turbulence model"
+            raise ValueError(message)
+        try:
+            case = CaseSpec.from_document(tomllib.loads(self.case.toml), Location(path="case.toml"))
+        except (CaseError, ValueError) as error:
+            message = f"case.toml is not a valid case: {error}"
+            raise ValueError(message) from None
+        if case.hash() != self.case.sha256:
+            message = "case.sha256 is not the hash of case.toml"
+            raise ValueError(message)
+        recorded = case.verification.manufactured.sha256 if case.verification else None
+        if recorded != (self.verification.sha256 if self.verification else None):
+            message = "verification differs from the case's verification"
             raise ValueError(message)
         manufactured = {b.kind == "manufactured" for b in self.boundaries}
         if manufactured and manufactured != {self.verification is not None}:

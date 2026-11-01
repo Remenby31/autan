@@ -387,7 +387,7 @@ class Manufactured(Spec):
     and whose exact fields give the data of every boundary zone."""
 
     path: Name
-    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
 class Verification(Spec):
@@ -484,6 +484,10 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
                 "a manufactured solution gives every boundary its data; remove the boundary rules",
             )
         )
+    if spec.verification is not None and isinstance(spec.time, Unsteady):
+        found.append(
+            ("E0417", "time", "manufactured solutions are steady: verification needs a steady time")
+        )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(
             ("E0305", "time", f"{physics.turbulence.model} needs case.time = autan.Unsteady(...)")
@@ -521,7 +525,10 @@ def json_schema() -> dict[str, Any]:
 
     schema["allOf"] = [
         {
-            "if": {"required": ["verification"]},
+            "if": {
+                "required": ["verification"],
+                "properties": {"verification": {"type": "object"}},
+            },
             "then": {"properties": {"boundaries": {"maxItems": 0}}},
         },
         {
