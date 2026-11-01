@@ -50,3 +50,28 @@ def test_lock_use_follows_a_real_flock(tmp_path):
         fcntl.flock(handle, fcntl.LOCK_EX)
         assert campaign.lock_in_use(lock, proc_locks.read_text())
     assert not campaign.lock_in_use(lock, proc_locks.read_text())
+
+
+def test_start_keeps_its_options_out_of_the_command(tmp_path, monkeypatch):
+    # docker is the external boundary: a fake records its arguments and reports nothing running.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {calls}\n'
+        'case "$1" in inspect) echo "exited 0" ;; esac\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    work = tmp_path / "work"
+    work.mkdir()
+    argv = ["start", "c1", "--cpus", "3", "--dir", str(work), "--", "make", "-j", "--cpus"]
+    assert campaign.main(argv) == 0
+    create = next(line for line in calls.read_text().splitlines() if line.startswith("create"))
+    assert "--cpus 3.0" in create
+    assert create.endswith("autan-dev:local nice -n 19 make -j --cpus")
