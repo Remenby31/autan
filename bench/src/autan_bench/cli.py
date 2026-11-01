@@ -120,9 +120,15 @@ def _baseline(args: argparse.Namespace) -> int:
         raise BenchError(
             Code.DIRTY_TREE, "a baseline must come from a binary built from a clean checkout"
         )
-    if not doc["provenance"]["image"]:
+    # The environment a baseline was measured in: the container image on Linux; on macOS, where
+    # Metal runs without a container, the OS version.
+    provenance = doc["provenance"]
+    if provenance["backend"] == "metal":
+        if not provenance.get("os_version"):
+            raise BenchError(Code.ENVIRONMENT_UNKNOWN, "a Metal baseline must record os_version")
+    elif not provenance["image"]:
         raise BenchError(
-            Code.IMAGE_UNKNOWN, "a baseline must record its image digest (AUTAN_IMAGE)"
+            Code.ENVIRONMENT_UNKNOWN, "a baseline must record its image digest (AUTAN_IMAGE)"
         )
     if doc["suite"] == "stream":
         array_bytes = doc["config"]["elements"] * doc["config"]["element_bytes"]
