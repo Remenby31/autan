@@ -3,7 +3,8 @@
 Usage: python physics/tmr/plot3d.py GRID.p2dfmt[.gz] OUT.msh --zones flatplate
 
 A 2D structured grid (i along the first index, j the second) becomes ni-1 x nj-1 hexahedra one cell
-thick in z (z from 0 to `--span`), written as a Fluent ASCII mesh by autan-vv. Boundary zones come
+thick in z (z from 0 to `--span`), or in -y with the grid in the x-z plane (`--plane xz`, for
+airfoils at incidence: a case's angle of attack turns the velocity in x-z), written as a Fluent ASCII mesh by autan-vv. Boundary zones come
 from the grid's edges, split where the case needs it (`ZONES`), plus `sides` for the two
 symmetry planes of the 2D problem. Zone types are placeholders: the case sets every condition.
 """
@@ -60,7 +61,7 @@ def _airfoil(x: np.ndarray, side: str, index: np.ndarray) -> str:
 ZONES = {"flatplate": _flatplate, "bump": _bump, "airfoil": _airfoil}
 
 
-def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of) -> object:
+def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of, plane: str = "xy") -> object:
     nj, ni = x.shape
     nci, ncj = ni - 1, nj - 1
     pts = np.zeros((nj, ni, 2, 3))
@@ -174,6 +175,10 @@ def extrude(x: np.ndarray, y: np.ndarray, span: float, zone_of) -> object:
     interior_polys = [renumber[q] for q in interior_polys]
     boundary = {name: [(renumber[q], o) for q, o in parts] for name, parts in boundary.items()}
     points = points[used]
+    if plane == "xz":
+        # The grid's y becomes z and the layer extends towards -y: a rotation, which keeps every
+        # face's orientation (the angle of attack of a case turns the velocity in x-z).
+        points = np.stack([points[:, 0], -points[:, 2], points[:, 1]], axis=1)
     mesh = from_faces(
         points,
         nci * ncj,
@@ -198,9 +203,12 @@ def main() -> None:
     parser.add_argument("out", type=Path)
     parser.add_argument("--zones", choices=sorted(ZONES), required=True)
     parser.add_argument("--span", type=float, default=1.0)
+    parser.add_argument(
+        "--plane", choices=("xy", "xz"), default="xy", help="plane of the 2D grid (xz for lift)"
+    )
     args = parser.parse_args()
     x, y = read_plot3d_2d(args.grid)
-    mesh = extrude(x, y, args.span, ZONES[args.zones])
+    mesh = extrude(x, y, args.span, ZONES[args.zones], args.plane)
     write_fluent(mesh, args.out, "fluid")
     sys.stdout.write(f"{args.out}: {mesh.n_cells} cells, zones {[z.name for z in mesh.zones]}\n")
 
