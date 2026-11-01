@@ -29,7 +29,9 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
       AUTAN_MPIEXEC_NUMPROC_FLAG="${MPIEXEC_NUMPROC_FLAG}"
   )
 endif()
-catch_discover_tests(autan_runtime_tests)
+# The multi-rank tests carry the label `mpi` (ctest -L mpi).
+catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]" PROPERTIES LABELS mpi)
 
 add_executable(autan_exact_sum_tests test_exact_sum.cpp)
 target_link_libraries(

@@ -131,6 +131,22 @@ def _cmd_verify(args: argparse.Namespace) -> None:
             raise SystemExit(1)
 
 
+def _cmd_agree(args: argparse.Namespace) -> None:
+    import json  # noqa: PLC0415
+
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    report = agreement(args.fp64, args.fp32, args.k)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for pair in report["pairs"]:
+        worst = max(pair["fields"], key=pair["fields"].get)
+        _say(f"{pair['n_cells']} cells: worst {worst} {pair['fields'][worst]:.3g} x 2^-23")
+    _say(f"fp32 agreement (k = {report['k']:g}): {'PASS' if report['pass'] else 'FAIL'}")
+    if not report["pass"]:
+        raise SystemExit(1)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
     parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
@@ -141,8 +157,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_mms)
 
-    p = sub.add_parser("meshes", help="generate a seeded mesh family of the unit cube")
-    p.add_argument("kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated"))
+    p = sub.add_parser(
+        "meshes",
+        help="generate a seeded mesh family of the unit cube, or of the Ringleb domain with its"
+        " face states",
+    )
+    p.add_argument(
+        "kind", choices=("tet", "hex", "prism", "hybrid", "poly", "agglomerated", "ringleb")
+    )
     p.add_argument("--levels", type=_levels, default=(8, 16, 32, 64))
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
@@ -178,6 +200,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gate", help="gate of docs/validation/acceptance.md (exit 1 if it fails)")
     p.add_argument("--out", type=Path, help="write the report (autan.vv-verdict/1) as JSON")
     p.set_defaults(func=_cmd_verify)
+
+    p = sub.add_parser(
+        "agree",
+        help="check fp32+acc64 runs against the fp64 runs of the same cases, level by level",
+    )
+    p.add_argument("--fp64", type=Path, nargs="+", required=True)
+    p.add_argument("--fp32", type=Path, nargs="+", required=True)
+    p.add_argument("--k", type=float, default=500.0)
+    p.add_argument("--out", type=Path)
+    p.set_defaults(func=_cmd_agree)
 
     p = sub.add_parser("cases", help="list or download reference cases, verifying checksums")
     p.add_argument("action", choices=("list", "fetch"))

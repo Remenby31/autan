@@ -2,6 +2,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -81,6 +82,10 @@ struct PhysicsContext {
   GhostExchange& ghosts;
   /// The ranks of the run; norms and loads reduce over them.
   Ranks& ranks;
+  /// Per face zone (index into mesh.face_zones()) with an oracle-state condition, the states of
+  /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
+  /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
+  const std::map<index_t, std::vector<double>>& boundary_states;
 };
 
 // case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
