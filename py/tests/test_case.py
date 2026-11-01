@@ -321,7 +321,17 @@ def test_error_paths_are_document_paths(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("unit", "code"), [("Pa", "E0301"), ("m**2", "E0301"), ("2 m", "E0303"), ("cubit_x", "E0303")]
+    ("unit", "code"),
+    [
+        ("Pa", "E0301"),
+        ("m**2", "E0301"),
+        ("2 m", "E0303"),
+        ("cubit_x", "E0303"),
+        ("m*dB", "E0301"),  # a length, but logarithmic: no factor to metres
+        ("km**200/m**199", "E0301"),  # a length whose factor overflows
+        # A length whose text, with exponents to 6 digits, is [length] ** 0.999999.
+        ("m**0.3333333333333333 * cm**0.3333333333333333 * mm**0.3333333333333334", "E0301"),
+    ],
 )
 def test_mesh_unit_must_be_a_unit_of_length(
     unit: str, code: str, write_case: Callable[[str], Path]
