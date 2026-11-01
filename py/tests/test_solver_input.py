@@ -225,9 +225,7 @@ def test_reproducibility_reaches_the_runtime_and_the_hash(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    body = CRM_HL.replace(
-        'precision="fp32+acc64"', f'precision="fp32+acc64", reproducibility={mode!r}'
-    )
+    body = CRM_HL.replace("autan.SA())", f"autan.SA(), reproducibility={mode!r})")
     case = write_case(body, name=f"{mode}.py")
     spec = autan.load(case).spec
     copy = tmp_path / "copy.toml"
