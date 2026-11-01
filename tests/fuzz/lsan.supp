@@ -2,8 +2,11 @@
 # A rule hides every leak with that function anywhere in its allocation stack: one rule per
 # library function found leaking, never a public entry point such as cg_open, under which a
 # missing cg_close of ours would also hide. Remove a rule once a fixed library is in use.
-# CGNS 4.5.2 returns CG_ERROR without freeing the node ids of cgi_get_nodes:
-# cg_version, on its error paths (and the node data);
+# CGNS 4.5.2 returns CG_ERROR without freeing what it allocated on the way: the node ids of
+# cgi_get_nodes, and data read by cgi_read_node, in
 leak:^cg_version$
-# cgi_read_zboco, when cgi_read_boco fails on one of the BC_t nodes.
+leak:^cgi_read_zone$
+leak:^cgi_read_zonetype$
+leak:^cgi_read_zcoor$
+leak:^cgi_read_section$
 leak:^cgi_read_zboco$
