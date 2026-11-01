@@ -98,6 +98,8 @@ export interface RunSummary {
   max_iterations: number | null;
   /** The settings studies usually sweep, as the case writes them ("19.57 deg"). */
   settings?: RunSettings;
+  /** The run has ended and written solution.cgns, which Analysis shows. */
+  solution: boolean;
 }
 
 export interface RunSettings {

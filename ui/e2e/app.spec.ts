@@ -3,7 +3,7 @@ import { appendFileSync, cpSync, readFileSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { RUNS } from "../playwright.config";
-import type { Run } from "../src/api/contracts";
+import type { Run, RunRegistry } from "../src/api/contracts";
 
 async function runs(page: Page): Promise<Run[]> {
   return (await (await page.request.get("/api/runs")).json()).runs;
@@ -169,6 +169,27 @@ test("runs selected with x compare with c, with a polar for an angle sweep", asy
   await group.getByRole("button", { name: "Compare" }).click();
   await expect(page.getByTestId("polar")).toBeVisible();
   await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
+});
+
+test("Analysis without a run lists the runs it can show, never a stand-in surface", async ({
+  page,
+}) => {
+  const registry: RunRegistry = await (await page.request.get("/api/runs")).json();
+  const solved = registry.runs.filter((r) => registry.summaries[r.run_id]?.solution);
+  const converged = solved.find((r) => r.status === "converged") as Run;
+  await page.goto("/");
+  await page.getByRole("link", { name: "Analysis" }).click();
+
+  const picker = page.getByTestId("run-picker");
+  await expect(picker.getByRole("link")).toHaveCount(solved.length);
+  await expect(page.getByTestId("viewport")).toHaveCount(0);
+  await picker.getByRole("link").filter({ hasText: converged.run_id.slice(-8) }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/viewer\\?run=${converged.run_id}`));
+  const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
+  await expect(crumbs).toContainText(converged.case.name);
+  await expect(crumbs).toContainText(converged.run_id.slice(-8));
+  await expect(page.getByTestId("zones")).toBeVisible();
 });
 
 test("a converged run opens its wall surface in Analysis and switches fields", async ({ page }) => {

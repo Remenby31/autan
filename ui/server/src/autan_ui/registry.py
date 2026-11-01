@@ -102,12 +102,19 @@ class Registry:
                                     floors=(outcome.get("convergence") or {}).get("floor"),
                                     target=self._budgets.get(child.name, {}).get("target_orders"),
                                 )
+                                # A finished run's solution.cgns is a result (results.md).
+                                written = folder.stat("solution.cgns")
+                                solution = (
+                                    not live and written is not None and S_ISREG(written.st_mode)
+                                )
                         except (OSError, ValueError, ArithmeticError) as error:
                             log.warning("no summary for %s: %s", child, error)
                             summary = None
                         if summary is not None:
                             budget = self._budgets.get(child.name, {})
-                            snapshot.summaries[child.name] = summary | budget
+                            snapshot.summaries[child.name] = (
+                                summary | budget | {"solution": solution}
+                            )
             gone = self._checked.keys() - names
             for name in gone:
                 del self._checked[name]
