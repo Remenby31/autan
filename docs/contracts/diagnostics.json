@@ -571,6 +571,12 @@
       "fix": "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1012"
     },
+    "E1013": {
+      "severity": "error",
+      "title": "Policy not available on the backend",
+      "fix": "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1013"
+    },
     "E1100": {
       "severity": "error",
       "title": "Generated loop failed",
@@ -612,6 +618,18 @@
       "title": "Incidence twins missing",
       "fix": "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1106"
+    },
+    "E1107": {
+      "severity": "error",
+      "title": "Metal runtime error",
+      "fix": "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1107"
+    },
+    "E1108": {
+      "severity": "error",
+      "title": "Strategy not available",
+      "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
     }
   }
 }
