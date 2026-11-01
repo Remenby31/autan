@@ -211,6 +211,43 @@ Mesh column_with_branch() {
   return autan::assemble(autan::to_face_based(std::move(m)));
 }
 
+// Four cells 1 x 1 x 0.01 stacked along z, one line, whose boundary patches are A (bottom
+// face), B (a side face of each middle cell) and C (top face): only the middle pair may share an
+// agglomerate.
+Mesh four_cell_line() {
+  autan::CellwiseMesh m;
+  autan::CellZone zone;
+  zone.name = "a";
+  zone.kind = autan::CellKind::fluid;
+  m.cell_zones.push_back(zone);
+  for (const char* name : {"A", "B", "C"}) {
+    autan::FaceZone f;
+    f.name = name;
+    f.kind = autan::BcKind::wall;
+    m.face_zones.push_back(f);
+  }
+  for (int k = 0; k <= 4; ++k) {
+    for (const auto& [x, y] : {std::pair{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}}) {
+      m.x.push_back(x);
+      m.y.push_back(y);
+      m.z.push_back(0.01 * k);
+    }
+  }
+  auto v = [](int k, int i) { return static_cast<index_t>(4 * k + i); };
+  for (int k = 0; k < 4; ++k) {
+    m.add_cell(autan::CellShape::hexa,
+               std::array<index_t, 8>{v(k, 0), v(k, 1), v(k, 2), v(k, 3), v(k + 1, 0), v(k + 1, 1),
+                                      v(k + 1, 2), v(k + 1, 3)},
+               0);
+  }
+  m.add_labelled_face(std::array<index_t, 4>{v(0, 0), v(0, 3), v(0, 2), v(0, 1)}, 0);
+  for (int k = 1; k <= 2; ++k) {
+    m.add_labelled_face(std::array<index_t, 4>{v(k, 1), v(k, 2), v(k + 1, 2), v(k + 1, 1)}, 1);
+  }
+  m.add_labelled_face(std::array<index_t, 4>{v(4, 0), v(4, 1), v(4, 2), v(4, 3)}, 2);
+  return autan::assemble(autan::to_face_based(std::move(m)));
+}
+
 // Operator of the tests: a diffusion stencil (V shift + sum over faces of A_f / d_f) on every
 // component, coupled through a random face perturbation, so that the 5 x 5 blocks are full.
 struct System {
@@ -474,6 +511,16 @@ TEST_CASE("a line with no neighbouring line coarsens along itself", "[multigrid]
   REQUIRE(with_branch.size() >= 2);
   CHECK(2 * with_branch[1].n_nodes <= with_branch[0].n_nodes + 4);
   check_hierarchy(branched, with_branch);
+  // Pairs along the line are taken wherever two consecutive nodes may share an agglomerate, not
+  // at a fixed parity: here the middle pair.
+  const auto patched = four_cell_line();
+  const auto gp = autan::compute_geometry(patched);
+  options.coarsest_nodes = 1;
+  const auto four = autan::solvers::agglomerate(patched, gp, options);
+  REQUIRE(four[0].n_lines() == 1);
+  REQUIRE(four.size() >= 2);
+  CHECK(four[1].n_nodes == 3);
+  check_hierarchy(patched, four);
 }
 
 TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigrid]") {

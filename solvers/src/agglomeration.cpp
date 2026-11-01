@@ -321,15 +321,18 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
   // Pirzadeh 1999, J. Aircraft 36(6):987-998): the coarse nodes form a coarse line.
   auto pair_along = [&](const std::vector<std::size_t>& run) {
     std::vector<std::size_t> coarse_line;
+    bool open = false;  // the last coarse node holds one node
     for (std::size_t k = 0; k < run.size(); ++k) {
-      if (k % 2 == 1 && compatible(g, run[k - 1], run[k])) {
+      if (open && compatible(g, run[k - 1], run[k])) {
         members[coarse_line.back()].push_back(static_cast<index_t>(run[k]));
         agg[run[k]] = coarse_line.back();
+        open = false;
         continue;
       }
       agg[run[k]] = members.size();
       coarse_line.push_back(members.size());
       members.push_back({static_cast<index_t>(run[k])});
+      open = true;
     }
     clines.push_back(std::move(coarse_line));
   };
@@ -348,12 +351,13 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
         for (std::size_t k = 0; k < line_size(s); ++k) {
           const std::size_t a = layer_node(member, k);
           if (a == none) continue;
-          g.for_edges(a, [&](std::size_t, std::size_t m) {
+          // One vote per neighbouring cell, however many faces they share.
+          for (const auto& [m, w] : g.couplings(a)) {
             const std::size_t l = line_of[m];
-            if (grouped[l] != 0 || line_size(l) < opt.min_line) return;
+            if (grouped[l] != 0 || line_size(l) < opt.min_line) continue;
             // Only a layer the seed line's node there would accept counts (else the line would
             // join the group at no layer and keep the seed line from coarsening along itself).
-            if (!compatible(g, line_node(s, k), m)) return;
+            if (!compatible(g, line_node(s, k), m)) continue;
             auto it = std::find_if(candidates.begin(), candidates.end(),
                                    [&](const Candidate& c) { return c.line == l; });
             if (it == candidates.end())
@@ -369,7 +373,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
               seen.push_back(l);
               ++it->touched;
             }
-          });
+          }
         }
       }
       if (candidates.empty()) break;
