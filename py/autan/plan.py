@@ -232,7 +232,8 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
 
 
 def groups_file(mesh_file: Path) -> Path:
-    """The zone groups file of a mesh: ``<mesh file or polyMesh directory>.zones.json``."""
+    """The zone groups file of a mesh: ``<mesh file or polyMesh directory>.zones.json`` next
+    to it, symlinks followed, as the runtime finds it from the solver input's path."""
     return mesh_file.parent / f"{mesh_file.name}.zones.json"
 
 
@@ -240,12 +241,16 @@ def _check_groups_file(case: Case, mesh: MeshInfo, found: list[Diagnostic]) -> N
     path = groups_file(case.mesh_path)
     source = mesh.groups_source
     if path.exists():
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        try:
+            digest: str | None = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = None
         if source is None or digest != source.sha256:
             found.append(
                 diagnostic(
                     "E0210",
-                    f"the MeshInfo's zone groups differ from {str(path)!r}",
+                    f"the MeshInfo's zone groups differ from {str(path)!r}"
+                    + ("" if digest else ", which cannot be read"),
                     location=case.locate("mesh"),
                     groups=str(path),
                 )
@@ -288,8 +293,9 @@ def _unknown_group(
     found.append(
         diagnostic(
             "E0426",
-            f"group {group!r} matches no zone group of the mesh (groups: {known})",
+            f"group {group!r} matches no zone group of the mesh",
             location=location,
+            fix=f"Use one of the mesh's groups: {known}.",
             group=group,
         )
     )

@@ -315,6 +315,15 @@ class Symmetry(Spec):
     kind: Literal["symmetry"] = "symmetry"
 
 
+def _one_of(key: str) -> ConfigDict:
+    """The model's JSON Schema requires exactly one of ``key`` and ``group``."""
+
+    def extra(schema: dict[str, Any]) -> None:
+        schema["oneOf"] = [{"required": [key]}, {"required": ["group"]}]
+
+    return ConfigDict(**Spec.model_config, json_schema_extra=extra)
+
+
 def one_selector(zones: str | None, group: str | None, key: str) -> None:
     """A zone selection gives exactly one of a glob over zone names (``key``) and ``group``."""
     if (zones is None) == (group is None):
@@ -329,6 +338,8 @@ class PointVortex(Spec):
     surfaces: Pattern | None = None
     group: Pattern | None = None
     center: tuple[Coordinate, Coordinate, Coordinate]
+
+    model_config = _one_of("surfaces")
 
     @model_validator(mode="after")
     def _selector(self) -> Self:
@@ -377,6 +388,8 @@ class BoundaryRule(Spec):
     group: Pattern | None = None
     condition: Condition
 
+    model_config = _one_of("zones")
+
     @model_validator(mode="after")
     def _selector(self) -> Self:
         one_selector(self.zones, self.group, "zones")
@@ -424,6 +437,8 @@ class Forces(Spec):
     moment_center: tuple[Coordinate, Coordinate, Coordinate] = Field(
         default_factory=lambda: (0.0 * m, 0.0 * m, 0.0 * m)
     )
+
+    model_config = _one_of("surfaces")
 
     @model_validator(mode="after")
     def _selector(self) -> Self:
