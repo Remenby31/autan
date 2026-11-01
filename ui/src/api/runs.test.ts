@@ -95,6 +95,10 @@ test("an identically zero equation is exempt at its floor and woken above it, fo
   const drops = (my: number[], woken: string[] = []) =>
     appendHistory(empty(), rows(...my), run({ residual_reference: null, woken })).orders;
   expect(drops([0, 1e-12, 1e-33])).toEqual([0, 4, 8]);
+  const exempt = (my: number[]) =>
+    appendHistory(empty(), rows(...my), run({ residual_reference: null, woken: [] })).exempt;
+  expect([...exempt([0, 1e-33])]).toEqual(["my"]);
+  expect([...exempt([0, 1e-11])]).toEqual([]);
   expect(drops([1e-30, 1e-33])[1]).toBeCloseTo(4);
   const woken = drops([0, 1e-11, 1e-33]);
   expect(woken[1]).toBeNaN();

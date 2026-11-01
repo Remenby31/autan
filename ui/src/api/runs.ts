@@ -140,6 +140,8 @@ export interface HistoryColumns {
   orders: number[];
   /** Identically zero equations that rose above their floor: no longer exempt. */
   woken: Set<string>;
+  /** Identically zero equations still exempt from the convergence rule. */
+  exempt: Set<string>;
   version: number;
 }
 
@@ -151,6 +153,7 @@ export function emptyColumns(): HistoryColumns {
     monitors: new Map(),
     orders: [],
     woken: new Set(),
+    exempt: new Set(),
     version: 0,
   };
 }
@@ -218,6 +221,14 @@ function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
     }
     columns.orders.push(comparable ? slowest : Number.NaN);
   }
+  columns.exempt = new Set(
+    series
+      .map(([name]) => name)
+      .filter((name) => {
+        const first = firsts[name];
+        return first !== undefined && first >= 0 && first < floor && !columns.woken.has(name);
+      }),
+  );
 }
 
 /** Appends in place, so a long history is never copied; returns a new handle for React.

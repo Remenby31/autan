@@ -187,5 +187,6 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
   await page.goto(`/runs/${runId}`);
   await expect(page.getByTestId("residual-chart").locator("canvas")).toBeVisible();
   await expect(page.getByTestId("iteration")).toHaveText(String(lines.at(-1).iteration));
+  await expect(page.locator("[data-exempt]")).toHaveText(/momentum-y\s*exempt/);
   expect(errors).toEqual([]);
 });

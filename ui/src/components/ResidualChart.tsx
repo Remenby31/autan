@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import type { HistoryColumns } from "../api/runs";
+import { Tooltip } from "./ui/Tooltip";
 
 const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -145,17 +146,33 @@ export function ResidualChart({
   return (
     <div className="flex h-full flex-col gap-2">
       <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-fg-3 text-xs">
-        {names.map((name, k) => (
-          <span key={name} className="flex items-center gap-1.5">
-            <i
-              className="inline-block h-0.5 w-3"
-              style={{ background: `var(--series-${(k % 8) + 1})` }}
-            />
-            {name}
-          </span>
-        ))}
+        {names.map((name, k) =>
+          history.exempt.has(name) ? (
+            <Tooltip
+              key={name}
+              content="Identically zero since iteration 1: exempt from convergence while it stays below 1e-12 of the largest initial residual"
+            >
+              <span className="flex items-center gap-1.5 opacity-50" data-exempt>
+                <Swatch k={k} />
+                {name}
+                <span className="font-sans">exempt</span>
+              </span>
+            </Tooltip>
+          ) : (
+            <span key={name} className="flex items-center gap-1.5">
+              <Swatch k={k} />
+              {name}
+            </span>
+          ),
+        )}
       </div>
       <div ref={host} className="min-h-0 flex-1" data-testid="residual-chart" />
     </div>
+  );
+}
+
+function Swatch({ k }: { k: number }) {
+  return (
+    <i className="inline-block h-0.5 w-3" style={{ background: `var(--series-${(k % 8) + 1})` }} />
   );
 }
