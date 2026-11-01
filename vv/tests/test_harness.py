@@ -160,13 +160,15 @@ def test_euler_order_gate_warns_above_its_upper_bound(
 
 
 def test_euler_order_gate_needs_errors_decreasing_with_refinement(tmp_path: Path) -> None:
-    meshes = _family(tmp_path, "hex", (4, 6, 8, 12))
+    # The second level's error, 2.5 times too large, exceeds the first's; the orders stay >= 1.9.
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12, 16))
     runs = _runs(tmp_path / "a", meshes, "mms-euler", 2.0)
-    (louder,) = _runs(tmp_path / "b", meshes[2:3], "mms-euler", 2.0, amplitude=0.5)
-    verdict = verify([*runs[:2], louder, runs[3]], "mms-euler", "euler-mms-order")["verdict"]
+    (louder,) = _runs(tmp_path / "b", meshes[1:2], "mms-euler", 2.0, amplitude=0.125)
+    verdict = verify([runs[0], louder, *runs[2:]], "mms-euler", "euler-mms-order")["verdict"]
     rho = next(c for c in verdict["checks"] if c.get("field") == "rho")
+    assert min(rho["fitted_order"], rho["finest_pair_order"]) >= 1.9
     assert rho["errors_decrease"] is False
-    assert not verdict["pass"]
+    assert not rho["pass"]
 
 
 def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(tmp_path: Path) -> None:

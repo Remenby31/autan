@@ -527,7 +527,9 @@ def _gate_checks(
             "levels": fit["levels"],
             "lower": gate.lower,
             "upper": gate.upper,
-            "pass": min(orders) >= gate.lower and (not above or not gate.upper_blocks),
+            "pass": all(math.isfinite(v) for v in orders)
+            and min(orders) >= gate.lower
+            and (not above or not gate.upper_blocks),
         }
         if above and not gate.upper_blocks:
             check["warning"] = f"order above {gate.upper:g}"
