@@ -1,3 +1,4 @@
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -125,6 +126,22 @@ std::vector<double> solution_field(const fs::path& file, const char* solution, c
   return values;
 }
 
+std::vector<std::string> field_list(const fs::path& file) {
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  int count = 0;
+  REQUIRE(cg_nfields(fn, 1, 1, 1, &count) == CG_OK);
+  std::vector<std::string> names;
+  for (int f = 1; f <= count; ++f) {
+    char name[33];
+    CGNS_ENUMT(DataType_t) type{};
+    REQUIRE(cg_field_info(fn, 1, 1, 1, f, &type, name) == CG_OK);
+    names.emplace_back(name);
+  }
+  cg_close(fn);
+  return names;
+}
+
 void require_error(const Outcome& o, const std::string& code) {
   CHECK(o.status == ExitStatus::invalid_input);
   CHECK(o.run.empty());
@@ -181,8 +198,10 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   for (std::size_t k = 0; k < lines.size(); ++k) {
     CHECK(lines[k]["iteration"] == k + 1);
     CHECK(lines[k]["time"].is_null());
-    for (const auto& e : equations)
-      CHECK(lines[k]["residuals"][e] == std::pow(0.5, static_cast<double>(k)));
+    for (std::size_t e = 0; e < equations.size(); ++e) {
+      CHECK(lines[k]["residuals"][equations[e]] ==
+            static_cast<double>(e + 1) * std::pow(0.5, static_cast<double>(k)));
+    }
     // Forces on ymin every 5 iterations; uniform p = p_inf gives no load.
     const bool recorded = (k + 1) % 5 == 0;
     CHECK(lines[k]["monitors"].contains("forces") == recorded);
@@ -240,8 +259,10 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(history(o.run).size() == 3);
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
-    // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s, average_from=3).
-    const Outcome o = run(input({}, "hybrid-unsteady.solver-input.json"));
+    // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
+    // average_from=3); fields grow by 10 % per step, so the mean is
+    // (1.1^4 + 1.1^5 + 1.1^6) / 3 times the initial value.
+    const Outcome o = run(input({}, "hybrid-unsteady.solver-input.json"), {.growth = 0.1});
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "completed");
     CHECK_THAT(info["time"].get<double>(), WithinRel(0.06, 1e-12));
@@ -252,8 +273,15 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const auto lines = history(o.run);
     REQUIRE(lines.size() == 6);
     CHECK_THAT(lines[1]["time"].get<double>(), WithinRel(0.02, 1e-12));
-    CHECK(solution_field(o.run / "solution.cgns", "FlowSolutionMean", "Density") ==
-          solution_field(o.run / "solution.cgns", "FlowSolution", "Density"));
+    const auto mean = solution_field(o.run / "solution.cgns", "FlowSolutionMean", "Density");
+    const auto last = solution_field(o.run / "solution.cgns", "FlowSolution", "Density");
+    const double rho =
+        input({}, "hybrid-unsteady.solver-input.json")["freestream"]["density"].get<double>();
+    REQUIRE(mean.size() == last.size());
+    for (std::size_t c = 0; c < mean.size(); ++c) {
+      CHECK_THAT(mean[c], WithinRel(rho * (std::pow(1.1, 4) + std::pow(1.1, 5) + std::pow(1.1, 6)) / 3.0, 1e-12));
+      CHECK_THAT(last[c], WithinRel(rho * std::pow(1.1, 6), 1e-12));
+    }
   }
 }
 
@@ -331,4 +359,100 @@ TEST_CASE("SIGTERM stops a running process: stopped, solution written, exit 130"
   CHECK(info["iterations"].get<int>() >= 3);
   CHECK(info["iterations"].get<std::size_t>() == history(run_dir).size());
   CHECK(fs::exists(run_dir / "solution.cgns"));
+}
+
+TEST_CASE("Forces monitors report the loads and their coefficients", "[runtime]") {
+  // ymin is the unit square y = 0 with outward normal -y: a pressure excess
+  // dp gives F = (0, -dp, 0) and, about the origin, M = c x F with c the
+  // square's centroid (1/2, 0, 1/2). Coefficients follow results.md with the
+  // drag, lift and side directions of the incidence and sideslip.
+  constexpr double dp = 1000.0, alpha = 0.3, beta = 0.2;
+  const Json doc = input([&](Json& d) {
+    d["freestream"]["aoa"] = alpha;
+    d["freestream"]["sideslip"] = beta;
+  });
+  const Outcome o = run(doc, {.factor = 0.5, .pressure_offset = dp});
+  const Json f = history(o.run)[4]["monitors"]["forces"];
+  const double q = 0.5 * doc["freestream"]["density"].get<double>() *
+                   std::pow(doc["freestream"]["speed"].get<double>(), 2);
+  const std::array<double, 3> force{0.0, -dp, 0.0};
+  const std::array<double, 3> moment{0.5 * dp, 0.0, -0.5 * dp};
+  const std::array<double, 3> drag{std::cos(alpha) * std::cos(beta), -std::sin(beta),
+                                   std::sin(alpha) * std::cos(beta)};
+  const std::array<double, 3> lift{-std::sin(alpha), 0.0, std::cos(alpha)};
+  const std::array<double, 3> side{lift[1] * drag[2] - lift[2] * drag[1],
+                                   lift[2] * drag[0] - lift[0] * drag[2],
+                                   lift[0] * drag[1] - lift[1] * drag[0]};
+  auto dot = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  };
+  const std::array<std::string, 3> axes{"x", "y", "z"};
+  for (std::size_t k = 0; k < 3; ++k) {
+    CHECK_THAT(f["f" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(force[k], 1e-9));
+    CHECK_THAT(f["m" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k], 1e-9));
+    CHECK_THAT(f["cm" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k] / q, 1e-9));
+  }
+  CHECK_THAT(f["cd"].get<double>(), Catch::Matchers::WithinAbs(dot(force, drag) / q, 1e-12));
+  CHECK_THAT(f["cl"].get<double>(), Catch::Matchers::WithinAbs(dot(force, lift) / q, 1e-12));
+  CHECK_THAT(f["cs"].get<double>(), Catch::Matchers::WithinAbs(dot(force, side) / q, 1e-12));
+  CHECK(std::abs(f["cd"].get<double>()) > 1e-3);
+}
+
+TEST_CASE("An incompressible input from the SDK runs", "[runtime]") {
+  // `autan prepare` for water through the hybrid box: velocity inlet,
+  // outlet, walls; no temperature anywhere.
+  const Outcome o = run(input({}, "hybrid-water.solver-input.json"));
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto lines = history(o.run);
+  CHECK(lines.front()["residuals"].contains("pressure"));
+  CHECK_FALSE(lines.front()["residuals"].contains("energy"));
+  CHECK(field_list(o.run / "solution.cgns") ==
+        std::vector<std::string>{"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"});
+}
+
+TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
+  SECTION("WMLES needs its wall model") {
+    require_error(run(input([](Json& d) {
+                    d["physics"]["turbulence"] =
+                        Json{{"model", "wmles"},          {"base", nullptr},
+                             {"wall_model", nullptr},     {"nu_tilde_ratio", nullptr},
+                             {"intensity", nullptr},      {"viscosity_ratio", nullptr}};
+                  })),
+                  "E0705");
+  }
+  SECTION("DDES needs an unsteady time") {
+    require_error(run(input([](Json& d) {
+                    d["physics"]["turbulence"]["model"] = "ddes";
+                    d["physics"]["turbulence"]["base"] = "sa";
+                  })),
+                  "E0705");
+  }
+  SECTION("monitor names are unique") {
+    require_error(run(input([](Json& d) { d["monitors"].push_back(d["monitors"][0]); })), "E0705");
+  }
+  SECTION("cell zones are described once") {
+    require_error(run(input([](Json& d) { d["cell_zones"].push_back(d["cell_zones"][0]); })),
+                  "E0705");
+  }
+  SECTION("mesh path is absolute") {
+    require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
+  }
+  SECTION("hashes are 64 lowercase hexadecimal characters") {
+    require_error(run(input([](Json& d) { d["case"]["sha256"] = "ABC"; })), "E0705");
+  }
+  SECTION("a number beyond double range") {
+    std::string text = input().dump();
+    const std::string key = "\"speed\":";
+    const auto at = text.find(key) + key.size();
+    text.replace(at, text.find(',', at) - at, "1e400");
+    const fs::path dir = fresh_dir();
+    std::ofstream(dir / "in.json") << text;
+    std::FILE* out = std::tmpfile();
+    std::FILE* err = std::tmpfile();
+    CHECK(autan::runtime::run_case(dir / "in.json", dir / "runs",
+                                   autan_test::relaxation_registry({}), build, out,
+                                   err) == ExitStatus::invalid_input);
+    std::fclose(out);
+    std::fclose(err);
+  }
 }

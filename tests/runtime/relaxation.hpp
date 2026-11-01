@@ -23,6 +23,8 @@ struct RelaxationOptions {
   autan::index_t diverge_cell = 0;
   std::int64_t throw_at = 0;  ///< 0: never
   int pause_ms = 0;
+  double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
+  double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -63,8 +65,8 @@ class Relaxation final : public autan::runtime::Physics {
         if (f.name == "VelocityX" && fluid) v = (*s.velocity)[0];
         if (f.name == "VelocityY" && fluid) v = (*s.velocity)[1];
         if (f.name == "VelocityZ" && fluid) v = (*s.velocity)[2];
-        if (f.name == "Pressure" && fluid) v = *s.pressure;
-        if (f.name == "Temperature") v = s.temperature;
+        if (f.name == "Pressure" && fluid) v = *s.pressure + options.pressure_offset;
+        if (f.name == "Temperature") v = s.temperature.value_or(0.0);
         if (f.name == "TurbulentSANuTilde" && fluid) v = s.nu_tilde.value_or(0.0);
         if (f.name == "TurbulentEnergyKinetic" && fluid) v = s.k.value_or(0.0);
         if (f.name == "TurbulentDissipationRate" && fluid) v = s.omega.value_or(0.0);
@@ -80,8 +82,13 @@ class Relaxation final : public autan::runtime::Physics {
       std::this_thread::sleep_for(std::chrono::milliseconds(options_.pause_ms));
     if (iteration == options_.throw_at) throw std::runtime_error("relaxation: requested failure");
     autan::runtime::StepReport report;
+    // Equation e decays from e + 1, so that equations are told apart.
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
-    report.residuals.assign(autan::runtime::residual_names(context_.input).size(), r);
+    const auto equations = autan::runtime::residual_names(context_.input).size();
+    for (std::size_t e = 0; e < equations; ++e) report.residuals.push_back(static_cast<double>(e + 1) * r);
+    for (auto& f : state_) {
+      for (auto& v : f.values) v *= 1.0 + options_.growth;
+    }
     const auto& time = context_.input.time;
     if (time.kind == "unsteady") report.time_step = time.dt.value_or(1e-3);
     if (iteration == options_.diverge_at) {

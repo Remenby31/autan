@@ -78,11 +78,23 @@ void RunDirectory::append_history(const std::string& line) {
         ::open((path_ / "history.jsonl").c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
     if (history_ < 0) fail("open", path_ / "history.jsonl");
   }
-  // One write(2) per line: readers see whole lines, except possibly the
-  // last one of a running run.
+  // Readers see whole lines, except possibly the last one of a running run;
+  // a line that cannot be completed is cut off again so the history stays
+  // whole once the run is finalised.
   const std::string whole = line + "\n";
-  const ssize_t written = ::write(history_, whole.data(), whole.size());
-  if (std::cmp_not_equal(written, whole.size())) fail("append to", path_ / "history.jsonl");
+  const off_t start = ::lseek(history_, 0, SEEK_END);
+  std::size_t done = 0;
+  while (done < whole.size()) {
+    const ssize_t n = ::write(history_, whole.data() + done, whole.size() - done);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) {
+      const int saved = errno;
+      if (start >= 0) (void)::ftruncate(history_, start);
+      errno = saved;
+      fail("append to", path_ / "history.jsonl");
+    }
+    done += static_cast<std::size_t>(n);
+  }
 }
 
 fs::path RunDirectory::solution_staging() const { return path_ / ".solution.cgns.tmp"; }

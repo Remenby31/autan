@@ -28,7 +28,7 @@ struct Medium {
 struct InitialState {
   std::string kind;  ///< "fluid" or "solid"
   std::optional<double> density, pressure;
-  double temperature = 0.0;
+  std::optional<double> temperature;  ///< null for incompressible fluid zones
   std::optional<std::array<double, 3>> velocity;
   std::optional<double> nu_tilde, k, omega;
 };
@@ -43,7 +43,7 @@ struct BoundaryInput {
   std::string zone;
   std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<std::array<double, 3>> velocity;
+  std::optional<double> velocity;  ///< velocity-inlet: speed normal to the face (m/s)
 };
 
 struct Turbulence {

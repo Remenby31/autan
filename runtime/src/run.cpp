@@ -159,7 +159,15 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     }
   }
   std::map<std::string, bool> described;
-  for (const auto& cell_zone : p.input.cell_zones) described[cell_zone.zone] = true;
+  std::map<std::string, bool> in_mesh;
+  for (const index_t z : zones.cell) in_mesh[p.mesh.cell_zones()[at(z)].name] = true;
+  for (std::size_t i = 0; i < p.input.cell_zones.size(); ++i) {
+    const auto& name = p.input.cell_zones[i].zone;
+    const std::string path = "cell_zones[" + std::to_string(i) + "].zone";
+    if (!in_mesh[name]) invalid(path, "no cell zone '" + name + "' holds cells in the mesh");
+    if (described[name]) invalid(path, "cell zone '" + name + "' is described twice");
+    described[name] = true;
+  }
   for (const index_t z : zones.cell) {
     if (!described[p.mesh.cell_zones()[at(z)].name]) {
       invalid("cell_zones", "cell zone '" + p.mesh.cell_zones()[at(z)].name + "' has no entry");
@@ -249,7 +257,7 @@ class Run {
         {"started", utc(started, "%Y-%m-%dT%H:%M:%SZ")},
         {"finished", nullptr},
         {"iterations", 0},
-        {"time", nullptr},
+        {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
         {"diagnostics", Json::array()}};
   }
@@ -269,15 +277,25 @@ class Run {
       physics_ = (*p_.factory)(context);
       status = iterate(done);
     } catch (const std::exception& e) {
-      info_["diagnostics"].push_back(Json::parse(
-          Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"}.json()));
+      record_failure(e.what());
       return finish("failed", done);
     }
     return finish(status, done);
   }
 
  private:
-  std::string_view iterate(std::int64_t& done) {
+  // Thrown by the solution writer when a physics member fails: unlike a
+  // write failure, it fails even a diverged run (runtime.md).
+  struct PhysicsFailure : std::runtime_error {
+    using std::runtime_error::runtime_error;
+  };
+
+  void record_failure(const std::string& message) {
+    info_["diagnostics"].push_back(Json::parse(
+        Diagnostic{.code = "E0704", .message = message, .path = "", .data_json = "{}"}.json()));
+  }
+
+  std::string iterate(std::int64_t& done) {
     const auto& in = p_.input;
     const bool steady = in.time.kind == "steady";
     const std::int64_t budget = steady ? in.time.max_iterations : in.time.steps;
@@ -285,7 +303,10 @@ class Run {
     std::vector<double> first;
     double time = 0.0, average_start = 0.0;
     for (std::int64_t it = 1; it <= budget; ++it) {
-      if (stop_requested != 0) return "stopped";
+      if (stop_requested != 0) {
+        stopped_by_signal_ = true;
+        return "stopped";
+      }
       const StepReport report = physics_->step(it);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -303,20 +324,20 @@ class Run {
         diverge(it, report.diverged_cell);
         return "diverged";
       }
-      time += report.time_step;
-      if (!steady) {
-        info_["time"] = time;
-        if (in.time.average_from && it > *in.time.average_from) {
-          if (it == *in.time.average_from + 1) average_start = time - report.time_step;
-          physics_->accumulate_average(report.time_step);
-          info_["averaging"] = Json{{"from_step", *in.time.average_from + 1},
-                                    {"to_step", it},
-                                    {"from_time", average_start},
-                                    {"to_time", time}};
-        }
+      // The step's time and averaging become run metadata only once its
+      // history line is recorded, so that run.json never runs ahead of it.
+      const double step_time = time + report.time_step;
+      Json averaging = info_["averaging"];
+      if (!steady && in.time.average_from && it > *in.time.average_from) {
+        if (it == *in.time.average_from + 1) average_start = time;
+        physics_->accumulate_average(report.time_step);
+        averaging = Json{{"from_step", *in.time.average_from + 1},
+                         {"to_step", it},
+                         {"from_time", average_start},
+                         {"to_time", step_time}};
       }
       Json record{{"iteration", it},
-                  {"time", steady ? Json(nullptr) : Json(time)},
+                  {"time", steady ? Json(nullptr) : Json(step_time)},
                   {"residuals", residuals},
                   {"monitors", Json::object()}};
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
@@ -329,7 +350,12 @@ class Run {
       // `iterations` is the last completed (recorded) iteration: a diverging
       // one is reported by its D diagnostic, not counted.
       done = it;
+      time = step_time;
       info_["iterations"] = it;
+      if (!steady) {
+        info_["time"] = time;
+        info_["averaging"] = averaging;
+      }
       if (steady) {
         if (it == 1) first = report.residuals;
         const double drop = std::pow(10.0, -in.time.residual_orders);
@@ -340,11 +366,10 @@ class Run {
         if (converged) return "converged";
       }
     }
-    return stop_requested != 0 ? "stopped" : "completed";
+    return "completed";
   }
 
   void diverge(std::int64_t iteration, std::optional<index_t> cell) {
-    diverged_ = true;
     nlohmann::json data{{"iteration", iteration}};
     std::string where;
     if (cell) {
@@ -361,12 +386,15 @@ class Run {
             .json()));
   }
 
-  void write_solution() {
+  // Collects the solution from the physics (PhysicsFailure on any error of
+  // its members) and writes it; skips a diverged state that is not finite.
+  void write_solution(bool diverged) {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
     for (const char* key : {"status", "finished", "iterations", "diagnostics"}) metadata.erase(key);
-    s.run_metadata = metadata.dump();
+    // ASCII JSON, as readers decode CGNS descriptors.
+    s.run_metadata = metadata.dump(-1, ' ', true);
     std::map<std::string, const BoundaryInput*> conditions;
     for (const auto& b : in.boundaries) conditions[b.zone] = &b;
     const auto offsets = p_.mesh.boundary_zone_offsets();
@@ -378,21 +406,24 @@ class Run {
       }
     }
     std::ranges::sort(s.wall_faces);
-    s.fields = physics_->fields(false);
-    // A diverged state may hold non-finite values; results.md asks for its
-    // solution only if one can be written, and readers require finite fields.
-    if (info_["status"] == "diverged" || diverged_) {
-      for (const auto& f : s.fields) {
-        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
-      }
+    try {
+      s.fields = physics_->fields(false);
+      if (!info_["averaging"].is_null()) s.mean_fields = physics_->fields(true);
+      if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(s.wall_faces);
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(e.what());
     }
     std::vector<std::string> names;
     names.reserve(s.fields.size());
     for (const auto& f : s.fields) names.push_back(f.name);
-    if (names != field_names(in))
-      throw std::runtime_error("the physics returned another set of fields");
-    if (!info_["averaging"].is_null()) s.mean_fields = physics_->fields(true);
-    if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(s.wall_faces);
+    if (names != field_names(in)) throw PhysicsFailure("the physics returned another set of fields");
+    // A diverged state may hold non-finite values; results.md asks for its
+    // solution only if one can be written, and readers require finite fields.
+    if (diverged) {
+      for (const auto& f : s.fields) {
+        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
+      }
+    }
     io::write_solution(dir_->solution_staging(), p_.mesh, s);
     dir_->publish_solution();
   }
@@ -403,15 +434,13 @@ class Run {
     // if possible) or failed (optional).
     if (physics_ && status != "failed") {
       try {
-        write_solution();
+        write_solution(status == "diverged");
+      } catch (const PhysicsFailure& e) {
+        record_failure(e.what());
+        status = "failed";
       } catch (const std::exception& e) {
         if (status != "diverged") {
-          info_["diagnostics"].push_back(
-              Json::parse(Diagnostic{.code = "E0704",
-                                     .message = std::string("writing the solution: ") + e.what(),
-                                     .path = "",
-                                     .data_json = "{}"}
-                              .json()));
+          record_failure(std::string("writing the solution: ") + e.what());
           status = "failed";
         }
       }
@@ -420,7 +449,7 @@ class Run {
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     dir_->write_run_json(info_.dump(2));
     if (status == "failed") return ExitStatus::failed;
-    return stop_requested != 0 ? ExitStatus::signalled : ExitStatus::finished;
+    return stopped_by_signal_ ? ExitStatus::signalled : ExitStatus::finished;
   }
 
   Prepared& p_;
@@ -428,7 +457,7 @@ class Run {
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
-  bool diverged_ = false;
+  bool stopped_by_signal_ = false;
 };
 
 }  // namespace
@@ -462,11 +491,19 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   }
   stop_requested = 0;
   const SignalGuard signals;
-  Run run(*prepared, build);
-  run.open(runs);
-  std::fprintf(out, "%s\n", run.path().string().c_str());
-  std::fflush(out);
-  return run.execute();
+  try {
+    Run run(*prepared, build);
+    run.open(runs);
+    std::fprintf(out, "%s\n", run.path().string().c_str());
+    std::fflush(out);
+    return run.execute();
+  } catch (const std::exception& e) {
+    // The run directory could not be created or its run.json not written:
+    // nothing records the failure but this diagnostic.
+    std::fprintf(err, "%s\n",
+                 Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"}.json().c_str());
+    return ExitStatus::failed;
+  }
 }
 
 }  // namespace autan::runtime

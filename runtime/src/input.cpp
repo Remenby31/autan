@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <initializer_list>
 #include <set>
 #include <stdexcept>
@@ -121,6 +122,16 @@ class Object {
   std::string path_;
 };
 
+// A SHA-256 written as 64 lowercase hexadecimal characters.
+std::string sha256(const Object& o, const std::string& key) {
+  std::string v = o.string(key);
+  const bool hex = v.size() == 64 && std::ranges::all_of(v, [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+  });
+  if (!hex) invalid(o.at(key), "expected 64 lowercase hexadecimal characters");
+  return v;
+}
+
 std::string indexed(const std::string& path, std::size_t i) {
   return path + "[" + std::to_string(i) + "]";
 }
@@ -141,17 +152,14 @@ Turbulence parse_turbulence(const Object& physics, const std::string& kind) {
   const bool ddes = out.model == "ddes";
   out.base = t.maybe<std::string>("base", ddes,
                                   [&](const std::string& k) { return t.tag(k, {"sa", "sst"}); });
-  out.wall_model =
-      t.is_null("wall_model") ? std::nullopt : std::optional<std::string>(t.string("wall_model"));
-  if (out.model != "wmles" && out.wall_model) invalid(t.at("wall_model"), "must be null here");
+  out.wall_model = t.maybe<std::string>("wall_model", out.model == "wmles",
+                                        [&](const std::string& k) { return t.tag(k, {"equilibrium"}); });
   const bool sa = out.model == "sa" || (ddes && out.base == "sa");
   const bool sst = out.model == "sst" || (ddes && out.base == "sst");
   out.nu_tilde_ratio = t.positive_if("nu_tilde_ratio", sa);
   out.intensity = t.positive_if("intensity", sst);
   out.viscosity_ratio = t.positive_if("viscosity_ratio", sst);
-  if (kind == "incompressible" && out.model == "inviscid") {
-    invalid(t.at("model"), "inviscid incompressible flow is not a model of autan.case/1");
-  }
+  (void)kind;
   return out;
 }
 
@@ -163,13 +171,16 @@ Medium parse_medium(const Json& value, const std::string& path) {
     m.kind = "ideal-gas";
     m.name = o.string("name");
     m.gas_constant = o.positive("gas_constant");
-    m.gamma = o.positive("gamma");
+    m.gamma = o.number("gamma");
+    if (!(*m.gamma > 1.0)) invalid(o.at("gamma"), "must be greater than 1");
     m.prandtl = o.positive("prandtl");
   } else if (kind == "constant-density-fluid") {
     const Object o(value, path, {"kind", "name", "density", "viscosity"});
     m.kind = "constant-density-fluid";
     m.name = o.string("name");
     m.density = o.positive("density");
+    m.viscosity = Viscosity{.law = "constant", .mu_ref = {}, .t_ref = {}, .s = {}, .mu = o.positive("viscosity")};
+    return m;
   } else if (kind == "solid") {
     const Object o(value, path, {"kind", "name", "density", "specific_heat", "conductivity"});
     m.kind = "solid";
@@ -223,7 +234,7 @@ InitialState parse_initial(const Json& value, const std::string& path, const Sol
   s.kind = "fluid";
   s.density = o.positive("density");
   s.pressure = o.number("pressure");
-  s.temperature = o.positive("temperature");
+  s.temperature = o.positive_if("temperature", in.physics_kind == "compressible");
   s.velocity = o.vector3("velocity");
   s.nu_tilde = o.positive_if("nu_tilde", sa);
   s.k = o.positive_if("k", sst);
@@ -246,8 +257,7 @@ BoundaryInput parse_boundary(const Json& value, const std::string& path) {
   b.total_pressure = o.positive_if("total_pressure", b.kind == "inlet");
   b.total_temperature = o.positive_if("total_temperature", b.kind == "inlet");
   b.static_pressure = o.positive_if("static_pressure", b.kind == "outlet");
-  b.velocity = o.maybe<std::array<double, 3>>("velocity", b.kind == "velocity-inlet",
-                                              [&](const std::string& k) { return o.vector3(k); });
+  b.velocity = o.positive_if("velocity", b.kind == "velocity-inlet");
   return b;
 }
 
@@ -272,7 +282,7 @@ SolverInput parse_solver_input(const std::string& text) {
   Json doc;
   try {
     doc = Json::parse(text);
-  } catch (const Json::parse_error& e) {
+  } catch (const Json::exception& e) {
     invalid("", std::string("not JSON: ") + e.what());
   }
   const Object root(doc, "",
@@ -284,11 +294,12 @@ SolverInput parse_solver_input(const std::string& text) {
   {
     const Object c(root.get("case"), "case", {"name", "sha256", "toml"});
     in.case_name = c.string("name");
-    in.case_sha256 = c.string("sha256");
+    in.case_sha256 = sha256(c, "sha256");
     in.case_toml = c.string("toml");
     const Object m(root.get("mesh"), "mesh", {"path", "sha256"});
     in.mesh_path = m.string("path");
-    in.mesh_sha256 = m.string("sha256");
+    if (!std::filesystem::path(in.mesh_path).is_absolute()) invalid("mesh.path", "must be an absolute path");
+    in.mesh_sha256 = sha256(m, "sha256");
   }
   in.precision = root.tag("precision", {"fp32+acc64", "fp64"});
   in.deterministic = root.boolean("deterministic");
@@ -314,11 +325,11 @@ SolverInput parse_solver_input(const std::string& text) {
     fs.pressure = f.number("pressure");
     fs.temperature = f.positive_if("temperature", compressible);
     fs.velocity = f.vector3("velocity");
-    fs.speed = f.number("speed");
+    fs.speed = f.positive("speed");
     fs.viscosity = f.positive("viscosity");
-    fs.mach = f.optional_number("mach");
-    fs.re = f.optional_number("re");
-    fs.ref_length = f.optional_number("ref_length");
+    fs.mach = f.is_null("mach") ? std::nullopt : std::optional<double>(f.positive("mach"));
+    fs.re = f.is_null("re") ? std::nullopt : std::optional<double>(f.positive("re"));
+    fs.ref_length = f.is_null("ref_length") ? std::nullopt : std::optional<double>(f.positive("ref_length"));
     fs.aoa = f.number("aoa");
     fs.sideslip = f.number("sideslip");
     fs.nu_tilde = f.positive_if("nu_tilde", sa);
@@ -363,6 +374,9 @@ SolverInput parse_solver_input(const std::string& text) {
       invalid("time.kind", "expected steady or unsteady");
     }
   }
+  if ((in.turbulence.model == "ddes" || in.turbulence.model == "wmles") && in.time.kind != "unsteady") {
+    invalid("time.kind", in.turbulence.model + " needs an unsteady time");
+  }
   const Json& monitors = *array_at(root, "monitors");
   for (std::size_t i = 0; i < monitors.size(); ++i) {
     const std::string path = indexed("monitors", i);
@@ -371,6 +385,9 @@ SolverInput parse_solver_input(const std::string& text) {
     (void)m.tag("kind", {"forces"});
     ForcesMonitor fm;
     fm.name = m.string("name");
+    for (const auto& other : in.monitors) {
+      if (other.name == fm.name) invalid(m.at("name"), "monitor name '" + fm.name + "' is used twice");
+    }
     fm.every = m.integer("every", 1);
     const Json& names = *array_at(m, "zones");
     for (std::size_t j = 0; j < names.size(); ++j) {
