@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy, FilePlus2 } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
+import type { CaseDocument } from "../api/cases";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import {
@@ -13,6 +14,7 @@ import {
   soleForces,
   useLiveRun,
 } from "../api/runs";
+import { coefficient, coefficientsCaveat, degrees } from "../api/units";
 import { ResidualChart } from "../components/ResidualChart";
 import { formatBytes, formatCount, remainingMs } from "../components/run/format";
 import { LogView } from "../components/run/LogView";
@@ -24,6 +26,7 @@ import { TopBar } from "../components/shell/TopBar";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Collapse } from "../components/ui/Collapse";
+import { cn } from "../components/ui/cn";
 import { Gauge } from "../components/ui/Gauge";
 import { LoadingDots } from "../components/ui/LoadingDots";
 import { MetaGrid } from "../components/ui/MetaGrid";
@@ -91,6 +94,18 @@ function RunView() {
   const iteration = history.iteration.at(-1) ?? 0;
   const orders = shownOrders(history.orders.at(-1), targetOrders);
   const forces = soleForces(history);
+  const unsteady = (details.data?.case.time as { kind?: string } | undefined)?.kind === "unsteady";
+  const caveat = run ? coefficientsCaveat(run.status, unsteady) : null;
+  // An ended run's coefficients are its final state (results.md#runjson monitors), which can
+  // come after the last recorded sample; a running one's are its last sample.
+  const ended = run && run.status !== "running" ? run.monitors : null;
+  const finalForces = ended
+    ? Object.values(ended).filter((m) => m.cl !== undefined && m.cd !== undefined)
+    : [];
+  const [cl, cd] =
+    finalForces.length === 1
+      ? [finalForces[0]?.cl, finalForces[0]?.cd]
+      : [forces?.cl.at(-1), forces?.cd.at(-1)];
 
   const crumbs = [
     { label: "Runs", to: "/" },
@@ -173,7 +188,7 @@ function RunView() {
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
-            <header className="flex items-center gap-4">
+            <header className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <h1 className="m-0 font-semibold text-xl">
                 {run?.case.name ?? <Skeleton className="h-8 w-40" />}
               </h1>
@@ -181,6 +196,13 @@ function RunView() {
                 <span data-testid="status">
                   <Status status={run.status} />
                 </span>
+              )}
+              {run && (
+                <Conditions
+                  run={run}
+                  document={details.data?.case}
+                  cells={details.data?.mesh_info.counts.cells}
+                />
               )}
               {run?.status === "running" && (
                 <span className="flex items-center gap-2 text-fg-3 text-sm">
@@ -243,8 +265,9 @@ function RunView() {
                     targetOrders={targetOrders}
                     history={history}
                     cells={details.data?.mesh_info.counts.cells}
-                    cl={forces?.cl.at(-1)}
-                    cd={forces?.cd.at(-1)}
+                    cl={cl}
+                    cd={cd}
+                    caveat={caveat}
                   />
                 ) : (
                   <Skeleton className="h-48 w-full" />
@@ -272,14 +295,19 @@ function RunView() {
                   title="Monitors"
                   defaultOpen={history.monitors.size > 0 || !history.iteration.length}
                   meta={
-                    <span className="font-mono text-fg-2 text-sm tabular-nums">
-                      {forces
-                        ? `CL ${forces.cl.at(-1)?.toFixed(3)} · CD ${forces.cd.at(-1)?.toFixed(4)}`
+                    <span
+                      className={cn(
+                        "font-mono text-sm tabular-nums",
+                        caveat ? "text-fg-3" : "text-fg-2",
+                      )}
+                    >
+                      {cl !== undefined && cd !== undefined
+                        ? `CL ${coefficient(cl)} · CD ${coefficient(cd)}${caveat ? ` · ${caveat}` : ""}`
                         : "—"}
                     </span>
                   }
                 >
-                  <MonitorTable history={history} />
+                  <MonitorTable history={history} final={ended} caveat={caveat} />
                 </Collapse>
                 <Collapse
                   title="Outputs"
@@ -349,6 +377,7 @@ function Facts({
   cells,
   cl,
   cd,
+  caveat,
 }: {
   run: Run;
   now: number;
@@ -360,6 +389,7 @@ function Facts({
   cells: number | undefined;
   cl: number | undefined;
   cd: number | undefined;
+  caveat: string | null;
 }) {
   const registry = useQuery(runsQuery);
   const known = new Set(registry.data?.runs.map((r) => r.run_id));
@@ -379,8 +409,6 @@ function Facts({
   return (
     <MetaGrid
       items={[
-        { label: "Case", value: <span className="font-medium">{run.case.name}</span> },
-        { label: "State", value: <Status status={run.status} /> },
         {
           label: "Iteration",
           value:
@@ -435,11 +463,7 @@ function Facts({
         },
         {
           label: "Devices",
-          value: (
-            <span className="font-mono">
-              {devicesLabel(run.devices)} · {run.precision}
-            </span>
-          ),
+          value: <span className="font-mono">{devicesLabel(run.devices)}</span>,
         },
         ...(run.timing
           ? [
@@ -494,7 +518,10 @@ function Facts({
           label: "Mesh",
           value: (
             <>
-              <MiddleTruncate value={run.mesh.sha256} />
+              <span className="font-mono" data-testid="mesh-name">
+                {run.mesh.path.split("/").pop()}
+              </span>
+              <MiddleTruncate value={run.mesh.sha256} keep={8} />
               {cells !== undefined && <span className="text-fg-3">{formatCount(cells)} cells</span>}
             </>
           ),
@@ -503,9 +530,13 @@ function Facts({
           label: "Forces",
           value:
             cl !== undefined && cd !== undefined ? (
-              <span className="flex flex-col font-mono tabular-nums">
-                <span>CL {cl.toFixed(4)}</span>
-                <span>CD {cd.toFixed(5)}</span>
+              <span
+                className={cn("flex flex-col font-mono tabular-nums", caveat && "text-fg-3")}
+                data-testid="forces"
+              >
+                <span>CL {coefficient(cl)}</span>
+                <span>CD {coefficient(cd)}</span>
+                {caveat && <span className="font-sans text-sm">{caveat}</span>}
               </span>
             ) : (
               "—"
@@ -522,5 +553,40 @@ function Facts({
         },
       ]}
     />
+  );
+}
+
+/** What the run computed, in a line, as its stored case writes it: Mach or velocity, angles,
+ * Reynolds number or pressure and temperature, model, precision, and the mesh's cells. */
+function Conditions({
+  run,
+  document,
+  cells,
+}: {
+  run: Run;
+  document: CaseDocument | undefined;
+  cells: number | undefined;
+}) {
+  const freestream = (document?.freestream ?? {}) as Record<string, string | number | undefined>;
+  const physics = (document?.physics ?? {}) as { turbulence?: { model?: string } };
+  const angle = (value: unknown) => (typeof value === "string" ? degrees(value) : null);
+  const alpha = angle(freestream.aoa);
+  const beta = angle(freestream.sideslip);
+  const parts = [
+    freestream.mach !== undefined && `M ${freestream.mach}`,
+    freestream.velocity !== undefined && `V ${freestream.velocity}`,
+    alpha !== null && `α ${alpha}°`,
+    beta !== null && beta !== 0 && `β ${beta}°`,
+    typeof freestream.re === "number" && `Re ${freestream.re.toExponential(2)}`,
+    freestream.pressure !== undefined && `p ${freestream.pressure}`,
+    freestream.temperature !== undefined && `T ${freestream.temperature}`,
+    physics.turbulence?.model,
+    run.precision,
+    cells !== undefined && `${formatCount(cells)} cells`,
+  ].filter(Boolean);
+  return (
+    <p className="m-0 basis-full font-mono text-fg-2 text-sm" data-testid="conditions">
+      {parts.join(" · ")}
+    </p>
   );
 }
