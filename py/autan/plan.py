@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from autan import face_states, initial_state
 from autan.errors import Diagnostic, diagnostic
+from autan.memory import DeviceKind, Memory, estimate
 from autan.meshinfo import mesh_sha256
 from autan.schema import (
     DDES,
@@ -102,14 +103,6 @@ class CellZoneResolution(_Report):
     rule: int | None
 
 
-class Memory(_Report):
-    model: Literal["autan.memory/1"] = "autan.memory/1"
-    bytes_total: int
-    bytes_per_gpu: int
-    gpus: int
-    equations: int
-
-
 class Plan(_Report):
     """Resolution of a case against its mesh: zones with provenance, memory, diagnostics."""
 
@@ -136,28 +129,7 @@ def equations(spec: CaseSpec) -> int:
     return flow + {SA: 1, SST: 2}.get(type(model), 0)
 
 
-def memory(spec: CaseSpec, mesh: MeshInfo, gpus: int) -> Memory:
-    """Device memory of the arrays listed in docs/sdk/plan.md (model ``autan.memory/1``)."""
-    n = equations(spec)
-    fp64 = spec.physics.precision == "fp64"
-    compute, accumulate, jacobian = (8, 8, 8) if fp64 else (4, 8, 2)
-    viscous = not isinstance(spec.physics.turbulence, Inviscid)
-    cells, faces = mesh.counts.cells, mesh.counts.faces
-    interior = faces - sum(zone.faces for zone in mesh.boundary_zones)
-    per_cell = (
-        2 * n * accumulate
-        + 5 * n * compute
-        + 4 * 8
-        + (compute if viscous else 0)
-        + n * n * jacobian
-    )
-    per_face = 6 * 8 + 2 * 4
-    per_interior_face = 2 * (n * n * jacobian + 4)
-    total = cells * per_cell + faces * per_face + interior * per_interior_face
-    return Memory(bytes_total=total, bytes_per_gpu=-(-total // gpus), gpus=gpus, equations=n)
-
-
-def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
+def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind = "cuda") -> Plan:
     spec = case.spec
     found: list[Diagnostic] = []
 
@@ -219,7 +191,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         },
         boundaries=tuple(boundaries),
         cell_zones=tuple(cell_zones),
-        memory=memory(spec, mesh, gpus),
+        memory=estimate(spec, mesh, equations=equations(spec), ranks=gpus, device_kind=device_kind),
         diagnostics=tuple(found),
     )
 

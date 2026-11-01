@@ -83,6 +83,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "cells": mesh.n_cells,
             "faces": mesh.n_faces,
             "nodes": int(mesh.points.shape[0]),
+            "face_nodes": len(mesh.face_nodes),
             "cells_by_type": by_type,
         },
         "boundary_zones": [

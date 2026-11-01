@@ -95,8 +95,9 @@ def _plan_text(result: Plan) -> str:
         )
     memory = result.memory
     lines.append(
-        f"memory      {memory.bytes_total / 1e9:.1f} GB total · {memory.bytes_per_gpu / 1e9:.1f} "
-        f"GB/GPU on {memory.gpus} GPU · {memory.equations} equations ({memory.model})"
+        f"memory      {memory.bytes_per_gpu / 1e9:.1f} GB per rank ({memory.bytes_host / 1e9:.1f} "
+        f"host, {memory.bytes_device / 1e9:.1f} {memory.device_kind}) x {memory.gpus} · "
+        f"{memory.equations} equations ({memory.model})"
     )
     lines += [d.render() for d in result.diagnostics]
     lines.append("plan OK" if result.ok else "plan has errors")
@@ -113,7 +114,9 @@ def command_plan(args: argparse.Namespace) -> int:
                 location=case.locate("mesh"),
             )
             return _fail(CaseError([missing]), args.json)
-        result = case.plan(MeshInfo.load(args.mesh_info), gpus=args.gpus)
+        result = case.plan(
+            MeshInfo.load(args.mesh_info), gpus=args.gpus, device_kind=args.device_kind
+        )
     except CaseError as error:
         return _fail(error, args.json)
     _emit(result.document(), args.json, _plan_text(result))
@@ -360,7 +363,10 @@ def parser() -> argparse.ArgumentParser:
     sub = commands.add_parser("plan", help="check a case against its mesh before running it")
     sub.add_argument("case", help="case file: .py, .toml or .json")
     sub.add_argument("--mesh-info", help="MeshInfo JSON of the case's mesh")
-    sub.add_argument("--gpus", type=int, default=1, help="GPUs for the memory estimate")
+    sub.add_argument("--gpus", type=int, default=1, help="ranks, one device each")
+    sub.add_argument(
+        "--device-kind", choices=("cpu", "cuda", "hip"), default="cuda", help="device of each rank"
+    )
     sub.add_argument("--json", action="store_true", help="print JSON")
     sub.set_defaults(func=command_plan)
 

@@ -48,6 +48,7 @@ class Counts(_Strict):
     cells: Positive
     faces: Positive
     nodes: Positive
+    face_nodes: Positive
     cells_by_type: CellsByType
 
 
@@ -134,6 +135,8 @@ class MeshInfo(_Strict):
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         problems = []
+        if self.counts.face_nodes < 3 * self.counts.faces:
+            problems.append("counts.face_nodes is below 3 nodes per face")
         if sum(self.counts.cells_by_type.model_dump().values()) != self.counts.cells:
             problems.append("counts.cells_by_type does not sum to counts.cells")
         if sum(zone.cells for zone in self.cell_zones) != self.counts.cells:
