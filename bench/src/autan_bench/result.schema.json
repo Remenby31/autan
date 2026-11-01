@@ -400,6 +400,30 @@
               "$ref": "#/$defs/spread"
             }
           }
+        },
+        "host_load": {
+          "type": "object",
+          "required": [
+            "cpus",
+            "before_1m",
+            "after_1m"
+          ],
+          "additionalProperties": false,
+          "description": "Host 1-minute load average before and after the run: on unified memory, other processes' CPU work takes bandwidth from the GPU.",
+          "properties": {
+            "cpus": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "before_1m": {
+              "type": "number",
+              "minimum": 0
+            },
+            "after_1m": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
         }
       }
     },
