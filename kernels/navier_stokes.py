@@ -175,10 +175,26 @@ def viscous_face(
     gl: Grad.Mat53,
     xl: Geom.Vec3,
     ml: State,
+    ql: Geom,
+    l0: Grad.Mat53,
+    l1: Grad.Mat53,
+    l2: Grad.Mat53,
+    l3: Grad.Mat53,
+    l4: Grad.Mat53,
+    l5: Grad.Mat53,
+    l6: Grad.Mat53,
     wr: State.Vec5,
     gr: Grad.Mat53,
     xr: Geom.Vec3,
     mr: State,
+    qr: Geom,
+    r0: Grad.Mat53,
+    r1: Grad.Mat53,
+    r2: Grad.Mat53,
+    r3: Grad.Mat53,
+    r4: Grad.Mat53,
+    r5: Grad.Mat53,
+    r6: Grad.Mat53,
     xf: Geom.Vec3,
     n: Geom.Vec3,
     area: Geom,
@@ -200,14 +216,16 @@ def viscous_face(
     wf = 0.5 * (face_value(wl, gl, rel(xf, xl), pref) + face_value(wr, gr, rel(xf, xr), pref))
     tl = temperature(wl, rgas, pref)
     tr = temperature(wr, rgas, pref)
-    gm = 0.5 * (gl + gr)
-    gu = corrected(Vec3(gm[1, 0], gm[1, 1], gm[1, 2]), wr[1] - wl[1], e, inv_d)
-    gv = corrected(Vec3(gm[2, 0], gm[2, 1], gm[2, 2]), wr[2] - wl[2], e, inv_d)
-    gwz = corrected(Vec3(gm[3, 0], gm[3, 1], gm[3, 2]), wr[3] - wl[3], e, inv_d)
-    gtm = 0.5 * (
-        temperature_gradient(wl, gl, rgas, pref) + temperature_gradient(wr, gr, rgas, pref)
+    tgl, ugl, vgl, wgl = side_gradients(
+        wl, gl, ql, l0, l1, l2, l3, l4, l5, l6, rel(xf, xl), rgas, pref
     )
-    gt = corrected(gtm, tr - tl, e, inv_d)
+    tgr, ugr, vgr, wgr = side_gradients(
+        wr, gr, qr, r0, r1, r2, r3, r4, r5, r6, rel(xf, xr), rgas, pref
+    )
+    gu = corrected(0.5 * (ugl + ugr), wr[1] - wl[1], e, inv_d)
+    gv = corrected(0.5 * (vgl + vgr), wr[2] - wl[2], e, inv_d)
+    gwz = corrected(0.5 * (wgl + wgr), wr[3] - wl[3], e, inv_d)
+    gt = corrected(0.5 * (tgl + tgr), tr - tl, e, inv_d)
     mu = viscosity(temperature(wf, rgas, pref), mref, tref, s, law)
     mt = 0.5 * (ml + mr)
     k = g * rgas / (g - 1.0) * (mu / prl + mt / prt)
@@ -310,7 +328,7 @@ def cubic_term(
 
 
 @pointwise
-def cubic_face_gradient(
+def cubic_parts(
     g: Grad.Vec3,
     hd: Grad.Vec3,
     ho: Grad.Vec3,
@@ -318,15 +336,10 @@ def cubic_face_gradient(
     c1: Grad.Vec3,
     c2: Grad.Vec3,
     c3: Grad.Vec3,
-    dphi: State,
     r: Geom.Vec3,
-    e: Geom.Vec3,
-    inv_d: Geom,
-) -> Grad.Vec3:
-    # The fitted cubic's gradient at the face, its component along e replaced by the secant slope
-    # of the values, which the cubic gives as (phi(r) - phi(0)) / |r|: the correction vanishes on
-    # cubic fields. Monomials: x^3/6, y^3/6, z^3/6, x^2 y/2, x^2 z/2, x y^2/2, y^2 z/2, x z^2/2,
-    # y z^2/2, x y z.
+) -> tuple[Grad.Vec3, Grad]:
+    # Gradient at r of the fitted cubic and its increment phi(r) - phi(0). Monomials: x^3/6,
+    # y^3/6, z^3/6, x^2 y/2, x^2 z/2, x y^2/2, y^2 z/2, x z^2/2, y z^2/2, x y z.
     x = r[0]
     y = r[1]
     z = r[2]
@@ -361,8 +374,99 @@ def cubic_face_gradient(
         + 0.5 * (y * y * z * c2[0] + x * z * z * c2[1] + y * z * z * c2[2])
         + x * y * z * c3[0]
     )
-    secant = (dot(g, r) + 0.5 * dot(hr, r) + value_c) * inv_d
-    return g + hr + grad_c + (dphi * inv_d - secant) * e
+    return g + hr + grad_c, dot(g, r) + 0.5 * dot(hr, r) + value_c
+
+
+@pointwise
+def cubic_face_gradient(
+    g: Grad.Vec3,
+    hd: Grad.Vec3,
+    ho: Grad.Vec3,
+    c0: Grad.Vec3,
+    c1: Grad.Vec3,
+    c2: Grad.Vec3,
+    c3: Grad.Vec3,
+    dphi: State,
+    r: Geom.Vec3,
+    e: Geom.Vec3,
+    inv_d: Geom,
+) -> Grad.Vec3:
+    # The fitted cubic's gradient at the face, its component along e replaced by the secant slope
+    # of the values, which the cubic gives as (phi(r) - phi(0)) / |r|: the correction vanishes on
+    # cubic fields.
+    gf, rise = cubic_parts(g, hd, ho, c0, c1, c2, c3, r)
+    return gf + (dphi - rise) * inv_d * e
+
+
+@pointwise
+def side_gradients(
+    w: State.Vec5,
+    gw: Grad.Mat53,
+    q: Geom,
+    f0: Grad.Mat53,
+    f1: Grad.Mat53,
+    f2: Grad.Mat53,
+    f3: Grad.Mat53,
+    f4: Grad.Mat53,
+    f5: Grad.Mat53,
+    f6: Grad.Mat53,
+    r: Geom.Vec3,
+    rgas: Param,
+    pref: Param,
+) -> tuple[Grad.Vec3, Grad.Vec3, Grad.Vec3, Grad.Vec3]:
+    # Gradients of T, u, v, w that one cell gives a face: its cubic fit's at the face where it
+    # carries one, its least-squares gradient otherwise.
+    if q > 0.5:
+        gt, a0 = cubic_parts(
+            Vec3(f0[0, 0], f0[0, 1], f0[0, 2]),
+            Vec3(f1[0, 0], f1[0, 1], f1[0, 2]),
+            Vec3(f2[0, 0], f2[0, 1], f2[0, 2]),
+            Vec3(f3[0, 0], f3[0, 1], f3[0, 2]),
+            Vec3(f4[0, 0], f4[0, 1], f4[0, 2]),
+            Vec3(f5[0, 0], f5[0, 1], f5[0, 2]),
+            Vec3(f6[0, 0], f6[0, 1], f6[0, 2]),
+            r,
+        )
+        gu, a1 = cubic_parts(
+            Vec3(f0[1, 0], f0[1, 1], f0[1, 2]),
+            Vec3(f1[1, 0], f1[1, 1], f1[1, 2]),
+            Vec3(f2[1, 0], f2[1, 1], f2[1, 2]),
+            Vec3(f3[1, 0], f3[1, 1], f3[1, 2]),
+            Vec3(f4[1, 0], f4[1, 1], f4[1, 2]),
+            Vec3(f5[1, 0], f5[1, 1], f5[1, 2]),
+            Vec3(f6[1, 0], f6[1, 1], f6[1, 2]),
+            r,
+        )
+        gv, a2 = cubic_parts(
+            Vec3(f0[2, 0], f0[2, 1], f0[2, 2]),
+            Vec3(f1[2, 0], f1[2, 1], f1[2, 2]),
+            Vec3(f2[2, 0], f2[2, 1], f2[2, 2]),
+            Vec3(f3[2, 0], f3[2, 1], f3[2, 2]),
+            Vec3(f4[2, 0], f4[2, 1], f4[2, 2]),
+            Vec3(f5[2, 0], f5[2, 1], f5[2, 2]),
+            Vec3(f6[2, 0], f6[2, 1], f6[2, 2]),
+            r,
+        )
+        gwz, a3 = cubic_parts(
+            Vec3(f0[3, 0], f0[3, 1], f0[3, 2]),
+            Vec3(f1[3, 0], f1[3, 1], f1[3, 2]),
+            Vec3(f2[3, 0], f2[3, 1], f2[3, 2]),
+            Vec3(f3[3, 0], f3[3, 1], f3[3, 2]),
+            Vec3(f4[3, 0], f4[3, 1], f4[3, 2]),
+            Vec3(f5[3, 0], f5[3, 1], f5[3, 2]),
+            Vec3(f6[3, 0], f6[3, 1], f6[3, 2]),
+            r,
+        )
+    else:
+        a0 = 0.0
+        a1 = 0.0
+        a2 = 0.0
+        a3 = 0.0
+        gt = temperature_gradient(w, gw, rgas, pref)
+        gu = Vec3(gw[1, 0], gw[1, 1], gw[1, 2])
+        gv = Vec3(gw[2, 0], gw[2, 1], gw[2, 2])
+        gwz = Vec3(gw[3, 0], gw[3, 1], gw[3, 2])
+    return gt, gu, gv, gwz
 
 
 @pointwise
@@ -491,10 +595,26 @@ FACE_ARGS = {
     "gl": grad.left,
     "xl": geometry.cell_centroid.left,
     "ml": mu_t.left,
+    "ql": quad.left,
+    "l0": fit0.left,
+    "l1": fit1.left,
+    "l2": fit2.left,
+    "l3": fit3.left,
+    "l4": fit4.left,
+    "l5": fit5.left,
+    "l6": fit6.left,
     "wr": prim.right,
     "gr": grad.right,
     "xr": geometry.cell_centroid.right,
     "mr": mu_t.right,
+    "qr": quad.right,
+    "r0": fit0.right,
+    "r1": fit1.right,
+    "r2": fit2.right,
+    "r3": fit3.right,
+    "r4": fit4.right,
+    "r5": fit5.right,
+    "r6": fit6.right,
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
