@@ -326,6 +326,55 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
   }
 }
 
+TEST_CASE("a run continued right after a shortened step reproduces the uninterrupted one",
+          "[euler]") {
+  // A shortened step caps the next CFL number; the cap is solver state and must cross a restart.
+  // Two zones at very different states make the first steps shorten.
+  auto doc = [&](int budget) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 3.0 * init["density"].get<double>();
+      init["pressure"] = 5.0 * init["pressure"].get<double>();
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  auto lines = [](const fs::path& f) {
+    std::vector<std::string> out;
+    std::ifstream in(f);
+    for (std::string l; std::getline(in, l);) out.push_back(l);
+    return out;
+  };
+  constexpr int budget = 40;
+  const auto whole = run(doc(budget));
+  REQUIRE(whole.status == ExitStatus::finished);
+  int shortened = 0;
+  for (const auto& l : lines(whole.run / "log.jsonl")) {
+    const auto e = Json::parse(l);
+    if (e["level"] == "warning" && e["source"] == "solver" && e["iteration"].is_number()) {
+      shortened = e["iteration"].get<int>();
+      break;
+    }
+  }
+  INFO("first shortened step " << shortened);
+  REQUIRE(shortened > 0);
+  REQUIRE(shortened < budget);
+  const auto first = run(doc(shortened));
+  REQUIRE(first.status == ExitStatus::finished);
+  auto next = doc(budget);
+  next["start"] = continue_from(first.run);
+  const auto second = run(next);
+  REQUIRE(second.status == ExitStatus::finished);
+  auto chain = lines(first.run / "history.jsonl");
+  const auto more = lines(second.run / "history.jsonl");
+  chain.insert(chain.end(), more.begin(), more.end());
+  CHECK(chain == lines(whole.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "Pressure"}) {
+    CHECK(field(second.run, name) == field(whole.run, name));
+  }
+}
+
 TEST_CASE("a steady run reports the residual of its second-order scheme from the start",
           "[euler]") {
   // The steady solver starts at first order, but convergence is judged on the history, which
