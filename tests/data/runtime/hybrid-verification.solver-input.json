@@ -51,6 +51,7 @@
   "boundaries": [
     {
       "zone": "xmin",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
@@ -62,6 +63,7 @@
     },
     {
       "zone": "xmax",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
@@ -73,6 +75,7 @@
     },
     {
       "zone": "ymin",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
@@ -84,6 +87,7 @@
     },
     {
       "zone": "ymax",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
@@ -95,6 +99,7 @@
     },
     {
       "zone": "zmin",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
@@ -106,6 +111,7 @@
     },
     {
       "zone": "zmax",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,

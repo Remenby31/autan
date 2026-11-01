@@ -51,6 +51,7 @@
   "boundaries": [
     {
       "zone": "xmin",
+      "rule": 0,
       "kind": "velocity-inlet",
       "temperature": null,
       "total_pressure": null,
@@ -62,6 +63,7 @@
     },
     {
       "zone": "xmax",
+      "rule": 1,
       "kind": "outlet",
       "temperature": null,
       "total_pressure": null,
@@ -73,6 +75,7 @@
     },
     {
       "zone": "ymin",
+      "rule": 2,
       "kind": "wall",
       "temperature": null,
       "total_pressure": null,
@@ -84,6 +87,7 @@
     },
     {
       "zone": "ymax",
+      "rule": 3,
       "kind": "wall",
       "temperature": null,
       "total_pressure": null,
@@ -95,6 +99,7 @@
     },
     {
       "zone": "zmin",
+      "rule": 4,
       "kind": "symmetry",
       "temperature": null,
       "total_pressure": null,
@@ -106,6 +111,7 @@
     },
     {
       "zone": "zmax",
+      "rule": 5,
       "kind": "symmetry",
       "temperature": null,
       "total_pressure": null,

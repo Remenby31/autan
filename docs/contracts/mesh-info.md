@@ -56,7 +56,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `groups[]` | list, sorted by `name` | The zone groups of the mesh's sidecar ([Zone groups](#zone-groups)); `[]` without one. |
 | `groups[].name` | string matching `[A-Za-z0-9_.][A-Za-z0-9_.-]*` | Group name, unique. |
 | `groups[].zones` | non-empty list of `boundary_zones` names | The group's zones, in `boundary_zones` order; groups may share zones. |
-| `groups_source` | `null` or `{path, sha256, provenance}` | The sidecar read: its path as derived from the mesh path, the SHA-256 of its bytes, its `provenance` object. |
+| `groups_source` | `null` or `{path, sha256, provenance}` | The sidecar read: its path, next to the mesh file with symlinks followed, the SHA-256 of its bytes, its `provenance` object. |
 | `quality.max_non_orthogonality_deg` | number in [0, 180] | Max over interior faces of the angle between the face normal and the vector joining the two cell centroids; over boundary faces, between the normal and the vector from the cell centroid to the face centroid. |
 | `quality.max_faces_per_cell` | integer ≥ 4 | Largest face count of any cell. |
 
@@ -64,7 +64,7 @@ Unknown fields are rejected. Readers fill every field; there are no optional fie
 
 ## Zone groups
 
-A mesh whose file does not name its parts (the HLPW-5 CRM-HL grid has 668 zones `TRI_bdy N`) can carry a sidecar next to it, `<mesh file>.zones.json`, or `<directory>.zones.json` for a polyMesh directory, which `autan-mesh-info` reads into `groups` (a CGNS family is already one zone, [mesh.md](mesh.md#readers)). It is never inferred from the mesh and never modifies it:
+A mesh whose file does not name its parts (the HLPW-5 CRM-HL grid has 668 zones `TRI_bdy N`) can carry a sidecar next to it, `<mesh file>.zones.json`, or `<directory>.zones.json` for a polyMesh directory (symlinks followed: next to the file itself), which `autan-mesh-info` reads into `groups` (a CGNS family is already one zone, [mesh.md](mesh.md#readers)). It is never inferred from the mesh and never modifies it:
 
 ```json
 {"schema": "autan.zone-groups/1", "mesh_sha256": "9f2c…", "provenance": {"url": "https://…", "note": "from the mapbc"}, "groups": {"wing.main": ["TRI_bdy 12", "TRI_bdy 13"]}}

@@ -27,15 +27,15 @@ MeshInfoZones meshinfo_zones(const Mesh& mesh);
 
 /// Groups of boundary zones from a mesh's sidecar (docs/contracts/mesh-info.md,
 /// Zone groups): each name with its zones, sorted by name, zones in MeshInfo
-/// order; `path` as derived from the mesh path, `sha256` of its bytes.
+/// order; `path` the sidecar's, symlinks of the mesh path followed, `sha256` of its bytes.
 struct ZoneGroups {
   std::string path, sha256;
   std::vector<std::pair<std::string, std::string>> provenance;
   std::vector<std::pair<std::string, std::vector<std::string>>> groups;
 };
 
-/// The sidecar of the mesh at `mesh_path` (`<mesh path>.zones.json`, for a
-/// polyMesh directory `<directory>.zones.json`), checked against `mesh` and
+/// The sidecar of the mesh at `mesh_path` (`<mesh file>.zones.json`, for a
+/// polyMesh directory `<directory>.zones.json`, symlinks followed), checked against `mesh` and
 /// its hash `sha256`; nullopt when there is none. Throws E0136 for a sidecar
 /// that cannot be read or breaks autan.zone-groups/1, E0137 for another mesh's
 /// hash, E0138 for an unknown zone, an empty group, a bad name or a zone twice

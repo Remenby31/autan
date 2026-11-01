@@ -213,7 +213,13 @@ TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-inf
     {"name": "all-x_1", "zones": ["xmin"]},
     {"name": "walls", "zones": ["ymin", "zmin"]},
     {"name": "x.sides", "zones": ["xmin", "xmax"]}])"));
-  CHECK(with["groups_source"]["path"] == sidecar.string());
+  CHECK(with["groups_source"]["path"] == fs::canonical(mesh_path).string() + ".zones.json");
+  // Through a symlink to the mesh, the sidecar next to the mesh file itself.
+  const fs::path link = dir / "link";
+  fs::create_symlink(mesh_path, link);
+  CHECK(nlohmann::json::parse(autan::io::mesh_info_json(
+            mesh, hash, autan::io::read_zone_groups(link, mesh, hash)))["groups"] ==
+        with["groups"]);
   CHECK(with["groups_source"]["sha256"] == autan::io::mesh_hash(sidecar));
   CHECK(with["groups_source"]["provenance"] == doc["provenance"]);
 

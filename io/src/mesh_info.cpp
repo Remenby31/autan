@@ -150,10 +150,11 @@ std::string mesh_hash(const fs::path& path) {
 
 std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh& mesh,
                                            const std::string& sha256) {
-  std::string base = mesh_path.string();
-  while (base.size() > 1 && base.back() == '/') base.pop_back();
-  const fs::path path = base + ".zones.json";
+  // Next to the mesh file itself, symlinks followed (case-schema.md), so the
+  // SDK and the runtime read the same sidecar.
   std::error_code ec;
+  const fs::path resolved = fs::canonical(mesh_path, ec);
+  const fs::path path = (ec ? mesh_path.lexically_normal() : resolved).string() + ".zones.json";
   if (!fs::exists(path, ec)) return std::nullopt;
   const auto invalid = [&](ErrorCode code, const std::string& why) -> Error {
     return Error(code, path.string() + ": " + why);

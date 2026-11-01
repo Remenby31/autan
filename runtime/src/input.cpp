@@ -256,10 +256,16 @@ InitialState parse_initial(const Json& value, const std::string& path, const Sol
 
 BoundaryInput parse_boundary(const Json& value, const std::string& path) {
   const Object o(value, path,
-                 {"zone", "kind", "temperature", "total_pressure", "total_temperature", "velocity",
-                  "static_pressure", "states", "point_vortex"});
+                 {"zone", "rule", "kind", "temperature", "total_pressure", "total_temperature",
+                  "velocity", "static_pressure", "states", "point_vortex"});
   BoundaryInput b;
   b.zone = o.string("zone");
+  // The case rule the SDK resolved the zone with: checked, of no use to the run.
+  if (!o.is_null("rule")) {
+    const Json& rule = o.get("rule");
+    if (!rule.is_number_integer() || rule.get<std::int64_t>() < 0)
+      invalid(path + ".rule", "expected an integer >= 0 or null");
+  }
   b.kind = o.tag("kind", {"wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet",
                           "outlet", "manufactured", "oracle-state"});
   if (b.kind == "oracle-state") {
