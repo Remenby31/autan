@@ -10,7 +10,7 @@ import autan_spike as s
 import meshes
 import numpy as np
 import pytest
-from conftest import KINDS, eps
+from conftest import KINDS, eps, refused
 
 
 def euler_states(m: s.Mesh, rng: np.random.Generator) -> np.ndarray:
@@ -53,9 +53,15 @@ def test_face_jacobians_assemble_into_the_complex_step_jacobian_of_the_residual(
 @pytest.mark.gpu
 @pytest.mark.parametrize("strategy", s.STRATEGIES)
 @pytest.mark.parametrize("policy", ["fp64", "fp32+acc64"])
-def test_device_face_jacobians_equal_host(strategy: str, policy: str) -> None:
+def test_device_face_jacobians_equal_host(backend: str, strategy: str, policy: str) -> None:
     m = s.mesh(meshes.build("tet", 4, 0.15, seed=6))
     u = euler_states(m, np.random.default_rng(2))
+    code = refused(backend, policy, strategy)
+    if code is not None:
+        with pytest.raises(s.SpikeError) as err:
+            s.roe_jacobian(m, policy, u, strategy)
+        assert err.value.code == code
+        return
     host_res, host_jac = s.roe_jacobian(m, policy, u)
     dev_res, dev_jac = s.roe_jacobian(m, policy, u, strategy)
     interior = slice(0, m.n_interior)
