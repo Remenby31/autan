@@ -89,7 +89,9 @@ void RunDirectory::append_history(const std::string& line) {
     if (n < 0 && errno == EINTR) continue;
     if (n <= 0) {
       const int saved = errno;
-      if (start >= 0) (void)::ftruncate(history_, start);
+      // Best effort: if the cut fails too, the run fails anyway.
+      if (start >= 0 && ::ftruncate(history_, start) != 0) {
+      }
       errno = saved;
       fail("append to", path_ / "history.jsonl");
     }
