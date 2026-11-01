@@ -8,16 +8,20 @@ on:
     paths: [bench/**, codegen/**, kernels/**, CMakeLists.txt, .github/workflows/gpu-hip.yml]
   pull_request:
     paths: [bench/**, codegen/**, kernels/**, CMakeLists.txt, .github/workflows/gpu-hip.yml]
+    # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions: {}
 
+# Pull requests cancel their older run; runs on main queue, each checking a merged commit.
 concurrency:
   group: gpu-hip-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   compile:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

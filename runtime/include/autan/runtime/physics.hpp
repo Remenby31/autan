@@ -2,6 +2,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -81,6 +82,10 @@ struct PhysicsContext {
   GhostExchange& ghosts;
   /// The ranks of the run; norms and loads reduce over them.
   Ranks& ranks;
+  /// Per face zone (index into mesh.face_zones()) with an oracle-state condition, the states of
+  /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
+  /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
+  const std::map<index_t, std::vector<double>>& boundary_states;
 };
 
 // case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
@@ -139,9 +144,11 @@ struct PhysicsRefusal {
   std::string data_json = "{}";  ///< machine-readable details: the text of a JSON object
 };
 
-/// What a physics supports beyond its key (media, zones, conditions): nullopt when it can run
-/// the input. A scope must not throw: it reports what it refuses as a PhysicsRefusal.
-using PhysicsScope = std::function<std::optional<PhysicsRefusal>(const SolverInput&)>;
+/// What a physics supports beyond its key (media, zones, conditions, the number of ranks the
+/// run spans): nullopt when it can run the input on `ranks` ranks. A scope must not throw: it
+/// reports what it refuses as a PhysicsRefusal.
+using PhysicsScope =
+    std::function<std::optional<PhysicsRefusal>(const SolverInput& input, int ranks)>;
 
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {

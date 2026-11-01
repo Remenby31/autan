@@ -84,6 +84,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # UCX intermittently fails to start on hosted runners ("pml_ucx.c:319 Error: Failed to create
+    # UCP worker", then MPI_ERR_OTHER in MPI_Isend). These are single-node CPU tests: use Open MPI's
+    # ob1 PML over shared memory (Open MPI 5 names it sm, formerly vader) and no UCX one-sided.
+    env:
+      OMPI_MCA_pml: ob1
+      OMPI_MCA_btl: self,sm
+      OMPI_MCA_osc: ^ucx
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,11 +119,26 @@ jobs:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
           PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
         run: |
-          tests='^(autan_halo_tests_[0-9]+_ranks|Several ranks .*)$'
-          n=$(ctest --test-dir build -N -R "$tests" | sed -n 's/^Total Tests: //p')
-          echo "$n multi-rank tests"
-          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 multi-rank tests, found $n"; exit 1; }
-          ctest --test-dir build -R "$tests" --output-on-failure --no-tests=error
+          n=$(ctest --test-dir build -N -L mpi | sed -n 's/^Total Tests: //p')
+          echo "$n multi-rank tests (CTest label mpi)"
+          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 tests labelled mpi, found $n"; exit 1; }
+          ctest --test-dir build -L mpi --output-on-failure --no-tests=error
+
+  bench-harness:
+    # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
+    name: Bench harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
 
   clang-tidy:
     name: clang-tidy

@@ -311,7 +311,7 @@ def json_schema(name: str) -> dict[str, Any]:
     require_tags(schema)
     if name == "results":
         # Optional in RunInfo only for writers' convenience; run.json always carries them.
-        schema["required"] = [*schema["required"], "start", "convergence"]
+        schema["required"] = [*schema["required"], "start", "convergence", "monitors"]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMAS[name],
