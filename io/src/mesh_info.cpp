@@ -151,11 +151,22 @@ std::string mesh_hash(const fs::path& path) {
 std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh& mesh,
                                            const std::string& sha256) {
   // Next to the mesh file itself, symlinks followed (case-schema.md), so the
-  // SDK and the runtime read the same sidecar.
+  // SDK and the runtime read the same sidecar; for an OpenFOAM case
+  // directory, next to its polyMesh directory.
   std::error_code ec;
-  const fs::path resolved = fs::canonical(mesh_path, ec);
-  const fs::path path = (ec ? mesh_path.lexically_normal() : resolved).string() + ".zones.json";
-  if (!fs::exists(path, ec)) return std::nullopt;
+  const fs::path given =
+      fs::is_directory(mesh_path, ec) ? polymesh_directory(mesh_path) : mesh_path;
+  const fs::path resolved = fs::canonical(given, ec);
+  const fs::path path = (ec ? given.lexically_normal() : resolved).string() + ".zones.json";
+  // Absent only when nothing is there: a link to nothing or an error is unreadable.
+  const auto entry = fs::symlink_status(path, ec);
+  if (ec && ec != std::errc::no_such_file_or_directory) {
+    throw Error(ErrorCode::zone_groups_invalid, path.string() + ": " + ec.message());
+  }
+  if (!fs::exists(entry)) return std::nullopt;
+  if (!fs::is_regular_file(path, ec)) {
+    throw Error(ErrorCode::zone_groups_invalid, path.string() + ": not a readable file");
+  }
   const auto invalid = [&](ErrorCode code, const std::string& why) -> Error {
     return Error(code, path.string() + ": " + why);
   };

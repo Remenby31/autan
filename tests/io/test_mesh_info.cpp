@@ -214,6 +214,18 @@ TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-inf
     {"name": "walls", "zones": ["ymin", "zmin"]},
     {"name": "x.sides", "zones": ["xmin", "xmax"]}])"));
   CHECK(with["groups_source"]["path"] == fs::canonical(mesh_path).string() + ".zones.json");
+  // Given as its OpenFOAM case directory, the polyMesh directory's sidecar.
+  if (directory) {
+    const fs::path case_dir = dir / "case";
+    fs::create_directories(case_dir / "constant");
+    fs::rename(mesh_path, case_dir / "constant" / "polyMesh");
+    fs::rename(sidecar, case_dir / "constant" / "polyMesh.zones.json");
+    CHECK(nlohmann::json::parse(autan::io::mesh_info_json(
+              mesh, hash, autan::io::read_zone_groups(case_dir, mesh, hash)))["groups"] ==
+          with["groups"]);
+    fs::rename(case_dir / "constant" / "polyMesh", mesh_path);
+    fs::rename(case_dir / "constant" / "polyMesh.zones.json", sidecar);
+  }
   // Through a symlink to the mesh, the sidecar next to the mesh file itself.
   const fs::path link = dir / "link";
   fs::create_symlink(mesh_path, link);
@@ -258,6 +270,16 @@ TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-inf
     refused(edited([&](auto& d) { d["groups"][name] = {"ymin"}; }),
             ErrorCode::zone_groups_bad_group);
   }
+  // A sidecar that is there but cannot be read: a link to itself.
+  fs::remove(sidecar);
+  fs::create_symlink(sidecar.filename(), sidecar);
+  try {
+    (void)autan::io::read_zone_groups(mesh_path, mesh, hash);
+    FAIL("expected E0136 for a looping link");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == ErrorCode::zone_groups_invalid);
+  }
+  fs::remove(sidecar);
   // A name given twice, which a JSON parser would merge.
   refused(R"({"schema": "autan.zone-groups/1", "mesh_sha256": ")" + hash +
               R"(", "provenance": {}, "groups": {"walls": ["ymin"], "walls": ["zmin"]}})",

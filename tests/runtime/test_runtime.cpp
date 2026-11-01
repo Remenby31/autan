@@ -826,7 +826,7 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                   "E0705");
   }
   SECTION("a boundary's rule is an index or null") {
-    for (const Json rule : {Json(-1), Json(1.5), Json("0")}) {
+    for (const Json& rule : {Json(-1), Json(1.5), Json("0")}) {
       CAPTURE(rule);
       require_error(run(input([&](Json& d) { d["boundaries"][0]["rule"] = rule; })), "E0705");
     }
