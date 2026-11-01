@@ -100,6 +100,8 @@ def test_a_real_run_reads_back_through_the_results_contract(
     assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
     assert result.history.iterations[-1] == run.iterations
     assert result.field("Density").size == mesh.counts.cells
+    assert run.timing is not None  # measured by the runtime; checked by Results.open
+    assert (run.timing.iterations, run.timing.solve_seconds > 0) == (run.iterations, True)
 
 
 def test_divergence_and_interruption_come_back_as_the_contract_says(
