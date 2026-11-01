@@ -644,10 +644,16 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 }
 
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
-// conditions that apply to inviscid flow, and no periodic pairs (it exchanges no ghost cells yet).
-std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
-  // The steady solver's block Gauss-Seidel acts on the cells of one mesh: image ghosts would be
-  // other unknowns, not copies.
+// conditions that apply to inviscid flow, and steady runs on one rank without periodic pairs.
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
+  // The steady solver's block Gauss-Seidel is coloured in the order of one mesh's cells: on a
+  // partition, or with periodic image ghosts, it would be another algorithm.
+  if (ranks > 1 && in.time.kind == "steady") {
+    return runtime::PhysicsRefusal{
+        .message = "the steady Euler solver runs on one rank only, not " + std::to_string(ranks),
+        .path = "time.kind",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
   if (!in.periodic.empty() && in.time.kind == "steady") {
     return runtime::PhysicsRefusal{
         .message = "the steady Euler solver does not run with periodic pairs yet",
