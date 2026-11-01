@@ -236,3 +236,52 @@ def test_a_gated_binary_that_never_gets_ready_fails_without_the_lock(tmp_path, c
         assert "error[BINARY_FAILED]" in capsys.readouterr().err
         # The lock was never created, hence never taken.
         assert not lock.exists()
+
+
+GATED_EDGE = """#!{python}
+import os, pathlib, subprocess, sys, time
+{before}
+print("autan-bench: ready", file=sys.stderr, flush=True)
+sys.stdin.readline()
+sys.stderr.buffer.write(b"\\xff not utf-8\\n" * 20000)
+sys.stderr.flush()
+{after}
+busy = pathlib.Path({raw!r}).parent / "busy"
+busy.touch()
+time.sleep(0.7)
+busy.unlink()
+print(pathlib.Path({raw!r}).read_text())
+"""
+
+
+def test_a_gated_binary_that_cannot_receive_go_fails(fake_gpu, tmp_path, capsys):
+    fake_gpu()
+    binary = tmp_path / "closed-stdin"
+    before = "os.close(0)"
+    binary.write_text(GATED_EDGE.format(python=sys.executable, before=before, after="",
+                                        raw=str(tmp_path / "raw.json")))  # fmt: skip
+    binary.chmod(0o755)
+    argv = ["run", "--suite", "codegen", "--binary", str(binary), "--precision", "fp32",
+            "--out", str(tmp_path / "r.json"), "--lock", str(tmp_path / "lock"), "--ready", "30"]  # fmt: skip
+    assert main(argv) == 2
+    assert "error[BINARY_FAILED]" in capsys.readouterr().err
+
+
+def test_a_gated_binary_s_helpers_neither_outlive_it_nor_hold_its_output(fake_gpu, tmp_path):
+    fake_gpu()
+    pid_file = tmp_path / "helper"
+    after = f"h = subprocess.Popen(['sleep', '60']); pathlib.Path({str(pid_file)!r}).write_text(str(h.pid))"
+    binary = tmp_path / "with-helper"
+    binary.write_text(GATED_EDGE.format(python=sys.executable, before="", after=after,
+                                        raw=str(tmp_path / "raw.json")))  # fmt: skip
+    binary.chmod(0o755)
+    out = tmp_path / "r.json"
+    argv = ["run", "--suite", "codegen", "--binary", str(binary), "--precision", "fp32",
+            "--out", str(out), "--lock", str(tmp_path / "lock"), "--ready", "30"]  # fmt: skip
+    start = time.monotonic()
+    assert main(argv) == 0
+    assert time.monotonic() - start < 15
+    assert json.loads(out.read_text())["benchmarks"]
+    helper = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(helper, 0)
