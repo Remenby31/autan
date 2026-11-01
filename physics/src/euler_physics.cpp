@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -18,6 +19,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
 
@@ -35,13 +37,21 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
 
 // Steady runs: pseudo-transient continuation, (V / dt + dR/dU) du = -R with the approximate
 // Jacobian, local dt = CFL V / lambda, the CFL number following the residual (switched evolution
-// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246).
-constexpr double cfl_start = 10.0;
+// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246). The multigrid solves the
+// step's system at any CFL number, so the start is large: the pseudo-time step then no longer
+// scales with the viscous time step h^2 (docs/design/multigrid.md, measurements).
+constexpr double cfl_start = 1000.0;
 constexpr double cfl_min = 1.0;
 constexpr double first_order_drop = 1e-3;
 constexpr int first_order_max_steps = 200;
 constexpr double cfl_max = 1e6;
-constexpr int gauss_seidel_sweeps = 4;
+// Each step's linear system is solved to this relative residual (inexact Newton), with at most
+// this many multigrid-preconditioned iterations.
+constexpr double linear_tolerance = 0.1;
+constexpr int linear_max_cycles = 10;
+// A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
+// diverge on a system the CFL number made too weakly diagonal): the step is rejected.
+constexpr double linear_failure = 0.9;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
@@ -83,6 +93,14 @@ class EulerPhysics final : public runtime::Physics {
     set_boundaries(mms ? &*mms : nullptr);
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
+      multigrid_.emplace(mesh, ctx.geometry);
+      std::string levels;
+      for (const auto& l : multigrid_->levels()) {
+        levels += (levels.empty() ? "" : ", ") + std::to_string(l.n_nodes);
+      }
+      ctx.log.write("info", "linear", "agglomeration multigrid", {},
+                    "{\"nodes\": [" + levels + "], \"coarsest\": \"" +
+                        (multigrid_->direct_coarsest() ? "lu" : "sweeps") + "\"}");
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -113,7 +131,7 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       unsteady_step(report);
     }
-    report.diverged_cell = first_invalid_cell();
+    if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
     return report;
   }
 
@@ -453,12 +471,47 @@ class EulerPhysics final : public runtime::Physics {
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
-    matrix_->factor();
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
+    solvers::Multigrid::Report linear;
+    try {
+      multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+      linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+    } catch (const std::domain_error&) {
+      linear = {};  // a singular block: the solve failed
+    }
+    const bool failed = !(linear.residual_drop <= linear_failure);
+    if (!(linear.residual_drop <= linear_tolerance)) {
+      std::array<char, 32> text{};
+      std::snprintf(text.data(), text.size(), "%.6g", linear.residual_drop);
+      ctx_.log.write("warning", "linear",
+                     failed ? "the implicit step's linear solve failed: step rejected"
+                            : "the implicit step's linear solve stopped above its tolerance",
+                     {},
+                     std::string("{\"cycles\": ") + std::to_string(linear.cycles) +
+                         ", \"residual_drop\": " +
+                         (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
+    }
+    if (failed) {
+      // As a step with no admissible length: the state is kept and the next CFL number is half
+      // this one, also when this one was clamped; at the smallest CFL number the run diverged.
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+      shortened_ = true;
+      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return;
+    }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
+    // The next step halves the penalty; starting from the CFL number actually used, so that the
+    // CFL number halves also when it was clamped.
+    if (shortened_ && drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+    if (shortened_) {
+      std::array<char, 64> text{};
+      std::snprintf(text.data(), text.size(), "{\"alpha\": %.6g, \"cfl\": %.6g}", alpha, cfl_);
+      ctx_.log.write("warning", "solver",
+                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
+                     text.data());
+    }
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
       // number the run has diverged.
@@ -578,6 +631,7 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;
