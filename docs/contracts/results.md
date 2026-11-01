@@ -83,7 +83,7 @@ reported as `fx` `fy` `fz` (N) and `mx` `my` `mz` (N·m) in mesh axes. With `ref
 
 ## Log
 
-`log.jsonl` holds one JSON object per line, appended during the run like `history.jsonl` (written in one piece and flushed; while the run is `running` the last line may be incomplete and readers skip it; once it ends every line is complete):
+`log.jsonl` holds one JSON object per line in UTF-8, lines separated by LF and in the order they were written, appended during the run like `history.jsonl` (written in one piece and flushed; while the run is `running` the last line may be incomplete and readers skip it; once it ends every line is complete):
 
 ```json
 {"time": "2026-11-01T01:02:03.456Z", "iteration": 812, "level": "error", "source": "solver", "message": "divergence at iteration 812 near cell 3418772", "code": "D0107", "data": {"iteration": 812, "cell": 3418772, "zone": "fluid"}}
@@ -96,9 +96,10 @@ reported as `fx` `fy` `fz` (N) and `mx` `my` `mz` (N·m) in mesh axes. With `ref
 | `level` | `info`, `warning` or `error`. |
 | `source` | The component that logs: a short identifier matching `[a-z][a-z0-9-]*` (`solver`, `linear`, `io`, `mpi`, `fake`, …). |
 | `message` | Human-readable; never parse it. |
-| `code`, `data` | A registered diagnostic code and its data, as in [case-schema.md](case-schema.md#diagnostics), or `null` and `{}`. |
+| `code` | A registered diagnostic code, as in [case-schema.md](case-schema.md#diagnostics), or `null`. |
+| `data` | Machine-readable details, `{}` when there are none: the diagnostic's data when `code` is set. |
 
-The first line logs the start of the run and the last one its end with the final status. Every diagnostic of `run.json` also has a line with the same `code` and `data`. The log carries wall-clock times, so it is outside the bitwise guarantee of [run.json](#runjson).
+The first line logs the start of the run (`iteration` null), and the writer logs the end with the final status. A line with a `code` has the level of its letter (`E` and `D`: `error`, `W`: `warning`) and, when its `data` has an `iteration`, the same `iteration`. Every diagnostic of `run.json` also has a line with the same `code` and `data`, written before `run.json` refers to it. Times are wall-clock and need not increase: the order of the lines is the order of the events. The log is outside the bitwise guarantee of [run.json](#runjson).
 
 ## solution.cgns
 

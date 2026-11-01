@@ -601,7 +601,6 @@ def test_log_records_the_run_and_its_diagnostics(
     assert all(
         re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", line["time"]) for line in lines
     )
-    assert [line["time"] for line in lines] == sorted(line["time"] for line in lines)
     assert lines[0]["iteration"] is None
     assert lines[-1]["iteration"] == crm_run.run.iterations
     assert "W0205" in {line["code"] for line in lines}  # the plan's warning, logged at start
@@ -632,6 +631,18 @@ def _rewrite_log(path: Path, edit: Callable[[dict[str, Any]], None]) -> None:
         lambda p: _rewrite_log(p, lambda line: line.update(time="2026-11-01T01:02:03Z")),
         lambda p: _rewrite_log(p, lambda line: line.pop("source")),
         lambda p: (p / "log.jsonl").write_text((p / "log.jsonl").read_text()[:-1]),
+        lambda p: _rewrite_log(p, lambda line: line.update(time="2026-99-99T99:99:99.000Z")),
+        lambda p: _rewrite_log(p, lambda line: line.update(code="D0107", level="info")),
+        lambda p: _rewrite_log(p, lambda line: line.update(iteration=5)),
+        lambda p: _rewrite_log(
+            p, lambda line: line.update(code="W0205", level="warning", data={"iteration": 3})
+        ),
+        lambda p: (p / "log.jsonl").write_text(
+            (p / "log.jsonl")
+            .read_text()
+            .replace('"data": {}', '"data": {"x": NaN}', 1)
+            .replace('"data":{}', '"data":{"x":NaN}', 1)
+        ),
     ],
 )
 def test_reader_checks_the_log(damage: Callable[[Path], object], crm_run: autan.Results) -> None:
@@ -651,3 +662,30 @@ def test_a_diagnostic_of_run_json_must_be_logged(tmp_path: Path, crm_mesh: autan
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(diverged.path)
     assert error.value.codes == ["E0701"]
+
+
+def test_log_lines_are_framed_on_bytes(crm_run: autan.Results) -> None:
+    path = crm_run.path / "log.jsonl"
+    lines = path.read_text().splitlines()
+    first = json.loads(lines[0])
+    first["message"] = "line separator \u2028 inside a message"
+    path.write_text(json.dumps(first, ensure_ascii=False) + "\n" + "\n".join(lines[1:]) + "\n")
+    assert autan.Results.open(crm_run.path).log[0].message == first["message"]
+
+    document = json.loads((crm_run.path / "run.json").read_text())
+    document.update(status="running", finished=None)
+    (crm_run.path / "run.json").write_text(json.dumps(document))
+    with path.open("ab") as log:
+        log.write('{"message": "half a character \u00e9'.encode()[:-1])
+    assert len(autan.Results.open(crm_run.path).log) == len(lines)
+
+
+def test_the_writer_refuses_lines_the_reader_would_reject(crm_run: autan.Results) -> None:
+    from autan.results import RunWriter  # noqa: PLC0415
+
+    writer = RunWriter.__new__(RunWriter)
+    writer.path = crm_run.path
+    with pytest.raises(ValueError, match="registered"):
+        writer.log("error", "x", source="solver", code="E9999")
+    with pytest.raises(ValueError, match="level"):
+        writer.log("info", "x", source="solver", code="D0107")
