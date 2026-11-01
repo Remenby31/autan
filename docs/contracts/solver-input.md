@@ -7,17 +7,17 @@ Producer: `autan prepare` / `autan.solver_input.build` (owner: CFD - SDK & contr
 ## Invocation
 
 ```text
-autan-run --input solver-input.json --runs DIR
+autan-run --input solver-input.json --runs DIR [--stop-file PATH]
 ```
 
-`autan-run` creates `DIR/<run_id>/` as [results.md](results.md) specifies, writing `case.toml` (the `case.toml` text of the input, unchanged), its own `mesh-info.json`, `run.json`, `history.jsonl` and `solution.cgns`, with `identity` and `run_id` computed from its own commit. It prints the run directory path on one line of stdout.
+`autan-run` creates `DIR/<run_id>/` as [results.md](results.md) specifies, writing `case.toml` (the `case.toml` text of the input, unchanged), its own `mesh-info.json`, `run.json`, `history.jsonl` and `solution.cgns`, with `identity` and `run_id` computed from its own commit. It prints the run directory path on one line of stdout (rank 0 alone, on several ranks). With `--stop-file`, the run stops between two iterations once `PATH` exists, on every rank together, as for SIGINT: the way to stop a run started through an MPI launcher, which turns a signal into an abort.
 
 | Exit | Meaning |
 |---|---|
 | 0 | The run ended `converged`, `completed`, `stopped` or `diverged`; the status is in `run.json`. |
 | 1 | The run `failed`; `run.json` carries `E0704`. |
 | 2 | The input cannot be run: invalid document (`E0705`, `data.path` names the key), mesh hash different from `mesh.sha256` (`E0203`), or no implementation of the physics, turbulence model, precision and device kind in this build, or of the case's media and zones ([runtime.md](runtime.md#registration)) (`E0706`). No directory is created; the diagnostics go to stderr as JSON in the shape of [case-schema.md](case-schema.md#diagnostics), with `fix` and `doc` taken from [`diagnostics.json`](diagnostics.json), as for every diagnostic the runtime writes. |
-| 130 | Stopped by SIGINT or SIGTERM; the run is finalized as `stopped` with its solution. |
+| 130 | Stopped by SIGINT, SIGTERM or the stop file; the run is finalized as `stopped` with its solution. |
 
 ## Document
 
@@ -30,7 +30,7 @@ Every table rejects unknown keys; every key is present, `null` where it does not
 | `mesh` | `path` absolute path of the mesh file or polyMesh directory; `sha256` expected mesh hash ([mesh-info.md](mesh-info.md)), checked by the runtime |
 | `precision` | `"fp32+acc64"` or `"fp64"` |
 | `reproducibility` | The case's `physics.reproducibility`: `none`, `run` or `ranks` ([case-schema.md](case-schema.md#physics)) |
-| `devices` | `kind` (`cpu`, `cuda`, `hip`) and `count` |
+| `devices` | `kind` (`cpu`, `cuda`, `hip`) and `count`: the number of ranks, one device each (on `cuda` and `hip`, rank r takes the device r modulo the devices its node shows). The runtime refuses a launch with another number of ranks (`E0705` at `devices.count`). |
 | `physics` | `kind` (`compressible`, `incompressible`); `turbulence`: `model`, `base` (DDES only: `sa` or `sst`), `wall_model` (WMLES only), `nu_tilde_ratio` (exactly for SA and DDES on SA), `intensity` and `viscosity_ratio` (exactly for SST and DDES on SST). DDES and WMLES require an unsteady `time`. |
 | `freestream` | Closed state: `density` (kg/m³), `pressure` (Pa; 0 for incompressible), `temperature` (K; null for incompressible), `velocity` (m/s, mesh axes), `speed` (m/s), `viscosity` (dynamic, Pa·s); as given: `mach`, `re`, `ref_length` (m), `aoa` and `sideslip` (rad); turbulence state: `nu_tilde` (m²/s), `k` (m²/s²), `omega` (1/s), null when the model has none |
 | `boundaries[]` | One entry per boundary zone with a condition (zones without faces and without condition are omitted): `zone` (MeshInfo name), `kind` as in [case-schema.md](case-schema.md#boundaries) or `manufactured` (see `verification`), and its values, required for its kind and null otherwise: `inlet` takes `total_pressure` (Pa) and `total_temperature` (K); `velocity-inlet` takes `velocity` (m/s); `outlet` takes `static_pressure` (Pa); `oracle-state` takes `states = {path, sha256}`, the absolute path of its [face-state file](face-states.md) and the `sha256` of the case rule that applies to the zone, which the runtime checks (`E0420`, `E0422`) and pairs with the zone's faces by centroid (`E0421`); `wall` may take `temperature` (K, isothermal; null is adiabatic); `farfield` may take `point_vortex = {zones, center}`, the wall and slip zones its circulation comes from and its center (m) ([case-schema.md](case-schema.md#boundaries)); the other kinds take none. |

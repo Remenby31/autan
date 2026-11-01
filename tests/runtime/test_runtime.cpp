@@ -85,14 +85,15 @@ struct Outcome {
   std::string err;
 };
 
-Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
+Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
+            const fs::path& stop_file = {}) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   std::FILE* out = std::tmpfile();
   std::FILE* err = std::tmpfile();
   const ExitStatus status =
-      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err);
+      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err, stop_file);
   auto text = [](std::FILE* f) {
     std::rewind(f);
     std::string s;
@@ -105,8 +106,9 @@ Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
   return Outcome{.status = status, .runs = dir / "runs", .run = printed, .err = text(err)};
 }
 
-Outcome run(const Json& doc, autan_test::RelaxationOptions options = {}) {
-  return run(doc, autan_test::relaxation_registry(options));
+Outcome run(const Json& doc, autan_test::RelaxationOptions options = {},
+            const fs::path& stop_file = {}) {
+  return run(doc, autan_test::relaxation_registry(options), stop_file);
 }
 
 // The hybrid input on periodic-box (Gmsh): xmin -> xmax by (tx, 0, 0), ymin
@@ -307,6 +309,17 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(info["schema"] == "autan.results/1");
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
+  // results.md, timing: this run's 28 iterations, the loop within the
+  // process, and ns per cell and iteration by its definition.
+  const Json& t = info["timing"];
+  REQUIRE(t.is_object());
+  CHECK(t["iterations"] == 28);
+  CHECK(t["solve_seconds"].get<double>() > 0.0);
+  CHECK(t["solve_seconds"].get<double>() <= t["wall_seconds"].get<double>());
+  const double cells = static_cast<double>(autan::io::read_mesh(mesh_path).n_cells());
+  CHECK_THAT(
+      t["ns_per_cell_iteration"].get<double>(),
+      Catch::Matchers::WithinRel(t["solve_seconds"].get<double>() * 1e9 / (cells * 28), 1e-12));
   CHECK(std::regex_match(info["run_id"].get<std::string>(),
                          std::regex("run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")));
   CHECK(o.run.filename() == info["run_id"].get<std::string>());
@@ -403,6 +416,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "stopped");
     CHECK(info["iterations"] == 0);
+    CHECK(info["timing"].is_null());  // no iteration to time
     CHECK_FALSE(fs::exists(o.run / "history.jsonl"));
     const Json& f = info["monitors"]["forces"];
     CHECK(f["iteration"] == 0);
@@ -456,6 +470,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
+    CHECK(info["timing"].is_null());
   }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
@@ -485,6 +500,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
+    CHECK(info["timing"].is_null());  // a failed run is not timed
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -702,6 +718,32 @@ TEST_CASE("Deterministic runs produce identical history and solution arrays", "[
   }
 }
 
+TEST_CASE("A stop file stops the run as SIGINT does", "[runtime]") {
+  // The relaxation physics creates the file during iteration 5: the run
+  // stops before iteration 6, with its solution, and exits 130.
+  const fs::path stop = fresh_dir() / "stop";
+  autan_test::RelaxationOptions options{.factor = 0.9};
+  options.touch_at = 5;
+  options.touch_file = stop.string();
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 1000; }), options, stop);
+  CHECK(o.status == ExitStatus::signalled);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "stopped");
+  CHECK(info["iterations"] == 5);
+  CHECK(fs::exists(o.run / "solution.cgns"));
+}
+
+TEST_CASE("solve_seconds leaves out the physics' log writes", "[runtime]") {
+  // Every step logs 10 MB: the log takes most of the run, which the solve
+  // time does not count (results.md, timing).
+  autan_test::RelaxationOptions options{.factor = 0.9};
+  options.log_bytes = 10'000'000;
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 4; }), options);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json t = Json::parse(read(o.run / "run.json"))["timing"];
+  CHECK(t["solve_seconds"].get<double>() < 0.25 * t["wall_seconds"].get<double>());
+}
+
 TEST_CASE("SIGTERM stops a running process: stopped, solution written, exit 130", "[runtime]") {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
@@ -835,6 +877,11 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                     d["periodic"] = Json::array({bad});
                   })),
                   "E0705");
+  }
+  SECTION("one rank per device: devices.count is the rank count") {
+    const Outcome o = run(input([](Json& d) { d["devices"]["count"] = 2; }));
+    require_error(o, "E0705");
+    CHECK(Json::parse(o.err)["location"]["path"] == "devices.count");
   }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
@@ -970,6 +1017,9 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
+  // timing counts this run's iterations only.
+  CHECK(info["timing"]["iterations"] ==
+        info["iterations"].get<std::int64_t>() - second["start"]["iterations"].get<std::int64_t>());
   // identity: the seven parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
@@ -1544,10 +1594,14 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0, Json* diagnostic = nullptr) {
+                      int expected_status = 0, Json* diagnostic = nullptr,
+                      const std::vector<std::string>& extra_args = {}) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
-  std::ofstream(input_file) << doc.dump();
+  // One device per rank (solver-input.md, `devices`), unless a test sets it.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(input_file) << with_count.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),
@@ -1556,6 +1610,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
                                 input_file.string(),
                                 "--runs",
                                 (dir / "runs").string()};
+  args.insert(args.end(), extra_args.begin(), extra_args.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -1764,6 +1819,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(g["monitors"].is_null());
   CHECK(g["diagnostics"][0]["code"] == "E0704");
   CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
+
+  // A stop file the last rank creates during iteration 5: rank 0 sees it, and
+  // all stop before iteration 6.
+  const fs::path stop_file = fresh_dir() / "stop";
+  const fs::path by_file = run_on_ranks(doc, ranks,
+                                        {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_TOUCH_AT=5",
+                                         "AUTAN_TEST_TOUCH_RANK=" + std::to_string(ranks - 1),
+                                         "AUTAN_TEST_TOUCH_FILE=" + stop_file.string()},
+                                        130, nullptr, {"--stop-file", stop_file.string()});
+  CHECK(Json::parse(read(by_file / "run.json"))["status"] == "stopped");
+  CHECK(Json::parse(read(by_file / "run.json"))["iterations"] == 5);
 
   // A signal reaching the last rank alone, after iteration 5, stops all of
   // them before iteration 6, with the solution written.
