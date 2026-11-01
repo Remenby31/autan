@@ -411,12 +411,13 @@ SolverInput parse_solver_input(const std::string& text) {
     in.case_name = c.string("name");
     in.case_sha256 = sha256(c, "sha256");
     in.case_toml = c.string("toml");
-    const Object m(root.get("mesh"), "mesh", {"path", "sha256", "scale"});
+    const Object m(root.get("mesh"), "mesh", {"path", "sha256", "scale", "groups_sha256"});
     in.mesh_path = m.string("path");
     if (!std::filesystem::path(in.mesh_path).is_absolute())
       invalid("mesh.path", "must be an absolute path");
     in.mesh_sha256 = sha256(m, "sha256");
     in.mesh_scale = m.positive("scale");
+    if (!m.is_null("groups_sha256")) in.mesh_groups_sha256 = sha256(m, "groups_sha256");
   }
   if (!root.is_null("verification")) {
     const Object v(root.get("verification"), "verification", {"path", "sha256"});

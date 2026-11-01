@@ -5,9 +5,9 @@
 #include <cstdint>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <regex>
 #include <sstream>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -191,7 +191,8 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
     throw invalid(ErrorCode::zone_groups_invalid, std::string("not JSON: ") + e.what());
   }
   if (duplicate_other) throw invalid(ErrorCode::zone_groups_invalid, "a key is given twice");
-  if (duplicate_group) throw invalid(ErrorCode::zone_groups_duplicate_name, "a group is given twice");
+  if (duplicate_group)
+    throw invalid(ErrorCode::zone_groups_duplicate_name, "a group is given twice");
   const auto schema = [&](const std::string& why) {
     throw invalid(ErrorCode::zone_groups_invalid, why);
   };
@@ -206,9 +207,9 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
   if (doc["schema"] != "autan.zone-groups/1") schema("schema is not autan.zone-groups/1");
   if (!doc["mesh_sha256"].is_string()) schema("mesh_sha256 is not a string");
   if (doc["mesh_sha256"].get<std::string>() != sha256) {
-    throw invalid(ErrorCode::zone_groups_other_mesh,
-                  "mesh_sha256 " + doc["mesh_sha256"].get<std::string>() + " is not the mesh's " +
-                      sha256);
+    throw invalid(
+        ErrorCode::zone_groups_other_mesh,
+        "mesh_sha256 " + doc["mesh_sha256"].get<std::string>() + " is not the mesh's " + sha256);
   }
   if (!doc["provenance"].is_object()) schema("provenance is not an object");
   if (!doc["groups"].is_object()) schema("groups is not an object");

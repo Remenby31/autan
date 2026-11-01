@@ -152,6 +152,10 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
 | E0134 | `io_external_reference` | The mesh refers to another file (CGNS link); meshes must be self-contained. |
 | E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |
+| E0136 | `zone_groups_invalid` | Zone groups file unreadable: not JSON, or not `autan.zone-groups/1` ([mesh-info.md](mesh-info.md#zone-groups)). |
+| E0137 | `zone_groups_other_mesh` | Zone groups file describes another mesh: its `mesh_sha256` is not the mesh hash, or the run's sidecar is not the one `mesh.groups_sha256` names. |
+| E0138 | `zone_groups_bad_group` | Bad zone group: an unknown zone, a zone twice, an empty group, or an invalid name. |
+| E0139 | `zone_groups_duplicate_name` | Zone group defined twice. |
 | E0140 | `partition_invalid_request` | A part count, rank, part index or cell weight is out of range, or an array has the wrong size. |
 | E0141 | `partition_input_has_ghosts` | The mesh to partition already has ghost cells. |
 | E0142 | `partition_backend_failed` | The partitioner (METIS, Scotch) is not built or reports an error. |

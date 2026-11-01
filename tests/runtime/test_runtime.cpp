@@ -331,11 +331,12 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
                          std::regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")));
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
   CHECK(info["solver"] == Json{{"version", "0.0.0"}, {"commit", build.commit}, {"backend", "cpu"}});
-  // identity: SHA-256 of the seven fields joined by "\n" (results.md).
+  // identity: SHA-256 of the eight fields joined by "\n" (results.md), the
+  // zone groups' hash empty without a sidecar.
   std::string expected;
   picosha2::hash256_hex_string(doc["case"]["sha256"].get<std::string>() + "\n" +
-                                   doc["mesh"]["sha256"].get<std::string>() + "\n" + build.commit +
-                                   "\nfp32+acc64\ncpu\ncpu\n1",
+                                   doc["mesh"]["sha256"].get<std::string>() + "\n\n" +
+                                   build.commit + "\nfp32+acc64\ncpu\ncpu\n1",
                                expected);
   CHECK(info["identity"] == expected);
   CHECK(read(o.run / "case.toml") == doc["case"]["toml"].get<std::string>());
@@ -984,12 +985,12 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
-  // identity: the seven parts, then the start's identity, mode, iterations
+  // identity: the eight parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
   std::string identity;
   picosha2::hash256_hex_string(second["case"]["sha256"].get<std::string>() + "\n" +
-                                   second["mesh"]["sha256"].get<std::string>() + "\n" +
+                                   second["mesh"]["sha256"].get<std::string>() + "\n\n" +
                                    build.commit + "\nfp32+acc64\ncpu\ncpu\n1\n" +
                                    s["identity"].get<std::string>() + "\ncontinue\n" +
                                    std::to_string(s["iterations"].get<int>()) + "\n" +
@@ -1894,4 +1895,46 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     CAPTURE(axis);
     close(coordinates(a.run / "solution.cgns", axis), coordinates(b.run / "solution.cgns", axis));
   }
+}
+
+TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime][groups]") {
+  // The hybrid mesh copied with a zone-groups sidecar: the input names the
+  // sidecar's hash (mesh.groups_sha256); run.json records it, the identity
+  // covers it, the archived MeshInfo carries the groups. A sidecar that is not
+  // the one named, present or absent, is refused before any directory.
+  const fs::path mesh = fresh_dir() / "polyMesh";
+  fs::copy(mesh_path, mesh, fs::copy_options::recursive);
+  const std::string hash = autan::io::mesh_hash(mesh);
+  const fs::path sidecar = mesh.string() + ".zones.json";
+  std::ofstream(sidecar) << Json{{"schema", "autan.zone-groups/1"},
+                                 {"mesh_sha256", hash},
+                                 {"provenance", Json::object()},
+                                 {"groups", {{"walls", {"ymin", "zmax"}}}}}
+                                .dump();
+  const std::string groups_hash = autan::io::mesh_hash(sidecar);
+  const auto on = [&](const Json& groups_sha256) {
+    return input([&](Json& d) {
+      d["mesh"]["path"] = mesh.string();
+      d["mesh"]["sha256"] = hash;
+      d["mesh"]["groups_sha256"] = groups_sha256;
+    });
+  };
+  const Outcome o = run(on(groups_hash), {.factor = 0.5});
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["mesh"]["groups_sha256"] == groups_hash);
+  const Json archived = Json::parse(read(o.run / "mesh-info.json"));
+  CHECK(archived["groups"] == Json::parse(R"([{"name": "walls", "zones": ["ymin", "zmax"]}])"));
+  CHECK(archived["groups_source"]["sha256"] == groups_hash);
+  // The identity covers the groups' hash (results.md).
+  std::string expected;
+  picosha2::hash256_hex_string(info["case"]["sha256"].get<std::string>() + "\n" + hash + "\n" +
+                                   groups_hash + "\n" + build.commit + "\nfp32+acc64\ncpu\ncpu\n1",
+                               expected);
+  CHECK(info["identity"] == expected);
+
+  require_error(run(on(nullptr)), "E0137");               // a sidecar the input does not name
+  require_error(run(on(std::string(64, 'a'))), "E0137");  // another sidecar
+  fs::remove(sidecar);
+  require_error(run(on(groups_hash)), "E0137");  // the named sidecar is gone
 }

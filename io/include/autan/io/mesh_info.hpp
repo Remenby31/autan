@@ -2,8 +2,8 @@
 
 #include <filesystem>
 #include <optional>
-#include <utility>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "autan/core/mesh.hpp"
@@ -40,8 +40,8 @@ struct ZoneGroups {
 /// that cannot be read or breaks autan.zone-groups/1, E0137 for another mesh's
 /// hash, E0138 for an unknown zone, an empty group, a bad name or a zone twice
 /// in a group, E0139 for a name given twice.
-std::optional<ZoneGroups> read_zone_groups(const std::filesystem::path& mesh_path,
-                                           const Mesh& mesh, const std::string& sha256);
+std::optional<ZoneGroups> read_zone_groups(const std::filesystem::path& mesh_path, const Mesh& mesh,
+                                           const std::string& sha256);
 
 /// MeshInfo document (docs/contracts/mesh-info.md, schema autan.mesh-info/1)
 /// of an assembled, unpartitioned mesh read from its source, as JSON text,
