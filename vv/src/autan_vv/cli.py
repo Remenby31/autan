@@ -101,6 +101,41 @@ def _cmd_forces(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _cmd_su2(args: argparse.Namespace) -> None:
+    from autan_vv.su2 import naca0012 as su2  # noqa: PLC0415
+
+    if args.action == "prepare":
+        if args.family is None or args.out is None or args.runs:
+            msg = "su2 prepare takes --family and --out, and no run directories"
+            raise VVError(msg, code="V0903")
+        for run in su2.prepare(
+            args.family, args.out, dimension=args.dimension, max_iterations=args.max_iterations
+        ):
+            _say(str(run.relative_to(args.out)))
+        return
+    if not args.runs:
+        msg = "su2 study takes the run directories of one condition"
+        raise VVError(msg, code="V0905")
+    report = su2.study(args.runs)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for lv in report["levels"]:
+        state = "converged" if lv["converged"] else "NOT converged"
+        _say(
+            f"{lv['run']}: {state} in {lv['iterations']} iterations, CL {lv['cl']:.9f}, "
+            f"CD {lv['cd']:.9f}, CM {lv['cmy']:.9f}"
+        )
+    for name, est in (report["continuum"] or {}).items():
+        if "error" in est:
+            _say(f"{name}: no continuum estimate ({est['error']})")
+        else:
+            _say(
+                f"{name}: continuum {est['estimate']:.9f}, p = {est['order']:.3f}, GCI {est['gci']:.3g}"
+            )
+    for verdict in report["verdicts"]:
+        _say(f"gate {verdict['gate']}: {'PASS' if verdict['pass'] else 'FAIL'}")
+
+
 def _cmd_order(args: argparse.Namespace) -> None:
     from autan_vv.study import order_study, write_report  # noqa: PLC0415
 
@@ -227,6 +262,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("runs", type=Path, nargs="+", help="run directories of one condition")
     p.add_argument("--out", type=Path, help="write the report (autan.vv-force-study/1) as JSON")
     p.set_defaults(func=_cmd_forces)
+
+    p = sub.add_parser(
+        "su2", help="SU2 on the NACA 0012 family: prepare its cases, or study its runs"
+    )
+    p.add_argument("action", choices=("prepare", "study"))
+    p.add_argument("runs", type=Path, nargs="*", help="study: run directories of one condition")
+    p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
+    p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
+    p.add_argument("--max-iterations", type=int, default=20000)
+    p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
+    p.set_defaults(func=_cmd_su2)
 
     p = sub.add_parser(
         "order", help="observed order from errors on a mesh family (JSON in, JSON out)"
