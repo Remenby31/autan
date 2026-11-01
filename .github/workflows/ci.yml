@@ -55,18 +55,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ninja-build
-      # 64-bit, HDF5-backed CGNS 4.5 from conda-forge: Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files.
+      # 64-bit, HDF5-backed CGNS 4.5 from conda-forge (Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files),
+      # and Ninja from the same place, so no job depends on the Ubuntu mirrors.
       - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
         with:
           micromamba-version: 2.3.3-0
           environment-name: cgns
-          create-args: -c conda-forge cgns=4.5.2
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
           init-shell: none
           cache-downloads: false
           cache-environment: false
-      - name: Put the CGNS tools on the PATH
+      - name: Put CGNS tools and Ninja on the PATH
         run: |
           grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
@@ -90,20 +89,19 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
-      - name: Install Ninja and clang-tidy
-        run: |
-          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ninja-build
-          uv tool install clang-tidy==23.1.4
-      # 64-bit, HDF5-backed CGNS 4.5 from conda-forge: Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files.
+      - name: Install clang-tidy
+        run: uv tool install clang-tidy==23.1.4
+      # 64-bit, HDF5-backed CGNS 4.5 from conda-forge (Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files),
+      # and Ninja from the same place, so no job depends on the Ubuntu mirrors.
       - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
         with:
           micromamba-version: 2.3.3-0
           environment-name: cgns
-          create-args: -c conda-forge cgns=4.5.2
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
           init-shell: none
           cache-downloads: false
           cache-environment: false
-      - name: Put the CGNS tools on the PATH
+      - name: Put CGNS tools and Ninja on the PATH
         run: |
           grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
@@ -125,22 +123,22 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
-      # 64-bit, HDF5-backed CGNS 4.5 from conda-forge: Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files.
+      # 64-bit, HDF5-backed CGNS 4.5 from conda-forge (Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files),
+      # and Ninja from the same place, so no job depends on the Ubuntu mirrors.
       - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
         with:
           micromamba-version: 2.3.3-0
           environment-name: cgns
-          create-args: -c conda-forge cgns=4.5.2
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
           init-shell: none
           cache-downloads: false
           cache-environment: false
-      - name: Put the CGNS tools on the PATH
+      - name: Put CGNS tools and Ninja on the PATH
         run: |
           grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
       - name: Build autan-mesh-info, the real MeshInfo producer for the contract test
         run: |
-          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ninja-build
           cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
           cmake --build build --target autan-mesh-info
       - name: Check that uv.lock matches pyproject.toml
@@ -157,4 +155,33 @@ jobs:
           set -o pipefail
           command -v cgnscheck
           uv run --locked --no-sync pytest -ra | tee pytest.log
+          if grep -q '^SKIPPED' pytest.log; then echo "::error::CI must run every test; see the SKIPPED lines above."; exit 1; fi
+
+  vv:
+    name: V&V
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: vv
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: Check that uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Install from the lock file, Gmsh included
+        run: uv sync --locked --all-groups
+      - name: Type-check
+        run: uv run --locked --no-sync mypy
+      # Tests marked "network" download reference data; they run on demand, not on every PR.
+      - name: Test, failing on any skipped test
+        run: |
+          set -o pipefail
+          uv run --locked --no-sync pytest -m "not network" -ra | tee pytest.log
           if grep -q '^SKIPPED' pytest.log; then echo "::error::CI must run every test; see the SKIPPED lines above."; exit 1; fi
