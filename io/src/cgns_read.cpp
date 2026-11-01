@@ -9,10 +9,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <cgns_io.h>
 #include <cgnslib.h>
+#include <nlohmann/json.hpp>
 
 #include "autan/core/cellwise.hpp"
 #include "autan/core/error.hpp"
@@ -20,11 +22,24 @@
 #include "cgns_util.hpp"
 
 namespace autan::io {
+
+static_assert(sizeof(cgsize_t) == 8, "CGNS must be built with 64-bit cgsize_t (CG_BUILD_64BIT)");
+
 namespace {
 
 namespace fs = std::filesystem;
 
 std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
+
+// Once the file is open, a library error means its content breaks the SIDS
+// (E0132); opening it is checked by CgnsFile (E0130).
+void ok(int status, const std::string& what, const std::string& name = "") {
+  if (status != CG_OK) {
+    throw Error(
+        ErrorCode::io_malformed,
+        "CGNS: cannot " + what + (name.empty() ? "" : " '" + name + "'") + ": " + cg_get_error());
+  }
+}
 
 [[noreturn]] void unsupported(const std::string& path, const std::string& what) {
   throw Error(ErrorCode::io_unsupported, path + ": " + what);
@@ -143,55 +158,67 @@ class Reader {
   MeshInput read() {
     fn_ = file_.handle();
     int bases = 0;
-    cgns_check(cg_nbases(fn_, &bases), "count bases");
+    ok(cg_nbases(fn_, &bases), "count bases");
     if (bases != 1) unsupported(path_, std::to_string(bases) + " bases (one is supported)");
     char name[33];
     int cell_dim = 0, phys_dim = 0;
-    cgns_check(cg_base_read(fn_, 1, name, &cell_dim, &phys_dim), "read base");
+    ok(cg_base_read(fn_, 1, name, &cell_dim, &phys_dim), "read base");
     if (cell_dim != 3) unsupported(path_, "a base of cell dimension " + std::to_string(cell_dim));
     int zones = 0;
-    cgns_check(cg_nzones(fn_, 1, &zones), "count zones");
+    ok(cg_nzones(fn_, 1, &zones), "count zones");
     if (zones != 1) unsupported(path_, std::to_string(zones) + " zones (one is supported)");
     CGNS_ENUMT(ZoneType_t) zone_type{};
-    cgns_check(cg_zone_type(fn_, 1, 1, &zone_type), "read zone type");
+    ok(cg_zone_type(fn_, 1, 1, &zone_type), "read zone type");
     if (zone_type != CGNS_ENUMV(Unstructured)) unsupported(path_, "a structured zone");
     cgsize_t size[3] = {0, 0, 0};
-    cgns_check(cg_zone_read(fn_, 1, 1, name, size), "read zone");
+    ok(cg_zone_read(fn_, 1, 1, name, size), "read zone");
     n_nodes_ = size[0];
+    n_cells_ = size[1];
 
     read_families();
     read_coordinates();
     read_sections();
     read_bcs();
     read_subregions();
+    restore_zone_names();
     return has_nface_ ? face_based() : element_based();
   }
 
  private:
   void read_families() {
     int n = 0;
-    cgns_check(cg_nfamilies(fn_, 1, &n), "count families");
+    ok(cg_nfamilies(fn_, 1, &n), "count families");
     for (int f = 1; f <= n; ++f) {
       char name[33];
       int bcs = 0, geos = 0;
-      cgns_check(cg_family_read(fn_, 1, f, name, &bcs, &geos), "read family");
+      ok(cg_family_read(fn_, 1, f, name, &bcs, &geos), "read family");
       Family family{.name = name, .parent = "", .bc_type = ""};
       if (bcs > 0) {
         char bc_name[33];
         CGNS_ENUMT(BCType_t) type{};
-        cgns_check(cg_fambc_read(fn_, 1, f, 1, bc_name, &type), "read FamilyBC", name);
+        ok(cg_fambc_read(fn_, 1, f, 1, bc_name, &type), "read FamilyBC", name);
         family.bc_type = BCTypeName[type];
       }
       int names = 0;
-      cgns_check(cg_nfamily_names(fn_, 1, f, &names), "count family names", name);
+      ok(cg_nfamily_names(fn_, 1, f, &names), "count family names", name);
       if (names > 0) {
         char node[33];
         char parent[CG_MAX_GOTO_DEPTH * 33 + 1];
-        cgns_check(cg_family_name_read(fn_, 1, f, 1, node, parent), "read family name", name);
+        ok(cg_family_name_read(fn_, 1, f, 1, node, parent), "read family name", name);
         family.parent = parent;
       }
       families_[family.name] = family;
     }
+  }
+
+  // A FamilyName may be a path (/Base/Wall); families are children of the
+  // base, so its last component names the family.
+  [[nodiscard]] std::string family_key(const std::string& reference) const {
+    const auto slash = reference.rfind('/');
+    std::string key = slash == std::string::npos ? reference : reference.substr(slash + 1);
+    if (!families_.contains(key))
+      malformed(path_, "reference to family '" + reference + "' that does not exist");
+    return key;
   }
 
   // The group a family belongs to: the root of its FamilyName_t chain.
@@ -220,29 +247,29 @@ class Reader {
     for (const auto& [axis, out] : {std::pair{"CoordinateX", &x_}, std::pair{"CoordinateY", &y_},
                                     std::pair{"CoordinateZ", &z_}}) {
       out->resize(at(n_nodes_));
-      cgns_check(cg_coord_read(fn_, 1, 1, axis, CGNS_ENUMV(RealDouble), &first, &last, out->data()),
-                 "read", axis);
+      ok(cg_coord_read(fn_, 1, 1, axis, CGNS_ENUMV(RealDouble), &first, &last, out->data()), "read",
+         axis);
     }
   }
 
   void read_sections() {
     int n = 0;
-    cgns_check(cg_nsections(fn_, 1, 1, &n), "count sections");
+    ok(cg_nsections(fn_, 1, 1, &n), "count sections");
     for (int s = 1; s <= n; ++s) {
       char name[33];
       CGNS_ENUMT(ElementType_t) type{};
       cgsize_t start = 0, end = 0;
       int boundary = 0, parent_flag = 0;
-      cgns_check(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
-                 "read section");
+      ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
+         "read section");
       if (start < 1 || end < start) malformed(path_, std::string("section '") + name + "' range");
       std::string family;
-      cgns_check(cg_goto(fn_, 1, "Zone_t", 1, "Elements_t", s, "end"), "go to section", name);
+      ok(cg_goto(fn_, 1, "Zone_t", 1, "Elements_t", s, "end"), "go to section", name);
       char family_name[CG_MAX_GOTO_DEPTH * 33 + 1];
       if (cg_famname_read(family_name) == CG_OK) family = family_name;
 
       cgsize_t data_size = 0;
-      cgns_check(cg_ElementDataSize(fn_, 1, 1, s, &data_size), "size section", name);
+      ok(cg_ElementDataSize(fn_, 1, 1, s, &data_size), "size section", name);
       std::vector<cgsize_t> connectivity(at(data_size));
       std::vector<cgsize_t> offsets;
       const auto count = at(end - start + 1);
@@ -250,42 +277,74 @@ class Reader {
           type == CGNS_ENUMV(MIXED) || type == CGNS_ENUMV(NGON_n) || type == CGNS_ENUMV(NFACE_n);
       if (poly) {
         offsets.resize(count + 1);
-        cgns_check(
-            cg_poly_elements_read(fn_, 1, 1, s, connectivity.data(), offsets.data(), nullptr),
-            "read section", name);
+        ok(cg_poly_elements_read(fn_, 1, 1, s, connectivity.data(), offsets.data(), nullptr),
+           "read section", name);
       } else {
-        cgns_check(cg_elements_read(fn_, 1, 1, s, connectivity.data(), nullptr), "read section",
-                   name);
+        ok(cg_elements_read(fn_, 1, 1, s, connectivity.data(), nullptr), "read section", name);
         int nodes = 0;
-        cgns_check(cg_npe(type, &nodes), "size element", name);
+        ok(cg_npe(type, &nodes), "size element", name);
         if (nodes <= 0 || at(nodes) * count != connectivity.size()) {
           unsupported(path_, std::string("element type ") + ElementTypeName[type]);
         }
         offsets.resize(count + 1);
         for (std::size_t e = 0; e <= count; ++e) offsets[e] = static_cast<cgsize_t>(e) * nodes;
       }
-      if (elements_.size() < at(end)) elements_.resize(at(end));
+      check_offsets(offsets, connectivity.size(), name);
+      Section& section =
+          sections_.emplace_back(Section{.start = start, .elements = std::vector<Element>(count)});
       for (std::size_t e = 0; e < count; ++e) {
-        Element& element = elements_[at(start - 1) + e];
-        if (element.type != CGNS_ENUMV(ElementTypeNull))
-          malformed(path_, "two sections share element ids");
+        Element& element = section.elements[e];
         auto first = connectivity.begin() + offsets[e];
         const auto last = connectivity.begin() + offsets[e + 1];
         element.type = type;
         if (type == CGNS_ENUMV(MIXED)) {
-          if (first == last) malformed(path_, "empty MIXED element");
-          element.type = static_cast<CGNS_ENUMT(ElementType_t)>(*first);
+          const cgsize_t code = *first;
           ++first;
+          int nodes = 0;
+          if (code <= CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
+              cg_npe(static_cast<CGNS_ENUMT(ElementType_t)>(code), &nodes) != CG_OK || nodes <= 0 ||
+              last - first != nodes) {
+            malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
+          }
+          element.type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
         }
         element.connectivity.assign(first, last);
         element.family = family;
         classify(element, name);
       }
     }
+    std::ranges::sort(sections_, {}, &Section::start);
+    for (std::size_t i = 1; i < sections_.size(); ++i) {
+      const auto& previous = sections_[i - 1];
+      if (sections_[i].start < previous.start + static_cast<cgsize_t>(previous.elements.size())) {
+        malformed(path_, "two sections share element ids");
+      }
+    }
     if (has_nface_ && !has_ngon_) malformed(path_, "NFACE_n cells without NGON_n faces");
     if (has_nface_ && has_standard_cells_) {
       unsupported(path_, "NFACE_n cells mixed with standard volume elements");
     }
+  }
+
+  // ElementStartOffset of a section: starts at 0, never decreases, ends at
+  // the connectivity size, and gives every element at least one entry.
+  void check_offsets(const std::vector<cgsize_t>& offsets, std::size_t size,
+                     const char* section) const {
+    bool valid = !offsets.empty() && offsets.front() == 0 && at(offsets.back()) == size;
+    for (std::size_t e = 0; valid && e + 1 < offsets.size(); ++e)
+      valid = offsets[e + 1] > offsets[e];
+    if (!valid)
+      malformed(path_,
+                std::string("ElementStartOffset of section '") + section + "' is inconsistent");
+  }
+
+  // The element of id `id`, or null when no section holds it.
+  [[nodiscard]] const Element* element(cgsize_t id) const {
+    const auto it = std::ranges::upper_bound(sections_, id, {}, &Section::start);
+    if (it == sections_.begin()) return nullptr;
+    const Section& section = *std::prev(it);
+    const cgsize_t index = id - section.start;
+    return std::cmp_less(index, section.elements.size()) ? &section.elements[at(index)] : nullptr;
   }
 
   void classify(const Element& element, const char* section) {
@@ -321,7 +380,7 @@ class Reader {
 
   void read_bcs() {
     int n = 0;
-    cgns_check(cg_nbocos(fn_, 1, 1, &n), "count BCs");
+    ok(cg_nbocos(fn_, 1, 1, &n), "count BCs");
     for (int b = 1; b <= n; ++b) {
       char name[33];
       CGNS_ENUMT(BCType_t) type{};
@@ -330,22 +389,26 @@ class Reader {
       int normal_index[3];
       CGNS_ENUMT(DataType_t) normal_type{};
       int datasets = 0;
-      cgns_check(cg_boco_info(fn_, 1, 1, b, name, &type, &set, &points, normal_index, &normal_size,
-                              &normal_type, &datasets),
-                 "read BC");
+      ok(cg_boco_info(fn_, 1, 1, b, name, &type, &set, &points, normal_index, &normal_size,
+                      &normal_type, &datasets),
+         "read BC");
       CGNS_ENUMT(GridLocation_t) location{};
-      cgns_check(cg_boco_gridlocation_read(fn_, 1, 1, b, &location), "read BC location", name);
+      ok(cg_boco_gridlocation_read(fn_, 1, 1, b, &location), "read BC location", name);
       std::vector<cgsize_t> ids(at(points));
-      cgns_check(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
+      ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
       ids = point_set(set, std::move(ids), name);
-      cgns_check(cg_goto(fn_, 1, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", b, "end"), "go to BC", name);
+      ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", b, "end"), "go to BC", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
       const std::string family_name = cg_famname_read(family) == CG_OK ? family : "";
       // A BC that names a family belongs to that family's group; the group,
       // not the BC node, is the zone the user sets a condition on.
-      const std::string zone = family_name.empty() ? name : group_of(family_name);
+      const std::string family_ref = family_name.empty() ? "" : family_key(family_name);
+      if (type == CGNS_ENUMV(FamilySpecified) && family_ref.empty()) {
+        malformed(path_, std::string("BC '") + name + "' is FamilySpecified without a family");
+      }
+      const std::string zone = family_ref.empty() ? name : group_of(family_ref);
       std::string bc_type = BCTypeName[type];
-      if (type == CGNS_ENUMV(FamilySpecified)) bc_type = family_bc(family_name);
+      if (type == CGNS_ENUMV(FamilySpecified)) bc_type = family_bc(family_ref);
       if (location == CGNS_ENUMV(Vertex) && set != CGNS_ENUMV(ElementList) &&
           set != CGNS_ENUMV(ElementRange)) {
         unsupported(path_,
@@ -371,11 +434,11 @@ class Reader {
   int dimension_of(const std::vector<cgsize_t>& ids, const char* owner) const {
     int dimension = -1;
     for (const cgsize_t id : ids) {
-      if (id < 1 || at(id) > elements_.size()) {
+      if (element(id) == nullptr) {
         malformed(path_, std::string("'") + owner + "' refers to element " + std::to_string(id) +
                              " that does not exist");
       }
-      const auto type = elements_[at(id - 1)].type;
+      const auto type = element(id)->type;
       const int d = (type == CGNS_ENUMV(NFACE_n) || cell_shape(type))    ? 3
                     : (type == CGNS_ENUMV(NGON_n) || is_face_type(type)) ? 2
                                                                          : 1;
@@ -389,7 +452,7 @@ class Reader {
 
   void read_subregions() {
     int n = 0;
-    cgns_check(cg_nsubregs(fn_, 1, 1, &n), "count subregions");
+    ok(cg_nsubregs(fn_, 1, 1, &n), "count subregions");
     for (int s = 1; s <= n; ++s) {
       char name[33];
       int dimension = 0;
@@ -397,18 +460,64 @@ class Reader {
       CGNS_ENUMT(PointSetType_t) set{};
       cgsize_t points = 0;
       int bc_name_length = 0, gc_name_length = 0;
-      cgns_check(cg_subreg_info(fn_, 1, 1, s, name, &dimension, &location, &set, &points,
-                                &bc_name_length, &gc_name_length),
-                 "read subregion");
+      ok(cg_subreg_info(fn_, 1, 1, s, name, &dimension, &location, &set, &points, &bc_name_length,
+                        &gc_name_length),
+         "read subregion");
       if (location != CGNS_ENUMV(CellCenter) || points == 0) continue;
       std::vector<cgsize_t> ids(at(points));
-      cgns_check(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
+      ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
       ids = point_set(set, std::move(ids), name);
-      cgns_check(cg_goto(fn_, 1, "Zone_t", 1, "ZoneSubRegion_t", s, "end"), "go to subregion",
-                 name);
+      ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneSubRegion_t", s, "end"), "go to subregion", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
-      const std::string zone = cg_famname_read(family) == CG_OK ? group_of(family) : name;
+      const std::string zone =
+          cg_famname_read(family) == CG_OK ? group_of(family_key(family)) : name;
+      if (dimension_of(ids, name) != 3)
+        malformed(path_, std::string("subregion '") + name + "' does not select cells");
       add_cell_zone(zone, ids, std::string("CGNS ZoneSubRegion_t '") + name + "'");
+    }
+  }
+
+  // Files Autan writes (results.md) map node names to zone names in the
+  // ZoneNames descriptor of the base; zones keep their own names and those
+  // declared without faces stay visible.
+  void restore_zone_names() {
+    ok(cg_goto(fn_, 1, "end"), "go to base");
+    int count = 0;
+    ok(cg_ndescriptors(&count), "count descriptors");
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      ok(cg_descriptor_read(d, name, &text), "read descriptor");
+      const std::string content = text != nullptr ? text : "";
+      cg_free(text);
+      if (std::string_view(name) != "ZoneNames") continue;
+      nlohmann::json names;
+      try {
+        names = nlohmann::json::parse(content);
+        for (auto& zone : face_zones_) {
+          if (names.at("boundary").contains(zone.name))
+            zone.name = names["boundary"][zone.name].get<std::string>();
+        }
+        for (auto& zone : cell_zones_) {
+          if (names.at("cell").contains(zone.name))
+            zone.name = names["cell"][zone.name].get<std::string>();
+        }
+        for (const auto& [node, zone] : names.at("boundary").items()) {
+          if (face_zone_index_.contains(node)) continue;
+          const std::string type = families_.contains(node) ? families_.at(node).bc_type : "";
+          face_zone_index_[node] = static_cast<index_t>(face_zones_.size());
+          face_zones_.push_back(
+              FaceZone{.name = zone.get<std::string>(),
+                       .bc_type = type,
+                       .kind = bc_kind(type),
+                       .boundary = true,
+                       .provenance = Provenance{
+                           .source_id = -1, .detail = "CGNS family '" + node + "' without faces"}});
+        }
+      } catch (const nlohmann::json::exception& e) {
+        malformed(path_,
+                  std::string("ZoneNames is not the descriptor results.md defines: ") + e.what());
+      }
     }
   }
 
@@ -429,7 +538,7 @@ class Reader {
                   path_ + ": BCs of zone '" + zone + "' declare different BC types");
     }
     for (const cgsize_t id : ids) {
-      if (id < 1 || at(id) > elements_.size())
+      if (element(id) == nullptr)
         malformed(path_, std::string("BC '") + bc_name + "' element id out of range");
       auto [slot, fresh] = face_label_.try_emplace(id, it->second);
       if (!fresh && slot->second != it->second) {
@@ -466,9 +575,9 @@ class Reader {
         zone[c] = it->second;
         continue;
       }
-      const std::string& family = elements_[at(cells[c] - 1)].family;
+      const std::string& family = element(cells[c])->family;
       if (!family.empty()) {
-        add_cell_zone(group_of(family), {cells[c]},
+        add_cell_zone(group_of(family_key(family)), {cells[c]},
                       "CGNS family '" + family + "' of an element section");
         zone[c] = cell_label_.at(cells[c]);
       }
@@ -488,10 +597,19 @@ class Reader {
 
   std::vector<cgsize_t> element_ids(bool (*keep)(const Element&)) const {
     std::vector<cgsize_t> ids;
-    for (std::size_t e = 0; e < elements_.size(); ++e) {
-      if (keep(elements_[e])) ids.push_back(static_cast<cgsize_t>(e + 1));
+    for (const Section& section : sections_) {
+      for (std::size_t e = 0; e < section.elements.size(); ++e) {
+        if (keep(section.elements[e])) ids.push_back(section.start + static_cast<cgsize_t>(e));
+      }
     }
     return ids;
+  }
+
+  void check_cell_count(std::size_t cells) const {
+    if (std::cmp_not_equal(cells, n_cells_)) {
+      malformed(path_, "the zone declares " + std::to_string(n_cells_) + " cells and holds " +
+                           std::to_string(cells));
+    }
   }
 
   [[nodiscard]] index_t node(cgsize_t id) const {
@@ -502,18 +620,19 @@ class Reader {
   MeshInput face_based() {
     const auto faces = element_ids([](const Element& e) { return e.type == CGNS_ENUMV(NGON_n); });
     const auto cells = element_ids([](const Element& e) { return e.type == CGNS_ENUMV(NFACE_n); });
+    check_cell_count(cells.size());
     std::map<cgsize_t, index_t> face_index;
     MeshInput in;
     in.face_node_offsets.push_back(0);
     for (const cgsize_t id : faces) {
       face_index[id] = static_cast<index_t>(face_index.size());
-      for (const cgsize_t p : elements_[at(id - 1)].connectivity) in.face_nodes.push_back(node(p));
+      for (const cgsize_t p : element(id)->connectivity) in.face_nodes.push_back(node(p));
       in.face_node_offsets.push_back(static_cast<offset_t>(in.face_nodes.size()));
     }
     in.face_cell0.assign(faces.size(), no_cell);
     in.face_cell1.assign(faces.size(), no_cell);
     for (std::size_t c = 0; c < cells.size(); ++c) {
-      for (const cgsize_t signed_id : elements_[at(cells[c] - 1)].connectivity) {
+      for (const cgsize_t signed_id : element(cells[c])->connectivity) {
         const auto it = face_index.find(signed_id < 0 ? -signed_id : signed_id);
         if (it == face_index.end()) malformed(path_, "NFACE_n refers to a non-NGON element");
         // A positive id: the face normal points out of the cell (SIDS).
@@ -574,6 +693,7 @@ class Reader {
     if (has_ngon_) unsupported(path_, "NGON_n faces without NFACE_n cells");
     const auto cells = element_ids([](const Element& e) { return cell_shape(e.type).has_value(); });
     if (cells.empty()) malformed(path_, "no volume elements");
+    check_cell_count(cells.size());
     CellwiseMesh mesh;
     mesh.x = x_;
     mesh.y = y_;
@@ -581,7 +701,7 @@ class Reader {
     const std::vector<index_t> zones = cell_zones_of(cells);
     std::vector<index_t> nodes;
     for (std::size_t c = 0; c < cells.size(); ++c) {
-      const Element& e = elements_[at(cells[c] - 1)];
+      const Element& e = *element(cells[c]);
       nodes.clear();
       for (const cgsize_t p : e.connectivity) nodes.push_back(node(p));
       const auto shape = cell_shape(e.type);
@@ -589,7 +709,7 @@ class Reader {
       mesh.add_cell(*shape, nodes, zones[c]);
     }
     for (const auto& [id, zone] : face_label_) {
-      const Element& e = elements_[at(id - 1)];
+      const Element& e = *element(id);
       if (!is_face_type(e.type)) malformed(path_, "a face-centred BC refers to a non-face element");
       nodes.clear();
       for (const cgsize_t p : e.connectivity) nodes.push_back(node(p));
@@ -605,9 +725,14 @@ class Reader {
   CgnsFile file_;
   int fn_ = 0;
   cgsize_t n_nodes_ = 0;
+  cgsize_t n_cells_ = 0;
   std::vector<double> x_, y_, z_;
   std::map<std::string, Family> families_;
-  std::vector<Element> elements_;
+  struct Section {
+    cgsize_t start;
+    std::vector<Element> elements;
+  };
+  std::vector<Section> sections_;
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;
