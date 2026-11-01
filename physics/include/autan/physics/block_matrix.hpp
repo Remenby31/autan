@@ -22,6 +22,10 @@ class BlockMatrix {
   [[nodiscard]] double* diagonal(std::size_t c) { return &diag_[25 * c]; }
   [[nodiscard]] double* upper(std::size_t f) { return &upper_[25 * f]; }
   [[nodiscard]] double* lower(std::size_t f) { return &lower_[25 * f]; }
+  /// Every diagonal / upper / lower block, in cell / interior face order.
+  [[nodiscard]] std::span<const double> diagonals() const noexcept { return diag_; }
+  [[nodiscard]] std::span<const double> uppers() const noexcept { return upper_; }
+  [[nodiscard]] std::span<const double> lowers() const noexcept { return lower_; }
 
   /// y = A x.
   void multiply(std::span<const double> x, std::span<double> y) const;

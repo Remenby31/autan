@@ -18,6 +18,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/solvers/multigrid.hpp"
 
 namespace autan::physics {
 
@@ -35,13 +36,21 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
 
 // Steady runs: pseudo-transient continuation, (V / dt + dR/dU) du = -R with the approximate
 // Jacobian, local dt = CFL V / lambda, the CFL number following the residual (switched evolution
-// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246).
-constexpr double cfl_start = 10.0;
+// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246). The multigrid solves the
+// step's system at any CFL number, so the start is large: the pseudo-time step then no longer
+// scales with the viscous time step h^2 (docs/design/multigrid.md, measurements).
+constexpr double cfl_start = 1000.0;
 constexpr double cfl_min = 1.0;
 constexpr double first_order_drop = 1e-3;
 constexpr int first_order_max_steps = 200;
 constexpr double cfl_max = 1e6;
-constexpr int gauss_seidel_sweeps = 4;
+// Each step's linear system is solved to this relative residual (inexact Newton), with at most
+// this many multigrid-preconditioned iterations.
+constexpr double linear_tolerance = 0.1;
+constexpr int linear_max_cycles = 10;
+// A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
+// diverge on a system the CFL number made too weakly diagonal): the step is rejected.
+constexpr double linear_failure = 0.9;
 // No update may lower density or pressure by more than this fraction in one step; a step
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
@@ -75,7 +84,8 @@ class EulerPhysics final : public runtime::Physics {
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)) {
+        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        reference_(scheme(ctx.input).reference) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
@@ -83,6 +93,13 @@ class EulerPhysics final : public runtime::Physics {
     set_boundaries(mms ? &*mms : nullptr);
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
+      multigrid_.emplace(mesh, ctx.geometry);
+      nlohmann::json nodes = nlohmann::json::array();
+      for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
+      ctx.log.write("info", "linear", "agglomeration multigrid", {},
+                    nlohmann::json{{"nodes", nodes},
+                                   {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
+                        .dump());
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
@@ -108,12 +125,20 @@ class EulerPhysics final : public runtime::Physics {
 
   StepReport step(std::int64_t /*iteration*/) override {
     StepReport report;
+    // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
+    // before a solve turns it into an exception.
+    if (const auto bad = first_invalid_cell()) {
+      residual_of(u_);
+      record_norms(report);
+      report.diverged_cell = bad;
+      return report;
+    }
     if (ctx_.input.time.kind == "steady") {
       steady_step(report);
     } else {
       unsteady_step(report);
     }
-    report.diverged_cell = first_invalid_cell();
+    if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
     return report;
   }
 
@@ -307,6 +332,7 @@ class EulerPhysics final : public runtime::Physics {
       v.emplace_back("SolverReferenceResidual" + std::to_string(k),
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
+    v.emplace_back("SolverCflCap", cfl_cap_);
     return v;
   }
 
@@ -320,6 +346,7 @@ class EulerPhysics final : public runtime::Physics {
     if (v[4].second >= 0.0) {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
+    cfl_cap_ = v[9].second;
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -459,16 +486,51 @@ class EulerPhysics final : public runtime::Physics {
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
     penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
-    if (drop > 0.0) cfl_ = std::clamp(penalty_ * cfl_start / drop, cfl_min, cfl_max);
+    if (drop > 0.0) {
+      cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
+    }
+    cfl_cap_ = cfl_max;
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
-    matrix_->factor();
     for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
     std::fill(du_.begin(), du_.end(), 0.0);
-    matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
+    solvers::Multigrid::Report linear;
+    try {
+      multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+      linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+    } catch (const std::domain_error&) {
+      linear = {};  // a singular block: the solve failed
+    }
+    const bool failed = !(linear.residual_drop <= linear_failure);
+    if (!(linear.residual_drop <= linear_tolerance)) {
+      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
+      if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
+      ctx_.log.write("warning", "linear",
+                     failed ? "the implicit step's linear solve failed: step rejected"
+                            : "the implicit step's linear solve stopped above its tolerance",
+                     {}, data.dump());
+    }
+    if (failed) {
+      // As a step with no admissible length: the state is kept and the next CFL number is half
+      // this one, also when this one was clamped; at the smallest CFL number the run diverged.
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
+      shortened_ = true;
+      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
+      return;
+    }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
+    // The next step halves the penalty; starting from the CFL number actually used, so that the
+    // CFL number halves also when it was clamped.
+    if (shortened_) {
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
+      ctx_.log.write("warning", "solver",
+                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
+                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+    }
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
       // number the run has diverged.
@@ -543,15 +605,39 @@ class EulerPhysics final : public runtime::Physics {
     report.time_step = dt;
   }
 
+  // The first cell whose state, as the kernels read it, has a non-finite or non-positive
+  // density or pressure (to_primitive of kernels/euler.py: P::state differences from the
+  // reference, the gauge pressure from the differences, all in P::compute, FP32 in
+  // fp32+acc64); else the first cell whose residual is not finite.
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
+    using C = typename P::compute;
+    const auto& r = reference_;
+    const C g = static_cast<C>(gas_.gamma);
+    const C r0 = static_cast<C>(r[0]);
+    const std::array<C, 3> mr{static_cast<C>(r[1]), static_cast<C>(r[2]), static_cast<C>(r[3])};
+    const C p_ref = static_cast<C>((gas_.gamma - 1.0) *
+                                   (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     for (std::size_t c = 0; c < n_; ++c) {
-      const double rho = u_[c];
-      const double q2 = (u_[n_ + c] * u_[n_ + c] + u_[2 * n_ + c] * u_[2 * n_ + c] +
-                         u_[3 * n_ + c] * u_[3 * n_ + c]) /
-                        rho;
-      const double p = (gas_.gamma - 1.0) * (u_[4 * n_ + c] - 0.5 * q2);
-      if (!std::isfinite(rho) || !std::isfinite(p) || rho <= 0.0 || p <= 0.0) {
+      std::array<C, 5> dq{};
+      for (std::size_t k = 0; k < 5; ++k) {
+        dq[k] = static_cast<C>(State(u_[k * n_ + c] - r[k]));
+      }
+      const C rho = r0 + dq[0];
+      C dm_m = 0, mr_mr = 0;
+      for (std::size_t k = 0; k < 3; ++k) {
+        dm_m += dq[k + 1] * (C(2) * mr[k] + dq[k + 1]);
+        mr_mr += mr[k] * mr[k];
+      }
+      const C dk = (dm_m * r0 - mr_mr * dq[0]) / (rho * r0);
+      const C p = (g - C(1)) * (dq[4] - C(0.5) * dk) + p_ref;
+      if (!std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
+          !(rho > C(0)) || !(p > C(0))) {
         return static_cast<index_t>(c);
+      }
+    }
+    for (std::size_t c = 0; c < n_; ++c) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return static_cast<index_t>(c);
       }
     }
     return std::nullopt;
@@ -586,8 +672,11 @@ class EulerPhysics final : public runtime::Physics {
   Gas gas_;
   std::size_t n_;
   Euler<P> euler_;
+  std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;
+  double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;
@@ -615,7 +704,7 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and no periodic pairs (it exchanges no ghost cells yet).
-std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int /*ranks*/) {
   if (!in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message = "the Euler physics does not exchange periodic ghost cells yet",
