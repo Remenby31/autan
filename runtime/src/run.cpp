@@ -777,14 +777,7 @@ class Run final : public Log {
     try {
       physics_ = (*p_.factory)(context);
       set_floor();
-      const auto loop = std::chrono::steady_clock::now();
-      try {
-        status = std::string(iterate(done));
-      } catch (...) {
-        solve_seconds_ = seconds_since(loop);
-        throw;
-      }
-      solve_seconds_ = seconds_since(loop);
+      status = std::string(iterate(done));
     } catch (const std::exception& e) {
       return fail(e.what(), done);
     }
@@ -1014,7 +1007,10 @@ class Run final : public Log {
         return "stopped";
       }
       iteration_ = it;
+      // The solve: the physics' own work, without the history and log writes.
+      const auto stepping = std::chrono::steady_clock::now();
       StepReport report = physics_->step(it);
+      solve_seconds_ += seconds_since(stepping);
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -1038,7 +1034,9 @@ class Run final : public Log {
       Json averaging = info_["averaging"];
       if (!steady && in.time.average_from && it > *in.time.average_from) {
         if (it == *in.time.average_from + 1) average_start = time;
+        const auto averaging_start = std::chrono::steady_clock::now();
         physics_->accumulate_average(report.time_step);
+        solve_seconds_ += seconds_since(averaging_start);
         averaging = Json{{"from_step", *in.time.average_from + 1},
                          {"to_step", it},
                          {"from_time", average_start},
@@ -1258,9 +1256,9 @@ class Run final : public Log {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
   }
 
-  // results.md, run.json `timing`: the process's and the iteration loop's
-  // wall-clock seconds (the slowest rank's), for this run's iterations;
-  // null without any. Collective.
+  // results.md, run.json `timing`: the process's wall-clock seconds and those
+  // of the physics' steps and averaging (the slowest rank's), for this run's
+  // iterations; null without any. Collective.
   Json timing(std::int64_t done) {
     const double solve = -comm_.min(-solve_seconds_);
     const std::int64_t iterations = done - (continued() ? p_.input.start->iterations : 0);
@@ -1318,7 +1316,7 @@ class Run final : public Log {
   Prepared& p_;
   Comm& comm_;
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
-  double solve_seconds_ = 0.0;                      // this rank's iteration loop
+  double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;
