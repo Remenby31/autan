@@ -27,7 +27,7 @@ void ok(int status, const std::string& what) {
 }  // namespace
 
 StoredSolution read_solution(const std::filesystem::path& file) {
-  CgnsFile in(file, CG_MODE_READ);
+  const CgnsFile in(file, CG_MODE_READ);
   const int fn = in.handle();
   StoredSolution out;
   int count = 0;
