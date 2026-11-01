@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_template_test_macros.hpp>
@@ -23,6 +24,8 @@
 namespace {
 
 namespace fs = std::filesystem;
+using autan::index_t;
+using autan::offset_t;
 using autan::physics::BoundaryKind;
 using autan::physics::Euler;
 using autan::physics::Gas;
@@ -44,6 +47,89 @@ constexpr std::array<double, 3> a{30.0, 6.0, -10.0};
 
 std::array<double, 5> primitive(double x, double y, double z) {
   return {rho, a[0] * y, a[1] * y, a[2] * y, 1.0e5 + 2000.0 * x + 500.0 * z};
+}
+
+// One layer of hexahedra over [0,1]^2 x [0,1], the spacing in y growing geometrically from 1e-5 at
+// y = 0 (aspect ratio 10^4 at the wall, as in the wall-resolved 2D grids of the NASA TMR), zones
+// xmin ... ymax and `sides` for z = 0 and z = 1.
+autan::Mesh stretched_slab() {
+  constexpr int nx = 8;
+  constexpr int ny = 12;
+  constexpr double first = 1.0e-5;
+  double lo = 1.0, hi = 4.0;
+  for (int it = 0; it < 200; ++it) {
+    const double ratio = 0.5 * (lo + hi);
+    (first * (std::pow(ratio, ny) - 1.0) / (ratio - 1.0) > 1.0 ? hi : lo) = ratio;
+  }
+  autan::MeshInput in;
+  double y = 0.0, dy = first;
+  for (int j = 0; j <= ny; ++j) {
+    for (int k = 0; k <= 1; ++k) {
+      for (int i = 0; i <= nx; ++i) {
+        in.x.push_back(static_cast<double>(i) / nx);
+        in.y.push_back(j == ny ? 1.0 : y);
+        in.z.push_back(k);
+      }
+    }
+    y += dy;
+    dy *= lo;
+  }
+  auto p = [](int i, int j, int k) { return static_cast<index_t>(i + (nx + 1) * (k + 2 * j)); };
+  auto cell = [](int i, int j) { return static_cast<index_t>(i + nx * j); };
+  in.face_node_offsets.push_back(0);
+  auto face = [&](std::array<index_t, 4> nodes, bool flip, index_t c0, index_t c1, index_t zone) {
+    if (flip) std::reverse(nodes.begin(), nodes.end());
+    in.face_nodes.insert(in.face_nodes.end(), nodes.begin(), nodes.end());
+    in.face_node_offsets.push_back(static_cast<offset_t>(in.face_nodes.size()));
+    in.face_cell0.push_back(c0);
+    in.face_cell1.push_back(c1);
+    in.face_zone.push_back(zone);
+  };
+  constexpr index_t interior = 5;
+  for (int j = 0; j < ny; ++j) {
+    for (int i = 0; i <= nx; ++i) {
+      const std::array<index_t, 4> q{p(i, j, 0), p(i, j + 1, 0), p(i, j + 1, 1), p(i, j, 1)};
+      if (i == 0)
+        face(q, true, cell(0, j), autan::no_cell, 0);
+      else if (i == nx)
+        face(q, false, cell(nx - 1, j), autan::no_cell, 1);
+      else
+        face(q, false, cell(i - 1, j), cell(i, j), interior);
+    }
+  }
+  for (int j = 0; j <= ny; ++j) {
+    for (int i = 0; i < nx; ++i) {
+      const std::array<index_t, 4> q{p(i, j, 0), p(i, j, 1), p(i + 1, j, 1), p(i + 1, j, 0)};
+      if (j == 0)
+        face(q, true, cell(i, 0), autan::no_cell, 2);
+      else if (j == ny)
+        face(q, false, cell(i, ny - 1), autan::no_cell, 3);
+      else
+        face(q, false, cell(i, j - 1), cell(i, j), interior);
+    }
+  }
+  for (int j = 0; j < ny; ++j) {
+    for (int i = 0; i < nx; ++i) {
+      for (int k = 0; k <= 1; ++k) {
+        face({p(i, j, k), p(i + 1, j, k), p(i + 1, j + 1, k), p(i, j + 1, k)}, k == 0, cell(i, j),
+             autan::no_cell, 4);
+      }
+    }
+  }
+  in.cell_zone.assign(static_cast<std::size_t>(nx * ny), 0);
+  for (const char* name : {"xmin", "xmax", "ymin", "ymax", "sides"}) {
+    in.face_zones.push_back(autan::FaceZone{
+        .name = name, .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
+  }
+  in.face_zones.push_back(autan::FaceZone{.name = "interior",
+                                          .bc_type = "",
+                                          .kind = autan::BcKind::unspecified,
+                                          .boundary = false,
+                                          .provenance = {}});
+  in.cell_zones = {autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}}};
+  in.source = autan::MeshSource{.format = "memory", .path = ""};
+  return autan::assemble(std::move(in));
 }
 
 template <class P>
@@ -154,13 +240,17 @@ TEMPLATE_TEST_CASE("viscous residual of linear velocity and temperature is the d
 
 // A cubic velocity vanishing on the wall y = 0, at uniform density and pressure: the stress on the
 // wall is mu (du/dy, 0, dw/dy) at each face centroid, and the cubic fit of the boundary cells gives
-// it exactly, where a linear fit would be first order and a quadratic one second.
+// it exactly, where a linear fit would be first order and a quadratic one second. Also on a
+// one-layer slab stretched 10^4:1 at the wall, with slip sides (the fields are those of the plane
+// z = 1/2) and an outlet at x = 1, which gives neither T nor the velocity at the wall's end.
 TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-stokes]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
-  const auto* file = GENERATE(from_range(meshes));
+  const std::string file = GENERATE(Catch::Generators::values<std::string>(
+      {meshes[0], meshes[1], meshes[2], meshes[3], "stretched slab"}));
   CAPTURE(file);
-  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto mesh =
+      file == "stretched slab" ? stretched_slab() : autan::io::read_mesh(mesh_dir / file);
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
@@ -190,6 +280,11 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
       kind[b] = BoundaryKind::wall;
       data[b] = p / (rho * air.gas_constant);
       wall.push_back(b);
+    } else if (zone == "sides") {
+      kind[b] = BoundaryKind::slip;
+    } else if (zone == "xmax" && file == "stretched slab") {
+      kind[b] = BoundaryKind::outlet;
+      data[4 * nb + b] = p;
     } else {
       data[b] = rho;
       for (std::size_t k = 0; k < 3; ++k) data[(1 + k) * nb + b] = v[k];

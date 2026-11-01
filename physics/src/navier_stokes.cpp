@@ -41,6 +41,7 @@ struct NavierStokes<P>::Impl {
   // node with it or with one of those) and their boundary faces; empty for the other cells.
   std::vector<offset_t> fit_offsets;
   std::vector<index_t> fit_entries;
+  bool bounded = false;  // set_boundary called: the fit is built
   kernels::CellStencil vertex;
   std::array<std::vector<typename P::grad>, 7> fits;
   const Geometry& geo;  // FP64 geometry of the boundary fit
@@ -67,18 +68,27 @@ struct NavierStokes<P>::Impl {
     d.topo.stencil_twin = nullptr;  // the fit has no adjoint
   }
 
-  // The fit's stencil: the two rings of cells around each cell owning a face whose condition gives
-  // T and the velocity (cells sharing a node with it or with one of those) and their boundary
-  // faces; empty for the other cells, which the fit's loop then skips.
-  void fit_stencil(std::span<const BoundaryKind> kind) {
+  // Cubic least-squares fit of every cell owning a face whose condition gives T and the velocity
+  // (manufactured, walls) and of its face neighbours (docs/design/ns-sa.md, Boundary conditions):
+  // theta (19 values: gradient, Hessian, third derivatives) minimises
+  // sum_k w_k (phi_k - phi_c - b_k . theta)^2, b_k the monomials of kernels/navier_stokes.py at
+  // d_k, over the cells within two rings of the cell (sharing a node with it or with one of those)
+  // and their boundary faces with such a condition. Monomials in a direction where no entry extends
+  // (the span of a one-cell-thick 2D mesh) are left out, their derivatives zero. A cell whose two
+  // rings leave the rest undetermined (a corner where a wall meets an outflow) takes three; one
+  // whose three rings do not either is refused. Stores M^-1 w_k b_k per entry; the cells without
+  // a fit get an empty stencil, which the fit's loop skips.
+  void fit_weights(std::span<const BoundaryKind> kind) {
+    constexpr std::size_t nt = 19;
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
+    auto gives = [&](std::size_t f) {
+      return kind[f - ni] == BoundaryKind::state || kind[f - ni] == BoundaryKind::wall;
+    };
     std::vector<char> fitted(nc, 0);
     for (std::size_t f = ni; f < nf; ++f) {
-      if (kind[f - ni] == BoundaryKind::state || kind[f - ni] == BoundaryKind::wall) {
-        fitted[static_cast<std::size_t>(topo.owner[f])] = 1;
-      }
+      if (gives(f)) fitted[static_cast<std::size_t>(topo.owner[f])] = 1;
     }
     // Their face neighbours too: their face2 least-squares stencil reaches those boundary faces
     // on one side only, which leaves the faces between them first order.
@@ -88,117 +98,111 @@ struct NavierStokes<P>::Impl {
       if (fitted[own] == 1 && fitted[nbr] == 0) fitted[nbr] = 2;
       if (fitted[nbr] == 1 && fitted[own] == 0) fitted[own] = 2;
     }
-    auto ring = [&](std::size_t c) {
+    auto ring = [&](index_t c) {
+      const auto i = static_cast<std::size_t>(c);
       return std::span<const index_t>(
-          vertex.entries.data() + vertex.offsets[c],
-          static_cast<std::size_t>(vertex.offsets[c + 1] - vertex.offsets[c]));
+          vertex.entries.data() + vertex.offsets[i],
+          static_cast<std::size_t>(vertex.offsets[i + 1] - vertex.offsets[i]));
     };
-    fit_offsets.assign(nc + 1, 0);
-    fit_entries.clear();
-    std::vector<index_t> entries;
-    for (std::size_t c = 0; c < nc; ++c) {
-      if (fitted[c] != 0) {
-        entries.assign(ring(c).begin(), ring(c).end());
-        for (const auto e : ring(c)) {
-          if (e >= 0) {
-            const auto second = ring(static_cast<std::size_t>(e));
-            entries.insert(entries.end(), second.begin(), second.end());
+    // The cells within `rings` rings of c and their boundary faces with a condition giving T
+    // and the velocity, c excluded.
+    auto gather = [&](std::size_t c, int rings) {
+      std::vector<index_t> cells{static_cast<index_t>(c)}, out;
+      for (int r = 0; r < rings; ++r) {
+        const auto reached = cells.size();
+        for (std::size_t k = 0; k < reached; ++k) {
+          for (const auto e : ring(cells[k])) {
+            if (e >= 0)
+              cells.push_back(e);
+            else if (gives(static_cast<std::size_t>(-e - 1)))
+              out.push_back(e);
           }
         }
-        std::sort(entries.begin(), entries.end());
-        entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
-        for (const auto e : entries) {
-          if (e != static_cast<index_t>(c)) fit_entries.push_back(e);
-        }
+        std::sort(cells.begin(), cells.end());
+        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
       }
-      fit_offsets[c + 1] = static_cast<offset_t>(fit_entries.size());
-    }
-    d.topo.n_stencil = static_cast<offset_t>(fit_entries.size());
-    d.topo.stencil_offsets = fit_offsets.data();
-    d.topo.stencil = fit_entries.data();
-  }
-
-  // Cubic least-squares fit over the two-ring stencil of every cell with a boundary face (docs/
-  // design/ns-sa.md, Boundary conditions): theta (19 values: gradient, Hessian, third derivatives)
-  // minimises sum_k w_k (phi_k - phi_c - b_k . theta)^2, w_k = 1/|d_k|^2, b_k the monomials of
-  // kernels/navier_stokes.py at d_k, over the stencil's cells and its boundary faces whose
-  // condition gives T and the velocity there (manufactured, walls). Monomials in a direction where
-  // no entry extends (the span of a one-cell-thick 2D mesh) are left out, their derivatives zero. A
-  // cell whose entries do not determine the rest is refused. Stores M^-1 w_k b_k per entry.
-  void fit_weights(std::span<const BoundaryKind> kind) {
-    constexpr std::size_t nt = 19;
-    fit_stencil(kind);
-    const auto& t = d.topo;
-    const auto nc = static_cast<std::size_t>(t.n_cells);
-    const auto ni = static_cast<std::size_t>(t.n_interior_faces);
-    const auto nst = static_cast<std::size_t>(t.n_stencil);
-    for (auto& v : q) v.assign(3 * nst, {});
-    std::fill(quad.begin(), quad.end(), typename decltype(quad)::value_type(0));
+      for (const auto e : cells) {
+        if (e != static_cast<index_t>(c)) out.push_back(e);
+      }
+      std::sort(out.begin(), out.end());
+      out.erase(std::unique(out.begin(), out.end()), out.end());
+      return out;
+    };
+    constexpr std::array<std::array<int, 3>, nt> power{{{1, 0, 0},
+                                                        {0, 1, 0},
+                                                        {0, 0, 1},
+                                                        {2, 0, 0},
+                                                        {0, 2, 0},
+                                                        {0, 0, 2},
+                                                        {1, 1, 0},
+                                                        {1, 0, 1},
+                                                        {0, 1, 1},
+                                                        {3, 0, 0},
+                                                        {0, 3, 0},
+                                                        {0, 0, 3},
+                                                        {2, 1, 0},
+                                                        {2, 0, 1},
+                                                        {1, 2, 0},
+                                                        {0, 2, 1},
+                                                        {1, 0, 2},
+                                                        {0, 1, 2},
+                                                        {1, 1, 1}}};
     const auto& g = geo;
-    std::vector<std::array<double, nt>> rows;
-    std::vector<double> w;
-    for (std::size_t c = 0; c < nc; ++c) {
-      const auto begin = static_cast<std::size_t>(t.stencil_offsets[c]);
-      const auto end = static_cast<std::size_t>(t.stencil_offsets[c + 1]);
-      if (begin == end) continue;
-      rows.assign(end - begin, {});
-      w.assign(end - begin, 0.0);
-      double scale = 0.0;
-      for (std::size_t k = begin; k < end; ++k) {
-        const index_t e = t.stencil[k];
+    // theta's weights per entry of c's stencil, or false if the entries leave it undetermined.
+    auto solve = [&](std::size_t c, std::span<const index_t> entries,
+                     std::vector<std::array<double, nt>>& coef) {
+      std::vector<std::array<double, nt>> rows(entries.size());
+      std::vector<double> w(entries.size());
+      std::array<double, 3> extent{};
+      for (std::size_t k = 0; k < entries.size(); ++k) {
+        const index_t e = entries[k];
         std::array<double, 3> x{};
         if (e >= 0) {
           const auto i = static_cast<std::size_t>(e);
           x = {g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]};
         } else {
           const auto f = static_cast<std::size_t>(-e - 1);
-          if (kind[f - ni] != BoundaryKind::state && kind[f - ni] != BoundaryKind::wall) continue;
           x = {g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]};
         }
         const double dx = x[0] - g.cell_centroid_x[c];
         const double dy = x[1] - g.cell_centroid_y[c];
         const double dz = x[2] - g.cell_centroid_z[c];
-        const double d2 = dx * dx + dy * dy + dz * dz;
-        scale = std::max(scale, std::sqrt(d2));
-        w[k - begin] = 1.0 / d2;
-        rows[k - begin] = {dx,
-                           dy,
-                           dz,
-                           0.5 * dx * dx,
-                           0.5 * dy * dy,
-                           0.5 * dz * dz,
-                           dx * dy,
-                           dx * dz,
-                           dy * dz,
-                           dx * dx * dx / 6.0,
-                           dy * dy * dy / 6.0,
-                           dz * dz * dz / 6.0,
-                           0.5 * dx * dx * dy,
-                           0.5 * dx * dx * dz,
-                           0.5 * dx * dy * dy,
-                           0.5 * dy * dy * dz,
-                           0.5 * dx * dz * dz,
-                           0.5 * dy * dz * dz,
-                           dx * dy * dz};
+        extent = {std::max(extent[0], std::abs(dx)), std::max(extent[1], std::abs(dy)),
+                  std::max(extent[2], std::abs(dz))};
+        for (std::size_t i = 0; i < nt; ++i) {
+          rows[k][i] = std::pow(dx, power[i][0]) * std::pow(dy, power[i][1]) *
+                       std::pow(dz, power[i][2]) /
+                       (std::tgamma(power[i][0] + 1.0) * std::tgamma(power[i][1] + 1.0) *
+                        std::tgamma(power[i][2] + 1.0));
+        }
       }
-      // Unknowns scaled by the stencil's size keep the normal matrix's entries of order one.
-      const std::array<int, nt> degree{1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3};
+      // Each unknown scaled by the stencil's extent along its directions, and the weights 1/|d|^2
+      // taken in the scaled coordinates, keep the normal matrix of order one and well conditioned
+      // on stretched cells: in physical coordinates, the entries across a wall-resolved layer
+      // (10^3:1 and more) would outweigh the others by the aspect ratio squared.
+      const double widest = std::max({extent[0], extent[1], extent[2]});
       std::array<double, nt> unit{};
-      for (std::size_t i = 0; i < nt; ++i) unit[i] = std::pow(scale, degree[i]);
-      // Columns of the weighted, scaled basis that vanish (no extent in a direction) are dropped.
-      std::array<double, nt> norm{};
-      for (std::size_t k = 0; k < rows.size(); ++k) {
-        for (std::size_t i = 0; i < nt; ++i) norm[i] += w[k] * std::pow(rows[k][i] / unit[i], 2);
-      }
-      const double largest = *std::max_element(norm.begin(), norm.end());
       std::vector<std::size_t> used;
       for (std::size_t i = 0; i < nt; ++i) {
-        if (norm[i] > 1e-20 * largest) used.push_back(i);
+        unit[i] = 1.0;
+        bool spans = true;
+        for (std::size_t a = 0; a < 3; ++a) {
+          if (power[i][a] == 0) continue;
+          spans = spans && extent[a] > 1e-12 * widest;
+          unit[i] *= std::pow(extent[a], power[i][a]);
+        }
+        if (spans) used.push_back(i);
+      }
+      for (std::size_t k = 0; k < rows.size(); ++k) {
+        double s2 = 0.0;
+        for (std::size_t a = 0; a < 3; ++a) {
+          if (extent[a] > 1e-12 * widest) s2 += std::pow(rows[k][a] / extent[a], 2);
+        }
+        w[k] = 1.0 / s2;
       }
       const auto m = used.size();
       std::vector<double> a(m * m, 0.0), inv(m * m, 0.0);
       for (std::size_t k = 0; k < rows.size(); ++k) {
-        if (w[k] == 0.0) continue;
         for (std::size_t i = 0; i < m; ++i) {
           for (std::size_t j = 0; j < m; ++j) {
             a[m * i + j] +=
@@ -215,11 +219,7 @@ struct NavierStokes<P>::Impl {
         for (std::size_t r = col + 1; r < m; ++r) {
           if (std::abs(a[m * r + col]) > std::abs(a[m * piv + col])) piv = r;
         }
-        if (!(std::abs(a[m * piv + col]) > 1e-12 * diag)) {
-          throw std::invalid_argument(
-              "the boundary fit of the viscous fluxes is undetermined at cell " +
-              std::to_string(c) + " (" + std::to_string(end - begin) + " stencil entries)");
-        }
+        if (!(std::abs(a[m * piv + col]) > 1e-12 * diag)) return false;
         for (std::size_t j = 0; j < m; ++j) {
           std::swap(a[m * col + j], a[m * piv + j]);
           std::swap(inv[m * col + j], inv[m * piv + j]);
@@ -238,22 +238,51 @@ struct NavierStokes<P>::Impl {
           }
         }
       }
-      quad[c] = typename decltype(quad)::value_type(1);
-      for (std::size_t k = begin; k < end; ++k) {
-        const double wk = w[k - begin];
-        if (wk == 0.0) continue;
-        std::array<double, 21> coef{};
+      coef.assign(entries.size(), {});
+      for (std::size_t k = 0; k < entries.size(); ++k) {
         for (std::size_t i = 0; i < m; ++i) {
           double v = 0.0;
           for (std::size_t j = 0; j < m; ++j) {
-            v += inv[m * i + j] * wk * rows[k - begin][used[j]] / unit[used[j]];
+            v += inv[m * i + j] * w[k] * rows[k][used[j]] / unit[used[j]];
           }
-          coef[used[i]] = v / unit[used[i]];
+          coef[k][used[i]] = v / unit[used[i]];
         }
-        for (std::size_t b = 0; b < 7; ++b) {
-          for (std::size_t j = 0; j < 3; ++j) {
+      }
+      return true;
+    };
+    fit_offsets.assign(nc + 1, 0);
+    fit_entries.clear();
+    std::vector<std::array<double, nt>> coef, all;
+    std::fill(quad.begin(), quad.end(), typename decltype(quad)::value_type(0));
+    for (std::size_t c = 0; c < nc; ++c) {
+      if (fitted[c] != 0) {
+        auto entries = gather(c, 2);
+        if (!solve(c, entries, coef)) {
+          entries = gather(c, 3);
+          if (!solve(c, entries, coef)) {
+            throw std::invalid_argument(
+                "the boundary fit of the viscous fluxes is undetermined at cell " +
+                std::to_string(c) + " (" + std::to_string(entries.size()) +
+                " entries within three rings)");
+          }
+        }
+        fit_entries.insert(fit_entries.end(), entries.begin(), entries.end());
+        all.insert(all.end(), coef.begin(), coef.end());
+        quad[c] = typename decltype(quad)::value_type(1);
+      }
+      fit_offsets[c + 1] = static_cast<offset_t>(fit_entries.size());
+    }
+    d.topo.n_stencil = static_cast<offset_t>(fit_entries.size());
+    d.topo.stencil_offsets = fit_offsets.data();
+    d.topo.stencil = fit_entries.data();
+    const auto nst = fit_entries.size();
+    for (auto& v : q) v.assign(3 * nst, {});
+    for (std::size_t k = 0; k < nst; ++k) {
+      for (std::size_t b = 0; b < 7; ++b) {
+        for (std::size_t j = 0; j < 3; ++j) {
+          if (3 * b + j < nt) {
             q[b][j * nst + k] =
-                static_cast<typename decltype(q)::value_type::value_type>(coef[3 * b + j]);
+                static_cast<typename decltype(q)::value_type::value_type>(all[k][3 * b + j]);
           }
         }
       }
@@ -529,8 +558,9 @@ struct NavierStokes<P>::Impl {
 
     d.topo = topo;
     share();
+    // No fit until set_boundary gives the conditions it depends on.
     fit_weights(std::vector<BoundaryKind>(nf - static_cast<std::size_t>(topo.n_interior_faces),
-                                          BoundaryKind::state));
+                                          BoundaryKind::slip));
     d.mu_t = mu_t.data();
     d.mu_t_b = mu_t_b.data();
     d.lam_v = lam_v.data();
@@ -592,6 +622,7 @@ void NavierStokes<P>::set_boundary(std::span<const BoundaryKind> kind,
   impl_->euler.set_boundary(kind, data);
   impl_->share();
   impl_->fit_weights(kind);
+  impl_->bounded = true;
 }
 
 template <class P>
@@ -632,6 +663,7 @@ void NavierStokes<P>::state(std::span<const double> u, std::span<State> s) const
 template <class P>
 void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
+  if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before the residual");
   m.euler.residual(s, res);
   m.share();
   m.fit();
@@ -643,6 +675,7 @@ void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
 template <class P>
 void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
+  if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before the residual");
   m.euler.residual_and_jacobian(s, res);
   m.share();
   m.fit();

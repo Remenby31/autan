@@ -41,6 +41,9 @@ class NavierStokes {
   [[nodiscard]] index_t n_cells() const noexcept;
   [[nodiscard]] index_t n_boundary_faces() const noexcept;
 
+  /// As Euler<P>'s; it also builds the boundary fit of the viscous fluxes, which the residual
+  /// needs (std::logic_error before it) and which refuses a cell whose stencil leaves the fit
+  /// undetermined (std::invalid_argument).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   void set_second_order(bool on);
   void set_source(std::span<const double> source);
