@@ -526,7 +526,9 @@ _CODES = [
         "E0706",
         "Physics not in this solver build",
         "The solver build has no implementation for the requested combination of physics, "
-        "turbulence model, precision and device kind; `data` names the combination.",
+        "turbulence model, precision and device kind, or for the case's media, zones and "
+        "conditions (a solid zone, several gases, a condition the physics lacks); `data` names "
+        "the combination or the zone.",
         "Use a build that includes it, or change the case or the devices.",
     ),
     Code(
