@@ -1,29 +1,31 @@
 {
   "schema": "autan.su2-study/1",
   "case": "naca0012",
-  "condition": "m080-a125",
+  "condition": "m080-a000",
   "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+  "scheme": "jst",
   "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
   "levels": [
     {
       "run": "n0032",
       "n": 32,
+      "scheme": "jst",
       "points": 1056,
       "venkat_coefficient": 2.2899780992249235,
       "converged": true,
-      "iterations": 455,
-      "wall_seconds": 0.168523195204,
+      "iterations": 560,
+      "wall_seconds": 0.25503433519200003,
       "threads": 4,
-      "cl": 0.2496194552,
-      "cd": 0.005853731728,
-      "cmy": -0.01445048218,
+      "cl": -4.027923828e-13,
+      "cd": 0.00268278675,
+      "cmy": 7.552812542e-14,
       "drop": {
-        "density": 10.413552849,
-        "momentum-x": 10.117896515,
-        "momentum-z": 10.002384183999999,
-        "energy": 10.436938703
+        "density": 10.558425952,
+        "momentum-x": 10.260331234,
+        "momentum-z": 10.058888002,
+        "energy": 10.553338516
       },
-      "case_sha256": "7c35d5497ceb378d28898a4cbcd7e752e007848e9fa55a01fbe45afa870afabf",
+      "case_sha256": "fc1ffa6b55bd66bfaf7cc85b3b6bd8d58fba047296212d31d497c81b1c9b7130",
       "plane_sha256": "9640b2309090c8b70b747c00ba325a8600a72851eae313dbfd95c278f0d59829",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -31,22 +33,23 @@
     {
       "run": "n0064",
       "n": 64,
+      "scheme": "jst",
       "points": 4160,
       "venkat_coefficient": 1.4374493966900252,
       "converged": true,
-      "iterations": 474,
-      "wall_seconds": 16.8891329154,
+      "iterations": 367,
+      "wall_seconds": 1.0424108410050001,
       "threads": 4,
-      "cl": 0.3168436333,
-      "cd": 0.02139558135,
-      "cmy": -0.0295156015,
+      "cl": 1.137423489e-13,
+      "cd": 0.006085029161,
+      "cmy": -4.521383268e-14,
       "drop": {
-        "density": 10.510438306000001,
-        "momentum-x": 10.01988928,
-        "momentum-z": 10.185360397,
-        "energy": 10.44394591
+        "density": 10.271749398,
+        "momentum-x": 10.0046079,
+        "momentum-z": 10.4272534,
+        "energy": 10.271465401
       },
-      "case_sha256": "bb35a6896cc59b7f5ccdb809575c5ffe231de31544bf6228d5b1d164b562f7cf",
+      "case_sha256": "ada4589b6fc78ec03a480f20f3c4b567c65d77bd8ffbf183d099dd5b0fd2da3f",
       "plane_sha256": "8e46fcee69cdb13852daa83f39f4aec7cb07841dccd0a51e8cef3c0be7ccb08b",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -54,22 +57,23 @@
     {
       "run": "n0128",
       "n": 128,
+      "scheme": "jst",
       "points": 16512,
       "venkat_coefficient": 0.9025366858328476,
       "converged": true,
-      "iterations": 683,
-      "wall_seconds": 8.44577499874,
+      "iterations": 328,
+      "wall_seconds": 3.133787797192,
       "threads": 4,
-      "cl": 0.3447900484,
-      "cd": 0.02504014805,
-      "cmy": -0.03679828716,
+      "cl": -1.011604689e-11,
+      "cd": 0.007503986755,
+      "cmy": 4.970375674e-12,
       "drop": {
-        "density": 10.392139399,
-        "momentum-x": 10.075400909,
-        "momentum-z": 10.337825334000001,
-        "energy": 10.429727353
+        "density": 10.062138848,
+        "momentum-x": 10.240145193,
+        "momentum-z": 10.59064263,
+        "energy": 10.030826441
       },
-      "case_sha256": "16a0e1b93dbde7783ee6f288a1a1df474216dc40b0970931591289249c143235",
+      "case_sha256": "621aef55cfaafb89bde47f8b2201b9161d4ea2113a2df2b956b6db6dd885a842",
       "plane_sha256": "82ff204c3b36cc04cf927bd47b70eae7223529fb70962d41922b392dc32ea87a",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -77,22 +81,23 @@
     {
       "run": "n0256",
       "n": 256,
+      "scheme": "jst",
       "points": 65792,
       "venkat_coefficient": 0.5686856043283535,
       "converged": true,
-      "iterations": 1381,
-      "wall_seconds": 140.21405233870001,
+      "iterations": 409,
+      "wall_seconds": 15.725631494840002,
       "threads": 4,
-      "cl": 0.3523723572,
-      "cd": 0.02465435482,
-      "cmy": -0.0385650395,
+      "cl": -8.209211089e-12,
+      "cd": 0.008124476977,
+      "cmy": 4.542460158e-13,
       "drop": {
-        "density": 10.351783943,
-        "momentum-x": 10.022776655000001,
-        "momentum-z": 10.250050518,
-        "energy": 10.408225307
+        "density": 10.040856448,
+        "momentum-x": 10.235336762,
+        "momentum-z": 10.508228826,
+        "energy": 10.012629815
       },
-      "case_sha256": "e0b64c69c6360e34dbad042bd43aeb7181fb4cf24fec674395880c337a88f939",
+      "case_sha256": "e8eb81bdbc2a5cb5b0588fde533ef1aef618a66c8a6051818ce17cb0e74de863",
       "plane_sha256": "4bde602f7af53417fe9f871d6163cc34b98d717715b20331aba7b517696624a0",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -100,22 +105,23 @@
     {
       "run": "n0512",
       "n": 512,
+      "scheme": "jst",
       "points": 262656,
       "venkat_coefficient": 0.35828112444575466,
       "converged": true,
-      "iterations": 2072,
-      "wall_seconds": 1390.6249037016,
+      "iterations": 632,
+      "wall_seconds": 99.1732430056,
       "threads": 4,
-      "cl": 0.3526514492,
-      "cd": 0.02376009019,
-      "cmy": -0.038453376,
+      "cl": -6.46302456e-13,
+      "cd": 0.008291644847,
+      "cmy": -1.013248513e-12,
       "drop": {
-        "density": 10.35728548,
-        "momentum-x": 10.002123710000001,
-        "momentum-z": 10.192691666999998,
-        "energy": 10.381204004
+        "density": 10.072657998,
+        "momentum-x": 10.057610138000001,
+        "momentum-z": 10.499170387000001,
+        "energy": 10.039194772
       },
-      "case_sha256": "871c3b9cb53d47081a2ec5e52516e85ffa6641b6de8aeb5bf3dc2379406a2629",
+      "case_sha256": "49143fb86dbcf5031d2bc249be73a97c75dc185055e316347f3c1f8e71afbfd9",
       "plane_sha256": "ef16cb4d3e1ea04896d226bb5e9e4fbe5c7f69b3547fcc0860ea822c65839d82",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -123,22 +129,23 @@
     {
       "run": "n1024",
       "n": 1024,
+      "scheme": "jst",
       "points": 1049600,
       "venkat_coefficient": 0.2257217952884304,
       "converged": true,
-      "iterations": 8235,
-      "wall_seconds": 11198.345554215,
+      "iterations": 1284,
+      "wall_seconds": 776.3113341552,
       "threads": 4,
-      "cl": 0.3531474394,
-      "cd": 0.02319784952,
-      "cmy": -0.0384665641,
+      "cl": 2.973253588e-12,
+      "cd": 0.008329261643,
+      "cmy": -3.920540108e-14,
       "drop": {
-        "density": 10.370554841999999,
-        "momentum-x": 10.006707945999999,
-        "momentum-z": 10.207666138,
-        "energy": 10.340047466
+        "density": 10.038957234,
+        "momentum-x": 10.07403729,
+        "momentum-z": 10.444453916999999,
+        "energy": 10.004741877
       },
-      "case_sha256": "0d2596c6d7c1fab8bfbc6755adf6b4a4f88d82e9c1c0b5394da8294fd5426ace",
+      "case_sha256": "c9bf9c57128a5f7be0ec22be7f232518aa37260b6c2b2faa023f301976cae3d2",
       "plane_sha256": "586b06e01dd77320b4c29f45ae2bf232d144d851538302a0143fb7a77f49dc2c",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -146,13 +153,16 @@
   ],
   "continuum": {
     "cl": {
-      "error": "V0108"
+      "estimate": 6.295600667031876e-12,
+      "order": 1.0631284352621568,
+      "gci": 4.152933848789846e-12,
+      "order_if_zero": null
     },
     "cd": {
-      "estimate": 0.022245765908317137,
-      "order": 0.6695139999685846,
-      "gci": 0.0011901045146035802,
-      "order_if_zero": 0.0345492411449616
+      "estimate": 0.008340184156396573,
+      "order": 2.1518487071188046,
+      "gci": 1.3653141745717527e-05,
+      "order_if_zero": -0.00653028855383103
     },
     "cmy": {
       "error": "V0107"
@@ -160,19 +170,14 @@
   },
   "verdicts": [
     {
-      "gate": "naca0012-m080-a125-cl",
-      "pass": false,
-      "reason": "no continuum estimate (V0108)"
-    },
-    {
-      "gate": "naca0012-m080-a125-cd",
-      "value": 0.022245765908317137,
-      "gci": 0.0011901045146035802,
+      "gate": "naca0012-m080-a000-cd",
+      "value": 0.008340184156396573,
+      "gci": 1.3653141745717527e-05,
       "bounds": [
-        0.02258,
-        0.022779999999999998
+        0.008242000000000001,
+        0.008442
       ],
-      "pass": false
+      "pass": true
     }
   ]
 }

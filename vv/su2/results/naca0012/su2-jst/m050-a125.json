@@ -3,27 +3,29 @@
   "case": "naca0012",
   "condition": "m050-a125",
   "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+  "scheme": "jst",
   "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
   "levels": [
     {
       "run": "n0032",
       "n": 32,
+      "scheme": "jst",
       "points": 1056,
       "venkat_coefficient": 2.2899780992249235,
       "converged": true,
-      "iterations": 180,
-      "wall_seconds": 0.09227264486400001,
+      "iterations": 273,
+      "wall_seconds": 0.1420715081058,
       "threads": 4,
-      "cl": 0.1155823132,
-      "cd": -0.02001046983,
-      "cmy": -0.0007158693489,
+      "cl": 0.155055808,
+      "cd": -0.01351230142,
+      "cmy": -0.002138107971,
       "drop": {
-        "density": 10.795704966,
-        "momentum-x": 10.45293786,
-        "momentum-z": 10.046019579000001,
-        "energy": 10.820384809
+        "density": 10.741856636,
+        "momentum-x": 10.37655346,
+        "momentum-z": 10.030825479,
+        "energy": 10.768531768999999
       },
-      "case_sha256": "15111dcd65ffdec72dc76d99c8b6025dfaa78fb503467c1e5eb71f770f5d3739",
+      "case_sha256": "7dc52c8e22451c7ac3ee5d5b31248f6594fd177f6055a71c45dfe72960f5fcb2",
       "plane_sha256": "9640b2309090c8b70b747c00ba325a8600a72851eae313dbfd95c278f0d59829",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -31,22 +33,23 @@
     {
       "run": "n0064",
       "n": 64,
+      "scheme": "jst",
       "points": 4160,
       "venkat_coefficient": 1.4374493966900252,
       "converged": true,
-      "iterations": 195,
-      "wall_seconds": 0.9292892569350001,
+      "iterations": 170,
+      "wall_seconds": 0.59017762581,
       "threads": 4,
-      "cl": 0.1529018576,
-      "cd": -0.001639124885,
-      "cmy": -0.0008732679125,
+      "cl": 0.1727575345,
+      "cd": -0.005328376885,
+      "cmy": -0.00192913725,
       "drop": {
-        "density": 10.806492734,
-        "momentum-x": 10.295800194,
-        "momentum-z": 10.015784802,
-        "energy": 10.800460117000002
+        "density": 10.888919079999999,
+        "momentum-x": 10.058588923,
+        "momentum-z": 10.888500463,
+        "energy": 10.843382345
       },
-      "case_sha256": "e5d98ff0325043b0604f75a20d57a1b09aa6744630c1b610899eeb1578d4cff2",
+      "case_sha256": "d932c608b6123402a37866e195ccfddd14635ff9d2d875ebef0ccee18ee72527",
       "plane_sha256": "8e46fcee69cdb13852daa83f39f4aec7cb07841dccd0a51e8cef3c0be7ccb08b",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -54,22 +57,23 @@
     {
       "run": "n0128",
       "n": 128,
+      "scheme": "jst",
       "points": 16512,
       "venkat_coefficient": 0.9025366858328476,
       "converged": true,
-      "iterations": 316,
-      "wall_seconds": 4.41756051724,
+      "iterations": 209,
+      "wall_seconds": 1.9959167761060002,
       "threads": 4,
-      "cl": 0.1692382753,
-      "cd": 0.002933230994,
-      "cmy": -0.001795067508,
+      "cl": 0.1778440587,
+      "cd": -0.001672693781,
+      "cmy": -0.002167320438,
       "drop": {
-        "density": 10.729802927,
-        "momentum-x": 10.150917963,
-        "momentum-z": 10.021685198000002,
-        "energy": 10.69499871
+        "density": 10.9905863,
+        "momentum-x": 10.029783089999999,
+        "momentum-z": 11.116614067999999,
+        "energy": 10.935506041
       },
-      "case_sha256": "c25a1ab3217668605a984415997976a9ab07a84dcf24b7cd7b4c580d80a22d05",
+      "case_sha256": "a036b7f06afb49db25670e37fdf59a6712667c82a7375bf58bf2d04028f04b3a",
       "plane_sha256": "82ff204c3b36cc04cf927bd47b70eae7223529fb70962d41922b392dc32ea87a",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -77,22 +81,23 @@
     {
       "run": "n0256",
       "n": 256,
+      "scheme": "jst",
       "points": 65792,
       "venkat_coefficient": 0.5686856043283535,
       "converged": true,
-      "iterations": 515,
-      "wall_seconds": 50.85719355725,
+      "iterations": 268,
+      "wall_seconds": 10.23532854456,
       "threads": 4,
-      "cl": 0.1754349107,
-      "cd": 0.002505446162,
-      "cmy": -0.002153990901,
+      "cl": 0.1793146683,
+      "cd": -0.0004112364008,
+      "cmy": -0.002248401514,
       "drop": {
-        "density": 10.717516981,
-        "momentum-x": 10.167536218999999,
-        "momentum-z": 10.006084333,
-        "energy": 10.679048183999999
+        "density": 11.067484006,
+        "momentum-x": 10.021650462,
+        "momentum-z": 11.2105482,
+        "energy": 10.982083371
       },
-      "case_sha256": "da7105d14df14801dd927c16d14ef0b311ba9e7e5d3e678ced304d58218ecff2",
+      "case_sha256": "3f48d5f1fcccc28654fa64875080e6f18300d7f0365c11144e1e6867bd885379",
       "plane_sha256": "4bde602f7af53417fe9f871d6163cc34b98d717715b20331aba7b517696624a0",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -100,22 +105,23 @@
     {
       "run": "n0512",
       "n": 512,
+      "scheme": "jst",
       "points": 262656,
       "venkat_coefficient": 0.35828112444575466,
       "converged": true,
-      "iterations": 1326,
-      "wall_seconds": 932.0653942236,
+      "iterations": 373,
+      "wall_seconds": 56.299647589,
       "threads": 4,
-      "cl": 0.1779116102,
-      "cd": 0.001517098201,
-      "cmy": -0.002259773658,
+      "cl": 0.1796678597,
+      "cd": -8.677435762e-05,
+      "cmy": -0.00226078969,
       "drop": {
-        "density": 10.646510768,
-        "momentum-x": 10.134294975,
-        "momentum-z": 10.002250512000002,
-        "energy": 10.604722940999999
+        "density": 11.060481239,
+        "momentum-x": 10.019185801,
+        "momentum-z": 11.32122717,
+        "energy": 10.968443795
       },
-      "case_sha256": "fb7f4a6237f585088042067d5182fbd6a90ca1e89b9839095325c681b2884a3f",
+      "case_sha256": "fc9820bcb514aedfa9895537688478364293df509695ed76bdcbd7235dd7046b",
       "plane_sha256": "ef16cb4d3e1ea04896d226bb5e9e4fbe5c7f69b3547fcc0860ea822c65839d82",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -123,22 +129,23 @@
     {
       "run": "n1024",
       "n": 1024,
+      "scheme": "jst",
       "points": 1049600,
       "venkat_coefficient": 0.2257217952884304,
       "converged": true,
-      "iterations": 3316,
-      "wall_seconds": 3806.215690356,
+      "iterations": 487,
+      "wall_seconds": 288.80568494930003,
       "threads": 4,
-      "cl": 0.1789593306,
-      "cd": 0.0008305151502,
-      "cmy": -0.002283084949,
+      "cl": 0.179749858,
+      "cd": -1.096956744e-05,
+      "cmy": -0.002261741635,
       "drop": {
-        "density": 10.65421537,
-        "momentum-x": 10.239150969999999,
-        "momentum-z": 10.000035273,
-        "energy": 10.599109673
+        "density": 10.958642524999998,
+        "momentum-x": 10.008965186000001,
+        "momentum-z": 11.279998511,
+        "energy": 10.888496937000001
       },
-      "case_sha256": "f18e98ea7ac393466e86d6c675798e2d3f7c5fc804b22e01fcde3e8d44e12078",
+      "case_sha256": "070754fc57d6cfae7db04a509fcaa68a6c03bfe682dab6fd5f499a2beed8038d",
       "plane_sha256": "586b06e01dd77320b4c29f45ae2bf232d144d851538302a0143fb7a77f49dc2c",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -146,35 +153,34 @@
   ],
   "continuum": {
     "cl": {
-      "estimate": 0.17972751400910386,
-      "order": 1.2411650725243324,
-      "gci": 0.0009602292613798487,
-      "order_if_zero": -0.008471103669719168
+      "estimate": 0.1797746511131098,
+      "order": 2.1067843096475185,
+      "gci": 3.0991391387240036e-05,
+      "order_if_zero": -0.0006582788604903323
     },
     "cd": {
-      "estimate": -0.0007316157328553208,
-      "order": 0.5255848082306376,
-      "gci": 0.0019526636038191508,
-      "order_if_zero": 0.8692360824448847
+      "estimate": 1.214001872692282e-05,
+      "order": 2.0976887943482705,
+      "gci": 2.8886982708653524e-05,
+      "order_if_zero": 2.9837621425402556
     },
     "cmy": {
-      "estimate": -0.0022896740920629677,
-      "order": 2.1820036721999605,
-      "gci": 8.23642882870966e-06,
-      "order_if_zero": -0.014806262761489705
+      "estimate": -0.0022618208743300752,
+      "order": 3.7019417524045215,
+      "gci": 9.904916259398045e-08,
+      "order_if_zero": -0.0006073440966079898
     }
   },
   "verdicts": [
     {
       "gate": "naca0012-m050-a125-cd",
-      "value": -0.0007316157328553208,
-      "gci": 0.0019526636038191508,
+      "value": 1.214001872692282e-05,
+      "gci": 2.8886982708653524e-05,
       "bounds": [
         -5e-05,
         5e-05
       ],
-      "pass": false,
-      "reason": "magnitude not decreasing level to level"
+      "pass": true
     }
   ]
 }

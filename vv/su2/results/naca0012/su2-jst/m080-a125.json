@@ -1,29 +1,31 @@
 {
   "schema": "autan.su2-study/1",
   "case": "naca0012",
-  "condition": "m080-a000",
+  "condition": "m080-a125",
   "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+  "scheme": "jst",
   "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
   "levels": [
     {
       "run": "n0032",
       "n": 32,
+      "scheme": "jst",
       "points": 1056,
       "venkat_coefficient": 2.2899780992249235,
       "converged": true,
-      "iterations": 459,
-      "wall_seconds": 0.629782499817,
+      "iterations": 557,
+      "wall_seconds": 0.2581403558105,
       "threads": 4,
-      "cl": -1.335043187e-14,
-      "cd": -0.004476943319,
-      "cmy": 1.073793832e-15,
+      "cl": 0.2966993249,
+      "cd": 0.01415324754,
+      "cmy": -0.02456393197,
       "drop": {
-        "density": 10.473737212,
-        "momentum-x": 10.217580714,
-        "momentum-z": 10.060008982000001,
-        "energy": 10.516350786
+        "density": 10.515636649,
+        "momentum-x": 10.249954855,
+        "momentum-z": 10.050228224000001,
+        "energy": 10.512757153
       },
-      "case_sha256": "ec1e7442ec7b5519960b7b9672d068552e89ac904d55d0f1077f5134546150c2",
+      "case_sha256": "c39db15b51bb112ae98bd315d35233d01e4cb15286f773426e3b32f1f849c231",
       "plane_sha256": "9640b2309090c8b70b747c00ba325a8600a72851eae313dbfd95c278f0d59829",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -31,22 +33,23 @@
     {
       "run": "n0064",
       "n": 64,
+      "scheme": "jst",
       "points": 4160,
       "venkat_coefficient": 1.4374493966900252,
       "converged": true,
-      "iterations": 451,
-      "wall_seconds": 37.99477129613,
+      "iterations": 389,
+      "wall_seconds": 0.952269969031,
       "threads": 4,
-      "cl": 3.445577157e-13,
-      "cd": 0.008512001674,
-      "cmy": -3.584459118e-13,
+      "cl": 0.3378252224,
+      "cd": 0.01984876538,
+      "cmy": -0.03430949862,
       "drop": {
-        "density": 10.530871919,
-        "momentum-x": 10.065091099,
-        "momentum-z": 10.255621951,
-        "energy": 10.499587853000001
+        "density": 10.278027269999999,
+        "momentum-x": 10.013420174,
+        "momentum-z": 10.504852963,
+        "energy": 10.2742529
       },
-      "case_sha256": "72794d84ee28617fc8116dfe0e2f3ec360d7c3b6f16df2df8aafc09c9aa53f3b",
+      "case_sha256": "4628242d70c1b94a86c4394bf1ecc46ad2c7f694c8ba960772d3709cf45a0016",
       "plane_sha256": "8e46fcee69cdb13852daa83f39f4aec7cb07841dccd0a51e8cef3c0be7ccb08b",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -54,22 +57,23 @@
     {
       "run": "n0128",
       "n": 128,
+      "scheme": "jst",
       "points": 16512,
       "venkat_coefficient": 0.9025366858328476,
       "converged": true,
-      "iterations": 662,
-      "wall_seconds": 8.079383634,
+      "iterations": 286,
+      "wall_seconds": 2.583048379054,
       "threads": 4,
-      "cl": 9.143241719e-13,
-      "cd": 0.0110831216,
-      "cmy": -4.515329083e-13,
+      "cl": 0.3493615739,
+      "cd": 0.02154636847,
+      "cmy": -0.03731037101,
       "drop": {
-        "density": 10.423446638000001,
-        "momentum-x": 10.032448057,
-        "momentum-z": 10.229420894,
-        "energy": 10.462566652000001
+        "density": 10.044151799000002,
+        "momentum-x": 10.032369775000001,
+        "momentum-z": 10.457485518,
+        "energy": 10.007706279999999
       },
-      "case_sha256": "0e0b53acef602b2128b41a291970a5a067f962c731d3e2a2dc8a2da8fee063c4",
+      "case_sha256": "259581e6a9f4bce57272b2a4bc5e56b3f1afae4851e4172f6a1c73de9f08794f",
       "plane_sha256": "82ff204c3b36cc04cf927bd47b70eae7223529fb70962d41922b392dc32ea87a",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -77,22 +81,23 @@
     {
       "run": "n0256",
       "n": 256,
+      "scheme": "jst",
       "points": 65792,
       "venkat_coefficient": 0.5686856043283535,
       "converged": true,
-      "iterations": 916,
-      "wall_seconds": 60.77673881064,
+      "iterations": 443,
+      "wall_seconds": 17.02959573891,
       "threads": 4,
-      "cl": -2.199712634e-12,
-      "cd": 0.01044002131,
-      "cmy": 1.74434577e-12,
+      "cl": 0.351658799,
+      "cd": 0.02223707239,
+      "cmy": -0.03793607915,
       "drop": {
-        "density": 10.314115094,
-        "momentum-x": 10.051029346,
-        "momentum-z": 10.244228445,
-        "energy": 10.377629688
+        "density": 10.052644193,
+        "momentum-x": 10.730676953,
+        "momentum-z": 10.690544849,
+        "energy": 10.017881536
       },
-      "case_sha256": "e476780dd5c58ab915f127010862f5fe55e81a2b18f2e7a3ef24f19fc2ba65d2",
+      "case_sha256": "664bc0691a18e3be80a2d08bed9cd2183c8fad70e888c5849ab6af7f8f406b9b",
       "plane_sha256": "4bde602f7af53417fe9f871d6163cc34b98d717715b20331aba7b517696624a0",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -100,22 +105,23 @@
     {
       "run": "n0512",
       "n": 512,
+      "scheme": "jst",
       "points": 262656,
       "venkat_coefficient": 0.35828112444575466,
       "converged": true,
-      "iterations": 1972,
-      "wall_seconds": 1143.096094648,
+      "iterations": 670,
+      "wall_seconds": 121.260134987,
       "threads": 4,
-      "cl": 1.645975023e-12,
-      "cd": 0.009573857104,
-      "cmy": -1.592821361e-12,
+      "cl": 0.3523573951,
+      "cd": 0.02243086154,
+      "cmy": -0.03811859207,
       "drop": {
-        "density": 10.171590413,
-        "momentum-x": 10.009468067,
-        "momentum-z": 10.224852398000001,
-        "energy": 10.252440567
+        "density": 10.038300148,
+        "momentum-x": 10.246706049,
+        "momentum-z": 10.446119856,
+        "energy": 10.007878961
       },
-      "case_sha256": "d97a2655119d6b1b7f31ca4a99c9d53fbb10ea318a67d61010ca8b030b148704",
+      "case_sha256": "7445b3ca44e82cc62bb7d5e2ceaf11c41a17ac25930bc661dd34b738209c7f3b",
       "plane_sha256": "ef16cb4d3e1ea04896d226bb5e9e4fbe5c7f69b3547fcc0860ea822c65839d82",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -123,22 +129,23 @@
     {
       "run": "n1024",
       "n": 1024,
+      "scheme": "jst",
       "points": 1049600,
       "venkat_coefficient": 0.2257217952884304,
-      "converged": false,
-      "iterations": 6511,
-      "wall_seconds": 8332.734977153,
+      "converged": true,
+      "iterations": 1402,
+      "wall_seconds": 1020.9138799543999,
       "threads": 4,
-      "cl": -1.287328166e-06,
-      "cd": 0.009004695647,
-      "cmy": 3.093856928e-07,
+      "cl": 0.3522324599,
+      "cd": 0.02245932394,
+      "cmy": -0.03807027224,
       "drop": {
-        "density": 7.509919006,
-        "momentum-x": 7.366607594,
-        "momentum-z": 7.569351749,
-        "energy": 7.59833226
+        "density": 10.043763314000001,
+        "momentum-x": 10.038759287,
+        "momentum-z": 10.256487396999999,
+        "energy": 10.009224905
       },
-      "case_sha256": "fbe0d3e8945d628ae97b6603c6405c9b38d5b79c15eb416f469341c1b1c05895",
+      "case_sha256": "52f1a98478c73af2b348284d3fab9ca2f3737df9784e31e231d280d2f2489dba",
       "plane_sha256": "586b06e01dd77320b4c29f45ae2bf232d144d851538302a0143fb7a77f49dc2c",
       "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
       "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
@@ -149,7 +156,10 @@
       "error": "V0107"
     },
     "cd": {
-      "error": "V0108"
+      "estimate": 0.022464223983179706,
+      "order": 2.767358575705077,
+      "gci": 6.125053974629938e-06,
+      "order_if_zero": -0.0018294675504363898
     },
     "cmy": {
       "error": "V0107"
@@ -157,9 +167,19 @@
   },
   "verdicts": [
     {
-      "gate": "naca0012-m080-a000-cd",
+      "gate": "naca0012-m080-a125-cl",
       "pass": false,
-      "reason": "no continuum estimate (V0108)"
+      "reason": "no continuum estimate (V0107)"
+    },
+    {
+      "gate": "naca0012-m080-a125-cd",
+      "value": 0.022464223983179706,
+      "gci": 6.125053974629938e-06,
+      "bounds": [
+        0.02258,
+        0.022779999999999998
+      ],
+      "pass": false
     }
   ]
 }

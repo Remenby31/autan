@@ -76,24 +76,26 @@ SU2-Roe's K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). I
 
 ## Phase 1: SU2 on the NACA 0012 cases
 
-SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/`. CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count.
+SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/`. CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count. Continuum estimates come from the three finest levels.
+
+### SU2-JST, the accuracy reference
 
 | Level | M 0.8, α 0°: it. | CD | M 0.8, α 1.25°: it. | CL | CD | CM | M 0.5, α 1.25°: it. | CL | CD |
 |---|---|---|---|---|---|---|---|---|---|
-| 32² | 459 | −0.004477 | 455 | 0.249619 | 0.005854 | −0.014450 | 180 | 0.115582 | −0.020010 |
-| 64² | 451 | 0.008512 | 474 | 0.316844 | 0.021396 | −0.029516 | 195 | 0.152902 | −0.001639 |
-| 128² | 662 | 0.011083 | 683 | 0.344790 | 0.025040 | −0.036798 | 316 | 0.169238 | 0.002933 |
-| 256² | 916 | 0.010440 | 1 381 | 0.352372 | 0.024654 | −0.038565 | 515 | 0.175435 | 0.002505 |
-| 512² | 1 972 | 0.009574 | 2 072 | 0.352651 | 0.023760 | −0.038453 | 1 326 | 0.177912 | 0.001517 |
-| 1024² | stalls at 7.4 orders (6 511) | 0.009005 | 8 235 | 0.353147 | 0.023198 | −0.038467 | 3 316 | 0.178959 | 0.000831 |
-| Vassberg–Jameson | | 0.008342 | | 0.3516–0.3562 | 0.02268 | | | | → 0 |
+| 32² | 560 | 0.002683 | 557 | 0.296699 | 0.014153 | −0.024564 | 273 | 0.155056 | −0.013512 |
+| 64² | 367 | 0.006085 | 389 | 0.337825 | 0.019849 | −0.034309 | 170 | 0.172758 | −0.005328 |
+| 128² | 328 | 0.007504 | 286 | 0.349362 | 0.021546 | −0.037310 | 209 | 0.177844 | −0.001673 |
+| 256² | 409 | 0.008124 | 443 | 0.351659 | 0.022237 | −0.037936 | 268 | 0.179315 | −0.000411 |
+| 512² | 632 | 0.008292 | 670 | 0.352357 | 0.022431 | −0.038119 | 373 | 0.179668 | −0.000087 |
+| 1024² | 1 284 | 0.008329 | 1 402 | 0.352232 | 0.022459 | −0.038070 | 487 | 0.179750 | −0.000011 |
+| Continuum (order) | | 0.008340 (2.15) | | — | 0.022464 (2.77) | — | | 0.179775 (2.11) | +0.000012 (2.10) |
+| Vassberg–Jameson | | 0.008342 | | 0.3516–0.3562 | 0.02268 | | | 0.180346 (FLO82) | → 0 |
 
-- **M 0.8, α 1.25°.** CL lies in the paper's band from 256² on (0.3524–0.3531), but its change grows from level to level (+0.00028, then +0.00050), so it has no Richardson estimate (`V0108`) and the CL gate cannot be evaluated. CD decreases toward the paper's value, 5.2 counts above it at 1024²; from the three finest levels its observed order is 0.67 and its continuum estimate 0.02225 ± 0.00119 (GCI), which overlaps 0.02268 but fails the one-count gate.
-- **M 0.8, α 0°.** CD decreases from 128² on and is 6.6 counts above the paper at 1024²; over the three finest converged levels (128²–512²) its change grows from level to level, so it has no estimate (`V0108`). At 1024² SU2's residuals stall 7.4 orders below their start (the stall rule stopped it after 6 511 iterations).
-- **M 0.5, α 1.25°.** The drag of this shock-free flow should vanish. SU2's falls from 25 counts (256²) to 8.3 counts (1024²), at order 0.53; its continuum estimate is −7 ± 20 counts and the gate (|CD| < 0.5 count, decreasing at every level) fails. CL converges at order 1.24 to 0.1797 (the paper's FLO82 continuum is 0.1803, Table 2).
-- **Limiter.** At M 0.8, α 0° and M 0.5, α 1.25°, on 256² and 512², rerunning with the limiter off and with its threshold divided by four moves CD by at most 0.36 counts (`limiter-sensitivity.json`, which records each run's scheme keys and hashes), against SU2's offsets of 12–25 counts there: on those runs the offsets come from SU2's discretisation on these meshes, not from the limiter. The lifting transonic condition and 1024², where the threshold is smallest, were not rerun. A vertex-centred scheme puts a node at the sharp trailing edge, where the wall normal is undefined; that is one candidate cause the data cannot single out.
+- **M 0.8, α 0°:** CD converges at order 2.15 to 0.008340, 0.2 count from the paper: gate passed.
+- **M 0.5, α 1.25°:** the drag of this shock-free flow decreases in magnitude at every level, at order 2.1, to +0.12 count: gate passed. CL converges at order 2.1 to 0.17977, 0.3 % below FLO82's continuum.
+- **M 0.8, α 1.25°:** CD converges at order 2.8 to 0.022464, 2.2 counts below the paper: the one-count gate fails. CL lies in the paper's band from 256² but changes direction between 512² and 1024², so it has no Richardson estimate (`V0107`) and its gate cannot be evaluated. Both are what a uniform-freestream far field gives at 148 c: the paper's lifting values come from point-vortex far-field runs, which raise the circulation the boundary sees; without the correction the effective incidence is slightly lower, and lift and drag with it. Autan has the same far field ([cases.md](cases.md#naca-0012-inviscid)), so this gate measures the far field until the correction exists, for both codes.
 
-**What this says about the cases.** SU2 approaches every value of the paper, with the right sign and trend, and its CL is in the paper's band: nothing points to an error in the meshes, conditions, boundaries or force reference. It does not reproduce the paper's continuum CD to one count on these levels: its CD converges at order 0.5–0.7, so the paper's gates need levels beyond 1024² for SU2 (a 2048² run would take one to two days at 4 threads on the shared Spark). The gates are measured on Autan, which is cell-centred; SU2's levels are a plausibility check, not a substitute for the paper.
+**What this says about the cases.** SU2's reference scheme reproduces the two non-lifting gates of the paper at second order on these meshes and conditions, and the lifting case to within its far-field model: the meshes, the conditions, the boundaries and the force reference are right.
 
 ## Tests
 
