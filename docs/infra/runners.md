@@ -22,6 +22,16 @@ Checked on the Sparks: a temporary workflow whose job had an `if: always()`, an 
 
 Residual risks, accepted because only trusted triggers run code: jobs run as the same user as the runner, so a job can read the runner's credentials and alter the runner installation or the workspace that later jobs reuse; anyone who can push a branch can therefore act as the runner. Ephemeral just-in-time runners would remove this, at the price of a repository-administration token on a machine that brokers registrations. Disk use is not capped (no quota without root): a job can fill the shared Docker storage. The proxy lets a job reach any public host, so a malicious maintainer could exfiltrate what the runner sees; the repository is public and the runner holds no secret beyond its own registration.
 
+## Writing GPU jobs
+
+Jobs run directly in the runner container, which is the dev image with the GPU attached: no `docker run` inside a job. Take the GPU lock for any GPU work. Inside a job, `flock /tmp/cfd-gpu.lock <cmd>` fails (exit 66): `flock(1)` opens its file with `O_CREAT`, which the kernel's `fs.protected_regular` refuses on a file another user owns in `/tmp`. Open it read-only instead:
+
+```sh
+{ flock 9 && <cmd>; } 9</tmp/cfd-gpu.lock
+```
+
+`autan-bench` takes the lock itself.
+
 ## Install or update a runner
 
 Run from a workstation with `gh` logged in as the repository owner and SSH access to the Spark. Replace `spark` with `spark-5359` for the second one.
