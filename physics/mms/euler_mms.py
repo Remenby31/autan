@@ -98,13 +98,14 @@ class Euler:
         limiter: bool,
         mach_ref: float,
         stencil: str = "face2",
+        venkat_k: float = 5.0,
     ) -> None:
         self.n = m.n_cells
         err = ctypes.create_string_buffer(512)
         h = ctypes.c_void_p()
         scheme = np.array([FLUXES[flux], 1, int(limiter), STENCILS[stencil]], dtype=np.int32)
         gamma, rgas = 1.4, 287.0
-        real = np.array([gamma, rgas, 5.0, 1.0, mach_ref, 1.0, 100.0, 100.0, 100.0, 1e5])
+        real = np.array([gamma, rgas, venkat_k, 1.0, mach_ref, 1.0, 100.0, 100.0, 100.0, 1e5])
         _check(
             lib().autan_mms_euler_create(
                 m.handle, policy.encode(), _p(scheme), _p(real), ctypes.byref(h), err, len(err)
@@ -211,7 +212,13 @@ class Solution:
 
 
 def solve(
-    m: Mesh, policy: str, flux: str, limiter: bool, tol: float, stencil: str = "face2"
+    m: Mesh,
+    policy: str,
+    flux: str,
+    limiter: bool,
+    tol: float,
+    stencil: str = "face2",
+    venkat_k: float = 5.0,
 ) -> Solution:
     """Newton-Krylov for R_P(u) = 0 from the exact solution; Jacobian-vector products by FD on
     the FP64 residual, preconditioned by ILU of the first-order Jacobian, so that the converged u
@@ -233,11 +240,11 @@ def solve(
     mach = float(speed / sound)
     kind = np.zeros(m.n_faces - m.n_interior, dtype=np.uint8)
     data = np.array([wb[k] for k in PRIMITIVE])
-    ep = Euler(m, policy, flux, limiter, mach, stencil)
-    e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach, stencil)
+    ep = Euler(m, policy, flux, limiter, mach, stencil, venkat_k)
+    e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach, stencil, venkat_k)
     # The preconditioner is the first-order Roe Jacobian whatever the flux: its ILU stays stable
     # where HLLC's switches between wave branches make pivots vanish.
-    pre = Euler(m, "fp64", "roe", limiter, mach, stencil)
+    pre = Euler(m, "fp64", "roe", limiter, mach, stencil, venkat_k)
     for e in {id(ep): ep, id(e64): e64, id(pre): pre}.values():
         e.set_boundary(kind, data)
         e.set_source(src)
@@ -319,6 +326,7 @@ def main() -> None:
     ap.add_argument("--kinds", default="")
     ap.add_argument("--limiter", action="store_true")
     ap.add_argument("--stencil", default="face2", choices=sorted(STENCILS))
+    ap.add_argument("--venkat-k", type=float, default=5.0)
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     lib().autan_mms_commit.restype = ctypes.c_char_p
@@ -333,25 +341,25 @@ def main() -> None:
         for policy in a.policies.split(","):
             for flux in a.fluxes.split(","):
                 config = {"solution": solution, "precision": policy, "flux": flux,
-                          "limiter": a.limiter, "stencil": a.stencil}  # fmt: skip
+                          "limiter": a.limiter, "venkat_k": a.venkat_k, "stencil": a.stencil}  # fmt: skip
                 case_sha = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
                 levels = []
                 for lv, m in meshes:
                     t0 = time.perf_counter()
                     s = solve(
-                        m, policy, flux, a.limiter, 1e-10 if policy == "fp64" else 1e-5, a.stencil
+                        m, policy, flux, a.limiter, 1e-10 if policy == "fp64" else 1e-5, a.stencil, a.venkat_k
                     )
                     levels.append({
                         "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),
                         "errors": errors(m, s.u), "mesh_sha256": lv["mesh_sha256"],
                         "solver_commit": commit, "case_sha256": case_sha,
                         "precision": policy, "flux": flux,
-                        "limiter": a.limiter, "stencil": a.stencil, "relative_residual": s.relative_residual,
+                        "limiter": a.limiter, "venkat_k": a.venkat_k, "stencil": a.stencil, "relative_residual": s.relative_residual,
                         "newton": s.newton, "gmres": s.gmres,
                         "seconds": time.perf_counter() - t0,
                     })  # fmt: skip
                 label = f"{fam.name} {policy} {flux} {a.stencil}" + (
-                    " limited" if a.limiter else ""
+                    f" limited K={a.venkat_k:g}" if a.limiter else ""
                 )
                 name = label.replace(" ", "-").replace("+", "")
                 # One study per conserved variable, in the input format of `autan-vv order`.
