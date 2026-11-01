@@ -10,16 +10,10 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  RUN_STATUSES,
-  type Run,
-  type RunSettings,
-  type RunStatus,
-  type RunSummary,
-} from "../api/contracts";
+import { RUN_STATUSES, type Run, type RunStatus, type RunSummary } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
-import { degrees } from "../api/units";
+import { study } from "../api/studies";
 import { Peek } from "../components/runs/Peek";
 import { SelectionBar } from "../components/runs/SelectionBar";
 import { SelectionContext, useSelection } from "../components/runs/selection";
@@ -417,39 +411,6 @@ function Group({
       </ul>
     </li>
   );
-}
-
-/** "α 7.05–21.47 deg" for the settings that vary across a group; null when none does. Angles
- * are compared in degrees, whatever unit each case wrote. */
-export function study(settings: (RunSettings | undefined)[]): string | null {
-  const parts: string[] = [];
-  const labels = {
-    aoa: "α",
-    sideslip: "β",
-    mach: "Mach",
-    re: "Re",
-    turbulence: "turbulence",
-    precision: "precision",
-  };
-  for (const key of ["aoa", "sideslip", "mach", "re", "turbulence", "precision"] as const) {
-    const raw = settings.map((s) => s?.[key]).filter((v) => v != null);
-    const angle = key === "aoa" || key === "sideslip";
-    const numbers = raw.map((v) => {
-      const n = angle ? degrees(String(v)) : typeof v === "number" ? v : null;
-      // Equal settings written in other units must not look like a sweep after conversion.
-      return n === null ? null : Math.round(n * 1e9) / 1e9;
-    });
-    if (numbers.length && numbers.every((n) => n !== null)) {
-      const distinct = [...new Set(numbers as number[])];
-      if (distinct.length < 2) continue;
-      const range = `${Math.min(...distinct)}–${Math.max(...distinct)}`;
-      parts.push(`${labels[key]} ${range}${angle ? " deg" : ""}`);
-    } else {
-      const distinct = [...new Set(raw.map(String))];
-      if (distinct.length > 1) parts.push(`${labels[key]} ${distinct.join(" · ")}`);
-    }
-  }
-  return parts.length ? parts.join(", ") : null;
 }
 
 function duration(run: Run): string {

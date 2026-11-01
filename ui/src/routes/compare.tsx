@@ -2,11 +2,12 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Run } from "../api/contracts";
+import type { Run, RunSettings } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
-import { coefficient } from "../api/units";
+import { studies } from "../api/studies";
+import { coefficient, degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { DASHES, PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -114,6 +115,7 @@ function Compare() {
   }, [details]);
 
   const others = (registry.data?.runs ?? []).filter((r) => !ids.includes(r.run_id));
+  const available = studies(registry.data);
 
   return (
     <>
@@ -149,7 +151,11 @@ function Compare() {
             {ids.length < MAX_RUNS && others.length > 0 && (
               <Menu
                 label="Add a run"
-                trigger={<Button size="sm" variant="tertiary" icon={<Plus className="size-4" />} />}
+                trigger={
+                  <Button size="sm" variant="tertiary" icon={<Plus className="size-4" />}>
+                    Add a run
+                  </Button>
+                }
               >
                 {others.slice(0, 20).map((run) => (
                   <MenuItem
@@ -158,7 +164,10 @@ function Compare() {
                     onClick={() => setRuns([...ids, run.run_id])}
                   >
                     {run.case.name}{" "}
-                    <span className="font-mono text-fg-3">{run.run_id.slice(-8)}</span>
+                    <span className="font-mono text-fg-3">
+                      {conditions(registry.data?.summaries[run.run_id]?.settings)}{" "}
+                      {run.run_id.slice(-8)}
+                    </span>
                   </MenuItem>
                 ))}
               </Menu>
@@ -169,10 +178,25 @@ function Compare() {
             <EmptyState
               icon={<GitCompareArrows className="size-5" />}
               title="Pick two runs or more"
-              description="Select runs on the Runs page with x, then press c."
+              description={
+                available.length
+                  ? "Compare a study, or add runs above."
+                  : "Add runs above, or select them on the Runs page."
+              }
             >
+              {available.map((s) => (
+                <Button
+                  key={s.name}
+                  onClick={() => setRuns(s.ids)}
+                  data-testid="study-choice"
+                  className="justify-start"
+                >
+                  {s.name}
+                  <span className="font-mono text-fg-3 text-sm">{s.label}</span>
+                </Button>
+              ))}
               <Link to="/" className="self-center">
-                <Button>Go to Runs</Button>
+                <Button variant="tertiary">Go to Runs</Button>
               </Link>
             </EmptyState>
           ) : (
@@ -382,6 +406,17 @@ function Compare() {
       </div>
     </>
   );
+}
+
+// "M 0.2 · α 11.29°": what tells a run of a study from the next, in a menu.
+function conditions(settings: RunSettings | undefined): string {
+  const alpha = degrees(settings?.aoa);
+  return [
+    settings?.mach != null && `M ${settings.mach}`,
+    alpha !== null && `α ${Number(alpha.toFixed(2))}°`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function ChartCard({

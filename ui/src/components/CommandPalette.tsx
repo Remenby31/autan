@@ -1,11 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { Box, CornerDownLeft, FilePlus2, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
+import {
+  Box,
+  CornerDownLeft,
+  FilePlus2,
+  GitCompareArrows,
+  ListTree,
+  Monitor,
+  Moon,
+  Search,
+  Sun,
+} from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
+import { studies } from "../api/studies";
 import { setTheme } from "./shell/theme";
 import { Kbd } from "./ui/Kbd";
 import { formatRelative } from "./ui/RelativeTime";
@@ -86,6 +97,12 @@ export function CommandPalette({
               onSelect={() => close(() => navigate({ to: "/" }))}
             />
             <Item
+              value="go compare"
+              icon={<GitCompareArrows className="size-4" />}
+              title="Compare"
+              onSelect={() => close(() => navigate({ to: "/compare", search: { runs: [] } }))}
+            />
+            <Item
               value="go analysis"
               icon={<Box className="size-4" />}
               title="Analysis"
@@ -98,6 +115,21 @@ export function CommandPalette({
               onSelect={() => close(() => navigate({ to: "/cases/new" }))}
             />
           </Command.Group>
+          {studies(data).length > 0 && (
+            <Command.Group heading="Compare a study">
+              {studies(data).map((s) => (
+                <Item
+                  key={s.name}
+                  value={`compare ${s.name} ${s.label}`}
+                  icon={<GitCompareArrows className="size-4" />}
+                  title={`${s.name} · ${s.label}`}
+                  onSelect={() =>
+                    close(() => navigate({ to: "/compare", search: { runs: s.ids } }))
+                  }
+                />
+              ))}
+            </Command.Group>
+          )}
           <Command.Group heading="Theme">
             <Item
               value="theme system"

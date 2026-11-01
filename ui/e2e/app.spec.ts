@@ -588,3 +588,22 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     );
   }
 });
+
+test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {
+  // The crm-hl runs of scripts/sample-runs.sh form a study: one case name, several angles.
+  const crm = (await runs(page)).filter((r) => r.case.name === "crm-hl");
+  const expected = Math.min(crm.length, 8);
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("compare crm-hl");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  await expect(page.getByTestId("compared").getByRole("link")).toHaveCount(expected);
+
+  await page.goto("/compare");
+  await expect(page.getByRole("button", { name: "Add a run" })).toBeVisible();
+  await page.getByTestId("study-choice").filter({ hasText: "crm-hl" }).click();
+  await expect(page.getByTestId("compared").getByRole("link")).toHaveCount(expected);
+  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+});
