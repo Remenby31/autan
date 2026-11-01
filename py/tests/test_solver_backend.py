@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import autan
+import autan.solver_backend
 import pytest
 from autan import cgns
 from autan.cli import main
@@ -397,3 +398,62 @@ def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
     assert case.spec.time.residual_orders == 8.0  # above the fp32+acc64 plateau
     result = case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     assert result.run.status == "converged"
+
+
+MPI_RELAXATION = _binary(
+    "AUTAN_RUN_RELAXATION_MPI", ROOT / "build-mpi" / "tests" / "runtime" / "autan-run-relaxation"
+)
+needs_mpi = pytest.mark.skipif(
+    MPI_RELAXATION is None or autan.solver_backend.find_launcher() is None,
+    reason="an MPI build of autan-run-relaxation (AUTAN_RUN_RELAXATION_MPI) and a launcher",
+)
+
+
+@needs_mpi
+def test_two_ranks_run_and_stop_through_the_launcher(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    case, mesh = hybrid
+    devices = autan.Devices(kind="cpu", count=2)
+    result = case.run(
+        mesh,
+        backend=autan.SolverBackend(devices=devices, executable=MPI_RELAXATION),
+        runs=tmp_path / "runs",
+    )
+    assert (result.run.status, result.run.devices.count) == ("converged", 2)
+
+    # A stop asked of the SDK reaches every rank through the stop file, not the launcher.
+    runs = tmp_path / "stopped"
+    script = (
+        "import sys, autan\nfrom pathlib import Path\n"
+        "case, mesh = autan.load(sys.argv[1]), autan.MeshInfo.load(sys.argv[2])\n"
+        "backend = autan.SolverBackend(devices=autan.Devices(kind='cpu', count=2), "
+        "executable=Path(sys.argv[3]))\n"
+        "try:\n    case.run(mesh, backend=backend, runs=Path(sys.argv[4]))\n"
+        "except KeyboardInterrupt:\n    sys.exit(130)\n"
+    )
+    env = {**os.environ, "AUTAN_TEST_PAUSE_MS": "20", "AUTAN_TEST_FACTOR": "1.0"}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path / "hybrid.py"),
+            str(tmp_path / "hybrid.meshinfo.json"),
+            str(MPI_RELAXATION),
+            str(runs),
+        ],
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not list(runs.glob("run-*/history.jsonl")):
+            time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=60) == 130
+    finally:
+        process.kill()
+    [run_dir] = runs.glob("run-*")
+    stopped = autan.Results.open(run_dir)
+    assert stopped.run.status == "stopped"
+    assert stopped.field("Density").size == mesh.counts.cells  # the solution was written

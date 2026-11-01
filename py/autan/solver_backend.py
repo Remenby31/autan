@@ -83,7 +83,16 @@ class SolverBackend:
         with tempfile.TemporaryDirectory(prefix="autan-input-") as folder:
             source = Path(folder) / "solver-input.json"
             source.write_text(json.dumps(document, indent=2) + "\n")
-            command = [str(executable), "--input", str(source), "--runs", str(runs)]
+            stop = Path(folder) / "stop"
+            command = [
+                str(executable),
+                "--input",
+                str(source),
+                "--runs",
+                str(runs),
+                "--stop-file",
+                str(stop),
+            ]
             if self.devices.count > 1:  # one rank per device (solver-input.md, devices)
                 launcher = find_launcher()
                 if launcher is None:
@@ -108,7 +117,7 @@ class SolverBackend:
                     message = f"the MPI launcher {command[0]} cannot be started: {error}"
                     raise CaseError([diagnostic("E0808", message)]) from None
                 raise CaseError([_not_installed(str(error))]) from None
-            stdout, stderr, interrupted = _wait(process)
+            stdout, stderr, interrupted = _wait(process, stop)
         if interrupted or process.returncode == 130:
             raise KeyboardInterrupt
         if process.returncode == 2:
@@ -174,11 +183,12 @@ def _failure(code: int, stderr: str) -> Diagnostic:
     return diagnostic("E0704", f"autan-run exited with {code}: {stderr.strip()}")
 
 
-def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
-    """Wait for the runtime. On SIGINT or SIGTERM of this process, forward SIGINT so the
-    runtime finalizes the run as stopped, ignore further interrupts, and terminate then
-    kill it only if it does not finish within GRACE seconds. The runtime is always reaped
-    before this returns."""
+def _wait(process: subprocess.Popen[str], stop: Path) -> tuple[str, str, bool]:
+    """Wait for the runtime. On SIGINT or SIGTERM of this process, create the stop file so
+    that every rank finalizes the run as stopped (a launcher would turn a signal into an
+    abort), ignore further interrupts, and terminate then kill its process group only if it
+    does not finish within GRACE seconds. The runtime is always reaped before this
+    returns."""
     deadline: float | None = None
     previous = None
     if threading.current_thread() is threading.main_thread():
@@ -191,7 +201,7 @@ def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
             except KeyboardInterrupt:
                 if deadline is None:
                     deadline = time.monotonic() + GRACE
-                    process.send_signal(signal.SIGINT)
+                    stop.touch()
                 continue
             except subprocess.TimeoutExpired:
                 stdout, stderr = _terminate(process)
