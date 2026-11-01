@@ -39,8 +39,10 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
 
 // Steady runs: pseudo-transient continuation, (V / dt + dR/dU) du = -R with the approximate
 // Jacobian, local dt = CFL V / lambda, the CFL number following the residual (switched evolution
-// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246).
-constexpr double cfl_start = 10.0;
+// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246). The multigrid solves the
+// step's system at any CFL number, so the start is large: the pseudo-time step then no longer
+// scales with the viscous time step h^2 (docs/design/multigrid.md, measurements).
+constexpr double cfl_start = 1000.0;
 constexpr double cfl_min = 1.0;
 constexpr double first_order_drop = 1e-3;
 constexpr int first_order_max_steps = 200;
