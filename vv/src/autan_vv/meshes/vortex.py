@@ -5,10 +5,13 @@
 moved by a seeded jitter (along the boundary only tangentially, the same on both sides of a
 periodic pair) and whose squares are split along a seeded diagonal; every finer level splits each
 triangle into four at its edge midpoints, so a level is the next finer one with every other line
-removed. Both are extruded over a thickness 20/n, so that h = (V / N)^(1/3) is proportional to
-1/n: 20/n for quadrilaterals, 20/(2^(1/3) n) for triangles, two per lattice square. The zones xmin
+removed; `vortex-hex` takes any n, and its levels are nested when they double, as these are. Both
+are extruded over a thickness of 1 at every level, as the order study of a 2D oracle requires (one
+layer, one domain); its in-plane size h = sqrt(area / N) is 20/n for quadrilaterals and 20/(sqrt(2) n)
+for triangles, two per lattice square. The zones xmin
 and xmax, ymin and ymax are periodic pairs, translated by 20 along x and y; zmin and zmax bound
-the layer.
+the layer. A case on these meshes sets zmin and zmax to symmetry and names no periodic zone in its
+boundary rules (E0424).
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ COARSE = 8
 # (zone a, zone b, translation): x_b = x_a + translation (mesh.md, Periodic pairs).
 PERIODIC = (("xmin", "xmax", (SIDE, 0.0, 0.0)), ("ymin", "ymax", (0.0, SIDE, 0.0)))
 JITTER = 0.25
+THICKNESS = 1.0
 
 
 def _lattice(seed: int) -> tuple[FloatArray, IntArray]:
@@ -76,7 +80,7 @@ def _refine(xy: FloatArray, tri: IntArray) -> tuple[FloatArray, IntArray]:
 
 def grid(kind: str, n: int, seed: int = 0) -> tuple[FloatArray, dict[str, IntArray]]:
     """Points and cells (Gmsh node order) of level `n` of family `kind`."""
-    dz = SIDE / n
+    dz = THICKNESS
     if kind == "vortex-hex":
         axis = LOWER + SIDE * np.arange(n + 1) / n
         gx, gy = np.meshgrid(axis, axis, indexing="ij")

@@ -282,6 +282,17 @@ def _zone_faces(mesh: FaceMesh, name: str, axis: int, shift: float) -> set[tuple
     return out
 
 
+def _zone_polygons(mesh: FaceMesh, name: str) -> list[np.ndarray]:
+    """The node coordinates of each face of zone `name`."""
+    zone = next(z for z in mesh.zones if z.name == name)
+    return [mesh.points[mesh.face(f)] for f in range(zone.start, zone.start + zone.count)]
+
+
+def _polygon_key(corners: np.ndarray) -> frozenset[tuple[float, ...]]:
+    """A polygon as the set of its corners, rounded off the 16 digits the files keep."""
+    return frozenset(map(tuple, corners.round(9).tolist()))
+
+
 @pytest.mark.parametrize("kind", ["vortex-hex", "vortex-prism"])
 def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> None:
     # The square [-10, 10]^2 of the isentropic vortex, one layer of thickness 20/n: each face of
@@ -290,12 +301,12 @@ def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> N
     family, meshes = generate_family(kind, (8, 16, 32), tmp_path, seed=5)
     for level, mesh in zip(family.levels, meshes, strict=True):
         g = mesh.geometry
-        side, dz = 20.0, 20.0 / level.n
+        side = 20.0
         assert g.cell_volume.min() > 0.0
-        assert g.cell_volume.sum() == pytest.approx(side * side * dz, rel=1e-13)
-        # h = (V / N)^(1/3) proportional to 1/n: 2^(-1/3) dz with two triangles per square.
-        per_square = 1.0 if kind == "vortex-hex" else 2.0
-        assert level.h == pytest.approx(dz * per_square ** (-1.0 / 3.0), rel=1e-12)
+        assert g.cell_volume.sum() == pytest.approx(side * side, rel=1e-13)
+        # One layer of thickness 1 at every level; n^2 squares, two triangles each for prisms.
+        np.testing.assert_array_equal(np.unique(mesh.points[:, 2]), [0.0, 1.0])
+        assert mesh.n_cells == level.n**2 * (1 if kind == "vortex-hex" else 2)
         for a, b, axis in (("xmin", "xmax", 0), ("ymin", "ymax", 1)):
             moved = _zone_faces(mesh, a, axis, side)
             assert moved
@@ -304,11 +315,43 @@ def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> N
         links = re.search(r"\$Periodic\n(\d+)\n", text)
         assert links is not None
         assert int(links.group(1)) == 2
+    # Nested: the faces of zmin at the finer level are exactly the four children of each coarser
+    # face, at its edge midpoints (and, for a quadrilateral, its centre).
     for coarse, fine in itertools.pairwise(meshes):
-        assert fine.n_cells == 4 * coarse.n_cells
-        plane = {tuple(p) for p in fine.points[fine.points[:, 2] == 0.0][:, :2].tolist()}
-        assert {
-            tuple(p) for p in coarse.points[coarse.points[:, 2] == 0.0][:, :2].tolist()
-        } <= plane
+        children = set()
+        for corners in _zone_polygons(coarse, "zmin"):
+            k = len(corners)
+            mid = [0.5 * (corners[i] + corners[(i + 1) % k]) for i in range(k)]
+            if k == 3:
+                parts = [
+                    (corners[0], mid[0], mid[2]),
+                    (mid[0], corners[1], mid[1]),
+                    (mid[2], mid[1], corners[2]),
+                    (mid[0], mid[1], mid[2]),
+                ]
+            else:
+                centre = corners.mean(axis=0)
+                parts = [(corners[i], mid[i], centre, mid[(i - 1) % 4]) for i in range(4)]
+            children |= {_polygon_key(np.array(q)) for q in parts}
+        assert {_polygon_key(q) for q in _zone_polygons(fine, "zmin")} == children
     again, _ = generate_family(kind, (8,), tmp_path / "again", seed=5)
     assert again.levels[0].file_sha256 == family.levels[0].file_sha256
+    # Read back through Gmsh: the nodes are the arrays bit for bit, and each link makes the max
+    # zone the translate of the min zone.
+    gmsh.initialize(readConfigFiles=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(tmp_path / family.levels[0].file))
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        xyz = np.asarray(coords).reshape(-1, 3)[np.argsort(node_tags)]
+        np.testing.assert_array_equal(xyz, meshes[0].points)
+        entity = {
+            gmsh.model.getPhysicalName(d, t): gmsh.model.getEntitiesForPhysicalGroup(d, t)[0]
+            for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        for a, b, shift in (("xmin", "xmax", (20.0, 0.0, 0.0)), ("ymin", "ymax", (0.0, 20.0, 0.0))):
+            master, _, _, affine = gmsh.model.mesh.getPeriodicNodes(2, entity[b])
+            assert master == entity[a]
+            np.testing.assert_array_equal(np.asarray(affine).reshape(4, 4)[:3, 3], shift)
+    finally:
+        gmsh.finalize()
