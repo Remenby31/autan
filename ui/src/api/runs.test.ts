@@ -63,7 +63,26 @@ test("a continued run's drop is measured from the reference it carries", () => {
   const history = appendHistory(
     empty(),
     [{ iteration: 31, time: null, residuals: { density: 1e-3, energy: 1e-4 } }],
-    reference,
+    { residual_reference: reference, woken: [] },
   );
   expect(history.orders.at(-1)).toBeCloseTo(3);
+});
+
+test("an identically zero equation is exempt at its floor and woken above it, for good", () => {
+  // Floor: 1e-12 times the largest first residual (case-schema.md#time).
+  const rows = (...my: number[]) =>
+    my.map((v, k) => ({
+      iteration: k + 1,
+      time: null,
+      residuals: { density: 10 ** -(4 * k), my: v },
+    }));
+  const drops = (my: number[], woken: string[] = []) =>
+    appendHistory(empty(), rows(...my), { residual_reference: null, woken }).orders;
+  expect(drops([0, 1e-12, 1e-33])).toEqual([0, 4, 8]);
+  expect(drops([1e-30, 1e-33])[1]).toBeCloseTo(4);
+  const woken = drops([0, 1e-11, 1e-33]);
+  expect(woken[1]).toBeNaN();
+  expect(woken[2]).toBeNaN();
+  expect(drops([0, 1e-33], ["my"])[1]).toBeNaN();
+  expect(drops([1e-30, 1e-33], ["my"])[1]).toBeCloseTo(3);
 });

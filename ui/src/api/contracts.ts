@@ -50,6 +50,7 @@ export interface RunStart {
   time: number | null;
   solution_sha256: string;
   residual_reference: Record<string, number> | null;
+  woken: string[] | null;
 }
 
 export interface Forces {

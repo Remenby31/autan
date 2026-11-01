@@ -2,6 +2,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from autan.restart import FLOOR
+
 from autan_ui.confine import Folder
 from autan_ui.history import read_history
 
@@ -15,17 +17,27 @@ class _Trend:
     iteration: int | None = None
     orders: list[float] = field(default_factory=list)
     current: float | None = None
+    woken: set[str] = field(default_factory=set)
 
 
-def residual_orders(first: dict[str, float], residuals: dict[str, float]) -> float | None:
+def residual_orders(
+    first: dict[str, float], residuals: dict[str, float], woken: set[str]
+) -> float | None:
     """Orders of magnitude the slowest equation has dropped since iteration 1: the quantity
-    the steady convergence criterion (`time.residual_orders`, case-schema.md) compares. None
-    when an equation cannot be compared: a residual that is not a positive finite number, or
-    that grew from an exact zero at iteration 1. A residual that reached exactly zero does not
-    limit the drop."""
+    the steady convergence criterion (`time.residual_orders`, case-schema.md) compares. An
+    equation below the floor at iteration 1 (FLOOR times the largest first residual) is exempt
+    while it stays at or below it; once above, it joins `woken`, which this call updates, and
+    is never exempt again. None when an equation cannot be compared: a residual that is not a
+    positive finite number, or that grew from an exact zero. A residual that reached exactly
+    zero does not limit the drop."""
+    floor = FLOOR * max((v for v in first.values() if _positive(v)), default=0.0)
     drops = []
     for name, value in residuals.items():
         start = first.get(name)
+        if name not in woken and isinstance(start, float | int) and 0 <= start < floor:
+            if isinstance(value, float | int) and 0 <= value <= floor:
+                continue
+            woken.add(name)
         if value == 0 and (start == 0 or _positive(start)):
             continue  # Reached exactly zero: no limit on the drop.
         if not (_positive(start) and _positive(value)):
@@ -58,9 +70,11 @@ class Summaries:
         *,
         live: bool,
         reference: dict[str, float] | None = None,
+        woken: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """`reference`: the residuals the drop is measured from when they are not the run's own
-        first line, `start.residual_reference` of a steady `continue` run (results.md)."""
+        """`reference` and `woken`: `start.residual_reference` and `start.woken` of a steady
+        `continue` run (results.md), the residuals the drop is measured from and the identically
+        zero equations no longer exempt."""
         trend = self._trends.setdefault(name, _Trend())
         stat = folder.stat("history.jsonl")
         if (stat.st_size if stat else 0) < trend.offset:
@@ -78,8 +92,9 @@ class Summaries:
                 residuals = {}
             if trend.first is None:
                 trend.first = reference or residuals
+                trend.woken = set(woken or ())
             trend.iteration = iteration
-            orders = residual_orders(trend.first, residuals)
+            orders = residual_orders(trend.first, residuals, trend.woken)
             trend.current = orders
             if orders is not None:
                 trend.orders.append(orders)

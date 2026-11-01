@@ -98,6 +98,7 @@ class Registry:
                                     folder,
                                     live=live,
                                     reference=start.get("residual_reference"),
+                                    woken=start.get("woken"),
                                 )
                         except (OSError, ValueError, ArithmeticError) as error:
                             log.warning("no summary for %s: %s", child, error)

@@ -239,8 +239,10 @@ def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     assert summary["iteration"] == 30
     assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
     assert len(summary["trend"]) == 30
-    assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
     case = tomllib.loads((source / "case.toml").read_text())
+    # The default target of a run in fp32+acc64 (case-schema.md#time).
+    assert case["physics"]["precision"] == "fp32+acc64"
+    assert (summary["target_orders"], summary["max_iterations"]) == (5.0, 10000)
     assert summary["settings"]["aoa"] == case["freestream"]["aoa"]
     assert summary["settings"]["turbulence"] == case["physics"]["turbulence"]["model"]
 
@@ -384,19 +386,36 @@ def test_a_manufactured_solution_run_plans_against_its_archive(
 
 
 @pytest.mark.parametrize(
-    ("first", "now", "expected"),
+    ("first", "now", "woken", "expected", "now_woken"),
     [
-        ({"density": 1e-300, "energy": 1.0}, {"density": 1e-310, "energy": 1e-8}, 8.0),
-        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 0.0}, 8.0),
-        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 1.0}, None),
-        ({"density": 1.0, "energy": 1.0}, {"density": 0.0, "energy": 1e-8}, 8.0),
+        (
+            {"density": 1e-300, "energy": 1.0},
+            {"density": 1e-310, "energy": 1e-8},
+            set(),
+            8.0,
+            set(),
+        ),
+        ({"density": 1.0, "energy": 0.0}, {"density": 1e-8, "energy": 0.0}, set(), 8.0, set()),
+        ({"density": 1.0, "energy": 1.0}, {"density": 0.0, "energy": 1e-8}, set(), 8.0, set()),
+        # Identically zero at iteration 1 (below 1e-12 of the largest): exempt at the floor...
+        ({"density": 1.0, "my": 0.0}, {"density": 1e-8, "my": 1e-12}, set(), 8.0, set()),
+        ({"density": 1.0, "my": 1e-30}, {"density": 1e-8, "my": 1e-33}, set(), 8.0, set()),
+        # ...woken above it, for good: it must drop like the others, which it cannot from zero.
+        ({"density": 1.0, "my": 0.0}, {"density": 1e-8, "my": 1e-11}, set(), None, {"my"}),
+        ({"density": 1.0, "my": 0.0}, {"density": 1e-8, "my": 1e-33}, {"my"}, None, {"my"}),
+        ({"density": 1.0, "my": 1e-30}, {"density": 1e-8, "my": 1e-33}, {"my"}, 3.0, {"my"}),
     ],
 )
 def test_residual_drop_is_the_slowest_equation(
-    first: dict[str, float], now: dict[str, float], expected: float | None
+    first: dict[str, float],
+    now: dict[str, float],
+    woken: set[str],
+    expected: float | None,
+    now_woken: set[str],
 ) -> None:
-    orders = residual_orders(first, now)
+    orders = residual_orders(first, now, woken)
     assert orders == (None if expected is None else pytest.approx(expected))
+    assert woken == now_woken
 
 
 def test_several_histories_share_one_stream(runs: Path, server: str) -> None:

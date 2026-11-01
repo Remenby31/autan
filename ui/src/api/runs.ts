@@ -1,6 +1,14 @@
 import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type { Diagnostic, Forces, HistoryRecord, LogLine, Run, RunRegistry } from "./contracts";
+import type {
+  Diagnostic,
+  Forces,
+  HistoryRecord,
+  LogLine,
+  Run,
+  RunRegistry,
+  RunStart,
+} from "./contracts";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -138,6 +146,8 @@ export interface HistoryColumns {
   monitors: Map<string, Forces>;
   /** Orders of magnitude the slowest residual has dropped since the first record. */
   orders: number[];
+  /** Identically zero equations that rose above their floor: no longer exempt. */
+  woken: Set<string>;
   version: number;
 }
 
@@ -148,6 +158,7 @@ export function emptyColumns(): HistoryColumns {
     forces: new Map(),
     monitors: new Map(),
     orders: [],
+    woken: new Set(),
     version: 0,
   };
 }
@@ -161,28 +172,48 @@ function column<T>(map: Map<string, T>, name: string, create: () => T): T {
   return value;
 }
 
+// An equation below FLOOR times the largest first residual is identically zero
+// (case-schema.md#time); the SDK's autan.restart.FLOOR.
+const FLOOR = 1e-12;
+
 /** Appends in place, so a long history is never copied; returns a new handle for React. */
 export function appendHistory(
   columns: HistoryColumns,
   records: HistoryRecord[],
-  /** `start.residual_reference` of a steady continued run: the drop is measured from it. */
-  reference?: Record<string, number> | null,
+  /** `start` of a steady continued run: the drop is measured from its `residual_reference`,
+   * and the equations of its `woken` are no longer exempt. */
+  start?: Pick<RunStart, "residual_reference" | "woken"> | null,
 ): HistoryColumns {
+  const reference = start?.residual_reference ?? null;
+  if (!columns.iteration.length) for (const name of start?.woken ?? []) columns.woken.add(name);
   for (const record of records) {
     columns.iteration.push(record.iteration);
     let slowest = Number.POSITIVE_INFINITY;
     let comparable = true;
+    const firsts: Record<string, number> = reference
+      ? { ...reference }
+      : Object.fromEntries([...columns.residuals].map(([name, series]) => [name, series[0] ?? 0]));
     for (const [name, value] of Object.entries(record.residuals)) {
       const series = column(columns.residuals, name, () => []);
       series.push(value);
-      const first = reference?.[name] ?? series[0] ?? 0;
+      if (!(name in firsts)) firsts[name] = series[0] ?? 0;
+    }
+    const floor =
+      FLOOR * Math.max(0, ...Object.values(firsts).filter((v) => v > 0 && v < Infinity));
+    for (const [name, value] of Object.entries(record.residuals)) {
+      const first = firsts[name] ?? 0;
+      if (!columns.woken.has(name) && first >= 0 && first < floor) {
+        if (value >= 0 && value <= floor) continue;
+        columns.woken.add(name);
+      }
       if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
       else comparable = false;
     }
-    // Same rule as the server's residual_orders: a residual at exactly zero does not limit the
-    // drop; one grown from an exact zero, or not positive, leaves it undefined.
+    // Same rule as the server's residual_orders: an identically zero equation is exempt at its
+    // floor, a residual at exactly zero does not limit the drop; one grown from an exact zero,
+    // or not positive, leaves it undefined.
     columns.orders.push(comparable && Number.isFinite(slowest) ? slowest : Number.NaN);
     for (const [name, forces] of Object.entries(record.monitors ?? {})) {
       columns.monitors.set(name, forces);
@@ -226,7 +257,7 @@ export function useLiveRun(runId: string): LiveRun {
   }));
   useEffect(() => {
     let history = emptyColumns();
-    let reference: Record<string, number> | null = null;
+    let start: Run["start"] = null;
     const log: LogLines = { lines: [], version: 0 };
     setState({ run: null, history, log, connected: false, invalid: null });
     const source = new EventSource(`/api/runs/${runId}/history/events`);
@@ -234,13 +265,13 @@ export function useLiveRun(runId: string): LiveRun {
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
     source.addEventListener("run", (e) => {
       const run = JSON.parse(e.data) as Run;
-      reference = run.start?.residual_reference ?? null;
+      start = run.start;
       setState((s) => ({ ...s, run }));
     });
     source.addEventListener("history", (e) => {
       const records = JSON.parse(e.data) as HistoryRecord[];
       if (!records.length) return;
-      history = appendHistory(history, records, reference);
+      history = appendHistory(history, records, start);
       const next = history;
       setState((s) => ({ ...s, history: next }));
     });
@@ -285,19 +316,19 @@ export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> 
         next.set(runId, change(old));
         return next;
       });
-    const references = new Map<string, Record<string, number> | null>();
+    const starts = new Map<string, Run["start"]>();
     const query = runIds.map((id) => `run=${encodeURIComponent(id)}`).join("&");
     const source = new EventSource(`/api/runs/history/events?${query}`);
     source.addEventListener("run", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: Run };
-      references.set(run_id, data.start?.residual_reference ?? null);
+      starts.set(run_id, data.start);
       set(run_id, (old) => ({ ...old, run: data }));
     });
     source.addEventListener("history", (e) => {
       const { run_id, data } = JSON.parse(e.data) as { run_id: string; data: HistoryRecord[] };
       const history = histories.get(run_id);
       if (!history || !data.length) return;
-      const next = appendHistory(history, data, references.get(run_id));
+      const next = appendHistory(history, data, starts.get(run_id));
       histories.set(run_id, next);
       set(run_id, (old) => ({ ...old, history: next }));
     });
