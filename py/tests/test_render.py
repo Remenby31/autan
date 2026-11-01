@@ -136,7 +136,6 @@ case.verification = autan.Manufactured(
 
 
 def body(source: str) -> str:
-    """``source`` without its module docstring and the blank line after it."""
     first = ast.parse(source).body[0]
     assert isinstance(first, ast.Expr)
     assert first.end_lineno is not None
@@ -218,19 +217,65 @@ EDGES: dict[str, Callable[[autan.Case], None]] = {
     "library-units": co2_viscosity_in_base_units,
     "long-zone": lambda case: case.boundary("w" * 80).wall(),
     "long-zone-arguments": lambda case: case.boundary("w" * 80).wall(temperature=Q(400, "K")),
+    "long-zone-long-arguments": lambda case: case.cell_zone("w" * 80).fluid(
+        autan.gases.AIR,
+        initial=autan.State(
+            pressure=Q(101325, "Pa"), temperature=Q(300, "K"), velocity=(Q(1, "m/s"),) * 3
+        ),
+    ),
+    "broken-tuple": lambda case: case.monitor(
+        autan.forces("*", moment_center=(Q(1.23456789012345e-100, "m"),) * 3)
+    ),
+    "positive-exponent": lambda case: case.freestream(
+        mach=0.2, pressure=Q(101325, "Pa"), ref_length=Q(1e20, "m")
+    ),
+    "long-unit": lambda case: case.freestream(
+        mach=0.2,
+        pressure=Q(101325, "Pa"),
+        ref_length=Q(
+            1,
+            "kPa**0.8125 * m**0.65625 * s**3.09375 * W**0.59375 / J**0.0625 / kg**1.25"
+            " / Pa**0.09375",
+        ),
+    ),
 }
-NAMES = {"quote": 'a"b', "both-quotes": "a\"b'c", "carriage-return": "a\rb", "nul": "a\x00b"}
+NAMES = {
+    "quote": 'a"b',
+    "both-quotes": "a\"b'c",
+    "more-double-quotes": 'a""b\'c',
+    "carriage-return": "a\rb",
+    "nul": "a\x00b",
+    "wide": "n" + "\u754c" * 40,
+}
 
 
-@pytest.mark.parametrize("edge", sorted(EDGES) + sorted(NAMES))
-def test_rendering_keeps_the_document(edge: str, write_case: Callable[..., Path]) -> None:
+def edge_case(edge: str) -> autan.Case:
     case = autan.Case(NAMES.get(edge, "edge"), mesh="crm-hl.cgns")
     case.physics = autan.Compressible(turbulence=autan.SA())
     case.freestream(mach=0.2, pressure=Q(101325, "Pa"))
     if edge in EDGES:
         EDGES[edge](case)
+    return case
+
+
+@pytest.mark.parametrize("edge", sorted(EDGES) + sorted(NAMES))
+def test_rendering_keeps_the_document(edge: str, write_case: Callable[..., Path]) -> None:
+    case = edge_case(edge)
     source = case.to_python()
     reloaded = autan.load(write_case(source))
     assert reloaded.spec == case.spec
     assert reloaded.spec.hash() == case.spec.hash()
     assert ruff_clean(source)
+
+
+def test_rendered_code_type_checks_against_the_builders(tmp_path: Path) -> None:
+    for edge in sorted(EDGES) + sorted(NAMES):
+        (tmp_path / f"{edge.replace('-', '_')}.py").write_text(edge_case(edge).to_python())
+    config = Path(__file__).parents[2] / "pyproject.toml"
+    checked = subprocess.run(
+        [sys.executable, "-m", "mypy", "--config-file", str(config), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stdout

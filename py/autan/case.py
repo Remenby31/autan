@@ -52,6 +52,9 @@ if TYPE_CHECKING:
     import pint
 
     from autan.fake import FakeBackend
+
+    # A quantity, or its text "<number> <unit>" as the case document writes it.
+    type QuantityLike = pint.Quantity | str
     from autan.meshinfo import MeshInfo
     from autan.results import Results
     from autan.solver_backend import SolverBackend
@@ -187,13 +190,13 @@ class Case:
         self,
         *,
         mach: float | None = None,
-        velocity: pint.Quantity | None = None,
-        aoa: pint.Quantity | None = None,
-        sideslip: pint.Quantity | None = None,
-        temperature: pint.Quantity | None = None,
-        pressure: pint.Quantity | None = None,
+        velocity: QuantityLike | None = None,
+        aoa: QuantityLike | None = None,
+        sideslip: QuantityLike | None = None,
+        temperature: QuantityLike | None = None,
+        pressure: QuantityLike | None = None,
         re: float | None = None,
-        ref_length: pint.Quantity | None = None,
+        ref_length: QuantityLike | None = None,
     ) -> None:
         """Set the freestream state; which parameters apply depends on the physics."""
         given = {
@@ -357,7 +360,7 @@ class BoundarySelector:
     def _add(self, condition: Any) -> None:
         self._case._add_boundary(BoundaryRule(zones=self._zones, condition=condition))
 
-    def wall(self, *, temperature: pint.Quantity | None = None) -> None:
+    def wall(self, *, temperature: QuantityLike | None = None) -> None:
         """No-slip wall, adiabatic unless ``temperature`` is given."""
         self._add(Wall() if temperature is None else Wall(temperature=temperature))
 
@@ -373,15 +376,15 @@ class BoundarySelector:
         a 2D lifting body."""
         self._add(Farfield(point_vortex=point_vortex))
 
-    def inlet(self, *, total_pressure: pint.Quantity, total_temperature: pint.Quantity) -> None:
+    def inlet(self, *, total_pressure: QuantityLike, total_temperature: QuantityLike) -> None:
         """Subsonic inlet at total conditions (compressible)."""
         self._add(Inlet(total_pressure=total_pressure, total_temperature=total_temperature))
 
-    def velocity_inlet(self, *, velocity: pint.Quantity) -> None:
+    def velocity_inlet(self, *, velocity: QuantityLike) -> None:
         """Inlet at a given normal velocity (incompressible)."""
         self._add(VelocityInlet(velocity=velocity))
 
-    def outlet(self, *, static_pressure: pint.Quantity) -> None:
+    def outlet(self, *, static_pressure: QuantityLike) -> None:
         """Subsonic outlet at a static pressure."""
         self._add(Outlet(static_pressure=static_pressure))
 
@@ -417,8 +420,8 @@ def forces(
     surfaces: str,
     *,
     name: str = "forces",
-    ref_area: pint.Quantity | None = None,
-    moment_center: tuple[pint.Quantity, pint.Quantity, pint.Quantity] | None = None,
+    ref_area: QuantityLike | None = None,
+    moment_center: tuple[QuantityLike, QuantityLike, QuantityLike] | None = None,
 ) -> Forces:
     """A forces monitor over the boundary zones matching ``surfaces``."""
     given: dict[str, Any] = {"surfaces": surfaces, "name": name}

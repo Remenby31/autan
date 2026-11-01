@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -35,7 +36,6 @@ _LIBRARY = [
 
 
 def to_python(spec: CaseSpec) -> str:
-    """Render ``spec`` as SDK code (see ``autan.Case.to_python``)."""
     value = _Values()
     body = _statements(spec, value)
     imports = ["import autan"]
@@ -119,7 +119,9 @@ class _Values:
     def __call__(self, value: Any) -> _Expr:
         if isinstance(value, pint.Quantity):
             return self.quantity(value)
-        if isinstance(value, bool | int | float) or value is None:
+        if isinstance(value, float):
+            return _number(value)
+        if isinstance(value, bool | int) or value is None:
             return repr(value)
         if isinstance(value, str):
             return _string(value)
@@ -151,21 +153,27 @@ class _Values:
             found.append(_Keyword(key, self(mine)))
         return tuple(found)
 
-    def quantity(self, quantity: pint.Quantity) -> str:
+    def quantity(self, quantity: pint.Quantity) -> _Expr:
         text = format_quantity(quantity)
-        magnitude, unit = text.split(" ", 1)
+        unit = text.split(" ", 1)[1]
         if not _EXPORTED_TEXT.fullmatch(unit):
             return _string(text)
         self.units |= set(re.findall(r"[A-Za-z]+", unit))
+        magnitude = _number(float(quantity.magnitude))
         expression = unit.replace(" ** ", "**")
         if expression.startswith("1 / "):
-            return f"{magnitude} / {expression.removeprefix('1 / ')}"
-        return f"{magnitude} * {expression}"
+            return _Quantity(f"{magnitude} / {expression.removeprefix('1 / ')}", _string(text))
+        return _Quantity(f"{magnitude} * {expression}", _string(text))
+
+
+def _number(value: float) -> str:
+    # ruff writes a positive exponent without its sign.
+    return repr(value).replace("e+", "e")
 
 
 def _string(text: str) -> str:
-    # ruff's preferred quotes: double, unless only that would need escaping.
-    quote = "'" if '"' in text and "'" not in text else '"'
+    # ruff's preferred quotes: double, unless single quotes need fewer escapes.
+    quote = "'" if text.count('"') > text.count("'") else '"'
     body = "".join(
         "\\\\"
         if char == "\\"
@@ -193,12 +201,27 @@ class _Call:
     receiver: _Call | None = None
 
 
-_Expr = str | _Call
+@dataclass(frozen=True)
+class _Quantity:
+    # A quantity as an expression of autan.units, or as its text where the expression would
+    # need a line of its own that it does not fit on.
+    expression: str
+    text: str
+
+
+_Expr = str | _Call | _Quantity
+
+
+def _width(text: str) -> int:
+    # Display width, as ruff measures lines: East Asian wide characters take two columns.
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
 
 
 def _flat(expr: _Expr | _Keyword) -> str:
     if isinstance(expr, str):
         return expr
+    if isinstance(expr, _Quantity):
+        return expr.expression
     if isinstance(expr, _Keyword):
         return f"{expr.name}={_flat(expr.value)}"
     return f"{_head(expr)}({_joined(expr)})"
@@ -214,22 +237,27 @@ def _joined(call: _Call) -> str:
 
 
 def _layout(expr: _Expr | _Keyword, indent: int, column: int, tail: int) -> str:
-    # ``expr`` from ``column`` on a line indented by ``indent``, ``tail`` characters following
-    # it, broken as ruff format breaks it: the last brackets first, unless what precedes them
-    # does not fit, then the receiver's.
+    # ``expr`` from ``column`` on a line indented by ``indent``, ``tail`` columns following it,
+    # broken as ruff format breaks it: the last brackets first, unless what precedes them does
+    # not fit, then the receiver's.
     flat = _flat(expr)
-    if isinstance(expr, str) or column + len(flat) + tail <= WIDTH:
+    if isinstance(expr, str) or column + _width(flat) + tail <= WIDTH:
         return flat
+    if isinstance(expr, _Quantity):
+        return expr.text
     if isinstance(expr, _Keyword):
         prefix = f"{expr.name}="
         return prefix + _layout(expr.value, indent, column + len(prefix), tail)
+    if expr.receiver and (not expr.arguments or column + _width(_head(expr)) + 1 > WIDTH):
+        receiver = _layout(expr.receiver, indent, column, len(expr.head) + 1)
+        last = _width(receiver.rsplit("\n", 1)[-1])
+        if "\n" not in receiver:
+            last += column
+        return receiver + _layout(_Call(expr.head, expr.arguments), indent, last, tail)
     head = _head(expr)
-    if expr.receiver and (not expr.arguments or column + len(head) + 1 > WIDTH):
-        rest = f"{expr.head}({_joined(expr)})"
-        return _layout(expr.receiver, indent, column, tail + len(rest)) + rest
     inner = indent + len(INDENT)
     joined = _joined(expr)
-    if inner + len(joined) <= WIDTH:
+    if expr.head and inner + _width(joined) <= WIDTH:
         return f"{head}(\n{' ' * inner}{joined}\n{' ' * indent})"
     if expr.head and len(expr.arguments) == 1:
         # No comma to split at: ruff breaks inside the argument, without a trailing comma.
