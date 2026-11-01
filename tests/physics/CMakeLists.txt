@@ -60,5 +60,7 @@ if(AUTAN_ENABLE_CGNS)
     )
     add_dependencies(autan_euler_run_tests autan-run)
   endif()
-  catch_discover_tests(autan_euler_run_tests)
+  # The multi-rank tests carry the label `mpi` (ctest -L mpi).
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[mpi]")
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]" PROPERTIES LABELS mpi)
 endif()

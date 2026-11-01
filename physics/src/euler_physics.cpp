@@ -671,7 +671,15 @@ class EulerPhysics final : public runtime::Physics {
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
-        lines_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        // Every rank enters the GCR's reductions, or none does: a singular block anywhere fails
+        // the step on every rank.
+        bool singular = false;
+        try {
+          lines_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        } catch (const std::domain_error&) {
+          singular = true;
+        }
+        if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) throw std::domain_error("singular block");
         auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
         krylov_residual_ = rhs_;
         linear = gcr_.solve(
