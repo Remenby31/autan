@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <string>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -19,7 +19,6 @@ namespace nk = autan::kernels::navier_stokes;
 
 template <class P>
 struct NavierStokes<P>::Impl {
-
   Euler<P> euler;
   kernels::Topology topo{};
   // Each geometry array has the element type its Data<P> member stores (P::geom_value for
@@ -41,6 +40,7 @@ struct NavierStokes<P>::Impl {
   // node with it or with one of those) and their boundary faces; empty for the other cells.
   std::vector<offset_t> fit_offsets;
   std::vector<index_t> fit_entries;
+  kernels::CellStencil vertex;
   std::array<std::vector<typename P::grad>, 7> fits;
   const Geometry& geo;  // FP64 geometry of the boundary fit
   std::vector<typename P::jac> visc_jac, visc_bnd_jac;
@@ -63,15 +63,59 @@ struct NavierStokes<P>::Impl {
     d.topo.stencil_twin = nullptr;  // the fit has no adjoint
   }
 
+  // The fit's stencil: the two rings of cells around each cell owning a face whose condition gives
+  // T and the velocity (cells sharing a node with it or with one of those) and their boundary
+  // faces; empty for the other cells, which the fit's loop then skips.
+  void fit_stencil(std::span<const BoundaryKind> kind) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    std::vector<char> fitted(nc, 0);
+    for (std::size_t f = ni; f < nf; ++f) {
+      if (kind[f - ni] == BoundaryKind::state || kind[f - ni] == BoundaryKind::wall) {
+        fitted[static_cast<std::size_t>(topo.owner[f])] = 1;
+      }
+    }
+    auto ring = [&](std::size_t c) {
+      return std::span<const index_t>(
+          vertex.entries.data() + vertex.offsets[c],
+          static_cast<std::size_t>(vertex.offsets[c + 1] - vertex.offsets[c]));
+    };
+    fit_offsets.assign(nc + 1, 0);
+    fit_entries.clear();
+    std::vector<index_t> entries;
+    for (std::size_t c = 0; c < nc; ++c) {
+      if (fitted[c] != 0) {
+        entries.assign(ring(c).begin(), ring(c).end());
+        for (const auto e : ring(c)) {
+          if (e >= 0) {
+            const auto second = ring(static_cast<std::size_t>(e));
+            entries.insert(entries.end(), second.begin(), second.end());
+          }
+        }
+        std::sort(entries.begin(), entries.end());
+        entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+        for (const auto e : entries) {
+          if (e != static_cast<index_t>(c)) fit_entries.push_back(e);
+        }
+      }
+      fit_offsets[c + 1] = static_cast<offset_t>(fit_entries.size());
+    }
+    d.topo.n_stencil = static_cast<offset_t>(fit_entries.size());
+    d.topo.stencil_offsets = fit_offsets.data();
+    d.topo.stencil = fit_entries.data();
+  }
+
   // Cubic least-squares fit over the two-ring stencil of every cell with a boundary face (docs/
   // design/ns-sa.md, Boundary conditions): theta (19 values: gradient, Hessian, third derivatives)
   // minimises sum_k w_k (phi_k - phi_c - b_k . theta)^2, w_k = 1/|d_k|^2, b_k the monomials of
-  // kernels/navier_stokes.py at d_k, over the stencil's cells and its boundary faces whose condition
-  // gives T and the velocity there (manufactured, walls). Monomials in a direction where no entry
-  // extends (the span of a one-cell-thick 2D mesh) are left out, their derivatives zero. A cell
-  // whose entries do not determine the rest is refused. Stores M^-1 w_k b_k per entry.
+  // kernels/navier_stokes.py at d_k, over the stencil's cells and its boundary faces whose
+  // condition gives T and the velocity there (manufactured, walls). Monomials in a direction where
+  // no entry extends (the span of a one-cell-thick 2D mesh) are left out, their derivatives zero. A
+  // cell whose entries do not determine the rest is refused. Stores M^-1 w_k b_k per entry.
   void fit_weights(std::span<const BoundaryKind> kind) {
     constexpr std::size_t nt = 19;
+    fit_stencil(kind);
     const auto& t = d.topo;
     const auto nc = static_cast<std::size_t>(t.n_cells);
     const auto ni = static_cast<std::size_t>(t.n_interior_faces);
@@ -145,8 +189,8 @@ struct NavierStokes<P>::Impl {
         if (w[k] == 0.0) continue;
         for (std::size_t i = 0; i < m; ++i) {
           for (std::size_t j = 0; j < m; ++j) {
-            a[m * i + j] += w[k] * (rows[k][used[i]] / unit[used[i]]) *
-                            (rows[k][used[j]] / unit[used[j]]);
+            a[m * i + j] +=
+                w[k] * (rows[k][used[i]] / unit[used[i]]) * (rows[k][used[j]] / unit[used[j]]);
           }
         }
       }
@@ -225,44 +269,19 @@ struct NavierStokes<P>::Impl {
     }
     const auto packed = kernels::pack_geometry(mesh, geometry);
     topo = kernels::topology(mesh.view());
-    {
-      const auto vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
-      const auto ncell = static_cast<std::size_t>(mesh.n_cells());
-      std::vector<char> boundary_cell(ncell, 0);
-      for (auto f = mesh.n_interior_faces(); f < mesh.n_faces(); ++f) {
-        boundary_cell[static_cast<std::size_t>(mesh.owner()[static_cast<std::size_t>(f)])] = 1;
-      }
-      auto ring = [&](std::size_t c) {
-        return std::span<const index_t>(
-            vertex.entries.data() + vertex.offsets[c],
-            static_cast<std::size_t>(vertex.offsets[c + 1] - vertex.offsets[c]));
-      };
-      fit_offsets.assign(ncell + 1, 0);
-      std::vector<index_t> entries;
-      for (std::size_t c = 0; c < ncell; ++c) {
-        if (boundary_cell[c] != 0) {
-          entries.assign(ring(c).begin(), ring(c).end());
-          for (const auto e : ring(c)) {
-            if (e >= 0) {
-              const auto second = ring(static_cast<std::size_t>(e));
-              entries.insert(entries.end(), second.begin(), second.end());
-            }
-          }
-          std::sort(entries.begin(), entries.end());
-          entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
-          for (const auto e : entries) {
-            if (e != static_cast<index_t>(c)) fit_entries.push_back(e);
-          }
-        }
-        fit_offsets[c + 1] = static_cast<offset_t>(fit_entries.size());
-      }
-    }
-    face_normal = kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
-    face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<typename decltype(face_centroid)::value_type>(packed.face_centroid);
-    face_moment = kernels::converted<typename decltype(face_moment)::value_type>(packed.face_moment);
-    cell_centroid = kernels::converted<typename decltype(cell_centroid)::value_type>(packed.cell_centroid);
-    cell_volume = kernels::converted<typename decltype(cell_volume)::value_type>(packed.cell_volume);
+    vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+    face_normal =
+        kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
+    face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(
+        packed.face_area_magnitude);
+    face_centroid =
+        kernels::converted<typename decltype(face_centroid)::value_type>(packed.face_centroid);
+    face_moment =
+        kernels::converted<typename decltype(face_moment)::value_type>(packed.face_moment);
+    cell_centroid =
+        kernels::converted<typename decltype(cell_centroid)::value_type>(packed.cell_centroid);
+    cell_volume =
+        kernels::converted<typename decltype(cell_volume)::value_type>(packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     mu_t.assign(nc, State(0));
