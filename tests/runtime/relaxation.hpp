@@ -41,9 +41,9 @@ struct RelaxationOptions {
 };
 
 // An implementation of the runtime's Physics interface that solves nothing:
-// the state stays at each zone's `initial` and every residual decays as
-// r_k = factor^(k-1). It exists to exercise the runtime, the run directory
-// and solution.cgns through the same seam the real physics use.
+// the state starts at each zone's `initial` (or the start's fields), grows by
+// `growth` per step, and every residual decays as r_k = factor^(k-1). It exists to exercise the
+// runtime, the run directory and solution.cgns through the same seam the real physics use.
 class Relaxation final : public autan::runtime::Physics {
  public:
   Relaxation(const autan::runtime::PhysicsContext& context, RelaxationOptions options)
@@ -76,6 +76,15 @@ class Relaxation final : public autan::runtime::Physics {
     mean_ = state_;
     context_.log.write("info", "solver", "relaxation physics ready");
     for (auto& f : mean_) std::fill(f.values.begin(), f.values.end(), 0.0);
+    if (context.start != nullptr) {
+      state_ = context.start->fields;
+      // RestartState: the averaging sums, then the weight (one value per cell).
+      const auto& restart = context.start->restart_fields;
+      if (!restart.empty()) {
+        for (std::size_t f = 0; f < mean_.size(); ++f) mean_[f].values = restart[f].values;
+        weight_ = restart.back().values.at(0);
+      }
+    }
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
@@ -116,6 +125,14 @@ class Relaxation final : public autan::runtime::Physics {
     for (auto& f : out) {
       for (auto& v : f.values) v /= weight_;
     }
+    return out;
+  }
+
+  [[nodiscard]] std::vector<autan::io::Field> restart_fields() const override {
+    auto out = mean_;
+    for (auto& f : out) f.name = "Sum" + f.name;
+    out.push_back({.name = "AverageWeight",
+                   .values = std::vector<double>(state_.front().values.size(), weight_)});
     return out;
   }
 

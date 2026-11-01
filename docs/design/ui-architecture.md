@@ -24,6 +24,7 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 | `GET /api/runs/{id}/plan` | `autan plan --json` of the stored case against the stored MeshInfo, for the run's GPU count |
 | `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` and `log` batches (history.jsonl and log.jsonl records; each log line also carries `doc`, the documentation page of its `code`). The event id is the JSON map of byte offsets reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 and rejected ones 409 with the reason, before any stream starts. |
 | `GET /api/runs/history/events?run=…&run=…` | The same events for up to 8 runs over one connection (a browser opens at most six per host), payloads `{run_id, data}`; the event id is the JSON map of byte offsets. Used by Compare. |
+| `GET /api/runs/{id}/surface` | The wall and slip zones of `solution.cgns` as an `autan-ui.surface/1` message, fields per node: `Cp` = (p − p∞)/q∞, `Cf` = \|τ\|/q∞, `Pressure` (Pa), with q∞ from the stored case's freestream; face values (`WallSolution`) averaged to nodes with face-area weights, polygons fan-triangulated. 404 without a solution. Opened from a run with *Open in Analysis* (`/viewer?run=…&field=…`). |
 | `GET /api/surfaces/synthetic?triangles=N` | A synthetic wing surface for the viewer and its benchmark, until `solution.cgns` surfaces are served |
 
 Live updates come from file-system events (`watchfiles`, 50 ms debounce) and a 1 s timeout: every wake-up rescans, so a change made before the watcher started is still reported. A directory is checked by `autan.Results.open` again only when its `run.json`, `case.toml`, `mesh-info.json` or `solution.cgns` changes; history.jsonl is re-read from the last offset. SSE rather than WebSocket: traffic is server → browser only, `EventSource` reconnects by itself, and FastAPI ships SSE natively.
@@ -39,7 +40,7 @@ An internal format between `autan_ui` and the web app (not a project contract): 
  "buffers": [{"name": "positions" | "indices" | "field:<name>", "dtype": "f32" | "u32", "offset", "length"}]}
 ```
 
-Positions are FP32 relative to `origin` (FP64), so a model far from the mesh origin keeps sub-micrometre resolution. Triangles are sorted by zone, so a zone is one contiguous range: one draw group, one pick id. The browser wraps the buffers in typed-array views without copying and hands them to the GPU. Field values are per node; face-centred wall data (`WallSolution`) is averaged to nodes with face-area weights when real surfaces land. Arrow IPC was considered and rejected: a columnar table format and its library for what are three flat arrays.
+Positions are FP32 relative to `origin` (FP64), so a model far from the mesh origin keeps sub-micrometre resolution. Triangles are sorted by zone, so a zone is one contiguous range: one draw group, one pick id. The browser wraps the buffers in typed-array views without copying and hands them to the GPU. Field values are per node; face-centred wall data (`WallSolution`) is averaged to nodes with face-area weights. Arrow IPC was considered and rejected: a columnar table format and its library for what are three flat arrays.
 
 ## Stack
 

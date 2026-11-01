@@ -45,12 +45,24 @@ int world_size() {
   return s;
 }
 
-enum class MeshKind { tetra, hexa, prism, pyramid, hybrid, polyhedral };
+enum class MeshKind { tetra, hexa, prism, pyramid, hybrid, polyhedral, periodic };
 
 autan::Mesh make_mesh(MeshKind kind) {
   using autan::test::BoxFill;
   if (kind == MeshKind::polyhedral) {
     return autan::assemble(autan::to_face_based(autan::test::hanging_node_box()));
+  }
+  if (kind == MeshKind::periodic) {
+    // Tetrahedra, periodic in x and y: every rank holds image ghosts.
+    autan::CellwiseMesh cells = autan::test::box(6, BoxFill::tetra, 0.2);
+    for (int k = 0; k < 2; ++k) {
+      cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+      cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+      std::array<double, 3> t{};
+      t[at(k)] = 1.0;
+      cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+    }
+    return autan::assemble(autan::to_face_based(std::move(cells)));
   }
   const BoxFill fill = kind == MeshKind::tetra     ? BoxFill::tetra
                        : kind == MeshKind::hexa    ? BoxFill::hexa
@@ -225,18 +237,27 @@ double global_sum(double local) {
 }  // namespace
 
 TEST_CASE("Ghost geometry arrives bit for bit from the owning rank", "[halo]") {
-  const MeshKind kind = GENERATE(MeshKind::tetra, MeshKind::hybrid, MeshKind::polyhedral);
+  const MeshKind kind =
+      GENERATE(MeshKind::tetra, MeshKind::hybrid, MeshKind::polyhedral, MeshKind::periodic);
   Setup s = setup(kind);
   autan::HaloExchange exchange(s.local.halo, s.local.mesh.n_owned_cells(), MPI_COMM_WORLD,
                                autan::MemorySpace::host);
-  autan::exchange_ghost_geometry(exchange, s.local.geometry);
+  autan::exchange_ghost_geometry(exchange, s.local.mesh, s.local.geometry);
   const auto& m = s.local.mesh;
   for (index_t c = 0; c < m.n_cells(); ++c) {
     const auto global_cell = at(m.cell_global_id()[at(c)]);
+    // A periodic image: the owner's centroid moved by its translation.
+    const std::array<double, 3> t = c < m.n_owned_cells()
+                                        ? std::array<double, 3>{}
+                                        : m.ghost_translation()[at(c - m.n_owned_cells())];
     CHECK(
         same_bits(s.local.geometry.cell_volume[at(c)], s.global_geometry.cell_volume[global_cell]));
+    CHECK(same_bits(s.local.geometry.cell_centroid_x[at(c)],
+                    s.global_geometry.cell_centroid_x[global_cell] + t[0]));
+    CHECK(same_bits(s.local.geometry.cell_centroid_y[at(c)],
+                    s.global_geometry.cell_centroid_y[global_cell] + t[1]));
     CHECK(same_bits(s.local.geometry.cell_centroid_z[at(c)],
-                    s.global_geometry.cell_centroid_z[global_cell]));
+                    s.global_geometry.cell_centroid_z[global_cell] + t[2]));
   }
 }
 
@@ -251,7 +272,7 @@ TEMPLATE_TEST_CASE("A gradient on N ranks matches the single-rank one bit for bi
   const autan::Mesh& m = s.local.mesh;
   autan::HaloExchange geometry_exchange(s.local.halo, m.n_owned_cells(), MPI_COMM_WORLD,
                                         autan::MemorySpace::host);
-  autan::exchange_ghost_geometry(geometry_exchange, s.local.geometry);
+  autan::exchange_ghost_geometry(geometry_exchange, s.local.mesh, s.local.geometry);
   autan::HaloExchange exchange(s.local.halo, m.n_owned_cells(), MPI_COMM_WORLD, space);
 
   const auto& gg = s.global_geometry;
@@ -359,20 +380,30 @@ TEST_CASE("Reverse adds one per rank that holds the cell as a ghost", "[halo]") 
   exchange.reverse<double>(w.to_space());
   w.from_space();
 
-  // Expected from the global mesh: the number of other parts adjacent to the cell.
-  std::vector<std::vector<std::int32_t>> adjacent(at(s.global.n_cells()));
-  for (index_t f = 0; f < s.global.n_interior_faces(); ++f) {
-    const auto o = at(s.global.owner()[at(f)]);
-    const auto n = at(s.global.neighbour()[at(f)]);
-    if (s.parts[o] == s.parts[n]) continue;
-    adjacent[o].push_back(s.parts[n]);
-    adjacent[n].push_back(s.parts[o]);
-  }
+  // Expected from the global mesh: with two ghost layers, a cell is held by
+  // every other part that owns a cell within two face steps of it.
+  const auto& g = s.global;
+  const auto holders = [&](index_t cell) {
+    std::vector<index_t> near{cell};
+    for (int step = 0; step < 2; ++step) {
+      const std::vector<index_t> from = near;
+      for (const index_t u : from) {
+        for (const index_t f : g.cell_faces(u)) {
+          if (f < g.n_interior_faces())
+            near.push_back(g.owner()[at(f)] == u ? g.neighbour()[at(f)] : g.owner()[at(f)]);
+        }
+      }
+    }
+    std::vector<std::int32_t> parts;
+    for (const index_t u : near) {
+      if (s.parts[at(u)] != s.parts[at(cell)]) parts.push_back(s.parts[at(u)]);
+    }
+    std::sort(parts.begin(), parts.end());
+    return static_cast<double>(std::unique(parts.begin(), parts.end()) - parts.begin());
+  };
   for (index_t c = 0; c < m.n_cells(); ++c) {
-    auto& a = adjacent[at(m.cell_global_id()[at(c)])];
-    std::sort(a.begin(), a.end());
-    const auto distinct = std::unique(a.begin(), a.end()) - a.begin();
-    CHECK(w[0][at(c)] == (c < m.n_owned_cells() ? static_cast<double>(distinct) : 0.0));
+    CHECK(w[0][at(c)] ==
+          (c < m.n_owned_cells() ? holders(static_cast<index_t>(m.cell_global_id()[at(c)])) : 0.0));
   }
 }
 

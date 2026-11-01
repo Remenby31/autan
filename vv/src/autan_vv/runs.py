@@ -95,6 +95,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
         ],
         "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": mesh.n_cells}],
         "interfaces": [],
+        "periodic": [],
         "quality": {
             "max_non_orthogonality_deg": float(
                 np.degrees(np.arccos(np.clip(cos.min(), -1.0, 1.0)))

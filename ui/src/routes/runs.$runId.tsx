@@ -1,9 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
-import { type HistoryColumns, planQuery, runQuery, soleForces, useLiveRun } from "../api/runs";
+import {
+  type HistoryColumns,
+  planQuery,
+  runQuery,
+  runsQuery,
+  soleForces,
+  useLiveRun,
+} from "../api/runs";
 import { ResidualChart } from "../components/ResidualChart";
 import { formatBytes, formatCount, remainingMs } from "../components/run/format";
 import { LogView } from "../components/run/LogView";
@@ -57,13 +64,24 @@ function RunView() {
     refetchInterval: run?.status === "running" ? 5000 : false,
   });
   const client = useQueryClient();
-  // Refetch whenever the details lag the live status (a run that ended while they loaded).
+  // Refetch once the run has ended, or whenever the details lag its status: the registry
+  // stream updates the cached run.json but not the outputs (solution.cgns comes at the end).
+  const status = run?.status;
   const stale = Boolean(run && details.data && details.data.run.status !== run.status);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch on each status change
+  useEffect(() => {
+    if (status && status !== "running")
+      void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
+  }, [status]);
   useEffect(() => {
     if (stale) void client.invalidateQueries({ queryKey: runQuery(runId).queryKey });
   }, [stale, client, runId]);
   const plan = useQuery(planQuery(runId));
   const toast = useToast();
+  // While running, solution.cgns is not a result yet (results.md); after, it is the one to show.
+  const hasSolution =
+    run?.status !== "running" &&
+    Boolean(details.data?.outputs.some((o) => o.name === "solution.cgns"));
   const now = useSyncExternalStore(second.subscribe, second.now);
   const time = details.data?.case.time;
   const targetOrders = time?.kind === "steady" ? time.residual_orders : undefined;
@@ -96,13 +114,23 @@ function RunView() {
             >
               Copy Run Id
             </Button>
-            <Tooltip content="3D fields arrive with solution.cgns surfaces">
-              <span>
-                <Button size="sm" icon={<Box className="size-4" />} disabled>
-                  Open in Analysis
-                </Button>
-              </span>
-            </Tooltip>
+            {hasSolution ? (
+              <Button
+                size="sm"
+                icon={<Box className="size-4" />}
+                onClick={() => void navigate({ to: "/viewer", search: { run: runId } })}
+              >
+                Open in Analysis
+              </Button>
+            ) : (
+              <Tooltip content="The run has no solution.cgns yet">
+                <span>
+                  <Button size="sm" icon={<Box className="size-4" />} disabled>
+                    Open in Analysis
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           </>
         }
       />
@@ -320,6 +348,8 @@ function Facts({
   cl: number | undefined;
   cd: number | undefined;
 }) {
+  const registry = useQuery(runsQuery);
+  const known = new Set(registry.data?.runs.map((r) => r.run_id));
   const started = new Date(run.started).getTime();
   const end = run.finished ? new Date(run.finished).getTime() : now;
   const left =
@@ -392,6 +422,27 @@ function Facts({
           ),
         },
         { label: "Started", value: <RelativeTime iso={run.started} /> },
+        ...(run.start
+          ? [
+              {
+                label: run.start.mode === "continue" ? "Continues" : "Warm start from",
+                // A predecessor read from another runs directory has no page here.
+                value: known.has(run.start.run_id) ? (
+                  <Link
+                    to="/runs/$runId"
+                    params={{ runId: run.start.run_id }}
+                    className="font-mono text-accent hover:underline"
+                  >
+                    {run.start.run_id.slice(-8)}
+                  </Link>
+                ) : (
+                  <Tooltip content={`${run.start.run_id}, not in this runs directory`}>
+                    <span className="font-mono text-fg-3">{run.start.run_id.slice(-8)}</span>
+                  </Tooltip>
+                ),
+              },
+            ]
+          : []),
         {
           label: run.status === "running" ? "Elapsed · left" : "Duration",
           value: (

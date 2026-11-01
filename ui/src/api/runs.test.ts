@@ -57,3 +57,13 @@ test("the residual drop is the slowest equation's, undefined once a zero residua
     ]),
   ).toBeCloseTo(8);
 });
+
+test("a continued run's drop is measured from the reference it carries", () => {
+  const reference = { density: 1, energy: 1 };
+  const history = appendHistory(
+    empty(),
+    [{ iteration: 31, time: null, residuals: { density: 1e-3, energy: 1e-4 } }],
+    reference,
+  );
+  expect(history.orders.at(-1)).toBeCloseTo(3);
+});

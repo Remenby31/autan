@@ -133,8 +133,10 @@ std::vector<std::int32_t> partition_scotch(const DualGraph& graph, std::int32_t 
   std::vector<SCOTCH_Num> velotab(options.cell_weights.begin(), options.cell_weights.end());
   std::vector<SCOTCH_Num> part(static_cast<std::size_t>(n_vertices));
 
-  // A private, seeded generator and deterministic threading make the result
-  // reproducible (Scotch 7 user's guide, "Execution contexts").
+  // A private, seeded generator and one thread make the result reproducible (Scotch 7 user's
+  // guide, "Execution contexts"). SCOTCH_OPTIONNUMDETERMINISTIC alone is not enough: with 8 or
+  // more threads the same call returned different parts on GB10, and a thread count taken from
+  // the machine would give different parts on different machines.
   SCOTCH_Context context;
   SCOTCH_Graph graph_s;
   SCOTCH_Graph bound;
@@ -143,7 +145,8 @@ std::vector<std::int32_t> partition_scotch(const DualGraph& graph, std::int32_t 
       SCOTCH_graphInit(&bound) != 0 || SCOTCH_stratInit(&strategy) != 0) {
     throw Error(ErrorCode::partition_backend_failed, "Scotch initialisation failed");
   }
-  int status = SCOTCH_contextOptionSetNum(&context, SCOTCH_OPTIONNUMDETERMINISTIC, 1);
+  int status = SCOTCH_contextThreadSpawn(&context, 1, nullptr);
+  if (status == 0) status = SCOTCH_contextOptionSetNum(&context, SCOTCH_OPTIONNUMDETERMINISTIC, 1);
   if (status == 0) status = SCOTCH_contextRandomClone(&context);
   if (status == 0) {
     SCOTCH_contextRandomSeed(&context, options.seed);

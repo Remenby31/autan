@@ -400,6 +400,38 @@
               "$ref": "#/$defs/spread"
             }
           }
+        },
+        "host_load": {
+          "type": "object",
+          "required": [
+            "cpus",
+            "before_1m",
+            "after_1m"
+          ],
+          "additionalProperties": false,
+          "description": "Host 1-minute load average before and after the run: on unified memory, other processes' CPU work takes bandwidth from the GPU.",
+          "properties": {
+            "cpus": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "before_1m": {
+              "type": "number",
+              "minimum": 0
+            },
+            "after_1m": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "setup_seconds": {
+          "type": "object",
+          "description": "Untimed setup durations the binary reports (mesh read, renumbering, ...).",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
         }
       }
     },
@@ -468,6 +500,16 @@
           }
         }
       }
+    },
+    "pooled_from": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "description": "Creation times of the runs whose samples this result pools (autan-bench baseline with several runs)."
     }
   },
   "allOf": [

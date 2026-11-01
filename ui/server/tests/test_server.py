@@ -16,6 +16,7 @@ from unittest.mock import ANY
 import autan
 import httpx
 import numpy as np
+import numpy.typing as npt
 import pytest
 import uvicorn
 from autan_ui import create_app
@@ -474,3 +475,61 @@ def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server:
         kind, reason = next(e for e in events if e[0] != "history")
     assert kind == "invalid"
     assert reason.startswith("log.jsonl")
+
+
+def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, server: str) -> None:
+    import h5py  # noqa: PLC0415 -- only this test edits a CGNS file
+    from autan.solver_input import freestream_state  # noqa: PLC0415
+
+    directory = next(runs.iterdir())
+    state = freestream_state(autan.Results.open(directory).case)
+    q_inf = 0.5 * state.density * state.speed**2
+    with h5py.File(directory / "solution.cgns", "r+") as tree:
+        zone = tree["Base"]["Zone"]
+        wall = zone["WallSolution"]
+        wall["Pressure"][" data"][...] = state.pressure + q_inf
+        wall["WallShearStressX"][" data"][...] = 0.6 * q_inf
+        wall["WallShearStressY"][" data"][...] = 0.8 * q_inf
+        wall["WallShearStressZ"][" data"][...] = 0.0
+        start = zone["NGonElements"]["ElementStartOffset"][" data"][()]
+        walls = {
+            name
+            for name, bc in zone["ZoneBC"].items()
+            if bytes(bc[" data"][()]).decode().startswith("BCWall")
+        }
+        faces = {name: zone["ZoneBC"][name]["PointList"][" data"][()].ravel() - 1 for name in walls}
+
+    message = httpx.get(f"{server}/api/runs/{directory.name}/surface").content
+    length = int.from_bytes(message[:4], "little")
+    header = json.loads(message[4 : 4 + length])
+    body = memoryview(message)[4 + length :]
+    field = {b["name"]: b for b in header["buffers"]}
+
+    def values(name: str) -> npt.NDArray[np.float32]:
+        b = field[name]
+        return np.frombuffer(body, np.float32, b["length"], b["offset"])
+
+    assert {z["name"] for z in header["zones"]} == walls
+    for z in header["zones"]:
+        counts = start[faces[z["name"]] + 1] - start[faces[z["name"]]]
+        assert z["triangles"] == int((counts - 2).sum())
+    np.testing.assert_allclose(values("field:Cp"), 1.0, rtol=1e-5)
+    np.testing.assert_allclose(values("field:Cf"), 1.0, rtol=1e-5)
+
+
+def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Path) -> None:
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    first = autan.Results.open(next(runs.iterdir()))
+    continued = case.run(
+        mesh_info, backend=autan.FakeBackend(iterations=60), runs=runs, start=first
+    )
+    run = json.loads((continued.path / "run.json").read_text())
+    reference = run["start"]["residual_reference"]
+    last = json.loads((continued.path / "history.jsonl").read_text().splitlines()[-1])["residuals"]
+
+    summary = Registry(runs).scan().summaries[continued.path.name]
+
+    expected = min(math.log10(reference[k] / last[k]) for k in reference)
+    assert summary["orders"] == pytest.approx(expected, abs=1e-3)
+    assert summary["trend"][0] > 0  # the first line of the continuation is already below

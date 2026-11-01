@@ -20,6 +20,7 @@ class Code(enum.StrEnum):
     UNKNOWN_BACKEND = "E1010"
     UNKNOWN_POLICY = "E1011"
     AD_UNSUPPORTED = "E1012"
+    POLICY_UNSUPPORTED_BY_BACKEND = "E1013"
 
 
 class CodegenError(Exception):

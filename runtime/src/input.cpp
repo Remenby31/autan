@@ -5,10 +5,12 @@
 #include <filesystem>
 #include <initializer_list>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -32,14 +34,11 @@ class Object {
  public:
   Object(const Json& value, std::string path, std::initializer_list<std::string_view> keys)
       : value_(value), path_(std::move(path)) {
-    if (!value_.is_object()) invalid(path_, "expected an object");
-    const std::set<std::string, std::less<>> expected(keys.begin(), keys.end());
-    for (const auto& [key, item] : value_.items()) {
-      if (!expected.contains(key)) invalid(at(key), "unknown key");
-    }
-    for (const auto key : keys) {
-      if (!value_.contains(key)) invalid(at(std::string(key)), "missing key");
-    }
+    check(std::span(keys.begin(), keys.size()));
+  }
+  Object(const Json& value, std::string path, const std::vector<std::string>& keys)
+      : value_(value), path_(std::move(path)) {
+    check(std::span(keys));
   }
 
   [[nodiscard]] std::string at(const std::string& key) const {
@@ -97,8 +96,7 @@ class Object {
   }
   // `required` true: must not be null; false: must be null.
   template <typename T, typename Read>
-  [[nodiscard]] [[nodiscard]] [[nodiscard]] [[nodiscard]] std::optional<T> maybe(
-      const std::string& key, bool required, Read read) const {
+  [[nodiscard]] std::optional<T> maybe(const std::string& key, bool required, Read read) const {
     if (is_null(key)) {
       if (required) invalid(at(key), "must not be null here");
       return std::nullopt;
@@ -118,6 +116,18 @@ class Object {
   }
 
  private:
+  template <typename Key>
+  void check(std::span<const Key> keys) const {
+    if (!value_.is_object()) invalid(path_, "expected an object");
+    const std::set<std::string, std::less<>> expected(keys.begin(), keys.end());
+    for (const auto& [key, item] : value_.items()) {
+      if (!expected.contains(key)) invalid(at(key), "unknown key");
+    }
+    for (const auto& key : keys) {
+      if (!value_.contains(key)) invalid(at(std::string(key)), "missing key");
+    }
+  }
+
   const Json& value_;
   std::string path_;
 };
@@ -292,6 +302,66 @@ std::string Diagnostic::json() const {
   return d.dump();
 }
 
+namespace {
+
+// results.md: run-YYYYMMDDTHHMMSSZ-xxxxxxxx, x lowercase hexadecimal.
+bool is_run_id(std::string_view id) {
+  constexpr std::string_view shape = "run-DDDDDDDDTDDDDDDZ-hhhhhhhh";
+  if (id.size() != shape.size()) return false;
+  for (std::size_t i = 0; i < id.size(); ++i) {
+    const char c = id[i];
+    const bool digit = c >= '0' && c <= '9';
+    const bool ok = shape[i] == 'D'   ? digit
+                    : shape[i] == 'h' ? digit || (c >= 'a' && c <= 'f')
+                                      : c == shape[i];
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// Needs the rest of the input: the residual reference is keyed by its
+// equations and the mode's rules depend on its time.
+Start parse_start(const Json& value, const SolverInput& in) {
+  const Object o(value, "start",
+                 {"run", "run_id", "identity", "mode", "iterations", "time", "solution_sha256",
+                  "residual_reference"});
+  Start start;
+  start.run = o.string("run");
+  if (!std::filesystem::path(start.run).is_absolute())
+    invalid("start.run", "must be an absolute path");
+  start.run_id = o.string("run_id");
+  if (!is_run_id(start.run_id)) invalid("start.run_id", "expected run-YYYYMMDDTHHMMSSZ-xxxxxxxx");
+  start.identity = sha256(o, "identity");
+  start.mode = o.tag("mode", {"continue", "warm"});
+  start.iterations = o.integer("iterations", 1);
+  start.solution_sha256 = sha256(o, "solution_sha256");
+  const bool steady = in.time.kind == "steady";
+  const bool continued = start.mode == "continue";
+  // A continued run has the previous run's kind of time; a warm one may not.
+  start.time = continued ? o.number_if("time", !steady) : o.optional_number("time");
+  if (continued && start.time && *start.time < 0.0) invalid("start.time", "must not be negative");
+  if (continued && (steady ? in.time.max_iterations : in.time.steps) <= start.iterations) {
+    invalid(o.at("iterations"), "the time budget must exceed the iterations already done");
+  }
+  if (o.is_null("residual_reference")) {
+    if (continued && steady) invalid(o.at("residual_reference"), "must not be null here");
+    return start;
+  }
+  if (!(continued && steady)) invalid(o.at("residual_reference"), "must be null here");
+  const auto equations = residual_names(in);
+  const Object r(o.get("residual_reference"), o.at("residual_reference"), equations);
+  std::vector<double> reference;
+  for (const auto& name : equations) {
+    const double v = r.number(name);
+    if (v < 0.0) invalid(r.at(name), "must not be negative");
+    reference.push_back(v);
+  }
+  start.residual_reference = std::move(reference);
+  return start;
+}
+
+}  // namespace
+
 SolverInput parse_solver_input(const std::string& text) {
   Json doc;
   try {
@@ -301,8 +371,8 @@ SolverInput parse_solver_input(const std::string& text) {
   }
   const Object root(
       doc, "",
-      {"schema", "case", "mesh", "verification", "precision", "deterministic", "devices", "physics",
-       "freestream", "boundaries", "cell_zones", "time", "monitors"});
+      {"schema", "case", "mesh", "verification", "start", "periodic", "precision", "deterministic",
+       "devices", "physics", "freestream", "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -414,6 +484,20 @@ SolverInput parse_solver_input(const std::string& text) {
   if ((in.turbulence.model == "ddes" || in.turbulence.model == "wmles") &&
       in.time.kind != "unsteady") {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");
+  }
+  if (!root.is_null("start")) in.start = parse_start(root.get("start"), in);
+  const Json& periodic = *array_at(root, "periodic");
+  for (std::size_t i = 0; i < periodic.size(); ++i) {
+    const Object o(periodic[i], indexed("periodic", i), {"zones", "transform"});
+    const Json& names = o.get("zones");
+    if (!names.is_array() || names.size() != 2 || !names[0].is_string() || !names[1].is_string() ||
+        names[0] == names[1]) {
+      invalid(o.at("zones"), "expected two distinct zone names");
+    }
+    const Object t(o.get("transform"), o.at("transform"), {"kind", "vector"});
+    (void)t.tag("kind", {"translation"});
+    in.periodic.push_back({.zones = {names[0].get<std::string>(), names[1].get<std::string>()},
+                           .translation = t.vector3("vector")});
   }
   const Json& monitors = *array_at(root, "monitors");
   for (std::size_t i = 0; i < monitors.size(); ++i) {

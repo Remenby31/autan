@@ -59,7 +59,12 @@ def test_producer_output_is_a_valid_mesh_info(source: Path) -> None:
     fmt = info.source.format
     if mesh != "hanging" and fmt in ("polymesh", "fluent"):
         assert (types["ymin"], types["zmax"]) == ("wall", "symmetry")
-    if fmt == "gmsh":
+    if mesh == "periodic-box":
+        assert [p.zones for p in info.periodic] == [("xmin", "xmax"), ("ymin", "ymax")]
+        vectors = [p.transform.vector for p in info.periodic]
+        assert vectors == [pytest.approx(v, abs=1e-12) for v in ((1, 0, 0), (0, 1, 0))]
+        assert (types["zmin"], types["xmin"], types["ymax"]) == (None, "periodic", "periodic")
+    elif fmt == "gmsh":
         assert set(types.values()) == {None}
     if fmt == "fluent":
         assert [(z.name, z.type) for z in info.cell_zones] == [("fluid-1", "fluid")]
