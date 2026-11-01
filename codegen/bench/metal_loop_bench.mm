@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <random>
 #include <string>
@@ -19,6 +20,7 @@
 #include "advection_cpu.hpp"
 #include "advection_metal.hpp"
 #include "autan/core/renumber.hpp"
+#include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/metal.hpp"
 #include "gradients_cpu.hpp"
@@ -297,7 +299,6 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
                    time_it(ctx, o, [&] { rf::metal_loops::flux_adjoint(ctx, rd, s, dm.schedule); }),
                    written});
   }
-  std::fprintf(stderr, "Metal compilation %.3f s\n", ctx.compile_seconds());
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.int_colours.offsets.size() - 1,
                dm.bnd_colours.offsets.size() - 1);
@@ -336,13 +337,19 @@ int main(int argc, char** argv) {
   autan::spike::metal::print_device(ctx);
   std::printf("\"revision\":{\"commit\":\"%s\",\"dirty\":%s},", AUTAN_BENCH_COMMIT,
               AUTAN_BENCH_DIRTY);
-  std::printf("\"config\":{\"mesh\":\"%s\",\"policy\":\"%s\",\"order\":\"%s\",\"layout\":\"soa\","
-              "\"n_cells\":%d,\"n_faces\":%d,\"n_interior_faces\":%d,\"n_incidences\":%lld,"
-              "\"block\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,\"read_seconds\":%.3f,"
-              "\"renumber_seconds\":%.3f,\"tolerance\":%.1e},",
-              o.mesh.c_str(), o.policy.c_str(), o.order.c_str(), m.topo.n_cells, m.topo.n_faces,
-              m.topo.n_interior_faces, static_cast<long long>(m.topo.n_incidences), o.block,
-              o.warmup, o.reps, o.batch, read_seconds, renumber_seconds, tolerance);
+  // `config` identifies a run by content (mesh hash, not path) and holds no measurement, so that
+  // autan-bench compare can match runs; one-off host costs go to `setup_seconds`.
+  const std::string sha = autan::io::mesh_hash(o.mesh);
+  std::printf(
+      "\"config\":{\"mesh_file\":\"%s\",\"mesh_sha256\":\"%s\",\"policy\":\"%s\","
+      "\"order\":\"%s\",\"layout\":\"soa\",\"n_cells\":%d,\"n_faces\":%d,"
+      "\"n_interior_faces\":%d,\"n_incidences\":%lld,\"block\":%d,\"warmup\":%d,\"reps\":%d,"
+      "\"batch\":%d,\"tolerance\":%.1e},",
+      std::filesystem::path(o.mesh).filename().string().c_str(), sha.c_str(), o.policy.c_str(),
+      o.order.c_str(), m.topo.n_cells, m.topo.n_faces, m.topo.n_interior_faces,
+      static_cast<long long>(m.topo.n_incidences), o.block, o.warmup, o.reps, o.batch, tolerance);
+  std::printf("\"setup_seconds\":{\"read\":%.3f,\"renumber\":%.3f,\"metal_compile\":%.3f},",
+              read_seconds, renumber_seconds, ctx.compile_seconds());
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < timed.size(); ++k) {
     const auto& t = timed[k];

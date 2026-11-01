@@ -38,7 +38,7 @@ def main() -> None:
     for path in sys.argv[2:]:
         doc = json.loads(Path(path).read_text())
         cfg = doc["config"]
-        mesh = Path(cfg["mesh"]).stem
+        mesh = Path(cfg["mesh_file"]).stem
         bench = {b["name"]: b for b in doc["benchmarks"]}
         for name, b in bench.items():
             if name.endswith(".time_per_cell"):

@@ -46,7 +46,7 @@ Metal has device-scope atomic adds on `float`, none on 64-bit floating-point typ
 | reduction adjoint, atomic scatter | yes | yes | no (E1108) |
 | reduction adjoint, two passes (deterministic strategies) | yes | yes | yes |
 
-Residual norms on the device are fixed-order sums of squares in double-float, scaled by a power of two so the squares stay in FP32's exponent range (`autan::kernels::metal::sum_of_squares`). An FP64 sum of FP64 data is refused (E1013).
+Residual norms on the device are fixed-order sums of squares in double-float, scaled by a power of two read from the bits so that subnormal entries (which Apple GPUs flush as operands) and squares beyond FP32's range stay exact (`autan::kernels::metal::sum_of_squares`). An FP64 sum of FP64 data is refused (E1013).
 
 ## Measurements
 
@@ -69,7 +69,7 @@ Apple M4 Pro (20 GPU cores, 48 GB unified memory), macOS 26.7.1, solver commit `
 
 Deterministic strategies in `fp32`: store-gather 70 % (tet and hex), gather-recompute 62 % and 72 %; global colouring 18–19 %, as on GB10. In `fp32+acc64`, store-gather is the fastest strategy (79 %): its scratch holds the faces' FP32 values (exact: they are body outputs) and the gather sums them in double-float; gather-recompute (52–61 %) pays the double-float sums of every face twice.
 
-LSQ on hex in `fp32+acc64` misses the gate. Not the double-float arithmetic: with its sums replaced by float sums, the time does not change. It is the 8-byte read of `lsq_weight` per incidence (six per cell): read as float, the same kernel takes 0.76 ns/cell instead of 1.80. The same loop is at 72 % on GB10. The fix belongs to the generator: geometry that bodies only convert to the compute type is stored in it, with values identical to the CPU `fp32+acc64` loops ([Open items](#open-items)).
+LSQ on hex in `fp32+acc64` misses the gate. Two manual experiments on the generated kernel (edits of the generated header, not kept in the repository) point at the 8-byte read of `lsq_weight` per incidence (six per cell), not at the double-float arithmetic: with its sums replaced by float sums, the time did not change; with the weights read as float, it fell from 1.80 to 0.76 ns/cell. The same loop is at 72 % on GB10. The fix belongs to the generator: geometry that bodies only convert to the compute type is stored in it, with values identical to the CPU `fp32+acc64` loops ([Open items](#open-items)).
 
 **MMS.** `spike/mms_study.py` with the residual evaluated by the Metal loops (gather-recompute), V&V families at levels 8, 12, 16, 24, unperturbed: fitted L2 order / finest pair, identical in `fp32` and `fp32+acc64` and to the CPU orders of the spike. Per-level errors with mesh hash, commit and precision: `codegen/spike/results/metal/mms/`.
 

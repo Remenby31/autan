@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -44,10 +45,18 @@ void copy_out(const std::vector<T>& v, double* p) {
   }
 }
 
-/// One context per process: libraries and pipelines compile once.
-mtl::Context& context() {
-  static mtl::Context ctx;
+/// One context per process, created on first use: libraries and pipelines compile once.
+std::unique_ptr<mtl::Context>& context_slot() {
+  static std::unique_ptr<mtl::Context> ctx;
   return ctx;
+}
+
+mtl::Context& context() {
+  auto& ctx = context_slot();
+  if (!ctx) {
+    ctx = std::make_unique<mtl::Context>();
+  }
+  return *ctx;
 }
 
 void synchronise() { context().synchronise(); }
@@ -59,7 +68,9 @@ int metal_guarded(char* err, std::size_t len, F&& body) {
     try {
       body();
     } catch (...) {
-      context().discard();
+      if (auto& ctx = context_slot()) {
+        ctx->discard();
+      }
       throw;
     }
   });
@@ -332,6 +343,21 @@ int autan_spike_metal_compile(const char* name, const char* source, char* err,
   return guarded(err, err_len, [&] {
     const char* const pieces[] = {source, nullptr};
     context().compile(mtl::Library{name, pieces});
+  });
+}
+
+/// Euclidean norm of FP32 data computed on the device by autan::kernels::metal::sum_of_squares.
+int autan_spike_metal_norm_f32(const float* x, std::int64_t n, double* out, char* err,
+                               std::size_t err_len) {
+  return metal_guarded(err, err_len, [&] {
+    namespace av = autan::kernels::advection;
+    auto& ctx = context();
+    DeviceArray<float> dx(ctx, x, static_cast<std::size_t>(n));
+    DeviceArray<mtl::df64> partials(ctx, static_cast<std::size_t>(mtl::norm_partials(n)));
+    DeviceArray<mtl::df64> sum(ctx, 2);
+    mtl::sum_of_squares(ctx, av::metal_loops::library, dx.get(), n, partials.get(), sum.get());
+    synchronise();
+    *out = mtl::norm_of(sum.download().data());
   });
 }
 

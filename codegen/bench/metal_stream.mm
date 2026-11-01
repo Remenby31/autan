@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
       "\"config\":{\"elements\":%ld,\"element_bytes\":4,\"warmup\":%d,\"reps\":%d,\"batch\":%d,"
       "\"block\":%d},",
       o.elements, o.warmup, o.reps, o.batch, o.block);
-  std::fprintf(stderr, "Metal compilation %.3f s\n", ctx.compile_seconds());
+  std::printf("\"setup_seconds\":{\"metal_compile\":%.3f},", ctx.compile_seconds());
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < kernels.size(); ++k) {
     std::printf("%s{\"name\":\"%s\",\"bytes_per_rep\":%zu,\"seconds\":[", k ? "," : "",

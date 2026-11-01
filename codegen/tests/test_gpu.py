@@ -242,7 +242,7 @@ def test_mms_solution_on_the_device_converges_at_second_order(
     assert fit >= 1.9
 
 
-@pytest.mark.parametrize("scale", [1e-20, 1.0, 1e20])
+@pytest.mark.parametrize("scale", [1e-30, 1e-20, 1.0, 1e20])
 @pytest.mark.parametrize("policy", PRECISIONS)
 def test_device_residual_norm_holds_at_extreme_amplitudes(
     case: tuple[s.Mesh, dict[str, np.ndarray]], backend: str, policy: str, scale: float

@@ -210,10 +210,30 @@ struct NormData {
   long n;
 };
 
-inline float magnitude(float x) { return metal::fabs(x); }
-inline float magnitude(df64 x) { return metal::fabs(x.hi); }
-inline float scaled_by(float x, int k) { return metal::ldexp(x, k); }
-inline df64 scaled_by(df64 x, int k) { return df64(metal::ldexp(x.hi, k), metal::ldexp(x.lo, k)); }
+// Apple GPUs flush subnormal operands to zero, so the scaling reads the bits: the exponent of
+// |x| (floor(log2 |x|), -1000 for zero, 1000 for inf and NaN) and 2^k x, exact for subnormals.
+inline int exponent_of(float x) {
+  const uint bits = as_type<uint>(x) & 0x7fffffffu;
+  const uint e = bits >> 23;
+  if (e == 255u) {
+    return 1000;
+  }
+  if (e != 0u) {
+    return int(e) - 127;
+  }
+  return bits == 0u ? -1000 : int(31u - metal::clz(bits)) - 149;
+}
+inline int exponent_of(df64 x) { return exponent_of(x.hi); }
+
+inline float scaled_by(float x, int k) {
+  const uint bits = as_type<uint>(x);
+  if ((bits & 0x7f800000u) != 0u || (bits & 0x007fffffu) == 0u) {
+    return metal::ldexp(x, k);
+  }
+  const float m = float(bits & 0x007fffffu);  // exact: 23 bits
+  return metal::ldexp((bits >> 31) != 0u ? -m : m, k - 149);
+}
+inline df64 scaled_by(df64 x, int k) { return df64(scaled_by(x.hi, k), scaled_by(x.lo, k)); }
 
 inline df64 square(float x) {
   const float p = x * x;
@@ -232,7 +252,7 @@ inline void tree_sum(threadgroup float2* s, uint t) {
   }
 }
 
-inline void tree_max(threadgroup float* s, uint t) {
+inline void tree_max(threadgroup int* s, uint t) {
   for (uint w = norm_block / 2; w > 0; w /= 2) {
     if (t < w) {
       s[t] = metal::max(s[t], s[t + w]);
@@ -245,40 +265,37 @@ template <class T>
 kernel void max_by_chunk(constant NormData<T>& d [[buffer(0)]],
                          uint t [[thread_position_in_threadgroup]],
                          uint g [[threadgroup_position_in_grid]]) {
-  threadgroup float s[norm_block];
+  threadgroup int s[norm_block];
   const long base = long(g) * norm_block * norm_per_thread + long(t);
-  float m = 0.0f;
+  int m = -1000;
   for (int j = 0; j < norm_per_thread; ++j) {
     const long i = base + long(j) * norm_block;
     if (i < d.n) {
-      m = metal::max(m, magnitude(d.x[i]));
+      m = metal::max(m, exponent_of(d.x[i]));
     }
   }
   s[t] = m;
   metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   tree_max(s, t);
   if (t == 0) {
-    d.partial[g] = df64(s[0]);
+    d.partial[g] = df64(float(s[0]));
   }
 }
 
-// k such that 2^k max lies in [0.5, 1); 0 if max is zero or not finite (the sum then carries it).
+// k = -(largest exponent + 1), so 2^k max lies in [0.5, 1); 0 if every entry is zero or one is
+// not finite (the sum then carries the infinity or NaN).
 [[host_name("scale_partials_df64")]] kernel void scale_partials_df64(
     constant NormData<df64>& d [[buffer(0)]], uint t [[thread_position_in_threadgroup]]) {
-  threadgroup float s[norm_block];
-  float m = 0.0f;
+  threadgroup int s[norm_block];
+  int m = -1000;
   for (long i = long(t); i < d.n; i += norm_block) {
-    m = metal::max(m, d.x[i].hi);
+    m = metal::max(m, int(d.x[i].hi));
   }
   s[t] = m;
   metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   tree_max(s, t);
   if (t == 0) {
-    int e = 0;
-    if (s[0] > 0.0f && metal::isfinite(s[0])) {
-      metal::frexp(s[0], e);
-    }
-    d.out[1] = df64(float(-e));
+    d.out[1] = df64(float(s[0] == -1000 || s[0] == 1000 ? 0 : -(s[0] + 1)));
   }
 }
 
