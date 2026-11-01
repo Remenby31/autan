@@ -15,6 +15,7 @@ namespace autan::spike {
 
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
+using autan::spike::GeomArray;
 namespace gpu = autan::kernels::gpu;
 
 template <class T>
@@ -86,10 +87,25 @@ struct DeviceMesh {
   }
 };
 
+/// Device copy of a GeomArray, in both stored types.
+template <class P>
+struct DeviceGeomArray {
+  DeviceArray<typename P::geom> geom;
+  DeviceArray<typename P::compute> compute;
+  explicit DeviceGeomArray(const GeomArray<P>& a) : geom(a.geom), compute(a.compute) {}
+  template <class T>
+  [[nodiscard]] const T* as() const {
+    if constexpr (std::is_same_v<T, typename P::geom>) {
+      return geom.get();
+    } else {
+      return compute.get();
+    }
+  }
+};
+
 template <class P>
 struct DeviceGeom {
-  using G = typename P::geom;
-  DeviceArray<G> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
+  DeviceGeomArray<P> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
       face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight;
   explicit DeviceGeom(const GeomCopy<P>& g)
       : face_area(g.face_area),
