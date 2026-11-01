@@ -478,6 +478,18 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
     require_error(run(input([](Json& d) { d["cell_zones"].push_back(d["cell_zones"][0]); })),
                   "E0705");
   }
+  SECTION("periodic pairs are the mesh's, well formed") {
+    const Json pair{{"zones", {"xmin", "xmax"}},
+                    {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}};
+    // The hybrid mesh has no periodic pair.
+    require_error(run(input([&](Json& d) { d["periodic"] = Json::array({pair}); })), "E0705");
+    require_error(run(input([&](Json& d) {
+                    Json bad = pair;
+                    bad["transform"]["kind"] = "rotation";
+                    d["periodic"] = Json::array({bad});
+                  })),
+                  "E0705");
+  }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
   }
