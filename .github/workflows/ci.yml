@@ -137,10 +137,12 @@ jobs:
         run: |
           grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
-      - name: Build autan-mesh-info, the real MeshInfo producer for the contract test
+      # The SDK's contract tests run the real C++ producers (autan-mesh-info, autan-run and the test
+      # runtimes); building everything keeps this job independent of their target names.
+      - name: Build the C++ tools the SDK tests run
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
-          cmake --build build --target autan-mesh-info
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=ON
+          cmake --build build
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check
       - name: Install from the lock file
