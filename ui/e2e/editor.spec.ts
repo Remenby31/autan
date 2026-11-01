@@ -100,3 +100,23 @@ test("errors leave with the rule that raised them", async ({ page }) => {
   await expect(page.getByTestId("plan")).toContainText("ready");
   await expect(errors).toHaveCount(0);
 });
+
+test("a line longer than the code panel says so and scrolls to its end", async ({ page }) => {
+  await page.goto("/cases/new");
+  await crmHl(page);
+  const code = page.getByTestId("case-py");
+  await expect.poll(() => code.textContent()).toBe(CRM_HL);
+  await expect(page.getByTestId("case-py-more")).toBeVisible();
+
+  const end = await code.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+    el.dispatchEvent(new Event("scroll"));
+    const aside = el.closest("aside")?.getBoundingClientRect();
+    return {
+      inside: aside !== undefined && el.getBoundingClientRect().right <= aside.right,
+      atEnd: Math.abs(el.scrollLeft + el.clientWidth - el.scrollWidth) <= 1,
+    };
+  });
+  expect(end).toEqual({ inside: true, atEnd: true });
+  await expect(page.getByTestId("case-py-more")).toHaveCount(0);
+});

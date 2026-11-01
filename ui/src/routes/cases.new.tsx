@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { Plus, Trash2 } from "lucide-react";
-import { type ReactNode, useDeferredValue, useEffect, useState } from "react";
+import { type ReactNode, useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   type BoundaryForm,
   type CaseForm,
@@ -327,7 +327,7 @@ function CaseEditor() {
           </Section>
         </form>
 
-        <aside className="flex min-h-0 flex-col gap-4 overflow-auto border-line border-l bg-bg-1 px-6 py-6">
+        <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
           {rendered.isError && (
             <Note tone="error" title="The SDK could not be reached">
               The code below is from an earlier version of the case: {rendered.error.message}
@@ -339,7 +339,7 @@ function CaseEditor() {
             <TabsRoot
               defaultValue="python"
               className={cn(
-                "flex min-h-0 flex-col gap-3 transition-opacity",
+                "flex min-h-0 min-w-0 flex-col gap-3 transition-opacity",
                 (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
               )}
             >
@@ -352,10 +352,10 @@ function CaseEditor() {
                 />
                 <span className="text-fg-3 text-sm">written by the SDK</span>
               </div>
-              <TabPanel value="python" className="outline-none">
+              <TabPanel value="python" className="min-w-0 outline-none">
                 <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
               </TabPanel>
-              <TabPanel value="toml" className="outline-none">
+              <TabPanel value="toml" className="min-w-0 outline-none">
                 <Code testId="case-toml" text={rendered.data?.ok ? rendered.data.toml : ""} />
               </TabPanel>
             </TabsRoot>
@@ -369,14 +369,40 @@ function CaseEditor() {
   );
 }
 
+// Lines never wrap: the code's own line breaks are part of what it shows. A line longer than the
+// panel scrolls, and a fade on the right edge says so until its end is in view (overlay
+// scrollbars stay hidden until a reader scrolls).
 function Code({ text, testId }: { text: string; testId: string }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const [more, setMore] = useState(false);
+  const measure = (el: HTMLElement) => setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measured again when the text changes
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    measure(el);
+    const resize = new ResizeObserver(() => measure(el));
+    resize.observe(el);
+    return () => resize.disconnect();
+  }, [text]);
   return (
-    <pre
-      className="m-0 overflow-auto rounded-lg border border-line bg-bg-0 p-4 font-mono text-sm leading-6"
-      data-testid={testId}
-    >
-      {text}
-    </pre>
+    <div className="relative min-w-0">
+      <pre
+        ref={ref}
+        onScroll={(e) => measure(e.currentTarget)}
+        className="m-0 max-w-full overflow-x-auto whitespace-pre rounded-lg border border-line bg-bg-0 p-4 font-mono text-sm leading-6"
+        data-testid={testId}
+      >
+        {text}
+      </pre>
+      {more && (
+        <span
+          aria-hidden
+          data-testid={`${testId}-more`}
+          className="pointer-events-none absolute inset-y-px right-px w-12 rounded-r-lg bg-gradient-to-l from-bg-0 to-transparent"
+        />
+      )}
+    </div>
   );
 }
 
