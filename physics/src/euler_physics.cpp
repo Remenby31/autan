@@ -524,7 +524,12 @@ class EulerPhysics final : public runtime::Physics {
     }
     // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
     // solution; second order from the step after the first-order residual has dropped.
-    if (!second_order_ &&
+#ifdef AUTAN_EXPERIMENT_DIAG
+    const bool keep_first = std::getenv("AUTAN_EXP_FIRST_ORDER") != nullptr;
+#else
+    const bool keep_first = false;
+#endif
+    if (!second_order_ && !keep_first &&
         (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
       second_order_ = true;
       euler_.set_second_order(true);

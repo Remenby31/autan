@@ -1,0 +1,37 @@
+#!/bin/bash
+# ONERA M6 n=12 stall: diagnostics variants (experiment build, AUTAN_EXPERIMENT_DIAG).
+set -u
+cd /src
+B=/src/build-m6
+export UV_PROJECT_ENVIRONMENT=/src/.venv-m6 UV_CACHE_DIR=/tmp/uv-cache
+cmake -S . -B $B -G Ninja -DCMAKE_BUILD_TYPE=Release -DAUTAN_EXPERIMENT_DIAG=ON >/dev/null && cmake --build $B -j 8 --target autan-run >/dev/null || exit 1
+uv sync --locked -q
+D=$B/m6; R=$D/exp; mkdir -p $R
+uv run --no-sync autan prepare $D/cases/onera-m6-n012.toml --mesh-info $D/n012.meshinfo.json > $D/base.json || exit 1
+python3 - $D/base.json $R <<'PY'
+import json,sys
+b=json.load(open(sys.argv[1])); out=sys.argv[2]
+def w(name, edit):
+    d=json.loads(json.dumps(b)); edit(d); json.dump(d, open(f"{out}/{name}.json","w"))
+def steady(n):
+    def e(d): d["time"]["max_iterations"]=n
+    return e
+w("base", steady(1500))
+w("freeze600", steady(2000))
+w("k100", steady(1500))
+w("k10000", steady(1500))
+def rk(d):
+    d["time"]={"kind":"unsteady","steps":20000,"dt":None,"cfl":0.8,"average_from":None}
+w("rk3local", rk)
+def first(d): d["time"]["max_iterations"]=1500
+w("first", first)
+PY
+run() { name=$1; shift; rm -rf $R/$name; env "$@" AUTAN_EXP_DUMP=$R/$name nice $B/runtime/autan-run --input $R/$name.json --runs $R/$name > $R/$name.log 2>&1; }
+run base X=1 &
+run freeze600 AUTAN_EXP_FREEZE=600 &
+run k100 AUTAN_EXP_K=100 &
+run k10000 AUTAN_EXP_K=10000 &
+run rk3local AUTAN_EXP_LOCAL_DT=1 &
+run first AUTAN_EXP_FIRST_ORDER=1 &
+wait
+echo done
