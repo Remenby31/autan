@@ -22,6 +22,16 @@ struct Euler<P>::Impl {
 
   Scheme scheme;
   bool limiter_frozen = false;
+  bool limiter_monotone = false;
+  std::vector<State> phi_history;
+  void monotone() {
+    if (!limiter_monotone) return;
+    if (phi_history.empty()) phi_history = phi;
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+      phi[i] = std::min(phi[i], phi_history[i]);
+      phi_history[i] = phi[i];
+    }
+  }
   kernels::Topology topo{};
   // Each geometry array has the element type its Data<P> member stores (the generator stores
   // geometry that bodies read only as values in P::geom_value).
@@ -291,6 +301,11 @@ void Euler<P>::set_limiter_frozen(bool frozen) {
 }
 
 template <class P>
+void Euler<P>::set_limiter_monotone(bool monotone) {
+  impl_->limiter_monotone = monotone;
+}
+
+template <class P>
 std::vector<double> Euler<P>::limiter_values() const {
   return {impl_->phi.begin(), impl_->phi.end()};
 }
@@ -339,6 +354,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter && !m.limiter_frozen) {
       ek::cpu::limiter(m.d);
+      m.monotone();
     }
   }
   ek::cpu::sources(m.d);
@@ -367,6 +383,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter && !m.limiter_frozen) {
       ek::cpu::limiter(m.d);
+      m.monotone();
     }
   }
   ek::cpu::sources(m.d);

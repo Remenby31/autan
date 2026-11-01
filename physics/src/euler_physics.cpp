@@ -139,6 +139,14 @@ class EulerPhysics final : public runtime::Physics {
                      static_cast<long long>(iteration));
       }
     }
+    if (const char* n = std::getenv("AUTAN_EXP_MONO")) {
+      if (!monotone_ && second_order_ && iteration >= std::atoll(n)) {
+        monotone_ = true;
+        euler_.set_limiter_monotone(true);
+        std::fprintf(stderr, "EXPERIMENT: monotone limiter from iteration %lld\n",
+                     static_cast<long long>(iteration));
+      }
+    }
     struct After {
       EulerPhysics& self;
       std::int64_t it;
@@ -750,6 +758,7 @@ class EulerPhysics final : public runtime::Physics {
 
  private:
   bool frozen_ = false;
+  bool monotone_ = false;
   std::vector<double> prev_phi_;
   std::vector<double> flips_;
   std::FILE* steps_ = nullptr;

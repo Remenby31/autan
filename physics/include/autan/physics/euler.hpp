@@ -75,6 +75,7 @@ class Euler {
   void set_second_order(bool on);
 #ifdef AUTAN_EXPERIMENT_DIAG
   void set_limiter_frozen(bool frozen);
+  void set_limiter_monotone(bool monotone);
   [[nodiscard]] std::vector<double> limiter_values() const;
 #endif
   /// The least-squares weights of the gradient over its stencil (layout of
