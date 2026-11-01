@@ -7,11 +7,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "autan/core/cellwise.hpp"
@@ -133,6 +135,10 @@ class GmshReader {
       const int dim = next_int();
       const int tag = next_int();
       const int master = next_int();
+      if (dim < 0 || dim > 2 || tag <= 0 || master <= 0) {
+        c_.fail("a periodic link of dimension " + std::to_string(dim) + " between entities " +
+                std::to_string(tag) + " and " + std::to_string(master));
+      }
       const std::uint64_t n_affine = next_size();
       if (n_affine != 0 && n_affine != 16)
         c_.fail("a periodic affine transform of " + std::to_string(n_affine) + " values");
@@ -140,13 +146,29 @@ class GmshReader {
       for (std::uint64_t k = 0; k < n_affine; ++k) a[k] = next_double();
       const std::uint64_t n_nodes = next_size();
       c_.check_fits(n_nodes, min_bytes(2));
-      for (std::uint64_t k = 0; k < 2 * n_nodes; ++k) (void)next_size();
+      std::vector<std::pair<index_t, index_t>> nodes(n_nodes);
+      for (auto& [slave, from] : nodes) {
+        slave = node_index(next_size());
+        from = node_index(next_size());
+      }
       if (dim != 2) continue;
       if (n_affine == 0) c_.unsupported("a periodic surface link without its affine transform");
       const std::array<double, 12> identity{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
       const std::array<double, 12> linear{a[0], a[1], a[2],  a[4],  a[5],  a[6],
                                           a[8], a[9], a[10], a[12], a[13], a[14]};
       if (linear != identity || a[15] != 1.0) c_.unsupported("rotational periodicity");
+      // The link's own node pairs must follow its translation (to 1e-9 of
+      // it): the core matches faces by geometry, which must not paper over a
+      // link the file contradicts.
+      const double tolerance = 1e-9 * std::hypot(a[3], a[7], a[11]);
+      for (const auto& [slave, from] : nodes) {
+        const auto i = 3 * static_cast<std::size_t>(slave), j = 3 * static_cast<std::size_t>(from);
+        if (std::hypot(xyz_[i] - xyz_[j] - a[3], xyz_[i + 1] - xyz_[j + 1] - a[7],
+                       xyz_[i + 2] - xyz_[j + 2] - a[11]) > tolerance) {
+          c_.fail("periodic link of surface " + std::to_string(tag) +
+                  ": a node pair does not follow its translation");
+        }
+      }
       const auto group = [&](int entity) {
         const auto it = entity_physical_.find({2, entity});
         if (it == entity_physical_.end() || it->second == 0)
