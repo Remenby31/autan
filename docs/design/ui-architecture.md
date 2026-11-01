@@ -87,7 +87,7 @@ Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench
 
 ### Studies and Compare
 
-There is no study entity in `autan.results/1` yet: Home groups runs by case name and calls a group a study when its runs differ in the swept settings of their summaries, labelled with the range (`α 7.05–21.47 deg`). On Home, `x` selects the focused row, `Space` previews it, `c` compares the selection (also from a group header). `/compare?runs=[…]` (≤ 8, in selection order, A first) overlays residual drop, CL and CD against iteration with a shared cursor, draws the lift and drag polars from converged runs when the angle of attack varies, and lists the case settings that differ, with where each run ran from run.json (`run.devices`, `run.backend`, `run.solver` commit, `run.deterministic`).
+There is no study entity in `autan.results/1` yet: Home groups runs by case name and calls a group a study when its runs differ in the swept settings of their summaries, labelled with the range (`α 7.05–21.47 deg`). On Home, `x` selects the focused row, `Space` previews it, `c` compares the selection (also from a group header). `/compare?runs=[…]` (≤ 8, in selection order, A first) overlays residual drop, CL and CD against iteration with a shared cursor, draws the lift and drag polars of the converged runs with one forces monitor, one series per fixed condition (mesh, Mach, Reynolds number, sideslip, model, precision) and every run a point, names each run left out with the reason, and lists the case settings that differ, with where each run ran from run.json (`run.devices`, `run.backend`, `run.solver` commit, `run.deterministic`).
 
 ### Component library
 
