@@ -656,6 +656,7 @@ class EulerPhysics final : public runtime::Physics {
     const std::array<C, 3> mr{static_cast<C>(r[1]), static_cast<C>(r[2]), static_cast<C>(r[3])};
     const C p_ref = static_cast<C>((gas_.gamma - 1.0) *
                                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
+    LeastGlobal first{.ids = ctx_.mesh.cell_global_id(), .cell = {}, .best = 0};
     for (std::size_t c = 0; c < owned_; ++c) {
       std::array<C, 5> dq{};
       for (std::size_t k = 0; k < 5; ++k) {
@@ -671,16 +672,32 @@ class EulerPhysics final : public runtime::Physics {
       const C p = (g - C(1)) * (dq[4] - C(0.5) * dk) + p_ref;
       if (!std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
           !(rho > C(0)) || !(p > C(0))) {
-        return static_cast<index_t>(c);
+        first.take(c);
       }
     }
-    for (std::size_t c = 0; c < n_; ++c) {
+    if (first.cell) return first.cell;
+    for (std::size_t c = 0; c < owned_; ++c) {
       for (std::size_t k = 0; k < 5; ++k) {
-        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return static_cast<index_t>(c);
+        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) first.take(c);
       }
     }
-    return std::nullopt;
+    return first.cell;
   }
+
+  // Of the cells offered, the one with the least cell_global_id: the same cell whatever the
+  // numbering and the partition.
+  struct LeastGlobal {
+    std::span<const std::int64_t> ids;
+    std::optional<index_t> cell;
+    std::int64_t best = 0;
+    void take(std::size_t c) {
+      const std::int64_t id = ids.empty() ? static_cast<std::int64_t>(c) : ids[c];
+      if (!cell || id < best) {
+        cell = static_cast<index_t>(c);
+        best = id;
+      }
+    }
+  };
 
   [[nodiscard]] std::array<std::vector<double>, 6> primitive_fields() const {
     std::array<std::vector<double>, 6> f;

@@ -143,6 +143,25 @@ __global__ void invalid_residuals(index_t count, index_t n, const R* res, std::u
   flag[c] = bad;
 }
 
+// Of the flagged cells, the least global id (the cell index without ids): exact, so the same
+// whatever the launch and the numbering.
+__global__ void least_flagged(index_t n, const std::uint8_t* flag, const std::int64_t* ids,
+                              unsigned long long* best) {
+  const index_t c = static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= n || flag[c] == 0) return;
+  const auto id = static_cast<unsigned long long>(ids != nullptr ? ids[c] : c);
+  atomicMin(best, id);
+}
+
+// The cell whose id is `best` (ids are unique).
+__global__ void cell_of(index_t n, const std::uint8_t* flag, const std::int64_t* ids,
+                        const unsigned long long* best, index_t* cell) {
+  const index_t c = static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= n || flag[c] == 0) return;
+  const auto id = static_cast<unsigned long long>(ids != nullptr ? ids[c] : c);
+  if (id == *best) *cell = c;
+}
+
 // Terms of the residual norms: R_k^2 for k < 5, and 1 (the cell count) for k = 5.
 template <class R>
 struct SquareTerm {
@@ -202,6 +221,9 @@ class CudaStepper final : public DeviceStepper<P> {
         bc_kind_(nf_, stream_),
         bc_(5 * nf_, stream_),
         flag_(n_, stream_),
+        ids_(mesh.cell_global_id(), stream_),
+        best_(1, stream_),
+        cell_(1, stream_),
         sums_(6, stream_) {
     const D& h = host.data();
     source_.upload(std::span(h.source, 5 * n_), stream_);
@@ -362,14 +384,25 @@ class CudaStepper final : public DeviceStepper<P> {
     invalid_states<P><<<blocks(owned_), block, 0, stream_>>>(index(owned_), index(n_), u_.get(),
                                                              ref_, gamma_, p_ref_, flag_.get());
     check(cudaGetLastError(), "invalid_states");
-    auto c = gpu::first_index(index(owned_), flag_.get(), stream_);
-    if (c < index(owned_)) return c;
+    if (const auto c = least_invalid()) return c;
     invalid_residuals<<<blocks(owned_), block, 0, stream_>>>(index(owned_), index(n_), res_.get(),
                                                              flag_.get());
     check(cudaGetLastError(), "invalid_residuals");
-    c = gpu::first_index(index(owned_), flag_.get(), stream_);
-    if (c < index(owned_)) return c;
-    return std::nullopt;
+    return least_invalid();
+  }
+
+  // As the host's first_invalid_cell: the flagged owned cell with the least cell_global_id.
+  std::optional<index_t> least_invalid() {
+    if (gpu::first_index(index(owned_), flag_.get(), stream_) == index(owned_)) return std::nullopt;
+    const unsigned long long none = ~0ULL;
+    best_.upload(std::span<const unsigned long long>(&none, 1), stream_);
+    const std::int64_t* ids = ids_.size() == n_ ? ids_.get() : nullptr;
+    least_flagged<<<blocks(owned_), block, 0, stream_>>>(index(owned_), flag_.get(), ids,
+                                                         best_.get());
+    cell_of<<<blocks(owned_), block, 0, stream_>>>(index(owned_), flag_.get(), ids, best_.get(),
+                                                   cell_.get());
+    check(cudaGetLastError(), "least_invalid");
+    return cell_.download(stream_)[0];
   }
 
   cudaStream_t stream_;
@@ -393,6 +426,9 @@ class CudaStepper final : public DeviceStepper<P> {
   gpu::DeviceArray<element<decltype(D::bc_kind)>> bc_kind_;
   gpu::DeviceArray<element<decltype(D::bc)>> bc_;
   gpu::DeviceArray<std::uint8_t> flag_;
+  gpu::DeviceArray<std::int64_t> ids_;  // cell_global_id; empty for the identity
+  gpu::DeviceArray<unsigned long long> best_;
+  gpu::DeviceArray<index_t> cell_;
   gpu::DeviceArray<runtime::gpu::ExactWords> sums_;
   D d_{};
 };

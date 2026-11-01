@@ -17,6 +17,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
@@ -146,4 +147,52 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   }
   INFO("worst difference " << worst << " eps f_k A_i");
   CHECK(worst <= 500.0);
+}
+
+TEST_CASE("the device names the invalid cell of least global id, whatever the numbering",
+          "[euler][gpu]") {
+  // A tetrahedral mesh renumbered by RCM keeps each cell's global id. Two cells get a negative
+  // density: D0107 names the one with the lesser global id, which is not the lesser local index.
+  using P = autan::kernels::fp64;
+  const auto input = autan::io::read_mesh(mesh_dir / meshes[0]);
+  const auto mesh = autan::renumber_cells(input, autan::rcm_order(input));
+  const auto ids = mesh.cell_global_id();
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  REQUIRE(ids.size() == n);
+  // The pair of cells (a, b) with a < b locally but ids[a] > ids[b].
+  std::size_t a = n, b = n;
+  for (std::size_t c = 0; c + 1 < n && a == n; ++c) {
+    for (std::size_t d = c + 1; d < n; ++d) {
+      if (ids[c] > ids[d]) {
+        a = c;
+        b = d;
+        break;
+      }
+    }
+  }
+  REQUIRE(a < n);
+  const auto g = autan::compute_geometry(mesh);
+  const auto ref = flow(0.5, 0.5, 0.5);
+  Scheme s;
+  s.scale = {ref[0], 100.0, 100.0, 100.0, ref[4]};
+  s.mach_ref = 0.3;
+  s.reference = conserved(ref);
+  Euler<P> host(mesh, g, air, s);
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t k = 0; k < 5; ++k) std::fill_n(data.begin() + k * nb, nb, ref[k]);
+  host.set_boundary(kind, data);
+  std::vector<double> u(5 * n);
+  const auto uc = conserved(ref);
+  for (std::size_t k = 0; k < 5; ++k) std::fill_n(u.begin() + k * n, n, uc[k]);
+  u[a] = u[b] = -1.0;
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto device =
+      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
+  device->upload(u);
+  const auto e = device->evaluate();
+  REQUIRE(e.invalid.has_value());
+  CHECK(static_cast<std::size_t>(*e.invalid) == b);
 }
