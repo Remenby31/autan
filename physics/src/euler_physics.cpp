@@ -829,6 +829,39 @@ class EulerPhysics final : public runtime::Physics {
                    nonorth[c], skew[c], c < q.aspect_ratio.size() ? q.aspect_ratio[c] : 0.0);
     }
     std::fclose(out);
+    // The faces of the five cells with the largest residual: zone, area, n . (c_f - c_cell).
+    std::vector<std::pair<double, std::size_t>> top;
+    for (std::size_t c = 0; c < n_; ++c) {
+      double r = 0.0;
+      for (std::size_t k = 0; k < 5; ++k) {
+        r = std::max(r, std::abs(static_cast<double>(res_[k * n_ + c])) /
+                            (scales[k] / area * surface[c]));
+      }
+      top.emplace_back(r, c);
+    }
+    std::partial_sort(top.begin(), top.begin() + 5, top.end(), std::greater<>());
+    std::FILE* faces = std::fopen((std::string(prefix) + "." + tag + ".faces.txt").c_str(), "w");
+    for (int t = 0; t < 5; ++t) {
+      const auto c = top[static_cast<std::size_t>(t)].second;
+      std::fprintf(faces, "cell %zu r %.3g at %.4f %.4f %.4f volume %.4g\n", c, top[t].first,
+                   g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c],
+                   g.cell_volume[c]);
+      for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+        const bool own = static_cast<std::size_t>(mesh.owner()[f]) == c;
+        const bool nb = f < static_cast<std::size_t>(mesh.n_interior_faces()) &&
+                        static_cast<std::size_t>(mesh.neighbour()[f]) == c;
+        if (!own && !nb) continue;
+        const double sgn = own ? 1.0 : -1.0;
+        const double dn = sgn * (g.face_area_x[f] * (g.face_centroid_x[f] - g.cell_centroid_x[c]) +
+                                 g.face_area_y[f] * (g.face_centroid_y[f] - g.cell_centroid_y[c]) +
+                                 g.face_area_z[f] * (g.face_centroid_z[f] - g.cell_centroid_z[c]));
+        const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+        std::fprintf(faces, "  face %zu %s area %.4g S.d %.4g nonorth %.1f other %d\n", f,
+                     zone.c_str(), g.face_area[f], dn, q.non_orthogonality[f],
+                     nb ? mesh.owner()[f] : (own && f < static_cast<std::size_t>(mesh.n_interior_faces()) ? mesh.neighbour()[f] : -1));
+      }
+    }
+    std::fclose(faces);
   }
 #endif
 
