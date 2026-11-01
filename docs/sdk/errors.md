@@ -532,6 +532,14 @@ A boundary rule names a zone of a periodic pair; the mesh pairs its faces with t
 
 Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic.
 
+## E0425
+
+**Point-vortex surfaces match no wall** (error)
+
+The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of a periodic pair, or match zones that are not wall or slip zones: the vortex's circulation comes from the lift on the body. Patterns with wildcards skip periodic zones.
+
+Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.
+
 ## E0501
 
 **Cell zone rule matches no zone** (error)

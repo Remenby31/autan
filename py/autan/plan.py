@@ -196,6 +196,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         boundaries = _manufactured_boundaries(mesh)
     else:
         boundaries = _resolve_boundaries(case, spec, mesh, found)
+        _check_point_vortices(case, spec, mesh, boundaries, found)
     cell_zones = _resolve_cell_zones(case, spec, mesh, found)
     if spec.initial_state is not None:
         kinds = [(z.medium or {}).get("kind") for z in cell_zones]
@@ -696,6 +697,50 @@ def _properties(material: dict[str, Any]) -> dict[str, Any]:
 
     result: dict[str, Any] = canonical(material)
     return result
+
+
+def vortex_zones(
+    pattern: str, mesh: MeshInfo, boundaries: tuple[BoundaryResolution, ...] | list[Any]
+) -> tuple[list[str], list[str]]:
+    """The zones a point vortex's ``surfaces`` matches (periodic zones skipped), and those of
+    them that are not wall or slip zones."""
+    partners = _partners(mesh)
+    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
+    kinds = {b.zone: (b.condition or {}).get("kind") for b in boundaries}
+    matched = _matches(pattern, names)
+    return matched, [z for z in matched if kinds.get(z) not in ("wall", "slip")]
+
+
+def _check_point_vortices(
+    case: Case,
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    boundaries: list[BoundaryResolution],
+    found: list[Diagnostic],
+) -> None:
+    partners = _partners(mesh)
+    for index, rule in enumerate(spec.boundaries):
+        vortex = rule.condition.point_vortex if isinstance(rule.condition, Farfield) else None
+        if vortex is None:
+            continue
+        matched, others = vortex_zones(vortex.surfaces, mesh, boundaries)
+        literal = not any(c in vortex.surfaces for c in "*?[")
+        if literal and vortex.surfaces in partners:
+            problem = f"zone {vortex.surfaces!r} is periodic"
+        elif not matched:
+            problem = f"{vortex.surfaces!r} matches no boundary zone"
+        elif others:
+            problem = f"it matches zones that are not wall or slip: {', '.join(others)}"
+        else:
+            continue
+        found.append(
+            diagnostic(
+                "E0425",
+                f"point vortex of boundaries[{index}]: {problem}",
+                location=case.locate(f"boundaries[{index}].condition.point_vortex"),
+                surfaces=vortex.surfaces,
+            )
+        )
 
 
 def _check_monitors(case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]) -> None:
