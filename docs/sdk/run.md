@@ -14,3 +14,11 @@ Until the C++ core is built, the only backend is `fake` (`autan.FakeBackend`). I
 SIGINT or SIGTERM stops the run: it is finalized as `stopped`, with its solution, and the command exits with 130. Exit status otherwise: 0, or 1 when the plan has errors or the run diverged.
 
 To browse runs, `autan ui [--runs DIR] [--port N] [--no-open]` serves the web UI for the run directories under `DIR` (default `./runs`) on `127.0.0.1:8765`. It needs the `ui` extra (`uv add 'autan[ui]'`); without it the command exits with `E0805`.
+
+## Solver input: `autan prepare`
+
+```text
+autan prepare CASE --mesh-info MESHINFO [--device-kind cpu|cuda|hip] [--device-count N] [--deterministic] [-o FILE]
+```
+
+`autan prepare` writes the document the solver runtime `autan-run` reads: the case planned against its mesh, every zone resolved and every value in SI ([solver-input.md](../contracts/solver-input.md)). It refuses a case whose plan has errors, with the plan's diagnostics and exit status 1, and reports the plan's warnings on stderr. You rarely call it yourself: a run with the real solver prepares its input this way.
