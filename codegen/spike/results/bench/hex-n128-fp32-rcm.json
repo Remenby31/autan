@@ -57,10 +57,6 @@
    },
    "clocks_event_reasons": "0x0000000000000000",
    "compute_apps_max": 1
-  },
-  "setup_seconds": {
-   "read": 3.231,
-   "renumber": 1.289
   }
  },
  "config": {

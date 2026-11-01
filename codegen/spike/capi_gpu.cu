@@ -244,9 +244,69 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   copy_out(q_adj.download(), out);
 }
 
+/// Adjoint of the LSQ gradient + bounds reduction on the device (seed 5 x n_cells -> q-bar):
+/// Sum, Min and Max accumulators and the finalise body.
+template <class P>
+void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, const double* q,
+                        const double* q_b, const double* seed, double* out) {
+  namespace gr = autan::kernels::gradients;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  DeviceMesh dm(m, block);
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(hg);
+  DeviceArray<S> qs(converted_in<S>(q, nc)), qbs(converted_in<S>(q_b, nf));
+  DeviceArray<typename P::grad> gs(3 * nc);
+  DeviceArray<S> lo(nc), hi(nc);
+  DeviceArray<R> g_adj(converted_in<R>(seed, 3 * nc)), lo_adj(converted_in<R>(seed + 3 * nc, nc)),
+      hi_adj(converted_in<R>(seed + 4 * nc, nc)), q_adj(nc);
+  gr::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.q_b = qbs.get();
+  d.grad = gs.get();
+  d.qmin = lo.get();
+  d.qmax = hi.get();
+  d.lsq_weight = g.lsq_weight.get();
+  d.grad_adj = g_adj.get();
+  d.qmin_adj = lo_adj.get();
+  d.qmax_adj = hi_adj.get();
+  d.q_adj = q_adj.get();
+  gr::gpu_loops::lsq_gradient_bounds_adjoint(d, strategy, dm.schedule);
+  synchronise();
+  copy_out(q_adj.download(), out);
+}
+
 }  // namespace
 
 extern "C" {
+
+int autan_spike_gpu_lsq_bounds_adjoint(const void* mesh, const char* policy, const char* strategy,
+                                       int block, const double* q, const double* q_b,
+                                       const double* seed, double* out, char* err,
+                                       std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::with_policy(
+        policy, [&](auto p) { lsq_bounds_adjoint<decltype(p)>(*m, s, block, q, q_b, seed, out); });
+  });
+}
+
+/// Fixed-order FP64 sum of squares of x[0..n) computed on the device.
+int autan_spike_gpu_sum_of_squares(const double* x, std::int64_t n, double* out, char* err,
+                                   std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    DeviceArray<double> dx(x, static_cast<std::size_t>(n));
+    DeviceArray<double> partials(static_cast<std::size_t>(gpu::norm_partials(n)));
+    DeviceArray<double> sum(1);
+    gpu::sum_of_squares(dx.get(), n, partials.get(), sum.get(), nullptr);
+    synchronise();
+    *out = sum.download()[0];
+  });
+}
 
 int autan_spike_gpu_roe(const void* mesh, const char* policy, const char* strategy, int block,
                         int mode, const double* u, const double* seed, double* out, char* err,

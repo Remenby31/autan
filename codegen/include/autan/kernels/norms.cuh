@@ -46,11 +46,12 @@ __global__ void __launch_bounds__(norm_block) squares_by_chunk(const T* __restri
   }
 }
 
-__global__ void __launch_bounds__(norm_block) sum_partials(const double* __restrict__ partial,
-                                                           std::int64_t m,
-                                                           double* __restrict__ out) {
+// A template so that every translation unit including this header may instantiate it.
+template <class T>
+__global__ void __launch_bounds__(norm_block) sum_partials(const T* __restrict__ partial,
+                                                           std::int64_t m, T* __restrict__ out) {
   __shared__ double s[norm_block];
-  double acc = 0.0;
+  T acc = 0.0;
   for (std::int64_t i = threadIdx.x; i < m; i += norm_block) {
     acc += partial[i];
   }
@@ -70,7 +71,7 @@ void sum_of_squares(const T* x, std::int64_t n, double* partials, double* out, s
   if (m > 0) {
     squares_by_chunk<T><<<static_cast<unsigned>(m), norm_block, 0, stream>>>(x, n, partials);
   }
-  sum_partials<<<1, norm_block, 0, stream>>>(partials, m, out);
+  sum_partials<double><<<1, norm_block, 0, stream>>>(partials, m, out);
   check(last_error(), "sum_of_squares");
 }
 

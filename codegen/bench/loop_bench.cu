@@ -244,7 +244,29 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   da.q_adj = q_adj.get();
   const double lsq_adj_bytes = lsq_bytes - cells * (3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
                                cells * (sizeof(S) + 10.0 * sizeof(R) + 2.0 * sizeof(R));
+  // Host reference with random seeds; the adjoint consumes (zeroes) its seeds, so each check
+  // uploads them again. Timed repetitions after the first run on zeroed seeds: same work.
+  std::vector<R> seeds(5 * nc);
+  for (auto& v : seeds) v = R(normal(rng));
+  std::vector<R> h_gadj(seeds.begin(), seeds.begin() + 3 * nc);
+  std::vector<R> h_lo(seeds.begin() + 3 * nc, seeds.begin() + 4 * nc);
+  std::vector<R> h_hi(seeds.begin() + 4 * nc, seeds.end());
+  std::vector<R> h_qadj(nc, R(0));
+  gr::Data<P> dha = dh;
+  dha.grad_adj = h_gadj.data();
+  dha.qmin_adj = h_lo.data();
+  dha.qmax_adj = h_hi.data();
+  dha.q_adj = h_qadj.data();
+  gr::cpu::lsq_gradient_bounds(dh);
+  gr::cpu::lsq_gradient_bounds_adjoint(dha);
   for (auto s : {gpu::Strategy::atomic, gpu::Strategy::store_gather}) {
+    g_adj.upload(seeds.data());
+    lo_adj.upload(seeds.data() + 3 * nc);
+    hi_adj.upload(seeds.data() + 4 * nc);
+    gpu::check(cudaMemset(q_adj.get(), 0, nc * sizeof(R)), "memset");
+    gr::gpu_loops::lsq_gradient_bounds_adjoint(da, s, dm.schedule);
+    gpu::check(cudaDeviceSynchronize(), "lsq adjoint");
+    if (max_rel_diff(as_double(q_adj.download()), as_double(h_qadj)) > tolerance) verified = false;
     std::string tag = gpu::name(s);
     std::replace(tag.begin(), tag.end(), '-', '_');
     out.push_back(

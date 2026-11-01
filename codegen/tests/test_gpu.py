@@ -6,6 +6,8 @@ Needs AUTAN_SPIKE_LIB pointing to libautan_spike_gpu (built with -DAUTAN_ENABLE_
 
 from __future__ import annotations
 
+import math
+
 import autan_spike as s
 import meshes
 import mms
@@ -147,3 +149,30 @@ def test_ghost_cells_receive_their_partial_sums_in_every_strategy(strategy: str)
     ghosts = slice(m.n_cells - n_ghost, m.n_cells)
     assert np.abs(host[ghosts]).max() > 0.0
     assert np.abs(dev - host).max() <= 500 * eps("fp64") * np.abs(host).max()
+
+
+@pytest.mark.parametrize("strategy", s.STRATEGIES)
+@pytest.mark.parametrize("policy", PRECISIONS)
+def test_reduction_adjoints_with_min_max_and_finalise_equal_host(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], policy: str, strategy: str
+) -> None:
+    # Values rounded to one decimal, so Min/Max tie often; both GPU forms (atomic scatter and the
+    # deterministic two passes) must send each adjoint to the incidence the host selects.
+    m, _ = case
+    rng = np.random.default_rng(15)
+    q = np.round(rng.standard_normal(m.n_cells), 1)
+    q_b = np.round(rng.standard_normal(m.n_faces), 1)
+    seed = rng.standard_normal((m.n_cells, 5))
+    host = s.lsq_bounds_derivative(m, policy, "adjoint", q, q_b, seed)
+    dev = s.gpu_lsq_bounds_adjoint(m, policy, strategy, 64, q, q_b, seed)
+    assert np.abs(dev - host).max() <= 500 * eps(policy) * np.abs(host).max()
+
+
+@pytest.mark.parametrize("n", [0, 1, 4095, 4096, 4097, 250_001])
+def test_device_sum_of_squares_is_exact_to_rounding_and_order_fixed(n: int) -> None:
+    x = np.random.default_rng(n).standard_normal(n)
+    # Reference: correctly rounded sum (math.fsum). Pairwise trees err by O(log n) ulps.
+    got = s.gpu_sum_of_squares(x)
+    ref = math.fsum(x * x)
+    assert abs(got - ref) <= 64 * np.finfo(np.float64).eps * ref
+    assert {s.gpu_sum_of_squares(x) for _ in range(5)} == {got}
