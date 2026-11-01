@@ -613,8 +613,21 @@ class EulerPhysics final : public runtime::Physics {
     newton_u_.resize(5 * n_);
     newton_state_.resize(5 * n_);
     newton_res_.resize(5 * n_);
+    // The iteration runs on the equations the SER ratio follows: an equation identically zero
+    // (the span momentum of a one-cell-thick mesh) stays zero, where the round-off of the finite
+    // differences would wake it.
+    auto restrict_to_active = [&](std::span<double> w) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        if (exempt_[k]) std::fill_n(w.begin() + static_cast<std::ptrdiff_t>(k * n_), n_, 0.0);
+      }
+    };
     newton_r_ = rhs_;
-    auto apply = [&](std::span<const double> v, std::span<double> y) {
+    restrict_to_active(newton_r_);
+    newton_v_.resize(5 * n_);
+    auto apply = [&](std::span<const double> x, std::span<double> y) {
+      std::copy(x.begin(), x.end(), newton_v_.begin());
+      restrict_to_active(newton_v_);
+      const std::vector<double>& v = newton_v_;
       const double vnorm = norm(v);
       if (!(vnorm > 0.0)) {
         std::fill(y.begin(), y.end(), 0.0);
@@ -631,9 +644,11 @@ class EulerPhysics final : public runtime::Physics {
                  (static_cast<double>(newton_res_[i]) - static_cast<double>(res_[i])) / eps;
         }
       }
+      restrict_to_active(y);
     };
     auto precondition = [&](std::span<const double> r, std::span<double> z) {
       multigrid_->cycle(r, z);
+      restrict_to_active(z);
     };
     return newton_gcr_.solve(apply, precondition, newton_r_, du_, newton_max_iterations,
                              linear_tolerance);
@@ -776,7 +791,7 @@ class EulerPhysics final : public runtime::Physics {
   std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;
   solvers::Gcr newton_gcr_;
-  std::vector<double> newton_u_, newton_r_;
+  std::vector<double> newton_u_, newton_r_, newton_v_;
   std::vector<State> newton_state_;
   std::vector<Res> newton_res_;
   bool newton_ = false;       // logging only: the phase follows from the restart state
