@@ -209,6 +209,35 @@ def test_reduction_adjoints_with_min_max_and_finalise_equal_host(
     assert np.abs(dev - host).max() <= 500 * eps(policy) * np.abs(host).max()
 
 
+def test_device_mesh_binds_built_in_geometry_and_leaves_physics_datasets(backend: str) -> None:
+    if backend == "metal":
+        pytest.skip("DeviceMesh is CUDA/HIP (autan/kernels/device.cuh)")
+    m = s.mesh(meshes.build("hex", 3))
+    assert s.gpu_bind_check(m) == (True, True)
+
+
+@pytest.mark.parametrize("n", [0, 1, 255, 256, 257, 65_537, 1_000_003])
+def test_device_min_and_first_index_are_exact(backend: str, n: int) -> None:
+    # Global time step and first diverged cell: exact, NaN never the minimum, -0 before +0.
+    if backend == "metal":
+        pytest.skip("gpu::min and gpu::first_index are CUDA/HIP (autan/kernels/device.cuh)")
+    rng = np.random.default_rng(n)
+    x = rng.standard_normal(n)
+    flags = rng.random(n) < 3.0 / max(n, 1)
+    if n > 2:
+        x[n // 3] = np.nan
+    m64, m32, first, first64 = s.gpu_reductions(x, flags)
+    if n == 0:
+        assert (m64, m32, first, first64) == (np.inf, np.float32(np.inf), 0, 0)
+        return
+    assert m64 == np.nanmin(x)
+    assert m32 == np.nanmin(x.astype(np.float32))
+    assert first == first64 == (np.flatnonzero(flags)[0] if flags.any() else n)
+    zeros = np.where(np.arange(n) % 2 == 0, 0.0, -0.0) if n > 1 else np.zeros(n)
+    z64, z32, _, _ = s.gpu_reductions(zeros, flags)
+    assert np.signbit(z64) == np.signbit(z32) == (n > 1)
+
+
 @pytest.mark.parametrize("n", [0, 1, 4095, 4096, 4097, 250_001])
 def test_device_sum_of_squares_is_exact_to_rounding_and_order_fixed(backend: str, n: int) -> None:
     x = np.random.default_rng(n).standard_normal(n)

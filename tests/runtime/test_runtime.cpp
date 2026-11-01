@@ -393,6 +393,22 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
   }
+  SECTION("failed on a recorded load that is not finite: E0704, history up to the line before") {
+    // results.md, History: a record holds numbers, so a non-finite force
+    // at iteration 5 fails the run there instead of writing null.
+    const Outcome o = run(input([](Json& d) { d["monitors"][0]["every"] = 1; }),
+                          {.factor = 0.9, .nan_loads_from = 5});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["iterations"] == 4);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+    const auto lines = history(o.run);
+    REQUIRE(lines.size() == 4);
+    CHECK(lines.back()["iteration"] == 4);
+    CHECK(std::isfinite(lines.back()["monitors"]["forces"]["fy"].get<double>()));
+  }
   SECTION("failed writing the solution: E0704, no monitors") {
     const Outcome o = run(input(), {.factor = 0.5, .throw_in_fields = true});
     CHECK(o.status == ExitStatus::failed);
