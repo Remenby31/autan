@@ -15,6 +15,7 @@ from autan_codegen.emit_cpp import Emitter, at, call_args
 from autan_codegen.emit_cpu import (
     boundary_write_body,
     cell_stores,
+    jacobian_lines,
     n_out,
     offsets,
     other_targets,
@@ -35,13 +36,21 @@ def _range(lm: LoopModel) -> tuple[str, str]:
     return "d.topo.n_interior_faces", "d.topo.n_faces"
 
 
-def _face_eval(lm: LoopModel, indent: str) -> list[str]:
-    """Loads l (and r), evaluates the body of face f into `out`."""
+def _face_eval(lm: LoopModel, indent: str, jac: str | None = "true") -> list[str]:
+    """Loads l (and r), evaluates the body of face f into `out`, and writes the face's Jacobian
+    outputs when `jac` (a C++ condition; None: never) holds."""
     lines = [f"{indent}const index_t l = d.topo.owner[f];"]
     if lm.kind == "face":
         lines.append(f"{indent}const index_t r = d.topo.neighbour[f];")
     args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"})
     lines.append(f"{indent}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
+    if lm.jac_fns and jac is not None:
+        if jac == "true":
+            lines += jacobian_lines(lm, args, "f", indent)
+        else:
+            lines.append(f"{indent}if ({jac}) {{")
+            lines += jacobian_lines(lm, args, "f", indent + "  ")
+            lines.append(f"{indent}}}")
     return lines
 
 
@@ -203,7 +212,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
                 e.w("    const bool left = d.topo.owner[f] == c;")
         else:
             e.w(f"    typename P::compute out[{n}];")
-            for s in _face_eval(lm, "    "):
+            for s in _face_eval(lm, "    ", "l == c"):
                 e.w(s)
             if lm.kind == "face":
                 e.w("    const bool left = l == c;")
@@ -311,6 +320,8 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
         e.w(f"  typename P::compute out[{n_out(lm)}];")
         args = call_args(lm.sig, lm.loop.bindings, {"direct": "c"})
         e.w(f"  {lm.fn.name}<P>({', '.join([*args, 'out'])});")
+        for s in jacobian_lines(lm, args, "c", "  "):
+            e.w(s)
         for s in cell_stores(lm, "  "):
             e.w(s)
     elif lm.kind == "reduce_adjoint":

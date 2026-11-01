@@ -48,6 +48,7 @@ struct fp64 {
   using residual = double;
   using geom = double;
   using param = double;
+  using jac = double;
   using compute = double;
   using accum = double;
   static constexpr const char* name = "fp64";
@@ -59,6 +60,7 @@ struct fp32_acc64 {
   using residual = double;
   using geom = double;
   using param = double;
+  using jac = float;
   using compute = float;
   using accum = double;
   static constexpr const char* name = "fp32+acc64";
@@ -70,6 +72,7 @@ struct fp32 {
   using residual = float;
   using geom = float;
   using param = float;
+  using jac = float;
   using compute = float;
   using accum = float;
   static constexpr const char* name = "fp32";
@@ -82,6 +85,7 @@ struct complex_step {
   using residual = std::complex<double>;
   using geom = double;
   using param = double;
+  using jac = std::complex<double>;
   using compute = std::complex<double>;
   using accum = std::complex<double>;
   static constexpr const char* name = "complex-step";

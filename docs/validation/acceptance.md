@@ -32,7 +32,7 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | NACA 0012 inviscid, M 0.8, α 0° | continuum CD within 1 count of 0.008342 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
 | NACA 0012 inviscid, M 0.8, α 1.25° | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 | idem, point-vortex farfield runs |
 | NACA 0012 inviscid, M 0.5, α 1.25° | CD decreases monotonically; extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
-| ONERA M6 inviscid (run 2308 conditions) | residual drop ≥ 10 orders; shock x/c within ±0.03 of experiment at η = 0.20–0.65 (report) | PLAN M2; Schmitt and Charpin 1979 (`onera-m6` case) |
+| ONERA M6 inviscid (run 2308 conditions) | `fp64`: residual drop ≥ 10 orders. `fp32+acc64`: the residual reaches its rounding plateau, at least 5 orders (the plateau is reported), and CL, CD, CM within 0.1 % of `fp64` and Cp within the tolerance of [euler.md](../design/euler.md#precision); shock x/c within ±0.03 of experiment at η = 0.20–0.65 (report) | PLAN M2; Schmitt and Charpin 1979 (`onera-m6` case). *Ours* (lead, 2026-11-01): 10 orders prove the discretisation and the solver, so they are measured in `fp64`; in `fp32+acc64` each face flux carries FP32 rounding, which bounds the drop ([euler.md](../design/euler.md#precision)) |
 
 ## M3 — Navier-Stokes and Spalart-Allmaras
 
