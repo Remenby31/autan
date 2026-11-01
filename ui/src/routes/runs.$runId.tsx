@@ -3,6 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { Run } from "../api/contracts";
+import { devicesLabel } from "../api/devices";
 import {
   type HistoryColumns,
   planQuery,
@@ -429,7 +430,7 @@ function Facts({
           label: "Devices",
           value: (
             <span className="font-mono">
-              {run.devices.count}× {run.devices.kind} · {run.precision}
+              {devicesLabel(run.devices)} · {run.precision}
             </span>
           ),
         },

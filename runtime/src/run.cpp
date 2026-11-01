@@ -130,6 +130,7 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
+  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
   std::optional<StartState> start;  // input.start, read and checked
   Json start_averaging;             // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
@@ -773,6 +774,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
+  p.groups = entry != nullptr ? &entry->groups : nullptr;
   if (entry != nullptr && entry->scope) {
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
@@ -1007,7 +1009,8 @@ class Run final : public Log {
   }
 
   // On several ranks, each runs its part of the mesh, partitioned by METIS
-  // with the face-count cost of each cell; every rank partitions the same
+  // with the face-count cost of each cell and the physics' groups kept
+  // whole; every rank partitions the same
   // mesh with the same seed, so all agree on the parts (partitioning.md).
   // On one rank, a mesh with periodic pairs runs on its one-part partition,
   // whose image ghosts make each periodic face an interior face; its owned
@@ -1017,7 +1020,14 @@ class Run final : public Log {
     const std::int32_t n = comm_.size();
     if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
-    if (n > 1) parts = partition_cells(mesh, n, {.cell_weights = cell_cost_weights(mesh)});
+    if (n > 1) {
+      CellGroups groups;
+      if (p_.groups != nullptr && *p_.groups) groups = (*p_.groups)(p_.input, mesh, geometry_);
+      parts = partition_cells(mesh, n,
+                              {.cell_weights = cell_cost_weights(mesh),
+                               .group_offsets = groups.offsets,
+                               .group_cells = groups.cells});
+    }
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1504,8 +1514,9 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks) {
-  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks});
+                          bool several_ranks, PartitionGroups groups) {
+  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
+                                              std::move(groups)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {

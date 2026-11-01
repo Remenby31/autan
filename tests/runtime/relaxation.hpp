@@ -52,6 +52,10 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
   std::vector<double> scales{};  ///< residual_scales(); empty: none
+  /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
+  /// `groups`, so each group spans the mesh. On several ranks, the physics throws unless the
+  /// runtime asked for them and every group it holds a cell of is wholly owned. 0: none.
+  int groups = 0;
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -73,6 +77,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
     read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
+    read("AUTAN_TEST_GROUPS", o.groups);
     return o;
   }
 };
@@ -335,9 +340,43 @@ class Relaxation final : public autan::runtime::Physics {
 
 inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions options) {
   autan::runtime::PhysicsRegistry registry;
+  // Cells per group, recorded when the runtime asks for the groups.
+  auto group_sizes = std::make_shared<std::vector<std::int64_t>>();
+  autan::runtime::PartitionGroups groups;
+  if (options.groups > 0) {
+    groups = [n = options.groups, group_sizes](const autan::runtime::SolverInput& /*input*/,
+                                               const autan::Mesh& mesh,
+                                               const autan::Geometry& /*geometry*/) {
+      autan::runtime::CellGroups g;
+      g.offsets.push_back(0);
+      group_sizes->assign(static_cast<std::size_t>(n), 0);
+      for (int k = 0; k < n; ++k) {
+        for (autan::index_t c = k; c < mesh.n_cells(); c += 2 * n) {
+          g.cells.push_back(c);
+          ++(*group_sizes)[static_cast<std::size_t>(k)];
+        }
+        g.offsets.push_back(static_cast<autan::offset_t>(g.cells.size()));
+      }
+      return g;
+    };
+  }
   registry.add(
       {.kind = "*", .turbulence = "*", .precision = "*", .device = "*"},
-      [options](const autan::runtime::PhysicsContext& context) {
+      [options, group_sizes](const autan::runtime::PhysicsContext& context) {
+        if (options.groups > 0 && context.ranks.size() > 1) {
+          if (group_sizes->empty()) throw std::runtime_error("the partition had no groups");
+          std::vector<std::int64_t> held(group_sizes->size(), 0);
+          const auto& mesh = context.mesh;
+          for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+            const auto id = mesh.cell_global_id()[static_cast<std::size_t>(c)];
+            if (id % (2 * options.groups) < options.groups)
+              ++held[static_cast<std::size_t>(id % (2 * options.groups))];
+          }
+          for (std::size_t k = 0; k < held.size(); ++k) {
+            if (held[k] != 0 && held[k] != (*group_sizes)[k])
+              throw std::runtime_error("group " + std::to_string(k) + " is split");
+          }
+        }
         return std::make_unique<Relaxation>(context, options);
       },
       [options](const autan::runtime::SolverInput& /*input*/,
@@ -348,7 +387,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
             .path = "physics",
             .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
       },
-      !options.one_rank);
+      !options.one_rank, groups);
   return registry;
 }
 

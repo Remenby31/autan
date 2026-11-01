@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <numeric>
 #include <set>
 #include <span>
 #include <vector>
@@ -556,4 +558,187 @@ TEST_CASE("Periodic images fill in device memory as on the host", "[partition][p
   require_error(autan::ErrorCode::halo_device_unsupported,
                 [&] { autan::DeviceSelfForward images(part.halo, m.n_owned_cells()); });
 #endif
+}
+
+namespace {
+
+// The dual graph of a mesh as a GraphLevel: cells, interior faces, global ids.
+struct DualLevel {
+  std::vector<index_t> owner, neighbour;
+  std::vector<std::int64_t> ids;
+  autan::GraphLevel level;
+  explicit DualLevel(const autan::Mesh& mesh) {
+    owner.assign(mesh.owner().begin(), mesh.owner().begin() + mesh.n_interior_faces());
+    neighbour.assign(mesh.neighbour().begin(), mesh.neighbour().end());
+    ids.assign(mesh.cell_global_id().begin(), mesh.cell_global_id().end());
+    level = {
+        .n_nodes = at(mesh.n_cells()), .owner = owner, .neighbour = neighbour, .global_id = ids};
+  }
+};
+
+}  // namespace
+
+#if defined(AUTAN_HAVE_METIS) || defined(AUTAN_HAVE_SCOTCH)
+TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
+  // Pairs of cells across every third interior face that touch no earlier pair.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(6, autan::test::BoxFill::hybrid, 0.2)));
+  std::vector<autan::offset_t> offsets{0};
+  std::vector<index_t> grouped;
+  std::vector<char> used(at(mesh.n_cells()), 0);
+  for (index_t f = 0; f < mesh.n_interior_faces(); f += 3) {
+    const index_t a = mesh.owner()[at(f)], b = mesh.neighbour()[at(f)];
+    if (used[at(a)] || used[at(b)]) continue;
+    used[at(a)] = used[at(b)] = 1;
+    grouped.insert(grouped.end(), {a, b});
+    offsets.push_back(static_cast<autan::offset_t>(grouped.size()));
+  }
+  REQUIRE(offsets.size() > 10);
+  std::vector<autan::PartitionMethod> methods;
+#ifdef AUTAN_HAVE_METIS
+  methods.push_back(autan::PartitionMethod::metis);
+#endif
+#ifdef AUTAN_HAVE_SCOTCH
+  methods.push_back(autan::PartitionMethod::scotch);
+#endif
+  for (const auto method : methods) {
+    for (const std::int32_t n : {2, 4}) {
+      const auto parts = autan::partition_cells(
+          mesh, n,
+          {.method = method, .cell_weights = {}, .group_offsets = offsets, .group_cells = grouped});
+      for (std::size_t g = 0; g + 1 < offsets.size(); ++g)
+        CHECK(parts[at(grouped[at(offsets[g])])] == parts[at(grouped[at(offsets[g]) + 1])]);
+      CHECK(parts == autan::partition_cells(mesh, n,
+                                            {.method = method,
+                                             .cell_weights = {},
+                                             .group_offsets = offsets,
+                                             .group_cells = grouped}));
+    }
+  }
+  // Malformed groups, refused on one part as on two: a cell in two groups, an empty group
+  // (no phantom node), cells without offsets.
+  const auto refused = [&](std::vector<autan::offset_t> group_offsets,
+                           std::vector<index_t> group_cells) {
+    for (const std::int32_t n : {1, 2}) {
+      require_error(autan::ErrorCode::partition_invalid_request, [&] {
+        (void)autan::partition_cells(
+            mesh, n,
+            {.cell_weights = {}, .group_offsets = group_offsets, .group_cells = group_cells});
+      });
+    }
+  };
+  refused({0, 2, 4}, {0, 1, 1, 2});
+  std::vector<index_t> all(at(mesh.n_cells()));
+  std::iota(all.begin(), all.end(), index_t{0});
+  refused({0, 0, static_cast<autan::offset_t>(all.size())}, all);
+  refused({}, {0, 1});
+}
+#endif
+
+TEST_CASE("A coarse node goes to the part of its least child", "[partition][graph]") {
+  // Children (ids 5, 2, 7) of coarse 0 and (ids 4, 9) of coarse 1.
+  const std::vector<std::int32_t> parts{0, 1, 0, 2, 1};
+  const std::vector<index_t> coarse{0, 0, 0, 1, 1};
+  const std::vector<std::int64_t> ids{5, 2, 7, 4, 9};
+  const auto cp = autan::coarse_parts(parts, coarse, ids, 2);
+  CHECK(cp == std::vector<std::int32_t>{1, 2});
+  // Coarse 0 is rank 1's (node 1, id 2): its other children, nodes 0 and 2, live on rank 0.
+  CHECK(autan::remote_children(1, parts, coarse, cp) == std::vector<index_t>{0, 2});
+  CHECK(autan::remote_children(2, parts, coarse, cp) == std::vector<index_t>{4});
+  CHECK(autan::remote_children(0, parts, coarse, cp).empty());
+  require_error(autan::ErrorCode::partition_invalid_request,
+                [&] { (void)autan::coarse_parts(parts, coarse, ids, 3); });  // coarse 2 empty
+  // The largest id is an id like any other.
+  const std::vector<std::int64_t> top{std::numeric_limits<std::int64_t>::max()};
+  CHECK(autan::coarse_parts(std::vector<std::int32_t>{1}, std::vector<index_t>{0}, top, 1) ==
+        std::vector<std::int32_t>{1});
+}
+
+TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partition][graph]") {
+  // The dual graph of a box, cut in slabs, coarsened by groups of 4 consecutive cells (so
+  // many coarse nodes have children in two slabs). For every pair of parts, what one receives
+  // from the other (ghost nodes and ghost edges, in order) is what the other sends, by id.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(4, autan::test::BoxFill::tetra, 0.2)));
+  const DualLevel dual(mesh);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const std::int32_t n_parts = GENERATE(1, 2, 4);
+  CAPTURE(n_parts);
+  const auto parts = slabs(g, n_parts, 1.0);
+  std::vector<index_t> coarse(at(mesh.n_cells()));
+  for (std::size_t c = 0; c < coarse.size(); ++c) coarse[c] = static_cast<index_t>(c / 4);
+  const auto cp = autan::coarse_parts(parts, coarse, dual.ids, (coarse.size() + 3) / 4);
+  std::vector<autan::LocalGraph> locals;
+  for (std::int32_t r = 0; r < n_parts; ++r)
+    locals.push_back(autan::extract_graph(dual.level, parts, n_parts, r, coarse, cp));
+
+  std::vector<int> owned(at(mesh.n_cells()), 0);
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    const auto& l = locals[at(r)];
+    for (std::size_t v = 0; v < l.n_owned; ++v) {
+      ++owned[at(l.node_source[v])];
+      CHECK(parts[at(l.node_source[v])] == r);
+    }
+    // Remote children are ghosts, with their edges.
+    std::set<std::int64_t> held(l.node_global_id.begin(), l.node_global_id.end());
+    std::set<std::int64_t> edges(l.edge_global_id.begin(), l.edge_global_id.end());
+    for (const index_t v : autan::remote_children(r, parts, coarse, cp)) {
+      CHECK(held.contains(dual.ids[at(v)]));
+      for (index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+        if (dual.owner[at(f)] == v || dual.neighbour[at(f)] == v) CHECK(edges.contains(f));
+      }
+    }
+    // Local edges: local owner < neighbour, the level's cells, reversed as flagged.
+    for (std::size_t e = 0; e < l.owner.size(); ++e) {
+      CHECK(l.owner[e] < l.neighbour[e]);
+      const auto f = at(l.edge_global_id[e]);
+      const bool reversed = l.edge_reversed[e] != 0;
+      CHECK(l.node_source[at(reversed ? l.neighbour[e] : l.owner[e])] == dual.owner[f]);
+      CHECK(l.node_source[at(reversed ? l.owner[e] : l.neighbour[e])] == dual.neighbour[f]);
+      CHECK((e < l.n_owned_edges) == (parts[at(dual.owner[f])] == r));
+    }
+  }
+  CHECK(std::all_of(owned.begin(), owned.end(), [](int k) { return k == 1; }));
+
+  // The exchange, emulated: the ids received from q are the ids q sends, in order.
+  const auto check = [&](auto halo_of, auto ids_of, auto n_owned_of) {
+    for (std::int32_t r = 0; r < n_parts; ++r) {
+      const autan::HaloPattern& h = halo_of(locals[at(r)]);
+      for (std::size_t i = 0; i < h.neighbours.size(); ++i) {
+        const std::int32_t q = h.neighbours[i];
+        const autan::HaloPattern& hq = halo_of(locals[at(q)]);
+        const auto j =
+            at(std::find(hq.neighbours.begin(), hq.neighbours.end(), r) - hq.neighbours.begin());
+        REQUIRE(j < hq.neighbours.size());
+        std::vector<std::int64_t> received, sent;
+        for (index_t k = h.recv_offsets[i]; k < h.recv_offsets[i + 1]; ++k)
+          received.push_back(ids_of(locals[at(r)])[n_owned_of(locals[at(r)]) + at(k)]);
+        for (index_t k = hq.send_offsets[j]; k < hq.send_offsets[j + 1]; ++k)
+          sent.push_back(ids_of(locals[at(q)])[at(hq.send_cells[at(k)])]);
+        CHECK(received == sent);
+      }
+      std::size_t total = 0;
+      for (std::size_t i = 0; i + 1 < h.recv_offsets.size(); ++i)
+        total += at(h.recv_offsets[i + 1] - h.recv_offsets[i]);
+      CHECK(total == ids_of(locals[at(r)]).size() - n_owned_of(locals[at(r)]));
+    }
+  };
+  check([](const autan::LocalGraph& l) -> const autan::HaloPattern& { return l.node_halo; },
+        [](const autan::LocalGraph& l) -> const std::vector<std::int64_t>& {
+          return l.node_global_id;
+        },
+        [](const autan::LocalGraph& l) { return l.n_owned; });
+  check([](const autan::LocalGraph& l) -> const autan::HaloPattern& { return l.edge_halo; },
+        [](const autan::LocalGraph& l) -> const std::vector<std::int64_t>& {
+          return l.edge_global_id;
+        },
+        [](const autan::LocalGraph& l) { return l.n_owned_edges; });
+
+  // A coarse node owned by no part is refused.
+  for (const std::int32_t wrong : {-1, n_parts}) {
+    auto bad = cp;
+    bad.front() = wrong;
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { (void)autan::extract_graph(dual.level, parts, n_parts, 0, coarse, bad); });
+  }
 }
