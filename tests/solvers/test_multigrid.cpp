@@ -40,8 +40,10 @@ enum class Fill { hexa, prism };
 // Box [0,1]^2 x [0,h] of nx x nx x nz cells: hexahedra, or prisms extruded along z. The
 // spacing in z grows geometrically from `first` at the wall z = 0 (zone "wall") up to
 // `largest` (the in-plane spacing by default), then stays uniform up to z = 1/2. Cells with
-// x < 1/2 are in a second cell zone when `two_zones`.
-Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double largest = 0.0) {
+// x < 1/2 are in a second cell zone when `two_zones`. With `slab` > 0 the box is one cell of
+// that thickness in y, as the meshes of two-dimensional cases.
+Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double largest = 0.0,
+                 double slab = 0.0) {
   autan::CellwiseMesh m;
   for (const char* name : {"a", "b"}) {
     autan::CellZone z;
@@ -61,19 +63,21 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
     if (d == top && z.back() >= 0.5) break;
   }
   const int nz = static_cast<int>(z.size()) - 1;
-  const int p = nx + 1;
+  const int ny = slab > 0.0 ? 1 : nx;
+  const double dy = slab > 0.0 ? slab : dx;
+  const int p = nx + 1, q = ny + 1;
   for (int k = 0; k <= nz; ++k) {
-    for (int j = 0; j <= nx; ++j) {
+    for (int j = 0; j <= ny; ++j) {
       for (int i = 0; i <= nx; ++i) {
         m.x.push_back(i * dx);
-        m.y.push_back(j * dx);
+        m.y.push_back(j * dy);
         m.z.push_back(z[static_cast<std::size_t>(k)]);
       }
     }
   }
-  auto v = [&](int i, int j, int k) { return static_cast<index_t>(i + p * (j + p * k)); };
+  auto v = [&](int i, int j, int k) { return static_cast<index_t>(i + p * (j + q * k)); };
   for (int k = 0; k < nz; ++k) {
-    for (int j = 0; j < nx; ++j) {
+    for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
         const index_t zone = two_zones && 2 * i < nx ? 1 : 0;
         if (fill == Fill::hexa) {
@@ -319,6 +323,39 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
     }
     CHECK(longest >= 20);
   }
+}
+
+TEST_CASE(
+    "wall layers of a one-cell-thick mesh form wall-normal lines and coarsen to a direct solve",
+    "[multigrid]") {
+  // The two side planes of a two-dimensional case couple each cell through faces much larger
+  // than its others: they must neither make every cell a line seed nor block agglomeration.
+  const Fill fill = GENERATE(Fill::hexa, Fill::prism);
+  const int nx = 32;
+  const auto mesh = layered_box(nx, 1e-5, fill, false, 0.0, 1.0);
+  const auto g = autan::compute_geometry(mesh);
+  const auto levels = autan::solvers::agglomerate(mesh, g);
+  const auto& l0 = levels[0];
+  std::size_t wall_lines = 0;
+  for (std::size_t li = 0; li < l0.n_lines(); ++li) {
+    const auto b = static_cast<std::size_t>(l0.line_offsets[li]);
+    const auto e = static_cast<std::size_t>(l0.line_offsets[li + 1]);
+    if (e - b < 2) continue;
+    // A line stays in one column: every node has the x of its first node.
+    const auto first = static_cast<std::size_t>(l0.line_nodes[b]);
+    for (std::size_t k = b; k < e; ++k) {
+      const auto c = static_cast<std::size_t>(l0.line_nodes[k]);
+      CHECK(std::abs(g.cell_centroid_x[c] - g.cell_centroid_x[first]) < 0.5 / nx);
+    }
+    if (g.cell_centroid_z[first] < 1e-5) {
+      ++wall_lines;
+      CHECK(e - b >= 20);
+    }
+  }
+  CHECK(wall_lines == static_cast<std::size_t>(fill == Fill::hexa ? nx : 2 * nx));
+  REQUIRE(levels.size() >= 3);
+  CHECK(5 * levels.back().n_nodes <= 1000);
+  check_hierarchy(mesh, levels);
 }
 
 TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigrid]") {

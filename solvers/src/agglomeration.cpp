@@ -26,6 +26,7 @@ struct Graph {
   std::vector<index_t> zone;
   std::vector<std::vector<index_t>> boundary;  // sorted boundary zones touched
   std::vector<Normal> normal;                  // sum of the boundary faces' area vectors
+  std::vector<double> boundary_area;           // sum of their magnitudes
   std::vector<Normal> centroid;
   std::vector<double> volume;
   // Level 0: weakest and strongest coupling of each cell through its faces, boundary faces
@@ -75,7 +76,13 @@ bool compatible(const Graph& g, std::size_t a, std::size_t b) {
                      g.boundary[b].end())) {
     return false;
   }
-  return g.boundary[a].empty() || g.boundary[b].empty() || dot(g.normal[a], g.normal[b]) > 0.0;
+  // Only boundary faces facing one side give a direction: those of a cell between the two side
+  // planes of a one-cell-thick mesh cancel out.
+  auto directed = [&](std::size_t c) {
+    return std::sqrt(dot(g.normal[c], g.normal[c])) > 0.5 * g.boundary_area[c];
+  };
+  return g.boundary[a].empty() || g.boundary[b].empty() || !directed(a) || !directed(b) ||
+         dot(g.normal[a], g.normal[b]) > 0.0;
 }
 
 Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
@@ -102,6 +109,7 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
   }
   g.boundary.assign(g.n, {});
   g.normal.assign(g.n, Normal{0.0, 0.0, 0.0});
+  g.boundary_area.assign(g.n, 0.0);
   const auto nf = static_cast<std::size_t>(mesh.n_faces());
   for (std::size_t f = ni; f < nf; ++f) {
     const auto c = static_cast<std::size_t>(mesh.owner()[f]);
@@ -111,24 +119,31 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
     g.normal[c][0] += gm.face_area_x[f];
     g.normal[c][1] += gm.face_area_y[f];
     g.normal[c][2] += gm.face_area_z[f];
+    g.boundary_area[c] += gm.face_area[f];
   }
   for (auto& zones : g.boundary) std::sort(zones.begin(), zones.end());
-  g.weakest.assign(g.n, std::numeric_limits<double>::infinity());
-  g.strongest.assign(g.n, 0.0);
-  auto couple = [&](std::size_t c, double w) {
-    g.weakest[c] = std::min(g.weakest[c], w);
-    g.strongest[c] = std::max(g.strongest[c], w);
-  };
+  // A cell's typical coupling is the median over its faces: the faces of the extra dimension of
+  // a one-cell-thick mesh (two-dimensional cases) are then neither weak nor strong references.
+  std::vector<std::vector<double>> couplings(g.n);
   for (std::size_t f = 0; f < ni; ++f) {
-    couple(static_cast<std::size_t>(g.owner[f]), g.weight[f]);
-    couple(static_cast<std::size_t>(g.neighbour[f]), g.weight[f]);
+    couplings[static_cast<std::size_t>(g.owner[f])].push_back(g.weight[f]);
+    couplings[static_cast<std::size_t>(g.neighbour[f])].push_back(g.weight[f]);
   }
   for (std::size_t f = ni; f < nf; ++f) {
     const auto c = static_cast<std::size_t>(mesh.owner()[f]);
     const double dx = gm.face_centroid_x[f] - gm.cell_centroid_x[c];
     const double dy = gm.face_centroid_y[f] - gm.cell_centroid_y[c];
     const double dz = gm.face_centroid_z[f] - gm.cell_centroid_z[c];
-    couple(c, gm.face_area[f] / (2.0 * std::sqrt(dx * dx + dy * dy + dz * dz)));
+    couplings[c].push_back(gm.face_area[f] / (2.0 * std::sqrt(dx * dx + dy * dy + dz * dz)));
+  }
+  g.weakest.assign(g.n, 0.0);
+  g.strongest.assign(g.n, 0.0);
+  for (std::size_t c = 0; c < g.n; ++c) {
+    auto& w = couplings[c];
+    std::sort(w.begin(), w.end());
+    const std::size_t k = w.size();
+    g.weakest[c] = k % 2 == 1 ? w[k / 2] : 0.5 * (w[k / 2 - 1] + w[k / 2]);
+    g.strongest[c] = w.back();
   }
   g.build_adjacency();
   return g;
@@ -292,6 +307,26 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
           });
       grouped[best->line] = 1;
       group.push_back({best->line, best->backward > best->forward});
+    }
+    if (group.size() == 1) {
+      // No free neighbouring line: the line coarsens along itself, two layers per coarse node
+      // (semi-coarsening in the strong direction, Mavriplis and Pirzadeh 1999, J. Aircraft
+      // 36(6):987-998), so that coarse levels keep shrinking once the wall plane is exhausted.
+      std::vector<std::size_t> coarse_line;
+      for (std::size_t k = 0; k < line_size(s); ++k) {
+        const std::size_t node = line_node(s, k);
+        const bool pair = k % 2 == 1 && compatible(g, line_node(s, k - 1), node);
+        if (pair) {
+          members[coarse_line.back()].push_back(static_cast<index_t>(node));
+          agg[node] = coarse_line.back();
+          continue;
+        }
+        agg[node] = members.size();
+        coarse_line.push_back(members.size());
+        members.push_back({static_cast<index_t>(node)});
+      }
+      clines.push_back(std::move(coarse_line));
+      continue;
     }
     std::vector<std::size_t> coarse_line;
     std::vector<std::size_t> joined(group.size(), 0);
@@ -461,6 +496,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
   coarse.zone.assign(nc, 0);
   coarse.boundary.assign(nc, {});
   coarse.normal.assign(nc, Normal{0.0, 0.0, 0.0});
+  coarse.boundary_area.assign(nc, 0.0);
   coarse.centroid.assign(nc, Normal{0.0, 0.0, 0.0});
   coarse.volume.assign(nc, 0.0);
   level.coarse_node.assign(g.n, 0);
@@ -477,6 +513,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
                      std::back_inserter(merged));
       zones = std::move(merged);
       coarse.volume[C] += g.volume[fu];
+      coarse.boundary_area[C] += g.boundary_area[fu];
       for (std::size_t d = 0; d < 3; ++d) {
         coarse.normal[C][d] += g.normal[fu][d];
         coarse.centroid[C][d] += g.volume[fu] * g.centroid[fu][d];
