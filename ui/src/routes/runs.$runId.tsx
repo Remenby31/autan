@@ -465,6 +465,24 @@ function Facts({
           label: "Devices",
           value: <span className="font-mono">{devicesLabel(run.devices)}</span>,
         },
+        ...(run.timing
+          ? [
+              {
+                label: "Iteration cost",
+                value: (
+                  <span className="flex flex-col" data-testid="timing">
+                    <span className="font-mono tabular-nums">
+                      {run.timing.ns_per_cell_iteration.toPrecision(3)} ns per cell
+                    </span>
+                    <span className="text-fg-3 text-sm tabular-nums">
+                      {run.timing.solve_seconds.toPrecision(3)} s solving of{" "}
+                      {run.timing.wall_seconds.toPrecision(3)} s
+                    </span>
+                  </span>
+                ),
+              },
+            ]
+          : []),
         { label: "Started", value: <RelativeTime iso={run.started} /> },
         ...(run.start
           ? [

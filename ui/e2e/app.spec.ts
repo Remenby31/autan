@@ -474,6 +474,55 @@ test("floors written while a run page is open recompute its residual drop", asyn
   await expect(orders).toHaveText(target.toFixed(2));
 });
 
+test("a run's iteration cost shows when run.json measured it", async ({ page }) => {
+  const source = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const started = new Date(Date.now() - 14_400_000).toISOString().replace(/\.\d+Z$/, "Z");
+  const suffix = Math.floor(Math.random() * 2 ** 32)
+    .toString(16)
+    .padStart(8, "0");
+  const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
+  // The fake backend measures nothing: a CUDA run, its identity as results.md defines it.
+  const solver = { ...source.solver, backend: "cuda" as const };
+  const devices = { kind: "cuda" as const, count: 1 };
+  const identity = createHash("sha256")
+    .update(
+      [
+        source.case.sha256,
+        source.mesh.sha256,
+        solver.commit,
+        source.precision,
+        solver.backend,
+        devices.kind,
+        devices.count,
+      ].join("\n"),
+    )
+    .digest("hex");
+  const cells = JSON.parse(readFileSync(join(RUNS, source.run_id, "mesh-info.json"), "utf8")).counts
+    .cells;
+  const timing = {
+    wall_seconds: 868.2,
+    solve_seconds: 851.7,
+    iterations: source.iterations,
+    ns_per_cell_iteration: (851.7 * 1e9) / (cells * source.iterations),
+  };
+  const staging = join(RUNS, `.staging-${suffix}`);
+  cpSync(join(RUNS, source.run_id), staging, { recursive: true });
+  writeFileSync(
+    join(staging, "run.json"),
+    JSON.stringify({ ...source, run_id: runId, started, identity, solver, devices, timing }),
+  );
+  renameSync(staging, join(RUNS, runId));
+  await expect.poll(async () => (await runs(page)).some((r) => r.run_id === runId)).toBe(true);
+
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByTestId("timing")).toHaveText(
+    `${timing.ns_per_cell_iteration.toPrecision(3)} ns per cell852 s solving of 868 s`,
+  );
+  await page.goto(`/runs/${source.run_id}`);
+  await expect(page.getByTestId("status")).toBeVisible();
+  await expect(page.getByTestId("timing")).toHaveCount(0);
+});
+
 test("Compare lists where each run ran when that differs", async ({ page }) => {
   const source = (await runs(page)).find((r) => r.status === "converged") as Run;
   const started = new Date(Date.now() - 10_800_000).toISOString().replace(/\.\d+Z$/, "Z");
