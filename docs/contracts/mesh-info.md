@@ -65,7 +65,7 @@ Unknown fields are rejected. Readers fill every field; there are no optional fie
 | `farfield` | `pressure-far-field` | `BCFarfield` | — | — |
 | `inlet` | `velocity-inlet`, `pressure-inlet`, `mass-flow-inlet` | `BCInflow`, `BCInflowSubsonic`, `BCInflowSupersonic`, `BCTunnelInflow` | — | — |
 | `outlet` | `pressure-outlet`, `outflow` | `BCOutflow`, `BCOutflowSubsonic`, `BCOutflowSupersonic`, `BCTunnelOutflow` | — | — |
-| `periodic` | — | — | — | — |
+| `periodic` | — | — | — | the groups of a `$Periodic` surface link |
 | `null` | every other type | every other type, `FamilySpecified` resolved to the family's type first | every other type (`patch`, `empty`, `cyclic`, …) | every physical group |
 
 `periodic` marks the two zones of a periodic pair (`periodic[]`), whose faces the core matches ([mesh.md](mesh.md#periodic-pairs)); a periodic zone takes no condition.
