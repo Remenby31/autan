@@ -40,6 +40,7 @@ add_custom_command(
 
 add_library(
   autan_physics
+  src/block_matrix.cpp
   src/euler.cpp
   src/manufactured.cpp
   ${AUTAN_PHYSICS_GENERATED}/euler.hpp
