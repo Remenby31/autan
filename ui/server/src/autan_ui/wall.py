@@ -71,14 +71,14 @@ def wall_surface(folder: Folder) -> bytes:
             "Cf": np.linalg.norm(shear[rows], axis=1) / q_inf,
             "Pressure": pressure[rows],
         }
-        zones.append(_zone(name, faces, start, connectivity, coords, values, origin))
+        zones.append(polygon_zone(name, faces, start, connectivity, coords, values, origin))
     if not zones:
         msg = "the solution has no wall face"
         raise ValueError(msg)
     return encode(zones, origin=(float(origin[0]), float(origin[1]), float(origin[2])))
 
 
-def _zone(
+def polygon_zone(
     name: str,
     faces: npt.NDArray[np.int64],
     start: npt.NDArray[np.int64],

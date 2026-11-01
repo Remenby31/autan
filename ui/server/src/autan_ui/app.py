@@ -441,6 +441,19 @@ def create_app(
         """The MeshInfo files a case can be planned against."""
         return meshes.summaries()
 
+    @app.get("/api/meshes/{name}/surface")
+    def mesh_surface_message(name: str) -> Response:
+        """The boundary zones of a listed mesh as an `autan-ui.surface/1` message, from the
+        `autan.surface/1` file next to its MeshInfo. 404 without one; 422 when it breaks the
+        contract or is not of that mesh."""
+        try:
+            message = meshes.surface(name)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return Response(message, media_type="application/octet-stream")
+
     @app.post("/api/cases/render")
     def render_case(
         case: Annotated[dict[str, Any], Body()], mesh: Annotated[str | None, Body()] = None

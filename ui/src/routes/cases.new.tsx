@@ -14,7 +14,9 @@ import {
   UNITS,
 } from "../api/cases";
 import type { Diagnostic } from "../api/contracts";
+import { globEscape, globMatches } from "../api/glob";
 import type { Plan } from "../api/runs";
+import { MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -22,7 +24,12 @@ import { Field, NumberInput, QuantityInput, SelectInput, TextInput } from "../co
 import { Note } from "../components/ui/Note";
 import { TabList, TabPanel, TabsRoot } from "../components/ui/Tabs";
 
-export const Route = createFileRoute("/cases/new")({ component: CaseEditor });
+export const Route = createFileRoute("/cases/new")({
+  // `webgl`: draw the mesh with WebGL2, as on CPU-only machines without WebGPU.
+  validateSearch: (raw: Record<string, unknown>): { webgl?: boolean } =>
+    raw.webgl === true || raw.webgl === "1" ? { webgl: true } : {},
+  component: CaseEditor,
+});
 
 const TURBULENCE = [
   { value: "inviscid", label: "Inviscid" },
@@ -58,6 +65,45 @@ function CaseEditor() {
   const rendered = useQuery(renderQuery(caseDocument(settled), settled.mesh || null));
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
+  const { webgl = false } = Route.useSearch();
+  const [picked, setPicked] = useState<string | null>(null);
+
+  // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
+  // it, its condition suggested by the type the mesh file gives the zone. A periodic zone takes
+  // no condition (case-schema.md#boundaries): nothing is added.
+  const [focusRule, setFocusRule] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const pick = (zone: string) => {
+    setPicked(zone);
+    setNotice(null);
+    const type = mesh?.boundary_zones.find((z) => z.name === zone)?.type ?? "";
+    if (type === "periodic") {
+      setNotice(
+        `${zone} is periodic: it takes no condition, the solver pairs it with its partner.`,
+      );
+      return;
+    }
+    const index = form.boundaries.findIndex((r) => globMatches(r.zones, zone));
+    if (index >= 0) {
+      setFocusRule(index);
+      return;
+    }
+    const typed: ConditionKind = type in CONDITIONS ? (type as ConditionKind) : "wall";
+    // A no-slip wall needs viscous flow (E0414): an inviscid case walls it with slip.
+    const kind = typed === "wall" && form.physics.turbulence === "inviscid" ? "slip" : typed;
+    set("boundaries", [...form.boundaries, { zones: globEscape(zone), kind, values: {} }]);
+    setFocusRule(form.boundaries.length);
+  };
+  // Focused once React has committed the rule's fieldset.
+  useEffect(() => {
+    if (focusRule === null) return;
+    document
+      .querySelector<HTMLInputElement>(
+        `fieldset[aria-label="Boundary rule ${focusRule + 1}"] input`,
+      )
+      ?.focus();
+    setFocusRule(null);
+  }, [focusRule]);
 
   const set = <K extends keyof CaseForm>(key: K, value: CaseForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -328,6 +374,12 @@ function CaseEditor() {
         </form>
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
+          {form.mesh && <MeshView mesh={form.mesh} selected={picked} onPick={pick} webgl={webgl} />}
+          {notice && (
+            <Note tone="info" title="Periodic zone">
+              {notice}
+            </Note>
+          )}
           {rendered.isError && (
             <Note tone="error" title="The SDK could not be reached">
               The code below is from an earlier version of the case: {rendered.error.message}
