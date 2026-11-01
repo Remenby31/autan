@@ -4,14 +4,17 @@ import { SurfaceViewer } from "../../viewer/SurfaceViewer";
 import { useResolvedTheme } from "../shell/theme";
 
 /** The boundary of a mesh in 3D, one zone per boundary zone; a click picks the zone under the
- * cursor. `selected` is a zone name, highlighted when the mesh has it. */
+ * cursor. `selected` is a zone name, highlighted when the mesh has it. Without a surface file,
+ * the mesh's boundary `zones` are listed to pick from instead. */
 export function MeshView({
   mesh,
+  zones,
   selected,
   onPick,
   webgl,
 }: {
   mesh: string;
+  zones: string[];
   selected: string | null;
   onPick: (zone: string) => void;
   webgl: boolean;
@@ -99,11 +102,27 @@ export function MeshView({
         }}
       />
       {error && (
-        <p className="absolute inset-x-0 bottom-0 m-0 bg-bg-1/90 px-3 py-2 text-fg-2 text-sm">
-          {error.includes("404")
-            ? "No boundary surface for this mesh: write it with autan-mesh-info --surface."
-            : error}
-        </p>
+        <div className="absolute inset-0 flex flex-col gap-3 overflow-auto bg-bg-0 p-4">
+          <p className="m-0 text-fg-2 text-sm">
+            {error.includes("404")
+              ? "No 3D view of this mesh (autan-mesh-info --surface writes one). Its boundary zones:"
+              : `${error}. Its boundary zones:`}
+          </p>
+          <ul className="m-0 flex list-none flex-wrap gap-2 p-0" data-testid="zone-list">
+            {zones.map((zone) => (
+              <li key={zone}>
+                <button
+                  type="button"
+                  aria-pressed={selected === zone}
+                  onClick={() => onPick(zone)}
+                  className="rounded-sm px-2 py-1 font-mono text-sm shadow-[0_0_0_1px_var(--line)] hover:bg-bg-2 aria-pressed:bg-accent-soft aria-pressed:text-accent"
+                >
+                  {zone}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {selected && surface?.zones.some((z) => z.name === selected) && (
         <span className="absolute top-2 left-2 rounded-sm bg-bg-1/90 px-2 py-1 font-mono text-sm">

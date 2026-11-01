@@ -182,21 +182,6 @@ test("picking keeps working on another mesh", async ({ page }) => {
   await expect(rule.getByLabel("Condition")).toHaveValue("wall");
 });
 
-test("a mesh without a surface draws nothing to pick", async ({ page }) => {
-  await page.goto(`/cases/new${WEBGL}`);
-  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
-  await expect(page.getByTestId("mesh-view")).toHaveAttribute("data-ready", "true");
-  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
-  await expect(page.getByText("No boundary surface for this mesh")).toBeVisible();
-
-  const view = page.getByTestId("mesh-view");
-  const box = await view.boundingBox();
-  if (!box) throw new Error("the mesh view has no box");
-  await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
-
-  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
-});
-
 test("an inviscid case walls a picked wall with slip", async ({ page }) => {
   await page.goto(`/cases/new${WEBGL}`);
   await page.getByLabel("Turbulence").selectOption("inviscid");
@@ -361,4 +346,80 @@ test("the form waits for the copy, and a run it cannot read says so", async ({ p
   ).toBeVisible({
     timeout: 15_000,
   });
+});
+
+test("a planned case is copied as case.py or saved as case.toml", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/cases/new");
+  const copy = page.getByRole("button", { name: "Copy case.py" });
+  const save = page.getByRole("button", { name: "Save case.toml" });
+  await expect(copy).toBeDisabled();
+
+  await crmHl(page);
+  await expect(page.getByTestId("plan-status")).toHaveText("ready");
+  await copy.click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(CRM_HL);
+  const download = page.waitForEvent("download");
+  await save.click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("crm-hl.toml");
+  const saved = readFileSync(await file.path(), "utf8");
+  await page.getByRole("tab", { name: "case.toml" }).click();
+  expect(saved).toBe(await page.getByTestId("case-toml").textContent());
+});
+
+test("the plan sits below the code, and its status counts its errors", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/cases/new");
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("hybrid-cgns");
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mach").fill("0.8");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+
+  const plan = page.getByTestId("plan");
+  await expect(page.getByTestId("plan-status")).toContainText("refused");
+  const errors = await page.getByTestId("plan-diagnostics").getByRole("alert").count();
+  await expect(page.getByTestId("plan-status")).toHaveText(`refused: ${errors} errors`);
+  const code = await page.getByTestId("case-py").boundingBox();
+  const status = await plan.boundingBox();
+  if (!code || !status) throw new Error("the code or the plan is not laid out");
+  expect(status.y).toBeGreaterThanOrEqual(code.y + code.height);
+});
+
+test("rules a new mesh does not have are offered for removal", async ({ page }) => {
+  await page.goto("/cases/new");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await rule(page, 1, "zmax", "symmetry");
+  await rule(page, 2, "wing.*", "wall");
+  await rule(page, 3, "xmin", "farfield");
+
+  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
+
+  // crm-hl.meshinfo.json has no zone zmax or xmin.
+  await expect(page.getByTestId("stale-rules")).toHaveText("zmax · xmin");
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  const rules = page.getByRole("group", { name: /^Boundary rule/ });
+  await expect(rules).toHaveCount(1);
+  await expect(rules.getByLabel("Zones")).toHaveValue("wing.*");
+  await expect(page.getByTestId("stale-rules")).toHaveCount(0);
+});
+
+test("a mesh without a 3D view lists its zones to pick from", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await expect(page.getByTestId("mesh-view")).toHaveAttribute("data-ready", "true");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
+  const list = page.getByTestId("zone-list");
+  await expect(list.getByRole("button")).toHaveText(
+    JSON.parse(
+      readFileSync("../py/tests/fixtures/crm-hl.meshinfo.json", "utf8"),
+    ).boundary_zones.map((z: { name: string }) => z.name),
+  );
+
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
+  await list.getByRole("button", { name: "symmetry" }).click();
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(rule.getByLabel("Zones")).toHaveValue("symmetry");
+  await expect(rule.getByLabel("Condition")).toHaveValue("symmetry");
 });
