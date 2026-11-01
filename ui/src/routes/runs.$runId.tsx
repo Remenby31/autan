@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box, Copy, FilePlus2 } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
-import type { Run, RunSettings } from "../api/contracts";
+import type { CaseDocument } from "../api/cases";
+import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import {
   type HistoryColumns,
@@ -13,12 +14,12 @@ import {
   soleForces,
   useLiveRun,
 } from "../api/runs";
-import { degrees } from "../api/units";
+import { coefficient, coefficientsCaveat, degrees } from "../api/units";
 import { ResidualChart } from "../components/ResidualChart";
 import { formatBytes, formatCount, remainingMs } from "../components/run/format";
 import { LogView } from "../components/run/LogView";
 import { MiddleTruncate } from "../components/run/MiddleTruncate";
-import { coefficient, MonitorTable } from "../components/run/MonitorTable";
+import { MonitorTable } from "../components/run/MonitorTable";
 import { OutputList } from "../components/run/OutputList";
 import { PlanTable } from "../components/run/PlanTable";
 import { TopBar } from "../components/shell/TopBar";
@@ -67,7 +68,6 @@ function RunView() {
     // Outputs grow while the run writes them; the status change brings solution.cgns.
     refetchInterval: run?.status === "running" ? 5000 : false,
   });
-  const registry = useQuery(runsQuery);
   const client = useQueryClient();
   // Refetch once the run has ended, or whenever the details lag its status: the registry
   // stream updates the cached run.json but not the outputs (solution.cgns comes at the end).
@@ -94,6 +94,8 @@ function RunView() {
   const iteration = history.iteration.at(-1) ?? 0;
   const orders = shownOrders(history.orders.at(-1), targetOrders);
   const forces = soleForces(history);
+  const unsteady = (details.data?.case.time as { kind?: string } | undefined)?.kind === "unsteady";
+  const caveat = run ? coefficientsCaveat(run.status, unsteady) : null;
 
   const crumbs = [
     { label: "Runs", to: "/" },
@@ -188,7 +190,7 @@ function RunView() {
               {run && (
                 <Conditions
                   run={run}
-                  settings={registry.data?.summaries[run.run_id]?.settings}
+                  document={details.data?.case}
                   cells={details.data?.mesh_info.counts.cells}
                 />
               )}
@@ -255,6 +257,7 @@ function RunView() {
                     cells={details.data?.mesh_info.counts.cells}
                     cl={forces?.cl.at(-1)}
                     cd={forces?.cd.at(-1)}
+                    caveat={caveat}
                   />
                 ) : (
                   <Skeleton className="h-48 w-full" />
@@ -282,14 +285,19 @@ function RunView() {
                   title="Monitors"
                   defaultOpen={history.monitors.size > 0 || !history.iteration.length}
                   meta={
-                    <span className="font-mono text-fg-2 text-sm tabular-nums">
+                    <span
+                      className={cn(
+                        "font-mono text-sm tabular-nums",
+                        caveat ? "text-fg-3" : "text-fg-2",
+                      )}
+                    >
                       {forces?.cl.length
-                        ? `CL ${coefficient(forces.cl.at(-1) as number)} · CD ${coefficient(forces.cd.at(-1) as number)}`
+                        ? `CL ${coefficient(forces.cl.at(-1) as number)} · CD ${coefficient(forces.cd.at(-1) as number)}${caveat ? ` · ${caveat}` : ""}`
                         : "—"}
                     </span>
                   }
                 >
-                  <MonitorTable history={history} converged={run?.status === "converged"} />
+                  <MonitorTable history={history} caveat={caveat} />
                 </Collapse>
                 <Collapse
                   title="Outputs"
@@ -359,6 +367,7 @@ function Facts({
   cells,
   cl,
   cd,
+  caveat,
 }: {
   run: Run;
   now: number;
@@ -370,6 +379,7 @@ function Facts({
   cells: number | undefined;
   cl: number | undefined;
   cd: number | undefined;
+  caveat: string | null;
 }) {
   const registry = useQuery(runsQuery);
   const known = new Set(registry.data?.runs.map((r) => r.run_id));
@@ -480,11 +490,10 @@ function Facts({
           label: "Mesh",
           value: (
             <>
-              <Tooltip content={<span className="font-mono">{run.mesh.sha256}</span>}>
-                <span className="font-mono" data-testid="mesh-name">
-                  {run.mesh.path.split("/").pop()}
-                </span>
-              </Tooltip>
+              <span className="font-mono" data-testid="mesh-name">
+                {run.mesh.path.split("/").pop()}
+              </span>
+              <MiddleTruncate value={run.mesh.sha256} keep={8} />
               {cells !== undefined && <span className="text-fg-3">{formatCount(cells)} cells</span>}
             </>
           ),
@@ -494,19 +503,12 @@ function Facts({
           value:
             cl !== undefined && cd !== undefined ? (
               <span
-                className={cn(
-                  "flex flex-col font-mono tabular-nums",
-                  run.status !== "converged" && "text-fg-3",
-                )}
+                className={cn("flex flex-col font-mono tabular-nums", caveat && "text-fg-3")}
                 data-testid="forces"
               >
                 <span>CL {coefficient(cl)}</span>
                 <span>CD {coefficient(cd)}</span>
-                {run.status !== "converged" && (
-                  <span className="font-sans text-sm">
-                    {run.status === "running" ? "still running" : "not converged"}
-                  </span>
-                )}
+                {caveat && <span className="font-sans text-sm">{caveat}</span>}
               </span>
             ) : (
               "—"
@@ -526,25 +528,30 @@ function Facts({
   );
 }
 
-/** What the run computed, in a line: Mach, angles, Reynolds number, model, precision, cells,
- * as its case writes them. */
+/** What the run computed, in a line, as its stored case writes it: Mach, angles, Reynolds
+ * number or pressure and temperature, model, precision, and the mesh's cells. */
 function Conditions({
   run,
-  settings,
+  document,
   cells,
 }: {
   run: Run;
-  settings: RunSettings | undefined;
+  document: CaseDocument | undefined;
   cells: number | undefined;
 }) {
-  const alpha = degrees(settings?.aoa);
-  const beta = degrees(settings?.sideslip);
+  const freestream = (document?.freestream ?? {}) as Record<string, string | number | undefined>;
+  const physics = (document?.physics ?? {}) as { turbulence?: { model?: string } };
+  const angle = (value: unknown) => (typeof value === "string" ? degrees(value) : null);
+  const alpha = angle(freestream.aoa);
+  const beta = angle(freestream.sideslip);
   const parts = [
-    settings?.mach != null && `M ${settings.mach}`,
+    freestream.mach !== undefined && `M ${freestream.mach}`,
     alpha !== null && `α ${alpha}°`,
     beta !== null && beta !== 0 && `β ${beta}°`,
-    settings?.re != null && `Re ${settings.re.toExponential(2)}`,
-    settings?.turbulence,
+    typeof freestream.re === "number" && `Re ${freestream.re.toExponential(2)}`,
+    freestream.pressure !== undefined && `p ${freestream.pressure}`,
+    freestream.temperature !== undefined && `T ${freestream.temperature}`,
+    physics.turbulence?.model,
     run.precision,
     cells !== undefined && `${formatCount(cells)} cells`,
   ].filter(Boolean);

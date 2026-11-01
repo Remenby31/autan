@@ -320,22 +320,57 @@ test("a run page states what it computed and how far its coefficients go", async
   const converged = all.find(
     (r) => r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "19.57 deg",
   ) as Run;
+  const fact = (label: string) =>
+    page
+      .locator("dt", { hasText: new RegExp(`^${label}$`) })
+      .locator("xpath=following-sibling::dd[1]");
+  // Coefficients to four decimals (one drag count), "-0.0000" written 0.0000.
+  const four = (v: number | undefined) => (v ?? Number.NaN).toFixed(4).replace(/^-(0\.0+)$/, "$1");
   await page.goto(`/runs/${converged.run_id}`);
 
   const conditions = page.getByTestId("conditions");
   for (const part of ["M 0.2", "α 19.57°", "Re 5.49e+6", "sa", converged.precision])
     await expect(conditions).toContainText(part);
   await expect(page.getByTestId("mesh-name")).toHaveText("crm-hl.cgns");
+  await expect(fact("Mesh")).toContainText(converged.mesh.sha256.slice(0, 8));
+  await expect(fact("Devices")).toHaveText("1 CPU rank");
   await expect(page.getByText("State", { exact: true })).toHaveCount(0);
-  const header = page.getByTestId("monitor-table").locator("th");
-  await expect(header).toHaveText(["Monitor", "cl", "cd", "CL trend"]);
-  await page.getByRole("button", { name: "Side force and moments" }).click();
-  await expect(header).toHaveText(["Monitor", "cl", "cd", "cs", "cmx", "cmy", "cmz", "CL trend"]);
-  await expect(page.getByTestId("forces")).not.toContainText("not converged");
+  const final = converged.monitors?.forces;
+  await expect(page.getByTestId("forces")).toHaveText(`CL ${four(final?.cl)}CD ${four(final?.cd)}`);
 
-  const diverged = all.find((r) => r.status === "diverged") as Run;
-  await page.goto(`/runs/${diverged.run_id}`);
+  const table = page.getByTestId("monitor-table");
+  await expect(table.locator("th")).toHaveText(["Monitor", "cl", "cd", "CL trend"]);
+  const toggle = page.getByRole("button", { name: "Side force and moments" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(table.locator("th")).toHaveText([
+    "Monitor",
+    "cl",
+    "cd",
+    "cs",
+    "cmx",
+    "cmy",
+    "cmz",
+    "CL trend",
+  ]);
+  await expect(table.locator("tbody tr").first().locator("td").nth(3)).toHaveText(four(final?.cs));
+  await expect(table.locator("tbody tr").first().locator("td").nth(6)).toHaveText(four(final?.cmz));
+  await toggle.click();
+  await expect(table.locator("th")).toHaveCount(4);
+  await expect(page.getByTestId("monitor-caveat")).toHaveCount(0);
+
+  // A run stopped at its budget: its coefficients are there, said not to be converged ones.
+  const stopped = all.find((r) => r.status === "stopped") as Run;
+  await page.goto(`/runs/${stopped.run_id}`);
   await expect(page.getByTestId("forces")).toContainText("not converged");
+  await expect(page.getByTestId("monitor-caveat")).toHaveText("not converged");
+
+  // py/examples/heat_exchanger.py: a pressure and a temperature, no Reynolds number.
+  const exchanger = all.find((r) => r.case.name === "heat-exchanger") as Run;
+  await page.goto(`/runs/${exchanger.run_id}`);
+  await expect(page.getByTestId("conditions")).toContainText(
+    "M 0.1 · α 0° · p 101325.0 Pa · T 300.0 K",
+  );
 });
 
 test("residuals at zero and far below 1 draw on the log chart", async ({ page }) => {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Forces } from "../../api/contracts";
 import type { HistoryColumns } from "../../api/runs";
+import { coefficient } from "../../api/units";
 import { cn } from "../ui/cn";
 import { Sparkline } from "../ui/Sparkline";
 
@@ -9,20 +10,14 @@ const LIFT_DRAG = ["cl", "cd"] as const;
 // and out-of-plane moments are artefacts of its extrusion: these show on request.
 const OTHERS = ["cs", "cmx", "cmy", "cmz"] as const;
 
-/** A force coefficient to four decimals, one drag count; never "-0.0000". */
-export function coefficient(value: number): string {
-  const text = value.toFixed(4);
-  return /^-0\.0+$/.test(text) ? text.slice(1) : text;
-}
-
-/** Last value of every forces monitor, with the CL trend; greyed while they are not the
- * coefficients of a converged run. */
+/** Last value of every forces monitor, with the CL trend; greyed, with the reason, while they
+ * are not the coefficients of a converged run. */
 export function MonitorTable({
   history,
-  converged,
+  caveat,
 }: {
   history: HistoryColumns;
-  converged: boolean;
+  caveat: string | null;
 }) {
   const [all, setAll] = useState(false);
   if (!history.monitors.size) {
@@ -43,7 +38,7 @@ export function MonitorTable({
             <th className="pl-4 font-normal">CL trend</th>
           </tr>
         </thead>
-        <tbody className={cn(!converged && "text-fg-3")}>
+        <tbody className={cn(caveat && "text-fg-3")}>
           {[...history.monitors].map(([name, forces]: [string, Forces]) => (
             <tr key={name} className="border-line border-t">
               <td className="h-10 font-mono">{name}</td>
@@ -62,14 +57,21 @@ export function MonitorTable({
           ))}
         </tbody>
       </table>
-      <button
-        type="button"
-        aria-pressed={all}
-        onClick={() => setAll(!all)}
-        className="self-start text-fg-2 text-sm hover:text-fg"
-      >
-        {all ? "Lift and drag only" : "Side force and moments"}
-      </button>
+      <div className="flex items-center gap-4 text-sm">
+        <button
+          type="button"
+          aria-pressed={all}
+          onClick={() => setAll(!all)}
+          className="text-fg-2 hover:text-fg aria-pressed:text-fg"
+        >
+          Side force and moments
+        </button>
+        {caveat && (
+          <span className="text-fg-3" data-testid="monitor-caveat">
+            {caveat}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
