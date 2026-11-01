@@ -39,12 +39,19 @@ struct CellZoneInput {
   InitialState initial;
 };
 
+/// Per-face boundary states of an oracle (docs/contracts/face-states.md).
+struct BoundaryStates {
+  std::string path;    ///< absolute path of the autan.face-states/1 file
+  std::string sha256;  ///< its expected SHA-256
+};
+
 struct BoundaryInput {
   std::string zone;
-  std::string
-      kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet, manufactured
+  std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
+                     ///< manufactured, oracle-state
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<double> velocity;  ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<double> velocity;        ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<BoundaryStates> states;  ///< oracle-state only
 };
 
 struct Turbulence {

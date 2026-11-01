@@ -104,6 +104,7 @@ std::string_view bc_type(const BoundaryInput& b) {
   if (b.kind == "farfield") return "BCFarfield";
   if (b.kind == "outlet") return "BCOutflowSubsonic";
   if (b.kind == "manufactured") return "UserDefined";
+  if (b.kind == "oracle-state") return "BCDirichlet";
   return "BCInflowSubsonic";  // inlet, velocity-inlet
 }
 
