@@ -244,6 +244,7 @@ class Loop:
     finalise: Body | None = None
     finalise_bindings: dict[str, Binding] = field(default_factory=dict)
     name: str = ""
+    frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
 
 
 def _bindings(raw: dict[str, object]) -> dict[str, Binding]:
@@ -275,13 +276,15 @@ def face_loop(body: Body, *, out: object, **args: object) -> Loop:
     return Loop("face", body, _bindings(args), outs)
 
 
-def boundary_loop(body: Body, *, out: object, **args: object) -> Loop:
+def boundary_loop(body: Body, *, out: object, frozen: bool = False, **args: object) -> Loop:
     """Loop over boundary faces; `out` increments the owner cell (`Inc`) or writes face datasets
-    (`Write`, for example boundary states). Face datasets are passive: a writing boundary loop
-    has no tangent or adjoint."""
+    (`Write`, for example boundary states). Face datasets are passive, so a writing loop has no
+    tangent or adjoint: if it reads active cell data, declare `frozen=True` to accept that the
+    derivatives of what it writes are dropped (the generated module lists it in
+    `frozen_loops`, so runs can label their adjoints approximate)."""
     outs = _outs(out)
     if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
-        return Loop("boundary_write", body, _bindings(args), outs)
+        return Loop("boundary_write", body, _bindings(args), outs, frozen=frozen)
     for o in outs:
         if not isinstance(o, Inc) or o.right is not None:
             raise CodegenError(

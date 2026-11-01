@@ -6,6 +6,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import autan_spike as s
+import meshes
+import numpy as np
 import pytest
 from autan_codegen.generate import generate
 
@@ -50,7 +53,7 @@ def mirror(ui: State.Vec5, n: Geom.Vec3) -> State.Vec5:
 
 
 # Boundary states written per face, then read by the reduction above through u.other(u_b).
-boundary_states = boundary_loop(mirror, ui=u.left, n=geometry.face_normal, out=Write(u_b))
+boundary_states = boundary_loop(mirror, ui=u.left, n=geometry.face_normal, out=Write(u_b), frozen=True)
 """
 
 UNIT = """
@@ -104,3 +107,41 @@ def test_state_gradient_module_compiles_for_cuda(tmp_path: Path) -> None:
          str(out / "state_gradient_gpu.cu"), "-o", str(tmp_path / "unit.o")],
         check=True,
     )  # fmt: skip
+
+
+def _face_weights(m: s.Mesh) -> list[list[tuple[int, int, float]]]:
+    """Per cell: (face, other cell or -1, |S_f| |x_f - x_c|^2), from the mesh arrays."""
+    out = []
+    for c in range(m.n_cells):
+        rows = []
+        for k in range(m.cell_face_offsets[c], m.cell_face_offsets[c + 1]):
+            f = int(m.cell_faces[k])
+            r = m.face_centroid[f] - m.cell_centroid[c]
+            wgt = float(np.linalg.norm(m.face_area[f]) * (r @ r))
+            nb = int(m.neighbour[f] if m.owner[f] == c else m.owner[f]) if f < m.n_interior else -1
+            rows.append((f, nb, wgt))
+        out.append(rows)
+    return out
+
+
+@pytest.mark.parametrize("kind", ["tet", "poly", "hybrid"])
+def test_face_data_in_a_reduction_and_its_derivatives_use_the_incidence_face(kind: str) -> None:
+    # codegen/tests/kernels/face_weighted.py against sums written here from the mesh arrays.
+    m = s.mesh(meshes.build(kind, 4, 0.15, seed=3))
+    rng = np.random.default_rng(2)
+    q, q_b = rng.standard_normal(m.n_cells), rng.standard_normal(m.n_faces)
+    dq, wbar = rng.standard_normal(m.n_cells), rng.standard_normal(m.n_cells)
+    value, tangent, adjoint = np.zeros(m.n_cells), np.zeros(m.n_cells), np.zeros(m.n_cells)
+    for c, rows in enumerate(_face_weights(m)):
+        for f, nb, wgt in rows:
+            value[c] += (q[nb] if nb >= 0 else q_b[f]) * wgt
+            if nb >= 0:
+                tangent[c] += dq[nb] * wgt
+                adjoint[nb] += wbar[c] * wgt
+    tol = 1e-13 * np.abs(value).max()
+    got = s.face_weighted(m, "fp64", "value", q, q_b)
+    np.testing.assert_allclose(got, value, rtol=0, atol=tol)
+    got = s.face_weighted(m, "fp64", "tangent", q, q_b, dq)
+    np.testing.assert_allclose(got, tangent, rtol=0, atol=tol)
+    got = s.face_weighted(m, "fp64", "adjoint", q, q_b, wbar)
+    np.testing.assert_allclose(got, adjoint, rtol=0, atol=tol)

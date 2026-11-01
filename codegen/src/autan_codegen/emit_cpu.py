@@ -254,7 +254,7 @@ def cell_stores(lm: LoopModel, indent: str) -> list[str]:
 
 def boundary_write_body(lm: LoopModel, indent: str) -> list[str]:
     """Body of a boundary loop writing face datasets, for boundary face f."""
-    lines = [f"{indent}const index_t l = d.topo.owner[f];"]
+    lines = [f"{indent}[[maybe_unused]] const index_t l = d.topo.owner[f];"]
     lines.append(f"{indent}typename P::compute out[{n_out(lm)}];")
     args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "direct": "f"})
     lines.append(f"{indent}{lm.fn.name}<P>({', '.join([*args, 'out'])});")

@@ -44,6 +44,20 @@ class Real:
 type Val = Real | Bool | Arr | int | float | tuple[Val, ...]
 
 UNARY_MATH = {"sqrt", "exp", "log", "sin", "cos"}
+INTRINSIC_ARITY = {
+    **dict.fromkeys(UNARY_MATH, 1),
+    "abs": 1,
+    "norm": 1,
+    "transpose": 1,
+    "dot": 2,
+    "cross": 2,
+    "outer": 2,
+    "rel": 2,
+    "min": 2,
+    "max": 2,
+    "Vec3": 3,
+    "Vec5": 5,
+}
 INTRINSICS = UNARY_MATH | {
     "dot",
     "cross",
@@ -319,6 +333,11 @@ class _Builder:
             raise self.err(
                 Code.UNSUPPORTED_CONSTRUCT,
                 f"call to {fname!r}: not a DSL intrinsic or @pointwise body",
+            )
+        arity = INTRINSIC_ARITY.get(fname)
+        if arity is not None and len(args) != arity:
+            raise self.err(
+                Code.TYPE_MISMATCH, f"{fname} takes {arity} argument(s), got {len(args)}"
             )
         if fname in UNARY_MATH:
             (x,) = args
