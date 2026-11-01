@@ -307,8 +307,10 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
                sFC = sizeof(*d.face_centroid), sM = sizeof(*d.face_moment),
                sC = sizeof(*d.cell_centroid), sV = sizeof(*d.cell_volume),
                sW = sizeof(*d.stencil_lsq_weight);
-  const double face_geometry = 3 * sN + sA + 3 * sFC + 9 * sM;          // per face, 16 values
-  const double gather = cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO;  // values over the stencil
+  const double face_geometry = 3 * sN + sA + 3 * sFC + 9 * sM;  // per face, 16 values
+  // Values over the stencil; the sliced layout also reads each cell's row length.
+  const double gather =
+      cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO + (o.stencil_slice > 0 ? cs * sI : 0.0);
   std::vector<index_t> owners(mesh.owner().begin() + static_cast<std::ptrdiff_t>(ni),
                               mesh.owner().end());
   std::sort(owners.begin(), owners.end());
