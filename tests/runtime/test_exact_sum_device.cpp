@@ -114,6 +114,42 @@ TEST_CASE("A device exact sum rounds on the device as ExactSum::value()",
       {{-3.0, 0.25}, -2.75},
       {{std::numeric_limits<double>::denorm_min(), 0.0}, std::numeric_limits<double>::denorm_min()},
   };
+  const double p54 = std::ldexp(1.0, 54);
+  const std::vector<std::pair<std::vector<double>, double>> more{
+      // Sticky bits below the 64 leading ones, in the same limbs and far below:
+      // the tie is broken upwards.
+      {{p53, 1.0, std::ldexp(1.0, -11)}, p53 + 2.0},
+      {{p53, 1.0, std::ldexp(1.0, -1000)}, p53 + 2.0},
+      // Rounding that carries into the exponent, and past the largest double.
+      {{p54, -1.0}, p54},
+      {{big, std::ldexp(1.0, 970)}, std::numeric_limits<double>::infinity()},
+  };
+  for (const auto& [terms, expected] : more) {
+    CAPTURE(terms, expected);
+    ExactSum s;
+    s.add(terms);
+    CHECK(same_bits(s.value(), expected));
+    CHECK(same_bits(autan_test::device_value(s), expected));
+  }
+  // Non-finite terms, bit for bit with the host (NaN payload included).
+  constexpr double inf = std::numeric_limits<double>::infinity();
+  for (const std::vector<double>& terms :
+       {std::vector<double>{-inf, 1.0}, std::vector<double>{inf, -inf},
+        std::vector<double>{std::numeric_limits<double>::quiet_NaN(), inf}}) {
+    CAPTURE(terms);
+    ExactSum s;
+    s.add(terms);
+    CHECK(same_bits(autan_test::device_value(s), s.value()));
+  }
+  // A top limb beyond 32 bits, which no sum of doubles reaches before
+  // overflowing: signed infinities.
+  for (const std::int64_t top : {std::int64_t{1} << 32, -(std::int64_t{1} << 32)}) {
+    CAPTURE(top);
+    ExactSum s;
+    s.data()[static_cast<std::size_t>(ExactSum::limbs - 1)] = top;
+    CHECK(same_bits(s.value(), top > 0 ? inf : -inf));
+    CHECK(same_bits(autan_test::device_value(s), s.value()));
+  }
   for (const auto& [terms, expected] : cases) {
     CAPTURE(terms, expected);
     std::array<double, 2> on_device{};

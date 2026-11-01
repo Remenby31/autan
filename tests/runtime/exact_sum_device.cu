@@ -55,4 +55,25 @@ std::array<autan::runtime::ExactSum, 2> device_sums(const std::vector<double>& a
   return sums;
 }
 
+double device_value(const autan::runtime::ExactSum& sum) {
+  autan::runtime::gpu::ExactWords words{};
+  autan::runtime::ExactSum copy = sum;
+  const auto data = copy.data();
+  for (int j = 0; j < autan::runtime::ExactSum::words; ++j)
+    words.w[j] = data[static_cast<std::size_t>(j)];
+  autan::runtime::gpu::ExactWords* dw = nullptr;
+  double* dv = nullptr;
+  check(cudaMalloc(&dw, 2 * sizeof(words)));
+  check(cudaMalloc(&dv, 2 * sizeof(double)));
+  check(cudaMemcpy(dw, &words, sizeof(words), cudaMemcpyHostToDevice));
+  check(cudaMemcpy(dw + 1, &words, sizeof(words), cudaMemcpyHostToDevice));
+  round_on_device<<<1, 1>>>(dw, dv);
+  check(cudaGetLastError());
+  double value = 0.0;
+  check(cudaMemcpy(&value, dv, sizeof(double), cudaMemcpyDeviceToHost));
+  check(cudaFree(dw));
+  check(cudaFree(dv));
+  return value;
+}
+
 }  // namespace autan_test
