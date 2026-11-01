@@ -94,6 +94,9 @@ struct Schedule {
   Colouring boundary;
   void* face_scratch = nullptr;  ///< store-gather: face_scratch_width x n_faces accumulation values
   int face_scratch_width = 0;    ///< components per face the scratch holds
+  /// Deterministic reduction adjoints: incidence_scratch_width x n_incidences accumulation values.
+  void* incidence_scratch = nullptr;
+  int incidence_scratch_width = 0;
   stream_t stream = nullptr;
 };
 

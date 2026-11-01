@@ -45,12 +45,15 @@ class Array {
 /// Topology, colourings and scratch of a spike mesh in Metal buffers.
 template <class P>
 struct DeviceMesh {
-  static constexpr int kScratchWidth = 10;  // widest spike face loop: the Roe adjoint
+  static constexpr int kScratchWidth = 10;          // widest spike face loop: the Roe adjoint
+  static constexpr int kIncidenceScratchWidth = 1;  // spike reductions gather one scalar
   Array<index_t> owner, neighbour, cell_faces;
   Array<offset_t> offsets;
   autan::kernels::HostColouring int_colours, bnd_colours;
   Array<index_t> int_faces, bnd_faces;
   Array<typename P::accum> scratch;
+  Array<offset_t> twin;
+  Array<typename P::accum> incidence_scratch;
   autan::kernels::Topology topo;
   mtl::Schedule schedule;
 
@@ -64,6 +67,9 @@ struct DeviceMesh {
         int_faces(ctx, int_colours.faces),
         bnd_faces(ctx, bnd_colours.faces),
         scratch(ctx, kScratchWidth * static_cast<std::size_t>(m.topo.n_faces)),
+        twin(ctx, m.topo.incidence_twin, static_cast<std::size_t>(m.topo.n_incidences)),
+        incidence_scratch(ctx,
+                          kIncidenceScratchWidth * static_cast<std::size_t>(m.topo.n_incidences)),
         topo(m.topo) {
     topo.owner = owner.get();
     topo.neighbour = neighbour.get();
@@ -74,6 +80,9 @@ struct DeviceMesh {
     schedule.boundary = {bnd_faces.get(), bnd_colours.offsets};
     schedule.face_scratch = scratch.get();
     schedule.face_scratch_width = kScratchWidth;
+    schedule.incidence_scratch = incidence_scratch.get();
+    schedule.incidence_scratch_width = kIncidenceScratchWidth;
+    topo.incidence_twin = twin.get();
   }
 };
 

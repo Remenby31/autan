@@ -83,6 +83,10 @@ template <class A>
 struct GatherArgs {
   const A* scratch;
 };
+template <class A>
+struct ScratchArgs {
+  A* scratch;
+};
 
 /// Everything a strategy needs besides the data. Pointers are GPU addresses (Buffer::device).
 struct Schedule {
@@ -91,6 +95,9 @@ struct Schedule {
   Colouring boundary;
   void* face_scratch = nullptr;  ///< store-gather: face_scratch_width x n_faces accumulation values
   int face_scratch_width = 0;
+  /// Deterministic reduction adjoints: incidence_scratch_width x n_incidences accumulation values.
+  void* incidence_scratch = nullptr;
+  int incidence_scratch_width = 0;
 };
 
 /// A shared-storage buffer: `host()` for the CPU, `device<T>()` for a Data<P> pointer field.
@@ -172,5 +179,36 @@ class Context {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+// Fixed-order sums of squares (kernels in every generated library's prelude).
+inline constexpr int norm_block = 256;
+inline constexpr int norm_per_thread = 16;
+inline constexpr std::int64_t norm_chunk = std::int64_t{norm_block} * norm_per_thread;
+
+/// Partial sums sum_of_squares needs: one per chunk of norm_chunk entries.
+inline std::int64_t norm_partials(std::int64_t n) { return (n + norm_chunk - 1) / norm_chunk; }
+
+template <class T>
+struct NormData {
+  const T* x;
+  df64* partial;
+  df64* out;
+  std::int64_t n;
+};
+
+/// Records the sum of x[i]^2 (float or df64 entries, GPU addresses), accumulated in double-float
+/// in an order fixed by n, into the device scalar `out`; `partials` holds norm_partials(n)
+/// values. `lib` is any generated module's library.
+template <class T>
+void sum_of_squares(Context& ctx, const Library& lib, const T* x, std::int64_t n, df64* partials,
+                    df64* out) {
+  static_assert(std::is_same_v<T, float> || std::is_same_v<T, df64>);
+  const std::int64_t m = norm_partials(n);
+  const char* tag = std::is_same_v<T, float> ? "float" : "df64";
+  ctx.dispatch(lib, "squares_by_chunk", tag, NormData<T>{x, partials, nullptr, n},
+               static_cast<index_t>(m * norm_block), norm_block);
+  ctx.dispatch(lib, "sum_partials", "df64", NormData<df64>{partials, nullptr, out, m}, norm_block,
+               norm_block);
+}
 
 }  // namespace autan::kernels::metal

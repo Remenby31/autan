@@ -1,6 +1,7 @@
 // C ABI of the Metal spike driver: the generated Metal loops on shared-memory copies of a spike
 // mesh, under the same symbols as the CUDA driver (capi_gpu.cu), so that the same tests run.
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -54,7 +55,7 @@ void synchronise() { context().synchronise(); }
 template <class P>
 void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const double* q,
                       const double* q_b, const double* source, const double* velocity, double nu,
-                      double* res, double* grad) {
+                      double* res, double* grad, double* norm) {
   namespace ad = autan::kernels::advection_diffusion;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
@@ -88,9 +89,14 @@ void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const do
   ad::metal_loops::init_residual(ctx, d, dm.schedule);
   ad::metal_loops::flux(ctx, d, strategy, dm.schedule);
   ad::metal_loops::boundary_flux(ctx, d, strategy, dm.schedule);
+  const auto n_owned = static_cast<std::int64_t>(m.topo.n_owned_cells);
+  DeviceArray<mtl::df64> partials(ctx, static_cast<std::size_t>(mtl::norm_partials(n_owned)));
+  DeviceArray<mtl::df64> sum(ctx, 1);
+  mtl::sum_of_squares(ctx, ad::metal_loops::library, rs.get(), n_owned, partials.get(), sum.get());
   synchronise();
   copy_out(rs.download(), res);
   copy_out(gs.download(), grad);
+  *norm = std::sqrt(static_cast<double>(sum.download()[0]));
 }
 
 template <class P>
@@ -249,7 +255,44 @@ void advdiff_adjoint(const SpikeMesh& m, Strategy strategy, int block, const dou
   ad::metal_loops::boundary_flux_adjoint(ctx, d, strategy, dm.schedule);
   ad::metal_loops::flux_adjoint(ctx, d, strategy, dm.schedule);
   ad::metal_loops::init_residual_adjoint(ctx, d, dm.schedule);
-  ad::metal_loops::lsq_gradient_adjoint(ctx, d, dm.schedule);
+  ad::metal_loops::lsq_gradient_adjoint(ctx, d, strategy, dm.schedule);
+  synchronise();
+  copy_out(q_adj.download(), out);
+}
+
+/// Adjoint of the LSQ gradient + bounds reduction on the device (seed 5 x n_cells -> q-bar):
+/// Sum, Min and Max accumulators and the finalise body.
+template <class P>
+void lsq_bounds_adjoint(const SpikeMesh& m, Strategy strategy, int block, const double* q,
+                        const double* q_b, const double* seed, double* out) {
+  namespace gr = autan::kernels::gradients;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  auto& ctx = context();
+  DeviceMesh<P> dm(ctx, m, block);
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(ctx, hg);
+  DeviceArray<S> qs(ctx, converted_in<S>(q, nc)), qbs(ctx, converted_in<S>(q_b, nf));
+  DeviceArray<typename P::grad> gs(ctx, 3 * nc);
+  DeviceArray<S> lo(ctx, nc), hi(ctx, nc);
+  DeviceArray<R> g_adj(ctx, converted_in<R>(seed, 3 * nc)),
+      lo_adj(ctx, converted_in<R>(seed + 3 * nc, nc)),
+      hi_adj(ctx, converted_in<R>(seed + 4 * nc, nc)), q_adj(ctx, nc);
+  gr::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.q_b = qbs.get();
+  d.grad = gs.get();
+  d.qmin = lo.get();
+  d.qmax = hi.get();
+  d.lsq_weight = g.lsq_weight.get();
+  d.grad_adj = g_adj.get();
+  d.qmin_adj = lo_adj.get();
+  d.qmax_adj = hi_adj.get();
+  d.q_adj = q_adj.get();
+  gr::metal_loops::lsq_gradient_bounds_adjoint(ctx, d, strategy, dm.schedule);
   synchronise();
   copy_out(q_adj.download(), out);
 }
@@ -257,6 +300,28 @@ void advdiff_adjoint(const SpikeMesh& m, Strategy strategy, int block, const dou
 }  // namespace
 
 extern "C" {
+
+int autan_spike_gpu_lsq_bounds_adjoint(const void* mesh, const char* policy, const char* strategy,
+                                       int block, const double* q, const double* q_b,
+                                       const double* seed, double* out, char* err,
+                                       std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::metal::with_policy(
+        policy, [&](auto p) { lsq_bounds_adjoint<decltype(p)>(*m, s, block, q, q_b, seed, out); });
+  });
+}
+
+/// FP64 sum of squares on the device: Metal has no FP64, so it is refused (the residual norm of
+/// autan_spike_gpu_advdiff_residual accumulates in double-float).
+int autan_spike_gpu_sum_of_squares(const double*, std::int64_t, double*, char* err,
+                                   std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    throw std::invalid_argument(
+        "E1013: Metal has no FP64: an FP64 sum of squares is not available");
+  });
+}
 
 int autan_spike_gpu_roe(const void* mesh, const char* policy, const char* strategy, int block,
                         int mode, const double* u, const double* seed, double* out, char* err,
@@ -286,12 +351,13 @@ int autan_spike_gpu_advdiff_adjoint(const void* mesh, const char* policy, const 
 int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const char* strategy,
                                      int block, const double* q, const double* q_b,
                                      const double* source, const double* velocity, double nu,
-                                     double* res, double* grad, char* err, std::size_t err_len) {
+                                     double* res, double* grad, double* norm, char* err,
+                                     std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(policy, [&](auto p) {
-      advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad);
+      advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
   });
 }

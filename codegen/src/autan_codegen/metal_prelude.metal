@@ -28,6 +28,7 @@ struct Topology {
   device const index_t* neighbour;
   device const offset_t* cell_face_offsets;
   device const index_t* cell_faces;
+  device const offset_t* incidence_twin;
 };
 
 // Double-float: x = hi + lo with |lo| <= ulp(hi) / 2, about 48 significant bits.
@@ -176,6 +177,11 @@ struct GatherArgs {
   device const A* scratch;
 };
 
+template <class A>
+struct ScratchArgs {
+  device A* scratch;
+};
+
 constant int warp_size = 32;  // SIMD-group width of every Apple GPU family
 
 /// Index of the contiguous run of `head` flags lane `lane` belongs to within its SIMD group:
@@ -185,6 +191,80 @@ inline int segment_id(bool head, int lane) {
   const ulong upto = lane == 63 ? ~0ul : (2ul << lane) - 1ul;
   return metal::popcount(heads & upto);
 }
+
+// Sum of squares in double-float in a fixed order (autan/kernels/norms.cuh on CUDA): chunks of
+// norm_block * norm_per_thread entries reduced by a tree in threadgroup memory, then the
+// partials (`x` of sum_partials) by one threadgroup. Launched with threadgroups of norm_block
+// threads (autan::kernels::metal::sum_of_squares); the result depends on the data and its
+// length only.
+constant int norm_block = 256;
+constant int norm_per_thread = 16;
+
+template <class T>
+struct NormData {
+  device const T* x;
+  device df64* partial;
+  device df64* out;
+  long n;
+};
+
+inline df64 square(float x) {
+  const float p = x * x;
+  return df64(p, fma(x, x, -p));
+}
+inline df64 square(df64 x) { return x * x; }
+
+// Threadgroup memory holds float2 (hi, lo): df64's constructors do not apply in that space.
+inline void tree_sum(threadgroup float2* s, uint t) {
+  for (uint w = norm_block / 2; w > 0; w /= 2) {
+    if (t < w) {
+      const df64 v = df64(s[t].x, s[t].y) + df64(s[t + w].x, s[t + w].y);
+      s[t] = float2(v.hi, v.lo);
+    }
+    metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  }
+}
+
+template <class T>
+kernel void squares_by_chunk(constant NormData<T>& d [[buffer(0)]],
+                             uint t [[thread_position_in_threadgroup]],
+                             uint g [[threadgroup_position_in_grid]]) {
+  threadgroup float2 s[norm_block];
+  const long base = long(g) * norm_block * norm_per_thread + long(t);
+  df64 acc = df64(0.0f);
+  for (int j = 0; j < norm_per_thread; ++j) {
+    const long i = base + long(j) * norm_block;
+    if (i < d.n) {
+      acc = acc + square(d.x[i]);
+    }
+  }
+  s[t] = float2(acc.hi, acc.lo);
+  metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  tree_sum(s, t);
+  if (t == 0) {
+    d.partial[g] = df64(s[0].x, s[0].y);
+  }
+}
+
+[[host_name("sum_partials_df64")]] kernel void sum_partials_df64(constant NormData<df64>& d [[buffer(0)]],
+                              uint t [[thread_position_in_threadgroup]]) {
+  threadgroup float2 s[norm_block];
+  df64 acc = df64(0.0f);
+  for (long i = long(t); i < d.n; i += norm_block) {
+    acc = acc + d.x[i];
+  }
+  s[t] = float2(acc.hi, acc.lo);
+  metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  tree_sum(s, t);
+  if (t == 0) {
+    d.out[0] = df64(s[0].x, s[0].y);
+  }
+}
+
+template [[host_name("squares_by_chunk_float")]] kernel void squares_by_chunk<float>(
+    constant NormData<float>&, uint, uint);
+template [[host_name("squares_by_chunk_df64")]] kernel void squares_by_chunk<df64>(
+    constant NormData<df64>&, uint, uint);
 
 }  // namespace kernels
 }  // namespace autan

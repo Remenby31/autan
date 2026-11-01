@@ -5,8 +5,8 @@ kernels, one instantiation per kernel and policy) and the host launchers that di
 `autan/kernels/metal.hpp`. Kernels read `Data<P>` from a constant buffer whose pointers are GPU
 addresses, so loop bodies are the same text as the CUDA and HIP loops. Metal has no FP64: the
 `fp32+acc64` policy accumulates in double-float, `fp64` is refused, and the strategies that need
-floating-point atomics on the accumulation type (atomic, warp-aggregated, the scatter of a cell
-reduction adjoint) exist in `fp32` only.
+floating-point atomics on the accumulation type (atomic, warp-aggregated, the atomic scatter of a
+cell reduction adjoint) exist in `fp32` only; the deterministic strategies run in both policies.
 """
 
 from __future__ import annotations
@@ -24,14 +24,22 @@ from autan_codegen.emit_cpp import (
     ctype,
     unique_bodies,
 )
-from autan_codegen.emit_cpu import cell_stores, n_out, offsets, reduce_adjoint_body, reduce_body
+from autan_codegen.emit_cpu import (
+    cell_stores,
+    n_out,
+    offsets,
+    other_targets,
+    reduce_adjoint_body,
+    reduce_body,
+    twin_gather_body,
+)
 from autan_codegen.emit_gpu import _face_eval, _incs, _signed
 
 if TYPE_CHECKING:
     from autan_codegen.ir import Function
     from autan_codegen.model import LoopModel, Module
 
-# Policy name -> (MSL and host policy type, kernel name suffix, has float atomics on its accum).
+# Policy name -> (MSL and host policy type, has float atomics on its accumulation type).
 POLICIES = {"fp32": ("fp32", True), "fp32+acc64": ("fp32_acc64", False)}
 PRELUDE = Path(__file__).with_name("metal_prelude.metal")
 DELIMITER = "autan_msl"
@@ -259,6 +267,29 @@ def _cell_kernel(k: _Kernels, lm: LoopModel) -> None:
         e.w(s)
     e.w("}")
     e.w()
+    if lm.kind == "reduce_adjoint":
+        # Deterministic two passes: the store pass writes what each cell sends to its neighbours
+        # in the per-incidence scratch, the gather sums it in each cell's incidence order.
+        k.head(f"{lm.name}_store", "ScratchArgs<typename P::accum>")
+        e.w("  const index_t c = index_t(gid);")
+        e.w("  if (c >= d.topo.n_owned_cells) {")
+        e.w("    return;")
+        e.w("  }")
+        e.w("  [[maybe_unused]] device A* scratch = a.scratch;")
+        for s in reduce_adjoint_body(lm, "  ", "store"):
+            e.w(s)
+        e.w("}")
+        e.w()
+        k.head(f"{lm.name}_twin_gather", "GatherArgs<typename P::accum>")
+        e.w("  const index_t c = index_t(gid);")
+        e.w("  if (c >= d.topo.n_cells) {")
+        e.w("    return;")
+        e.w("  }")
+        e.w("  device const A* scratch = a.scratch;")
+        for s in twin_gather_body(lm, "  "):
+            e.w(s)
+        e.w("}")
+        e.w()
 
 
 def emit_msl(m: Module, policies: list[str], line_directives: bool = True) -> str:
@@ -358,21 +389,51 @@ def _face_launcher(e: Emitter, lm: LoopModel) -> None:
 
 
 def _cell_launcher(e: Emitter, lm: LoopModel) -> None:
-    e.w("template <class P>")
-    e.w(f"void {lm.name}(mtl::Context& ctx, const Data<P>& d, const mtl::Schedule& s) {{")
-    if lm.kind == "reduce_adjoint":
-        e.w("  if constexpr (!P::float_atomics) {")
-        e.w(
-            f'    throw std::invalid_argument("E1108: {lm.name} scatters with atomics on the accumulation type, which Metal lacks in " + std::string(P::name));'
-        )
-        e.w("  } else {")
-        e.w(
-            f'    ctx.dispatch(library, "{lm.name}_kernel", P::tag, d, d.topo.n_owned_cells, s.block);'
-        )
-        e.w("  }")
-    else:
+    if lm.kind != "reduce_adjoint":
+        e.w("template <class P>")
+        e.w(f"void {lm.name}(mtl::Context& ctx, const Data<P>& d, const mtl::Schedule& s) {{")
         e.w(
             f'  ctx.dispatch(library, "{lm.name}_kernel", P::tag, d, d.topo.n_owned_cells, s.block);'
+        )
+        e.w("}")
+        e.w()
+        return
+    width = len(other_targets(lm))
+    e.w("template <class P>")
+    e.w(
+        f"void {lm.name}(mtl::Context& ctx, const Data<P>& d, const Strategy strategy, const mtl::Schedule& s) {{"
+    )
+    e.w("  using A = typename P::accum;")
+    e.w("  if (!::autan::kernels::deterministic(strategy)) {")
+    e.w("    if constexpr (!P::float_atomics) {")
+    e.w(
+        f'      throw std::invalid_argument("E1108: {lm.name} scatters with atomics on the accumulation type, which Metal lacks in " + std::string(P::name));'
+    )
+    e.w("    } else {")
+    e.w(
+        f'      ctx.dispatch(library, "{lm.name}_kernel", P::tag, d, d.topo.n_owned_cells, s.block);'
+    )
+    e.w("    }")
+    e.w("    return;")
+    e.w("  }")
+    if width:
+        e.w(f"  if (s.incidence_scratch_width < {width}) {{")
+        e.w(
+            '    throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
+        )
+        e.w("  }")
+        e.w("  if (d.topo.incidence_twin == nullptr) {")
+        e.w(
+            '    throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
+        )
+        e.w("  }")
+    e.w("  auto* scratch = static_cast<A*>(s.incidence_scratch);")
+    e.w(
+        f'  ctx.dispatch(library, "{lm.name}_store", P::tag, d, mtl::ScratchArgs<A>{{scratch}}, d.topo.n_owned_cells, s.block);'
+    )
+    if width:
+        e.w(
+            f'  ctx.dispatch(library, "{lm.name}_twin_gather", P::tag, d, mtl::GatherArgs<A>{{scratch}}, d.topo.n_cells, s.block);'
         )
     e.w("}")
     e.w()

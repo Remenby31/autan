@@ -96,7 +96,8 @@ def solve(
     def residual(*args: object) -> tuple[F64, F64]:
         if strategy is None:
             return s.advdiff_residual(m, policy, *args)  # type: ignore[arg-type]
-        return s.gpu_advdiff_residual(m, policy, strategy, 128, *args)  # type: ignore[arg-type]
+        res, grad, _norm = s.gpu_advdiff_residual(m, policy, strategy, 128, *args)  # type: ignore[arg-type]
+        return res, grad
 
     q_b = np.zeros(m.n_faces)
     q_b[m.n_interior :] = exact(m.face_centroid[m.n_interior :])
