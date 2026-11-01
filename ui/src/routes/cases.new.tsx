@@ -13,9 +13,11 @@ import {
   renderQuery,
   UNITS,
 } from "../api/cases";
+import type { Diagnostic } from "../api/contracts";
 import type { Plan } from "../api/runs";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
+import { cn } from "../components/ui/cn";
 import { Field, NumberInput, QuantityInput, SelectInput, TextInput } from "../components/ui/Field";
 import { Note } from "../components/ui/Note";
 import { TabList, TabPanel, TabsRoot } from "../components/ui/Tabs";
@@ -264,7 +266,7 @@ function CaseEditor() {
                 // biome-ignore lint/suspicious/noArrayIndexKey: monitors have no identity but their place
                 key={k}
                 aria-label={`Forces monitor ${k + 1}`}
-                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem] items-end gap-3 border-0 p-0"
+                className="col-span-2 m-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_auto] items-end gap-3 border-0 p-0"
               >
                 <Field label="Surfaces">
                   <TextInput
@@ -303,26 +305,39 @@ function CaseEditor() {
                     }
                   />
                 </Field>
+                <Button
+                  square
+                  variant="tertiary"
+                  aria-label={`Remove forces monitor ${k + 1}`}
+                  icon={<Trash2 className="size-4" />}
+                  onClick={() =>
+                    set(
+                      "monitors",
+                      form.monitors.filter((_, i) => i !== k),
+                    )
+                  }
+                />
               </fieldset>
             ))}
           </Section>
         </form>
 
         <aside className="flex min-h-0 flex-col gap-4 overflow-auto border-line border-l bg-bg-1 px-6 py-6">
+          {rendered.isError && (
+            <Note tone="error" title="The SDK could not be reached">
+              The code below is from an earlier version of the case: {rendered.error.message}
+            </Note>
+          )}
           {rendered.data?.ok === false ? (
-            <div className="flex flex-col gap-2" data-testid="diagnostics">
-              {rendered.data.diagnostics.map((d) => (
-                <Note
-                  key={`${d.code}-${d.location?.path ?? ""}`}
-                  tone={d.severity === "warning" ? "warning" : "error"}
-                  title={d.code}
-                >
-                  {d.message}
-                </Note>
-              ))}
-            </div>
+            <Diagnostics items={rendered.data.diagnostics} testId="diagnostics" />
           ) : (
-            <TabsRoot defaultValue="python" className="flex min-h-0 flex-col gap-3">
+            <TabsRoot
+              defaultValue="python"
+              className={cn(
+                "flex min-h-0 flex-col gap-3 transition-opacity",
+                (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
+              )}
+            >
               <div className="flex items-center gap-3">
                 <TabList
                   tabs={[
@@ -382,9 +397,12 @@ function PlanSummary({ plan }: { plan: Plan }) {
   const uncovered = plan.boundaries.filter((b) => b.condition === null);
   return (
     <section className="flex flex-col gap-2" data-testid="plan">
-      <h2 className="m-0 font-medium text-base">
-        Plan{" "}
+      <h2 className="m-0 flex items-baseline gap-2 font-medium text-base">
+        Plan
         <span className={plan.ok ? "text-success" : "text-danger"}>
+          {plan.ok ? "ready" : "refused"}
+        </span>
+        <span className="font-normal text-fg-3 text-sm">
           {plan.boundaries.length - uncovered.length} of {plan.boundaries.length} zones covered
         </span>
       </h2>
@@ -393,6 +411,23 @@ function PlanSummary({ plan }: { plan: Plan }) {
           {uncovered.map((b) => b.zone).join(" · ")}
         </p>
       )}
+      <Diagnostics items={plan.diagnostics} testId="plan-diagnostics" />
     </section>
+  );
+}
+
+function Diagnostics({ items, testId }: { items: Diagnostic[]; testId: string }) {
+  return (
+    <div className="flex flex-col gap-2" data-testid={testId}>
+      {items.map((d) => (
+        <Note
+          key={`${d.code}-${d.location?.path ?? ""}`}
+          tone={d.severity === "warning" ? "warning" : "error"}
+          title={d.location?.path ? `${d.code} · ${d.location.path}` : d.code}
+        >
+          {d.message}
+        </Note>
+      ))}
+    </div>
   );
 }

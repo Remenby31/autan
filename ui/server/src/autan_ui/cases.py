@@ -2,7 +2,7 @@ import copy
 import json
 import logging
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import autan
@@ -16,10 +16,9 @@ log = logging.getLogger(__name__)
 MESH_INFO = ".meshinfo.json"
 
 
+# The MeshInfo files (`*.meshinfo.json`) of one directory, which the case editor plans
+# against; found by listing the directory, never by a path a request names.
 class Meshes:
-    """The MeshInfo files (`*.meshinfo.json`) of one directory, which the case editor plans
-    against. Files are found by listing the directory, never by a path a request names."""
-
     def __init__(self, root: Path | None) -> None:
         self.root = root
 
@@ -33,7 +32,6 @@ class Meshes:
         )
 
     def read(self, name: str) -> autan.MeshInfo:
-        """The MeshInfo listed as `name`; LookupError when there is none."""
         if self.root is None or name not in self.names():
             msg = f"no MeshInfo {name!r}"
             raise LookupError(msg)
@@ -62,12 +60,14 @@ class Meshes:
 
 
 def render(document: dict[str, Any], mesh_info: autan.MeshInfo | None) -> dict[str, Any]:
-    """A case document as the SDK reads it: its canonical SDK code, its case.toml and, against
-    `mesh_info`, its plan; or the SDK's diagnostics when it refuses the document."""
     where = Location(file="case.json")
     try:
         case = autan.Case.from_spec(CaseSpec.from_document(document, where), file="case.json")
         plan = _plan(document, mesh_info) if mesh_info is not None else None
+        if plan is not None:
+            # The plan of the copy, told as the plan of the case returned.
+            plan["case"] = {"name": case.spec.name, "sha256": case.spec.hash()}
+            plan["mesh"]["path"] = case.spec.mesh
     except CaseError as error:
         return {
             "ok": False,
@@ -84,15 +84,20 @@ def render(document: dict[str, Any], mesh_info: autan.MeshInfo | None) -> dict[s
 
 def _plan(document: dict[str, Any], mesh_info: autan.MeshInfo) -> dict[str, Any]:
     # Planned from a copy in an empty scratch directory, so the SDK reads no file the case
-    # names: the mesh path is cut to its name (plan reads only the MeshInfo) and every state
-    # file points at a name that does not exist there, which plan reports as unreadable.
-    planned = copy.deepcopy(document)
-    planned["mesh"] = PurePosixPath(str(planned.get("mesh", ""))).name or "mesh"
-    specs = [r.get("condition") for r in planned.get("boundaries", []) if isinstance(r, dict)]
-    for spec in [*specs, planned.get("initial_state")]:
-        if isinstance(spec, dict) and "path" in spec:
-            spec["path"] = "states.json"
+    # names: the mesh is a name that does not exist there (plan reads only the MeshInfo) and
+    # every file a case names by `path` points at one that does not exist either, which plan
+    # reports as unreadable.
+    planned = _repointed(copy.deepcopy(document))
+    planned["mesh"] = "mesh-not-read"
     with tempfile.TemporaryDirectory() as scratch:
         path = Path(scratch) / "case.json"
         path.write_text(json.dumps(planned))
         return autan.load(path).plan(mesh_info).document()
+
+
+def _repointed(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: "file-not-read.json" if k == "path" else _repointed(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_repointed(v) for v in value]
+    return value

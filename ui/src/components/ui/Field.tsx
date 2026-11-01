@@ -8,7 +8,7 @@ const INPUT =
   "h-full min-w-0 flex-1 bg-transparent px-3 outline-none placeholder:text-fg-3 focus-visible:shadow-none";
 
 // The control a Field labels: its id, and the id of its hint as its description.
-const Control = createContext<{ id?: string; hint?: string }>({});
+const Control = createContext<{ id?: string; hint?: string; label?: string }>({});
 const useControl = () => useContext(Control);
 
 /** A label above one control; the hint says the default the SDK applies when it is empty. */
@@ -35,7 +35,9 @@ export function Field({
           </span>
         )}
       </span>
-      <Control.Provider value={hint ? { id, hint: hintId } : { id }}>{children}</Control.Provider>
+      <Control.Provider value={hint ? { id, hint: hintId, label } : { id, label }}>
+        {children}
+      </Control.Provider>
     </div>
   );
 }
@@ -141,7 +143,8 @@ export function SelectInput<T extends string>({
   );
 }
 
-/** A quantity as the SDK reads it, `"<number> <unit>"`; empty when no number is typed. */
+/** A quantity as the SDK reads it, `"<number> <unit>"`; its unit is kept while the number is
+ * empty, which the case document reads as unset. */
 export function QuantityInput({
   value,
   onChange,
@@ -157,7 +160,7 @@ export function QuantityInput({
   const space = value.indexOf(" ");
   const magnitude = space < 0 ? value : value.slice(0, space);
   const unit = space < 0 ? (units[0] ?? "") : value.slice(space + 1);
-  const emit = (m: string, u: string) => onChange(m.trim() === "" ? "" : `${m.trim()} ${u}`);
+  const emit = (m: string, u: string) => onChange(`${m.trim()} ${u}`);
   return (
     <span className={cn("flex", BOX)}>
       <input
@@ -172,7 +175,7 @@ export function QuantityInput({
       <select
         value={unit}
         onChange={(e) => emit(magnitude, e.target.value)}
-        aria-label="Unit"
+        aria-label={control.label ? `${control.label} unit` : "Unit"}
         className="cursor-pointer border-line border-l bg-transparent px-2 font-mono text-fg-2 text-sm outline-none"
       >
         {units.map((u) => (

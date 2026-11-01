@@ -116,8 +116,20 @@ export const EMPTY_CASE: CaseForm = {
   monitors: [],
 };
 
-const number = (text: string) => (text.trim() === "" ? undefined : Number(text));
+// A number the SDK reads, or the text as typed when it is not one, which the SDK refuses with
+// its code; empty is unset.
+const number = (text: string) => {
+  if (text.trim() === "") return undefined;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : text.trim();
+};
 const text = (value: string) => (value.trim() === "" ? undefined : value.trim());
+// A quantity `"<number> <unit>"`, unset while its number is empty (its unit is kept).
+const quantity = (value: string) => {
+  const space = value.indexOf(" ");
+  const magnitude = (space < 0 ? value : value.slice(0, space)).trim();
+  return magnitude === "" ? undefined : `${magnitude} ${value.slice(space + 1).trim()}`;
+};
 
 function sparse(entries: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(entries).filter(([, v]) => v !== undefined));
@@ -141,12 +153,12 @@ export function caseDocument(form: CaseForm): CaseDocument {
     }),
     freestream: sparse({
       mach: number(fs.mach),
-      aoa: text(fs.aoa),
-      sideslip: text(fs.sideslip),
+      aoa: quantity(fs.aoa),
+      sideslip: quantity(fs.sideslip),
       re: number(fs.re),
-      ref_length: text(fs.ref_length),
-      pressure: text(fs.pressure),
-      temperature: text(fs.temperature),
+      ref_length: quantity(fs.ref_length),
+      pressure: quantity(fs.pressure),
+      temperature: quantity(fs.temperature),
     }),
     time: Object.keys(time).length ? { kind: "steady", ...time } : undefined,
     boundaries: form.boundaries.length
@@ -155,17 +167,19 @@ export function caseDocument(form: CaseForm): CaseDocument {
           condition: sparse({
             kind: rule.kind,
             ...Object.fromEntries(
-              CONDITIONS[rule.kind].map(({ key }) => [key, text(rule.values[key] ?? "")]),
+              CONDITIONS[rule.kind].map(({ key }) => [key, quantity(rule.values[key] ?? "")]),
             ),
           }),
         }))
       : undefined,
     monitors: form.monitors.length
-      ? form.monitors.map((m) =>
+      ? form.monitors.map((m, k) =>
           sparse({
             kind: "forces",
+            // Names are unique in a case; the first keeps the SDK's default, "forces".
+            name: k === 0 ? undefined : `forces-${k + 1}`,
             surfaces: m.surfaces,
-            ref_area: text(m.ref_area),
+            ref_area: quantity(m.ref_area),
             every: number(m.every),
           }),
         )

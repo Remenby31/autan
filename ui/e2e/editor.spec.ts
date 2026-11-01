@@ -19,14 +19,16 @@ async function rule(page: Page, k: number, zones: string, kind: string) {
   await fieldset.getByLabel("Condition").selectOption(kind);
 }
 
-test("the CRM-HL case built in the editor writes py/examples/crm_hl.py", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator("a[data-row]").first()).toBeVisible();
-  await page.keyboard.press("ControlOrMeta+k");
-  await page.keyboard.type("new case");
-  await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/cases\/new$/);
+async function forces(page: Page, k: number, surfaces: string, area: string, every: string) {
+  await page.getByRole("button", { name: "Add forces" }).click();
+  const monitor = page.getByRole("group", { name: `Forces monitor ${k}` });
+  await monitor.getByLabel("Surfaces").fill(surfaces);
+  await monitor.getByLabel("Reference area", { exact: true }).fill(area);
+  await monitor.getByLabel("Every").fill(every);
+}
 
+// The CRM-HL case of py/examples/crm_hl.py, field by field.
+async function crmHl(page: Page) {
   await page.getByLabel("Name").fill("crm-hl");
   await page.getByLabel("Mesh").selectOption("crm-hl");
   await page.getByLabel("Turbulence").selectOption("sa");
@@ -36,21 +38,46 @@ test("the CRM-HL case built in the editor writes py/examples/crm_hl.py", async (
   await page.getByLabel("Reference length", { exact: true }).fill("7.0");
   await rule(page, 1, "wing.*", "wall");
   await rule(page, 2, "symmetry", "symmetry");
-  await page.getByRole("button", { name: "Add forces" }).click();
-  const forces = page.getByRole("group", { name: "Forces monitor 1" });
-  await forces.getByLabel("Surfaces").fill("wing.*");
-  await forces.getByLabel("Reference area", { exact: true }).fill("191.84");
-  await forces.getByLabel("Every").fill("10");
+  await forces(page, 1, "wing.*", "191.84", "10");
+}
+
+test("the CRM-HL case built in the editor writes py/examples/crm_hl.py", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("new case");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/cases\/new$/);
+
+  await crmHl(page);
 
   // Byte for byte: toHaveText would collapse whitespace.
   await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(CRM_HL);
-  await expect(page.getByTestId("plan")).toContainText("zones covered");
+  await expect(page.getByTestId("plan")).toContainText("ready");
 });
 
-test("a case the SDK refuses shows its coded diagnostics", async ({ page }) => {
+test("a value the SDK refuses shows its code at its field", async ({ page }) => {
   await page.goto("/cases/new");
-  await page.getByLabel("Name").fill("broken");
-  await page.getByLabel("Mach").fill("-1");
+  await crmHl(page);
+  await expect(page.getByTestId("plan")).toContainText("ready");
 
-  await expect(page.getByTestId("diagnostics")).toContainText(/E\d{4}/);
+  await page.getByLabel("Mach").fill("-1");
+  await expect(page.getByTestId("diagnostics")).toContainText("E0304 · freestream.mach");
+
+  await page.getByLabel("Mach").fill("0.2");
+  await page.getByLabel("Reynolds number", { exact: true }).fill("abc");
+  await expect(page.getByTestId("diagnostics")).toContainText("E0301 · freestream.re");
+});
+
+test("a unit chosen first is kept, and monitors get names of their own", async ({ page }) => {
+  await page.goto("/cases/new");
+  await crmHl(page);
+  await page.getByLabel("Reference length unit").selectOption("mm");
+  await page.getByLabel("Reference length", { exact: true }).fill("");
+  await page.getByLabel("Reference length", { exact: true }).fill("7000.0");
+  await forces(page, 2, "wing.*", "191.84", "10");
+
+  await expect(page.getByTestId("case-py")).toContainText("ref_length=7000.0 * mm");
+  await expect(page.getByTestId("case-py")).toContainText('name="forces-2"');
+  await expect(page.getByTestId("plan")).toContainText("ready");
 });

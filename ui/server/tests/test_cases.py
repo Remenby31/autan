@@ -1,5 +1,6 @@
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -55,14 +56,47 @@ def test_a_case_renders_as_the_sdk_reads_it(client: TestClient, tmp_path: Path) 
     assert _without_files(rendered["plan"]) == _without_files(expected)
 
 
-def test_planning_reads_no_file_the_case_names(client: TestClient) -> None:
+OPENED: list[str] | None = None
+
+
+def _record(event: str, args: tuple[Any, ...]) -> None:
+    if event == "open" and OPENED is not None and isinstance(args[0], str | Path):
+        OPENED.append(str(args[0]))
+
+
+sys.addaudithook(_record)
+
+
+@pytest.mark.parametrize("mesh", ["CRM_HL", "..", "../..", "/"])
+def test_planning_reads_no_mesh_the_case_names(client: TestClient, mesh: str) -> None:
     document = json.loads(autan.load(PY / "examples" / "crm_hl.py").to_json())
-    document["mesh"] = str(CRM_HL)  # A file that exists on the server.
+    document["mesh"] = str(CRM_HL) if mesh == "CRM_HL" else mesh  # Paths the server can reach.
 
     rendered = client.post("/api/cases/render", json={"case": document, "mesh": "crm-hl"}).json()
 
-    assert rendered["toml"].count(str(CRM_HL)) == 1  # The case itself keeps its path.
+    assert rendered["plan"]["mesh"]["path"] == document["mesh"]  # The case keeps its own.
     assert "W0205" in {d["code"] for d in rendered["plan"]["diagnostics"]}
+
+
+def test_planning_reads_no_file_the_case_names(client: TestClient, tmp_path: Path) -> None:
+    global OPENED  # noqa: PLW0603 -- the audit hook cannot be removed, only muted
+    sentinel = tmp_path / "manufactured.json"
+    sentinel.write_text("{}")
+    document = json.loads(autan.load(PY / "examples" / "crm_hl.py").to_json())
+    # A case verification allows: inviscid, every boundary given by the manufactured solution.
+    document["physics"]["turbulence"] = {"model": "inviscid"}
+    document["boundaries"] = []
+    document["monitors"] = []
+    document["verification"] = {"manufactured": {"path": str(sentinel), "sha256": "0" * 64}}
+
+    OPENED = []
+    try:
+        rendered = client.post("/api/cases/render", json={"case": document, "mesh": "crm-hl"})
+    finally:
+        opened, OPENED = OPENED, None
+
+    assert rendered.json()["ok"] is True
+    assert str(sentinel) not in opened
 
 
 def test_a_case_the_sdk_refuses_renders_as_its_coded_diagnostics(client: TestClient) -> None:
