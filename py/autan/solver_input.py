@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from autan.errors import CaseError, Location
+from autan.meshinfo import Translation  # noqa: TC001 -- pydantic resolves field types at runtime
 from autan.results import Devices  # noqa: TC001 -- pydantic resolves field types at runtime
 from autan.schema import (
     DDES,
@@ -280,6 +281,11 @@ class VerificationInput(_Strict):
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
+class PeriodicInput(_Strict):
+    zones: tuple[str, str]
+    transform: Translation
+
+
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
@@ -292,6 +298,7 @@ class SolverInput(_Strict):
     physics: PhysicsInput
     freestream: FreestreamInput
     boundaries: tuple[BoundaryInput, ...]
+    periodic: tuple[PeriodicInput, ...]
     cell_zones: tuple[CellZoneInput, ...]
     time: Annotated[SteadyInput | UnsteadyInput, Field(discriminator="kind")]
     monitors: tuple[ForcesInput, ...]
@@ -304,6 +311,10 @@ class SolverInput(_Strict):
         turbulence, fs = self.physics.turbulence, self.freestream
         if turbulence.model in ("ddes", "wmles") and self.time.kind != "unsteady":
             message = f"{turbulence.model} needs an unsteady time"
+            raise ValueError(message)
+        periodic = {zone for pair in self.periodic for zone in pair.zones}
+        if periodic & {b.zone for b in self.boundaries}:
+            message = "a periodic zone takes no boundary condition"
             raise ValueError(message)
         sa = turbulence.nu_tilde_ratio is not None
         sst = turbulence.intensity is not None
@@ -553,7 +564,7 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
     boundaries = []
     for resolution in plan.boundaries:
         condition = resolution.condition
-        if condition is None:
+        if condition is None or condition["kind"] == "periodic":
             continue
         boundaries.append(
             BoundaryInput(
@@ -622,6 +633,9 @@ def build(case: Case, mesh_info: MeshInfo, *, devices: Devices, deterministic: b
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,
         boundaries=tuple(boundaries),
+        periodic=tuple(
+            PeriodicInput(zones=p.zones, transform=p.transform) for p in mesh_info.periodic
+        ),
         cell_zones=cell_zones,
         time=time,
         monitors=monitors,

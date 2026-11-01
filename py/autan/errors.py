@@ -163,6 +163,21 @@ _CODES = [
         "Regenerate the partition; global cell ids must be unique and non-negative.",
     ),
     Code(
+        "E0118",
+        "Invalid periodic pair",
+        "A periodic pair is declared wrongly: zones out of range or not boundary zones of kind "
+        "periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a "
+        "translation that is zero or not finite.",
+        "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one "
+        "pair, with a non-zero translation.",
+    ),
+    Code(
+        "E0119",
+        "Periodic faces do not match",
+        "The faces of a periodic pair do not match one to one under its translation.",
+        "Regenerate the mesh with conforming periodic faces, and check the translation.",
+    ),
+    Code(
         "E0120",
         "Degenerate face",
         "A face has zero or non-finite area.",
@@ -408,6 +423,13 @@ _CODES = [
         "an initial-condition error at fixed time; `autan.case/1` verification cases are "
         "steady.",
         "Set `case.time = autan.Steady(...)` in the verification case.",
+    ),
+    Code(
+        "E0424",
+        "Condition on a periodic zone",
+        "A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those "
+        "of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.",
+        "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
     ),
     Code(
         "E0501",

@@ -14,7 +14,9 @@ from autan.units import fail
 
 SCHEMA_ID = "autan.mesh-info/1"
 
-BoundaryType = Literal["wall", "thermal-wall", "slip", "symmetry", "farfield", "inlet", "outlet"]
+BoundaryType = Literal[
+    "wall", "thermal-wall", "slip", "symmetry", "farfield", "inlet", "outlet", "periodic"
+]
 Name = Annotated[str, Field(min_length=1)]
 Count = Annotated[int, Field(strict=True, ge=0)]
 Positive = Annotated[int, Field(strict=True, ge=1)]
@@ -65,6 +67,20 @@ class Interface(_Strict):
     faces: Positive
 
 
+Finite = Annotated[float, Field(strict=True, allow_inf_nan=False)]
+
+
+class Translation(_Strict):
+    kind: Literal["translation"]
+    vector: tuple[Finite, Finite, Finite]
+
+
+class PeriodicPair(_Strict):
+    zones: tuple[Name, Name]
+    transform: Translation
+    faces: Positive
+
+
 class Quality(_Strict):
     max_non_orthogonality_deg: Annotated[float, Field(strict=True, ge=0, le=180)]
     max_faces_per_cell: Annotated[int, Field(strict=True, ge=4)]
@@ -79,6 +95,7 @@ class MeshInfo(_Strict):
     boundary_zones: tuple[BoundaryZone, ...]
     cell_zones: Annotated[tuple[CellZone, ...], Field(min_length=1)]
     interfaces: tuple[Interface, ...]
+    periodic: tuple[PeriodicPair, ...]
     quality: Quality
 
     @model_validator(mode="after")
@@ -109,9 +126,27 @@ class MeshInfo(_Strict):
                 problems.append(f"interface {[a, b]} names an unknown cell zone")
         if len(set(pairs)) != len(pairs):
             problems.append("interfaces lists a pair twice")
+        problems += self._periodic_problems()
         if problems:
             fail("E0202", "{problems}", problems="; ".join(problems))
         return self
+
+    def _periodic_problems(self) -> list[str]:
+        faces = {zone.name: zone.faces for zone in self.boundary_zones}
+        periodic = {zone.name for zone in self.boundary_zones if zone.type == "periodic"}
+        paired = [name for pair in self.periodic for name in pair.zones]
+        problems = []
+        for pair in self.periodic:
+            a, b = pair.zones
+            if a == b or not {a, b} <= periodic:
+                problems.append(f"periodic pair {[a, b]} is not two distinct periodic zones")
+            elif faces[a] != pair.faces or faces[b] != pair.faces:
+                problems.append(f"periodic pair {[a, b]} has another face count than its zones")
+            if not any(pair.transform.vector):
+                problems.append(f"periodic pair {[a, b]} has a zero translation")
+        if sorted(paired) != sorted(periodic):
+            problems.append("each periodic zone must be in exactly one periodic pair")
+        return problems
 
     @classmethod
     def load(cls, path: str | Path) -> MeshInfo:

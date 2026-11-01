@@ -133,6 +133,18 @@
       "fix": "Regenerate the partition; global cell ids must be unique and non-negative.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0117"
     },
+    "E0118": {
+      "severity": "error",
+      "title": "Invalid periodic pair",
+      "fix": "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0118"
+    },
+    "E0119": {
+      "severity": "error",
+      "title": "Periodic faces do not match",
+      "fix": "Regenerate the mesh with conforming periodic faces, and check the translation.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0119"
+    },
     "E0120": {
       "severity": "error",
       "title": "Degenerate face",
@@ -354,6 +366,12 @@
       "title": "Unsteady verification case",
       "fix": "Set `case.time = autan.Steady(...)` in the verification case.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0417"
+    },
+    "E0424": {
+      "severity": "error",
+      "title": "Condition on a periodic zone",
+      "fix": "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0424"
     },
     "E0501": {
       "severity": "error",
