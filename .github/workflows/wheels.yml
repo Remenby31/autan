@@ -203,6 +203,10 @@ jobs:
           # job's temp directory) and none of the dev image's uv settings.
           flock /home/admin/autan-gpu/gpu.lock env -u UV_PYTHON -u UV_PYTHON_DOWNLOADS -u UV_CACHE_DIR -u XDG_DATA_HOME \
             HOME="$home" TMPDIR="$home" REQUIRE_GPU=1 sh packaging/test-install.sh "$PWD"
+      - name: Name the GPU's other tenants
+        # A GPU taken by another team's stack fails the install check with a bare out-of-memory.
+        if: failure()
+        run: bench/ci/gpu-tenants.sh
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop

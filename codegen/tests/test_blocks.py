@@ -11,7 +11,9 @@ import autan_spike as s
 import meshes
 import numpy as np
 import pytest
+from autan_codegen.errors import Code, CodegenError
 from autan_codegen.generate import generate
+from conftest import PRECISIONS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -209,3 +211,143 @@ def test_incidence_side_is_plus_one_on_the_left_cell_and_on_boundary_faces(kind:
             f = m.cell_faces[k]
             left = f >= m.n_interior or m.owner[f] == c
             assert m.incidence_side[k] == (1.0 if left else -1.0), (c, f)
+
+
+# One driver for the host and the device: kernels/blocks.py inverts n blocks given as doubles
+# (component-major), stored in the policy's accumulation type.
+INVERSE_DRIVER = r"""
+#include <vector>
+#include "blocks.hpp"
+#ifdef __CUDACC__
+#include "blocks_gpu.cuh"
+#else
+#include "blocks_cpu.hpp"
+#endif
+using namespace autan::kernels;
+using P = POLICY;
+using A = P::accum;
+extern "C" void run(int n, const double* in, double* out) {
+  std::vector<A> a(in, in + 25 * n), inv(25 * n);
+  Topology t{};
+  t.n_cells = t.n_owned_cells = n;
+  blocks::Data<P> d{};
+  d.topo = t;
+#ifdef __CUDACC__
+  const std::size_t bytes = sizeof(A) * a.size();
+  cudaMalloc(&d.diag, bytes);
+  cudaMalloc(&d.diag_inv, bytes);
+  cudaMemcpy(d.diag, a.data(), bytes, cudaMemcpyHostToDevice);
+  blocks::gpu_loops::invert_diagonal(d, gpu::Schedule{});
+  cudaMemcpy(inv.data(), d.diag_inv, bytes, cudaMemcpyDeviceToHost);
+  cudaFree(d.diag);
+  cudaFree(d.diag_inv);
+#else
+  d.diag = a.data();
+  d.diag_inv = inv.data();
+  blocks::cpu::invert_diagonal(d);
+#endif
+  for (std::size_t i = 0; i < inv.size(); ++i) out[i] = double(inv[i]);
+}
+"""
+
+POLICY_TYPES = {"fp64": "fp64", "fp32+acc64": "fp32_acc64", "fp32": "fp32"}
+N_REGULAR = 48
+
+
+def invert5(a: np.ndarray) -> np.ndarray:
+    """Gauss-Jordan of the host BlockMatrix (physics/src/block_matrix.cpp), in Python floats."""
+    m = [[float(a[i, j]) for j in range(5)] + [float(i == j) for j in range(5)] for i in range(5)]
+    for k in range(5):
+        p = k
+        for i in range(k + 1, 5):
+            if abs(m[i][k]) > abs(m[p][k]):
+                p = i
+        if m[p][k] == 0.0 or not np.isfinite(m[p][k]):
+            return np.full((5, 5), np.nan)
+        m[k], m[p] = m[p], m[k]
+        d = 1.0 / m[k][k]
+        m[k] = [x * d for x in m[k]]
+        for i in range(5):
+            if i != k:
+                f = m[i][k]
+                m[i] = [x - f * y for x, y in zip(m[i], m[k], strict=True)]
+    return np.array([row[5:] for row in m])
+
+
+def _test_blocks() -> np.ndarray:
+    """Regular blocks (diagonally dominant, row-permuted so that pivoting swaps, row-scaled over
+    six decades), then exactly singular ones (zero, a zero column, an infinite or a NaN entry)."""
+    rng = np.random.default_rng(5)
+    regular = rng.standard_normal((N_REGULAR, 5, 5)) + 6.0 * np.eye(5)
+    for b in regular[16:32]:
+        b[:] = b[rng.permutation(5)]
+    regular[32:] *= 10.0 ** rng.uniform(-3, 3, (16, 5, 1))
+    singular = np.repeat(rng.standard_normal((1, 5, 5)) + 6.0 * np.eye(5), 4, axis=0)
+    singular[0] = 0.0
+    singular[1][:, 2] = 0.0
+    singular[2][3, 1] = np.inf
+    singular[3][0, 4] = np.nan
+    return np.concatenate([regular, singular])
+
+
+def _build(tmp_path: Path, backend: str, policy: str) -> ctypes.CDLL:
+    out = tmp_path / f"gen_{backend}"
+    generate(ROOT / "kernels" / "blocks.py", out, [backend], policies=[policy])
+    source = tmp_path / ("driver.cu" if backend == "gpu" else "driver.cpp")
+    source.write_text(INVERSE_DRIVER)
+    lib = tmp_path / f"libinverse_{backend}.so"
+    flags = [f"-DPOLICY={POLICY_TYPES[policy]}", f"-I{ROOT / 'codegen' / 'include'}",
+             f"-I{ROOT / 'core' / 'include'}", f"-I{out}", "-o", str(lib)]  # fmt: skip
+    if backend == "gpu":
+        nvcc = shutil.which("nvcc")
+        assert nvcc is not None, "the GPU backend tests need nvcc on PATH"
+        cmd = [nvcc, "-std=c++20", "-O2", "-shared", "-Xcompiler", "-fPIC", *flags,
+               str(source), str(out / "blocks_gpu.cu")]  # fmt: skip
+    else:
+        cmd = ["c++", "-std=c++20", "-O2", "-ffp-contract=off", "-shared", "-fPIC", *flags,
+               str(source)]  # fmt: skip
+    subprocess.run(cmd, check=True, capture_output=True)
+    return ctypes.CDLL(str(lib))
+
+
+def _invert(lib: ctypes.CDLL, blocks: np.ndarray) -> np.ndarray:
+    n = len(blocks)
+    inputs = np.ascontiguousarray(blocks.reshape(n, 25).T)  # component-major
+    inv = np.zeros(25 * n)
+    lib.run(
+        ctypes.c_int(n), inputs.ctypes.data_as(ctypes.c_void_p), inv.ctypes.data_as(ctypes.c_void_p)
+    )
+    return inv.reshape(25, n).T.reshape(n, 5, 5)
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
+@pytest.mark.parametrize("policy", PRECISIONS)
+def test_diagonal_blocks_invert_as_the_host_block_matrix(
+    tmp_path: Path, backend: str, policy: str
+) -> None:
+    if backend == "metal":
+        with pytest.raises(CodegenError) as err:
+            generate(ROOT / "kernels" / "blocks.py", tmp_path, ["metal"])
+        assert err.value.code == Code.POLICY_UNSUPPORTED_BY_BACKEND
+        return
+    blocks = _test_blocks()
+    a = blocks[:N_REGULAR]
+    host = _invert(_build(tmp_path, "cpu", policy), blocks)
+    # The inverse runs in the accumulation type: FP64 under fp32+acc64, as the host matrix.
+    tol = 64 * float(np.finfo(np.float32 if policy == "fp32" else np.float64).eps)
+    bound = (
+        tol
+        * np.linalg.cond(a)[:, None, None]
+        * np.abs(np.linalg.inv(a)).max(axis=(1, 2))[:, None, None]
+    )
+    assert (np.abs(host[:N_REGULAR] - np.linalg.inv(a)) <= bound).all()
+    if policy != "fp32":
+        np.testing.assert_array_equal(host, np.array([invert5(b) for b in blocks]))
+    # A zero or non-finite pivot, where the host matrix throws, makes the whole inverse NaN.
+    assert np.isnan(host[N_REGULAR:]).all()
+    if backend == "gpu":
+        lib = _build(tmp_path, "gpu", policy)
+        dev = _invert(lib, blocks)
+        assert (np.abs(dev[:N_REGULAR] - host[:N_REGULAR]) <= bound).all()
+        assert np.isnan(dev[N_REGULAR:]).all()
+        np.testing.assert_array_equal(_invert(lib, blocks), dev)
