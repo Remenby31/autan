@@ -130,7 +130,7 @@ AbsolutePath = Annotated[
 class MeshRef(_Strict):
     path: AbsolutePath
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
-    scale: Positive
+    scale: Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 
 
 class SutherlandLaw(_Strict):
@@ -406,6 +406,9 @@ class SolverInput(_Strict):
             raise ValueError(message) from None
         if case.hash() != self.case.sha256:
             message = "case.sha256 is not the hash of case.toml"
+            raise ValueError(message)
+        if self.mesh.scale != metres_per(case.mesh_unit):
+            message = "mesh.scale is not the case's mesh_unit in metres"
             raise ValueError(message)
         initial = case.initial_state.sha256 if case.initial_state else None
         if initial != (self.initial_state.sha256 if self.initial_state else None):

@@ -146,9 +146,21 @@ class UnitOfLength:
                 got=repr(text),
                 reason=f"{type(error).__name__}: {error}",
             )
-        if not ureg.Quantity(1.0, unit).check("[length]"):
-            fail("E0301", "expected a unit of length, got {got}", got=repr(text))
-        return ureg.parse_units(format_unit(unit))
+        canonical = ureg.parse_units(format_unit(unit))
+        for candidate in (unit, canonical):
+            if not ureg.Quantity(1.0, candidate).check("[length]"):
+                fail("E0301", "expected a unit of length, got {got}", got=repr(text))
+            try:
+                one, two = (
+                    ureg.Quantity(x, candidate).to(ureg.meter).magnitude for x in (1.0, 2.0)
+                )
+            except (pint.PintError, ArithmeticError):
+                one = two = math.nan
+            # A mesh scale: a finite, positive, proportional factor to metres (not dB, not
+            # an exponent that overflows), the same after the text reads back.
+            if not (math.isfinite(one) and one > 0 and math.isclose(two, 2 * one)):
+                fail("E0301", "{got} has no finite factor to metres", got=repr(text))
+        return canonical
 
 
 def metres_per(unit: pint.Unit) -> float:

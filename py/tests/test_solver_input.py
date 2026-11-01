@@ -148,6 +148,9 @@ def _set_boundary(document: dict[str, Any], **values: Any) -> None:
         lambda d: d.update(extra=1),
         lambda d: d.pop("schema"),
         lambda d: d["time"].pop("kind"),
+        lambda d: d["mesh"].update(scale=True),
+        lambda d: d["mesh"].update(scale="1.0"),
+        lambda d: d["mesh"].update(scale=0.0),
         lambda d: d["monitors"][0].pop("kind"),
         lambda d: _set_boundary(d, kind="inlet"),
         lambda d: _set_boundary(d, static_pressure=1.0),
@@ -240,6 +243,11 @@ def test_mesh_unit_scales_the_mesh_alone(
     assert status == 0
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["mesh"]["scale"] == metres
+    autan.solver_input.SolverInput.model_validate(document)
+    with pytest.raises(ValidationError):  # a scale that is not the case's unit
+        autan.solver_input.SolverInput.model_validate(
+            document | {"mesh": document["mesh"] | {"scale": 2 * metres}}
+        )
     # Every other length carries its own unit: the reference length stays 7 m.
     assert document["monitors"][0]["ref_length"] == pytest.approx(7.0)
     in_metres = autan.load(write_case(CRM_HL, "metres.py")).spec
