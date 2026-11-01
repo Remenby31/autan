@@ -299,6 +299,7 @@ def _box(
     tmp_path: Path, turbulence: str, mesh_unit: str = "m"
 ) -> tuple[autan.Case, autan.MeshInfo]:
     assert MESH_INFO is not None
+    tmp_path.mkdir(parents=True, exist_ok=True)
     info = tmp_path / "box.meshinfo.json"
     info.write_text(
         subprocess.run(
