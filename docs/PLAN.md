@@ -33,7 +33,7 @@ autan/
   ui/         application web (à partir de M10)
 ```
 
-Build : CMake + scikit-build-core + nanobind. CI : GitHub Actions + runners GPU auto-hébergés (RTX PRO 6000, DGX Spark) ; AMD : compilation HIP seulement, exécution reportée (voir M1).
+Build : CMake + scikit-build-core + nanobind. CI : GitHub Actions + runners GPU auto-hébergés DGX Spark (GB10) ; AMD : compilation HIP seulement, exécution reportée (voir M1).
 
 ## Jalons
 
