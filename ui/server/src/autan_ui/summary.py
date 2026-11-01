@@ -51,7 +51,16 @@ class Summaries:
     def __init__(self) -> None:
         self._trends: dict[str, _Trend] = {}
 
-    def update(self, name: str, folder: Folder, *, live: bool) -> dict[str, Any] | None:
+    def update(
+        self,
+        name: str,
+        folder: Folder,
+        *,
+        live: bool,
+        reference: dict[str, float] | None = None,
+    ) -> dict[str, Any] | None:
+        """`reference`: the residuals the drop is measured from when they are not the run's own
+        first line, `start.residual_reference` of a steady `continue` run (results.md)."""
         trend = self._trends.setdefault(name, _Trend())
         stat = folder.stat("history.jsonl")
         if (stat.st_size if stat else 0) < trend.offset:
@@ -68,7 +77,7 @@ class Summaries:
             if not isinstance(residuals, dict):
                 residuals = {}
             if trend.first is None:
-                trend.first = residuals
+                trend.first = reference or residuals
             trend.iteration = iteration
             orders = residual_orders(trend.first, residuals)
             trend.current = orders

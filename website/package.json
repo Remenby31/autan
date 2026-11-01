@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "react-router dev",
     "build": "react-router build && bun scripts/assemble.ts",
+    "build:offline": "NODE_OPTIONS=--import=./scripts/no-network.mjs bun run build",
     "typecheck": "react-router typegen && tsc --noEmit",
     "lint": "biome check",
     "preview": "bun scripts/preview.ts",

@@ -59,6 +59,8 @@ const char* bc_type_name(BcKind kind) {
       return "inlet";
     case BcKind::outlet:
       return "outlet";
+    case BcKind::periodic:
+      return "periodic";
     case BcKind::unspecified:
       return nullptr;
   }
@@ -196,6 +198,17 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
     interfaces.push_back(Json{{"zones", {pair.first, pair.second}}, {"faces", faces}});
   }
 
+  Json periodic = Json::array();
+  for (const auto& pair : mesh.periodic_pairs()) {
+    periodic.push_back(
+        Json{{"zones",
+              {mesh.face_zones()[at(pair.zone_a)].name, mesh.face_zones()[at(pair.zone_b)].name}},
+             {"transform",
+              {{"kind", "translation"},
+               {"vector", {pair.translation[0], pair.translation[1], pair.translation[2]}}}},
+             {"faces", offsets[at(pair.zone_a) + 1] - offsets[at(pair.zone_a)]}});
+  }
+
   const double max_angle = *std::ranges::max_element(quality.non_orthogonality);
   const Json doc{
       {"schema", "autan.mesh-info/1"},
@@ -214,6 +227,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
       {"boundary_zones", boundary},
       {"cell_zones", cell_zones},
       {"interfaces", interfaces},
+      {"periodic", periodic},
       {"quality", {{"max_non_orthogonality_deg", max_angle}, {"max_faces_per_cell", max_faces}}},
   };
   return doc.dump(2);

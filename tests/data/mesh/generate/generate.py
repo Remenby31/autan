@@ -197,6 +197,31 @@ def write_unstructured_tet(name, out):
     save(name, out)
 
 
+def write_periodic_box(name, out):
+    """Unstructured tetrahedra, periodic in x and y: Gmsh meshes xmax and ymax
+    as translates of xmin and ymin and records the links in $Periodic."""
+    gmsh.model.add(name)
+    gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+    gmsh.model.occ.synchronize()
+    surfaces = {}
+    for _, tag in gmsh.model.getEntities(2):
+        box = gmsh.model.getBoundingBox(2, tag)
+        for axis in range(3):
+            if abs(box[axis] - box[axis + 3]) < 1e-6:
+                surfaces[2 * axis + round(box[axis])] = tag
+    for axis in (0, 1):
+        affine = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        affine[4 * axis + 3] = 1
+        gmsh.model.mesh.setPeriodic(2, [surfaces[2 * axis + 1]], [surfaces[2 * axis]], affine)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", 0.5)
+    gmsh.option.setNumber("Mesh.RandomSeed", 1)
+    gmsh.model.mesh.generate(3)
+    gmsh.model.addPhysicalGroup(3, [1], 101, "fluid")
+    for s, side in enumerate(SIDES):
+        gmsh.model.addPhysicalGroup(2, [surfaces[s]], s + 1, side)
+    save(name, out)
+
+
 def save(name, out):
     for suffix, version, binary in (("ascii", 4.1, 0), ("binary", 4.1, 1), ("v22", 2.2, 0)):
         gmsh.option.setNumber("Mesh.MshFileVersion", version)
@@ -341,6 +366,7 @@ def main():
     write_structured("tet", 2, "tet", out)
     write_structured("hybrid", 4, "hybrid", out)
     write_unstructured_tet("tet-gmsh", out)
+    write_periodic_box("periodic-box", out)
     write_hanging_node_polymesh(out)
     gmsh.finalize()
 

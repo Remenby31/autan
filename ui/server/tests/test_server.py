@@ -399,6 +399,64 @@ def test_residual_drop_is_the_slowest_equation(
     assert orders == (None if expected is None else pytest.approx(expected))
 
 
+def _oracle_state_run(runs: Path, tmp_path: Path) -> Path:
+    # The case names its face states by absolute path: a plan that reads them is not confined.
+    mesh = json.loads((PY / "tests" / "fixtures" / "crm-hl.meshinfo.json").read_text())
+    for zone in mesh["boundary_zones"]:
+        if zone["name"] == "farfield":
+            zone.update(faces=2, type=None, native_type=None)
+    (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
+    states = json.dumps(
+        {
+            "schema": "autan.face-states/1",
+            "oracle": "test",
+            "mesh_sha256": mesh["source"]["sha256"],
+            "variables": ["density", "velocity-x", "velocity-y", "velocity-z", "pressure"],
+            "zones": {
+                "farfield": {
+                    "faces": 2,
+                    "centroids": [[0, 0, 0], [1, 0, 0]],
+                    "values": [[1.2, 30, 0, 0, 1e5], [1.2, 30, 0, 0, 1e5]],
+                }
+            },
+        }
+    ).encode()
+    (tmp_path / "ringleb.json").write_bytes(states)
+    case = tmp_path / "oracle.py"
+    case.write_text(
+        (PY / "examples" / "crm_hl.py").read_text().replace("autan.SA()", "autan.Laminar()")
+        + f"case.boundary('farfield').oracle_state(path={str(tmp_path / 'ringleb.json')!r}, "
+        + f"sha256={hashlib.sha256(states).hexdigest()!r})\n"
+    )
+    mesh_info = autan.MeshInfo.load(tmp_path / "mesh.meshinfo.json")
+    return autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs).path
+
+
+def test_an_oracle_state_run_plans_against_its_archived_face_states(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    run = _oracle_state_run(runs, tmp_path)
+    (tmp_path / "ringleb.json").unlink()  # The plan reads the run's archive, not the source.
+
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
+
+    assert plan["ok"] is True, plan
+
+
+def test_a_missing_face_state_archive_is_never_replaced_by_its_source(
+    runs: Path, server: str, tmp_path: Path
+) -> None:
+    run = _oracle_state_run(runs, tmp_path)
+    assert httpx.get(f"{server}/api/runs/{run.name}/plan").json()["ok"] is True
+    for archive in (run / "states").iterdir():
+        archive.unlink()  # After the run was accepted: its source is still at tmp_path.
+
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
+
+    assert plan["ok"] is False
+    assert "E0420" in {d["code"] for d in plan["diagnostics"]}
+
+
 def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
     first = next(runs.iterdir())
     second = shutil.copytree(first, runs / ".staging")
@@ -515,3 +573,21 @@ def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, s
         assert z["triangles"] == int((counts - 2).sum())
     np.testing.assert_allclose(values("field:Cp"), 1.0, rtol=1e-5)
     np.testing.assert_allclose(values("field:Cf"), 1.0, rtol=1e-5)
+
+
+def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Path) -> None:
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    first = autan.Results.open(next(runs.iterdir()))
+    continued = case.run(
+        mesh_info, backend=autan.FakeBackend(iterations=60), runs=runs, start=first
+    )
+    run = json.loads((continued.path / "run.json").read_text())
+    reference = run["start"]["residual_reference"]
+    last = json.loads((continued.path / "history.jsonl").read_text().splitlines()[-1])["residuals"]
+
+    summary = Registry(runs).scan().summaries[continued.path.name]
+
+    expected = min(math.log10(reference[k] / last[k]) for k in reference)
+    assert summary["orders"] == pytest.approx(expected, abs=1e-3)
+    assert summary["trend"][0] > 0  # the first line of the continuation is already below

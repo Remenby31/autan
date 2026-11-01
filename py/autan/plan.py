@@ -6,13 +6,17 @@ Memory model: docs/sdk/plan.md.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
+import stat
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from autan import face_states
 from autan.errors import Diagnostic, diagnostic
 from autan.meshinfo import mesh_sha256
 from autan.schema import (
@@ -29,6 +33,8 @@ from autan.schema import (
     Incompressible,
     Inlet,
     Inviscid,
+    Laminar,
+    OracleState,
     Slip,
     SolidZone,
     Symmetry,
@@ -42,7 +48,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from autan.case import Case
-    from autan.meshinfo import MeshInfo
+    from autan.meshinfo import BoundaryZone, MeshInfo
 
 MMS_SCHEMA = "autan.mms/1"
 Provenance = Literal["code", "mesh", "default", "verification"]
@@ -297,10 +303,30 @@ def _mismatches(document: dict[str, Any], spec: CaseSpec) -> list[str]:
     return found
 
 
+def _partners(mesh: MeshInfo) -> dict[str, str]:
+    """Each zone of a periodic pair, with the other zone of its pair."""
+    return {a: b for pair in mesh.periodic for a, b in (pair.zones, pair.zones[::-1])}
+
+
+def _periodic(zone: BoundaryZone, partner: str) -> BoundaryResolution:
+    return BoundaryResolution(
+        zone=zone.name,
+        faces=zone.faces,
+        mesh_type=zone.type,
+        condition={"kind": "periodic", "partner": partner},
+        provenance="mesh",
+        rule=None,
+    )
+
+
 def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
-    """Every boundary zone takes the exact data of the manufactured solution."""
+    """Every boundary zone but the periodic ones takes the exact data of the manufactured
+    solution."""
+    partners = _partners(mesh)
     return [
-        BoundaryResolution(
+        _periodic(zone, partners[zone.name])
+        if zone.name in partners
+        else BoundaryResolution(
             zone=zone.name,
             faces=zone.faces,
             mesh_type=zone.type,
@@ -315,10 +341,22 @@ def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
 def _resolve_boundaries(
     case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]
 ) -> list[BoundaryResolution]:
-    names = [zone.name for zone in mesh.boundary_zones]
+    partners = _partners(mesh)
+    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
     owner: dict[str, int] = {}
     for index, rule in enumerate(spec.boundaries):
         where = case.locate(f"boundaries[{index}]")
+        if rule.zones in partners and not any(c in rule.zones for c in "*?["):
+            found.append(
+                diagnostic(
+                    "E0424",
+                    f"boundary zone {rule.zones!r} is periodic with {partners[rule.zones]!r} "
+                    "in the mesh; it takes no condition",
+                    location=where,
+                    zone=rule.zones,
+                )
+            )
+            continue
         matched = _matches(rule.zones, names)
         if not matched:
             found.append(
@@ -343,10 +381,16 @@ def _resolve_boundaries(
             else:
                 owner[name] = index
         _check_condition(case, spec, index, found)
+        if isinstance(rule.condition, OracleState):
+            zones = {z.name: z.faces for z in mesh.boundary_zones if z.name in matched}
+            _check_oracle(case, rule.condition, mesh, zones, index, found)
 
     inviscid = isinstance(spec.physics.turbulence, Inviscid)
     resolved = []
     for zone in mesh.boundary_zones:
+        if zone.name in partners:
+            resolved.append(_periodic(zone, partners[zone.name]))
+            continue
         rule_index = owner.get(zone.name)
         condition: Any = None
         provenance: Provenance | None = None
@@ -407,6 +451,53 @@ def _resolve_boundaries(
     return resolved
 
 
+def _check_oracle(
+    case: Case,
+    oracle: OracleState,
+    mesh: MeshInfo,
+    zones: dict[str, int],
+    index: int,
+    found: list[Diagnostic],
+) -> None:
+    """The face-state file of an oracle_state rule (docs/contracts/face-states.md), hashed
+    and parsed from the same bytes."""
+    source = case.resolve(oracle.path)
+    where = case.locate(f"boundaries[{index}].condition")
+
+    def problem(code: str, message: str) -> None:
+        found.append(diagnostic(code, message, location=where, path=str(source)))
+
+    try:
+        # O_NONBLOCK: opening a FIFO must not wait for a writer before the check below.
+        with os.fdopen(os.open(source, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                problem("E0420", f"face-state file {str(source)!r} is not a regular file")
+                return
+            data = handle.read()
+    except OSError:
+        problem("E0420", f"face-state file {str(source)!r} cannot be read")
+        return
+    if hashlib.sha256(data).hexdigest() != oracle.sha256:
+        problem("E0420", f"the SHA-256 of {str(source)!r} differs from the case's sha256")
+        return
+    document = face_states.parse(data)
+    if isinstance(document, str):
+        problem(
+            "E0420", f"{str(source)!r} is not a valid {face_states.SCHEMA} document: {document}"
+        )
+        return
+    if document.mesh_sha256 != mesh.source.sha256:
+        problem("E0422", "the face states were exported for another mesh")
+    for zone, faces in zones.items():
+        given = document.zones.get(zone)
+        if given is None or given.faces != faces:
+            problem(
+                "E0423",
+                f"zone {zone!r} has {faces} faces; the file gives "
+                f"{'none' if given is None else given.faces}",
+            )
+
+
 def _check_condition(case: Case, spec: CaseSpec, index: int, found: list[Diagnostic]) -> None:
     condition = spec.boundaries[index].condition
     physics = spec.physics
@@ -415,6 +506,14 @@ def _check_condition(case: Case, spec: CaseSpec, index: int, found: list[Diagnos
         problem = "inlet (total conditions) needs compressible physics; use velocity_inlet"
     elif isinstance(condition, VelocityInlet) and isinstance(physics, Compressible):
         problem = "velocity_inlet needs incompressible physics; use inlet"
+    elif isinstance(condition, OracleState) and (
+        isinstance(physics, Incompressible)
+        or not isinstance(physics.turbulence, Inviscid | Laminar)
+    ):
+        problem = (
+            "oracle_state imposes compressible states without turbulence variables; "
+            "it needs compressible inviscid or laminar physics"
+        )
     elif isinstance(condition, Wall) and isinstance(physics.turbulence, Inviscid):
         problem = "a no-slip wall needs viscous flow; use slip() with inviscid physics"
     if problem:

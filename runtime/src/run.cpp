@@ -104,6 +104,7 @@ std::string_view bc_type(const BoundaryInput& b) {
   if (b.kind == "farfield") return "BCFarfield";
   if (b.kind == "outlet") return "BCOutflowSubsonic";
   if (b.kind == "manufactured") return "UserDefined";
+  if (b.kind == "oracle-state") return "BCDirichlet";
   return "BCInflowSubsonic";  // inlet, velocity-inlet
 }
 
@@ -125,6 +126,27 @@ struct Prepared {
                               .message = message,
                               .path = path,
                               .data_json = data.is_null() ? "{}" : data.dump()});
+}
+
+// solver-input.md, `periodic`: the pairs of MeshInfo, which must be the
+// mesh's; no physics exchanges across them yet.
+void check_periodic(const Prepared& p) {
+  const auto pairs = p.mesh.periodic_pairs();
+  bool same = pairs.size() == p.input.periodic.size();
+  for (std::size_t i = 0; same && i < pairs.size(); ++i) {
+    const auto& in = p.input.periodic[i];
+    same = in.zones[0] == p.mesh.face_zones()[at(pairs[i].zone_a)].name &&
+           in.zones[1] == p.mesh.face_zones()[at(pairs[i].zone_b)].name &&
+           in.translation == pairs[i].translation;
+  }
+  if (!same) invalid("periodic", "differs from the periodic pairs of the mesh");
+  if (!pairs.empty()) {
+    throw InputError(
+        Diagnostic{.code = "E0706",
+                   .message = "this build of autan-run does not implement periodic boundaries",
+                   .path = "periodic",
+                   .data_json = nlohmann::json{{"pairs", pairs.size()}}.dump()});
+  }
 }
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is
@@ -266,6 +288,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
         .data_json =
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
+  check_periodic(p);
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
@@ -331,7 +354,18 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     }
     p.monitor_zones.push_back(std::move(ids));
   }
-  p.factory = registry.find(p.input);
+  const auto* entry = registry.find(p.input);
+  p.factory = entry != nullptr ? &entry->factory : nullptr;
+  if (entry != nullptr && entry->scope) {
+    if (auto refusal = entry->scope(p.input)) {
+      auto data = nlohmann::json::parse(refusal->data_json);
+      data["path"] = refusal->path;
+      throw InputError(Diagnostic{.code = "E0706",
+                                  .message = std::move(refusal->message),
+                                  .path = std::move(refusal->path),
+                                  .data_json = data.dump()});
+    }
+  }
   if (p.factory == nullptr) {
     const auto& in = p.input;
     throw InputError(Diagnostic{.code = "E0706",
@@ -701,18 +735,18 @@ class Run final : public Log {
 
 }  // namespace
 
-void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory) {
-  entries_.emplace_back(std::move(key), std::move(factory));
+void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope) {
+  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope)});
 }
 
-const PhysicsFactory* PhysicsRegistry::find(const SolverInput& in) const {
+const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
   const auto matches = [](const std::string& pattern, const std::string& value) {
     return pattern == "*" || pattern == value;
   };
-  for (const auto& [key, factory] : entries_) {
+  for (const auto& [key, entry] : entries_) {
     if (matches(key.kind, in.physics_kind) && matches(key.turbulence, in.turbulence.model) &&
         matches(key.precision, in.precision) && matches(key.device, in.device_kind)) {
-      return &factory;
+      return &entry;
     }
   }
   return nullptr;

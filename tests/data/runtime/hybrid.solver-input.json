@@ -54,7 +54,8 @@
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
-      "static_pressure": null
+      "static_pressure": null,
+      "states": null
     },
     {
       "zone": "xmax",
@@ -63,7 +64,8 @@
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
-      "static_pressure": null
+      "static_pressure": null,
+      "states": null
     },
     {
       "zone": "ymin",
@@ -72,7 +74,8 @@
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
-      "static_pressure": null
+      "static_pressure": null,
+      "states": null
     },
     {
       "zone": "ymax",
@@ -81,7 +84,8 @@
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
-      "static_pressure": null
+      "static_pressure": null,
+      "states": null
     },
     {
       "zone": "zmin",
@@ -90,7 +94,8 @@
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
-      "static_pressure": null
+      "static_pressure": null,
+      "states": null
     },
     {
       "zone": "zmax",
@@ -99,7 +104,8 @@
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
-      "static_pressure": null
+      "static_pressure": null,
+      "states": null
     }
   ],
   "cell_zones": [
@@ -187,5 +193,6 @@
     }
   ],
   "verification": null,
-  "start": null
+  "start": null,
+  "periodic": []
 }

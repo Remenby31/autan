@@ -151,16 +151,25 @@ _CODES = [
         "Assign each face to one zone in the meshing tool.",
     ),
     Code(
-        "E0116",
-        "Face without an owned cell",
-        "A face touches only ghost cells.",
-        "Regenerate the partition; every face needs an owned cell.",
-    ),
-    Code(
         "E0117",
         "Duplicate or negative global cell id",
         "Two cells share a global id, or one is negative.",
         "Regenerate the partition; global cell ids must be unique and non-negative.",
+    ),
+    Code(
+        "E0118",
+        "Invalid periodic pair",
+        "A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind "
+        "periodic, a zone paired with itself or in two pairs, a boundary zone of kind periodic in "
+        "no pair, or a translation that is zero or not finite.",
+        "Fix the periodic declaration in the meshing tool: each periodic zone in exactly one "
+        "pair, with a non-zero translation.",
+    ),
+    Code(
+        "E0119",
+        "Periodic faces do not match",
+        "The faces of a periodic pair do not match one to one under its translation.",
+        "Regenerate the mesh with conforming periodic faces, and check the translation.",
     ),
     Code(
         "E0120",
@@ -383,7 +392,8 @@ _CODES = [
         "E0414",
         "Boundary condition not available for this physics",
         "`inlet` (total conditions) is compressible only, `velocity-inlet` incompressible "
-        "only, and a no-slip `wall` needs viscous flow.",
+        "only, a no-slip `wall` needs viscous flow, and `oracle-state` needs compressible "
+        "inviscid or laminar physics.",
         "Use the condition matching the physics: `slip()` for inviscid walls, `inlet(...)` or "
         "`velocity_inlet(...)`.",
     ),
@@ -408,6 +418,42 @@ _CODES = [
         "an initial-condition error at fixed time; `autan.case/1` verification cases are "
         "steady.",
         "Set `case.time = autan.Steady(...)` in the verification case.",
+    ),
+    Code(
+        "E0420",
+        "Face-state file missing or invalid",
+        "The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the "
+        "case's, or it is not a valid `autan.face-states/1` document: its variables, a row of "
+        "3 finite coordinates and 5 finite values per face, density and pressure > 0 "
+        "(docs/contracts/face-states.md).",
+        "Export the face states with autan-vv for this mesh and give their path and sha256.",
+    ),
+    Code(
+        "E0421",
+        "Face states do not match the boundary faces",
+        "The solver could not pair every boundary face of the zone with one face state by "
+        "centroid, within 1e-9 times the largest extent of the zone's bounding box in the whole mesh.",
+        "Export the face states from the mesh the case uses.",
+    ),
+    Code(
+        "E0422",
+        "Face states exported for another mesh",
+        "The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.",
+        "Export the face states for the mesh the case uses.",
+    ),
+    Code(
+        "E0423",
+        "Face states do not cover the zone",
+        "A boundary zone that takes the `oracle_state` condition is missing from the file, or "
+        "the file gives another number of faces than the mesh has in that zone.",
+        "Export the face states for every zone the condition applies to.",
+    ),
+    Code(
+        "E0424",
+        "Condition on a periodic zone",
+        "A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those "
+        "of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.",
+        "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
     ),
     Code(
         "E0501",
@@ -510,7 +556,9 @@ _CODES = [
         "E0706",
         "Physics not in this solver build",
         "The solver build has no implementation for the requested combination of physics, "
-        "turbulence model, precision and device kind; `data` names the combination.",
+        "turbulence model, precision and device kind, or for the case's media, zones and "
+        "conditions (a solid zone, several gases, a condition the physics lacks); `data` names "
+        "the combination or the zone.",
         "Use a build that includes it, or change the case or the devices.",
     ),
     Code(
@@ -617,6 +665,12 @@ _CODES = [
         "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
     ),
     Code(
+        "E1013",
+        "Policy not available on the backend",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+    ),
+    Code(
         "E1100",
         "Generated loop failed",
         "A generated loop or the spike driver fails without a more specific code.",
@@ -657,6 +711,18 @@ _CODES = [
         "Incidence twins missing",
         "The deterministic adjoint of a cell reduction runs on a topology without incidence twins.",
         "Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.",
+    ),
+    Code(
+        "E1107",
+        "Metal runtime error",
+        "A Metal call, library compilation or command buffer fails.",
+        "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+    ),
+    Code(
+        "E1108",
+        "Strategy not available",
+        "A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.",
+        "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
         "W0801",
