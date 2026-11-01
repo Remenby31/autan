@@ -68,6 +68,10 @@ Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `d
 
 Restart: `restart_fields` holds the conserved variables bit for bit, the averaging sums, and the steady solver's state (penalty, order, reference residuals) as uniform fields, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
 
+## Partitions
+
+On a partition (several ranks, or one with periodic image ghosts) the residual fills the ghost cells' primitives, gradients and limiter between its loops (`Euler<P>::set_ghosts`), and the physics updates, sums and reports its owned cells only; norms, residual scales and loads are exact sums over the ranks. The guarantee across rank counts is in [runtime.md](../contracts/runtime.md#ranks).
+
 ## Limiter and verification
 
 Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips smooth extrema more as the mesh is refined; K sets where that starts (Venkatakrishnan 1995; Michalak and Ollivier-Gooch 2008, AIAA 2008-776, discuss the same trade-off). On the MMS (tet, levels 12–32, Roe, host study), fitted / finest-pair orders of ρv with the limiter on: K = 5 gives 1.88/1.78, K = 10, 20 and 40 give 1.99/1.97, the unlimited values. K = 10 is the default: smooth flows keep the design order at these resolutions, and the limiter still acts at shocks (Sod gate, below). A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) run without the limiter, every other case with it.
