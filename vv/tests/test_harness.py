@@ -402,3 +402,19 @@ def test_cli_reports_fields_without_a_fit(
     out = capsys.readouterr().out
     assert "VelocityZ: L2 order not measured" in out
     assert "gate vortex-order: PASS" in out
+
+
+def test_freestream_refuses_cell_zone_gas_overrides(tmp_path: Path) -> None:
+    ((mesh, path, _),) = _family(tmp_path, "hex", (3,))
+    case = autan.Case("fake-freestream", mesh=path)
+    case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp64")
+    case.freestream(mach=0.4, pressure=1e5 * Pa, temperature=250 * K)
+    case.boundary("*").farfield()
+    heavy = case.spec.physics.gas.model_copy(update={"molar_mass": 0.058 * kg / mol})  # type: ignore[union-attr]
+    case.cell_zone("fluid").fluid(heavy)
+    results = case.run(
+        mesh_info(mesh, path, "gmsh"), backend=autan.FakeBackend(), runs=tmp_path / "runs"
+    )
+    with pytest.raises(VVError) as err:
+        verify([results.path], "freestream", "freestream-preservation")
+    assert err.value.code == "V0724"

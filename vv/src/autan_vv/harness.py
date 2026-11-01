@@ -202,6 +202,13 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
     expected = {"euler": Inviscid, "navier-stokes": Laminar, "rans-sa": SA}
     if any(isinstance(rule.medium, SolidZone) for rule in spec.cell_zones):
         reasons.append("the case has solid zones; oracles describe one fluid")
+    if oracle.name == "freestream" and any(
+        isinstance(rule.medium, Fluid) and rule.medium.material != getattr(physics, "gas", None)
+        for rule in spec.cell_zones
+    ):
+        reasons.append(
+            "a cell zone overrides the gas: the freestream is defined for the default gas only"
+        )
     if oracle.physics in expected:
         if not isinstance(physics, Compressible) or not isinstance(
             physics.turbulence, expected[oracle.physics]

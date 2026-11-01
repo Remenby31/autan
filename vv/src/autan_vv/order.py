@@ -63,7 +63,7 @@ def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
             pairwise[0],
             math.nan,
             (math.nan, math.nan),
-            float(e_arr[0] / h_arr[0] ** pairwise[0]),
+            float(np.exp(min(np.log(e_arr[0]) - pairwise[0] * np.log(h_arr[0]), 709.0))),
             1.0,
             pairwise,
         )
@@ -74,7 +74,8 @@ def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
         order=float(fit.slope),
         order_stderr=float(fit.stderr),
         order_ci95=(float(fit.slope) - half_width, float(fit.slope) + half_width),
-        constant=float(math.exp(fit.intercept)),
+        # exp overflows for far-from-asymptotic data; the order stays meaningful.
+        constant=math.exp(fit.intercept) if fit.intercept < 709.0 else math.inf,
         r_squared=float(fit.rvalue**2),
         pairwise_orders=pairwise,
     )

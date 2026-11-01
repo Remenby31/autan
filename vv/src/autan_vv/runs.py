@@ -3,15 +3,15 @@
 These runs are fixtures for the verification harness: they let it be exercised on any mesh family
 with fields of known error before the solver exists. They are written through `autan`'s own
 `RunWriter` and CGNS node writer and read back with `autan.Results.open`, which checks them against
-docs/contracts/results.md. Unless a test says otherwise they carry backend `fake`: they are not
-solver results.
+docs/contracts/results.md. They always carry backend `fake`: they are not solver results and
+can never be evidence.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import autan
 import numpy as np
@@ -225,7 +225,6 @@ def write_run(
     *,
     time: float | None = None,
     status: str = "converged",
-    backend: Literal["cuda", "hip", "cpu", "fake"] = "fake",
 ) -> autan.Results:
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
@@ -249,7 +248,8 @@ def write_run(
         msg = f"fields {malformed} must hold one value per cell ({mesh.n_cells})"
         raise VVError(msg, code="V0731")
     started = utc_now()
-    solver = Solver(version=__version__, commit=COMMIT, backend=backend)
+    # Always the fake backend: fixture fields are given, never computed, so they are never evidence.
+    solver = Solver(version=__version__, commit=COMMIT, backend="fake")
     devices = Devices(kind="cpu", count=1)
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),
