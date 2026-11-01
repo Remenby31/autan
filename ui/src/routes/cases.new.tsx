@@ -705,15 +705,6 @@ function CaseEditor() {
                   ]}
                 />
                 <span className="text-fg-3 text-sm">written by the SDK</span>
-                <CaseActions
-                  name={form.name}
-                  // Only the case shown, once it is the form's: an edit not yet rendered waits.
-                  rendered={
-                    rendered.data?.ok && !rendered.isPlaceholderData && settled === form
-                      ? rendered.data
-                      : null
-                  }
-                />
               </div>
               <TabPanel value="python" className="min-w-0 outline-none">
                 <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
