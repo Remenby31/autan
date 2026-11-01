@@ -13,6 +13,7 @@ from autan_codegen import dsl
 from autan_codegen.derive import ReduceAdjoint
 from autan_codegen.emit_cpp import Emitter, at, call_args
 from autan_codegen.emit_cpu import (
+    boundary_write_body,
     cell_stores,
     n_out,
     offsets,
@@ -164,7 +165,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         e.w(s)
     for k in range(n):
         e.w(
-            f"  scratch[{k} * d.topo.n_faces + f] = A(out[{k}]);"
+            f"  scratch[offset_t({k}) * d.topo.n_faces + f] = A(out[{k}]);"
             if k
             else "  scratch[f] = A(out[0]);"
         )
@@ -194,7 +195,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
             e.w(f"    A out[{n}];")
             for k in range(n):
                 e.w(
-                    f"    out[{k}] = scratch[{k} * d.topo.n_faces + f];"
+                    f"    out[{k}] = scratch[offset_t({k}) * d.topo.n_faces + f];"
                     if k
                     else "    out[0] = scratch[f];"
                 )
@@ -282,6 +283,26 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
 def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     tid = "static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x)"
     _kernel_head(e, f"{lm.name}_kernel")
+    if lm.kind == "boundary_write":
+        e.w(f"  const index_t f = d.topo.n_interior_faces + {tid};")
+        e.w("  if (f >= d.topo.n_faces) {")
+        e.w("    return;")
+        e.w("  }")
+        for s in boundary_write_body(lm, "  "):
+            e.w(s)
+        e.w("}")
+        e.w()
+        e.w("template <class P>")
+        e.w(f"void {lm.name}(const Data<P>& d, const gpu::Schedule& s) {{")
+        e.w("  const index_t n = d.topo.n_faces - d.topo.n_interior_faces;")
+        e.w("  if (n > 0) {")
+        e.w("    const auto grid = static_cast<unsigned>((n + s.block - 1) / s.block);")
+        e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")
+        e.w("  }")
+        e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
+        e.w("}")
+        e.w()
+        return
     e.w(f"  const index_t c = {tid};")
     e.w("  if (c >= d.topo.n_owned_cells) {")
     e.w("    return;")

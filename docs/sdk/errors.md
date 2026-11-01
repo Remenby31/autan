@@ -616,9 +616,9 @@ Fix: Build the C++ core (see README) to run real computations.
 
 **No solver backend** (error)
 
-`case.run()` needs a backend. The C++ core is not part of this build, so only the `fake` backend exists; it writes synthetic results.
+`case.run()` needs a backend, and the solver backend needs the runtime `autan-run`, found through `$AUTAN_RUN` or the PATH.
 
-Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
+Fix: Pass one: `case.run(mesh_info, backend=autan.SolverBackend())` with autan-run installed, or `autan.FakeBackend()` for synthetic results.
 
 ## E0805
 
@@ -728,9 +728,9 @@ Fix: Use a policy listed by the generator's --help.
 
 **Differentiation not supported** (error)
 
-A loop with several output datasets is differentiated.
+A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.
 
-Fix: Differentiate loops with a single output dataset.
+Fix: Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.
 
 ## E1100
 

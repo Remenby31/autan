@@ -91,11 +91,17 @@ def test_stencil_residual_adjoint_passes_the_dot_product_test(stencil: str, poli
     m = s.mesh(meshes.build("tet", 5, 0.15, seed=6))
     s.set_stencil(m, stencil)
     rng = np.random.default_rng(3)
-    q, q_b, src = rng.standard_normal(m.n_cells), rng.standard_normal(m.n_faces), rng.standard_normal(m.n_cells)
+    q, q_b, src = (
+        rng.standard_normal(m.n_cells),
+        rng.standard_normal(m.n_faces),
+        rng.standard_normal(m.n_cells),
+    )
     x, y = rng.standard_normal(m.n_cells), rng.standard_normal(m.n_cells)
     jx = s.advdiff_derivative(m, policy, "tangent", q, q_b, src, mms.VELOCITY, mms.NU, x)
     jty = s.advdiff_derivative(m, policy, "adjoint", q, q_b, src, mms.VELOCITY, mms.NU, y)
-    gap = abs(y @ jx - jty @ x) / (np.linalg.norm(y) * np.linalg.norm(jx) + np.linalg.norm(jty) * np.linalg.norm(x))
+    gap = abs(y @ jx - jty @ x) / (
+        np.linalg.norm(y) * np.linalg.norm(jx) + np.linalg.norm(jty) * np.linalg.norm(x)
+    )
     assert gap <= (1e-13 if policy == "fp64" else 1e-5)
 
 
@@ -107,7 +113,9 @@ def _spectrum(m: s.Mesh) -> np.ndarray:
     for j in range(n):
         e = np.zeros(n)
         e[j] = 1.0
-        jac[:, j] = s.advdiff_derivative(m, "fp64", "tangent", zero, np.zeros(m.n_faces), zero, mms.VELOCITY, 0.0, e)
+        jac[:, j] = s.advdiff_derivative(
+            m, "fp64", "tangent", zero, np.zeros(m.n_faces), zero, mms.VELOCITY, 0.0, e
+        )
     return np.linalg.eigvals(jac / m.cell_volume[:, None])
 
 

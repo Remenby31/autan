@@ -1,10 +1,10 @@
 ---
-source_hash: "2f48b8b005e7"
+source_hash: "8629169282ef"
 ---
 
 # Prise en main du SDK Autan
 
-Vérifiez un cas face à son maillage et écrivez un répertoire de calcul avec le SDK Python, depuis un clone du dépôt. Le solveur n'existe pas encore : le seul backend est `fake`, qui écrit des résultats synthétiques dans les vrais formats.
+Vérifiez un cas face à son maillage et écrivez un répertoire de calcul avec le SDK Python, depuis un clone du dépôt. Le runtime du solveur `autan-run` n'a encore aucune physique : il rejette une entrée valide avec `E0706` ; cette page utilise donc le backend `fake` du SDK, qui écrit des résultats synthétiques dans les vrais formats.
 
 > Les résultats du backend `fake` sont synthétiques. Ne les utilisez jamais comme données de référence.
 

@@ -20,6 +20,7 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "face_weighted_cpu.hpp"
 #include "gradients_cpu.hpp"
 #include "roe_cpu.hpp"
 #include "spike.hpp"
@@ -329,6 +330,46 @@ void lsq_bounds_derivative(const SpikeMesh& m, int mode, const double* q, const 
   }
 }
 
+/// Test kernel codegen/tests/kernels/face_weighted.py: mode 0 value, 1 tangent (seed dq),
+/// 2 adjoint (seed w-bar -> q-bar).
+template <class P>
+void face_weighted(const SpikeMesh& m, int mode, const double* q, const double* q_b,
+                   const double* seed, double* out) {
+  namespace fw = autan::kernels::face_weighted;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<S>(q, nc);
+  auto qbs = copy_in<S>(q_b, nf);
+  auto q_tan = copy_in<S>(seed, nc);
+  std::vector<S> w(nc), w_tan(nc);
+  std::vector<R> w_adj(seed, seed + nc), q_adj(nc, R(0));
+  fw::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.q_b = qbs.data();
+  d.w = w.data();
+  d.face_area_magnitude = g.face_area_magnitude.data();
+  d.face_centroid = g.face_centroid.data();
+  d.cell_centroid = g.cell_centroid.data();
+  d.q_tan = q_tan.data();
+  d.w_tan = w_tan.data();
+  d.w_adj = w_adj.data();
+  d.q_adj = q_adj.data();
+  if (mode == 0) {
+    fw::cpu::face_weighted(d);
+    copy_out(w, out);
+  } else if (mode == 1) {
+    fw::cpu::face_weighted_tangent(d);
+    copy_out(w_tan, out);
+  } else {
+    fw::cpu::face_weighted_adjoint(d);
+    copy_out(q_adj, out);
+  }
+}
+
 template <class P>
 void gradients(const SpikeMesh& m, const char* method, const double* q, const double* q_b,
                int iterations, double* grad, double* qmin, double* qmax) {
@@ -580,6 +621,15 @@ int autan_spike_roe_complex_step(const void* mesh, const double* u, const double
                                  double* out, char* err, std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] { autan::spike::roe_complex_step(*m, u, du, h, out); });
+}
+
+int autan_spike_face_weighted(const void* mesh, const char* policy, int mode, const double* q,
+                              const double* q_b, const double* seed, double* out, char* err,
+                              std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::face_weighted<decltype(p)>(*m, mode, q, q_b, seed, out);
+  });
 }
 
 int autan_spike_lsq_bounds_derivative(const void* mesh, const char* policy, int mode,

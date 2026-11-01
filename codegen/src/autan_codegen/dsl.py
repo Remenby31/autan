@@ -52,6 +52,7 @@ class RoleAnnotation:
         self.Vec5 = Type(role, (5,))
         self.Mat3 = Type(role, (3, 3))
         self.Mat5 = Type(role, (5, 5))
+        self.Mat53 = Type(role, (5, 3))  # gradient of a 5-component state: row i is grad of u_i
 
 
 State = RoleAnnotation(Role.STATE)
@@ -247,6 +248,7 @@ class Loop:
     finalise_bindings: dict[str, Binding] = field(default_factory=dict)
     name: str = ""
     over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
+    frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
 
 
 def _bindings(raw: dict[str, object]) -> dict[str, Binding]:
@@ -278,13 +280,20 @@ def face_loop(body: Body, *, out: object, **args: object) -> Loop:
     return Loop("face", body, _bindings(args), outs)
 
 
-def boundary_loop(body: Body, *, out: object, **args: object) -> Loop:
-    """Loop over boundary faces; `out` increments the owner cell."""
+def boundary_loop(body: Body, *, out: object, frozen: bool = False, **args: object) -> Loop:
+    """Loop over boundary faces; `out` increments the owner cell (`Inc`) or writes face datasets
+    (`Write`, for example boundary states). Face datasets are passive, so a writing loop has no
+    tangent or adjoint: if it reads active cell data, declare `frozen=True` to accept that the
+    derivatives of what it writes are dropped (the generated module lists it in
+    `frozen_loops`, so runs can label their adjoints approximate)."""
     outs = _outs(out)
+    if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
+        return Loop("boundary_write", body, _bindings(args), outs, frozen=frozen)
     for o in outs:
         if not isinstance(o, Inc) or o.right is not None:
             raise CodegenError(
-                Code.INVALID_LOOP_OUTPUT, "boundary loop outputs are Inc of the owner only"
+                Code.INVALID_LOOP_OUTPUT,
+                "boundary loop outputs are Inc of the owner only, or Write of face datasets only",
             )
     return Loop("boundary", body, _bindings(args), outs)
 
@@ -350,4 +359,6 @@ def _intrinsic(*_: object) -> object:
     raise CodegenError(Code.UNSUPPORTED_CONSTRUCT, "DSL intrinsics only exist inside parsed bodies")
 
 
-dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = Vec3 = Vec5 = _intrinsic
+dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = outer = Vec3 = Vec5 = (
+    _intrinsic
+)

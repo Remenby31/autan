@@ -110,7 +110,7 @@ There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE
 
 Node names. A zone keeps its name as node name when it has 1 to 32 printable ASCII characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, is not itself of the form `boundary-NNNN` or `cell-zone-NNNN`, differs from the other children of `Base` listed above and, for cell zones, from the other children of `Zone`. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
 
-BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`; `manufactured` (verification cases) → `BCTypeUserDefined`.
+BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`; `manufactured` (verification cases) → `UserDefined`. The node values are the SIDS strings (`BCTypeName` in the CGNS library), not the C enumerator names.
 
 `FlowSolution` fields (SIDS names):
 

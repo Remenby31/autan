@@ -22,7 +22,14 @@ set(AUTAN_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 set(AUTAN_GENERATED_FILES)
 set(AUTAN_GENERATED_GPU_UNITS)
-foreach(module IN LISTS AUTAN_KERNEL_MODULES)
+# Test kernels (codegen/tests/kernels) are built into the spike library only.
+set(AUTAN_TEST_KERNEL_MODULES face_weighted)
+foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
+  if(module IN_LIST AUTAN_TEST_KERNEL_MODULES)
+    set(module_source ${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/${module}.py)
+  else()
+    set(module_source ${PROJECT_SOURCE_DIR}/kernels/${module}.py)
+  endif()
   set(outputs ${AUTAN_GENERATED_DIR}/${module}.hpp)
   list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp)
   if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_HIP)
@@ -38,10 +45,9 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES)
     OUTPUT ${outputs}
     COMMAND
       ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/src ${Python3_EXECUTABLE} -m
-      autan_codegen ${PROJECT_SOURCE_DIR}/kernels/${module}.py --out ${AUTAN_GENERATED_DIR}
-      --backends ${backends}
-    DEPENDS ${PROJECT_SOURCE_DIR}/kernels/${module}.py ${AUTAN_CODEGEN_SOURCES}
-    COMMENT "Generating kernels from kernels/${module}.py"
+      autan_codegen ${module_source} --out ${AUTAN_GENERATED_DIR} --backends ${backends}
+    DEPENDS ${module_source} ${AUTAN_CODEGEN_SOURCES}
+    COMMENT "Generating kernels from ${module}.py"
     VERBATIM
   )
   list(APPEND AUTAN_GENERATED_FILES ${outputs})

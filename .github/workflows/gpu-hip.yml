@@ -42,7 +42,7 @@ jobs:
         if: hashFiles('codegen/CMakeLists.txt') != ''
         run: >-
           cmake -S . -B build-hip -G Ninja -DAUTAN_ENABLE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx942
-          -DAUTAN_BUILD_TESTS=OFF -DCMAKE_PREFIX_PATH=/opt/rocm
+          -DAUTAN_BUILD_TESTS=OFF -DAUTAN_ENABLE_CGNS=OFF -DCMAKE_PREFIX_PATH=/opt/rocm
           && cmake --build build-hip --target autan_kernels_gpu
       - name: Check every generated object carries gfx942 code
         if: hashFiles('codegen/CMakeLists.txt') != ''

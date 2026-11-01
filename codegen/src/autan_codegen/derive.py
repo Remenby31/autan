@@ -238,7 +238,7 @@ def derive(m: Module) -> None:
             lm.fin_sig is not None
             and bool(_active(lm.fin_sig, lm.loop.finalise_bindings, skip=len(lm.loop.outputs)))
         )
-        if not has_active:
+        if not has_active or lm.kind == "boundary_write":
             # Nothing active flows in: the tangent output is zero and there is no adjoint to send.
             continue
         derived.append(tangent_loop(lm, m))

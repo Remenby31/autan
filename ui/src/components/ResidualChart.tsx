@@ -6,6 +6,10 @@ const css = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const series = (k: number) => css(`--series-${(k % 8) + 1}`);
 
+// Ticks, labels and grid lines on decades only: a log axis is unreadable with every minor.
+const decades = (_: uPlot, splits: number[]) =>
+  splits.map((v) => (Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9 ? v : null));
+
 /** Residuals on a log axis; redraws in place as the history grows. */
 export function ResidualChart({ history }: { history: HistoryColumns }) {
   const host = useRef<HTMLDivElement>(null);
@@ -26,10 +30,11 @@ export function ResidualChart({ history }: { history: HistoryColumns }) {
           { stroke: css("--fg-3"), grid: { stroke: css("--line") } },
           {
             stroke: css("--fg-3"),
-            grid: { stroke: css("--line") },
+            grid: { stroke: css("--line"), filter: decades },
+            ticks: { filter: decades },
             size: 60,
-            values: (_, splits) =>
-              splits.map((v) => (Number.isInteger(Math.log10(v)) ? v.toExponential(0) : "")),
+            filter: decades,
+            values: (_, splits) => splits.map((v) => (v == null ? "" : v.toExponential(0))),
           },
         ],
         legend: { show: false },

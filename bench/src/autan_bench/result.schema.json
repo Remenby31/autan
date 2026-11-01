@@ -4,135 +4,545 @@
   "title": "Autan benchmark result",
   "description": "One benchmark run: provenance, measurement conditions and per-benchmark samples with summary statistics. Produced by `autan-bench`, consumed by `autan-bench compare` and the baselines in bench/baselines/.",
   "type": "object",
-  "required": ["schema", "suite", "created", "provenance", "conditions", "config", "benchmarks"],
+  "required": [
+    "schema",
+    "suite",
+    "created",
+    "provenance",
+    "conditions",
+    "config",
+    "benchmarks"
+  ],
   "additionalProperties": false,
   "$defs": {
     "spread": {
-      "type": ["object", "null"],
-      "required": ["min", "median", "max"],
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "min",
+        "median",
+        "max"
+      ],
       "additionalProperties": false,
-      "properties": {"min": {"type": "number"}, "median": {"type": "number"}, "max": {"type": "number"}}
+      "properties": {
+        "min": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
+      }
     },
     "stats": {
       "type": "object",
-      "required": ["n", "median", "q1", "q3", "iqr", "mean", "stdev", "cv", "min", "max"],
+      "required": [
+        "n",
+        "median",
+        "q1",
+        "q3",
+        "iqr",
+        "mean",
+        "stdev",
+        "cv",
+        "min",
+        "max"
+      ],
       "additionalProperties": false,
       "properties": {
-        "n": {"type": "integer", "minimum": 2},
-        "median": {"type": "number"},
-        "q1": {"type": "number"},
-        "q3": {"type": "number"},
-        "iqr": {"type": "number", "minimum": 0},
-        "mean": {"type": "number"},
-        "stdev": {"type": "number", "minimum": 0},
-        "cv": {"type": "number", "minimum": 0},
-        "min": {"type": "number"},
-        "max": {"type": "number"}
+        "n": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "median": {
+          "type": "number"
+        },
+        "q1": {
+          "type": "number"
+        },
+        "q3": {
+          "type": "number"
+        },
+        "iqr": {
+          "type": "number",
+          "minimum": 0
+        },
+        "mean": {
+          "type": "number"
+        },
+        "stdev": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cv": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
+      }
+    },
+    "cuda_gpu": {
+      "type": "object",
+      "required": [
+        "name",
+        "uuid",
+        "compute_capability",
+        "sm_count",
+        "l2_bytes",
+        "memory_bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string",
+          "pattern": "^GPU-[0-9a-f-]{36}$"
+        },
+        "compute_capability": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$"
+        },
+        "sm_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "l2_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "description": "NVIDIA or AMD GPU, as the CUDA/HIP runtime reports it."
+    },
+    "metal_gpu": {
+      "description": "Apple GPU, as Metal reports it. l2_bytes, when given, comes from the chip's published specification.",
+      "type": "object",
+      "required": [
+        "name",
+        "registry_id",
+        "gpu_cores",
+        "recommended_max_working_set_bytes",
+        "memory_bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "registry_id": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "gpu_cores": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recommended_max_working_set_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "l2_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     }
   },
   "properties": {
-    "schema": {"const": "autan.bench-result/1"},
-    "suite": {"type": "string", "pattern": "^[a-z0-9_]+$"},
-    "created": {"type": "string", "format": "date-time"},
+    "schema": {
+      "const": "autan.bench-result/1"
+    },
+    "suite": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
     "provenance": {
       "description": "Run identity, named as in docs/contracts/results.md (solver.commit, backend, precision, devices), plus the host, image and GPU the numbers depend on.",
       "type": "object",
-      "required": ["solver", "binary_sha256", "backend", "precision", "devices", "host", "image", "image_revision", "runtime_version", "driver_version", "gpu"],
+      "required": [
+        "solver",
+        "binary_sha256",
+        "backend",
+        "precision",
+        "devices",
+        "host",
+        "image",
+        "image_revision",
+        "runtime_version",
+        "driver_version",
+        "gpu"
+      ],
       "additionalProperties": false,
       "properties": {
         "solver": {
           "type": "object",
-          "required": ["commit", "dirty"],
+          "required": [
+            "commit",
+            "dirty"
+          ],
           "additionalProperties": false,
           "properties": {
-            "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "dirty": {"type": "boolean"}
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "dirty": {
+              "type": "boolean"
+            }
           }
         },
-        "binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "backend": {"enum": ["cuda", "hip", "cpu"]},
-        "precision": {"enum": ["fp32", "fp32+acc64", "fp64"]},
+        "binary_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "backend": {
+          "enum": [
+            "cuda",
+            "hip",
+            "metal",
+            "cpu"
+          ]
+        },
+        "precision": {
+          "enum": [
+            "fp32",
+            "fp32+acc64",
+            "fp64"
+          ]
+        },
         "devices": {
           "type": "object",
-          "required": ["kind", "count"],
-          "additionalProperties": false,
-          "properties": {"kind": {"enum": ["cuda", "hip", "cpu"]}, "count": {"type": "integer", "minimum": 1}}
-        },
-        "host": {"type": "string", "minLength": 1},
-        "image": {"type": ["string", "null"]},
-        "image_revision": {"type": ["string", "null"]},
-        "runtime_version": {"type": "integer"},
-        "driver_version": {"type": "integer"},
-        "gpu": {
-          "type": "object",
-          "required": ["name", "uuid", "compute_capability", "sm_count", "l2_bytes", "memory_bytes"],
+          "required": [
+            "kind",
+            "count"
+          ],
           "additionalProperties": false,
           "properties": {
-            "name": {"type": "string"},
-            "uuid": {"type": "string", "pattern": "^GPU-[0-9a-f-]{36}$"},
-            "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
-            "sm_count": {"type": "integer", "minimum": 1},
-            "l2_bytes": {"type": "integer", "minimum": 0},
-            "memory_bytes": {"type": "integer", "minimum": 1}
+            "kind": {
+              "enum": [
+                "cuda",
+                "hip",
+                "metal",
+                "cpu"
+              ]
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "image_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_version": {
+          "type": "integer"
+        },
+        "driver_version": {
+          "type": "integer"
+        },
+        "gpu": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/cuda_gpu"
+            },
+            {
+              "$ref": "#/$defs/metal_gpu"
+            }
+          ]
+        },
+        "os_version": {
+          "type": "string",
+          "description": "Operating system version, where the runtime has no version of its own (Metal: macOS)."
         }
       }
     },
     "conditions": {
       "type": "object",
-      "required": ["lock", "lock_wait_s", "idle_check", "during_run"],
+      "required": [
+        "lock",
+        "lock_wait_s",
+        "idle_check",
+        "during_run"
+      ],
       "additionalProperties": false,
       "properties": {
-        "lock": {"type": "string"},
-        "lock_wait_s": {"type": "number", "minimum": 0},
+        "lock": {
+          "type": "string"
+        },
+        "lock_wait_s": {
+          "type": "number",
+          "minimum": 0
+        },
         "idle_check": {
           "type": "object",
-          "required": ["samples", "compute_apps_max", "utilization_pct_max"],
+          "required": [
+            "samples",
+            "compute_apps_max",
+            "utilization_pct_max"
+          ],
           "additionalProperties": false,
           "properties": {
-            "samples": {"type": "integer", "minimum": 1},
-            "compute_apps_max": {"const": 0},
-            "utilization_pct_max": {"type": "number"}
+            "samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "compute_apps_max": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 0,
+              "description": "null where the platform does not list GPU processes (macOS)."
+            },
+            "utilization_pct_max": {
+              "type": "number"
+            }
           }
         },
         "during_run": {
           "type": "object",
-          "required": ["samples", "busy_samples", "sm_mhz", "sm_max_mhz", "power_w", "temperature_c", "clocks_event_reasons", "compute_apps_max"],
+          "required": [
+            "samples",
+            "busy_samples",
+            "sm_mhz",
+            "sm_max_mhz",
+            "power_w",
+            "temperature_c",
+            "clocks_event_reasons",
+            "compute_apps_max"
+          ],
           "additionalProperties": false,
           "properties": {
-            "samples": {"type": "integer", "minimum": 1},
-            "busy_samples": {"type": "integer", "minimum": 1, "description": "Samples at >= 50 % utilization; the clock, power and temperature spreads cover only these."},
-            "sm_mhz": {"$ref": "#/$defs/spread"},
-            "sm_max_mhz": {"type": ["number", "null"]},
-            "power_w": {"$ref": "#/$defs/spread"},
-            "temperature_c": {"$ref": "#/$defs/spread"},
-            "clocks_event_reasons": {"type": "string", "pattern": "^0x[0-9a-f]{16}$"},
-            "compute_apps_max": {"type": "integer", "minimum": 0, "maximum": 1}
+            "samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "busy_samples": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Samples at >= 50 % utilization; the clock, power and temperature spreads cover only these."
+            },
+            "sm_mhz": {
+              "$ref": "#/$defs/spread"
+            },
+            "sm_max_mhz": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "power_w": {
+              "$ref": "#/$defs/spread"
+            },
+            "temperature_c": {
+              "$ref": "#/$defs/spread"
+            },
+            "clocks_event_reasons": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^0x[0-9a-f]{16}$",
+              "description": "OR of the clock event reasons seen; null where the platform does not report them."
+            },
+            "compute_apps_max": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1,
+              "description": "null where the platform does not list GPU processes: contention unchecked."
+            }
           }
         }
       }
     },
-    "config": {"type": "object"},
+    "config": {
+      "type": "object"
+    },
     "benchmarks": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["name", "metric", "unit", "better", "samples", "stats"],
+        "required": [
+          "name",
+          "metric",
+          "unit",
+          "better",
+          "samples",
+          "stats"
+        ],
         "additionalProperties": false,
         "properties": {
-          "name": {"type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$"},
-          "metric": {"enum": ["bandwidth", "time_per_cell_iteration"]},
-          "unit": {"enum": ["GB/s", "ns"]},
-          "better": {"enum": ["higher", "lower"]},
-          "bytes_per_rep": {"type": "integer", "minimum": 1},
-          "cells_per_rep": {"type": "integer", "minimum": 1},
-          "params": {"type": "object", "description": "Kernel parameters reported by the binary (strategy, layout, ...)."},
-          "samples": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 2},
-          "stats": {"$ref": "#/$defs/stats"}
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$"
+          },
+          "metric": {
+            "enum": [
+              "bandwidth",
+              "time_per_cell_iteration"
+            ]
+          },
+          "unit": {
+            "enum": [
+              "GB/s",
+              "ns"
+            ]
+          },
+          "better": {
+            "enum": [
+              "higher",
+              "lower"
+            ]
+          },
+          "bytes_per_rep": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cells_per_rep": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "params": {
+            "type": "object",
+            "description": "Kernel parameters reported by the binary (strategy, layout, ...)."
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "minItems": 2
+          },
+          "stats": {
+            "$ref": "#/$defs/stats"
+          }
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "cuda",
+                  "hip"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "gpu": {
+                "$ref": "#/$defs/cuda_gpu"
+              }
+            }
+          },
+          "conditions": {
+            "properties": {
+              "idle_check": {
+                "properties": {
+                  "compute_apps_max": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "during_run": {
+                "properties": {
+                  "compute_apps_max": {
+                    "type": "integer"
+                  },
+                  "clocks_event_reasons": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "metal"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "gpu": {
+                "$ref": "#/$defs/metal_gpu"
+              },
+              "precision": {
+                "enum": [
+                  "fp32",
+                  "fp32+acc64"
+                ],
+                "description": "Metal has no FP64 arithmetic."
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

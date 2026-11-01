@@ -1,8 +1,13 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
+import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
+import { useState } from "react";
 import { useRegistrySubscription } from "../api/runs";
 import { CommandPalette } from "../components/CommandPalette";
+import { Sidebar } from "../components/shell/Sidebar";
+import { useTheme } from "../components/shell/theme";
+import { ToastProvider } from "../components/ui/Toast";
+import { TooltipProvider } from "../components/ui/Tooltip";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
@@ -10,42 +15,21 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function Root() {
   useRegistrySubscription();
+  useTheme();
+  const [find, setFind] = useState(false);
   return (
     <MotionConfig reducedMotion="user" transition={{ duration: 0.12 }}>
-      <div className="flex h-full flex-col">
-        <header className="flex items-center gap-4 border-line border-b px-4 py-2.5">
-          <Link to="/" aria-label="Autan" className="flex">
-            <picture>
-              <source srcSet="/logo-dark.svg" media="(prefers-color-scheme: dark)" />
-              <img src="/logo-light.svg" alt="" className="size-5" />
-            </picture>
-          </Link>
-          <nav className="flex gap-1 text-sm">
-            <Link
-              to="/"
-              className="rounded-md px-2.5 py-1 text-fg-3 hover:text-fg"
-              activeProps={{ className: "text-fg bg-glass" }}
-              activeOptions={{ exact: true }}
-            >
-              Runs
-            </Link>
-            <Link
-              to="/viewer"
-              className="rounded-md px-2.5 py-1 text-fg-3 hover:text-fg"
-              activeProps={{ className: "text-fg bg-glass" }}
-            >
-              Viewer
-            </Link>
-          </nav>
-          <span className="ml-auto font-mono text-fg-3 text-xs">
-            <kbd className="rounded border border-line px-1.5">⌘K</kbd>
-          </span>
-        </header>
-        <main className="relative min-h-0 flex-1">
-          <Outlet />
-        </main>
-        <CommandPalette />
-      </div>
+      <TooltipProvider delay={400}>
+        <ToastProvider>
+          <div className="flex h-full">
+            <Sidebar onFind={() => setFind(true)} />
+            <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1">
+              <Outlet />
+            </main>
+          </div>
+          <CommandPalette open={find} onOpenChange={setFind} />
+        </ToastProvider>
+      </TooltipProvider>
     </MotionConfig>
   );
 }

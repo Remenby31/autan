@@ -285,8 +285,8 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     const auto ns = st.entries.size();
     DeviceArray<offset_t> st_off(st.offsets), st_twin(st.twin);
     DeviceArray<index_t> st_entries(st.entries);
-    const auto w_host = autan::kernels::converted<std::remove_cv_t<std::remove_pointer_t<
-        decltype(d.stencil_lsq_weight)>>>(st.lsq_weight);
+    const auto w_host = autan::kernels::converted<
+        std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>>(st.lsq_weight);
     DeviceArray<std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>> w_dev(
         w_host);
     gr::Data<P> dst = d;
