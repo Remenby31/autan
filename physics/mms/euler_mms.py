@@ -97,6 +97,7 @@ class Euler:
         flux: str,
         limiter: bool,
         mach_ref: float,
+        reference: F64,
         stencil: str = "face2",
     ) -> None:
         self.n = m.n_cells
@@ -104,7 +105,9 @@ class Euler:
         h = ctypes.c_void_p()
         scheme = np.array([FLUXES[flux], 1, int(limiter), STENCILS[stencil]], dtype=np.int32)
         gamma, rgas = 1.4, 287.0
-        real = np.array([gamma, rgas, 5.0, 1.0, mach_ref, 1.0, 100.0, 100.0, 100.0, 1e5])
+        real = np.concatenate(
+            [[gamma, rgas, 5.0, 1.0, mach_ref, 1.0, 100.0, 100.0, 100.0, 1e5], reference]
+        )
         _check(
             lib().autan_mms_euler_create(
                 m.handle, policy.encode(), _p(scheme), _p(real), ctypes.byref(h), err, len(err)
@@ -233,11 +236,13 @@ def solve(
     mach = float(speed / sound)
     kind = np.zeros(m.n_faces - m.n_interior, dtype=np.uint8)
     data = np.array([wb[k] for k in PRIMITIVE])
-    ep = Euler(m, policy, flux, limiter, mach, stencil)
-    e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach, stencil)
+    # The cells store differences from the mean state, as autan-run's from the freestream.
+    reference = u.mean(axis=1)
+    ep = Euler(m, policy, flux, limiter, mach, reference, stencil)
+    e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach, reference, stencil)
     # The preconditioner is the first-order Roe Jacobian whatever the flux: its ILU stays stable
     # where HLLC's switches between wave branches make pivots vanish.
-    pre = Euler(m, "fp64", "roe", limiter, mach, stencil)
+    pre = Euler(m, "fp64", "roe", limiter, mach, reference, stencil)
     for e in {id(ep): ep, id(e64): e64, id(pre): pre}.values():
         e.set_boundary(kind, data)
         e.set_source(src)

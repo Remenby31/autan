@@ -198,6 +198,11 @@ class EulerPhysics final : public runtime::Physics {
     s.length = f.ref_length.value_or(1.0);
     s.scale = {f.density, speed, speed, speed, f.pressure};
     s.mach_ref = f.speed / c;
+    const double gamma = *in.cell_zones.front().medium.gamma;
+    const double q2 = f.velocity[0] * f.velocity[0] + f.velocity[1] * f.velocity[1] +
+                      f.velocity[2] * f.velocity[2];
+    s.reference = {f.density, f.density * f.velocity[0], f.density * f.velocity[1],
+                   f.density * f.velocity[2], f.pressure / (gamma - 1.0) + 0.5 * f.density * q2};
     return s;
   }
 
@@ -312,7 +317,7 @@ class EulerPhysics final : public runtime::Physics {
 
   // R(u) of the FP64 solution, through the policy's state type.
   void residual_of(const std::vector<double>& u) {
-    for (std::size_t i = 0; i < u.size(); ++i) state_[i] = State(u[i]);
+    euler_.state(u, state_);
     euler_.residual(state_, res_);
   }
 
