@@ -893,10 +893,18 @@ class Run final : public Log {
         f.values = comm_.gather(where, f.values, n);
       }
     };
-    gather(s.fields, ids, p_.mesh.n_cells());
-    gather(s.mean_fields, ids, p_.mesh.n_cells());
-    gather(s.restart_fields, ids, p_.mesh.n_cells());
-    gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
+    // A failure before the gathers end leaves other ranks inside them: it
+    // fails the run like a physics failure, which ends every rank.
+    try {
+      gather(s.fields, ids, p_.mesh.n_cells());
+      gather(s.mean_fields, ids, p_.mesh.n_cells());
+      gather(s.restart_fields, ids, p_.mesh.n_cells());
+      gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
+    }
     if (comm_.rank() != 0) return;
     // A diverged state may hold non-finite values; results.md asks for its
     // solution only if one can be written, and readers require finite fields.
@@ -989,19 +997,25 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     return ExitStatus::invalid_input;
   }
   // The ranks agree on whether the input can run before any collective
-  // call; the first rank that cannot prints why.
+  // call; the first rank that cannot prints why: a refused input (exit 2)
+  // or any other failure (E0704, exit 1).
   std::optional<Prepared> prepared;
-  std::optional<InputError> refusal;
+  std::optional<Diagnostic> refusal;
   try {
     prepared.emplace(prepare(input_file, registry, comm->size()));
   } catch (const InputError& e) {
-    refusal = e;
+    refusal = e.diagnostic();
+  } catch (const std::exception& e) {
+    refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
   }
+  // The key of the first refusing rank: -(2 rank + 1 if it failed).
   constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
-  const std::int64_t first = comm->max(refusal ? -std::int64_t{comm->rank()} : none);
+  const std::int64_t key =
+      refusal ? -(2 * std::int64_t{comm->rank()} + (refusal->code == "E0704" ? 1 : 0)) : none;
+  const std::int64_t first = comm->max(key);
   if (first != none) {
-    if (-first == comm->rank()) std::fprintf(err, "%s\n", refusal->diagnostic().json().c_str());
-    return ExitStatus::invalid_input;
+    if (first == key) std::fprintf(err, "%s\n", refusal->json().c_str());
+    return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
   }
   stop_requested = 0;
   const SignalGuard signals;
@@ -1015,11 +1029,16 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     return run.execute();
   } catch (const std::exception& e) {
     // The run directory could not be created or its run.json not written:
-    // nothing records the failure but this diagnostic.
+    // nothing records the failure but this diagnostic. On several ranks, the
+    // others may wait in a collective call: every rank ends.
     std::fprintf(err, "%s\n",
-                 Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"}
+                 Diagnostic{.code = "E0704",
+                            .message = e.what(),
+                            .path = "",
+                            .data_json = Json{{"rank", comm->rank()}}.dump()}
                      .json()
                      .c_str());
+    if (comm->size() > 1) comm->abort(static_cast<int>(ExitStatus::failed));
     return ExitStatus::failed;
   }
 }

@@ -91,8 +91,8 @@ TEST_CASE("ExactSum matches integer arithmetic whatever the order and grouping",
   left.add(std::ldexp(1.0, 100));
   left.add(1.0);
   right.add(-std::ldexp(1.0, 100));
-  left.merge(right);
-  CHECK(left.value() == 1.0);
+  right.merge(left);
+  CHECK(right.value() == 1.0);
 
   // Widely spread magnitudes: no integer oracle, but every order agrees.
   std::uniform_real_distribution<double> exponent(-1000.0, 1000.0);

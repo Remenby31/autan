@@ -422,8 +422,9 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     const Outcome o = run(input());
     unsetenv("OMPI_COMM_WORLD_SIZE");
     require_error(o, "E0146");
-    // PMIx may give the rank alone: a rank other than 0 shows several.
-    REQUIRE(setenv("PMIX_RANK", "1", 1) == 0);
+    // PMIx may give the rank alone: without a count, even rank 0 cannot
+    // tell it runs alone.
+    REQUIRE(setenv("PMIX_RANK", "0", 1) == 0);
     const Outcome pmix = run(input());
     unsetenv("PMIX_RANK");
     require_error(pmix, "E0146");

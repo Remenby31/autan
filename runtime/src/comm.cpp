@@ -207,9 +207,8 @@ std::unique_ptr<Comm> make_comm() {
   MPI_Initialized(&initialized);
   if (initialized != 0) return std::make_unique<World>();
 #endif
-  // Several ranks show by their count or, when only the rank is known, by
-  // a rank other than 0.
-  if (launched_size() > 1 || launched_rank() > 0) {
+  // Under a launcher, only a count of 1 shows a single rank.
+  if (launched_by_mpi() && launched_size() != 1) {
     throw Error(ErrorCode::mpi_unavailable,
                 "a launcher started several ranks, but this build of autan-run has no MPI");
   }
