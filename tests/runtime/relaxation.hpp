@@ -34,6 +34,7 @@ struct RelaxationOptions {
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
   bool signal_on_start = false;  ///< raise SIGTERM once constructed, before iteration 1
   bool throw_in_loads = false;
+  std::int64_t nan_loads_from = 0;  ///< loads are NaN from this iteration on; 0: never
   bool throw_in_fields = false;
   /// Every field and residual varies from cell to cell: values scaled by
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
@@ -134,6 +135,7 @@ class Relaxation final : public autan::runtime::Physics {
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
+    iteration_ = iteration;
     if (options_.pause_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(options_.pause_ms));
     if (iteration == options_.throw_at &&
@@ -266,6 +268,8 @@ class Relaxation final : public autan::runtime::Physics {
       loads.force[k] = sums[k].value();
       loads.moment[k] = sums[3 + k].value();
     }
+    if (options_.nan_loads_from > 0 && iteration_ >= options_.nan_loads_from)
+      loads.force[1] = std::numeric_limits<double>::quiet_NaN();
     return loads;
   }
 
@@ -284,6 +288,7 @@ class Relaxation final : public autan::runtime::Physics {
   autan::runtime::PhysicsContext context_;
   RelaxationOptions options_;
   double rms_ = 1.0;
+  std::int64_t iteration_ = 0;  // the last iteration stepped
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
