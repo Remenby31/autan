@@ -529,6 +529,44 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   }
 }
 
+TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") {
+  // Never a silent CPU run: a kind this build does not drive is E0706, and
+  // a CUDA build that sees no device is E0807, both before any directory.
+  require_error(run(input([](Json& d) { d["devices"]["kind"] = "hip"; })), "E0706");
+#ifdef AUTAN_HAVE_CUDA
+  // As a host without a GPU: CUDA reads this before its first call, and
+  // this test runs in a process of its own.
+  REQUIRE(setenv("CUDA_VISIBLE_DEVICES", "-1", 1) == 0);
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }));
+  require_error(o, "E0807");
+  CHECK(Json::parse(o.err)["data"] ==
+        Json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}});
+#else
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }));
+  require_error(o, "E0706");
+  CHECK(Json::parse(o.err)["data"]["path"] == "devices.kind");
+#endif
+}
+
+#ifdef AUTAN_HAVE_CUDA
+TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]") {
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }));
+  REQUIRE(o.status == ExitStatus::finished);
+  std::ifstream log_in(o.run / "log.jsonl");
+  Json ready, cuda;
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "relaxation physics ready") ready = event["data"];
+    if (event["source"] == "cuda") cuda = event["data"];
+  }
+  CHECK(ready["device"] == 0);
+  CHECK(ready["stream"] == true);
+  CHECK(cuda["device"] == 0);
+  CHECK(!cuda["name"].get<std::string>().empty());
+  CHECK(cuda["visible"].get<int>() >= 1);
+}
+#endif
+
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
   autan::runtime::PhysicsRegistry registry;

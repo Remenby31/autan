@@ -119,9 +119,10 @@ class Relaxation final : public autan::runtime::Physics {
       rms_ = std::sqrt(sums[0].value() / sums[1].value());
     }
     mean_ = state_;
-    context_.log.write(
-        "info", "solver", "relaxation physics ready", "",
-        "{\"ghosts\": " + std::to_string(mesh.n_cells() - mesh.n_owned_cells()) + "}");
+    context_.log.write("info", "solver", "relaxation physics ready", "",
+                       "{\"ghosts\": " + std::to_string(mesh.n_cells() - mesh.n_owned_cells()) +
+                           ", \"device\": " + std::to_string(context.device) +
+                           ", \"stream\": " + (context.stream != nullptr ? "true" : "false") + "}");
     for (auto& f : mean_) std::fill(f.values.begin(), f.values.end(), 0.0);
     if (context.start != nullptr) {
       state_ = context.start->fields;
