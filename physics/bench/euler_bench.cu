@@ -375,6 +375,12 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     std::replace(tag.begin(), tag.end(), '-', '_');
     out.timed.push_back(
         {"residual_" + o.flux + "_" + tag, gpu::name(s), bytes, time_it(o, [&] { residual(s); })});
+    for (const auto& l : jacobian_loops) {
+      const bool by_strategy = std::string_view(l.name) != "primitives_jacobian";
+      if (!by_strategy && s != gpu::Strategy::atomic) continue;
+      out.timed.push_back({std::string(l.name) + (by_strategy ? "_" + o.flux + "_" + tag : ""),
+                           gpu::name(s), l.bytes, time_it(o, [&] { l.launch(s); })});
+    }
     for (const auto& l : loops) {
       const bool by_strategy =
           std::string_view(l.name) == "faces" || std::string_view(l.name) == "boundaries";
