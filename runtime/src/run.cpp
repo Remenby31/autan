@@ -1056,8 +1056,10 @@ class Run final : public Log {
     std::vector<index_t> face_source;  // the mesh face of each face of `mesh`
   };
   std::optional<Ordered> make_ordered() {
+    // Rank 0's environment decides for every rank: ranks partitioning
+    // differently numbered meshes would exchange unrelated cells.
     const char* order = std::getenv("AUTAN_CELL_ORDER");
-    const std::string_view name = order == nullptr ? "input" : order;
+    const std::string name = comm_.broadcast(order == nullptr ? "input" : order);
     if (name == "input") return std::nullopt;
     if (name != "rcm") {
       throw std::runtime_error("AUTAN_CELL_ORDER is '" + std::string(name) + "', not input or rcm");
