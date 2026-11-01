@@ -125,6 +125,8 @@ test("viewer renders on WebGPU and picks the zone under the cursor", async ({ pa
   // CPU-only CI sets AUTAN_UI_E2E_BACKEND=webgl2; GPU runners keep the WebGPU default.
   const backend = process.env.AUTAN_UI_E2E_BACKEND ?? "webgpu";
   await expect(page.getByTestId("viewer-status")).toHaveAttribute("data-backend", backend);
+  // The backend is known before the surface arrives: pick once its zones are listed.
+  await expect(page.getByTestId("zones")).toBeVisible();
   const box = await page.getByTestId("viewport").boundingBox();
   if (!box) throw new Error("no viewport");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
