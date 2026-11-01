@@ -1567,6 +1567,18 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // A smoother sweeping the global colours (PhysicsContext::cell_colours),
+  // the ghosts exchanged after each colour, and an argmin over the ranks:
+  // the history of one rank.
+  autan_test::RelaxationOptions sweeping = options;
+  sweeping.colour_sweeps = 2;
+  const Outcome one_swept = run(doc, sweeping);
+  const fs::path many_swept =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2"});
+  CHECK(lines_of(one_swept.run / "history.jsonl") != lines_of(one.run / "history.jsonl"));
+  CHECK(lines_of(many_swept / "history.jsonl") == lines_of(one_swept.run / "history.jsonl"));
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in

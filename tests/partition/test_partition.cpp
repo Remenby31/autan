@@ -17,6 +17,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/partition/device_self.hpp"
 #include "autan/partition/partition.hpp"
 #include "fixtures.hpp"
@@ -556,4 +557,77 @@ TEST_CASE("Periodic images fill in device memory as on the host", "[partition][p
   require_error(autan::ErrorCode::halo_device_unsupported,
                 [&] { autan::DeviceSelfForward images(part.halo, m.n_owned_cells()); });
 #endif
+}
+
+TEST_CASE("Greedy colouring visits nodes by increasing global id", "[partition][colour]") {
+  using autan::offset_t;
+  // A path 0-1-2-3 with ids 3, 2, 1, 0: visited 3, 2, 1, 0, so colours alternate from node 3.
+  const std::vector<offset_t> path_offsets{0, 1, 3, 5, 6};
+  const std::vector<index_t> path{1, 0, 2, 1, 3, 2};
+  CHECK(autan::colour_greedy(path_offsets, path, std::vector<std::int64_t>{3, 2, 1, 0}) ==
+        std::vector<std::int32_t>{1, 0, 1, 0});
+  // A star whose centre has the largest id: the leaves first, all 0, then the centre 1.
+  const std::vector<offset_t> star_offsets{0, 3, 4, 5, 6};
+  const std::vector<index_t> star{1, 2, 3, 0, 0, 0};
+  CHECK(autan::colour_greedy(star_offsets, star, std::vector<std::int64_t>{9, 1, 2, 3}) ==
+        std::vector<std::int32_t>{1, 0, 0, 0});
+  // A triangle needs three.
+  const std::vector<offset_t> triangle_offsets{0, 2, 4, 6};
+  const std::vector<index_t> triangle{1, 2, 0, 2, 0, 1};
+  CHECK(autan::colour_greedy(triangle_offsets, triangle, std::vector<std::int64_t>{0, 1, 2}) ==
+        std::vector<std::int32_t>{0, 1, 2});
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_greedy(path_offsets, path, std::vector<std::int64_t>{0, 1});
+  });
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_greedy(triangle_offsets, std::vector<index_t>{1, 2, 0, 2, 0, 7},
+                               std::vector<std::int64_t>{0, 1, 2});
+  });
+}
+
+TEST_CASE("Cells across a face or a periodic pair never share a colour, in any cell order",
+          "[partition][colour]") {
+  using autan::test::BoxFill;
+  const BoxFill fill = GENERATE(BoxFill::hexa, BoxFill::tetra, BoxFill::hybrid);
+  const bool periodic = GENERATE(false, true);
+  CAPTURE(periodic);
+  autan::CellwiseMesh cells = autan::test::box(4, fill, 0.2);
+  if (periodic) {
+    for (int k = 0; k < 2; ++k) {
+      cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+      cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+      std::array<double, 3> t{};
+      t[at(k)] = 1.0;
+      cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+    }
+  }
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  const auto colour = autan::colour_cells(mesh);
+  REQUIRE(colour.size() == at(mesh.n_cells()));
+  for (index_t f = 0; f < mesh.n_interior_faces(); ++f)
+    CHECK(colour[at(mesh.owner()[at(f)])] != colour[at(mesh.neighbour()[at(f)])]);
+  std::size_t across = 0;
+  const auto offsets = mesh.boundary_zone_offsets();
+  for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+    const auto partners = mesh.periodic_partners(p);
+    const index_t first = offsets[at(mesh.periodic_pairs()[p].zone_a)];
+    for (std::size_t k = 0; k < partners.size(); ++k, ++across) {
+      CHECK(colour[at(mesh.owner()[at(first) + k])] != colour[at(mesh.owner()[at(partners[k])])]);
+    }
+  }
+  CHECK((across > 0) == periodic);
+  // The same colour for each global id after renumbering the cells (RCM).
+  const autan::Mesh renumbered = autan::renumber_cells(mesh, autan::rcm_order(mesh));
+  const auto again = autan::colour_cells(renumbered);
+  for (std::size_t c = 0; c < again.size(); ++c)
+    CHECK(again[c] == colour[at(renumbered.cell_global_id()[c])]);
+  require_error(autan::ErrorCode::partition_input_has_ghosts, [&] {
+    const autan::LocalPartition part =
+        autan::extract_partition(mesh, autan::compute_geometry(mesh),
+                                 std::vector<std::int32_t>(at(mesh.n_cells()), 0), 1, 0);
+    if (part.mesh.n_cells() == part.mesh.n_owned_cells()) {
+      throw autan::Error(autan::ErrorCode::partition_input_has_ghosts, "no ghosts to refuse");
+    }
+    (void)autan::colour_cells(part.mesh);
+  });
 }

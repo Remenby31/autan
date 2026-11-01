@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <utility>
 
 #include "autan/runtime/exact_sum.hpp"
 
@@ -21,6 +23,14 @@ class Ranks {
   [[nodiscard]] virtual double min(double value) = 0;
   /// The greatest of `value` over all ranks.
   [[nodiscard]] virtual std::int64_t max(std::int64_t value) = 0;
+  [[nodiscard]] virtual double max(double value) = 0;
+  /// The least finite `value` over all ranks and the `id` that goes with it,
+  /// the least id among equal values: the same pair on any number of ranks.
+  [[nodiscard]] std::pair<double, std::int64_t> argmin(double value, std::int64_t id) {
+    const double least = min(value);
+    const std::int64_t mine = value == least ? -id : std::numeric_limits<std::int64_t>::min();
+    return {least, -max(mine)};
+  }
 };
 
 /// A run on one rank.
@@ -31,6 +41,7 @@ class OneRank final : public Ranks {
   void sum(std::span<ExactSum> /*sums*/) override {}
   [[nodiscard]] double min(double value) override { return value; }
   [[nodiscard]] std::int64_t max(std::int64_t value) override { return value; }
+  [[nodiscard]] double max(double value) override { return value; }
 };
 
 }  // namespace autan::runtime
