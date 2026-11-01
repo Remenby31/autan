@@ -152,10 +152,10 @@ TEMPLATE_TEST_CASE("viscous residual of linear velocity and temperature is the d
   CHECK(worst <= 4096 * eps<P>());
 }
 
-// A velocity quadratic in y and vanishing on the wall y = 0, at uniform density and pressure: the
-// stress on the wall is mu (du/dy, 0, dw/dy) at each face centroid, and the quadratic fit of the
-// boundary cells gives it exactly, where a linear fit would be first order.
-TEMPLATE_TEST_CASE("wall shear stress of a quadratic velocity is exact", "[navier-stokes]",
+// A cubic velocity vanishing on the wall y = 0, at uniform density and pressure: the stress on the
+// wall is mu (du/dy, 0, dw/dy) at each face centroid, and the cubic fit of the boundary cells gives
+// it exactly, where a linear fit would be first order and a quadratic one second.
+TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-stokes]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
   const auto* file = GENERATE(from_range(meshes));
@@ -167,8 +167,9 @@ TEMPLATE_TEST_CASE("wall shear stress of a quadratic velocity is exact", "[navie
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
   constexpr double p = 1.0e5;
   auto velocity = [](double x, double y, double z) {
-    return std::array<double, 3>{y * (30.0 + 8.0 * x - 5.0 * z + 12.0 * y), 4.0 * y * y,
-                                 y * (-10.0 + 6.0 * x)};
+    return std::array<double, 3>{
+        y * (30.0 + 8.0 * x - 5.0 * z + 12.0 * y + 4.0 * x * x + 3.0 * y * y - 2.0 * x * z),
+        4.0 * y * y + y * y * y, y * (-10.0 + 6.0 * x + 2.0 * z * z)};
   };
   Scheme scheme;
   scheme.limiter = false;
@@ -214,7 +215,8 @@ TEMPLATE_TEST_CASE("wall shear stress of a quadratic velocity is exact", "[navie
   for (const auto b : wall) {
     const auto f = ni + b;
     const double x = g.face_centroid_x[f], z = g.face_centroid_z[f];
-    const std::array<double, 3> exact{mu * (30.0 + 8.0 * x - 5.0 * z), 0.0, mu * (-10.0 + 6.0 * x)};
+    const std::array<double, 3> exact{mu * (30.0 + 8.0 * x - 5.0 * z + 4.0 * x * x - 2.0 * x * z),
+                                      0.0, mu * (-10.0 + 6.0 * x + 2.0 * z * z)};
     for (std::size_t k = 0; k < 3; ++k) {
       worst = std::max(worst, std::abs(traction[k * nb + b] - exact[k]) / (mu * 45.0));
     }

@@ -215,21 +215,31 @@ def viscous_face(
     return -(f + Vec5(0.0, 0.0, 0.0, 0.0, warp_work(gu, gv, gwz, m, mu + mt)))
 
 
-# Boundary cells: weighted least-squares fit of a quadratic to T and the velocity over the cell's
-# stencil, the boundary faces whose condition gives T and the velocity (manufactured, walls)
-# included. Its gradient at a boundary face is exact for quadratic fields, where the linear fit's is
-# first order; the face's viscous flux is then second order, as on interior faces. Per stencil entry,
-# the fit's weights for the gradient at the centroid and the Hessian (diagonal; xy, xz, yz), set by
-# NavierStokes<P> (zero for the other cells, whose `quad` is 0).
-q_grad = Dataset("q_grad", MeshSet.STENCIL, Geom.Vec3, geometry=True)
-q_hdiag = Dataset("q_hdiag", MeshSet.STENCIL, Geom.Vec3, geometry=True)
-q_hoff = Dataset("q_hoff", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+# Boundary cells: weighted least-squares fit of a cubic polynomial to T and the velocity over the
+# cell's two-ring stencil, with the boundary faces whose condition gives T and the velocity
+# (manufactured, walls). Its gradient at a boundary face is exact for cubic fields: the face's
+# viscous flux error is O(h^3), so that boundary faces add no lower-order error than interior faces
+# (docs/design/ns-sa.md, Boundary conditions). Per stencil entry, the fit's 19 weights theta_k
+# (gradient, Hessian, third derivatives; NavierStokes<P>, zero for the other cells, whose `quad` is
+# 0) in seven 3-vectors: 0 the gradient, 1 (Hxx, Hyy, Hzz), 2 (Hxy, Hxz, Hyz), 3 (Cxxx, Cyyy, Czzz),
+# 4 (Cxxy, Cxxz, Cxyy), 5 (Cyyz, Cxzz, Cyzz), 6 (Cxyz, 0, 0).
+q0 = Dataset("q0", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q1 = Dataset("q1", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q2 = Dataset("q2", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q3 = Dataset("q3", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q4 = Dataset("q4", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q5 = Dataset("q5", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q6 = Dataset("q6", MeshSet.STENCIL, Geom.Vec3, geometry=True)
 quad = cells.field("quad", Geom)
 ut = cells.field("ut", State.Vec5)  # (T, u, v, w, 0)
 ut_b = faces.field("ut_b", State.Vec5)
-fit_g = cells.field("fit_g", Grad.Mat53)
-fit_hd = cells.field("fit_hd", Grad.Mat53)
-fit_ho = cells.field("fit_ho", Grad.Mat53)
+fit0 = cells.field("fit0", Grad.Mat53)
+fit1 = cells.field("fit1", Grad.Mat53)
+fit2 = cells.field("fit2", Grad.Mat53)
+fit3 = cells.field("fit3", Grad.Mat53)
+fit4 = cells.field("fit4", Grad.Mat53)
+fit5 = cells.field("fit5", Grad.Mat53)
+fit6 = cells.field("fit6", Grad.Mat53)
 
 
 @pointwise
@@ -276,25 +286,71 @@ def boundary_temperature_velocity(
 
 
 @pointwise
-def quadratic_term(
-    uc: State.Vec5, un: State.Vec5, a: Geom.Vec3, bd: Geom.Vec3, bo: Geom.Vec3
-) -> tuple[Grad.Mat53, Grad.Mat53, Grad.Mat53]:
+def cubic_term(
+    uc: State.Vec5,
+    un: State.Vec5,
+    a0: Geom.Vec3,
+    a1: Geom.Vec3,
+    a2: Geom.Vec3,
+    a3: Geom.Vec3,
+    a4: Geom.Vec3,
+    a5: Geom.Vec3,
+    a6: Geom.Vec3,
+) -> tuple[Grad.Mat53, Grad.Mat53, Grad.Mat53, Grad.Mat53, Grad.Mat53, Grad.Mat53, Grad.Mat53]:
     du = un - uc
-    return outer(du, a), outer(du, bd), outer(du, bo)
+    return (
+        outer(du, a0),
+        outer(du, a1),
+        outer(du, a2),
+        outer(du, a3),
+        outer(du, a4),
+        outer(du, a5),
+        outer(du, a6),
+    )
 
 
 @pointwise
-def quadratic_face_gradient(
-    g: Grad.Vec3, hd: Grad.Vec3, ho: Grad.Vec3, dphi: State, r: Geom.Vec3, e: Geom.Vec3, inv_d: Geom
+def cubic_face_gradient(
+    g: Grad.Vec3,
+    hd: Grad.Vec3,
+    ho: Grad.Vec3,
+    c0: Grad.Vec3,
+    c1: Grad.Vec3,
+    c2: Grad.Vec3,
+    c3: Grad.Vec3,
+    dphi: State,
+    r: Geom.Vec3,
+    e: Geom.Vec3,
+    inv_d: Geom,
 ) -> Grad.Vec3:
-    # g + H r at the face, its component along e replaced by the secant slope of the values, which
-    # the quadratic gives as (g + H r / 2) . e: the correction vanishes on quadratic fields.
+    # The fitted cubic's gradient at the face, its component along e replaced by the secant slope
+    # of the values, which the cubic gives as (phi(r) - phi(0)) / |r|: the correction vanishes on
+    # cubic fields. Monomials: x^3/6, y^3/6, z^3/6, x^2 y/2, x^2 z/2, x y^2/2, y^2 z/2, x z^2/2,
+    # y z^2/2, x y z.
+    x = r[0]
+    y = r[1]
+    z = r[2]
     hr = Vec3(
-        hd[0] * r[0] + ho[0] * r[1] + ho[1] * r[2],
-        ho[0] * r[0] + hd[1] * r[1] + ho[2] * r[2],
-        ho[1] * r[0] + ho[2] * r[1] + hd[2] * r[2],
+        hd[0] * x + ho[0] * y + ho[1] * z,
+        ho[0] * x + hd[1] * y + ho[2] * z,
+        ho[1] * x + ho[2] * y + hd[2] * z,
     )
-    return g + hr + (dphi * inv_d - dot(g + 0.5 * hr, e)) * e
+    grad_c = Vec3(
+        0.5 * x * x * c0[0] + x * y * c1[0] + x * z * c1[1] + 0.5 * y * y * c1[2]
+        + 0.5 * z * z * c2[1] + y * z * c3[0],
+        0.5 * y * y * c0[1] + 0.5 * x * x * c1[0] + x * y * c1[2] + y * z * c2[0]
+        + 0.5 * z * z * c2[2] + x * z * c3[0],
+        0.5 * z * z * c0[2] + 0.5 * x * x * c1[1] + 0.5 * y * y * c2[0] + x * z * c2[1]
+        + y * z * c2[2] + x * y * c3[0],
+    )
+    value_c = (
+        (x * x * x * c0[0] + y * y * y * c0[1] + z * z * z * c0[2]) / 6.0
+        + 0.5 * (x * x * y * c1[0] + x * x * z * c1[1] + x * y * y * c1[2])
+        + 0.5 * (y * y * z * c2[0] + x * z * z * c2[1] + y * z * z * c2[2])
+        + x * y * z * c3[0]
+    )
+    secant = (dot(g, r) + 0.5 * dot(hr, r) + value_c) * inv_d
+    return g + hr + grad_c + (dphi * inv_d - secant) * e
 
 
 @pointwise
@@ -302,9 +358,13 @@ def viscous_boundary(
     wl: State.Vec5,
     gl: Grad.Mat53,
     xl: Geom.Vec3,
-    qg: Grad.Mat53,
-    qd: Grad.Mat53,
-    qo: Grad.Mat53,
+    f0: Grad.Mat53,
+    f1: Grad.Mat53,
+    f2: Grad.Mat53,
+    f3: Grad.Mat53,
+    f4: Grad.Mat53,
+    f5: Grad.Mat53,
+    f6: Grad.Mat53,
     q: Geom,
     wb: State.Vec5,
     mb: State,
@@ -337,37 +397,53 @@ def viscous_boundary(
     adiabatic = wall and data[0] <= 0.0
     tb = boundary_temperature(wl, gl, xl, wb, kind, data, xf, rgas, pref)
     if q > 0.5:
-        gt = quadratic_face_gradient(
-            Vec3(qg[0, 0], qg[0, 1], qg[0, 2]),
-            Vec3(qd[0, 0], qd[0, 1], qd[0, 2]),
-            Vec3(qo[0, 0], qo[0, 1], qo[0, 2]),
+        gt = cubic_face_gradient(
+            Vec3(f0[0, 0], f0[0, 1], f0[0, 2]),
+            Vec3(f1[0, 0], f1[0, 1], f1[0, 2]),
+            Vec3(f2[0, 0], f2[0, 1], f2[0, 2]),
+            Vec3(f3[0, 0], f3[0, 1], f3[0, 2]),
+            Vec3(f4[0, 0], f4[0, 1], f4[0, 2]),
+            Vec3(f5[0, 0], f5[0, 1], f5[0, 2]),
+            Vec3(f6[0, 0], f6[0, 1], f6[0, 2]),
             tb - tl,
             r,
             e,
             inv_d,
         )
-        gu = quadratic_face_gradient(
-            Vec3(qg[1, 0], qg[1, 1], qg[1, 2]),
-            Vec3(qd[1, 0], qd[1, 1], qd[1, 2]),
-            Vec3(qo[1, 0], qo[1, 1], qo[1, 2]),
+        gu = cubic_face_gradient(
+            Vec3(f0[1, 0], f0[1, 1], f0[1, 2]),
+            Vec3(f1[1, 0], f1[1, 1], f1[1, 2]),
+            Vec3(f2[1, 0], f2[1, 1], f2[1, 2]),
+            Vec3(f3[1, 0], f3[1, 1], f3[1, 2]),
+            Vec3(f4[1, 0], f4[1, 1], f4[1, 2]),
+            Vec3(f5[1, 0], f5[1, 1], f5[1, 2]),
+            Vec3(f6[1, 0], f6[1, 1], f6[1, 2]),
             wb[1] - wl[1],
             r,
             e,
             inv_d,
         )
-        gv = quadratic_face_gradient(
-            Vec3(qg[2, 0], qg[2, 1], qg[2, 2]),
-            Vec3(qd[2, 0], qd[2, 1], qd[2, 2]),
-            Vec3(qo[2, 0], qo[2, 1], qo[2, 2]),
+        gv = cubic_face_gradient(
+            Vec3(f0[2, 0], f0[2, 1], f0[2, 2]),
+            Vec3(f1[2, 0], f1[2, 1], f1[2, 2]),
+            Vec3(f2[2, 0], f2[2, 1], f2[2, 2]),
+            Vec3(f3[2, 0], f3[2, 1], f3[2, 2]),
+            Vec3(f4[2, 0], f4[2, 1], f4[2, 2]),
+            Vec3(f5[2, 0], f5[2, 1], f5[2, 2]),
+            Vec3(f6[2, 0], f6[2, 1], f6[2, 2]),
             wb[2] - wl[2],
             r,
             e,
             inv_d,
         )
-        gwz = quadratic_face_gradient(
-            Vec3(qg[3, 0], qg[3, 1], qg[3, 2]),
-            Vec3(qd[3, 0], qd[3, 1], qd[3, 2]),
-            Vec3(qo[3, 0], qo[3, 1], qo[3, 2]),
+        gwz = cubic_face_gradient(
+            Vec3(f0[3, 0], f0[3, 1], f0[3, 2]),
+            Vec3(f1[3, 0], f1[3, 1], f1[3, 2]),
+            Vec3(f2[3, 0], f2[3, 1], f2[3, 2]),
+            Vec3(f3[3, 0], f3[3, 1], f3[3, 2]),
+            Vec3(f4[3, 0], f4[3, 1], f4[3, 2]),
+            Vec3(f5[3, 0], f5[3, 1], f5[3, 2]),
+            Vec3(f6[3, 0], f6[3, 1], f6[3, 2]),
             wb[3] - wl[3],
             r,
             e,
@@ -418,9 +494,13 @@ BOUNDARY_ARGS = {
     "wl": prim.left,
     "gl": grad.left,
     "xl": geometry.cell_centroid.left,
-    "qg": fit_g.left,
-    "qd": fit_hd.left,
-    "qo": fit_ho.left,
+    "f0": fit0.left,
+    "f1": fit1.left,
+    "f2": fit2.left,
+    "f3": fit3.left,
+    "f4": fit4.left,
+    "f5": fit5.left,
+    "f6": fit6.left,
     "q": quad.left,
     "wb": prim_b,
     "mb": mu_t_b,
@@ -450,15 +530,19 @@ boundary_temperatures_velocities = boundary_loop(
     out=Write(ut_b),
     frozen=True,
 )
-quadratic_fits = cell_reduce(
-    quadratic_term,
+cubic_fits = cell_reduce(
+    cubic_term,
     over=STENCIL,
     uc=ut.self_,
     un=ut.other(boundary=ut_b),
-    a=q_grad,
-    bd=q_hdiag,
-    bo=q_hoff,
-    acc=[Sum(fit_g), Sum(fit_hd), Sum(fit_ho)],
+    a0=q0,
+    a1=q1,
+    a2=q2,
+    a3=q3,
+    a4=q4,
+    a5=q5,
+    a6=q6,
+    acc=[Sum(fit0), Sum(fit1), Sum(fit2), Sum(fit3), Sum(fit4), Sum(fit5), Sum(fit6)],
 )
 
 viscous_faces = face_loop(viscous_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
@@ -516,9 +600,13 @@ def viscous_traction(
     wl: State.Vec5,
     gl: Grad.Mat53,
     xl: Geom.Vec3,
-    qg: Grad.Mat53,
-    qd: Grad.Mat53,
-    qo: Grad.Mat53,
+    f0: Grad.Mat53,
+    f1: Grad.Mat53,
+    f2: Grad.Mat53,
+    f3: Grad.Mat53,
+    f4: Grad.Mat53,
+    f5: Grad.Mat53,
+    f6: Grad.Mat53,
     q: Geom,
     wb: State.Vec5,
     mb: State,
@@ -543,9 +631,13 @@ def viscous_traction(
         wl,
         gl,
         xl,
-        qg,
-        qd,
-        qo,
+        f0,
+        f1,
+        f2,
+        f3,
+        f4,
+        f5,
+        f6,
         q,
         wb,
         mb,
