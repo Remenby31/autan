@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 from autan_codegen import dsl
-from autan_codegen.ad import adjoint, tangent
+from autan_codegen.ad import adjoint, jacobian, tangent
 from autan_codegen.dsl import (
     Geom,
     Grad,
@@ -264,3 +264,48 @@ def test_boundary_states_from_active_data_must_be_declared_frozen() -> None:
         "ok", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face), frozen=True)
     )
     assert lm.kind == "boundary_write"
+
+
+@pointwise
+def two_sided(ql: State.Vec5, qr: State.Vec5, n: Geom.Vec3) -> Residual.Vec5:
+    return dot(ql, ql) * qr + n[0] * ql
+
+
+u5 = cells.field("u5", State.Vec5)
+r5 = cells.field("r5", Residual.Vec5)
+
+
+def test_jacobian_outputs_are_checked_against_the_body() -> None:
+    good = dsl.faces.field("good", dsl.Jac.shape(2, 5, 5))
+    out = [dsl.Inc(r5, left=1, right=-1), dsl.Jacobian(good, wrt=("ql", "qr"))]
+    lm = build_loop(
+        "ok", dsl.face_loop(two_sided, ql=u5.left, qr=u5.right, n=dsl.geometry.face_normal, out=out)
+    )
+    assert len(lm.jac_fns) == 1
+    assert len(lm.jac_fns[0][1].outputs) == 50
+    for dataset, wrt, code in (
+        (dsl.faces.field("flat", dsl.Jac.shape(5, 5)), ("ql", "qr"), "E1004"),
+        (dsl.faces.field("state", State.Mat5), ("ql",), "E1004"),
+        (dsl.cells.field("on_cells", dsl.Jac.shape(5, 5)), ("ql",), "E1004"),
+        (dsl.faces.field("geom", dsl.Jac.shape(5, 3)), ("n",), "E1003"),
+    ):
+        out = [dsl.Inc(r5, left=1, right=-1), dsl.Jacobian(dataset, wrt=wrt)]
+        with pytest.raises(CodegenError) as info:
+            build_loop(
+                "bad",
+                dsl.face_loop(
+                    two_sided, ql=u5.left, qr=u5.right, n=dsl.geometry.face_normal, out=out
+                ),
+            )
+        assert info.value.code == code, dataset.name
+
+
+def test_jacobian_columns_are_the_partial_derivatives() -> None:
+    # F = (ql . ql) qr + n0 ql: dF/dql = 2 qr ql^T + n0 I, dF/dqr = (ql . ql) I.
+    fn, _ = parse(two_sided)
+    jfn = jacobian(fn, [0, 1])
+    ql, qr, n = (1.0, 2.0, -1.0, 0.5, 3.0), (0.5, -2.0, 1.0, 4.0, 1.0), (2.0, 0.0, 0.0)
+    got = np.array(run(jfn, ql, qr, n)).reshape(2, 5, 5)
+    a, b = np.array(ql), np.array(qr)
+    np.testing.assert_allclose(got[0], 2.0 * np.outer(b, a) + 2.0 * np.eye(5), rtol=1e-15)
+    np.testing.assert_allclose(got[1], (a @ a) * np.eye(5), rtol=1e-15)

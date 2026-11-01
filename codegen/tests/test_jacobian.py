@@ -17,7 +17,9 @@ def euler_states(m: s.Mesh, rng: np.random.Generator) -> np.ndarray:
     rho = 1.0 + 0.2 * rng.random(m.n_cells)
     vel = 0.3 * rng.standard_normal((m.n_cells, 3))
     p = 1.0 + 0.2 * rng.random(m.n_cells)
-    return np.column_stack([rho, rho[:, None] * vel, p / 0.4 + 0.5 * rho * np.sum(vel * vel, axis=1)])
+    return np.column_stack(
+        [rho, rho[:, None] * vel, p / 0.4 + 0.5 * rho * np.sum(vel * vel, axis=1)]
+    )
 
 
 def assembled(m: s.Mesh, jac: np.ndarray) -> np.ndarray:
@@ -57,5 +59,8 @@ def test_device_face_jacobians_equal_host(strategy: str, policy: str) -> None:
     host_res, host_jac = s.roe_jacobian(m, policy, u)
     dev_res, dev_jac = s.roe_jacobian(m, policy, u, strategy)
     interior = slice(0, m.n_interior)
-    assert np.abs(dev_jac[interior] - host_jac[interior]).max() <= 500 * eps(policy) * np.abs(host_jac).max()
+    assert (
+        np.abs(dev_jac[interior] - host_jac[interior]).max()
+        <= 500 * eps(policy) * np.abs(host_jac).max()
+    )
     assert np.abs(dev_res - host_res).max() <= 500 * eps(policy) * np.abs(host_res).max()
