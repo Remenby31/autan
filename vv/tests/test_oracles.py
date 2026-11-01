@@ -92,6 +92,15 @@ def test_ringleb_follows_the_hiocfd_conventions() -> None:
     np.testing.assert_allclose(_ringleb_point(0.5, 1.0)[:2], point[0, :2], rtol=1e-9)
 
 
+def test_ringleb_is_accurate_next_to_the_symmetry_axis() -> None:
+    # At y -> 0, u = y k rho V^2 -> 0 linearly (the hodograph y = cos(theta)/(k rho V)).
+    on_axis = _ringleb_point(0.9, 0.9)
+    near = on_axis + np.array([0.0, 1e-9, 0.0])
+    f = ringleb().fields(near[None, :])
+    c = math.sqrt(1 - 0.2 * 0.81)
+    assert f["VelocityX"][0] == pytest.approx(1e-9 * 0.9 * c**5 * 0.81, rel=1e-5)
+
+
 def test_ringleb_velocity_is_continuous_across_the_symmetry_axis() -> None:
     oracle = ringleb()
     above = oracle.fields(_ringleb_point(0.7, 0.7000001)[None, :])
@@ -107,7 +116,16 @@ def test_ringleb_rejects_points_outside_its_domain(point: list[float]) -> None:
     assert err.value.code == "V0706"
 
 
-@pytest.mark.parametrize("kwargs", [{"strength": 9.0}, {"period": (2.0, 2.0)}])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"strength": 9.0},
+        {"period": (2.0, 2.0)},
+        {"period": (1e-16, 2.0)},
+        {"period": (0.0, 20.0)},
+        {"period": (float("inf"), 20.0)},
+    ],
+)
 def test_vortex_rejects_parameters_that_break_the_exact_solution(kwargs: dict[str, object]) -> None:
     with pytest.raises(VVError) as err:
         isentropic_vortex(**kwargs)  # type: ignore[arg-type]
@@ -178,7 +196,7 @@ def test_riemann_solver_handles_strong_rarefactions_and_soft_gases() -> None:
     a_l, a_r, z = math.sqrt(1.4 * 0.1 / 0.5), math.sqrt(1.4 * 1.0 / 0.5), 0.4 / 2.8
     p_tr = ((a_l + a_r - 0.2 * 5.0) / (a_l / 0.1**z + a_r / 1.0**z)) ** (1 / z)
     assert star_region(left, right, 1.4).p == pytest.approx(p_tr, rel=1e-14)
-    for name, gamma in (("sod", 1.04), ("lax", 1.02)):
+    for name, gamma in (("sod", 1.04), ("lax", 1.02), ("sod", 1.002)):
         left, right = SHOCK_TUBES[name]
         star = star_region(left, right, gamma)
         # Left rarefaction: isentropic, and the Riemann invariant u + 2a/(gamma - 1) is constant.
@@ -332,14 +350,16 @@ def test_shu_osher_reference_places_the_shock_and_leaves_the_upstream_flow_untou
     # Behind it the entropy wave survives as density oscillations.
     behind = (x > 0.5) & (x < shock - 0.2)
     assert np.ptp(f["Density"][behind]) > 0.5
-    with pytest.raises(VVError) as err:
-        oracle.fields(np.zeros((1, 3)), 0.0)
-    assert err.value.code == "V0707"
+    for point, time in (([0.0, 0, 0], 0.0), ([6.0, 0, 0], 1.8), ([float("inf"), 0, 0], 1.8)):
+        with pytest.raises(VVError) as err:
+            oracle.fields(np.array([point]), time)
+        assert err.value.code == "V0707"
     assert list(tmp_path.glob("shu-osher-*.npy")), "the reference is cached"
 
 
 def test_registry_builds_every_oracle_and_rejects_unknown_names() -> None:
-    for name in sorted(set(ORACLES) - {"shu-osher"}):  # its reference takes a minute to compute
+    assert "shu-osher" not in ORACLES  # not an oracle until independent data confirm it
+    for name in sorted(ORACLES):
         oracle = get_oracle(name)
         assert oracle.name == name or name.startswith("mms-")
         f = oracle.fields(

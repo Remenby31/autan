@@ -1,9 +1,12 @@
-"""Shu-Osher shock/entropy-wave interaction: a fine-grid 1D reference (regression only).
+"""Shu-Osher shock/entropy-wave interaction: a fine-grid 1D reference, not yet an oracle.
 
 The problem has no exact solution. The reference comes from a 1D finite-volume solve: MUSCL
 reconstruction of primitive variables with the van Leer limiter, HLLC fluxes (Toro 2009, section
 10.6) and the third-order SSP Runge-Kutta scheme (Shu and Osher 1988), on `cells` uniform cells.
-`test_oracles.py` checks this solver against the exact Sod solution, a second, independent source.
+`test_oracles.py` checks this solver against the exact Sod solution and the profile's exact parts
+(the undisturbed flow ahead of the shock). The oscillatory profile behind the shock is confirmed by
+no independent source yet, so the reference is not registered as an oracle (AGENTS.md, Tests): it
+waits for independently published fine-grid data.
 """
 
 from __future__ import annotations
@@ -129,8 +132,11 @@ def shu_osher(cells: int = 12800, t_end: float = 1.8, cache_dir: Path | None = N
         if time is None or not math.isclose(time, t_end, rel_tol=1e-12):
             msg = f"the Shu-Osher reference exists at t = {t_end} only, not t = {time}"
             raise VVError(msg, code="V0707")
-        rho, u, p = reference()
         x = points[:, 0]
+        if not (np.all(np.isfinite(x)) and np.all(x >= DOMAIN[0]) and np.all(x <= DOMAIN[1])):
+            msg = f"the Shu-Osher reference covers {DOMAIN[0]} <= x <= {DOMAIN[1]} only"
+            raise VVError(msg, code="V0707")
+        rho, u, p = reference()
         zero = np.zeros_like(x)
         return {
             "Density": np.interp(x, xc, rho),
