@@ -184,7 +184,7 @@ Fix: Regenerate the partition; global cell ids must be unique and non-negative.
 
 **Invalid periodic pair** (error)
 
-A periodic pair is declared wrongly: zones out of range or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite.
+A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite.
 
 Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.
 
