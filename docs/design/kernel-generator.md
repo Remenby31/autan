@@ -18,6 +18,8 @@ The build runs the generator as a CMake custom command (`codegen/CMakeLists.txt`
 | `AUTAN_ENABLE_HIP` | the same generated GPU loops compiled with HIP into `autan_kernels_gpu`; exclusive with CUDA |
 | `AUTAN_ENABLE_METAL` (macOS) | Metal loops, runtime `autan_metal`, driver `autan_spike_metal`, benchmarks `autan_metal_stream` and `autan_metal_loop_bench` |
 
+The benchmarks record the commit they were built from (`codegen/bench/revision.cmake`): `AUTAN_COMMIT` when given, as for the runtime, else the git commit; a build from an export without either goes on and records `unknown`, marked dirty.
+
 ## DSL
 
 ```python
