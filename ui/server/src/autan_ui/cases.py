@@ -33,26 +33,30 @@ class Meshes:
             if p.name.endswith(MESH_INFO) and not p.name.startswith(".")
         )
 
-    def read(self, name: str) -> autan.MeshInfo:
-        if self.root is None or name not in self.names():
+    def _listed(self, name: str) -> tuple[Path, str]:
+        # The directory and its own spelling of a listed name: no path is built from a request.
+        listed = {n: n for n in self.names()}.get(name)
+        if self.root is None or listed is None:
             msg = f"no MeshInfo {name!r}"
             raise LookupError(msg)
-        with Folder(self.root) as folder:
+        return self.root, listed
+
+    def read(self, name: str) -> autan.MeshInfo:
+        root, name = self._listed(name)
+        with Folder(root) as folder:
             document = json.loads(folder.read(name + MESH_INFO).decode())
         return autan.MeshInfo.from_document(document, Location(file=name + MESH_INFO))
 
     def surface(self, name: str) -> bytes:
         # The `autan.surface/1` file `autan-mesh-info --surface` wrote next to the MeshInfo, as
         # a viewer message; LookupError when there is none, ValueError when it breaks a contract.
-        if self.root is None or name not in self.names():
-            msg = f"no MeshInfo {name!r}"
-            raise LookupError(msg)
+        root, name = self._listed(name)
         try:
             mesh_info = self.read(name).document()  # Checked as the SDK checks a MeshInfo.
         except (OSError, ValueError, CaseError) as error:
             msg = f"{name}{MESH_INFO} is not a valid MeshInfo: {error}"
             raise ValueError(msg) from error
-        with Folder(self.root) as folder:
+        with Folder(root) as folder:
             if folder.stat(name + SURFACE) is None:
                 msg = f"no surface for {name!r}: write it with autan-mesh-info --surface"
                 raise LookupError(msg)
