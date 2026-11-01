@@ -21,6 +21,7 @@ struct Euler<P>::Impl {
   using Gr = typename P::grad;
 
   Scheme scheme;
+  bool limiter_frozen = false;
   kernels::Topology topo{};
   // Each geometry array has the element type its Data<P> member stores (the generator stores
   // geometry that bodies read only as values in P::geom_value).
@@ -283,6 +284,18 @@ std::vector<double> Euler<P>::gradient_weights() const {
   return {w.begin(), w.end()};
 }
 
+#ifdef AUTAN_EXPERIMENT_DIAG
+template <class P>
+void Euler<P>::set_limiter_frozen(bool frozen) {
+  impl_->limiter_frozen = frozen;
+}
+
+template <class P>
+std::vector<double> Euler<P>::limiter_values() const {
+  return {impl_->phi.begin(), impl_->phi.end()};
+}
+#endif
+
 template <class P>
 void Euler<P>::set_second_order(bool on) {
   auto& m = *impl_;
@@ -324,7 +337,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
     ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
+    if (m.scheme.limiter && !m.limiter_frozen) {
       ek::cpu::limiter(m.d);
     }
   }
@@ -352,7 +365,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
     ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
+    if (m.scheme.limiter && !m.limiter_frozen) {
       ek::cpu::limiter(m.d);
     }
   }

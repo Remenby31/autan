@@ -58,6 +58,10 @@ target_link_libraries(
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
 set_target_properties(autan_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
+option(AUTAN_EXPERIMENT_DIAG "Experiment only: limiter and residual diagnostics" OFF)
+if(AUTAN_EXPERIMENT_DIAG)
+  target_compile_definitions(autan_physics PUBLIC AUTAN_EXPERIMENT_DIAG)
+endif()
 
 # C ABI over the residual, loaded through ctypes by the manufactured-solution study (mms/).
 add_library(autan_physics_mms SHARED mms/capi.cpp)

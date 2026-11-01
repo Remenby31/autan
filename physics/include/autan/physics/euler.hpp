@@ -73,6 +73,10 @@ class Euler {
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
+#ifdef AUTAN_EXPERIMENT_DIAG
+  void set_limiter_frozen(bool frozen);
+  [[nodiscard]] std::vector<double> limiter_values() const;
+#endif
   /// The least-squares weights of the gradient over its stencil (layout of
   /// kernels::CellStencil::lsq_weight). They depend on set_boundary: boundary faces take part
   /// where their condition gives the state there, and in the cells whose interior stencil alone

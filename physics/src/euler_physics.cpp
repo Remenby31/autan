@@ -12,6 +12,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef AUTAN_EXPERIMENT_DIAG
+#include <cstdio>
+#include <cstdlib>
+#include "autan/core/quality.hpp"
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -123,8 +128,25 @@ class EulerPhysics final : public runtime::Physics {
     if (ctx.start != nullptr) start_from(*ctx.start);
   }
 
-  StepReport step(std::int64_t /*iteration*/) override {
+  StepReport step(std::int64_t iteration) override {
     StepReport report;
+#ifdef AUTAN_EXPERIMENT_DIAG
+    if (const char* n = std::getenv("AUTAN_EXP_FREEZE")) {
+      if (!frozen_ && second_order_ && iteration >= std::atoll(n)) {
+        frozen_ = true;
+        euler_.set_limiter_frozen(true);
+        std::fprintf(stderr, "EXPERIMENT: limiter frozen at iteration %lld\n",
+                     static_cast<long long>(iteration));
+      }
+    }
+    struct After {
+      EulerPhysics& self;
+      std::int64_t it;
+      ~After() { self.track(it); }
+    } after{*this, iteration};
+#else
+    (void)iteration;
+#endif
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception.
     if (const auto bad = first_invalid_cell()) {
@@ -273,6 +295,12 @@ class EulerPhysics final : public runtime::Physics {
     // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
     s.limiter = !in.verification.has_value();
     s.venkat_k = venkatakrishnan_k;
+#ifdef AUTAN_EXPERIMENT_DIAG
+    if (const char* k = std::getenv("AUTAN_EXP_K")) {
+      s.venkat_k = std::atof(k);
+      std::fprintf(stderr, "EXPERIMENT: Venkatakrishnan K = %g\n", s.venkat_k);
+    }
+#endif
     s.length = f.ref_length.value_or(1.0);
     s.scale = {f.density, speed, speed, speed, f.pressure};
     s.mach_ref = f.speed / c;
@@ -581,13 +609,20 @@ class EulerPhysics final : public runtime::Physics {
     residual_of(u_);
     record_norms(report);
     double dt = t.dt.value_or(0.0);
+    std::vector<double> local(n_, 0.0);
     if (t.cfl) {
       euler_.spectral_radius(lambda_);
       dt = std::numeric_limits<double>::infinity();
       for (std::size_t c = 0; c < n_; ++c) {
-        dt = std::min(dt, *t.cfl * g.cell_volume[c] / static_cast<double>(lambda_[c]));
+        local[c] = *t.cfl * g.cell_volume[c] / static_cast<double>(lambda_[c]);
+        dt = std::min(dt, local[c]);
       }
     }
+#ifdef AUTAN_EXPERIMENT_DIAG
+    const bool local_dt = std::getenv("AUTAN_EXP_LOCAL_DT") != nullptr && t.cfl;
+#else
+    const bool local_dt = false;
+#endif
     const std::array<std::array<double, 2>, 3> weights{
         {{0.0, 1.0}, {0.75, 0.25}, {1.0 / 3.0, 2.0 / 3.0}}};
     stage_ = u_;
@@ -596,7 +631,8 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) {
         for (std::size_t c = 0; c < n_; ++c) {
           const auto i = k * n_ + c;
-          const double next = stage_[i] - dt / g.cell_volume[c] * static_cast<double>(res_[i]);
+          const double h = local_dt ? local[c] : dt;
+          const double next = stage_[i] - h / g.cell_volume[c] * static_cast<double>(res_[i]);
           stage_[i] = weights[s][0] * u_[i] + weights[s][1] * next;
         }
       }
@@ -667,6 +703,85 @@ class EulerPhysics final : public runtime::Physics {
     self.residual_of(u_);
     euler_.boundary_pressure(p, force);
   }
+
+#ifdef AUTAN_EXPERIMENT_DIAG
+ public:
+  ~EulerPhysics() override { dump("final"); }
+
+ private:
+  bool frozen_ = false;
+  std::vector<double> prev_phi_;
+  std::vector<double> flips_;
+  std::FILE* steps_ = nullptr;
+
+  // Per step: the cells whose limiter (min over the variables) moved by more than 0.05.
+  void track(std::int64_t it) {
+    const char* prefix = std::getenv("AUTAN_EXP_DUMP");
+    if (prefix == nullptr || !second_order_) return;
+    const auto v = euler_.limiter_values();
+    std::vector<double> phi(n_, 1.0);
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < n_; ++c) phi[c] = std::min(phi[c], v[k * n_ + c]);
+    }
+    if (flips_.empty()) flips_.assign(n_, 0.0);
+    std::size_t moved = 0;
+    if (!prev_phi_.empty()) {
+      for (std::size_t c = 0; c < n_; ++c) {
+        if (std::abs(phi[c] - prev_phi_[c]) > 0.05) {
+          flips_[c] += 1.0;
+          ++moved;
+        }
+      }
+    }
+    prev_phi_ = phi;
+    if (steps_ == nullptr) steps_ = std::fopen((std::string(prefix) + ".steps.csv").c_str(), "w");
+    std::fprintf(steps_, "%lld,%zu\n", static_cast<long long>(it), moved);
+    std::fflush(steps_);
+    if (it % 500 == 0) dump(std::to_string(it));
+  }
+
+  // Per cell: |R_k| / (f_k A_c) maxed over k, limiter, flips, volume, worst face metrics.
+  void dump(const std::string& tag) {
+    const char* prefix = std::getenv("AUTAN_EXP_DUMP");
+    if (prefix == nullptr) return;
+    const auto& mesh = ctx_.mesh;
+    const auto& g = ctx_.geometry;
+    residual_of(u_);
+    const auto scales = residual_scales();
+    std::vector<double> surface(n_, 0.0), nonorth(n_, 0.0), skew(n_, 0.0);
+    const auto q = compute_quality(mesh, g);
+    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+      for (const bool own : {true, false}) {
+        if (!own && f >= static_cast<std::size_t>(mesh.n_interior_faces())) continue;
+        const auto c = static_cast<std::size_t>(own ? mesh.owner()[f] : mesh.neighbour()[f]);
+        if (c >= n_) continue;
+        surface[c] += g.face_area[f];
+        nonorth[c] = std::max(nonorth[c], q.non_orthogonality[f]);
+        skew[c] = std::max(skew[c], q.skewness[f]);
+      }
+    }
+    double sum = 0.0;
+    for (const double a : surface) sum += a * a;
+    const double area = std::sqrt(sum / static_cast<double>(n_));
+    const auto v = euler_.limiter_values();
+    std::FILE* out = std::fopen((std::string(prefix) + "." + tag + ".cells.csv").c_str(), "w");
+    std::fprintf(out, "cell,x,y,z,volume,r0,r1,r2,r3,r4,phi,flips,nonorth,skew,aspect\n");
+    for (std::size_t c = 0; c < n_; ++c) {
+      double phi = 1.0;
+      for (std::size_t k = 0; k < 5; ++k) phi = std::min(phi, v[k * n_ + c]);
+      std::fprintf(out, "%zu,%.9g,%.9g,%.9g,%.6g", c, g.cell_centroid_x[c], g.cell_centroid_y[c],
+                   g.cell_centroid_z[c], g.cell_volume[c]);
+      for (std::size_t k = 0; k < 5; ++k) {
+        std::fprintf(out, ",%.6g",
+                     std::abs(static_cast<double>(res_[k * n_ + c])) /
+                         (scales[k] / area * surface[c]));
+      }
+      std::fprintf(out, ",%.4g,%g,%.4g,%.4g,%.4g\n", phi, flips_.empty() ? 0.0 : flips_[c],
+                   nonorth[c], skew[c], c < q.aspect_ratio.size() ? q.aspect_ratio[c] : 0.0);
+    }
+    std::fclose(out);
+  }
+#endif
 
   PhysicsContext ctx_;
   Gas gas_;
