@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 import autan
 import uvicorn
-from autan.errors import CaseError
+from autan.errors import CaseError, doc_url
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
@@ -21,7 +21,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from watchfiles import Change, awatch
 
 from autan_ui.confine import Folder, is_link
-from autan_ui.history import read_history
+from autan_ui.history import read_lines
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
@@ -62,17 +62,18 @@ MAX_FOLLOWED = 8
 
 
 class Follower:
-    """One run read for a stream: run.json when it changes and history.jsonl from a byte offset,
-    through a folder pinned at the start so that replacing the directory cannot redirect reads.
-    `done` once the history breaks the contract (an `invalid` event was produced)."""
+    """One run read for a stream: run.json when it changes, history.jsonl and log.jsonl from
+    byte offsets, through a folder pinned at the start so that replacing the directory cannot
+    redirect reads. `done` once a file breaks the contract (an `invalid` event was produced).
+    Log lines carry the documentation page of their code as `doc`."""
 
-    def __init__(self, directory: Path, offset: int) -> None:
+    def __init__(self, directory: Path, offsets: dict[str, int]) -> None:
         self.directory = directory
         self.folder = Folder(directory)
-        self.offset = offset
+        self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
         self.run: dict[str, Any] | None = None
         self.run_mtime: int | None = None
-        self.sent_history = False
+        self.sent = False
         self.done = False
 
     def poll(self) -> list[tuple[str, Any]]:
@@ -85,29 +86,48 @@ class Follower:
                 self.done = True
                 return [("invalid", str(error))]
             events.append(("run", self.run))
-        try:
-            chunk = read_history(self.folder, self.offset, live=self.run["status"] == "running")
-        except (OSError, ValueError) as error:
-            self.done = True
-            return [*events, ("invalid", str(error))]
-        if chunk.records or not self.sent_history:
-            self.offset, self.sent_history = chunk.offset, True
-            events.append(("history", chunk.records))
+        live = self.run["status"] == "running"
+        for name, event in STREAMED.items():
+            try:
+                chunk = read_lines(self.folder, name, self.offsets[name], live=live)
+            except (OSError, ValueError) as error:
+                self.done = True
+                return [*events, ("invalid", str(error))]
+            if chunk.records or not self.sent:
+                self.offsets[name] = chunk.offset
+                records = chunk.records
+                if event == "log":
+                    records = [_with_doc(line) for line in records if isinstance(line, dict)]
+                events.append((event, records))
+        self.sent = True
         return events
 
     def close(self) -> None:
         self.folder.close()
 
 
-def _offsets(last_event_id: str | None) -> dict[str, int]:
-    """The byte offsets of a reconnecting multi-run stream; anything malformed restarts at 0."""
+STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
+
+
+def _with_doc(line: dict[str, Any]) -> dict[str, Any]:
+    code = line.get("code")
+    return line | {"doc": doc_url(code) if isinstance(code, str) and code else None}
+
+
+def _offsets(last_event_id: str | None) -> dict[str, Any]:
+    """The offsets of a reconnecting stream, as its last event id carried them; anything
+    malformed restarts from the start of the files."""
     try:
         parsed = json.loads(last_event_id) if last_event_id else {}
     except ValueError:
         return {}
-    if not isinstance(parsed, dict):
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _file_offsets(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
         return {}
-    return {k: v for k, v in parsed.items() if type(v) is int and v >= 0}
+    return {k: v for k, v in value.items() if k in STREAMED and type(v) is int and v >= 0}
 
 
 def _mtime(folder: Folder) -> int | None:
@@ -225,7 +245,9 @@ def create_app(
         followers: dict[str, Follower] = {}
         try:
             for run_id in run_ids:
-                followers[run_id] = Follower(registry.run_dir(run_id), offsets.get(run_id, 0))
+                followers[run_id] = Follower(
+                    registry.run_dir(run_id), _file_offsets(offsets.get(run_id))
+                )
         except (LookupError, ValueError, OSError) as error:
             for follower in followers.values():
                 follower.close()
@@ -241,8 +263,8 @@ def create_app(
                         continue
                     for event, data in follower.poll():
                         payload = {"run_id": run_id, "data": data}
-                        if event == "history":
-                            ids = {k: f.offset for k, f in followers.items()}
+                        if event in STREAMED.values():
+                            ids = {k: f.offsets for k, f in followers.items()}
                             yield ServerSentEvent(event=event, data=payload, id=json.dumps(ids))
                         else:
                             yield ServerSentEvent(event=event, data=payload)
@@ -303,12 +325,11 @@ def create_app(
         request: Request,
         last_event_id: Annotated[str | None, Header()] = None,
     ) -> AsyncIterator[ServerSentEvent]:
-        """`run` with the current run.json, then `history` batches; the event id is the byte
-        offset reached, so a reconnecting EventSource resumes where it stopped. A history that
-        breaks the contract ends the stream with `invalid` and its reason."""
-        offset = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
+        """`run` with the current run.json, then `history` and `log` batches; the event id is
+        the JSON map of byte offsets reached, so a reconnecting EventSource resumes where it
+        stopped. A file that breaks the contract ends the stream with `invalid` and its reason."""
         try:
-            follower = Follower(registry.run_dir(run_id), offset)
+            follower = Follower(registry.run_dir(run_id), _file_offsets(_offsets(last_event_id)))
         except (LookupError, ValueError, OSError) as error:
             yield ServerSentEvent(event="invalid", data=f"run {run_id} is gone: {error}")
             return
@@ -318,8 +339,9 @@ def create_app(
         try:
             while True:
                 for event, data in follower.poll():
-                    if event == "history":
-                        yield ServerSentEvent(event=event, data=data, id=str(follower.offset))
+                    if event in STREAMED.values():
+                        cursor = json.dumps(follower.offsets)
+                        yield ServerSentEvent(event=event, data=data, id=cursor)
                     else:
                         yield ServerSentEvent(event=event, data=data)
                 if follower.done or await anext(changes, None) is None:

@@ -168,7 +168,7 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
     directory = next(runs.iterdir())
     run_id = directory.name
     with httpx.stream("GET", f"{server}/api/runs/{run_id}/history/events", timeout=10) as response:
-        events = sse_events(response)
+        events = (e for e in sse_events(response) if e[0] != "log")
         assert next(events)[0] == "run"
         kind, records = next(events)
         assert kind == "history"
@@ -320,7 +320,7 @@ def test_a_linked_index_disables_static_files(runs: Path, static: Path, tmp_path
         assert httpx.get(f"{url}/api/runs").status_code == 200
 
 
-@pytest.mark.parametrize("linked", ["directory", "run.json", "history.jsonl"])
+@pytest.mark.parametrize("linked", ["directory", "run.json", "history.jsonl", "log.jsonl"])
 def test_a_run_reached_through_a_link_is_refused(
     runs: Path, server: str, tmp_path: Path, linked: str
 ) -> None:
@@ -409,11 +409,35 @@ def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
     resume = {"Last-Event-ID": json.dumps({first.name: 0, second.name: None})}
     with httpx.stream("GET", url, headers=resume, timeout=10) as response:
         events = sse_events(response)
-        seen = [next(events) for _ in range(4)]
+        seen = [next(events) for _ in range(6)]
     assert sorted((kind, data["run_id"]) for kind, data in seen) == sorted(
-        [(k, r) for k in ("run", "history") for r in (first.name, second.name)]
+        [(k, r) for k in ("run", "history", "log") for r in (first.name, second.name)]
     )
     assert (
         httpx.get(f"{server}/api/runs/history/events?run=run-20261031T000000Z-deadbeef").status_code
         == 404
     )
+
+
+def test_the_log_streams_with_a_documentation_link_per_code(runs: Path, server: str) -> None:
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    diverged = case.run(mesh_info, backend=autan.FakeBackend(diverge_at=20), runs=runs).path
+    written = [json.loads(line) for line in (diverged / "log.jsonl").read_text().splitlines()]
+    url = f"{server}/api/runs/{diverged.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        _, lines = next(e for e in sse_events(response) if e[0] == "log")
+
+    assert [{k: v for k, v in line.items() if k != "doc"} for line in lines] == written
+    coded = [line for line in lines if line["code"]]
+    assert [line["code"] for line in coded if line["code"] == "D0107"] == ["D0107"]
+    assert all(line["doc"].endswith(line["code"].lower()) for line in coded)
+    assert all(line["doc"] is None for line in lines if not line["code"])
+
+
+def test_removing_the_log_after_a_scan_rejects_the_run(runs: Path) -> None:
+    source = next(runs.iterdir())
+    registry = Registry(runs)
+    assert source.name in registry.scan().runs
+    (source / "log.jsonl").unlink()
+    assert source.name in registry.scan().rejected

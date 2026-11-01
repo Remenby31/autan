@@ -1,6 +1,6 @@
 import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type { Diagnostic, Forces, HistoryRecord, Run, RunRegistry } from "./contracts";
+import type { Diagnostic, Forces, HistoryRecord, LogLine, Run, RunRegistry } from "./contracts";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -196,9 +196,16 @@ export function soleForces(history: HistoryColumns): ForceColumns | null {
   return history.forces.size === 1 ? ([...history.forces.values()][0] ?? null) : null;
 }
 
+/** log.jsonl lines, appended in place; `version` changes on every append. */
+export interface LogLines {
+  lines: LogLine[];
+  version: number;
+}
+
 export interface LiveRun {
   run: Run | null;
   history: HistoryColumns;
+  log: LogLines;
   connected: boolean;
   invalid: string | null;
 }
@@ -208,12 +215,14 @@ export function useLiveRun(runId: string): LiveRun {
   const [state, setState] = useState<LiveRun>(() => ({
     run: null,
     history: emptyColumns(),
+    log: { lines: [], version: 0 },
     connected: false,
     invalid: null,
   }));
   useEffect(() => {
     let history = emptyColumns();
-    setState({ run: null, history, connected: false, invalid: null });
+    const log: LogLines = { lines: [], version: 0 };
+    setState({ run: null, history, log, connected: false, invalid: null });
     const source = new EventSource(`/api/runs/${runId}/history/events`);
     source.onopen = () => setState((s) => ({ ...s, connected: true }));
     source.onerror = () => setState((s) => ({ ...s, connected: false }));
@@ -227,6 +236,14 @@ export function useLiveRun(runId: string): LiveRun {
       history = appendHistory(history, records);
       const next = history;
       setState((s) => ({ ...s, history: next }));
+    });
+    source.addEventListener("log", (e) => {
+      const lines = JSON.parse(e.data) as LogLine[];
+      if (!lines.length) return;
+      log.lines.push(...lines);
+      const next = { lines: log.lines, version: log.version + lines.length };
+      log.version = next.version;
+      setState((s) => ({ ...s, log: next }));
     });
     source.addEventListener("invalid", (e) => {
       const reason = JSON.parse(e.data) as string;
@@ -253,6 +270,7 @@ export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> 
         const old = s.get(runId) ?? {
           run: null,
           history: histories.get(runId) ?? emptyColumns(),
+          log: { lines: [], version: 0 },
           connected: true,
           invalid: null,
         };

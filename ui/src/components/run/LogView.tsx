@@ -1,47 +1,42 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Diagnostic } from "../../api/contracts";
-import type { HistoryColumns } from "../../api/runs";
+import type { LogLine } from "../../api/contracts";
+import type { HistoryColumns, LogLines } from "../../api/runs";
 import { cn } from "../ui/cn";
 import { LiveToggle } from "../ui/LiveToggle";
+import { SearchInput } from "../ui/SearchInput";
 
 const ROW = 32;
 const BUCKETS = 120;
+const LEVELS = ["info", "warning", "error"] as const;
+type Level = (typeof LEVELS)[number];
+const RANK: Record<Level, number> = { info: 0, warning: 1, error: 2 };
+const DOT: Record<Level, string> = { info: "bg-fg-3", warning: "bg-warning", error: "bg-danger" };
+const BAR: Record<Level, string> = {
+  info: "bg-fg-3/40",
+  warning: "bg-warning",
+  error: "bg-danger",
+};
 
-interface Line {
-  index: number;
-  iteration: number;
-  orders: number;
-  slowest: string;
-  cl?: number | undefined;
-  cd?: number | undefined;
-  diagnostics: Diagnostic[];
-}
+const clock = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  fractionalSecondDigits: 3,
+});
 
-function slowestEquation(history: HistoryColumns, k: number): string {
-  let name = "";
-  let worst = Number.POSITIVE_INFINITY;
-  for (const [equation, values] of history.residuals) {
-    const first = values[0] ?? 0;
-    const value = values[k] ?? 0;
-    if (first > 0 && value > 0) {
-      const drop = Math.log10(first) - Math.log10(value);
-      if (drop < worst) [worst, name] = [drop, equation];
-    }
-  }
-  return name;
-}
-
-/** history.jsonl as a log: one line per recorded iteration, diagnostics at their iteration, a
- * histogram of the residual drop above it. Live follows the end; scrolling up pauses it. */
+/** The solver log (log.jsonl): time, iteration, level, source, message and code, the code
+ * linking to its documentation. Above it, the residual drop along the run (history.jsonl),
+ * each bar coloured by the worst level logged in its iterations. Live follows the end;
+ * a reader's scroll pauses it, End resumes. */
 export function LogView({
   history,
-  diagnostics,
+  log,
   running,
   height = 480,
 }: {
   history: HistoryColumns;
-  diagnostics: Diagnostic[];
+  log: LogLines;
   running: boolean;
   height?: number;
 }) {
@@ -50,50 +45,30 @@ export function LogView({
   // (wheel, keys, scrollbar) pauses Live.
   const following = useRef(false);
   const [live, setLive] = useState(true);
-  const count = history.iteration.length;
-  const forces = history.forces.size === 1 ? [...history.forces.values()][0] : undefined;
-  // A diagnostic sits on the last recorded line at or before its iteration: a divergence is
-  // raised at an iteration that never reaches history.jsonl.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: columns grow in place, see forceAt
-  const byIteration = useMemo(() => {
-    const map = new Map<number, Diagnostic[]>();
-    const iterations = history.iteration;
-    for (const d of diagnostics) {
-      const at = d.data.iteration;
-      if (typeof at !== "number" || !iterations.length) continue;
-      let lo = 0;
-      let hi = iterations.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1;
-        if ((iterations[mid] ?? 0) <= at) lo = mid;
-        else hi = mid - 1;
-      }
-      const line = iterations[lo] ?? at;
-      map.set(line, [...(map.get(line) ?? []), d]);
-    }
-    return map;
-  }, [diagnostics, history.version]);
-  // History columns grow in place: `history.version` is what changes on every append.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
-  const forceAt = useMemo(() => {
-    const map = new Map<number, number>();
-    for (const [k, it] of (forces?.iteration ?? []).entries()) map.set(it, k);
-    return map;
-  }, [forces, history.version]);
+  const [levels, setLevels] = useState<ReadonlySet<Level>>(() => new Set(LEVELS));
+  const [query, setQuery] = useState("");
 
-  const line = (k: number): Line => {
-    const iteration = history.iteration[k] ?? 0;
-    const f = forceAt.get(iteration);
-    return {
-      index: k,
-      iteration,
-      orders: history.orders[k] ?? Number.NaN,
-      slowest: slowestEquation(history, k),
-      cl: f === undefined ? undefined : forces?.cl[f],
-      cd: f === undefined ? undefined : forces?.cd[f],
-      diagnostics: byIteration.get(iteration) ?? [],
-    };
-  };
+  // Lines grow in place: `log.version` is what changes on every append.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
+  const counts = useMemo(() => {
+    const c: Record<Level, number> = { info: 0, warning: 0, error: 0 };
+    for (const line of log.lines) c[line.level] += 1;
+    return c;
+  }, [log.version]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: lines grow in place, see counts
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return log.lines.filter(
+      (line) =>
+        levels.has(line.level) &&
+        (!q ||
+          line.message.toLowerCase().includes(q) ||
+          line.source.includes(q) ||
+          (line.code ?? "").toLowerCase().includes(q) ||
+          String(line.iteration ?? "") === q),
+    );
+  }, [log.version, levels, query]);
+  const count = shown.length;
 
   const virtualizer = useVirtualizer({
     count,
@@ -109,7 +84,7 @@ export function LogView({
     // Armed only when the view will actually move, so that the next scroll event clears it.
     if (el && el.scrollHeight - el.scrollTop - el.clientHeight >= ROW) following.current = true;
     virtualizer.scrollToIndex(count - 1, { align: "end" });
-  }, [history.version, live, count]);
+  }, [log.version, live, count]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -120,29 +95,67 @@ export function LogView({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: columns grow in place, see forceAt
+  // biome-ignore lint/correctness/useExhaustiveDependencies: columns and lines grow in place
   const buckets = useMemo(() => {
-    const n = Math.min(BUCKETS, count);
+    const iterations = history.iteration;
+    const n = Math.min(BUCKETS, iterations.length);
+    const worst = new Map<number, Level>();
+    for (const line of log.lines) {
+      if (line.iteration === null || line.level === "info") continue;
+      const seen = worst.get(line.iteration);
+      if (!seen || RANK[line.level] > RANK[seen]) worst.set(line.iteration, line.level);
+    }
     return Array.from({ length: n }, (_, b) => {
-      const first = Math.floor((b * count) / n);
-      const last = Math.max(first, Math.floor(((b + 1) * count) / n) - 1);
-      let flagged = false;
-      for (let k = first; k <= last; k++) {
-        if (byIteration.has(history.iteration[k] ?? -1)) flagged = true;
+      const first = Math.floor((b * iterations.length) / n);
+      const last = Math.max(first, Math.floor(((b + 1) * iterations.length) / n) - 1);
+      const from = iterations[first] ?? 0;
+      // The last bucket also takes lines logged after the last recorded iteration (a
+      // divergence is raised at an iteration that never reaches history.jsonl).
+      const to = b === n - 1 ? Number.POSITIVE_INFINITY : (iterations[last] ?? 0);
+      let level: Level = "info";
+      for (const [iteration, l] of worst) {
+        if (iteration >= from && iteration <= to && RANK[l] > RANK[level]) level = l;
       }
-      return { first, last, orders: history.orders[last] ?? 0, flagged };
+      return { from, to, orders: history.orders[last] ?? 0, level };
     });
-  }, [history.version, count, byIteration]);
+  }, [history.version, log.version]);
   const peak = Math.max(1, ...buckets.map((b) => (Number.isFinite(b.orders) ? b.orders : 0)));
+
+  const toggle = (level: Level) =>
+    setLevels((s) => {
+      const next = new Set(s);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
 
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-line bg-bg-0">
-      <div className="flex items-center gap-3 border-line border-b px-4 py-3">
-        <span className="font-medium">Log</span>
-        <span className="text-fg-3 text-sm tabular-nums">
-          {count.toLocaleString("en")} lines
-          {diagnostics.length > 0 && ` · ${diagnostics.length} diagnostics`}
-        </span>
+      <div className="flex flex-wrap items-center gap-2 border-line border-b px-4 py-3">
+        <div className="w-72">
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder="Search the log…"
+            label="Search the log"
+          />
+        </div>
+        <fieldset className="m-0 flex items-center gap-1 border-0 p-0">
+          <legend className="sr-only">Levels</legend>
+          {LEVELS.map((level) => (
+            <button
+              type="button"
+              key={level}
+              aria-pressed={levels.has(level)}
+              onClick={() => toggle(level)}
+              className="flex h-8 items-center gap-2 rounded-full border border-line px-3 text-fg-3 text-sm transition-colors hover:text-fg aria-pressed:border-line-strong aria-pressed:text-fg"
+            >
+              <i className={cn("inline-block size-2 rounded-full", DOT[level])} />
+              {level}
+              <span className="font-mono text-xs tabular-nums">{counts[level]}</span>
+            </button>
+          ))}
+        </fieldset>
         <div className="ml-auto flex items-center gap-2">
           {running && <LiveToggle live={live} onChange={setLive} />}
         </div>
@@ -155,34 +168,38 @@ export function LogView({
         {buckets.map((b) => (
           <button
             type="button"
-            key={b.first}
+            key={b.from}
             tabIndex={-1}
             aria-hidden
-            title={`iterations ${history.iteration[b.first]}–${history.iteration[b.last]}`}
+            title={`iterations ${b.from}–${Number.isFinite(b.to) ? b.to : "end"}`}
             onClick={() => {
+              const index = shown.findIndex(
+                (line) => line.iteration !== null && line.iteration >= b.from,
+              );
+              if (index < 0) return;
               setLive(false);
-              virtualizer.scrollToIndex(b.first, { align: "start" });
+              virtualizer.scrollToIndex(index, { align: "start" });
             }}
             className={cn(
               "min-w-px flex-1 rounded-t-[1px] transition-opacity hover:opacity-70",
-              b.flagged ? "bg-danger" : "bg-fg-3/40",
+              BAR[b.level],
             )}
             style={{ height: `${Math.max(4, (Math.max(0, b.orders) / peak) * 100)}%` }}
           />
         ))}
       </div>
-      <div className="grid grid-cols-[96px_96px_140px_96px_96px_1fr] gap-4 border-line border-b bg-bg-1 px-4 py-2 text-fg-3 text-sm">
+      <div className="grid grid-cols-[112px_80px_88px_96px_1fr_72px] gap-4 border-line border-b bg-bg-1 px-4 py-2 text-fg-3 text-sm">
+        <span>Time</span>
         <span className="text-right">Iteration</span>
-        <span className="text-right">Drop</span>
-        <span>Slowest</span>
-        <span className="text-right">CL</span>
-        <span className="text-right">CD</span>
+        <span>Level</span>
+        <span>Source</span>
         <span>Message</span>
+        <span>Code</span>
       </div>
       <div
         ref={scroller}
         style={{ height }}
-        className="overflow-auto font-mono text-sm"
+        className="overflow-auto text-sm"
         data-testid="log"
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -192,36 +209,67 @@ export function LogView({
           } else if (!atEnd) setLive(false);
         }}
       >
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-          {virtualizer.getVirtualItems().map((item) => {
-            const l = line(item.index);
-            return (
-              <div
-                key={item.key}
-                className={cn(
-                  "absolute inset-x-0 grid grid-cols-[96px_96px_140px_96px_96px_1fr] items-center gap-4 px-4 hover:bg-bg-1",
-                  l.diagnostics.length > 0 && "bg-danger-soft",
-                )}
-                style={{ height: ROW, transform: `translateY(${item.start}px)` }}
-              >
-                <span className="text-right tabular-nums">{l.iteration}</span>
-                <span className="text-right text-fg-2 tabular-nums">
-                  {Number.isFinite(l.orders) ? l.orders.toFixed(2) : "—"}
-                </span>
-                <span className="truncate text-fg-3">{l.slowest || "—"}</span>
-                <span className="text-right tabular-nums">{l.cl?.toFixed(4) ?? ""}</span>
-                <span className="text-right tabular-nums">{l.cd?.toFixed(5) ?? ""}</span>
-                <span className="truncate font-sans">
-                  {l.diagnostics.map((d) => (
-                    <span key={d.code} className="text-danger">
-                      <span className="font-mono">{d.code}</span> {d.message}
-                    </span>
-                  ))}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        {count === 0 ? (
+          <p className="m-0 px-4 py-8 text-center text-fg-3">
+            {log.lines.length ? "No line matches these filters" : "No log line yet"}
+          </p>
+        ) : (
+          <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const line = shown[item.index] as LogLine;
+              return (
+                <div
+                  key={item.key}
+                  className={cn(
+                    "absolute inset-x-0 grid grid-cols-[112px_80px_88px_96px_1fr_72px] items-center gap-4 px-4 hover:bg-bg-1",
+                    line.level === "error" && "bg-danger-soft",
+                    line.level === "warning" && "bg-warning-soft",
+                  )}
+                  style={{ height: ROW, transform: `translateY(${item.start}px)` }}
+                >
+                  <time
+                    dateTime={line.time}
+                    title={line.time}
+                    className="font-mono text-fg-3 tabular-nums"
+                  >
+                    {clock.format(new Date(line.time))}
+                  </time>
+                  <span className="text-right font-mono tabular-nums">{line.iteration ?? "—"}</span>
+                  <span className="flex items-center gap-2">
+                    <i className={cn("inline-block size-2 rounded-full", DOT[line.level])} />
+                    {line.level}
+                  </span>
+                  <span className="truncate font-mono text-fg-2">{line.source}</span>
+                  <span className="truncate" title={line.message}>
+                    {line.message}
+                  </span>
+                  <span className="font-mono">
+                    {line.code &&
+                      (line.doc ? (
+                        <a
+                          href={line.doc}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={cn(
+                            "hover:underline",
+                            line.level === "error"
+                              ? "text-danger"
+                              : line.level === "warning"
+                                ? "text-warning"
+                                : "text-accent",
+                          )}
+                        >
+                          {line.code}
+                        </a>
+                      ) : (
+                        line.code
+                      ))}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
