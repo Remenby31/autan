@@ -145,15 +145,27 @@ jobs:
         with:
           enable-cache: false
       - run: bun install --frozen-lockfile
-      - name: Lint and type-check
-        run: bun run check
+      - name: Lint (Biome)
+        run: bunx biome ci .
+      - name: Type-check
+        run: bunx tsc --noEmit -p .
       - name: Unit tests (Vitest)
         run: bun run test
       - name: Server tests (pytest)
-        run: uv run --locked --project server pytest -ra server/tests
-      # Headless Chrome, preinstalled on the runner (playwright.config.ts uses channel "chrome").
+        working-directory: ui/server
+        run: uv run --locked python -m pytest -q tests
+      # Headless Chrome, preinstalled on the runner (playwright.config.ts uses channel "chrome");
+      # WebGL2, since there is no WebGPU without a GPU.
       - name: End-to-end tests (Playwright)
+        env:
+          AUTAN_UI_E2E_BACKEND: webgl2
         run: bun run e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ui-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ui/test-results/
+          if-no-files-found: ignore
 
   clang-tidy:
     name: clang-tidy
