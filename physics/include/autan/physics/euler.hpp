@@ -8,7 +8,13 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/block_matrix.hpp"
+
+namespace autan::kernels::euler {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::euler
 
 namespace autan::physics {
 
@@ -117,6 +123,12 @@ class Euler {
   /// (n_boundary_faces, FP64) and, unless `force` is empty, the pressure force on each face as
   /// the residual integrates it, warped-face correction included (3 x n_boundary_faces).
   void boundary_pressure(std::span<double> p, std::span<double> force = {}) const;
+
+  /// For a device copy of the residual: the generated loops' data in host memory (geometry,
+  /// boundary conditions, source, parameters), the gradient stencil and the scheme.
+  [[nodiscard]] const kernels::euler::Data<P>& data() const;
+  [[nodiscard]] const kernels::CellStencil& stencil() const;
+  [[nodiscard]] const Scheme& scheme() const;
 
  private:
   struct Impl;

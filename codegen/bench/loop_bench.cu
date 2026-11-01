@@ -1,7 +1,9 @@
 // Times the generated loops of the spike on one mesh and prints the raw JSON that autan-bench
 // reads (one entry per loop, strategy and policy; bytes_per_rep is the loop's analytic minimum).
 //
-//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N]
+//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N] [--gate 1]
+//   --gate 1: after the host setup, print `autan-bench: ready` on stderr and wait for a line on
+//   stdin before any CUDA call (autan-bench run --ready takes the GPU lock only then).
 //              [--warmup N] [--reps N] [--batch N]
 #include <algorithm>
 #include <chrono>
@@ -9,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <random>
 #include <string>
@@ -20,6 +23,8 @@
 #include "autan/core/renumber.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "blocks_cpu.hpp"
+#include "blocks_gpu.cuh"
 #include "device.cuh"
 #include "gradients_cpu.hpp"
 #include "gradients_gpu.cuh"
@@ -42,6 +47,7 @@ struct Options {
   std::string policy = "fp32+acc64";
   std::string order = "rcm";
   int block = 256;
+  bool gate = false;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -50,6 +56,21 @@ struct Options {
 [[noreturn]] void fail(const std::string& msg) {
   std::fprintf(stderr, "error: %s\n", msg.c_str());
   std::exit(2);
+}
+
+/// With --gate 1 (autan-bench run --ready): the host setup is done, so announce it on stderr and
+/// wait for autan-bench to take the GPU lock and say go on stdin. No CUDA call comes before this,
+/// so the waiting process holds no device context.
+void wait_for_go(bool gate) {
+  if (!gate) {
+    return;
+  }
+  std::fprintf(stderr, "autan-bench: ready\n");
+  std::fflush(stderr);
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    fail("--gate: stdin closed before go");
+  }
 }
 
 Options parse(int argc, char** argv) {
@@ -63,6 +84,8 @@ Options parse(int argc, char** argv) {
       o.policy = v;
     else if (f == "--order")
       o.order = v;
+    else if (f == "--gate")
+      o.gate = std::stoi(v) != 0;
     else if (f == "--block")
       o.block = std::stoi(v);
     else if (f == "--warmup")
@@ -140,6 +163,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   for (auto& v : qb) v = S(normal(rng));
   for (auto& v : grad) v = Gr(normal(rng));
 
+  wait_for_go(o.gate);
   const auto colour_start = std::chrono::steady_clock::now();
   DeviceMesh dm(m, o.block);
   const double colouring_seconds =
@@ -302,6 +326,18 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                  static_cast<double>(ns) / cells, build_seconds);
     out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
                    time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
+    // The same in the sliced layout (32 cells per slice): the CSR bytes (padding is skipped)
+    // plus each cell's row length; the output is cleared first so the check sees this launch.
+    gpu::DeviceMesh sm(m.mesh, m.packed, &st, {o.block, 0, 0, nullptr, 32});
+    gr::Data<P> dsl = dst;
+    sm.bind(dsl);
+    gpu::check(cudaMemset(dgrad.get(), 0, 3 * nc * sizeof(Gr)), "clear gradient");
+    gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule());
+    gpu::check(cudaDeviceSynchronize(), "lsq stencil sliced");
+    if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+    out.push_back({std::string("lsq_gradient_stencil_") + label + "_sliced",
+                   st_bytes + cells * sizeof(index_t), "sliced32",
+                   time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule()); })});
   }
 
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
@@ -340,6 +376,35 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     out.push_back({"roe_adjoint_" + tag, roe_bytes, gpu::name(s),
                    time_it(o, [&] { rf::gpu_loops::flux_adjoint(rd, s, dm.schedule); })});
   }
+
+  // Diagonal block inverses (kernels/blocks.py), in the accumulation type: diagonally dominant
+  // random blocks, row-permuted so that pivoting swaps rows.
+  using A = typename P::accum;
+  std::vector<A> hdiag(25 * nc), hinv(25 * nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    const std::size_t shift = c % 5;
+    for (std::size_t i = 0; i < 5; ++i) {
+      for (std::size_t j = 0; j < 5; ++j) {
+        const double v = normal(rng) + ((i + shift) % 5 == j ? 6.0 : 0.0);
+        hdiag[(5 * i + j) * nc + c] = A(v);
+      }
+    }
+  }
+  namespace bk = autan::kernels::blocks;
+  bk::Data<P> hb{};
+  hb.topo = t;
+  hb.diag = hdiag.data();
+  hb.diag_inv = hinv.data();
+  bk::cpu::invert_diagonal(hb);
+  DeviceArray<A> ddiag(hdiag), dinv(25 * nc);
+  bk::Data<P> db{};
+  db.topo = t;
+  db.diag = ddiag.get();
+  db.diag_inv = dinv.get();
+  bk::gpu_loops::invert_diagonal(db, dm.schedule);
+  if (max_rel_diff(as_double(dinv.download()), as_double(hinv)) > tolerance) verified = false;
+  out.push_back({"block_inverse", cells * 50.0 * sizeof(A), "cell",
+                 time_it(o, [&] { bk::gpu_loops::invert_diagonal(db, dm.schedule); })});
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.schedule.interior.offsets.size() - 1,
                dm.schedule.boundary.offsets.size() - 1);

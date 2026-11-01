@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { Box, CornerDownLeft, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
+import { Box, CornerDownLeft, FilePlus2, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import type { Run } from "../api/contracts";
+import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
 import { setTheme } from "./shell/theme";
 import { Kbd } from "./ui/Kbd";
@@ -89,6 +90,12 @@ export function CommandPalette({
               icon={<Box className="size-4" />}
               title="Analysis"
               onSelect={() => close(() => navigate({ to: "/viewer" }))}
+            />
+            <Item
+              value="new case"
+              icon={<FilePlus2 className="size-4" />}
+              title="New case"
+              onSelect={() => close(() => navigate({ to: "/cases/new" }))}
             />
           </Command.Group>
           <Command.Group heading="Theme">
@@ -180,9 +187,7 @@ function Preview({ run, orders }: { run: Run; orders: number[] }) {
         <dt className="text-fg-3">Precision</dt>
         <dd className="m-0 font-mono">{run.precision}</dd>
         <dt className="text-fg-3">Devices</dt>
-        <dd className="m-0 font-mono">
-          {run.devices.count}× {run.devices.kind}
-        </dd>
+        <dd className="m-0 font-mono">{devicesLabel(run.devices)}</dd>
         <dt className="text-fg-3">Backend</dt>
         <dd className="m-0 font-mono">{run.solver.backend}</dd>
       </dl>

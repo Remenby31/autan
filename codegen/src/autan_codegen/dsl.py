@@ -27,6 +27,13 @@ class Role(enum.Enum):
     GEOM = "geom"
     PARAM = "param"
     JAC = "jac"  # blocks of Jacobians, written for preconditioners (not differentiated)
+    # Blocks kept in the accumulation precision (diagonal blocks and their inverses, FP64 in
+    # fp32+acc64), off-diagonal blocks staying in `jac` (mixed-precision preconditioners).
+    JAC_ACCUM = "jac_accum"
+
+
+# Matrix blocks are data of a linear solve, never differentiated.
+PASSIVE_ROLES = frozenset({Role.JAC, Role.JAC_ACCUM})
 
 
 @dataclass(frozen=True)
@@ -67,10 +74,11 @@ Param = RoleAnnotation(Role.PARAM)
 class _JacAnnotation(RoleAnnotation):
     def shape(self, *dims: int) -> Type:
         """`Jac.shape(2, 5, 5)`: a block shape for Jacobian datasets."""
-        return Type(Role.JAC, tuple(dims))
+        return Type(self.role, tuple(dims))
 
 
 Jac = _JacAnnotation(Role.JAC)
+JacAccum = _JacAnnotation(Role.JAC_ACCUM)
 
 
 def as_type(annotation: object) -> Type:
@@ -168,6 +176,9 @@ class geometry:
     cell_centroid = Dataset("cell_centroid", MeshSet.CELLS, Geom.Vec3, geometry=True)
     cell_volume = Dataset("cell_volume", MeshSet.CELLS, Geom.scalar, geometry=True)
     lsq_weight = Dataset("lsq_weight", MeshSet.INCIDENCES, Geom.Vec3, geometry=True)
+    # +1 where the cell is its face's left (owner) cell, and on boundary faces; -1 where it is
+    # the right one: the sign of a face's contribution to the cell in a gather over incidences.
+    incidence_side = Dataset("incidence_side", MeshSet.INCIDENCES, Geom.scalar, geometry=True)
     # The same least-squares weights over the entries of the cell stencil.
     stencil_lsq_weight = Dataset("stencil_lsq_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
 
@@ -180,6 +191,7 @@ class Body:
     """A pointwise function in the restricted subset; parsed lazily into the IR."""
 
     fn: Callable[..., Any]
+    compute: str = "compute"
 
     @property
     def name(self) -> str:
@@ -196,9 +208,18 @@ class Body:
         )
 
 
-def pointwise(fn: Callable[..., Any]) -> Body:
-    """Declare a pointwise body. Its source is parsed into the generator's IR."""
-    return Body(fn)
+def pointwise(fn: Callable[..., Any] | None = None, *, compute: str = "compute") -> Any:
+    """Declare a pointwise body. Its source is parsed into the generator's IR.
+
+    `@pointwise(compute="accum")` computes the body in the accumulation type of the policy
+    instead of the compute type (FP64 under fp32+acc64), for bodies whose arguments are all
+    passive (blocks, geometry, parameters) in cell loops.
+    """
+    if compute not in ("compute", "accum"):
+        raise CodegenError(Code.TYPE_MISMATCH, f"compute={compute!r}: 'compute' or 'accum'")
+    if fn is None:
+        return lambda f: Body(f, compute)
+    return Body(fn, compute)
 
 
 # ---------------------------------------------------------------------------- loops
@@ -399,6 +420,5 @@ def _intrinsic(*_: object) -> object:
     raise CodegenError(Code.UNSUPPORTED_CONSTRUCT, "DSL intrinsics only exist inside parsed bodies")
 
 
-dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = outer = Vec3 = Vec5 = (
-    _intrinsic
-)
+dot = cross = norm = sqrt = exp = log = sin = cos = rel = _intrinsic
+transpose = inverse = outer = Vec3 = Vec5 = _intrinsic

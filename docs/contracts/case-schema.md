@@ -4,15 +4,15 @@ A case is a typed document that says what to compute on which mesh. Python code 
 
 ## Example
 
-The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
+The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The Python is in the canonical form `case.to_python()` writes, which `autan.load` reads back into the same case: only values that differ from their default, quantities in the unit the case carries, library materials by name, numbers in their shortest round-trip form. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
 
 ```python
 import autan
 from autan.units import deg, m
 
 case = autan.Case("crm-hl", mesh="crm-hl.cgns")
-case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp32+acc64")
-case.freestream(mach=0.20, aoa=19.57 * deg, re=5.49e6, ref_length=7.0 * m)
+case.physics = autan.Compressible(turbulence=autan.SA())
+case.freestream(mach=0.2, aoa=19.57 * deg, re=5490000.0, ref_length=7.0 * m)
 case.boundary("wing.*").wall()
 case.boundary("symmetry").symmetry()
 case.monitor(autan.forces("wing.*", ref_area=191.84 * m**2), every=10)
@@ -41,6 +41,7 @@ temperature = "288.15 K"
 kind = "steady"
 max_iterations = 10000
 residual_orders = 8.0
+linear_solver = "multigrid"
 
 [[boundaries]]
 zones = "wing.*"
@@ -62,7 +63,7 @@ ref_area = "191.84 m ** 2"
 
 A dimensional value is written as a string `"<number> <unit>"`, for example `"7.0 m"`, `"101325.0 Pa"`, `"1.716e-05 Pa * s"`. Units are parsed by [Pint](https://pint.readthedocs.io) with its default registry. Each field declares a dimension; a value of another dimension is rejected (`E0301`), a bare number in a dimensional field is rejected (`E0302`), an unknown unit is rejected (`E0303`). Angles need an angle unit (`deg`, `rad`): a bare `19.57` is ambiguous and rejected. Dimensionless fields (`mach`, `re`, `gamma`, `prandtl`) are plain numbers.
 
-Values keep the unit they were written in; consumers convert to SI. Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
+Values keep the unit they were written in; consumers convert to SI. The Python builders take a Pint quantity or its text. A quantity built in Python is held as its text reads back: a 64-bit float in Pint's short unit, so the case, its document and its hash agree. A unit whose text does not read back with the field's dimension (exponents are written with six significant digits) is rejected (`E0301`). Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
 
 ## Tree
 
@@ -142,16 +143,18 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0 |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"`, default `"multigrid"` |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
 
 A steady run uses local time stepping and has converged when every residual of [results.md](results.md#history) has dropped `residual_orders` orders of magnitude below its value at iteration 1 (of the original run, for a continued one); it stops after `max_iterations` otherwise.
+
+`linear_solver` chooses how an implicit physics solves each step's linear system: `"multigrid"`, agglomeration multigrid, or `"gauss-seidel"`, symmetric block Gauss-Seidel over a colouring of the whole mesh, the same algorithm on any number of ranks. A physics states which it runs where (the Euler physics: `"multigrid"` on one rank only; `E0706` otherwise); an explicit physics ignores it.
 
 In `fp32+acc64`, round-off stops the residuals before they can drop 8 orders. So an equation also counts as converged once its residual reaches its floor C·ε₃₂·Φ_k, whichever comes first. The constants are C = 0.5 and ε₃₂ = 2⁻²³. Φ_k = f_k·√(Σ_i A_i²/N) is the flux scale of equation k: A_i is the surface of cell i (all its faces), the sum and N are those of the history residual, and f_k is the face flux magnitude of the freestream. With q∞ = |v∞| + c∞ and c∞ = √(γ p∞/ρ∞), f_k is ρ∞ q∞ for density, ρ∞ q∞² for each momentum, and ρ∞ H∞ q∞ for energy, with H∞ = c∞²/(γ−1) + |v∞|²/2. C puts the floor at least 4.3 times above the round-off plateaus measured on a NACA 0012 slice (M 0.5), manufactured solutions and Ni's transonic bump (M 0.675). A physics that gives no flux scale has no floor. The floors of a run are in its `run.json` ([results.md](results.md#runjson)). An equation whose residual at iteration 1 is below the floor, 1e-12 times the largest residual of any equation at iteration 1, is identically zero (the transverse momentum of a one-cell 2D slice, for example) and is exempt as long as its residual stays at or below the floor. The first time it rises above the floor, the runtime reports `W0710` and the equation must meet the rule like the others for the rest of the run, continuations included.
 
 With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
 
-Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
+Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 

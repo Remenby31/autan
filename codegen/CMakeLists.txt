@@ -1,7 +1,14 @@
 # Kernel generator: runs autan_codegen on kernels/*.py at build time and builds the generated loops.
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 
-set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients roe)
+set(
+  AUTAN_KERNEL_MODULES
+  advection
+  advection_diffusion
+  blocks
+  gradients
+  roe
+)
 # AUTAN_ENABLE_CUDA (root) adds the GPU loops, the GPU spike driver and the loop benchmark.
 # AUTAN_ENABLE_HIP compiles the same generated GPU loops with HIP (no AMD device: compile only).
 option(AUTAN_ENABLE_HIP "Compile the generated GPU loops with HIP" OFF)
@@ -38,6 +45,11 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
   else()
     set(module_source ${PROJECT_SOURCE_DIR}/kernels/${module}.py)
   endif()
+  set(module_backends ${AUTAN_KERNEL_BACKENDS})
+  if(module STREQUAL "blocks")
+    # Its inverse computes in the accumulation type, which Metal cannot divide in (E1013).
+    list(REMOVE_ITEM module_backends metal)
+  endif()
   set(outputs ${AUTAN_GENERATED_DIR}/${module}.hpp)
   list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp)
   if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_HIP)
@@ -48,10 +60,10 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
     )
     list(APPEND AUTAN_GENERATED_GPU_UNITS ${AUTAN_GENERATED_DIR}/${module}_gpu.cu)
   endif()
-  if(AUTAN_ENABLE_METAL)
+  if("metal" IN_LIST module_backends)
     list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_metal.hpp)
   endif()
-  list(JOIN AUTAN_KERNEL_BACKENDS "," backends)
+  list(JOIN module_backends "," backends)
   add_custom_command(
     OUTPUT ${outputs}
     COMMAND
@@ -99,7 +111,7 @@ if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_METAL)
     COMMAND
       ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
       "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/bench/revision.cmake
+      -P ${PROJECT_SOURCE_DIR}/bench/cmake/revision.cmake
     BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
   )
 endif()

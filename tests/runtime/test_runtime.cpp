@@ -31,6 +31,7 @@
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
@@ -84,14 +85,15 @@ struct Outcome {
   std::string err;
 };
 
-Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
+Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
+            const fs::path& stop_file = {}) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   std::FILE* out = std::tmpfile();
   std::FILE* err = std::tmpfile();
   const ExitStatus status =
-      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err);
+      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err, stop_file);
   auto text = [](std::FILE* f) {
     std::rewind(f);
     std::string s;
@@ -104,8 +106,9 @@ Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
   return Outcome{.status = status, .runs = dir / "runs", .run = printed, .err = text(err)};
 }
 
-Outcome run(const Json& doc, autan_test::RelaxationOptions options = {}) {
-  return run(doc, autan_test::relaxation_registry(options));
+Outcome run(const Json& doc, autan_test::RelaxationOptions options = {},
+            const fs::path& stop_file = {}) {
+  return run(doc, autan_test::relaxation_registry(options), stop_file);
 }
 
 // The hybrid input on periodic-box (Gmsh): xmin -> xmax by (tx, 0, 0), ymin
@@ -306,6 +309,17 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(info["schema"] == "autan.results/1");
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
+  // results.md, timing: this run's 28 iterations, the loop within the
+  // process, and ns per cell and iteration by its definition.
+  const Json& t = info["timing"];
+  REQUIRE(t.is_object());
+  CHECK(t["iterations"] == 28);
+  CHECK(t["solve_seconds"].get<double>() > 0.0);
+  CHECK(t["solve_seconds"].get<double>() <= t["wall_seconds"].get<double>());
+  const double cells = static_cast<double>(autan::io::read_mesh(mesh_path).n_cells());
+  CHECK_THAT(
+      t["ns_per_cell_iteration"].get<double>(),
+      Catch::Matchers::WithinRel(t["solve_seconds"].get<double>() * 1e9 / (cells * 28), 1e-12));
   CHECK(std::regex_match(info["run_id"].get<std::string>(),
                          std::regex("run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")));
   CHECK(o.run.filename() == info["run_id"].get<std::string>());
@@ -402,6 +416,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "stopped");
     CHECK(info["iterations"] == 0);
+    CHECK(info["timing"].is_null());  // no iteration to time
     CHECK_FALSE(fs::exists(o.run / "history.jsonl"));
     const Json& f = info["monitors"]["forces"];
     CHECK(f["iteration"] == 0);
@@ -455,6 +470,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
+    CHECK(info["timing"].is_null());
   }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
@@ -484,6 +500,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
+    CHECK(info["timing"].is_null());  // a failed run is not timed
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -691,6 +708,32 @@ TEST_CASE("Deterministic runs produce identical history and solution arrays", "[
   }
 }
 
+TEST_CASE("A stop file stops the run as SIGINT does", "[runtime]") {
+  // The relaxation physics creates the file during iteration 5: the run
+  // stops before iteration 6, with its solution, and exits 130.
+  const fs::path stop = fresh_dir() / "stop";
+  autan_test::RelaxationOptions options{.factor = 0.9};
+  options.touch_at = 5;
+  options.touch_file = stop.string();
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 1000; }), options, stop);
+  CHECK(o.status == ExitStatus::signalled);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "stopped");
+  CHECK(info["iterations"] == 5);
+  CHECK(fs::exists(o.run / "solution.cgns"));
+}
+
+TEST_CASE("solve_seconds leaves out the physics' log writes", "[runtime]") {
+  // Every step logs 10 MB: the log takes most of the run, which the solve
+  // time does not count (results.md, timing).
+  autan_test::RelaxationOptions options{.factor = 0.9};
+  options.log_bytes = 10'000'000;
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 4; }), options);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json t = Json::parse(read(o.run / "run.json"))["timing"];
+  CHECK(t["solve_seconds"].get<double>() < 0.25 * t["wall_seconds"].get<double>());
+}
+
 TEST_CASE("SIGTERM stops a running process: stopped, solution written, exit 130", "[runtime]") {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
@@ -824,6 +867,11 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                     d["periodic"] = Json::array({bad});
                   })),
                   "E0705");
+  }
+  SECTION("one rank per device: devices.count is the rank count") {
+    const Outcome o = run(input([](Json& d) { d["devices"]["count"] = 2; }));
+    require_error(o, "E0705");
+    CHECK(Json::parse(o.err)["location"]["path"] == "devices.count");
   }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
@@ -959,6 +1007,9 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
+  // timing counts this run's iterations only.
+  CHECK(info["timing"]["iterations"] ==
+        info["iterations"].get<std::int64_t>() - second["start"]["iterations"].get<std::int64_t>());
   // identity: the seven parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
@@ -1493,14 +1544,100 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
   return out;
 }
 
+// The relaxation physics' colour sweeps redone on the whole mesh, from the
+// global colouring: each step, `sweeps` symmetric sweeps over the colours,
+// each cell of a colour taking the mean of itself and its face neighbours,
+// summed in increasing global id; the field starts at global id mod 7. With
+// `groups` (RelaxationOptions::groups), a line smoother: a group is one node
+// of the colouring, greedy by increasing least global id, and its cells are
+// swept in decreasing id; this colouring is computed here, not by the code
+// under test.
+std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int groups = 0) {
+  const auto ids = mesh.cell_global_id();
+  const auto z = [](auto i) { return static_cast<std::size_t>(i); };
+  const std::int64_t period = 2 * std::int64_t{groups};
+  const auto node = [&](autan::index_t c) -> std::int64_t {
+    return groups > 0 && ids[z(c)] % period < groups ? ids[z(c)] % period
+                                                     : std::int64_t{groups} + ids[z(c)];
+  };
+  std::map<std::int64_t, std::vector<autan::index_t>> members;  // node -> cells, by id
+  std::map<std::int64_t, std::set<std::int64_t>> around_node;
+  for (autan::index_t c = 0; c < mesh.n_cells(); ++c) members[node(c)].push_back(c);
+  for (autan::index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+    const auto a = node(mesh.owner()[z(f)]), b = node(mesh.neighbour()[z(f)]);
+    if (a != b) {
+      around_node[a].insert(b);
+      around_node[b].insert(a);
+    }
+  }
+  std::vector<std::pair<std::int64_t, std::int64_t>> by_least;  // (least id, node)
+  for (const auto& [n, cells] : members) {
+    std::int64_t least = ids[z(cells.front())];
+    for (const auto c : cells) least = std::min(least, ids[z(c)]);
+    by_least.emplace_back(least, n);
+  }
+  std::ranges::sort(by_least);
+  std::map<std::int64_t, std::int32_t> node_colour;
+  for (const auto& [least, n] : by_least) {
+    std::set<std::int32_t> taken;
+    for (const auto m : around_node[n]) {
+      if (node_colour.contains(m)) taken.insert(node_colour[m]);
+    }
+    std::int32_t k = 0;
+    while (taken.contains(k)) ++k;
+    node_colour[n] = k;
+  }
+  std::int32_t n_colours = 0;
+  for (const auto& [n, k] : node_colour) n_colours = std::max(n_colours, k + 1);
+  std::vector<double> w(z(mesh.n_cells()));
+  for (std::size_t c = 0; c < w.size(); ++c) w[c] = static_cast<double>(ids[c] % 7);
+  const auto colour_sweep = [&](std::int32_t k) {
+    std::vector<autan::index_t> cells;
+    for (const auto& [least, n] : by_least) {
+      if (node_colour[n] != k || n >= groups) continue;
+      auto line = members[n];
+      std::ranges::sort(line, std::greater{}, [&](autan::index_t c) { return ids[z(c)]; });
+      cells.insert(cells.end(), line.begin(), line.end());
+    }
+    for (autan::index_t c = 0; c < mesh.n_cells(); ++c) {
+      if (node(c) >= groups && node_colour[node(c)] == k) cells.push_back(c);
+    }
+    for (const autan::index_t c : cells) {
+      std::vector<std::pair<std::int64_t, double>> around{
+          {ids[static_cast<std::size_t>(c)], w[static_cast<std::size_t>(c)]}};
+      for (const autan::index_t f : mesh.cell_faces(c)) {
+        if (f >= mesh.n_interior_faces()) continue;
+        const auto i = static_cast<std::size_t>(f);
+        const autan::index_t o = mesh.owner()[i] == c ? mesh.neighbour()[i] : mesh.owner()[i];
+        around.emplace_back(ids[static_cast<std::size_t>(o)], w[static_cast<std::size_t>(o)]);
+      }
+      std::ranges::sort(around);
+      double sum = 0.0;
+      for (const auto& [id, value] : around) sum += value;
+      w[static_cast<std::size_t>(c)] = sum / static_cast<double>(around.size());
+    }
+  };
+  for (int step = 0; step < steps; ++step) {
+    for (int s = 0; s < sweeps; ++s) {
+      for (std::int32_t k = 0; k < n_colours; ++k) colour_sweep(k);
+      for (std::int32_t k = n_colours - 1; k >= 0; --k) colour_sweep(k);
+    }
+  }
+  return w;
+}
+
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0, Json* diagnostic = nullptr) {
+                      int expected_status = 0, Json* diagnostic = nullptr,
+                      const std::vector<std::string>& extra_args = {}, bool directory = true) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
-  std::ofstream(input_file) << doc.dump();
+  // One device per rank (solver-input.md, `devices`), unless a test sets it.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(input_file) << with_count.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),
@@ -1509,6 +1646,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
                                 input_file.string(),
                                 "--runs",
                                 (dir / "runs").string()};
+  args.insert(args.end(), extra_args.begin(), extra_args.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -1539,13 +1677,13 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   if (fs::exists(dir / "runs")) {
     for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
   }
-  CHECK(run.empty() == (expected_status == 2));
+  CHECK(run.empty() == (expected_status == 2 || !directory));
   return run;
 }
 
 }  // namespace
 
-TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
+TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to
   // the wrong place or a norm summed in another order would change bits;
   // forces are recorded at every iteration, and the state grows.
@@ -1567,6 +1705,55 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // A smoother sweeping the global colours (PhysicsContext::cell_colours),
+  // the ghosts exchanged after each colour, and an argmin over the ranks:
+  // the history of one rank.
+  autan_test::RelaxationOptions sweeping = options;
+  sweeping.colour_sweeps = 2;
+  const Outcome one_swept = run(doc, sweeping);
+  const fs::path many_swept =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2"});
+  CHECK(lines_of(one_swept.run / "history.jsonl") != lines_of(one.run / "history.jsonl"));
+  CHECK(lines_of(many_swept / "history.jsonl") == lines_of(one_swept.run / "history.jsonl"));
+  // The swept field, cell for cell: on one rank, as an independent sweep of
+  // the whole mesh gives it (12 steps of 2 symmetric sweeps); on several,
+  // the same bits.
+  const auto swept_one =
+      solution_field(one_swept.run / "solution.cgns", "FlowSolution", "TurbulentSANuTilde");
+  CHECK(solution_field(many_swept / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
+        swept_one);
+  if (!periodic) CHECK(swept_one == swept(autan::io::read_mesh(mesh_path), 12, 2));
+  // A line smoother: the physics' groups (each spanning the mesh) stay whole
+  // on one rank, and it sweeps the colours of its groups, each in its order;
+  // on several ranks, the bits of one, and on one, those of an independent
+  // sweep of the whole mesh.
+  autan_test::RelaxationOptions lining = sweeping;
+  lining.groups = ranks;
+  const Outcome one_lined = run(doc, lining);
+  REQUIRE(one_lined.status == ExitStatus::finished);
+  const fs::path many_lined =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2",
+                    "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
+  CHECK(lines_of(many_lined / "history.jsonl") == lines_of(one_lined.run / "history.jsonl"));
+  const auto lined_one =
+      solution_field(one_lined.run / "solution.cgns", "FlowSolution", "TurbulentSANuTilde");
+  CHECK(lined_one != swept_one);
+  CHECK(solution_field(many_lined / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
+        lined_one);
+  if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
+  // Groups the partition refuses end every rank before any directory, with their code.
+  Json malformed;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, {}, false).empty());
+  CHECK(malformed["code"] == "E0140");
+  // Rank 1 alone fails while the others go on into the partition: every rank ends.
+  Json alone;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, {}, false).empty());
+  CHECK(alone["code"] == "E0140");
+  CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in
@@ -1671,6 +1858,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(g["monitors"].is_null());
   CHECK(g["diagnostics"][0]["code"] == "E0704");
   CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
+
+  // A stop file the last rank creates during iteration 5: rank 0 sees it, and
+  // all stop before iteration 6.
+  const fs::path stop_file = fresh_dir() / "stop";
+  const fs::path by_file = run_on_ranks(doc, ranks,
+                                        {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_TOUCH_AT=5",
+                                         "AUTAN_TEST_TOUCH_RANK=" + std::to_string(ranks - 1),
+                                         "AUTAN_TEST_TOUCH_FILE=" + stop_file.string()},
+                                        130, nullptr, {"--stop-file", stop_file.string()});
+  CHECK(Json::parse(read(by_file / "run.json"))["status"] == "stopped");
+  CHECK(Json::parse(read(by_file / "run.json"))["iterations"] == 5);
 
   // A signal reaching the last rank alone, after iteration 5, stops all of
   // them before iteration 6, with the solution written.
