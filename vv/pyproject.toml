@@ -5,6 +5,7 @@ description = "Verification and validation tools for Autan: manufactured solutio
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
+    "autan",
     "matplotlib>=3.11",
     "numpy>=2.5",
     "scipy>=1.18",
@@ -33,6 +34,9 @@ mesh = [
 
 [tool.uv]
 default-groups = ["dev", "mesh"]
+
+[tool.uv.sources]
+autan = { path = "..", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

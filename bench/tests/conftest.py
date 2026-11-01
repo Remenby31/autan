@@ -59,7 +59,7 @@ def make_result(
             },
         },
         "conditions": {
-            "lock": "/tmp/cfd-gpu.lock",
+            "lock": "/home/admin/autan-gpu/gpu.lock",
             "lock_wait_s": 0.0,
             "idle_check": {"samples": 5, "compute_apps_max": 0, "utilization_pct_max": 0.0},
             "during_run": {

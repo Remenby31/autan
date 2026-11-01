@@ -25,13 +25,13 @@ The implementation reproduces Table 1 of Celik et al. (2008) (p = 1.53, φ_ext =
 - Dirichlet data from the exact solution, the source at centroids, and GMRES preconditioned by the LU factors of the compact first-order operator, to 64 ε of the precision.
 - `precision="fp32"` keeps geometry and coefficients in FP64 (the solver's policy) and runs the operator, right-hand side, preconditioner and Krylov solve in FP32. A positive diffusivity is required: with every boundary value prescribed, pure advection is singular (`V0403`).
 
-`autan-vv verify` reports also record the mesh hashes, the SHA-256 of the manufactured solution's JSON export, the precision and the V&V commit.
+`autan-vv reference` reports also record the mesh hashes, the SHA-256 of the manufactured solution's JSON export, the precision and the V&V commit.
 
-Checks (`vv/tests/test_reference_fv.py`): a linear solution is reproduced to a few ulps on every kind, perturbed; the L2 order on the finest pair and the fitted order exceed 1.85 on every kind, clean and perturbed, in FP64 and FP32; `autan-vv verify` writes a strict-JSON report, the plot and the mesh manifest. FP32 orders match FP64 to 0.01 on tet, hex, poly and hybrid families (n = 8, 16, 24), FP32 L2 errors within 0.2 % of FP64.
+Checks (`vv/tests/test_reference_fv.py`): a linear solution is reproduced to a few ulps on every kind, perturbed; the L2 order on the finest pair and the fitted order exceed 1.85 on every kind, clean and perturbed, in FP64 and FP32; `autan-vv reference` writes a strict-JSON report, the plot and the mesh manifest. FP32 orders match FP64 to 0.01 on tet, hex, poly and hybrid families (n = 8, 16, 24), FP32 L2 errors within 0.2 % of FP64.
 
 ### Measured orders
 
-`autan-vv verify <kind> --levels … [--perturbation 0.3] --seed 2026`, FP64, macOS arm64, Gmsh 4.15.2. Fitted order over four levels / order on the finest pair.
+`autan-vv reference <kind> --levels … [--perturbation 0.3] --seed 2026`, FP64, macOS arm64, Gmsh 4.15.2. Fitted order over four levels / order on the finest pair.
 
 | Kind | Perturbation | Levels n | Finest cells | L2 | L∞ |
 |---|---|---|---|---|---|

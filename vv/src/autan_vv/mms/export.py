@@ -192,6 +192,7 @@ def to_json(ms: ManufacturedSolution) -> dict[str, Any]:
         "schema": JSON_SCHEMA,
         "name": ms.name,
         "equations": ms.equations,
+        "model": dict(ms.model),
         "description": ms.description,
         "coordinates": [str(c) for c in X],
         "domain": {"lower": [0.0, 0.0, 0.0], "upper": [1.0, 1.0, 1.0]},
