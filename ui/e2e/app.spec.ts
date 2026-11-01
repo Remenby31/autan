@@ -32,6 +32,25 @@ test("home lists every run directory and filters by state", async ({ page }) => 
   await expect(rows.first()).toContainText("D0107");
 });
 
+test("each run in the list shows its Mach, angle and final coefficients", async ({ page }) => {
+  // The crm-hl sweep of scripts/sample-runs.sh: M 0.2 at four angles, from its case files.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const sweep: Run[] = registry.runs.filter(
+    (r: Run) =>
+      r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
+  );
+  expect(sweep.length).toBeGreaterThan(0);
+  await page.goto("/");
+  for (const run of sweep) {
+    const row = page.locator(`a[data-run="${run.run_id}"]`);
+    await expect(row.getByTestId("mach")).toHaveText("0.2");
+    await expect(row.getByTestId("alpha")).toHaveText("11.29°");
+    const forces = run.monitors?.forces;
+    await expect(row.getByTestId("cl")).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
+    await expect(row.getByTestId("cd")).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
+  }
+});
+
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
