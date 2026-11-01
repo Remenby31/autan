@@ -50,6 +50,9 @@ constexpr int gauss_seidel_sweeps = 4;
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
 constexpr double min_step = 1e-6;
+// Largest relative decrease and increase of rho nt in one step (SA).
+constexpr double nt_max_decrease = 0.5;
+constexpr double nt_max_increase = 2.0;
 constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
@@ -100,6 +103,7 @@ struct SaState {
       : model(mesh, geometry, flow, t, ft2) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
+  double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
   std::vector<typename P::residual> res;
 
@@ -406,7 +410,8 @@ class EulerPhysics final : public runtime::Physics {
     for (std::size_t b = 0; b < nb; ++b) {
       bfaces[b] = {g.face_centroid_x[ni + b], g.face_centroid_y[ni + b], g.face_centroid_z[ni + b]};
     }
-    std::vector<double> nt_b(nb, in.freestream.nu_tilde.value_or(0.0));
+    t.nt_inf = in.freestream.nu_tilde.value_or(0.0);
+    std::vector<double> nt_b(nb, t.nt_inf);
     std::vector<double> d;
     if (mms != nullptr) {
       static const std::array<std::string, 1> nt_name = {"nu_hat"};
@@ -607,7 +612,13 @@ class EulerPhysics final : public runtime::Physics {
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
         t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, gauss_seidel_sweeps);
-        for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
+        // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
+        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches.
+        for (std::size_t c = 0; c < n_; ++c) {
+          const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
+          t.rnu[c] +=
+              alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
+        }
       }
       t.model.eddy_viscosity(t.stored(t.rnu));
     }
@@ -795,9 +806,9 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
-// The Navier-Stokes physics: one ideal gas as Euler, the Euler conditions and no-slip walls; SA runs
-// steady (its loosely coupled step is the steady solver's) and needs a wall to measure distances
-// from, unless a manufactured solution gives them.
+// The Navier-Stokes physics: one ideal gas as Euler, the Euler conditions and no-slip walls; SA
+// runs steady (its loosely coupled step is the steady solver's) and needs a wall to measure
+// distances from, unless a manufactured solution gives them.
 std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in) {
   bool wall = false;
   for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
@@ -809,22 +820,24 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
     if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
         b.kind != "outlet" && b.kind != "manufactured") {
       return runtime::PhysicsRefusal{
-          .message = "the Navier-Stokes physics has no '" + b.kind + "' condition; boundary zone '" +
-                     b.zone + "' needs wall, slip, symmetry, farfield, inlet or outlet",
+          .message = "the Navier-Stokes physics has no '" + b.kind +
+                     "' condition; boundary zone '" + b.zone +
+                     "' needs wall, slip, symmetry, farfield, inlet or outlet",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }
   }
   if (in.turbulence.model == "sa") {
     if (in.time.kind != "steady") {
-      return runtime::PhysicsRefusal{
-          .message = "the SA physics runs steady cases only", .path = "time.kind",
-          .data_json = nlohmann::json{{"time", in.time.kind}}.dump()};
+      return runtime::PhysicsRefusal{.message = "the SA physics runs steady cases only",
+                                     .path = "time.kind",
+                                     .data_json = nlohmann::json{{"time", in.time.kind}}.dump()};
     }
     if (!wall && !in.verification) {
       return runtime::PhysicsRefusal{
           .message = "the SA physics needs a wall boundary to measure the wall distance from",
-          .path = "boundaries", .data_json = "{}"};
+          .path = "boundaries",
+          .data_json = "{}"};
     }
   }
   // The gas checks are the Euler physics' own; its condition check is replaced above.
