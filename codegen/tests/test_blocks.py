@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import autan_spike as s
+import meshes
 import numpy as np
 import pytest
 from autan_codegen.generate import generate
@@ -194,16 +196,13 @@ def test_diagonal_blocks_assemble_from_face_blocks_by_incidence_side(tmp_path: P
         inputs.ctypes.data_as(ctypes.c_void_p), diag.ctypes.data_as(ctypes.c_void_p)
     )
     expect = np.zeros((3, 5, 5))
-    for (c, f), s in zip(incidences, side, strict=True):
-        expect[c] += jl[f] if s > 0 else -jr[f]
+    for (c, f), sign in zip(incidences, side, strict=True):
+        expect[c] += jl[f] if sign > 0 else -jr[f]
     np.testing.assert_array_equal(diag.reshape(25, 3).T.reshape(3, 5, 5), expect)
 
 
 @pytest.mark.parametrize("kind", ["tet", "hex", "poly", "hybrid"])
 def test_incidence_side_is_plus_one_on_the_left_cell_and_on_boundary_faces(kind: str) -> None:
-    import autan_spike as s
-    import meshes
-
     m = s.mesh(meshes.build(kind, 4, 0.15, seed=7))
     for c in range(m.n_cells):
         for k in range(m.cell_face_offsets[c], m.cell_face_offsets[c + 1]):
