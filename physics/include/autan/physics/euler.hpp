@@ -41,7 +41,7 @@ struct Scheme {
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.
   bool limiter = true;
-  double venkat_k = 5.0;
+  double venkat_k = 10.0;
   double length = 1.0;                                   ///< m
   std::array<double, 5> scale{1.0, 1.0, 1.0, 1.0, 1.0};  ///< W units: rho, u, v, w, p
   /// Cut-off Mach number of AUSM+-up's low-Mach scaling (the freestream Mach number).

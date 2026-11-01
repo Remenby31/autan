@@ -10,7 +10,7 @@ R_c = Σ_f F(W_L, W_R)·S_f − s_c V_c over the faces of cell c, in conserved v
 |---|---|---|
 | Variables reconstructed | primitive W = (ρ, u, v, w, p) | |
 | Gradients | weighted least squares (1/d²) over the **face2 stencil**: face neighbours, their face neighbours, and the boundary faces of both | [Stencil](#gradient-stencil) |
-| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 5, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
+| Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 10, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
 | Face states | W_f = W_c + φ ∘ (∇W · (x_f − x_c)) | |
 | Warped faces | flux of the linear reconstruction through the fan triangles: Σ_j dF_j[W; ∇W · M_{:,j}], M = Σ_t (c_t − x_f) ⊗ S_t | [Warped faces](#warped-faces) |
 | Fluxes | Roe with Harten's fix on the acoustic waves only; HLLC with Einfeldt speeds; AUSM+-up with M_co the freestream Mach number | Roe (1981); Toro, Spruce, Speares (1994); Batten et al. (1997); Liou (2006) |
@@ -70,7 +70,7 @@ Restart: `restart_fields` holds the conserved variables bit for bit, the averagi
 
 ## Limiter and verification
 
-Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips more as the mesh is refined: with it, the MMS order on tetrahedra falls to 1.82–1.94 (finest pairs, levels 12–32), against 1.97–2.05 without. A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) therefore run without the limiter. Every other case runs with it.
+Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips smooth extrema more as the mesh is refined; K sets where that starts (Venkatakrishnan 1995; Michalak and Ollivier-Gooch 2008, AIAA 2008-776, discuss the same trade-off). On the MMS (tet, levels 12–32, Roe, host study), fitted / finest-pair orders of ρv with the limiter on: K = 5 gives 1.88/1.78, K = 10, 20 and 40 give 1.99/1.97, the unlimited values. K = 10 is the default: smooth flows keep the design order at these resolutions, and the limiter still acts at shocks (Sod gate, below). A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) run without the limiter, every other case with it.
 
 ## Manufactured solution
 

@@ -41,7 +41,7 @@ constexpr double cfl_max = 1e6;
 constexpr int gauss_seidel_sweeps = 4;
 // No update may lower density or pressure by more than this fraction in one step.
 constexpr double max_decrease = 0.5;
-constexpr double venkatakrishnan_k = 5.0;
+constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
