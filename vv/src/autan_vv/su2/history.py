@@ -124,8 +124,9 @@ def converged_at(history: History, orders: float) -> int | None:
 
 @dataclass(frozen=True)
 class Convergence:
-    """What the criterion gives on a history: the iterations from the first recorded one, the
-    cumulative wall time there when known, the final forces, and the orders each equation dropped."""
+    """What the criterion gives on a history: the iterations run up to and including the one whose
+    residual meets it (a run given that many iterations ends on the criterion), the cumulative wall
+    time there when known, the forces there, and the orders each equation dropped."""
 
     converged: bool
     iterations: int
@@ -143,7 +144,7 @@ def convergence(history: History, orders: float) -> Convergence:
     i = len(history.iterations) - 1 if at is None else at
     return Convergence(
         converged=at is not None,
-        iterations=int(history.iterations[i] - history.iterations[0]),
+        iterations=int(history.iterations[i] - history.iterations[0]) + 1,
         wall_seconds=None if history.wall_seconds is None else float(history.wall_seconds[i]),
         cl=float(history.cl[i]),
         cd=float(history.cd[i]),

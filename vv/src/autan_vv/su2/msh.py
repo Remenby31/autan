@@ -131,7 +131,7 @@ def read(path: Path) -> Msh:
             raise _bad(path, f"element type {etype} in a physical group; only 3 and 5 are read")
         width = _NODES_PER_TYPE[etype] + 1
         conn = np.asarray(" ".join(block).split(), dtype=np.int64).reshape(count, width)[:, 1:]
-        if conn.max() > max_tag or np.any(index[conn] < 0):
+        if conn.min() < 1 or conn.max() > max_tag or np.any(index[conn] < 0):
             raise _bad(path, "an element references an undeclared node")
         for p in physical:
             name = names.get((dim, p))

@@ -11,9 +11,10 @@ SU2 is LGPL-2.1. It is built and run apart, never vendored in this repository an
 | Item | Value |
 |---|---|
 | Version | v8.6.0, commit `7048fd35f56d4bf52e586429d6746a36a10255f8` (checked at build) |
-| Image | `vv/su2/Dockerfile`: Ubuntu 24.04 (pinned digest), GCC 13.3, Open MPI 4.1.6; `meson --buildtype=release -Dwith-mpi=enabled -Dwith-omp=false`, no AD, no Python wrapper, no CGNS or TecIO |
-| Build | `docker build -t autan-su2:v8.6.0 vv/su2` on the DGX Spark (aarch64); every run records the image id |
-| Run | `vv/su2/run.sh ROOT CASE RANKS`: `mpirun -np RANKS SU2_CFD` in the image, `nice -n 10`, writes `log.txt` and `provenance.json` (`autan.su2-run/1`: image id, SU2 version, ranks, CPU model, wall time, exit status) |
+| Image | `vv/su2/Dockerfile`: Ubuntu 24.04 (pinned digest), GCC 13.3; `meson --buildtype=release -Dwith-mpi=disabled -Dwith-omp=true`, no AD, no Python wrapper, no CGNS or TecIO |
+| No MPI | SU2's MPI build compiles and links its bundled ParMETIS, whose licence is non-commercial (AGENTS.md); SU2 runs as one process with OpenMP threads (`SU2_CFD -t N`) |
+| Build | `docker build -t autan-su2:v8.6.0-omp vv/su2` on the DGX Spark (aarch64); every run records the image id |
+| Run | `vv/su2/run.sh ROOT CASE THREADS`: `SU2_CFD -t THREADS` in the image, `nice -n 10`, writes `log.txt` and `provenance.json` (`autan.su2-run/1`: image id, SU2 version, threads, SHA-256 of the configuration and mesh it ran, CPU model, wall time, exit status) |
 
 ## Fairness protocol
 
@@ -31,17 +32,17 @@ Fixed on 2026-11-01, before any measurement. Each code solves the same problem o
 | Forces | chord 1, area chord × span, moment about (c/4, 0) nose-up | per unit span; nose-up moment = −CMz in 2D, CMy in 3D | none |
 | Convergence | every residual 10 orders below its first value ([case-schema.md](../contracts/case-schema.md#time)) | the same rule, applied by `autan_vv.su2.history` to SU2's history | none: both residuals are the RMS of the integrated flux balances over the control volumes |
 | Solver controls | the defaults of the measured commit | `inv_NACA0012_Roe.cfg` of SU2 v8.6.0: implicit Euler, CFL 30, BiCGSTAB (3 iterations, 10⁻¹) with ILU(0), 3-level W-cycle multigrid | each code as its developers publish it; identical for every level |
-| Precision | `fp64` for accuracy; `fp32+acc64` timed and labelled | FP64 | SU2 has no FP32 path |
+| Precision | `fp64`; `fp32+acc64` | FP64; the mixed-precision build (`-Denable-mixedprec=true`: linear solver and preconditioner in FP32) | timed pairwise, `fp64` against FP64 and `fp32+acc64` against mixed precision, each accepted only if its CL and CD agree with its own `fp64` to 0.1 % |
 
 SU2 measures its relative residual from the largest value so far, not the first, so it is told to stop 0.5 orders beyond the criterion and the criterion's iteration is read from its history. The residuals rise by up to 0.7 orders in the first iterations on 32² and 0.36 on 64²; a larger margin is not possible, since SU2's FP64 residuals stall 10.5–11 orders below their largest value (M 0.5, 64² and 128²). A run that stops before the criterion is prepared again with a larger `--stop-margin`; one that reaches the 20 000-iteration cap is reported not converged.
 
-**Timing (phase 2).** On spark-5359 with the host quiet (load < 2, GPU idle), one take of `/home/admin/autan-gpu/gpu.lock` per measurement (≤ 10 min, 2 min between takes), alternating Autan and SU2, three repetitions, median reported. The same cores: SU2 with n MPI ranks against Autan's CPU backend with n threads, n = 1 and n = the count Autan's CPU backend uses, pinned with `taskset`; Autan's GPU backend against SU2 at its fastest n. Time to solution is the wall time of a run whose iteration budget is the criterion's iteration (found by an untimed run), from process start to exit, mesh reading included, writing only the final solution. Reported per level: iterations, wall time, time per iteration per control volume.
+**Timing (phase 2).** On spark-5359 with the host quiet (load < 2, GPU idle), one take of `/home/admin/autan-gpu/gpu.lock` per measurement (≤ 10 min, 2 min between takes), alternating Autan and SU2, three repetitions, median reported. The same cores: SU2 with n OpenMP threads against Autan's CPU backend with n threads, n = 1 and n = the count Autan's CPU backend uses, pinned with `taskset`; Autan's GPU backend against SU2 at its fastest n. Iterations are counted up to and including the one whose residual meets the criterion, so a run given that budget ends on it. Time to solution is the wall time of a run given that budget (found by an untimed run), from process start to exit, mesh reading included, writing only the final solution. Reported per level: iterations, wall time, time per iteration per control volume.
 
 **Accuracy.** CL, CD, CM per level at the criterion, and their continuum estimates from the three finest of at least four converged levels with `autan_vv.cases.naca0012.continuum` (the paper's eqs. 20–24), against the gates of [acceptance.md](acceptance.md#m2--compressible-euler).
 
 ## Mesh conversion
 
-`autan_vv.su2.mesh.convert` reads the MSH 4.1 file (`autan_vv.su2.msh`, the format of the Gmsh manual; anything else is `V0901`), checks that it is one layer of hexahedra between two planes y = const, each a straight extrusion (`V0902` otherwise), and writes SU2's native format with every coordinate in 17 significant digits:
+`autan_vv.su2.mesh.convert` reads the MSH 4.1 file (`autan_vv.su2.msh`, the format of the Gmsh manual; anything else is `V0901`), checks that it is one layer of hexahedra between two planes y = const, each a straight extrusion whatever its node order (`V0902` otherwise), and writes SU2's native format with every coordinate in 17 significant digits:
 
 - 2D: the back plane, (x, z) → (x, y), quadrangles counterclockwise; the lateral zones become edge markers, the planar zones (`back`, `front`, Autan's symmetry planes) are dropped.
 - 3D: the slab itself, every zone a marker, symmetry on `back` and `front`. Used as a check: on 32² at M 0.8, α 1.25°, it gives the 2D run's CL and CD to ten digits.
@@ -53,11 +54,11 @@ The record `<mesh>.json` (`autan.su2-mesh/1`) holds the SHA-256 of source and ou
 ```sh
 autan-vv meshes naca0012 --levels 32,64,128,256,512,1024 --out family   # macOS or x86-64 (Gmsh)
 autan-vv su2 prepare --family family --out su2                            # meshes, case.cfg, level.json
-vv/su2/run.sh su2 m080-a125/n0256 4                                       # on the Spark
+vv/su2/run.sh su2 m080-a125/n0256 4                                       # on the Spark, 4 threads
 autan-vv su2 study su2/m080-a125/n0* --out m080-a125.json                 # criterion, continuum, gates
 ```
 
-`prepare` writes `su2/meshes/` and one directory per condition and level with `case.cfg` and `level.json` (`autan.su2-level/1`: K_SU2, configuration hash, Autan case hash, source mesh hash, conversion record). `study` refuses a run whose configuration is not the prepared one or whose SU2 failed (`V0904`), and runs that mix conditions or SU2 images (`V0905`).
+`prepare` writes `su2/meshes/` and one directory per condition and level with `case.cfg` and `level.json` (`autan.su2-level/1`: K_SU2, configuration hash, Autan case hash, source mesh hash, conversion record). `study` refuses a run whose configuration or mesh, as hashed when it ran and as on disk, is not the prepared one, or whose SU2 failed (`V0904`), and runs that mix conditions or SU2 images (`V0905`).
 
 K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). In freestream units the threshold ε² = K_SU2³ is 12 at 32², 0.18 at 256² and 0.012 at 1024²; the squared density jump across the M 0.8 shock is about 0.2, so in both codes the limiter barely acts below 256². Autan's threshold uses h³ = V, and on a one-layer slab V includes the span (1 chord here): the same grid with another span limits differently.
 

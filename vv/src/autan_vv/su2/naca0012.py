@@ -72,11 +72,7 @@ def prepare(
                 "n": level["n"],
                 "venkat_coefficient": venkat,
                 "case_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "autan_case_sha256": hashlib.sha256(
-                    json.dumps(
-                        case.spec.model_dump(mode="json", by_alias=True), sort_keys=True
-                    ).encode()
-                ).hexdigest(),
+                "autan_case_sha256": case.spec.hash(),
                 "source_mesh_sha256": level["mesh_sha256"],
                 "mesh": asdict(record),
             }
@@ -96,7 +92,7 @@ class Level:
     converged: bool
     iterations: int
     wall_seconds: float | None
-    ranks: int
+    threads: int
     cl: float
     cd: float
     cmy: float
@@ -119,8 +115,15 @@ def read_level(run: Path) -> tuple[Level, str]:
         msg = f"{run}: SU2 exited with status {prov.get('exit_status')}"
         raise VVError(msg, code="V0904")
     text = (run / "case.cfg").read_text()
-    if hashlib.sha256(text.encode()).hexdigest() != info["case_sha256"]:
-        msg = f"{run}: case.cfg is not the prepared one"
+    ran = (prov.get("case_sha256"), prov.get("mesh_sha256"))
+    if ran != (info["case_sha256"], info["mesh"]["file_sha256"]):
+        msg = f"{run}: SU2 ran another configuration or mesh than the prepared ones"
+        raise VVError(msg, code="V0904")
+    on_disk = mesh.file_sha256(run.parent.parent / "meshes" / info["mesh"]["file"])
+    if hashlib.sha256(text.encode()).hexdigest() != info["case_sha256"] or (
+        on_disk != info["mesh"]["file_sha256"]
+    ):
+        msg = f"{run}: case.cfg or its mesh is not the prepared one"
         raise VVError(msg, code="V0904")
     conv = history.convergence(history.read_su2(run / "history.csv"), cases.RESIDUAL_ORDERS)
     level = Level(
@@ -131,7 +134,7 @@ def read_level(run: Path) -> tuple[Level, str]:
         converged=conv.converged,
         iterations=conv.iterations,
         wall_seconds=conv.wall_seconds,
-        ranks=prov["ranks"],
+        threads=prov["threads"],
         cl=conv.cl,
         cd=conv.cd,
         cmy=conv.cmy,

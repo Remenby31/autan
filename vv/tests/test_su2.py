@@ -140,6 +140,39 @@ def test_converter_refuses_what_is_not_a_one_layer_slab(tmp_path: Path) -> None:
     assert err.value.code == "V0902"
 
 
+def _rewrite_hexes(text: str, order: list[int]) -> str:
+    lines = text.split("\n")
+    head = lines.index("$Elements")
+    for i in range(head + 1, lines.index("$EndElements")):
+        parts = lines[i].split()
+        if len(parts) == 9:
+            lines[i] = " ".join([parts[0], *(parts[1 + k] for k in order)])
+    return "\n".join(lines)
+
+
+def test_converter_reads_any_node_order_of_the_hexahedra(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
+    family, _ = naca0012.generate_family((8,), tmp_path)
+    source = tmp_path / family.levels[0].file
+    text = source.read_text()
+    reference = mesh.convert(source, tmp_path / "a.su2", 2)
+    # The same hexahedra numbered so that the face (0, 1, 5, 4) of Gmsh's ordering lies on y = 0:
+    # new (0..7) = old (0, 1, 5, 4, 3, 2, 6, 7).
+    rotated = tmp_path / "rotated.msh"
+    rotated.write_text(_rewrite_hexes(text, [0, 1, 5, 4, 3, 2, 6, 7]))
+    assert mesh.convert(rotated, tmp_path / "b.su2", 2).plane_sha256 == reference.plane_sha256
+    # Node tags are strictly positive (Gmsh manual): -1 does not alias the last node.
+    negative = tmp_path / "negative.msh"
+    lines = text.split("\n")
+    i = lines.index("$Elements") + 3
+    parts = lines[i].split()
+    lines[i] = " ".join([*parts[:-1], "-1"])
+    negative.write_text("\n".join(lines))
+    with pytest.raises(VVError) as err:
+        mesh.convert(negative, tmp_path / "c.su2", 2)
+    assert err.value.code == "V0901"
+
+
 def _cfg(text: str) -> dict[str, str]:
     return dict(line.split("= ", 1) for line in text.strip().split("\n"))
 
@@ -268,9 +301,11 @@ def _write_run(run: Path, cl: float, cd: float, converged: bool) -> None:
         values = [row.get(n, -2.0 - drop if n.startswith("rms[") else 0.0) for n in names]
         lines.append(",".join(str(v) for v in values))
     (run / "history.csv").write_text("\n".join(lines) + "\n")
-    provenance = {"schema": "autan.su2-run/1", "image": "autan-su2:v8.6.0", "image_id": "sha256:0",
-                  "su2": "v8.6.0 7048fd35", "ranks": 4, "cpu": "", "wall_seconds": 1.0,
-                  "exit_status": 0}  # fmt: skip
+    level = json.loads((run / "level.json").read_text())
+    provenance = {"schema": "autan.su2-run/1", "image": "autan-su2:v8.6.0-omp",
+                  "image_id": "sha256:0", "su2": "v8.6.0 7048fd35", "threads": 4,
+                  "case_sha256": level["case_sha256"], "mesh_sha256": level["mesh"]["file_sha256"],
+                  "cpu": "", "wall_seconds": 1.0, "exit_status": 0}  # fmt: skip
     (run / "provenance.json").write_text(json.dumps(provenance))
 
 
@@ -282,7 +317,7 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     for run, cl, cd in zip(runs, FLO82_CL, FLO82_CD, strict=True):
         _write_run(run, cl, cd, converged=True)
     report = su2.study(runs)
-    assert all(lv["converged"] and lv["iterations"] == 36 for lv in report["levels"])
+    assert all(lv["converged"] and lv["iterations"] == 37 for lv in report["levels"])
     assert report["continuum"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
     assert report["continuum"]["cd"]["estimate"] == pytest.approx(0.022684938, abs=2e-9)
     assert all(v["pass"] for v in report["verdicts"])
@@ -290,7 +325,14 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     # A level that did not reach the criterion leaves too few levels for an estimate.
     _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=False)
     assert su2.study(runs)["continuum"] is None
-    # An edited configuration is not the prepared case.
+    # A run of another configuration, or of an edited one, is not the prepared case.
+    _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=True)
+    prov = json.loads((runs[0] / "provenance.json").read_text())
+    (runs[0] / "provenance.json").write_text(json.dumps({**prov, "mesh_sha256": "0" * 64}))
+    with pytest.raises(VVError) as err:
+        su2.study(runs)
+    assert err.value.code == "V0904"
+    _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=True)
     cfg = runs[1] / "case.cfg"
     cfg.write_text(cfg.read_text().replace("CFL_NUMBER= 30.0", "CFL_NUMBER= 60.0"))
     with pytest.raises(VVError) as err:

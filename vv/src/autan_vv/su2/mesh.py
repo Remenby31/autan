@@ -81,17 +81,29 @@ def read_slab(path: Path) -> Slab:
     return slab
 
 
+# Faces of a hexahedron in Gmsh's (and VTK's) node order, each a cycle, and the node joined by an
+# edge to each of nodes 0-7 across the opposite face (Gmsh reference manual, "Node ordering").
+_HEX_FACES = ((0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7))
+_HEX_EDGES = ((0, 1), (0, 3), (0, 4), (1, 2), (1, 5), (2, 3), (2, 6), (3, 7), (4, 5), (4, 7),
+              (5, 6), (6, 7))  # fmt: skip
+
+
 def _bottom_and_top(slab: Slab) -> tuple[IntArray, IntArray]:
-    """Each hexahedron's y0 face and the matching y1 nodes, as (M, 4) arrays."""
+    """Each hexahedron's face on y0, as a cycle, and the y1 node joined by an edge to each of its
+    nodes, as (M, 4) arrays."""
     on_y0 = slab.points[slab.hexes, 1] == slab.y0
-    first, second = slab.hexes[:, :4], slab.hexes[:, 4:]
-    low_first = on_y0[:, :4].all(axis=1) & ~on_y0[:, 4:].any(axis=1)
-    low_second = on_y0[:, 4:].all(axis=1) & ~on_y0[:, :4].any(axis=1)
-    if not np.all(low_first | low_second):
+    bottom = np.full((len(slab.hexes), 4), -1, dtype=np.int64)
+    top = np.full((len(slab.hexes), 4), -1, dtype=np.int64)
+    for face in _HEX_FACES:
+        rest = [k for k in range(8) if k not in face]
+        hit = on_y0[:, list(face)].all(axis=1) & ~on_y0[:, rest].any(axis=1)
+        across = [next(b if a == k else a for a, b in _HEX_EDGES if k in (a, b) and
+                       (b if a == k else a) in rest) for k in face]  # fmt: skip
+        bottom[hit] = slab.hexes[hit][:, list(face)]
+        top[hit] = slab.hexes[hit][:, across]
+    if np.any(bottom < 0):
         msg = "a hexahedron does not have one face on each plane of the slab"
         raise _fail(msg)
-    bottom = np.where(low_first[:, None], first, second)
-    top = np.where(low_first[:, None], second, first)
     xz = [0, 2]
     if not np.array_equal(slab.points[bottom][..., xz], slab.points[top][..., xz]):
         msg = "a hexahedron is not a straight extrusion between the two planes"
@@ -179,7 +191,7 @@ def plane_sha256(points: FloatArray, quads: IntArray, markers: dict[str, IntArra
     return h.hexdigest()
 
 
-def _sha256(path: Path) -> str:
+def file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -259,9 +271,9 @@ def convert(source: Path, out: Path, dimension: Dimension) -> Record:
     record = Record(
         schema=RECORD_SCHEMA,
         source=source.name,
-        source_sha256=_sha256(source),
+        source_sha256=file_sha256(source),
         file=out.name,
-        file_sha256=_sha256(out),
+        file_sha256=file_sha256(out),
         dimension=dimension,
         points=n_points,
         elements=n_elements,
