@@ -55,7 +55,9 @@ def _case(
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
     p = oracle.parameters
     gas = _gas(oracle.gas_constant, p.get("viscosity", 10.0), p.get("prandtl", 0.72))
-    turbulence = autan.Laminar() if oracle.physics == "navier-stokes" else autan.Inviscid()
+    turbulence = {"navier-stokes": autan.Laminar(), "rans-sa": autan.SA()}.get(
+        oracle.physics, autan.Inviscid()
+    )
     case.physics = autan.Compressible(turbulence=turbulence, precision=precision, gas=gas)  # type: ignore[arg-type]
     case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
     if time is not None:
@@ -148,12 +150,20 @@ def test_order_gate_recovers_the_order_of_the_error(
     assert all(not autan.Results.open(p).run.deterministic for p in runs)
 
 
+@pytest.mark.parametrize(
+    ("oracle", "gate"),
+    [
+        ("mms-euler", "euler-mms-order"),
+        ("mms-navier-stokes", "ns-mms-order"),
+        ("mms-rans-sa", "rans-sa-mms-order"),
+    ],
+)
 @pytest.mark.parametrize(("order", "investigate"), [(2.4, False), (2.8, True)])
-def test_euler_order_gate_warns_above_its_upper_bound(
-    tmp_path: Path, order: float, investigate: bool
+def test_mms_order_gates_warn_above_their_upper_bound(
+    tmp_path: Path, oracle: str, gate: str, order: float, investigate: bool
 ) -> None:
-    runs = _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), "mms-euler", order)
-    verdict = verify(runs, "mms-euler", "euler-mms-order")["verdict"]
+    runs = _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), oracle, order)
+    verdict = verify(runs, oracle, gate)["verdict"]
     assert verdict["pass"], verdict["checks"]
     assert "rho: order above 2.1" in verdict["warnings"]
     assert verdict["investigate"] is investigate
