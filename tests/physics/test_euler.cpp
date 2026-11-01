@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <span>
 #include <string>
@@ -202,12 +203,7 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
   const std::vector<double> data(5 * nb, 0.0);
   Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.1));
   e.set_boundary(kind, data);
-  // Far from the reference pressure, or closer to it than FP32 resolves p_ref itself: the
-  // stored gauge pressure must survive the boundary conditions.
-  const double p_ref = 0.95e5;
-  const double p = GENERATE_COPY(1e5, p_ref + 1e-3);
-  INFO("p - p_ref = " << p - p_ref);
-  const Prim w{1.0, {0.0, 0.0, 0.0}, p};
+  const Prim w{1.0, {0.0, 0.0, 0.0}, 1e5};
   auto absolute = uniform(w, nc);
   for (std::size_t i = 0; i < nc; ++i) {
     const auto x = c.geometry.cell_centroid_x[i];
@@ -219,9 +215,40 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
   const auto u = stored(e, absolute);
   // A 10:1 density jump: the linear reconstruction would make the density negative at some
   // faces, where the scheme falls back to the cell value.
-  // At rest only the gauge pressure p - p_ref enters the momentum fluxes.
-  const Prim scale{11.0, {0.0, 0.0, 0.0}, p - p_ref};
+  const Prim scale{11.0, {0.0, 0.0, 0.0}, 1e5};
   CHECK(relative_residual(e, c, std::span<const typename P::state>(u), scale) <= 64 * eps<P>());
+}
+
+TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_ref", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // One skew tetrahedron with four slip faces: no interior neighbour determines its gradient, so
+  // the boundary values do. At rest under uniform pressure the gradient must vanish and the
+  // residual reduce to the closure of the gauge pressure, even when p - p_ref = 1e-3 is below the
+  // FP32 spacing of p_ref = 0.95e5 (7.8e-3).
+  using P = TestType;
+  const fs::path file = fs::temp_directory_path() / "autan-one-skew-tet.msh";
+  {
+    std::ofstream out(file);
+    out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
+        << "$PhysicalNames\n2\n2 1 \"walls\"\n3 101 \"fluid\"\n$EndPhysicalNames\n"
+        << "$Entities\n0 0 1 1\n1 0 0 0 1 1 1.3 1 1 0\n1 0 0 0 1 1 1.3 1 101 1 1\n"
+        << "$EndEntities\n"
+        << "$Nodes\n1 4 1 4\n3 1 0 4\n1\n2\n3\n4\n"
+        << "0 0 0\n1 0 0\n0.3 1 0\n0.2 0.4 1.3\n$EndNodes\n"
+        << "$Elements\n2 5 1 5\n2 1 2 4\n1 1 3 2\n2 1 2 4\n3 2 3 4\n4 1 4 3\n"
+        << "3 1 4 1\n5 1 2 3 4\n$EndElements\n";
+  }
+  const Case c(file.c_str());
+  REQUIRE(c.mesh.n_cells() == 1);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.1));
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip), std::vector<double>(5 * nb));
+  const double gauge = 1e-3;
+  const auto u = stored(e, uniform(Prim{1.0, {0.0, 0.0, 0.0}, 0.95e5 + gauge}, 1));
+  std::vector<typename P::residual> r(5);
+  e.residual(std::span<const typename P::state>(u), r);
+  const double surface = c.cell_surface()[0];
+  for (const auto v : r) CHECK(std::abs(static_cast<double>(v)) <= 64 * eps<P>() * gauge * surface);
 }
 
 TEST_CASE("the first-order tangent matches central differences of the first-order residual",
