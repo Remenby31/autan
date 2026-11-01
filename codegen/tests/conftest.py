@@ -32,7 +32,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if config.getoption("--backend") == "gpu":
         if "AUTAN_SPIKE_LIB" not in os.environ:
-            raise pytest.UsageError("--backend gpu needs AUTAN_SPIKE_LIB=.../libautan_spike_gpu.so")
+            msg = "--backend gpu needs AUTAN_SPIKE_LIB=.../libautan_spike_gpu.so"
+            raise pytest.UsageError(msg)
         return
     gpu = [i for i in items if i.get_closest_marker("gpu")]
     if gpu:
