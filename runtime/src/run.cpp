@@ -144,7 +144,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
-    std::ifstream in(v.path, std::ios::binary);
+    const std::ifstream in(v.path, std::ios::binary);
     if (!in) {
       throw InputError(Diagnostic{.code = "E0207",
                                   .message = "cannot read '" + v.path + "'",
