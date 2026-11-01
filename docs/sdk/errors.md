@@ -532,6 +532,14 @@ A boundary rule names a zone of a periodic pair; the mesh pairs its faces with t
 
 Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic.
 
+## E0425
+
+**Point-vortex surfaces match no wall** (error)
+
+The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of a periodic pair, or match zones that are not wall or slip zones: the vortex's circulation comes from the lift on the body. Patterns with wildcards skip periodic zones.
+
+Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.
+
 ## E0501
 
 **Cell zone rule matches no zone** (error)
@@ -587,6 +595,46 @@ Fix: Use `autan.Compressible(...)`, or remove the solid zone from the mesh.
 A compressible fluid zone starts from an absolute pressure > 0, a temperature and a velocity; an incompressible one from a gauge pressure and a velocity, without temperature.
 
 Fix: Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.
+
+## E0508
+
+**Initial-state file missing or invalid** (error)
+
+The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs from the case's, or it is not a valid `autan.initial-state/1` document: its variables, a row of 3 finite coordinates and 5 finite values per cell, density and pressure > 0 (docs/contracts/initial-state.md).
+
+Fix: Write the initial state with `autan.initial_state.write` for this mesh, and give its path and the SHA-256 it returns.
+
+## E0509
+
+**Initial state written for another mesh** (error)
+
+The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.
+
+Fix: Write the initial state for the mesh the case uses.
+
+## E0510
+
+**Initial state does not cover the fluid cells** (error)
+
+The file gives another number of rows than the mesh has fluid cells.
+
+Fix: Write one row per fluid cell of the mesh, at its centroid.
+
+## E0511
+
+**Initial states do not match the cells** (error)
+
+The solver could not pair every fluid cell with exactly one row of the file by centroid, within 1e-9 times the largest extent of the mesh's bounding box, or two cells lie within that tolerance of each other; `data` names the cells.
+
+Fix: Write the initial state from the cell centroids of the mesh the case uses.
+
+## E0512
+
+**Initial-state file not available for this case** (error)
+
+An initial-state file needs compressible inviscid or laminar physics (it carries no turbulence variable), replaces the fluid zones' `initial` states, and cannot be combined with a start from a previous run, which gives the initial state itself.
+
+Fix: Remove the zones' `initial`, the start, or the file; or use a compressible inviscid or laminar case.
 
 ## E0601
 
