@@ -18,6 +18,13 @@
 #include <cgnslib.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
+#ifdef AUTAN_MPIEXEC
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
+#endif
 
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -399,34 +406,55 @@ TEST_CASE("a steady run reports the residual of its second-order scheme from the
   CHECK(history(steady.run).front()["residuals"] == history(unsteady.run).front()["residuals"]);
 }
 
-TEST_CASE("a mesh with periodic pairs is refused before any directory exists", "[euler]") {
-  // Until the physics exchanges ghost cells across periodic pairs: E0706 at `periodic`.
+namespace {
+
+// tests/data/mesh/periodic-box, periodic in x and y: zmin a slip wall, zmax a symmetry plane,
+// one cell zone; the case of hybrid.solver-input.json otherwise, inviscid.
+void periodic_box(Json& d, const char* precision) {
   const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
-  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    inviscid_along_x(d, "fp64");
-    d["mesh"]["path"] = fs::absolute(box).string();
-    d["mesh"]["sha256"] = autan::io::mesh_hash(box);
-    d["periodic"] =
-        Json::array({Json{{"zones", {"xmin", "xmax"}},
-                          {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}},
-                     Json{{"zones", {"ymin", "ymax"}},
-                          {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
-    // Periodic zones take no condition: zmin a slip wall, zmax its symmetry plane.
-    Json kept = Json::array();
-    for (const auto& b : d["boundaries"]) {
-      if (b["zone"] == "ymin") {
-        Json wall = b;
-        wall["zone"] = "zmin";
-        kept.push_back(wall);
-      }
-      if (b["zone"] == "zmax") kept.push_back(b);
+  inviscid_along_x(d, precision);
+  d["mesh"]["path"] = fs::absolute(box).string();
+  d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+  d["periodic"] =
+      Json::array({Json{{"zones", {"xmin", "xmax"}},
+                        {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}},
+                   Json{{"zones", {"ymin", "ymax"}},
+                        {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+  // Periodic zones take no condition.
+  Json kept = Json::array();
+  for (const auto& b : d["boundaries"]) {
+    if (b["zone"] == "ymin") {
+      Json wall = b;
+      wall["zone"] = "zmin";
+      kept.push_back(wall);
     }
-    d["boundaries"] = kept;
-    d["monitors"][0]["zones"] = {"zmin"};
-    Json zone = d["cell_zones"][0];
-    zone["zone"] = "fluid";
-    d["cell_zones"] = Json::array({zone});
-  });
+    if (b["zone"] == "zmax") kept.push_back(b);
+  }
+  d["boundaries"] = kept;
+  d["monitors"][0]["zones"] = {"zmin"};
+  Json zone = d["cell_zones"][0];
+  zone["zone"] = "fluid";
+  d["cell_zones"] = Json::array({zone});
+}
+
+// A flow along x and y through both periodic pairs, `steps` SSP-RK3 steps.
+void unsteady_through_pairs(Json& d, int steps) {
+  auto& f = d["freestream"];
+  const double speed = f["speed"].get<double>();
+  f["velocity"] = {0.6 * speed, 0.8 * speed, 0.0};
+  for (auto& z : d["cell_zones"]) z["initial"]["velocity"] = f["velocity"];
+  d["time"] = {{"kind", "unsteady"},
+               {"steps", steps},
+               {"dt", nullptr},
+               {"cfl", 0.8},
+               {"average_from", nullptr}};
+}
+
+}  // namespace
+
+TEST_CASE("a steady case with periodic pairs is refused before any directory exists", "[euler]") {
+  // The steady solver's Gauss-Seidel does not take image ghosts: E0706 at `periodic`.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) { periodic_box(d, "fp64"); });
   const auto out = run(doc);
   INFO(out.err);
   CHECK(out.status == ExitStatus::invalid_input);
@@ -434,6 +462,30 @@ TEST_CASE("a mesh with periodic pairs is refused before any directory exists", "
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
   CHECK(diagnostic["code"] == "E0706");
   CHECK(diagnostic["location"]["path"] == "periodic");
+}
+
+TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
+  // Image ghosts hold their owners' values: a uniform flow crossing both pairs is steady.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    periodic_box(d, precision);
+    unsteady_through_pairs(d, 20);
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
+                                                      : std::numeric_limits<float>::epsilon();
+  const auto& f = doc["freestream"];
+  const double rho = f["density"].get<double>(), p = f["pressure"].get<double>();
+  const double speed = f["speed"].get<double>();
+  for (const double v : field(out.run, "Density")) CHECK(std::abs(v - rho) <= 64 * eps * rho);
+  for (const double v : field(out.run, "Pressure")) CHECK(std::abs(v - p) <= 64 * eps * p);
+  for (const double v : field(out.run, "VelocityX"))
+    CHECK(std::abs(v - 0.6 * speed) <= 64 * eps * speed);
+  for (const double v : field(out.run, "VelocityY"))
+    CHECK(std::abs(v - 0.8 * speed) <= 64 * eps * speed);
 }
 
 TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
@@ -481,6 +533,151 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(diagnostic["data"]["zone"] ==
         (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][2]["zone"]));
 }
+
+#ifdef AUTAN_MPIEXEC
+namespace {
+
+// autan-run under the launcher on `ranks` ranks: its run directory, none for an invalid input;
+// its standard error in `err` when given.
+fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
+                      std::string* err = nullptr) {
+  std::random_device random;
+  const fs::path dir = fs::temp_directory_path() / ("autan_euler_mpi-" + std::to_string(random()));
+  fs::create_directories(dir);
+  const std::string err_file = (dir / "stderr").string();
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                   0644);
+  std::ofstream(dir / "solver-input.json") << doc.dump();
+  std::vector<std::string> args{AUTAN_MPIEXEC,
+                                AUTAN_MPIEXEC_NUMPROC_FLAG,
+                                std::to_string(ranks),
+                                AUTAN_RUN,
+                                "--input",
+                                (dir / "solver-input.json").string(),
+                                "--runs",
+                                (dir / "runs").string()};
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  pid_t pid = 0;
+  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, &actions, nullptr, argv.data(), environ) == 0);
+  posix_spawn_file_actions_destroy(&actions);
+  int status = 0;
+  REQUIRE(waitpid(pid, &status, 0) == pid);
+  if (err != nullptr) *err = read(err_file);
+  REQUIRE(WIFEXITED(status));
+  CHECK(WEXITSTATUS(status) == expected_status);
+  fs::path run;
+  if (fs::exists(dir / "runs")) {
+    for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
+  }
+  return run;
+}
+
+}  // namespace
+
+TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]") {
+  // runtime.md, Ranks: Euler on N ranks equals one rank to round-off (faces summed in local
+  // order, issue #199); at a fixed rank count, runs repeat bit for bit. Two zones at different
+  // states on the hybrid mesh (farfield around), or a flow through the periodic box's pairs.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool periodic = GENERATE(false, true);
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(precision, periodic, ranks);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    if (periodic) {
+      // Through both pairs and into the slip wall zmin, so that the flow evolves.
+      periodic_box(d, precision);
+      unsteady_through_pairs(d, 12);
+      const double speed = d["freestream"]["speed"].get<double>();
+      d["cell_zones"][0]["initial"]["velocity"] = {0.6 * speed, 0.7 * speed, -0.3 * speed};
+    } else {
+      inviscid_along_x(d, precision);
+      for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", 12},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", nullptr}};
+    }
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  const fs::path many = run_on_ranks(doc, ranks);
+  REQUIRE(!many.empty());
+  const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
+                                                      : std::numeric_limits<float>::epsilon();
+  // History: every residual norm.
+  const auto h1 = history(one.run), hn = history(many);
+  REQUIRE(h1.size() == hn.size());
+  double worst_norm = 0.0;
+  for (std::size_t i = 0; i < h1.size(); ++i) {
+    for (const auto& [name, v] : h1[i]["residuals"].items()) {
+      const double a = v.get<double>(), b = hn[i]["residuals"][name].get<double>();
+      worst_norm = std::max(worst_norm, std::abs(a - b) / (std::max(std::abs(a), 1e-300) * eps));
+    }
+  }
+  // Fields: the largest difference over the field's largest magnitude (the largest speed for
+  // the velocity components).
+  const auto magnitude = [](const std::vector<double>& v) {
+    double m = 0.0;
+    for (const double x : v) m = std::max(m, std::abs(x));
+    return m;
+  };
+  double speed = 0.0;
+  {
+    const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
+               vz = field(one.run, "VelocityZ");
+    for (std::size_t c = 0; c < vx.size(); ++c) {
+      speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
+    }
+  }
+  double worst_field = 0.0;
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    const auto a = field(one.run, name), b = field(many, name);
+    REQUIRE(a.size() == b.size());
+    double diff = 0.0;
+    for (std::size_t c = 0; c < a.size(); ++c) diff = std::max(diff, std::abs(a[c] - b[c]));
+    const double scale = std::string(name).starts_with("Velocity") ? speed : magnitude(a);
+    worst_field = std::max(worst_field, diff / (scale * eps));
+  }
+  // Measured at most 7.5 eps on norms and 11.3 eps on fields over these 12 steps (fp64, 4 ranks).
+  INFO("norms " << worst_norm << " eps, fields " << worst_field << " eps");
+  CHECK(worst_norm <= 256.0);
+  CHECK(worst_field <= 256.0);
+  // A fixed rank count repeats bit for bit.
+  const fs::path again = run_on_ranks(doc, ranks);
+  CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "Pressure"}) {
+    CHECK(field(again, name) == field(many, name));
+  }
+}
+
+TEST_CASE("a steady case on several ranks is refused before any directory exists", "[euler][mpi]") {
+  // The steady solver's Gauss-Seidel is coloured in one mesh's order: E0706, exit 2.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) { inviscid_along_x(d, "fp64"); });
+  std::string err;
+  CHECK(run_on_ranks(doc, 2, 2, &err).empty());
+  INFO(err);
+  // The launcher may write its own lines; the diagnostic is the first JSON object.
+  Json diagnostic;
+  std::istringstream lines(err);
+  for (std::string line; std::getline(lines, line);) {
+    if (line.starts_with('{')) {
+      diagnostic = Json::parse(line);
+      break;
+    }
+  }
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["location"]["path"] == "time.kind");
+}
+#endif
 
 TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
   // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from
