@@ -16,6 +16,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -139,7 +140,6 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   using S = typename P::state;
   using Gr = typename P::grad;
   using R = typename P::residual;
-  using G = typename P::geom;
   const auto packed = autan::kernels::pack_geometry(mesh, geometry);
   auto topo = autan::kernels::topology(mesh.view());
   const auto stencil =
@@ -198,15 +198,21 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   const auto boundary = autan::kernels::colour_faces(topo, topo.n_interior_faces, topo.n_faces);
   DeviceArray<index_t> int_faces(interior.faces), bnd_faces(boundary.faces);
   constexpr int scratch_width = 5;
-  DeviceArray<double> scratch(scratch_width * nf);
-  auto conv = [](const std::vector<double>& h) {
-    return DeviceArray<G>(std::vector<G>(h.begin(), h.end()));
+  DeviceArray<typename P::compute> scratch(scratch_width * nf);
+  // Each geometry array has the element type its Data<P> member stores (P::geom or
+  // P::geom_value, as the generator decides).
+  using D = ek::Data<P>;
+  auto conv = [](auto member, const std::vector<double>& h) {
+    using T = std::remove_cvref_t<std::remove_pointer_t<decltype(member)>>;
+    return DeviceArray<T>(std::vector<T>(h.begin(), h.end()));
   };
-  DeviceArray<G> face_normal = conv(packed.face_normal),
-                 face_area = conv(packed.face_area_magnitude),
-                 face_centroid = conv(packed.face_centroid), face_moment = conv(packed.face_moment),
-                 cell_centroid = conv(packed.cell_centroid), cell_volume = conv(packed.cell_volume),
-                 st_weight = conv(host.gradient_weights());
+  auto face_normal = conv(D{}.face_normal, packed.face_normal);
+  auto face_area = conv(D{}.face_area_magnitude, packed.face_area_magnitude);
+  auto face_centroid = conv(D{}.face_centroid, packed.face_centroid);
+  auto face_moment = conv(D{}.face_moment, packed.face_moment);
+  auto cell_centroid = conv(D{}.cell_centroid, packed.cell_centroid);
+  auto cell_volume = conv(D{}.cell_volume, packed.cell_volume);
+  auto st_weight = conv(D{}.stencil_lsq_weight, host.gradient_weights());
   std::vector<double> bc_kind(nf, 0.0);
   std::vector<S> bc(5 * nf, S(0));
   for (std::size_t b = 0; b < nb; ++b) {
@@ -271,8 +277,14 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   const double cs = static_cast<double>(nc), fs = static_cast<double>(nf),
                is = static_cast<double>(ni), bs = static_cast<double>(nb),
                st = static_cast<double>(stencil.entries.size());
-  const double sS = sizeof(S), sG = sizeof(G), sGr = sizeof(Gr), sR = sizeof(R),
-               sI = sizeof(index_t), sO = sizeof(offset_t), sK = sizeof(double);
+  const double sS = sizeof(S), sGr = sizeof(Gr), sR = sizeof(R), sI = sizeof(index_t),
+               sO = sizeof(offset_t), sK = sizeof(double);
+  // Geometry element sizes, member by member.
+  const double sN = sizeof(*d.face_normal), sA = sizeof(*d.face_area_magnitude),
+               sFC = sizeof(*d.face_centroid), sM = sizeof(*d.face_moment),
+               sC = sizeof(*d.cell_centroid), sV = sizeof(*d.cell_volume),
+               sW = sizeof(*d.stencil_lsq_weight);
+  const double face_geometry = 3 * sN + sA + 3 * sFC + 9 * sM;          // per face, 16 values
   const double gather = cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO;  // values over the stencil
   std::vector<index_t> owners(mesh.owner().begin() + static_cast<std::ptrdiff_t>(ni),
                               mesh.owner().end());
@@ -285,17 +297,17 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   };
   const std::vector<Loop> loops = {
       {"primitives", cs * 10 * sS, [&](gpu::Strategy) { ek::gpu_loops::primitives(d, sched); }},
-      {"boundary_states", bs * (sI + sK + 5 * sS + 3 * sG + 5 * sS) + bo * 5 * sS,
+      {"boundary_states", bs * (sI + sK + 5 * sS + 3 * sN + 5 * sS) + bo * 5 * sS,
        [&](gpu::Strategy) { ek::gpu_loops::boundary_states(d, sched); }},
-      {"gradients", gather + st * 3 * sG + cs * (15 * sGr + 10 * sS),
+      {"gradients", gather + st * 3 * sW + cs * (15 * sGr + 10 * sS),
        [&](gpu::Strategy) { ek::gpu_loops::gradients(d, sched); }},
       {"limiter",
-       cs * (5 * sS + 15 * sGr + 10 * sS + sG + 3 * sG + 5 * sS + sO) +
-           static_cast<double>(topo.n_incidences) * sI + fs * 3 * sG,
+       cs * (5 * sS + 15 * sGr + 10 * sS + sV + 3 * sC + 5 * sS + sO) +
+           static_cast<double>(topo.n_incidences) * sI + fs * 3 * sFC,
        [&](gpu::Strategy) { ek::gpu_loops::limiter(d, sched); }},
-      {"sources", cs * (5 * sS + sG + 5 * sR),
+      {"sources", cs * (5 * sS + sV + 5 * sR),
        [&](gpu::Strategy) { ek::gpu_loops::sources(d, sched); }},
-      {"faces", cs * (25 * sGr + 3 * sG + 10 * sR) + is * (2 * sI + 16 * sG),
+      {"faces", cs * (25 * sGr + 3 * sC + 10 * sR) + is * (2 * sI + face_geometry),
        [&](gpu::Strategy s) {
          if (scheme.flux == autan::physics::Flux::hllc) {
            ek::gpu_loops::hllc_faces(d, s, sched);
@@ -305,7 +317,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
            ek::gpu_loops::roe_faces(d, s, sched);
          }
        }},
-      {"boundaries", bs * (sI + sK + 5 * sS + 16 * sG) + bo * (25 * sGr + 3 * sG + 10 * sR),
+      {"boundaries", bs * (sI + sK + 5 * sS + face_geometry) + bo * (25 * sGr + 3 * sC + 10 * sR),
        [&](gpu::Strategy s) {
          if (scheme.flux == autan::physics::Flux::hllc) {
            ek::gpu_loops::hllc_boundaries(d, s, sched);
