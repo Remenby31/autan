@@ -8,6 +8,7 @@ this backend must never be used as reference data.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -39,6 +40,7 @@ from autan.schema import (
     CaseSpec,
     Fluid,
     Medium,
+    OracleState,
     SolidZone,
     Steady,
     Unsteady,
@@ -255,9 +257,11 @@ class FakeBackend:
             else None
         )
         states = {
-            rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()
+            rule.condition.sha256: _archived(
+                case.resolve(rule.condition.path), rule.condition.sha256
+            )
             for rule in spec.boundaries
-            if rule.condition.kind == "oracle-state"
+            if isinstance(rule.condition, OracleState)
         }
         writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake", states=states)
         for warning in result.diagnostics:
@@ -610,3 +614,12 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
         for name in names:
             fields[name][cell] = values[name]
     return fields
+
+
+def _archived(path: Path, sha256: str) -> bytes:
+    """The bytes of a face-state file, which must still be those the plan checked."""
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != sha256:
+        message = f"{path} changed after it was checked: its SHA-256 differs from the case's"
+        raise CaseError([diagnostic("E0420", message, path=str(path))])
+    return data

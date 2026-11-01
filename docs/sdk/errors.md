@@ -448,7 +448,7 @@ Fix: Set them: `case.boundary("name").outlet(static_pressure=101325 * Pa)`.
 
 **Boundary condition not available for this physics** (error)
 
-`inlet` (total conditions) is compressible only, `velocity-inlet` incompressible only, and a no-slip `wall` needs viscous flow.
+`inlet` (total conditions) is compressible only, `velocity-inlet` incompressible only, a no-slip `wall` needs viscous flow, and `oracle-state` needs compressible inviscid or laminar physics.
 
 Fix: Use the condition matching the physics: `slip()` for inviscid walls, `inlet(...)` or `velocity_inlet(...)`.
 
@@ -480,7 +480,7 @@ Fix: Set `case.time = autan.Steady(...)` in the verification case.
 
 **Face-state file missing or invalid** (error)
 
-The file of an `oracle_state` condition is missing, its SHA-256 differs from the case's, it is not an `autan.face-states/1` document, or its variables are not density, velocity-x, velocity-y, velocity-z, pressure (docs/contracts/face-states.md).
+The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the case's, or it is not a valid `autan.face-states/1` document: its variables, a row of 3 finite coordinates and 5 finite values per face, density and pressure > 0 (docs/contracts/face-states.md).
 
 Fix: Export the face states with autan-vv for this mesh and give their path and sha256.
 
@@ -488,7 +488,7 @@ Fix: Export the face states with autan-vv for this mesh and give their path and 
 
 **Face states do not match the boundary faces** (error)
 
-The solver could not pair every boundary face of the zone with one face state by centroid, within 1e-9 times the largest extent of the zone's bounding box.
+The solver could not pair every boundary face of the zone with one face state by centroid, within 1e-9 times the largest extent of the zone's bounding box in the whole mesh.
 
 Fix: Export the face states from the mesh the case uses.
 

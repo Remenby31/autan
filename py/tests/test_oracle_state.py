@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import autan
+import autan.solver_input
 import jsonschema
 import pytest
 from autan import cgns
@@ -14,6 +15,7 @@ from autan.cli import json_schema, main
 
 from tests.conftest import CRM_HL, mesh_document
 
+LAMINAR = CRM_HL.replace("autan.SA()", "autan.Laminar()")
 VARIABLES = ["density", "velocity-x", "velocity-y", "velocity-z", "pressure"]
 
 
@@ -35,6 +37,13 @@ def states(**changes: Any) -> dict[str, Any]:
     return document
 
 
+def zone(rows: int, value: float = 1.2, **changes: object) -> dict[str, Any]:
+    """The farfield zone with ``rows`` faces, its first density ``value``, then ``changes``."""
+    values = [[value if i == 0 else 1.2, 30, 0, 0, 1e5] for i in range(rows)]
+    entry = {"faces": rows, "centroids": [[i, 0, 0] for i in range(rows)], "values": values}
+    return {"farfield": entry | changes}
+
+
 @pytest.fixture
 def two_faces(mesh_variant: Callable[..., autan.MeshInfo], tmp_path: Path) -> Path:
     def edit(document: dict[str, Any]) -> None:
@@ -51,7 +60,7 @@ def oracle_case(
     write_case: Callable[..., Path],
     content: dict[str, Any] | bytes,
     digest: str | None = None,
-    body: str = CRM_HL,
+    body: str = LAMINAR,
 ) -> Path:
     data = content if isinstance(content, bytes) else json.dumps(content).encode()
     case = write_case(
@@ -107,7 +116,12 @@ def test_an_oracle_condition_reaches_the_solver_and_the_run(
         (states(variables=["density", "pressure"]), None, "E0420"),
         (states(mesh_sha256="1" * 64), None, "E0422"),
         (states(zones={}), None, "E0423"),
-        (states(zones={"farfield": {"faces": 3, "centroids": [], "values": []}}), None, "E0423"),
+        (states(zones=zone(3)), None, "E0423"),
+        (states(zones=zone(2, centroids=[[], None])), None, "E0420"),
+        (states(zones=zone(2, values=[{}, "bad"])), None, "E0420"),
+        (states(zones=zone(2, faces="2")), None, "E0420"),
+        (states(zones=zone(2, value=float("nan"))), None, "E0420"),
+        (states(zones=zone(2, value=-1.2)), None, "E0420"),
     ],
 )
 def test_the_face_state_file_is_checked(
@@ -130,17 +144,33 @@ def test_a_missing_file_is_e0420(write_case: Callable[..., Path], two_faces: Pat
     assert codes == ["E0420"]
 
 
-def test_oracle_states_need_compressible_physics(
-    write_case: Callable[..., Path], two_faces: Path
+WATER = (
+    "import autan\nfrom autan.units import Pa, kg, m, s\n"
+    "water = autan.ConstantDensityFluid(name='water', density=998 * kg / m**3,"
+    " viscosity=1e-3 * Pa * s)\n"
+    "case = autan.Case('c', mesh='crm-hl.cgns')\n"
+    "case.physics = autan.Incompressible(turbulence=autan.Laminar(), fluid=water)\n"
+    "case.freestream(velocity=2 * m / s)\n"
+)
+
+
+@pytest.mark.parametrize("body", [WATER, CRM_HL])
+def test_oracle_states_need_compressible_physics_without_turbulence_model(
+    body: str, write_case: Callable[..., Path], two_faces: Path
 ) -> None:
-    body = (
-        "import autan\nfrom autan.units import Pa, kg, m, s\n"
-        "water = autan.ConstantDensityFluid(name='water', density=998 * kg / m**3,"
-        " viscosity=1e-3 * Pa * s)\n"
-        "case = autan.Case('c', mesh='crm-hl.cgns')\n"
-        "case.physics = autan.Incompressible(turbulence=autan.Laminar(), fluid=water)\n"
-        "case.freestream(velocity=2 * m / s)\n"
-    )
     case = oracle_case(write_case, states(), body=body)
     codes = [d.code for d in autan.load(case).plan(autan.MeshInfo.load(two_faces)).diagnostics]
     assert "E0414" in codes
+
+
+def test_the_solver_input_states_are_those_of_the_case(
+    write_case: Callable[..., Path], two_faces: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = oracle_case(write_case, states())
+    assert main(["prepare", str(case), "--mesh-info", str(two_faces)]) == 0
+    document = json.loads(capsys.readouterr().out)
+    autan.solver_input.SolverInput.model_validate(document)
+    [boundary] = [b for b in document["boundaries"] if b["zone"] == "farfield"]
+    boundary["states"]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="states"):
+        autan.solver_input.SolverInput.model_validate(document)

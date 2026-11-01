@@ -29,6 +29,7 @@ from autan.schema import (
     Fluid,
     IdealGas,
     Medium,
+    OracleState,
     Solid,
     SolidZone,
     Steady,
@@ -340,6 +341,12 @@ class SolverInput(_Strict):
         if recorded != (self.verification.sha256 if self.verification else None):
             message = "verification differs from the case's verification"
             raise ValueError(message)
+        for boundary in self.boundaries:
+            rules = [r.condition for r in case.boundaries if fnmatchcase(boundary.zone, r.zones)]
+            oracle = rules[0] if len(rules) == 1 and isinstance(rules[0], OracleState) else None
+            if (boundary.states and boundary.states.sha256) != (oracle and oracle.sha256):
+                message = f"boundary {boundary.zone!r}: states differ from the case's rule"
+                raise ValueError(message)
         manufactured = {b.kind == "manufactured" for b in self.boundaries}
         if manufactured and manufactured != {self.verification is not None}:
             message = "with verification every boundary is manufactured; without, none is"
