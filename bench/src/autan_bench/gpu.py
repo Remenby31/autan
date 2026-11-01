@@ -269,6 +269,40 @@ class Sampler:
 LOAD_WARN_PER_CPU = 1.0
 
 
+PROC_STAT = Path("/proc/stat")
+# A thread line of `ps -A -M` whose STAT column, after %CPU, starts with R.
+_PS_RUNNING = re.compile(r"\s[0-9.]+\s+R\S*\s+[0-9]")
+
+
+def _runnable_now() -> int:
+    """Threads runnable on the host now, the observer included (global, also in a container)."""
+    if sys.platform == "darwin":
+        out = subprocess.run(["ps", "-A", "-M"], capture_output=True, text=True, check=True)
+        return sum(1 for line in out.stdout.splitlines() if _PS_RUNNING.search(line))
+    for line in PROC_STAT.read_text().splitlines():
+        if line.startswith("procs_running "):
+            return int(line.split()[1])
+    raise BenchError(Code.TELEMETRY_FAILED, f"{PROC_STAT} has no procs_running line")
+
+
+def runnable_threads(window_s: float = 1.0, samples: int = 10) -> float:
+    """Median count of runnable threads over ``window_s``, the observer excluded.
+
+    Unlike the load average, it reacts at once: a campaign frozen when the GPU lock is taken
+    (bench/campaign/) no longer counts, while the 1-minute average would keep it for minutes.
+    The median ignores the threads that run for an instant.
+    """
+    counts = []
+    for _ in range(samples):
+        counts.append(max(0, _runnable_now() - 1))
+        time.sleep(window_s / samples)
+    return float(statistics.median(counts))
+
+
 def host_load() -> dict[str, float | int]:
-    """1-minute load average of the host (global, also inside a container) and its CPU count."""
-    return {"load_1m": os.getloadavg()[0], "cpus": os.cpu_count() or 1}
+    """Runnable threads and 1-minute load average of the host, and its CPU count."""
+    return {
+        "runnable": runnable_threads(),
+        "load_1m": os.getloadavg()[0],
+        "cpus": os.cpu_count() or 1,
+    }

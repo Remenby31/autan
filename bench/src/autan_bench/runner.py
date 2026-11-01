@@ -79,17 +79,17 @@ def run(
     with gpu.gpu_lock(lock, lock_timeout_s) as waited:
         idle = gpu.require_idle()
         before = gpu.host_load()
-        per_cpu = before["load_1m"] / before["cpus"]
+        per_cpu = before["runnable"] / before["cpus"]
         if max_load_per_cpu is not None and per_cpu > max_load_per_cpu:
             raise BenchError(
                 Code.HOST_BUSY,
-                f"host load {before['load_1m']:.1f} on {before['cpus']} CPUs exceeds "
+                f"{before['runnable']:g} runnable threads on {before['cpus']} CPUs exceed "
                 f"{max_load_per_cpu} per CPU",
             )
         if per_cpu > gpu.LOAD_WARN_PER_CPU:
             _log.warning(
-                "host load %.1f on %d CPUs: other processes share the memory bandwidth",
-                before["load_1m"],
+                "%g runnable threads on %d CPUs: other processes share the memory bandwidth",
+                before["runnable"],
                 before["cpus"],
             )
         with gpu.Sampler() as sampler:
@@ -123,6 +123,8 @@ def run(
             "idle_check": idle,
             "host_load": {
                 "cpus": before["cpus"],
+                "before_runnable": before["runnable"],
+                "after_runnable": after["runnable"],
                 "before_1m": before["load_1m"],
                 "after_1m": after["load_1m"],
             },
