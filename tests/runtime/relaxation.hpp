@@ -16,6 +16,10 @@
 
 #include "autan/runtime/physics.hpp"
 
+#ifdef AUTAN_HAVE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace autan_test {
 
 // Behaviour of the relaxation physics, so that tests can drive every path of
@@ -106,6 +110,17 @@ class Relaxation final : public autan::runtime::Physics {
         f.values.push_back(v);
       }
     }
+    // An initial-state file sets the fluid cells' density, velocity and pressure.
+    if (context.initial != nullptr) {
+      for (const auto& from : *context.initial) {
+        for (auto& f : state_) {
+          if (f.name != from.name) continue;
+          for (std::size_t c = 0; c < f.values.size(); ++c) {
+            if (!std::isnan(from.values[c])) f.values[c] = from.values[c];
+          }
+        }
+      }
+    }
     if (options_.vary) {
       for (auto& f : state_) {
         for (std::size_t c = 0; c < f.values.size(); ++c) f.values[c] *= scale(c);
@@ -191,6 +206,27 @@ class Relaxation final : public autan::runtime::Physics {
       if (id[c] != static_cast<double>(mesh.cell_global_id()[c]))
         throw std::runtime_error("relaxation: a ghost did not receive its owner's value");
     }
+#ifdef AUTAN_HAVE_CUDA
+    // On a CUDA run, the same through device memory on the run's stream.
+    if (context_.stream == nullptr) return;
+    for (std::size_t c = static_cast<std::size_t>(mesh.n_owned_cells()); c < n; ++c)
+      id[c] = std::numeric_limits<double>::quiet_NaN();
+    const auto stream = static_cast<cudaStream_t>(context_.stream);
+    double* device = nullptr;
+    if (cudaMalloc(&device, n * sizeof(double)) != cudaSuccess)
+      throw std::runtime_error("relaxation: cudaMalloc");
+    cudaMemcpyAsync(device, id.data(), n * sizeof(double), cudaMemcpyHostToDevice, stream);
+    context_.ghosts.forward(std::span<double* const>(&device, 1), autan::MemorySpace::cuda,
+                            context_.stream);
+    cudaMemcpyAsync(id.data(), device, n * sizeof(double), cudaMemcpyDeviceToHost, stream);
+    const bool done = cudaStreamSynchronize(stream) == cudaSuccess;
+    cudaFree(device);
+    if (!done) throw std::runtime_error("relaxation: the device exchange failed");
+    for (std::size_t c = 0; c < n; ++c) {
+      if (id[c] != static_cast<double>(mesh.cell_global_id()[c]))
+        throw std::runtime_error("relaxation: a device ghost did not receive its owner's value");
+    }
+#endif
   }
 
   void accumulate_average(double weight) override {

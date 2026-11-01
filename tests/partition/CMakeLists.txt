@@ -12,6 +12,11 @@ target_compile_definitions(
     $<$<BOOL:${AUTAN_ENABLE_METIS}>:AUTAN_HAVE_METIS>
     $<$<BOOL:${AUTAN_ENABLE_SCOTCH}>:AUTAN_HAVE_SCOTCH>
 )
+if(AUTAN_ENABLE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  target_compile_definitions(autan_partition_tests PRIVATE AUTAN_HAVE_CUDA)
+  target_link_libraries(autan_partition_tests PRIVATE CUDA::cudart)
+endif()
 catch_discover_tests(autan_partition_tests)
 
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)

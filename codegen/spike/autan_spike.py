@@ -452,6 +452,34 @@ def gpu_lsq_bounds_adjoint(
     return out
 
 
+def gpu_bind_check(m: Mesh) -> tuple[bool, bool]:
+    """(built-in face_area bound, a physics' own writable cell_volume left alone) by DeviceMesh."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(2, dtype=np.int32)
+    _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
+    return bool(out[0]), bool(out[1])
+
+
+def gpu_reductions(x: F64, flags: npt.NDArray[np.bool_]) -> tuple[float, float, int, int]:
+    """Device min of x in FP64 and in FP32, and the first index where flags is set, from flags
+    stored as bytes and as doubles."""
+    err = ctypes.create_string_buffer(512)
+    m64, m32, first, first64 = (
+        ctypes.c_double(),
+        ctypes.c_float(),
+        ctypes.c_int64(),
+        ctypes.c_int64(),
+    )
+    xs = np.ascontiguousarray(x, dtype=np.float64)
+    fs = np.ascontiguousarray(flags, dtype=np.uint8)
+    rc = lib().autan_spike_gpu_reductions(
+        _p(xs), _p(fs), ctypes.c_int64(xs.size), ctypes.byref(m64), ctypes.byref(m32),
+        ctypes.byref(first), ctypes.byref(first64), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return m64.value, m32.value, first.value, first64.value
+
+
 def gpu_sum_of_squares(x: F64) -> float:
     """Fixed-order FP64 sum of squares computed on the device."""
     err = ctypes.create_string_buffer(512)
