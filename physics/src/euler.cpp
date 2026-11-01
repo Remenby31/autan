@@ -637,6 +637,7 @@ void Euler<P>::set_second_order(bool on) {
   m.scheme.second_order = on;
   if (!on) {
     std::fill(m.grad.begin(), m.grad.end(), typename P::grad(0));
+    std::fill(m.grad_v.begin(), m.grad_v.end(), typename P::grad(0));
     std::fill(m.phi.begin(), m.phi.end(), State(0));
   } else if (!m.scheme.limiter) {
     std::fill(m.phi.begin(), m.phi.end(), State(1));
