@@ -845,7 +845,7 @@ class Run final : public Log {
       : p_(p),
         comm_(comm),
         ordered_(make_ordered()),
-        geometry_(compute_geometry(compute_mesh())),
+        geometry_(compute_physics_geometry()),
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
     ghosts_ = local_ ? comm_.ghost_exchange(*local_) : std::make_unique<NoGhosts>();
@@ -950,6 +950,9 @@ class Run final : public Log {
     if (ordered_) {
       note("info", "solver", "cells renumbered in reverse Cuthill-McKee order", "",
            Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
+    } else {
+      note("warning", "solver", "the mesh's own cell order is kept (AUTAN_CELL_ORDER=input)", "",
+           Json{{"order", "input"}}.dump());
     }
     if (comm_.size() > 1) log_partition();
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
@@ -1082,8 +1085,8 @@ class Run final : public Log {
   // "input": the mesh's order.
   struct Ordered {
     Mesh mesh;
-    std::vector<index_t> face_source;         // the mesh face of each face of `mesh`
-    std::vector<std::uint8_t> face_reversed;  // 1 where that face runs against it
+    std::vector<index_t> new_to_old;  // the mesh cell of each cell of `mesh`
+    AssemblyMap map;                  // the mesh face of each face of `mesh`, flips
   };
   std::optional<Ordered> make_ordered() {
     // Rank 0's environment decides for every rank: ranks partitioning
@@ -1096,12 +1099,19 @@ class Run final : public Log {
     }
     const auto start = std::chrono::steady_clock::now();
     AssemblyMap map;
-    Mesh mesh = renumber_cells(p_.mesh, rcm_order(p_.mesh), &map);
+    std::vector<index_t> new_to_old = rcm_order(p_.mesh);
+    Mesh mesh = renumber_cells(p_.mesh, new_to_old, &map);
     renumber_seconds_ =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    return Ordered{.mesh = std::move(mesh),
-                   .face_source = std::move(map.face_source),
-                   .face_reversed = std::move(map.face_reversed)};
+    return Ordered{
+        .mesh = std::move(mesh), .new_to_old = std::move(new_to_old), .map = std::move(map)};
+  }
+  // The geometry of the compute mesh, computed on the mesh the run read and
+  // carried through the renumbering: the same bits in either cell order.
+  [[nodiscard]] Geometry compute_physics_geometry() const {
+    Geometry g = compute_geometry(p_.mesh);
+    if (!ordered_) return g;
+    return renumber_geometry(g, ordered_->new_to_old, ordered_->map);
   }
   // The mesh the runtime partitions and the physics computes on: the mesh,
   // or its renumbered copy.
@@ -1117,7 +1127,7 @@ class Run final : public Log {
       const auto g =
           local_ ? static_cast<index_t>(local_->face_global_id[f]) : static_cast<index_t>(f);
       std::uint8_t reversed = local_ ? local_->face_reversed[f] : 0;
-      if (ordered_) reversed ^= ordered_->face_reversed[at(g)];
+      if (ordered_) reversed ^= ordered_->map.face_reversed[at(g)];
       face_global_id_[f] = mesh_face(static_cast<index_t>(f));
       face_reversed_[f] = reversed;
     }
@@ -1125,7 +1135,7 @@ class Run final : public Log {
   // The mesh face of face f of the physics' mesh.
   [[nodiscard]] index_t mesh_face(index_t f) const {
     const auto g = local_ ? static_cast<index_t>(local_->face_global_id[at(f)]) : f;
-    return ordered_ ? ordered_->face_source[at(g)] : g;
+    return ordered_ ? ordered_->map.face_source[at(g)] : g;
   }
 
   // The oracle-state face states in the order of the physics' owned

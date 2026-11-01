@@ -197,4 +197,38 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old, Assem
   return assemble(std::move(in), map);
 }
 
+Geometry renumber_geometry(const Geometry& geometry, std::span<const index_t> new_to_old,
+                           const AssemblyMap& map) {
+  const std::size_t n_faces = map.face_source.size();
+  if (new_to_old.size() != geometry.cell_volume.size() || n_faces != geometry.face_area.size() ||
+      map.face_reversed.size() != n_faces) {
+    throw Error(ErrorCode::mesh_index_out_of_range,
+                "the renumbering does not match the geometry's cells and faces");
+  }
+  Geometry out;
+  const auto cells = [&](const std::vector<double>& from, std::vector<double>& to) {
+    to.resize(new_to_old.size());
+    for (std::size_t i = 0; i < to.size(); ++i) to[i] = from[at(new_to_old[i])];
+  };
+  const auto faces = [&](const std::vector<double>& from, std::vector<double>& to, bool vector) {
+    to.resize(n_faces);
+    for (std::size_t f = 0; f < n_faces; ++f) {
+      const double v = from[at(map.face_source[f])];
+      to[f] = vector && map.face_reversed[f] != 0 ? -v : v;
+    }
+  };
+  faces(geometry.face_area_x, out.face_area_x, true);
+  faces(geometry.face_area_y, out.face_area_y, true);
+  faces(geometry.face_area_z, out.face_area_z, true);
+  faces(geometry.face_area, out.face_area, false);
+  faces(geometry.face_centroid_x, out.face_centroid_x, false);
+  faces(geometry.face_centroid_y, out.face_centroid_y, false);
+  faces(geometry.face_centroid_z, out.face_centroid_z, false);
+  cells(geometry.cell_volume, out.cell_volume);
+  cells(geometry.cell_centroid_x, out.cell_centroid_x);
+  cells(geometry.cell_centroid_y, out.cell_centroid_y);
+  cells(geometry.cell_centroid_z, out.cell_centroid_z);
+  return out;
+}
+
 }  // namespace autan
