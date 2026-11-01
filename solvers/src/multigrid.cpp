@@ -417,6 +417,13 @@ void Multigrid::set_operator(std::span<const double> diagonal, std::span<const d
   }
 }
 
+void Multigrid::reference_operator(std::span<const double> diagonal, std::span<const double> upper,
+                                   std::span<const double> lower) {
+  ops_[0].diag = diagonal;
+  ops_[0].upper = upper;
+  ops_[0].lower = lower;
+}
+
 void Multigrid::smooth(std::span<const double> b, std::span<double> x, int sweeps) {
   smoothers_[0].sweep(ops_[0], b, x, sweeps);
 }

@@ -51,6 +51,11 @@ class Multigrid {
   /// until the next set_operator. Throws std::domain_error on a singular block.
   void set_operator(std::span<const double> diagonal, std::span<const double> upper,
                     std::span<const double> lower);
+  /// Replaces the fine operator only: solve() iterates on the new A, preconditioned by the
+  /// cycles of the last set_operator (coarse operators and smoother factorisations kept), so that
+  /// a preconditioner built once serves several systems. Same lifetime rule as set_operator.
+  void reference_operator(std::span<const double> diagonal, std::span<const double> upper,
+                          std::span<const double> lower);
   /// One multigrid cycle on A x = b from x.
   void cycle(std::span<const double> b, std::span<double> x);
   struct Report {

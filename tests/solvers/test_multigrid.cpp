@@ -729,6 +729,32 @@ TEST_CASE("multigrid iterations do not grow with refinement", "[multigrid]") {
   CHECK(counts[2] <= counts[0] + 2);
 }
 
+TEST_CASE("a preconditioner built on one operator solves the system of the next", "[multigrid]") {
+  // Built on A1, then referencing A2, the same couplings with twice the pseudo-time shift (the CFL
+  // number halved, as between two implicit steps): the solve must reach the tolerance on A2.
+  const auto mesh = layered_box(8, 1e-4, Fill::hexa);
+  const auto g = autan::compute_geometry(mesh);
+  const auto a1 = diffusion(mesh, g, 1e-3, 0.3, true, 7);
+  const auto a2 = diffusion(mesh, g, 2e-3, 0.3, true, 7);
+  Multigrid mg(mesh, g);
+  mg.set_operator(a1.diag, a1.upper, a1.lower);
+  mg.reference_operator(a2.diag, a2.upper, a2.lower);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> b(5 * n);
+  for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::sin(0.37 * static_cast<double>(k));
+  std::vector<double> x(5 * n, 0.0);
+  const double tolerance = 1e-8;
+  const auto report = mg.solve(b, x, 60, tolerance);
+  REQUIRE(report.residual_drop <= tolerance);
+  const auto ax = apply(mesh, a2, x);
+  double r = 0.0, rb = 0.0;
+  for (std::size_t k = 0; k < b.size(); ++k) {
+    r += (b[k] - ax[k]) * (b[k] - ax[k]);
+    rb += b[k] * b[k];
+  }
+  CHECK(std::sqrt(r) <= 10.0 * tolerance * std::sqrt(rb));
+}
+
 TEST_CASE("line smoothing keeps the iterations bounded on wall layers of aspect ratio 1e4",
           "[multigrid]") {
   const Fill fill = GENERATE(Fill::hexa, Fill::prism);
