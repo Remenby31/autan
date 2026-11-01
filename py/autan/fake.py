@@ -21,10 +21,12 @@ from pydantic import TypeAdapter
 
 from autan import cgns
 from autan.errors import CaseError, diagnostic
+from autan.plan import read_regular
 from autan.results import (
     Averaging,
     CaseIdentity,
     Devices,
+    FinalMonitor,
     MeshIdentity,
     Results,
     RunInfo,
@@ -34,6 +36,7 @@ from autan.results import (
     identity,
     iso,
     residual_names,
+    run_metadata,
     utc_now,
 )
 from autan.schema import (
@@ -270,11 +273,15 @@ class FakeBackend:
         )
         states = {
             rule.condition.sha256: _archived(
-                case.resolve(rule.condition.path), rule.condition.sha256
+                case.resolve(rule.condition.path), rule.condition.sha256, "E0420"
             )
             for rule in spec.boundaries
             if isinstance(rule.condition, OracleState)
         }
+        if spec.initial_state is not None:
+            states[spec.initial_state.sha256] = _archived(
+                case.resolve(spec.initial_state.path), spec.initial_state.sha256, "E0508"
+            )
         writer = RunWriter(runs, info, spec, mesh_info, manufactured, source="fake", states=states)
         for warning in result.diagnostics:
             writer.diagnose(warning)
@@ -352,6 +359,17 @@ class FakeBackend:
         )
         layout = cell_layout(box, plan)
         changes: dict[str, Any] = {"status": status, "iterations": done, "time": history.time(done)}
+        if status in ("converged", "completed", "stopped"):
+            final = {m.name: history.forces(m, done) for m in spec.monitors}
+            if all(math.isfinite(v) for record in final.values() for v in record.values()):
+                changes["monitors"] = {
+                    n: FinalMonitor.model_validate({"iteration": done, **r})
+                    for n, r in final.items()
+                }
+            else:
+                message = "a final monitor value is not finite"
+                status = "failed"
+                changes.update(status=status, diagnostics=(diagnostic("E0704", message),))
         if status == "diverged":
             assert self.diverge_at is not None
             cell = box.n**3 // 2
@@ -409,7 +427,7 @@ class _History:
             for index, name in enumerate(self.equations)
         }
         monitors = {
-            monitor.name: self._forces(monitor, iteration)
+            monitor.name: self.forces(monitor, iteration)
             for monitor in self.spec.monitors
             if iteration % monitor.every == 0
         }
@@ -420,7 +438,7 @@ class _History:
             "monitors": monitors,
         }
 
-    def _forces(self, monitor: Any, iteration: int) -> dict[str, float]:
+    def forces(self, monitor: Any, iteration: int) -> dict[str, float]:
         fs, state = self.spec.freestream, self.state
         alpha, beta = si(fs.aoa, "rad"), si(fs.sideslip, "rad")
         q = 0.5 * state["density"] * state["speed"] ** 2
@@ -436,7 +454,8 @@ class _History:
         force = q * area * (cd * e_d + cl * e_l)
         length = si(fs.ref_length, "m") if fs.ref_length is not None else 1.0
         center = np.array([si(c, "m") for c in monitor.moment_center])
-        moment = np.cross(np.array([0.25 * length, 0.0, 0.0]) - center, force)
+        with np.errstate(over="ignore", invalid="ignore"):  # non-finite: the run fails
+            moment = np.cross(np.array([0.25 * length, 0.0, 0.0]) - center, force)
         values = {key: float(v) for key, v in zip(("fx", "fy", "fz"), force, strict=True)}
         values.update({key: float(v) for key, v in zip(("mx", "my", "mz"), moment, strict=True)})
         if monitor.ref_area is not None:
@@ -497,11 +516,7 @@ def _write_solution(
             .reshape(5, 32)
             .T,
         )
-        metadata = {
-            k: v
-            for k, v in info.document().items()
-            if k not in ("status", "finished", "iterations", "diagnostics")
-        }
+        metadata = run_metadata(info)
         cgns.node(base, "RunMetadata", "Descriptor_t", json.dumps(metadata, sort_keys=True))
         cgns.node(
             base,
@@ -711,10 +726,14 @@ def _fields(spec: CaseSpec, plan: Plan, layout: list[str]) -> dict[str, NDArray[
     return fields
 
 
-def _archived(path: Path, sha256: str) -> bytes:
-    """The bytes of a face-state file, which must still be those the plan checked."""
-    data = path.read_bytes()
+def _archived(path: Path, sha256: str, code: str) -> bytes:
+    """The bytes of a file the plan checked, read the same way, which must not have changed."""
+    try:
+        data = read_regular(path)
+    except OSError as error:
+        message = f"{path} cannot be read: {error}"
+        raise CaseError([diagnostic(code, message, path=str(path))]) from None
     if hashlib.sha256(data).hexdigest() != sha256:
         message = f"{path} changed after it was checked: its SHA-256 differs from the case's"
-        raise CaseError([diagnostic("E0420", message, path=str(path))])
+        raise CaseError([diagnostic(code, message, path=str(path))])
     return data

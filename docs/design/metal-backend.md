@@ -86,7 +86,7 @@ CI: `.github/workflows/metal.yml` on GitHub's `macos-26` arm64 runner builds the
 
 ## Open items
 
-- **Advection in `fp32+acc64` at 69–70 % of the reference** (81–83 % of copy), recorded as measured: at the threshold within the measurement's spread, with no 64-bit atomics on Metal; the M1b gate was judged met (#21). The gathers read `owner[f]` per incidence to sign each face's value, 8 bytes per face the minimum does not count; encoding the side otherwise would change the topology contract (see the follow-up issue).
+- **Advection in `fp32+acc64` at 69–70 % of the reference** (81–83 % of copy), recorded as measured, with no 64-bit atomics on Metal. The M1b gate (≥ 70 % of the reference) is not met: tet store-gather reaches 69 %, so #21 stays open until #178 closes the gap. The gathers read `owner[f]` per incidence to sign each face's value, 8 bytes per face the minimum does not count; encoding the side otherwise would change the topology contract (see the follow-up issue).
 - **autan-bench on macOS.** Runs record the host load and `--max-load` refuses a busy host (#121); `autan-bench baseline` refuses Metal runs for lack of a container image digest, so the pooled peak above is computed with autan-bench's statistics directly.
 - **Shader compilation.** Libraries compile from source at first use (4 s for the spike modules, then the system cache); a precompiled `.metallib` (Metal Toolchain) is an option for packaged wheels.
 - **Hierarchical colouring and SIMD-group transposition** are not emitted, as on CUDA.

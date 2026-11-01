@@ -43,5 +43,10 @@ jobs:
           -DAUTAN_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build
+      - name: Give this job priority on the GPU lock
+        run: bench/ci/priority.sh start 90
       - name: Test (under the GPU lock)
         run: flock /home/admin/autan-gpu/gpu.lock ctest --test-dir build -j 8 --output-on-failure
+      - name: Release the GPU lock priority
+        if: always()
+        run: bench/ci/priority.sh stop

@@ -32,7 +32,6 @@ namespace {
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
 using autan::spike::DeviceArray;
-using autan::spike::DeviceGeom;
 using autan::spike::DeviceMesh;
 using autan::spike::GeomCopy;
 using autan::spike::SpikeMesh;
@@ -146,7 +145,6 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   const double colouring_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - colour_start).count();
   GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> dq(q), dqb(qb), dmin(nc), dmax(nc);
   DeviceArray<Gr> dgrad(grad);
   DeviceArray<R> dres(nc), dacc(3 * nc);
@@ -158,10 +156,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   a.q = dq.get();
   a.grad = dgrad.get();
   a.res = dres.get();
-  autan::spike::bind(a.face_r_left, g.face_r_left);
-  autan::spike::bind(a.face_r_right, g.face_r_right);
-  autan::spike::bind(a.face_normal, g.face_normal);
-  autan::spike::bind(a.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(a);
   a.velocity[0] = typename P::param(1.0);
   a.velocity[1] = typename P::param(0.7);
   a.velocity[2] = typename P::param(0.4);
@@ -204,12 +199,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   d.qmin = dmin.get();
   d.qmax = dmax.get();
   d.gg_sum = dacc.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.cell_volume, g.cell_volume);
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   gr::Data<P> dh = d;
   dh.topo = m.topo;
   std::vector<Gr> hgrad(3 * nc);
@@ -312,6 +302,18 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                  static_cast<double>(ns) / cells, build_seconds);
     out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
                    time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
+    // The same in the sliced layout (32 cells per slice): the CSR bytes (padding is skipped)
+    // plus each cell's row length; the output is cleared first so the check sees this launch.
+    gpu::DeviceMesh sm(m.mesh, m.packed, &st, {o.block, 0, 0, nullptr, 32});
+    gr::Data<P> dsl = dst;
+    sm.bind(dsl);
+    gpu::check(cudaMemset(dgrad.get(), 0, 3 * nc * sizeof(Gr)), "clear gradient");
+    gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule());
+    gpu::check(cudaDeviceSynchronize(), "lsq stencil sliced");
+    if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
+    out.push_back({std::string("lsq_gradient_stencil_") + label + "_sliced",
+                   st_bytes + cells * sizeof(index_t), "sliced32",
+                   time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule()); })});
   }
 
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
@@ -332,8 +334,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   rd.topo = dm.topo;
   rd.u_cons = du.get();
   rd.res = dr.get();
-  autan::spike::bind(rd.face_normal, g.face_normal);
-  autan::spike::bind(rd.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(rd);
   rd.u_cons_tan = du_tan.get();
   rd.res_tan = dr_tan.get();
   rd.res_adj = dr_adj.get();
@@ -352,8 +353,8 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                    time_it(o, [&] { rf::gpu_loops::flux_adjoint(rd, s, dm.schedule); })});
   }
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
-               colouring_seconds, dm.int_colours.offsets.size() - 1,
-               dm.bnd_colours.offsets.size() - 1);
+               colouring_seconds, dm.schedule.interior.offsets.size() - 1,
+               dm.schedule.boundary.offsets.size() - 1);
 }
 
 }  // namespace

@@ -18,6 +18,8 @@ The build runs the generator as a CMake custom command (`codegen/CMakeLists.txt`
 | `AUTAN_ENABLE_HIP` | the same generated GPU loops compiled with HIP into `autan_kernels_gpu`; exclusive with CUDA |
 | `AUTAN_ENABLE_METAL` (macOS) | Metal loops, runtime `autan_metal`, driver `autan_spike_metal`, benchmarks `autan_metal_stream` and `autan_metal_loop_bench` |
 
+The benchmarks record the commit they were built from, as every benchmark binary does ([bench.md](../infra/bench.md#benchmark-any-kernel)).
+
 ## DSL
 
 ```python
@@ -52,7 +54,7 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 
 **Stencils.** Least squares over face neighbours leaves the unlimited second-order scheme linearly unstable on tetrahedra (Diskin and Thomas, AIAA J. 49(4), 2011): on the V&V `tet` family at n = 5, −V⁻¹ ∂R/∂q of pure advection has five eigenvalues with positive real part (`tests/test_stencil.py`). `autan::kernels::cell_stencil(mesh, geometry, kind)` builds a wider stencil once per mesh, after renumbering: `vertex` holds the cells and boundary faces sharing a node with the cell (about 63 entries per tetrahedron), `face2` the face neighbours, theirs, and the boundary faces of both (about 13); either removes the unstable eigenvalues. It returns the CSR for `Topology::{stencil_offsets, stencil}`, the twins for `stencil_twin` and the LSQ weights for `geometry.stencil_lsq_weight`. Ghost cells get the stencil their known faces give, so the deterministic adjoint collects what owned cells send them; a partition needs a halo as deep as the stencil.
 
-`Inc` targets have role `Residual` (accumulation type). `Min`/`Max` ties keep the first incidence.
+`Inc` targets have role `Residual` (accumulation type). `Min`/`Max` ties keep the first incidence. `Sum` accumulates in the accumulation type; `Min`, `Max` and `Follow` keep a body output in the compute type, where selecting is exact, which halves their registers when the two types differ (Euler's gradient: 95 → 72 registers, 34 % faster on GB10).
 
 **Jacobian blocks.** Face, boundary and cell loops may add `Jacobian(d, wrt=("ul", "ur"))` to `out`: per face (or cell), the derivative of the body's outputs with respect to the named arguments, the others held fixed, written to `d` of role `Jac` and shape `(n_out, n_in)` for one argument or `(len(wrt), n_out, n_in)` for several, row-major — the blocks an implicit solver assembles. `ad.jacobian` derives it by forward mode, one direction per input component in a single function sharing the body's primal, structural zeros folded. Written once per face (by the owner in gather-recompute), so every strategy gives the same blocks; the loop's tangent and adjoint ignore it. `Jac` storage is the place to move to 16-bit formats with a per-block scale later (research §7).
 
@@ -69,6 +71,10 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 | `gather_recompute` | each cell evaluates its own faces | yes |
 
 `gpu::Schedule` carries the block size, the colourings (`autan::kernels::colour_faces`), the store-gather and incidence scratch and the stream.
+
+`gpu::DeviceMesh` (`autan/kernels/device.cuh`) builds, from a `Mesh`, its `PackedGeometry` and an optional `CellStencil`, everything a physics' generated loops read besides its own datasets: the device `Topology` (owned-face prefixes, incidence twins, stencil and stencil twins), the colourings of the owned face ranges, the scratch and the `Schedule`. `bind(d)` points every built-in geometry member of a generated `Data<P>` at a device copy in that member's own type (`P::geom` or `P::geom_value`), uploaded on first use, so one `DeviceMesh` serves every policy; `set_stencil_weights` replaces the stencil weights (a physics' own gradient weights). `gpu::min` and `gpu::first_index` are exact device reductions (global time step, first diverged cell): their result does not depend on the launch. Sums and norms use the runtime's exact device sum.
+
+Team per cell (lanes of a warp striding one cell's stencil, then a fixed butterfly combine) was measured on GB10: it lifts narrow stencil reductions (face2 LSQ gradient 57 → 94 % of peak on tetrahedra, vertex stencil 18 → 88 %) but slows Euler's gradient, whose 25 FP64 accumulators cost more in shuffles and registers than the coalescing saves (3.86 → 4.89 ns/cell at 4 lanes). It is not merged; the branch `codegen/team-per-cell` keeps it for scalar reductions such as a turbulence variable's gradient.
 
 The adjoint of a cell reduction sends values to neighbouring cells, so it takes a strategy too: with `atomic` and `warp_aggregated` it scatters with atomics; with the deterministic strategies it runs in two passes (research §6, store-then-gather on the transposed incidence list): each owned cell adds its own adjoints and stores, per incidence, what it sends across, then each cell, owned or ghost, sums what its owned neighbours stored for it, in the order of its incidences. The twin of an incidence (the same face in the other cell's list) is `Topology::incidence_twin`, from `autan::kernels::incidence_twins(mesh)`; over a stencil, the twin of an entry is the cell's entry in its neighbour's stencil (`stencil_twin`; stencils are symmetric).
 

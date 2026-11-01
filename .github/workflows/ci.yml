@@ -25,6 +25,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Run every hook on every file
         env:
@@ -84,6 +85,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # UCX intermittently fails to start on hosted runners ("pml_ucx.c:319 Error: Failed to create
+    # UCP worker", then MPI_ERR_OTHER in MPI_Isend). These are single-node CPU tests: use Open MPI's
+    # ob1 PML over shared memory (Open MPI 5 names it sm, formerly vader) and no UCX one-sided.
+    env:
+      OMPI_MCA_pml: ob1
+      OMPI_MCA_btl: self,sm
+      OMPI_MCA_osc: ^ucx
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,11 +120,81 @@ jobs:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
           PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
         run: |
-          tests='^(autan_halo_tests_[0-9]+_ranks|Several ranks .*)$'
-          n=$(ctest --test-dir build -N -R "$tests" | sed -n 's/^Total Tests: //p')
-          echo "$n multi-rank tests"
-          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 multi-rank tests, found $n"; exit 1; }
-          ctest --test-dir build -R "$tests" --output-on-failure --no-tests=error
+          n=$(ctest --test-dir build -N -L mpi | sed -n 's/^Total Tests: //p')
+          echo "$n multi-rank tests (CTest label mpi)"
+          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 tests labelled mpi, found $n"; exit 1; }
+          ctest --test-dir build -L mpi --output-on-failure --no-tests=error
+
+  bench-harness:
+    # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
+    name: Bench harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+
+  ui:
+    # No path filter: the UI reads the SDK, the contracts and the fake backend, which live outside ui/.
+    name: UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: website/package.json
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - run: bun install --frozen-lockfile
+      # The server's build backend (hatchling, editables) comes from its uv.lock, not from an
+      # isolated build environment; Vitest's surface test runs the server too.
+      - name: Install the server from its lock file
+        working-directory: ui/server
+        run: |
+          uv sync --locked --no-install-project --no-install-package autan
+          uv sync --locked --no-build-isolation
+      - name: Lint (Biome)
+        run: bunx biome ci .
+      - name: Type-check
+        run: bunx tsc --noEmit -p .
+      - name: Unit tests (Vitest)
+        run: bun run test
+      - name: Server type-check (mypy)
+        working-directory: ui/server
+        run: uv run --locked --no-sync mypy
+      - name: Server tests (pytest)
+        working-directory: ui/server
+        run: uv run --locked --no-sync python -m pytest -q tests
+      # Headless Chrome, preinstalled on the runner (playwright.config.ts uses channel "chrome");
+      # WebGL2, since there is no WebGPU without a GPU.
+      - name: End-to-end tests (Playwright)
+        env:
+          AUTAN_UI_E2E_BACKEND: webgl2
+        run: bun run e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ui-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ui/test-results/
+          if-no-files-found: ignore
 
   clang-tidy:
     name: clang-tidy
@@ -130,6 +208,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Install clang-tidy
         run: uv tool install clang-tidy==23.1.4
@@ -164,6 +243,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       # 64-bit, HDF5-backed CGNS 4.5 from conda-forge (Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files),
       # and Ninja from the same place, so no job depends on the Ubuntu mirrors.
@@ -216,6 +296,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check

@@ -19,6 +19,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
+#include <fcntl.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <signal.h>
@@ -30,6 +31,7 @@
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
@@ -199,6 +201,45 @@ std::string file_sha256(const fs::path& file) {
   return hash;
 }
 
+// An autan.initial-state/1 document for the fluid cells of `mesh_file`
+// (every cell of the hybrid box), rows in reverse cell order: density
+// 1 + 1e-3 c, velocity (c, -c, 0.5), pressure 1e5 + c for cell c.
+Json initial_state_document(const fs::path& mesh_file) {
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_file);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  Json centroids = Json::array(), values = Json::array();
+  for (autan::index_t c = mesh.n_cells() - 1; c >= 0; --c) {
+    const auto i = static_cast<std::size_t>(c);
+    const auto x = static_cast<double>(c);
+    centroids.push_back({g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]});
+    values.push_back({1.0 + 1e-3 * x, x, -x, 0.5, 1e5 + x});
+  }
+  return Json{{"schema", "autan.initial-state/1"},
+              {"oracle", "test"},
+              {"mesh_sha256", autan::io::mesh_hash(mesh_file)},
+              {"variables", {"density", "velocity-x", "velocity-y", "velocity-z", "pressure"}},
+              {"cells", mesh.n_cells()},
+              {"centroids", centroids},
+              {"values", values}};
+}
+
+// The hybrid input made inviscid: an initial-state file has no turbulence
+// variables (initial-state.md).
+void inviscid(Json& d) {
+  d["physics"]["turbulence"]["model"] = "inviscid";
+  d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+  d["freestream"]["nu_tilde"] = nullptr;
+  for (auto& zone : d["cell_zones"]) zone["initial"]["nu_tilde"] = nullptr;
+}
+
+// `doc` written to a fresh file; the solver input's initial_state names it.
+Json with_initial_state(Json input_doc, const Json& doc) {
+  const fs::path file = fresh_dir() / "initial.json";
+  std::ofstream(file) << doc.dump();
+  input_doc["initial_state"] = {{"path", file.string()}, {"sha256", file_sha256(file)}};
+  return input_doc;
+}
+
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
 // steady `continue`, the residuals at iteration 1 of the chain's first run
@@ -305,6 +346,14 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
       for (const auto& [key, value] : f.items()) CHECK(value == 0.0);
     }
   }
+  // Convergence between two monitor iterations: run.json still holds the
+  // final forces, at the last iteration.
+  const Json& final_forces = info["monitors"]["forces"];
+  CHECK(final_forces.size() == 13);
+  CHECK(final_forces["iteration"] == 28);
+  for (const auto& [key, value] : final_forces.items()) {
+    if (key != "iteration") CHECK(value == 0.0);
+  }
 
   const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
   const autan::Mesh back = autan::io::read_mesh(o.run / "solution.cgns");
@@ -325,6 +374,89 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["iterations"] == 10);
     CHECK(fs::exists(o.run / "solution.cgns"));
   }
+  SECTION("final monitors: the last state, equal to its history line when it has one") {
+    // The pressure grows at each step, so each line's forces differ.
+    const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 10; }),
+                          {.factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3});
+    const Json info = Json::parse(read(o.run / "run.json"));
+    Json expected = history(o.run)[9]["monitors"]["forces"];
+    CHECK(expected != history(o.run)[4]["monitors"]["forces"]);
+    expected["iteration"] = 10;
+    CHECK(info["monitors"] == Json{{"forces", expected}});
+
+    // Between two monitor iterations: ymin, the unit square y = 0 with
+    // outward normal -y, carries fy = -(p - p_inf), p = (p_inf + dp) 1.001^11.
+    const Json doc = input([](Json& d) { d["time"]["max_iterations"] = 11; });
+    const Outcome off = run(doc, {.factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3});
+    const Json f = Json::parse(read(off.run / "run.json"))["monitors"]["forces"];
+    CHECK(f["iteration"] == 11);
+    const double p_inf = doc["freestream"]["pressure"].get<double>();
+    CHECK_THAT(f["fy"].get<double>(),
+               WithinRel(-((p_inf + 1000.0) * std::pow(1.001, 11) - p_inf), 1e-12));
+  }
+  SECTION("stopped before iteration 1: the initial state at iteration 0") {
+    // ymin, the unit square y = 0 with outward normal -y, under a pressure
+    // excess dp carries F = (0, -dp, 0).
+    const Outcome o =
+        run(input(), {.factor = 0.9, .pressure_offset = 1000.0, .signal_on_start = true});
+    CHECK(o.status == ExitStatus::signalled);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "stopped");
+    CHECK(info["iterations"] == 0);
+    CHECK_FALSE(fs::exists(o.run / "history.jsonl"));
+    const Json& f = info["monitors"]["forces"];
+    CHECK(f["iteration"] == 0);
+    CHECK_THAT(f["fy"].get<double>(), Catch::Matchers::WithinAbs(-1000.0, 1e-9));
+    CHECK(fs::exists(o.run / "solution.cgns"));
+  }
+  SECTION("failed in the final loads: E0704, no monitors") {
+    const Outcome o = run(input([](Json& d) { d["monitors"][0]["every"] = 1000; }),
+                          {.factor = 0.5, .throw_in_loads = true});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["iterations"] == 28);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+  }
+  SECTION("failed on final loads that overflow: E0704, no monitors") {
+    // A pressure excess on ymin about a centre 1e308 m away: moments beyond
+    // the double range.
+    const Outcome o = run(input([](Json& d) {
+                            d["monitors"][0]["every"] = 1000;
+                            d["monitors"][0]["moment_center"] = {1e308, 1e308, 1e308};
+                          }),
+                          {.factor = 0.5, .pressure_offset = 1000.0});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+  }
+  SECTION("failed on a recorded load that is not finite: E0704, history up to the line before") {
+    // results.md, History: a record holds numbers, so a non-finite force
+    // at iteration 5 fails the run there instead of writing null.
+    const Outcome o = run(input([](Json& d) { d["monitors"][0]["every"] = 1; }),
+                          {.factor = 0.9, .nan_loads_from = 5});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["iterations"] == 4);
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+    const auto lines = history(o.run);
+    REQUIRE(lines.size() == 4);
+    CHECK(lines.back()["iteration"] == 4);
+    CHECK(std::isfinite(lines.back()["monitors"]["forces"]["fy"].get<double>()));
+  }
+  SECTION("failed writing the solution: E0704, no monitors") {
+    const Outcome o = run(input(), {.factor = 0.5, .throw_in_fields = true});
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["monitors"].is_null());
+  }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
     CHECK(o.status == ExitStatus::finished);
@@ -341,6 +473,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(d["data"]["zone"] ==
           mesh.cell_zones()[static_cast<std::size_t>(mesh.cell_zone()[3])].name);
     CHECK(history(o.run).size() == 6);
+    CHECK(info["monitors"].is_null());
     // The diverged state holds a NaN: no solution can satisfy the readers.
     CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
   }
@@ -351,6 +484,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(history(o.run).size() == 3);
+    CHECK(info["monitors"].is_null());
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -427,6 +561,20 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                   })),
                   "E0705");
   }
+  SECTION("E0705 point vortex on a condition other than farfield") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][2]["point_vortex"] = {{"zones", {"ymin"}},
+                                                          {"center", {0.0, 0.0, 0.0}}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 point vortex over a zone that is not a wall") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["point_vortex"] = {{"zones", {"xmax"}},
+                                                          {"center", {0.0, 0.0, 0.0}}};
+                  })),
+                  "E0705");
+  }
   SECTION("E0705 zone absent from the mesh") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }
@@ -451,6 +599,58 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   }
 }
 
+TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") {
+  // Never a silent CPU run: a kind this build does not drive is E0706, and
+  // a CUDA build that sees no device is E0807, both before any directory,
+  // whatever the physics registered: here, one for the CPU only.
+  autan::runtime::PhysicsRegistry cpu_only;
+  cpu_only.add({.kind = "*", .turbulence = "*", .precision = "*", .device = "cpu"},
+               [](const autan::runtime::PhysicsContext& context) {
+                 return std::make_unique<autan_test::Relaxation>(context,
+                                                                 autan_test::RelaxationOptions{});
+               });
+  const Outcome hip = run(input([](Json& d) { d["devices"]["kind"] = "hip"; }), cpu_only);
+  require_error(hip, "E0706");
+  CHECK(Json::parse(hip.err)["data"]["path"] == "devices.kind");
+#ifdef AUTAN_HAVE_CUDA
+  // As a host without a GPU: CUDA reads this before its first call, and
+  // this test runs in a process of its own.
+  REQUIRE(setenv("CUDA_VISIBLE_DEVICES", "-1", 1) == 0);
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
+  require_error(o, "E0807");
+  CHECK(Json::parse(o.err)["data"] ==
+        Json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}});
+#else
+  const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
+  require_error(o, "E0706");
+  CHECK(Json::parse(o.err)["data"]["path"] == "devices.kind");
+#endif
+}
+
+#ifdef AUTAN_HAVE_CUDA
+TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]") {
+  // On a periodic mesh too, where the relaxation physics checks that the
+  // device exchange fills each image ghost on the run's stream.
+  const bool periodic = GENERATE(false, true);
+  CAPTURE(periodic);
+  const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
+  const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
+  REQUIRE(o.status == ExitStatus::finished);
+  std::ifstream log_in(o.run / "log.jsonl");
+  Json ready, cuda;
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "relaxation physics ready") ready = event["data"];
+    if (event["source"] == "cuda") cuda = event["data"];
+  }
+  CHECK(ready["device"] == 0);
+  CHECK(ready["stream"] == true);
+  CHECK(cuda["device"] == 0);
+  CHECK(!cuda["name"].get<std::string>().empty());
+  CHECK(cuda["visible"].get<int>() >= 1);
+}
+#endif
+
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
   autan::runtime::PhysicsRegistry registry;
@@ -459,9 +659,10 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
       [](const autan::runtime::PhysicsContext& context) {
         return std::make_unique<autan_test::Relaxation>(context, autan_test::RelaxationOptions{});
       },
-      [refuse](
-          const autan::runtime::SolverInput& in) -> std::optional<autan::runtime::PhysicsRefusal> {
-        if (!refuse) return std::nullopt;
+      [refuse](const autan::runtime::SolverInput& in,
+               int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        // The scope sees the run's rank count: one, here.
+        if (!refuse || ranks != 1) return std::nullopt;
         return autan::runtime::PhysicsRefusal{
             .message = "refused",
             .path = "cell_zones[1].medium",
@@ -560,14 +761,20 @@ TEST_CASE("Forces monitors report the loads and their coefficients", "[runtime]"
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   };
   const std::array<std::string, 3> axes{"x", "y", "z"};
-  for (std::size_t k = 0; k < 3; ++k) {
-    CHECK_THAT(f["f" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(force[k], 1e-9));
-    CHECK_THAT(f["m" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k], 1e-9));
-    CHECK_THAT(f["cm" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k] / q, 1e-9));
+  // A history line, and run.json's final record at iteration 28, between two
+  // monitor iterations.
+  const Json final_forces = Json::parse(read(o.run / "run.json"))["monitors"]["forces"];
+  CHECK(final_forces["iteration"] == 28);
+  for (const Json& r : {f, final_forces}) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      CHECK_THAT(r["f" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(force[k], 1e-9));
+      CHECK_THAT(r["m" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k], 1e-9));
+      CHECK_THAT(r["cm" + axes[k]].get<double>(), Catch::Matchers::WithinAbs(moment[k] / q, 1e-9));
+    }
+    CHECK_THAT(r["cd"].get<double>(), Catch::Matchers::WithinAbs(dot(force, drag) / q, 1e-12));
+    CHECK_THAT(r["cl"].get<double>(), Catch::Matchers::WithinAbs(dot(force, lift) / q, 1e-12));
+    CHECK_THAT(r["cs"].get<double>(), Catch::Matchers::WithinAbs(dot(force, side) / q, 1e-12));
   }
-  CHECK_THAT(f["cd"].get<double>(), Catch::Matchers::WithinAbs(dot(force, drag) / q, 1e-12));
-  CHECK_THAT(f["cl"].get<double>(), Catch::Matchers::WithinAbs(dot(force, lift) / q, 1e-12));
-  CHECK_THAT(f["cs"].get<double>(), Catch::Matchers::WithinAbs(dot(force, side) / q, 1e-12));
   CHECK(std::abs(f["cd"].get<double>()) > 1e-3);
 }
 
@@ -773,6 +980,81 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
       CHECK(solution_field(b.run / "solution.cgns", "FlowSolutionMean", field) ==
             solution_field(whole.run / "solution.cgns", "FlowSolutionMean", field));
     }
+  }
+}
+
+TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") {
+  // initial-state.md: rows paired with cells by centroid, whatever their
+  // order; the relaxation physics keeps its state (factor 0.5, no growth),
+  // so the solution is the file's values cell for cell.
+  const Json state = initial_state_document(mesh_path);
+  const Json doc = with_initial_state(input(inviscid), state);
+  const Outcome o = run(doc);
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto n = state["cells"].get<std::size_t>();
+  const std::array<std::pair<const char*, std::function<double(double)>>, 5> expected{{
+      {"Density", [](double c) { return 1.0 + 1e-3 * c; }},
+      {"VelocityX", [](double c) { return c; }},
+      {"VelocityY", [](double c) { return -c; }},
+      {"VelocityZ", [](double) { return 0.5; }},
+      {"Pressure", [](double c) { return 1e5 + c; }},
+  }};
+  for (const auto& [field, value] : expected) {
+    CAPTURE(field);
+    const auto got = solution_field(o.run / "solution.cgns", "FlowSolution", field);
+    REQUIRE(got.size() == n);
+    for (std::size_t c = 0; c < n; ++c) CHECK(got[c] == value(static_cast<double>(c)));
+  }
+  // Archived byte for byte under its hash.
+  const std::string sha = doc["initial_state"]["sha256"];
+  CHECK(read(o.run / "states" / (sha + ".json")) ==
+        read(doc["initial_state"]["path"].get<std::string>()));
+
+  SECTION("E0508: the file differs from its hash") {
+    Json bad = doc;
+    bad["initial_state"]["sha256"] = std::string(64, '0');
+    require_error(run(bad), "E0508");
+  }
+  SECTION("E0508: not an initial-state document") {
+    Json other = state;
+    other["variables"] = {"density", "velocity-x", "velocity-y", "velocity-z", "temperature"};
+    require_error(run(with_initial_state(input(inviscid), other)), "E0508");
+  }
+  SECTION("E0508: an unknown key, or a mesh hash that is no SHA-256") {
+    Json extra = state;
+    extra["note"] = "unknown";
+    require_error(run(with_initial_state(input(inviscid), extra)), "E0508");
+    Json malformed = state;
+    malformed["mesh_sha256"] = "not-a-sha256";
+    require_error(run(with_initial_state(input(inviscid), malformed)), "E0508");
+  }
+  SECTION("E0705: a turbulence model, whose variables the file lacks") {
+    require_error(run(with_initial_state(input(), state)), "E0705");
+  }
+  SECTION("E0509: written for another mesh") {
+    Json other = state;
+    other["mesh_sha256"] = std::string(64, 'a');
+    require_error(run(with_initial_state(input(inviscid), other)), "E0509");
+  }
+  SECTION("E0510: a row short") {
+    Json other = state;
+    other["centroids"].erase(other["centroids"].size() - 1);
+    other["values"].erase(other["values"].size() - 1);
+    other["cells"] = n - 1;
+    require_error(run(with_initial_state(input(inviscid), other)), "E0510");
+  }
+  SECTION("E0511: a row far from every cell, or two rows on one cell") {
+    Json far = state;
+    far["centroids"][3][0] = far["centroids"][3][0].get<double>() + 1e-3;
+    require_error(run(with_initial_state(input(inviscid), far)), "E0511");
+    Json twice = state;
+    twice["centroids"][3] = twice["centroids"][4];
+    require_error(run(with_initial_state(input(inviscid), twice)), "E0511");
+  }
+  SECTION("E0705: initial_state with start") {
+    Json both = doc;
+    both["start"] = start_from(o.run, "warm");
+    require_error(run(both), "E0705");
   }
 }
 
@@ -1212,10 +1494,47 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
   return out;
 }
 
+// The relaxation physics' colour sweeps redone on the whole mesh, from the
+// global colouring: each step, `sweeps` symmetric sweeps over the colours,
+// each cell of a colour taking the mean of itself and its face neighbours,
+// summed in increasing global id; the field starts at global id mod 7.
+std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
+  const auto colours = autan::colour_cells(mesh);
+  const std::int32_t n_colours = *std::ranges::max_element(colours) + 1;
+  const auto ids = mesh.cell_global_id();
+  std::vector<double> w(colours.size());
+  for (std::size_t c = 0; c < w.size(); ++c) w[c] = static_cast<double>(ids[c] % 7);
+  const auto colour_sweep = [&](std::int32_t k) {
+    for (autan::index_t c = 0; c < mesh.n_cells(); ++c) {
+      if (colours[static_cast<std::size_t>(c)] != k) continue;
+      std::vector<std::pair<std::int64_t, double>> around{
+          {ids[static_cast<std::size_t>(c)], w[static_cast<std::size_t>(c)]}};
+      for (const autan::index_t f : mesh.cell_faces(c)) {
+        if (f >= mesh.n_interior_faces()) continue;
+        const auto i = static_cast<std::size_t>(f);
+        const autan::index_t o = mesh.owner()[i] == c ? mesh.neighbour()[i] : mesh.owner()[i];
+        around.emplace_back(ids[static_cast<std::size_t>(o)], w[static_cast<std::size_t>(o)]);
+      }
+      std::ranges::sort(around);
+      double sum = 0.0;
+      for (const auto& [id, value] : around) sum += value;
+      w[static_cast<std::size_t>(c)] = sum / static_cast<double>(around.size());
+    }
+  };
+  for (int step = 0; step < steps; ++step) {
+    for (int s = 0; s < sweeps; ++s) {
+      for (std::int32_t k = 0; k < n_colours; ++k) colour_sweep(k);
+      for (std::int32_t k = n_colours - 1; k >= 0; --k) colour_sweep(k);
+    }
+  }
+  return w;
+}
+
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
-// directory (none for an invalid input), after checking its exit status.
+// directory (none for an invalid input), after checking its exit status;
+// `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0) {
+                      int expected_status = 0, Json* diagnostic = nullptr) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
@@ -1235,12 +1554,24 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   std::vector<char*> envp;
   for (auto& e : env) envp.push_back(e.data());
   envp.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  const std::string err_file = (dir / "stderr.txt").string();
+  posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                   0644);
   pid_t pid = 0;
-  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, nullptr, nullptr, argv.data(), envp.data()) == 0);
+  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, &actions, nullptr, argv.data(), envp.data()) == 0);
+  posix_spawn_file_actions_destroy(&actions);
   int status = 0;
   REQUIRE(waitpid(pid, &status, 0) == pid);
   REQUIRE(WIFEXITED(status));
   CHECK(WEXITSTATUS(status) == expected_status);
+  if (diagnostic != nullptr) {
+    std::ifstream in(err_file);
+    for (std::string line; std::getline(in, line);) {
+      if (line.starts_with("{")) *diagnostic = Json::parse(line);
+    }
+  }
   fs::path run;
   if (fs::exists(dir / "runs")) {
     for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
@@ -1273,6 +1604,37 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // A smoother sweeping the global colours (PhysicsContext::cell_colours),
+  // the ghosts exchanged after each colour, and an argmin over the ranks:
+  // the history of one rank.
+  autan_test::RelaxationOptions sweeping = options;
+  sweeping.colour_sweeps = 2;
+  const Outcome one_swept = run(doc, sweeping);
+  const fs::path many_swept =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2"});
+  CHECK(lines_of(one_swept.run / "history.jsonl") != lines_of(one.run / "history.jsonl"));
+  CHECK(lines_of(many_swept / "history.jsonl") == lines_of(one_swept.run / "history.jsonl"));
+  // The swept field, cell for cell: on one rank, as an independent sweep of
+  // the whole mesh gives it (12 steps of 2 symmetric sweeps); on several,
+  // the same bits.
+  const auto swept_one =
+      solution_field(one_swept.run / "solution.cgns", "FlowSolution", "TurbulentSANuTilde");
+  CHECK(solution_field(many_swept / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
+        swept_one);
+  if (!periodic) CHECK(swept_one == swept(autan::io::read_mesh(mesh_path), 12, 2));
+#ifdef AUTAN_HAVE_CUDA
+  // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
+  // physics checks at every step that the exchange fills its ghosts in
+  // device memory, through a CUDA-aware MPI; the history stays that of one rank.
+  Json on_gpu = doc;
+  on_gpu["devices"]["kind"] = "cuda";
+  const fs::path gpu = run_on_ranks(on_gpu, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                                     "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+  CHECK(lines_of(gpu / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+#endif
   const Json a = Json::parse(read(one.run / "run.json"));
   const Json b = Json::parse(read(many / "run.json"));
   for (const char* key : {"status", "iterations", "time", "diagnostics"}) {
@@ -1284,6 +1646,23 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
     const auto expected = solution_field(one.run / "solution.cgns", "FlowSolution", field);
     CHECK(!expected.empty());
     CHECK(solution_field(many / "solution.cgns", "FlowSolution", field) == expected);
+  }
+  // An initial-state file, split among the ranks by their owned cells: the
+  // solution of one rank, cell for cell.
+  if (!periodic) {
+    Json plain = doc;
+    inviscid(plain);
+    const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
+    const Outcome one_file = run(from_file, options);
+    const fs::path many_file =
+        run_on_ranks(from_file, ranks,
+                     {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                      "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
+    for (const char* field : {"Density", "VelocityY", "Pressure"}) {
+      CAPTURE(field);
+      CHECK(solution_field(many_file / "solution.cgns", "FlowSolution", field) ==
+            solution_field(one_file.run / "solution.cgns", "FlowSolution", field));
+    }
   }
   const auto wall = wall_solution(one.run / "solution.cgns");
   CHECK(wall.contains("Pressure"));
@@ -1309,8 +1688,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(d["status"] == "diverged");
   CHECK(d["diagnostics"] == Json::parse(read(diverged.run / "run.json"))["diagnostics"]);
 
-  // A physics registered for one rank refuses several before any directory.
+  // A physics registered for one rank refuses several before any directory,
+  // and a scope refuses by the rank count it is given.
   CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_ONE_RANK=1"}, 2).empty());
+  // Every rank's scope must see the count for the run to start.
+  CHECK(!run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks)}).empty());
+  Json refusal;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks + 1)}, 2,
+                     &refusal)
+            .empty());
+  CHECK(refusal["code"] == "E0706");
+  CHECK(refusal["data"] == Json{{"ranks", ranks}, {"path", "physics"}});
 
   // A physics failure on the last rank alone, the others waiting for it in a
   // collective call, ends every rank with status 1 and a failed run.json.
@@ -1324,6 +1712,22 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(f["iterations"] == 3);
   CHECK(f["diagnostics"][0]["code"] == "E0704");
   CHECK(f["diagnostics"][0]["data"]["rank"] == ranks - 1);
+
+  // The same failure in the final monitor record (loads() called only by
+  // finish, `every` beyond the run), the others inside the collective sum of
+  // their loads(): every rank ends, none waits forever (ctest TIMEOUT).
+  Json final_only = doc;
+  final_only["monitors"][0]["every"] = 1000;
+  const Json g =
+      Json::parse(read(run_on_ranks(final_only, ranks,
+                                    {"AUTAN_TEST_FACTOR=0.5", "AUTAN_TEST_THROW_IN_LOADS=1",
+                                     "AUTAN_TEST_THROW_RANK=" + std::to_string(ranks - 1)},
+                                    1) /
+                       "run.json"));
+  CHECK(g["status"] == "failed");
+  CHECK(g["monitors"].is_null());
+  CHECK(g["diagnostics"][0]["code"] == "E0704");
+  CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
 
   // A signal reaching the last rank alone, after iteration 5, stops all of
   // them before iteration 6, with the solution written.

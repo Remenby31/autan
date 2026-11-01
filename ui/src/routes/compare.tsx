@@ -3,16 +3,8 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
-import {
-  type ForceColumns,
-  type HistoryColumns,
-  type LiveRun,
-  runQuery,
-  runsQuery,
-  shownOrders,
-  soleForces,
-  useRunsHistory,
-} from "../api/runs";
+import { devicesLabel } from "../api/devices";
+import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
 import { degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -95,17 +87,27 @@ function Compare() {
     return { drop, cl, cd, dropVersion: `${version}|${targets}` };
   }, [ids, live, version, registry.data]);
 
-  const cases = details.map((d) => d.data?.case);
-  const loaded = details.map((d) => d.dataUpdatedAt).join(",");
-  // Histories grow in place (`version`); `cases` is a new array each render (`loaded`).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const polar = useMemo(
-    () => polars(ids, runs, live, registry.data?.summaries ?? {}, cases),
-    [ids, runs, live, registry.data, version, loaded],
+    () => polars(ids, runs, registry.data?.summaries ?? {}),
+    [ids, runs, registry.data],
   );
 
   const diff = useMemo(() => {
-    const flat = details.map((d) => (d.data ? flatten(d.data.case) : null));
+    const flat = details.map((d) =>
+      d.data
+        ? new Map([
+            ...flatten(d.data.case),
+            ...flatten({
+              run: {
+                devices: devicesLabel(d.data.run.devices),
+                backend: d.data.run.solver.backend,
+                solver: d.data.run.solver.commit,
+                deterministic: d.data.run.deterministic,
+              },
+            }),
+          ])
+        : null,
+    );
     const keys = [...new Set(flat.flatMap((f) => (f ? [...f.keys()] : [])))].sort();
     // A setting absent from a case differs from every value, "—" included.
     return keys.map((key) => {
@@ -304,52 +306,32 @@ function Compare() {
   );
 }
 
-/** The coefficients a converged run ends with: its last forces sample, taken less than
- * `every` iterations before its final one (monitors are recorded at iterations divisible by
- * their `every`, results.md), the history having caught up with run.json. Null otherwise, and
- * without `every` unless the sample is at the final iteration. */
-function convergedForces(
-  run: Pick<Run, "status" | "iterations">,
-  history: Pick<HistoryColumns, "iteration">,
-  forces: ForceColumns | null,
-  every: number | undefined,
-): { cl: number; cd: number } | null {
-  if (run.status !== "converged" || history.iteration.at(-1) !== run.iterations) return null;
-  const at = forces?.iteration.at(-1);
-  const cl = forces?.cl.at(-1);
-  const cd = forces?.cd.at(-1);
-  if (at === undefined || cl === undefined || cd === undefined) return null;
-  return run.iterations - at < (every ?? 1) ? { cl, cd } : null;
-}
-
-/** The `every` of the monitor `name` of a case document. */
-function monitorEvery(caseDocument: Record<string, unknown> | undefined, name: string) {
-  const monitors = Array.isArray(caseDocument?.monitors) ? caseDocument.monitors : [];
-  const monitor = monitors.find(
-    (m): m is { every: number } =>
-      typeof m === "object" && m !== null && m.name === name && typeof m.every === "number",
+/** The coefficients a converged run ends with: its sole monitor giving them, on the final
+ * state as run.json records it (results.md#runjson). Null otherwise. */
+function finalCoefficients(run: Run): { cl: number; cd: number } | null {
+  if (run.status !== "converged") return null;
+  const coefficients = Object.values(run.monitors ?? {}).filter(
+    (m) => m.cl !== undefined && m.cd !== undefined,
   );
-  return monitor?.every;
+  const [only] = coefficients;
+  return coefficients.length === 1 && only?.cl !== undefined && only.cd !== undefined
+    ? { cl: only.cl, cd: only.cd }
+    : null;
 }
 
-/** Lift and drag polars from the compared runs that converged (convergedForces); at a
+/** Lift and drag polars from the compared runs that converged (finalCoefficients); at a
  * repeated α the newest run wins. Null when fewer than two angles remain. */
 function polars(
   ids: string[],
   runs: (Run | undefined)[],
-  live: Map<string, LiveRun>,
   summaries: Record<string, { settings?: { aoa: string | null } }>,
-  cases: (Record<string, unknown> | undefined)[],
 ): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
   const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
   ids.forEach((id, k) => {
     const run = runs[k];
-    const history = live.get(id)?.history;
-    if (!run || !history) return;
+    if (!run) return;
     const alpha = degrees(summaries[id]?.settings?.aoa);
-    const [name] = history.forces.size === 1 ? history.forces.keys() : [];
-    const every = name === undefined ? undefined : monitorEvery(cases[k], name);
-    const ended = convergedForces(run, history, soleForces(history), every);
+    const ended = finalCoefficients(run);
     if (alpha === null || ended === null) return;
     const seen = byAlpha.get(alpha);
     if (!seen || seen.started < run.started)

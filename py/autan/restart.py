@@ -42,6 +42,10 @@ def problems(
         return diagnostic(code, message, run=run.run_id)
 
     found = []
+    if spec.initial_state is not None:
+        found.append(
+            problem("E0512", "a case with an initial-state file cannot start from a previous run")
+        )
     if run.status not in RESUMABLE or not (previous.path / "solution.cgns").is_file():
         found.append(
             problem(

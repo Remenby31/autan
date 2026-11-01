@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "autan/core/error.hpp"
+#include "autan/partition/device_self.hpp"
 
 #ifdef AUTAN_HAVE_MPI
 #include <mpi.h>
@@ -32,33 +33,40 @@ int launched_rank() { return environment({"OMPI_COMM_WORLD_RANK", "PMI_RANK", "P
 class SelfExchange final : public GhostExchange {
  public:
   explicit SelfExchange(const LocalPartition& part) : part_(part) {}
-  void forward(std::span<float* const> components, MemorySpace space, void* /*stream*/) override {
-    run(components, space);
+  void forward(std::span<float* const> components, MemorySpace space, void* stream) override {
+    run(components, space, stream);
   }
-  void forward(std::span<double* const> components, MemorySpace space, void* /*stream*/) override {
-    run(components, space);
+  void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
+    run(components, space, stream);
   }
 
  private:
+  // Device memory: the image pairs move to the device on first use (E0145
+  // in a build without CUDA).
   template <class T>
-  void run(std::span<T* const> components, MemorySpace space) const {
-    if (space != MemorySpace::host) {
-      throw Error(ErrorCode::halo_device_unsupported,
-                  "autan-run exchanges periodic images on the host only");
+  void run(std::span<T* const> components, MemorySpace space, void* stream) {
+    if (space == MemorySpace::host) {
+      forward_self(part_.halo, part_.mesh.n_owned_cells(), components);
+      return;
     }
-    forward_self(part_.halo, part_.mesh.n_owned_cells(), components);
+    if (!device_)
+      device_ = std::make_unique<DeviceSelfForward>(part_.halo, part_.mesh.n_owned_cells());
+    device_->forward(components, stream);
   }
 
   const LocalPartition& part_;
+  std::unique_ptr<DeviceSelfForward> device_;
 };
 
 class Single final : public Comm {
  public:
   [[nodiscard]] int rank() const noexcept override { return 0; }
   [[nodiscard]] int size() const noexcept override { return 1; }
+  [[nodiscard]] int local_rank() const noexcept override { return 0; }
   void sum(std::span<ExactSum> /*sums*/) override {}
   [[nodiscard]] double min(double value) override { return value; }
   [[nodiscard]] std::int64_t max(std::int64_t value) override { return value; }
+  [[nodiscard]] double max(double value) override { return value; }
   [[nodiscard]] std::string broadcast(std::string text) override { return text; }
   [[nodiscard]] std::vector<double> gather(std::span<const std::int64_t> ids,
                                            std::span<const double> values,
@@ -114,7 +122,13 @@ class World final : public Comm {
   World() {
     check(MPI_Comm_rank(MPI_COMM_WORLD, &rank_), "MPI_Comm_rank");
     check(MPI_Comm_size(MPI_COMM_WORLD, &size_), "MPI_Comm_size");
+    MPI_Comm host = MPI_COMM_NULL;
+    check(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank_, MPI_INFO_NULL, &host),
+          "MPI_Comm_split_type");
+    check(MPI_Comm_rank(host, &local_rank_), "MPI_Comm_rank");
+    MPI_Comm_free(&host);
   }
+  [[nodiscard]] int local_rank() const noexcept override { return local_rank_; }
   [[nodiscard]] int rank() const noexcept override { return rank_; }
   [[nodiscard]] int size() const noexcept override { return size_; }
 
@@ -142,6 +156,11 @@ class World final : public Comm {
   }
   [[nodiscard]] std::int64_t max(std::int64_t value) override {
     check(MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD),
+          "MPI_Allreduce");
+    return value;
+  }
+  [[nodiscard]] double max(double value) override {
+    check(MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD),
           "MPI_Allreduce");
     return value;
   }
@@ -192,7 +211,7 @@ class World final : public Comm {
   }
 
  private:
-  int rank_ = 0, size_ = 1;
+  int rank_ = 0, size_ = 1, local_rank_ = 0;
 };
 
 #endif

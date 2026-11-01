@@ -93,13 +93,13 @@ target_link_libraries(
 
 if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_METAL)
   # Commit of the benchmark binaries, for the provenance autan-bench records.
-  find_package(Git REQUIRED)
+  find_package(Git QUIET)
   add_custom_target(
     autan_codegen_revision
     COMMAND
       ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
-      -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h -P
-      ${CMAKE_CURRENT_SOURCE_DIR}/bench/revision.cmake
+      "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
+      -P ${PROJECT_SOURCE_DIR}/bench/cmake/revision.cmake
     BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
   )
 endif()
