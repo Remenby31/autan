@@ -17,14 +17,17 @@ if(AUTAN_ENABLE_CUDA)
   target_compile_definitions(autan_partition_tests PRIVATE AUTAN_HAVE_CUDA)
   target_link_libraries(autan_partition_tests PRIVATE CUDA::cudart)
 endif()
-catch_discover_tests(autan_partition_tests)
+catch_discover_tests(autan_partition_tests TEST_SPEC "~[gpu]")
+catch_discover_tests(autan_partition_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
 
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   add_executable(autan_halo_tests ${AUTAN_CORE_FIXTURES} test_halo.cpp)
   target_include_directories(autan_halo_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
   target_link_libraries(autan_halo_tests PRIVATE autan::halo Catch2::Catch2 autan_compile_options)
+  set(halo_labels mpi)
   if(AUTAN_ENABLE_CUDA)
     target_compile_definitions(autan_halo_tests PRIVATE AUTAN_HAVE_CUDA)
+    set(halo_labels mpi gpu)
   endif()
   # The same tests on 1, 2, 4 and 8 ranks: results must not depend on the count.
   foreach(ranks 1 2 4 8)
@@ -36,7 +39,7 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
     )
     set_tests_properties(
       autan_halo_tests_${ranks}_ranks
-      PROPERTIES PROCESSORS ${ranks} TIMEOUT 600 LABELS mpi
+      PROPERTIES PROCESSORS ${ranks} TIMEOUT 600 LABELS "${halo_labels}"
     )
   endforeach()
 endif()
