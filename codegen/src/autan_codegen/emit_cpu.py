@@ -333,9 +333,9 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
     n = n_out(lm) if lm.kind != "reduce_adjoint" else 0
     if lm.kind in ("face", "boundary"):
         lo, hi = (
-            ("0", "d.topo.n_interior_faces")
+            ("0", "d.topo.n_owned_interior_faces")
             if lm.kind == "face"
-            else ("d.topo.n_interior_faces", "d.topo.n_faces")
+            else ("d.topo.n_interior_faces", "d.topo.n_owned_faces")
         )
         e.w(f"  for (index_t f = {lo}; f < {hi}; ++f) {{")
         e.w("    const index_t l = d.topo.owner[f];")

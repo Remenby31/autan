@@ -23,6 +23,8 @@ struct Topology {
   index_t n_owned_cells;
   index_t n_faces;
   index_t n_interior_faces;
+  index_t n_owned_interior_faces;
+  index_t n_owned_faces;
   offset_t n_incidences;
   device const index_t* owner;
   device const index_t* neighbour;

@@ -21,14 +21,18 @@ Partitioning is serial: every rank reads the global mesh, rank 0 partitions it a
 
 `extract_partition(global, compute_geometry(global), parts, n_parts, rank)` returns a `LocalPartition`:
 
-- `mesh`: owned cells in the order of the global mesh, then one layer of ghost cells (every cell outside the part that shares a face with it), ordered by owning rank then the same order. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
+- `mesh`: owned cells in the order of the global mesh, then the ghost cells within `layers` face steps (2 by default, 1 on request), ordered by owning rank, the same order, then periodic shift. The first ghost layer carries all its faces, so the face-of-face stencil of every owned cell is local; those halo faces come after the owned faces (mesh contract, invariant 6), and loops that write residuals stop at `n_owned_interior_faces` and `n_owned_faces`. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
 - `geometry`: the global geometry, copied bit for bit. A face whose orientation flips (its owned cell has the higher global index) has its area vector negated, which is exact. Ghost cells are NaN until a forward exchange fills them (`exchange_ghost_geometry`). `compute_geometry` on the partition would agree only to round-off, because a reversed face sums its nodes in another order.
 - `face_global_id`: the global face of each local face, the key for summing a cell's faces in an order that no partition changes.
 - `halo`: the `HaloPattern` below.
 
 ## Halo pattern
 
-Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is adjacent to `q`, so both lists are the cells of one part adjacent to the other, in the order of the global mesh. `interface_faces` lists the interior faces that touch a ghost.
+Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is within `layers` face steps of `q`, a symmetric relation, so both lists are the same cells in the same order. `interface_faces` lists the owned interior faces that touch a ghost.
+
+## Periodic images
+
+A mesh with periodic pairs is cut in its periodic covering: a cell copy is a global cell and a shift, one integer per direction, at the cell's position plus the shifts times the directions. Pairs whose translations are equal or opposite share a direction; at most three directions, linearly independent, else E0140, so that a shift names one translation. Across a periodic face, a cell's neighbour is the partner face's cell, shifted by one translation. Each physical periodic face appears once in a partition, as an interior face drawn from its zone-a face; the nodes of both sides are merged through the matched node pairs (one class per physical point, with a shift per node), so cells stay closed. A ghost that is a shifted copy is an image: `ghost_translation` holds its shift, its nodes and faces are translated, and `exchange_ghost_geometry` adds the translation to its centroid after the exchange. Cell values need no change under a translation. Images of a part's own cells make the part its own neighbour: on one rank too, the exchange then moves them by a message to self.
 
 ## Exchange
 
