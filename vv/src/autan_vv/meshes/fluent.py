@@ -58,5 +58,5 @@ def write_fluent(mesh: FaceMesh, path: Path, cell_zone: str) -> None:
             c1 = mesh.neighbour[f] + 1 if f < mesh.n_interior else 0
             lines.append(f"{nodes.size:x} " + " ".join(f"{v:x}" for v in nodes) + f" {c0:x} {c1:x}")
         lines.append("))")
-    lines += [f"(45 ({zid:x} {kind} {name})())" for zid, kind, name in zone_names]
+    lines += [f"(45 ({zid} {kind} {name})())" for zid, kind, name in zone_names]
     path.write_text("\n".join(lines) + "\n")

@@ -82,16 +82,16 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
   d.topo = m.topo;
   d.q = qs.data();
   d.q_b = qbs.data();
-  d.lsq_weight = g.lsq_weight.data();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.data();
   d.source = ss.data();
-  d.cell_volume = g.cell_volume.data();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.data();
-  d.cell_centroid = g.cell_centroid.data();
-  d.face_centroid = g.face_centroid.data();
-  d.face_area = g.face_area.data();
-  d.face_moment = g.face_moment.data();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -131,16 +131,16 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
   d.topo = m.topo;
   d.q = qs.data();
   d.q_b = qbs.data();
-  d.lsq_weight = g.lsq_weight.data();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.data();
   d.source = ss.data();
-  d.cell_volume = g.cell_volume.data();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.data();
-  d.cell_centroid = g.cell_centroid.data();
-  d.face_centroid = g.face_centroid.data();
-  d.face_area = g.face_area.data();
-  d.face_moment = g.face_moment.data();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   d.q_tan = q_tan.data();
   d.grad_tan = g_tan.data();
   d.source_tan = s_tan.data();
@@ -202,16 +202,16 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
   d.topo = m.topo;
   d.q = qs.data();
   d.q_b = qbs.data();
-  d.lsq_weight = g.lsq_weight.data();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.data();
   d.source = ss.data();
-  d.cell_volume = g.cell_volume.data();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.data();
-  d.cell_centroid = g.cell_centroid.data();
-  d.face_centroid = g.face_centroid.data();
-  d.face_area = g.face_area.data();
-  d.face_moment = g.face_moment.data();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = velocity[i];
   }
@@ -228,7 +228,8 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
 /// Roe flux loop: mode 0 residual of U, 1 tangent (seed dU -> dR), 2 adjoint (seed R-bar -> U-bar).
 /// Arrays are 5 x n_cells, structure of arrays.
 template <class P>
-void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, double* out) {
+void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, double* out,
+         double* jac = nullptr) {
   namespace rf = autan::kernels::roe;
   using S = typename P::state;
   using R = typename P::residual;
@@ -237,12 +238,14 @@ void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, doub
   auto us = copy_in<S>(u, 5 * nc);
   std::vector<S> u_tan(5 * nc, S(0));
   std::vector<R> rs(5 * nc, R(0)), r_tan(5 * nc, R(0)), r_adj(5 * nc, R(0)), u_adj(5 * nc, R(0));
+  std::vector<typename P::jac> js(mode == 3 ? 50 * static_cast<std::size_t>(m.topo.n_faces) : 0);
   rf::Data<P> d{};
   d.topo = m.topo;
+  d.face_jac = js.data();
   d.u_cons = us.data();
   d.res = rs.data();
-  d.face_normal = g.face_normal.data();
-  d.face_area_magnitude = g.face_area_magnitude.data();
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   d.u_cons_tan = u_tan.data();
   d.res_tan = r_tan.data();
   d.res_adj = r_adj.data();
@@ -250,6 +253,10 @@ void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, doub
   if (mode == 0) {
     rf::cpu::flux(d);
     copy_out(rs, out);
+  } else if (mode == 3) {
+    rf::cpu::flux_and_jacobian(d);
+    copy_out(rs, out);
+    copy_out(js, jac);
   } else if (mode == 1) {
     for (std::size_t i = 0; i < 5 * nc; ++i) u_tan[i] = S(seed[i]);
     rf::cpu::flux_tangent(d);
@@ -274,8 +281,8 @@ void roe_complex_step(const SpikeMesh& m, const double* u, const double* du, dou
   d.topo = m.topo;
   d.u_cons = us.data();
   d.res = rs.data();
-  d.face_normal = g.face_normal.data();
-  d.face_area_magnitude = g.face_area_magnitude.data();
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   rf::cpu::flux(d);
   for (std::size_t i = 0; i < 5 * nc; ++i) out[i] = rs[i].imag() / h;
 }
@@ -304,8 +311,8 @@ void lsq_bounds_derivative(const SpikeMesh& m, int mode, const double* q, const 
   d.grad = gs.data();
   d.qmin = lo.data();
   d.qmax = hi.data();
-  d.lsq_weight = g.lsq_weight.data();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.q_tan = q_tan.data();
   d.grad_tan = g_tan.data();
   d.qmin_tan = lo_tan.data();
@@ -354,9 +361,9 @@ void face_weighted(const SpikeMesh& m, int mode, const double* q, const double* 
   d.q = qs.data();
   d.q_b = qbs.data();
   d.w = w.data();
-  d.face_area_magnitude = g.face_area_magnitude.data();
-  d.face_centroid = g.face_centroid.data();
-  d.cell_centroid = g.cell_centroid.data();
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
   d.q_tan = q_tan.data();
   d.w_tan = w_tan.data();
   d.w_adj = w_adj.data();
@@ -393,13 +400,13 @@ void gradients(const SpikeMesh& m, const char* method, const double* q, const do
   d.qmin = mins.data();
   d.qmax = maxs.data();
   d.gg_sum = acc.data();
-  d.lsq_weight = g.lsq_weight.data();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.data();
-  d.cell_volume = g.cell_volume.data();
-  d.cell_centroid = g.cell_centroid.data();
-  d.face_centroid = g.face_centroid.data();
-  d.face_area = g.face_area.data();
-  d.face_moment = g.face_moment.data();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  autan::spike::bind(d.cell_volume, g.cell_volume);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   if (std::string_view(method) == "lsq") {
     gr::cpu::lsq_gradient_bounds(d);
   } else {
@@ -431,10 +438,10 @@ void advection(const SpikeMesh& m, const double* q, const double* grad, const do
   d.q = qs.data();
   d.grad = gs.data();
   d.res = rs.data();
-  d.face_r_left = g.face_r_left.data();
-  d.face_r_right = g.face_r_right.data();
-  d.face_normal = g.face_normal.data();
-  d.face_area_magnitude = g.face_area_magnitude.data();
+  autan::spike::bind(d.face_r_left, g.face_r_left);
+  autan::spike::bind(d.face_r_right, g.face_r_right);
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -692,6 +699,15 @@ int autan_spike_roe(const void* mesh, const char* policy, int mode, const double
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len,
                   [&](auto p) { autan::spike::roe<decltype(p)>(*m, mode, u, seed, out); });
+}
+
+/// Roe residual and its face Jacobians (50 x n_faces, structure of arrays; component
+/// (side * 5 + i) * 5 + j is dF_i / dU_side,j) from the fused loop flux_and_jacobian.
+int autan_spike_roe_jacobian(const void* mesh, const char* policy, const double* u, double* res,
+                             double* jac, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len,
+                  [&](auto p) { autan::spike::roe<decltype(p)>(*m, 3, u, u, res, jac); });
 }
 
 int autan_spike_roe_complex_step(const void* mesh, const double* u, const double* du, double h,

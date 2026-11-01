@@ -516,6 +516,14 @@ _CODES = [
         'Name them: `autan.forces("wing.*", name="wing")`.',
     ),
     Code(
+        "E0603",
+        "Monitor on a periodic zone",
+        "A monitor names a zone of a periodic pair: its faces are paired with those of its "
+        "partner, so they carry no load. Patterns with wildcards skip periodic zones.",
+        "Integrate over the walls instead, or change the mesh if the zone is not meant to be "
+        "periodic.",
+    ),
+    Code(
         "E0701",
         "The run directory does not conform to autan.results/1",
         "A file is missing or unreadable, `run.json` has another schema, the stored case or "

@@ -19,6 +19,7 @@
 #include <picosha2.h>
 
 #include "autan/core/geometry.hpp"
+#include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/run.hpp"
@@ -88,13 +89,13 @@ std::vector<Json> history(const fs::path& run) {
 }
 
 // The `start` the SDK writes to continue `previous` (solver-input.md).
-Json continue_from(const fs::path& previous) {
+Json continue_from(const fs::path& previous, const std::string& mode = "continue") {
   const Json info = Json::parse(read(previous / "run.json"));
   std::string hash;
   picosha2::hash256_hex_string(read(previous / "solution.cgns"), hash);
   Json reference = nullptr;
   Json woken = nullptr;
-  if (info["time"].is_null()) {
+  if (info["time"].is_null() && mode == "continue") {
     // case-schema.md#time: the equations below 1e-12 of the largest at
     // iteration 1 that went above that floor.
     const auto lines = history(previous);
@@ -114,7 +115,7 @@ Json continue_from(const fs::path& previous) {
   return Json{{"run", previous.string()},
               {"run_id", info["run_id"]},
               {"identity", info["identity"]},
-              {"mode", "continue"},
+              {"mode", mode},
               {"iterations", info["iterations"]},
               {"time", info["time"]},
               {"solution_sha256", hash},
@@ -315,6 +316,74 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
     CHECK(field(second.run, "AverageWeight", "RestartState") ==
           field(whole.run, "AverageWeight", "RestartState"));
   }
+}
+
+TEST_CASE("a steady run reports the residual of its second-order scheme from the start",
+          "[euler]") {
+  // The steady solver starts at first order, but convergence is judged on the history, which
+  // must hold the second-order residual: at iteration 1 it equals the unsteady run's, which is
+  // second order from its first step. Two zones at different states make the flow nonuniform.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  auto doc = [&](bool steady) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, precision);
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      if (steady) {
+        d["time"]["max_iterations"] = 1;
+      } else {
+        d["time"] = {{"kind", "unsteady"},
+                     {"steps", 1},
+                     {"dt", nullptr},
+                     {"cfl", 0.8},
+                     {"average_from", nullptr}};
+      }
+    });
+  };
+  const auto steady = run(doc(true));
+  const auto unsteady = run(doc(false));
+  REQUIRE(steady.status == ExitStatus::finished);
+  REQUIRE(unsteady.status == ExitStatus::finished);
+  CHECK(history(steady.run).front()["residuals"] == history(unsteady.run).front()["residuals"]);
+}
+
+TEST_CASE("a mesh with periodic pairs is refused before any directory exists", "[euler]") {
+  // Until the physics exchanges ghost cells across periodic pairs: E0706 at `periodic`.
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["mesh"]["path"] = fs::absolute(box).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(box);
+    d["periodic"] =
+        Json::array({Json{{"zones", {"xmin", "xmax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {1.0, 0.0, 0.0}}}}},
+                     Json{{"zones", {"ymin", "ymax"}},
+                          {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+    // Periodic zones take no condition: zmin a slip wall, zmax its symmetry plane.
+    Json kept = Json::array();
+    for (const auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") {
+        Json wall = b;
+        wall["zone"] = "zmin";
+        kept.push_back(wall);
+      }
+      if (b["zone"] == "zmax") kept.push_back(b);
+    }
+    d["boundaries"] = kept;
+    d["monitors"][0]["zones"] = {"zmin"};
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+  CHECK(diagnostic["location"]["path"] == "periodic");
 }
 
 TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {

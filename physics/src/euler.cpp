@@ -1,9 +1,12 @@
 #include "autan/physics/euler.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -15,18 +18,33 @@ namespace ek = autan::kernels::euler;
 
 template <class P>
 struct Euler<P>::Impl {
-  using G = typename P::geom;
   using Gr = typename P::grad;
 
   Scheme scheme;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
-      cell_volume, stencil_lsq_weight;
+  // Each geometry array has the element type its Data<P> member stores (the generator stores
+  // geometry that bodies read only as values in P::geom_value).
+  template <class Ptr>
+  using stored = std::vector<std::remove_cvref_t<std::remove_pointer_t<Ptr>>>;
+  using D = ek::Data<P>;
+  stored<decltype(D::face_normal)> face_normal;
+  stored<decltype(D::face_area_magnitude)> face_area_magnitude;
+  stored<decltype(D::face_centroid)> face_centroid;
+  stored<decltype(D::face_moment)> face_moment;
+  stored<decltype(D::cell_centroid)> cell_centroid;
+  stored<decltype(D::cell_volume)> cell_volume;
+  stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
+  std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
+
+  template <class T, class Source>
+  static void fill(std::vector<T>& to, const Source& from) {
+    to = kernels::converted<T>(from);
+  }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme s) : scheme(s) {
     const auto packed = kernels::pack_geometry(mesh, geometry);
@@ -39,13 +57,13 @@ struct Euler<P>::Impl {
     topo.stencil_offsets = stencil.offsets.data();
     topo.stencil = stencil.entries.data();
     topo.stencil_twin = stencil.twin.data();
-    stencil_lsq_weight = kernels::converted<G>(stencil.lsq_weight);
-    face_normal = kernels::converted<G>(packed.face_normal);
-    face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<G>(packed.face_centroid);
-    face_moment = kernels::converted<G>(packed.face_moment);
-    cell_centroid = kernels::converted<G>(packed.cell_centroid);
-    cell_volume = kernels::converted<G>(packed.cell_volume);
+    fill(stencil_lsq_weight, stencil.lsq_weight);
+    fill(face_normal, packed.face_normal);
+    fill(face_area_magnitude, packed.face_area_magnitude);
+    fill(face_centroid, packed.face_centroid);
+    fill(face_moment, packed.face_moment);
+    fill(cell_centroid, packed.cell_centroid);
+    fill(cell_volume, packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     bc_kind.assign(nf, 0.0);
@@ -84,6 +102,11 @@ struct Euler<P>::Impl {
       throw std::invalid_argument("AUSM+-up needs a positive cut-off Mach number");
     }
     d.mach_ref[0] = typename P::param(scheme.mach_ref);
+    const auto& r = scheme.reference;
+    if (!(r[0] > 0.0)) throw std::invalid_argument("reference density must be positive");
+    for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(r[c]);
+    d.p_ref[0] = typename P::param((gas.gamma - 1.0) *
+                                   (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     // Venkatakrishnan (1995), eq. 5, threshold eps^2 = (K h)^3 made dimensional:
     // eps_k^2 = (K / L)^3 V q_k^2.
     const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
@@ -103,6 +126,8 @@ struct Euler<P>::Impl {
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
     const auto nst = stencil.entries.size();
     std::vector<double> w(3 * nst, 0.0);
+    constexpr double coordinate_eps =
+        std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
     for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
       const auto begin = static_cast<std::size_t>(stencil.offsets[c]);
       const auto end = static_cast<std::size_t>(stencil.offsets[c + 1]);
@@ -124,9 +149,15 @@ struct Euler<P>::Impl {
               x[j] = static_cast<double>(face_centroid[j * nf + f]);
             }
           }
+          // Offsets within 64 ulps of the coordinates are round-off, not geometry: across a
+          // one-cell-thick slab the centroids differ only by them, and an offset kept at 1e-17
+          // would let the fit invert round-off into a gradient across the layer.
           std::array<double, 4> dk{};
           for (std::size_t j = 0; j < 3; ++j) {
-            dk[j] = x[j] - static_cast<double>(cell_centroid[j * nc + c]);
+            const double xc = static_cast<double>(cell_centroid[j * nc + c]);
+            const double round_off = 64 * coordinate_eps * std::max(std::abs(x[j]), std::abs(xc));
+            dk[j] = x[j] - xc;
+            if (std::abs(dk[j]) <= round_off) dk[j] = 0.0;
           }
           dk[3] = used ? 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]) : 0.0;
           for (std::size_t u = 0; u < 3; ++u) {
@@ -155,7 +186,7 @@ struct Euler<P>::Impl {
       };
       if (!weights(false)) weights(true);
     }
-    stencil_lsq_weight = kernels::converted<G>(w);
+    fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();
   }
 
@@ -172,6 +203,23 @@ struct Euler<P>::Impl {
       case Flux::ausm_up:
         ek::cpu::ausm_faces(d);
         ek::cpu::ausm_boundaries(d);
+        break;
+    }
+  }
+
+  void faces_jacobian() {
+    switch (scheme.flux) {
+      case Flux::roe:
+        ek::cpu::roe_faces_jacobian(d);
+        ek::cpu::roe_boundaries_jacobian(d);
+        break;
+      case Flux::hllc:
+        ek::cpu::hllc_faces_jacobian(d);
+        ek::cpu::hllc_boundaries_jacobian(d);
+        break;
+      case Flux::ausm_up:
+        ek::cpu::ausm_faces_jacobian(d);
+        ek::cpu::ausm_boundaries_jacobian(d);
         break;
     }
   }
@@ -236,6 +284,18 @@ std::vector<double> Euler<P>::gradient_weights() const {
 }
 
 template <class P>
+void Euler<P>::set_second_order(bool on) {
+  auto& m = *impl_;
+  m.scheme.second_order = on;
+  if (!on) {
+    std::fill(m.grad.begin(), m.grad.end(), typename P::grad(0));
+    std::fill(m.phi.begin(), m.phi.end(), State(0));
+  } else if (!m.scheme.limiter) {
+    std::fill(m.phi.begin(), m.phi.end(), State(1));
+  }
+}
+
+template <class P>
 void Euler<P>::set_source(std::span<const double> source) {
   auto& m = *impl_;
   if (source.size() != m.source.size()) {
@@ -243,6 +303,15 @@ void Euler<P>::set_source(std::span<const double> source) {
   }
   for (std::size_t i = 0; i < source.size(); ++i) {
     m.source[i] = State(source[i]);
+  }
+}
+
+template <class P>
+void Euler<P>::state(std::span<const double> u, std::span<State> s) const {
+  const auto n = static_cast<std::size_t>(n_cells());
+  const auto& r = impl_->scheme.reference;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < n; ++c) s[k * n + c] = State(u[k * n + c] - r[k]);
   }
 }
 
@@ -261,6 +330,83 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   }
   ek::cpu::sources(m.d);
   m.faces();
+}
+
+template <class P>
+void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
+  auto& m = *impl_;
+  if (m.dwdu.empty()) {
+    // Allocated on first use: residual-only users (explicit, unsteady) carry no Jacobian.
+    const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+    const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+    m.face_jac.assign(50 * nf, typename P::jac(0));
+    m.bnd_jac.assign(25 * nf, typename P::jac(0));
+    m.dwdu.assign(25 * nc, typename P::jac(0));
+    m.d.face_jac = m.face_jac.data();
+    m.d.bnd_jac = m.bnd_jac.data();
+    m.d.dwdu = m.dwdu.data();
+  }
+  m.d.u = const_cast<State*>(s.data());
+  m.d.res = res.data();
+  ek::cpu::primitives_jacobian(m.d);
+  ek::cpu::boundary_states(m.d);
+  if (m.scheme.second_order) {
+    ek::cpu::gradients(m.d);
+    if (m.scheme.limiter) {
+      ek::cpu::limiter(m.d);
+    }
+  }
+  ek::cpu::sources(m.d);
+  m.faces_jacobian();
+}
+
+template <class P>
+void Euler<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
+  const auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  // Block k of a structure-of-arrays Jac dataset over n entities: entry (i, j) of entity e at
+  // (k * 25 + i * 5 + j) * n + e.
+  auto block = [](const std::vector<typename P::jac>& v, std::size_t n, std::size_t e,
+                  std::size_t k) {
+    std::array<double, 25> b{};
+    for (std::size_t q = 0; q < 25; ++q) b[q] = static_cast<double>(v[(25 * k + q) * n + e]);
+    return b;
+  };
+  // out += sign * J D.
+  auto add_product = [](double* out, const std::array<double, 25>& j,
+                        const std::array<double, 25>& dm, double sign) {
+    for (std::size_t r = 0; r < 5; ++r) {
+      for (std::size_t c = 0; c < 5; ++c) {
+        double t = 0.0;
+        for (std::size_t k = 0; k < 5; ++k) t += j[5 * r + k] * dm[5 * k + c];
+        out[5 * r + c] += sign * t;
+      }
+    }
+  };
+  a.zero();
+  for (std::size_t c = 0; c < nc; ++c) {
+    double* dg = a.diagonal(c);
+    for (std::size_t i = 0; i < 5; ++i) dg[6 * i] += shift[c];
+  }
+  for (std::size_t f = 0; f < ni; ++f) {
+    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+    const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
+    const auto jl = block(m.face_jac, nf, f, 0);
+    const auto jr = block(m.face_jac, nf, f, 1);
+    const auto dl = block(m.dwdu, nc, o, 0);
+    const auto dr = block(m.dwdu, nc, n, 0);
+    // R_o += F, R_n -= F.
+    add_product(a.diagonal(o), jl, dl, 1.0);
+    add_product(a.upper(f), jr, dr, 1.0);
+    add_product(a.lower(f), jl, dl, -1.0);
+    add_product(a.diagonal(n), jr, dr, -1.0);
+  }
+  for (std::size_t f = ni; f < nf; ++f) {
+    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+    add_product(a.diagonal(o), block(m.bnd_jac, nf, f, 0), block(m.dwdu, nc, o, 0), 1.0);
+  }
 }
 
 template <class P>
@@ -317,7 +463,8 @@ void Euler<P>::boundary_pressure(std::span<double> p, std::span<double> force) c
       dp += g(4, j, c) * r;
     }
     const double rho_c = static_cast<double>(m.prim[c]);
-    const double p_c = static_cast<double>(m.prim[4 * nc + c]);
+    // prim[4] is the gauge pressure p - p_ref.
+    const double p_c = static_cast<double>(m.d.p_ref[0]) + static_cast<double>(m.prim[4 * nc + c]);
     const double rho_f = rho_c + static_cast<double>(m.phi[c]) * drho;
     double p_f = p_c + static_cast<double>(m.phi[4 * nc + c]) * dp;
     if (!(rho_f > 0.0 && p_f > 0.0)) p_f = p_c;

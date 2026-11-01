@@ -111,6 +111,7 @@ Scheme scheme(Flux flux, bool second_order) {
   s.second_order = second_order;
   s.mach_ref = 0.3;
   s.scale = {1.0, 100.0, 100.0, 100.0, 1e5};
+  s.reference = {1.0, 0.0, 0.0, 0.0, 1e5 / (air.gamma - 1.0)};  // at rest, p_ref = 1e5
   return s;
 }
 
@@ -125,7 +126,8 @@ Cpu cpu_residual(const Case& c, const Scheme& s, const Boundaries& b,
   using P = autan::kernels::fp32_acc64;
   autan::physics::Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(b.kind, b.data);
-  const std::vector<typename P::state> us(u.begin(), u.end());
+  std::vector<typename P::state> us(u.size());
+  e.state(u, us);
   std::vector<typename P::residual> r(us.size());
   e.residual(us, r);
   return {{r.begin(), r.end()}, e.gradient_weights()};
@@ -160,13 +162,23 @@ class Buffers {
   std::vector<mtl::Buffer> keep_;
 };
 
+/// Points `member` at a device copy of `v` in the member's stored type (geometry no body reads
+/// through rel() is stored in the compute type: kernel-generator.md, Precision).
+template <class T, class V>
+void put(Buffers& buf, const T*& member, const std::vector<V>& v) {
+  member = buf.put<T>(v);
+}
+template <class T, class V>
+void put(Buffers& buf, T*& member, const std::vector<V>& v) {
+  member = buf.put<T>(v);
+}
+
 /// The sequence of Euler<P>::residual on the Metal loops, in Metal policy M.
 template <class M>
 std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Scheme& s,
                                    const Boundaries& b, const std::vector<double>& weights,
                                    const std::vector<double>& u, Strategy strategy) {
   using S = typename M::state;
-  using G = typename M::geom;
   using R = typename M::residual;
   const auto packed = autan::kernels::pack_geometry(c.mesh, c.geometry);
   const auto stencil =
@@ -193,7 +205,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   sched.block = 128;
   sched.interior = {buf.put<index_t>(interior.faces), interior.offsets};
   sched.boundary = {buf.put<index_t>(boundary.faces), boundary.offsets};
-  sched.face_scratch = buf.zeros<typename M::accum>(5 * nf);
+  sched.face_scratch = buf.zeros<typename M::compute>(5 * nf);
   sched.face_scratch_width = 5;
 
   std::vector<double> kind(nf, 0.0), bc(5 * nf, 0.0);
@@ -203,9 +215,14 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   }
   ek::Data<M> d{};
   d.topo = topo;
-  d.u = buf.put<S>(u);
+  // Stored state U - U_ref and gauge pressure p - p_ref (Scheme::reference).
+  std::vector<double> stored(u.size());
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t i = 0; i < nc; ++i) stored[k * nc + i] = u[k * nc + i] - s.reference[k];
+  }
+  d.u = buf.put<S>(stored);
   d.prim = buf.zeros<S>(5 * nc);
-  d.bc_kind = buf.put<G>(kind);
+  put(buf, d.bc_kind, kind);
   d.bc = buf.put<S>(bc);
   d.prim_b = buf.zeros<S>(5 * nf);
   d.grad = buf.zeros<typename M::grad>(15 * nc);
@@ -214,16 +231,20 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   d.phi = buf.put<S>(std::vector<double>(5 * nc, s.second_order && !s.limiter ? 1.0 : 0.0));
   d.source = buf.zeros<S>(5 * nc);
   d.res = buf.zeros<R>(5 * nc);
-  d.face_normal = buf.put<G>(packed.face_normal);
-  d.face_area_magnitude = buf.put<G>(packed.face_area_magnitude);
-  d.face_centroid = buf.put<G>(packed.face_centroid);
-  d.face_moment = buf.put<G>(packed.face_moment);
-  d.cell_centroid = buf.put<G>(packed.cell_centroid);
-  d.cell_volume = buf.put<G>(packed.cell_volume);
-  d.stencil_lsq_weight = buf.put<G>(weights);
+  put(buf, d.face_normal, packed.face_normal);
+  put(buf, d.face_area_magnitude, packed.face_area_magnitude);
+  put(buf, d.face_centroid, packed.face_centroid);
+  put(buf, d.face_moment, packed.face_moment);
+  put(buf, d.cell_centroid, packed.cell_centroid);
+  put(buf, d.cell_volume, packed.cell_volume);
+  put(buf, d.stencil_lsq_weight, weights);
   d.gamma[0] = typename M::param(air.gamma);
   d.gas_constant[0] = typename M::param(air.gas_constant);
   d.mach_ref[0] = typename M::param(s.mach_ref);
+  const auto& r0 = s.reference;
+  for (std::size_t k = 0; k < 5; ++k) d.u_ref[k] = typename M::param(r0[k]);
+  d.p_ref[0] = typename M::param(
+      (air.gamma - 1.0) * (r0[4] - 0.5 * (r0[1] * r0[1] + r0[2] * r0[2] + r0[3] * r0[3]) / r0[0]));
   const double k3 = std::pow(s.venkat_k / s.length, 3);
   for (std::size_t k = 0; k < 5; ++k) {
     d.limiter_scale[k] = typename M::param(k3 * s.scale[k] * s.scale[k]);

@@ -298,7 +298,7 @@ class ForcesInput(_Strict):
     kind: Literal["forces"]
     name: str
     every: Annotated[int, Field(ge=1)]
-    zones: tuple[str, ...]
+    zones: Annotated[tuple[str, ...], Field(min_length=1)]
     ref_area: Positive | None
     ref_length: Positive | None
     moment_center: Vector
@@ -366,6 +366,9 @@ class SolverInput(_Strict):
         periodic = {zone for pair in self.periodic for zone in pair.zones}
         if periodic & {b.zone for b in self.boundaries}:
             message = "a periodic zone takes no boundary condition"
+            raise ValueError(message)
+        if periodic & {zone for m in self.monitors for zone in m.zones}:
+            message = "a monitor integrates over no periodic zone"
             raise ValueError(message)
         sa = turbulence.nu_tilde_ratio is not None
         sst = turbulence.intensity is not None
@@ -662,7 +665,8 @@ def build(
         )
         for zone, rule in media
     )
-    zone_names = [b.zone for b in plan.boundaries]
+    periodic = {zone for pair in mesh_info.periodic for zone in pair.zones}
+    zone_names = [b.zone for b in plan.boundaries if b.zone not in periodic]
     monitors = tuple(
         ForcesInput(
             kind="forces",

@@ -838,9 +838,14 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   }
 }
 
-TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "[runtime]") {
+TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]") {
+  // periodic-box (Gmsh): xmin -> xmax by (1, 0, 0), ymin -> ymax by
+  // (0, 1, 0), zmin a wall, zmax a symmetry plane. The relaxation physics
+  // checks at every step that the exchange gives each image ghost its
+  // owner's value; the run converges as on any mesh (k = 28) and its
+  // solution.cgns gives the pairs back.
   const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
-  const auto with_pairs = [&](double tx) {
+  const auto with_pairs = [&](double tx, const std::function<void(Json&)>& edit = {}) {
     return input([&](Json& d) {
       d["mesh"]["path"] = fs::absolute(box).string();
       d["mesh"]["sha256"] = autan::io::mesh_hash(box);
@@ -849,10 +854,55 @@ TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "
                 {"transform", {{"kind", "translation"}, {"vector", {tx, 0.0, 0.0}}}}},
            Json{{"zones", {"ymin", "ymax"}},
                 {"transform", {{"kind", "translation"}, {"vector", {0.0, 1.0, 0.0}}}}}});
+      // zmin takes the wall condition of ymin (now periodic), zmax keeps its own.
+      Json kept = Json::array();
+      for (const auto& b : d["boundaries"]) {
+        if (b["zone"] == "ymin") {
+          Json wall = b;
+          wall["zone"] = "zmin";
+          kept.push_back(wall);
+        }
+        if (b["zone"] == "zmax") kept.push_back(b);
+      }
+      d["boundaries"] = kept;
+      Json zone = d["cell_zones"][0];
+      zone["zone"] = "fluid";
+      d["cell_zones"] = Json::array({zone});
+      d["monitors"][0]["zones"] = Json::array({"zmin"});
+      if (edit) edit(d);
     });
   };
-  require_error(run(with_pairs(1.0)), "E0706");
+  const Outcome o = run(with_pairs(1.0));
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"] == 28);
+  // The physics ran on the partition: image ghosts, as many as the
+  // relaxation physics reported in its first log line.
+  std::ifstream log_in(o.run / "log.jsonl");
+  std::int64_t ghosts = -1;
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "relaxation physics ready") ghosts = event["data"]["ghosts"];
+  }
+  CHECK(ghosts > 0);
+  const autan::Mesh back = autan::io::read_mesh(o.run / "solution.cgns");
+  CHECK(back.periodic_pairs().size() == 2);
+  CHECK(!solution_field(o.run / "solution.cgns", "FlowSolution", "Density").empty());
+
   require_error(run(with_pairs(2.0)), "E0705");
+  // A periodic zone takes no condition and carries no forces monitor.
+  require_error(
+      run(with_pairs(1.0, [](Json& d) { d["monitors"][0]["zones"] = Json::array({"ymin"}); })),
+      "E0705");
+  // A periodic zone takes no condition.
+  require_error(run(with_pairs(1.0,
+                               [](Json& d) {
+                                 Json b = d["boundaries"][0];
+                                 b["zone"] = "xmin";
+                                 d["boundaries"].push_back(b);
+                               })),
+                "E0705");
 }
 
 TEST_CASE("An equation at round-off from iteration 1 does not hold back convergence", "[runtime]") {
