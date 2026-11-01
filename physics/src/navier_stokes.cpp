@@ -19,7 +19,8 @@ struct NavierStokes<P>::Impl {
 
   Euler<P> euler;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, cell_centroid, cell_volume;
+  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
+      cell_volume;
   std::vector<State> mu_t, mu_t_b, lam_v, traction;
   std::vector<typename P::jac> visc_jac, visc_bnd_jac;
   nk::Data<P> d{};
@@ -36,6 +37,7 @@ struct NavierStokes<P>::Impl {
     face_normal = kernels::converted<G>(packed.face_normal);
     face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
     face_centroid = kernels::converted<G>(packed.face_centroid);
+    face_moment = kernels::converted<G>(packed.face_moment);
     cell_centroid = kernels::converted<G>(packed.cell_centroid);
     cell_volume = kernels::converted<G>(packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
@@ -64,6 +66,7 @@ struct NavierStokes<P>::Impl {
     d.face_normal = face_normal.data();
     d.face_area_magnitude = face_area_magnitude.data();
     d.face_centroid = face_centroid.data();
+    d.face_moment = face_moment.data();
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
     using Pa = typename P::param;
@@ -134,10 +137,9 @@ void NavierStokes<P>::state(std::span<const double> u, std::span<State> s) const
 }
 
 template <class P>
-void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res,
-                               bool frozen_limiter) {
+void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
-  m.euler.residual(s, res, frozen_limiter);
+  m.euler.residual(s, res);
   m.d.res = res.data();
   nk::cpu::viscous_faces(m.d);
   nk::cpu::viscous_boundaries(m.d);
@@ -199,8 +201,8 @@ void NavierStokes<P>::spectral_radius(std::span<State> lambda) {
 }
 
 template <class P>
-void NavierStokes<P>::boundary_pressure(std::span<double> p) const {
-  impl_->euler.boundary_pressure(p);
+void NavierStokes<P>::boundary_pressure(std::span<double> p, std::span<double> force) const {
+  impl_->euler.boundary_pressure(p, force);
 }
 
 template <class P>

@@ -47,7 +47,7 @@ class NavierStokes {
   void set_eddy_viscosity(std::span<const double> cells, std::span<const double> boundary_faces);
 
   void state(std::span<const double> u, std::span<State> s) const;
-  void residual(std::span<const State> s, std::span<Res> res, bool frozen_limiter = false);
+  void residual(std::span<const State> s, std::span<Res> res);
   /// R(s) and the approximate Jacobian: Euler<P>'s, plus dF_v/dW of every face with the cell
   /// gradients held fixed.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
@@ -55,7 +55,7 @@ class NavierStokes {
   /// After residual(s): per cell, the convective spectral radius plus 4 times the viscous one
   /// (Blazek 2015, eq. 6.20), so that CFL V / lambda is the cell's time step.
   void spectral_radius(std::span<State> lambda);
-  void boundary_pressure(std::span<double> p) const;
+  void boundary_pressure(std::span<double> p, std::span<double> force = {}) const;
   /// After residual(s): force per unit area the fluid exerts on every boundary face through the
   /// viscous stress, -tau n (3 x n_boundary_faces, Pa, n out of the fluid); zero on slip faces.
   void viscous_traction(std::span<double> t) const;
