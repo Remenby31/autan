@@ -8,7 +8,7 @@ The runtime owns the iteration loop, the convergence test, stop signals, the run
 
 ## Physics
 
-A physics is constructed from a `PhysicsContext` (the assembled mesh, its FP64 geometry and the parsed solver input), with its state set to each cell zone's `initial` values. For a verification case, `input.verification->text` holds the `autan.mms/1` document the runtime read and checked: the physics takes the boundary data, source terms and auxiliary fields from it (solver-input.md, `verification`). It implements:
+A physics is constructed from a `PhysicsContext` (the assembled mesh, its FP64 geometry and the parsed solver input), with its state set to each cell zone's `initial` values. Its `log` writes events to the run's `log.jsonl` (results.md): level, source, message, and optionally a registry code and data; the runtime stamps the time and the iteration. For a verification case, `input.verification->text` holds the `autan.mms/1` document the runtime read and checked: the physics takes the boundary data, source terms and auxiliary fields from it (solver-input.md, `verification`). It implements:
 
 | Member | Contract |
 |---|---|

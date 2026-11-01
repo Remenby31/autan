@@ -32,6 +32,7 @@ from autan.meshinfo import MeshInfo
 from autan.results import Devices, RunInfo
 from autan.schema import json_schema as case_json_schema
 from autan.schema import require_tags
+from autan.solver_backend import SolverBackend
 from autan.solver_input import build as build_solver_input
 from autan.solver_input import json_schema as solver_input_json_schema
 from autan.version import COMMIT, DIRTY, SCHEMAS, __version__
@@ -119,13 +120,15 @@ def command_plan(args: argparse.Namespace) -> int:
 
 
 def command_run(args: argparse.Namespace) -> int:
-    if args.backend != "fake":
-        unknown = diagnostic("E0804", f"backend {args.backend!r} is not built")
-        return _fail(CaseError([unknown]), args.json)
     try:
         case = _load_quietly(args.case)
-        backend = FakeBackend(
-            iterations=args.iterations, pace=args.pace, diverge_at=args.diverge_at
+        backend: FakeBackend | SolverBackend = (
+            FakeBackend(iterations=args.iterations, pace=args.pace, diverge_at=args.diverge_at)
+            if args.backend == "fake"
+            else SolverBackend(
+                devices=Devices(kind=args.backend, count=args.device_count),
+                deterministic=args.deterministic,
+            )
         )
         previous = signal.signal(signal.SIGTERM, _interrupt)
         try:
@@ -344,7 +347,14 @@ def parser() -> argparse.ArgumentParser:
     sub = commands.add_parser("run", help="run a case (only the fake backend is built)")
     sub.add_argument("case", help="case file: .py, .toml or .json")
     sub.add_argument("--mesh-info", required=True, help="MeshInfo JSON of the case's mesh")
-    sub.add_argument("--backend", default="fake", help="solver backend (default: fake)")
+    sub.add_argument(
+        "--backend",
+        choices=["fake", "cpu", "cuda", "hip"],
+        default="fake",
+        help="fake (synthetic results) or the device kind autan-run runs on (default: fake)",
+    )
+    sub.add_argument("--device-count", type=_positive, default=1, help="autan-run: devices")
+    sub.add_argument("--deterministic", action="store_true", help="autan-run: bitwise mode")
     sub.add_argument("--runs", default="runs", help="directory of run directories")
     sub.add_argument("--iterations", type=int, default=200, help="fake: iterations to write")
     sub.add_argument("--pace", type=float, default=0.0, help="fake: seconds per iteration")

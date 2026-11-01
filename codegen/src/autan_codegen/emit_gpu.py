@@ -16,8 +16,10 @@ from autan_codegen.emit_cpu import (
     cell_stores,
     n_out,
     offsets,
+    other_targets,
     reduce_adjoint_body,
     reduce_body,
+    twin_gather_body,
 )
 
 if TYPE_CHECKING:
@@ -318,6 +320,9 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
             e.w(s)
     e.w("}")
     e.w()
+    if lm.kind == "reduce_adjoint":
+        emit_reduce_adjoint_deterministic(e, lm)
+        return
     e.w("template <class P>")
     e.w(f"void {lm.name}(const Data<P>& d, const gpu::Schedule& s) {{")
     e.w("  if (d.topo.n_owned_cells > 0) {")
@@ -325,6 +330,67 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
         "    const auto grid = static_cast<unsigned>((d.topo.n_owned_cells + s.block - 1) / s.block);"
     )
     e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")
+    e.w("  }")
+    e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
+    e.w("}")
+    e.w()
+
+
+def emit_reduce_adjoint_deterministic(e: Emitter, lm: LoopModel) -> None:
+    """Two-pass adjoint of a cell reduction for the deterministic strategies (research section 6,
+    store-then-gather with a transposed incidence list), and the launcher choosing between it and
+    the atomic kernel."""
+    tid = "static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x)"
+    width = len(other_targets(lm))
+    _kernel_head(e, f"{lm.name}_store", ", typename P::accum* __restrict__ scratch")
+    e.w(f"  const index_t c = {tid};")
+    e.w("  if (c >= d.topo.n_owned_cells) {")
+    e.w("    return;")
+    e.w("  }")
+    for s in reduce_adjoint_body(lm, "  ", "store"):
+        e.w(s)
+    e.w("}")
+    e.w()
+    _kernel_head(e, f"{lm.name}_twin_gather", ", const typename P::accum* __restrict__ scratch")
+    e.w(f"  const index_t c = {tid};")
+    e.w("  if (c >= d.topo.n_cells) {")
+    e.w("    return;")
+    e.w("  }")
+    for s in twin_gather_body(lm, "  "):
+        e.w(s)
+    e.w("}")
+    e.w()
+    e.w("template <class P>")
+    e.w(
+        f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{"
+    )
+    e.w(
+        "  const auto grid = [&](index_t n) { return static_cast<unsigned>((n + s.block - 1) / s.block); };"
+    )
+    e.w("  const auto block = static_cast<unsigned>(s.block);")
+    e.w("  if (d.topo.n_owned_cells == 0) {")
+    e.w("    return;")
+    e.w("  }")
+    e.w("  if (!gpu::deterministic(strategy)) {")
+    e.w(f"    {lm.name}_kernel<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d);")
+    e.w("  } else {")
+    if width:
+        e.w(f"    if (s.incidence_scratch_width < {width}) {{")
+        e.w(
+            '      throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
+        )
+        e.w("    }")
+        e.w("    if (d.topo.incidence_twin == nullptr) {")
+        e.w(
+            '      throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
+        )
+        e.w("    }")
+    e.w("    auto* scratch = static_cast<typename P::accum*>(s.incidence_scratch);")
+    e.w(f"    {lm.name}_store<P><<<grid(d.topo.n_owned_cells), block, 0, s.stream>>>(d, scratch);")
+    if width:
+        e.w(
+            f"    {lm.name}_twin_gather<P><<<grid(d.topo.n_cells), block, 0, s.stream>>>(d, scratch);"
+        )
     e.w("  }")
     e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
     e.w("}")
@@ -368,7 +434,7 @@ def emit_gpu_instances(m: Module, policies: list[str]) -> str:
     for p in policies:
         pol = f"::autan::kernels::{POLICIES[p]}"
         for lm in m.loops:
-            if lm.kind in ("face", "boundary"):
+            if lm.kind in ("face", "boundary", "reduce_adjoint"):
                 e.w(
                     f"template void {lm.name}<{pol}>(const Data<{pol}>&, gpu::Strategy, const gpu::Schedule&);"
                 )

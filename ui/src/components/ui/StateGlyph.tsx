@@ -1,4 +1,4 @@
-import type { RunStatus } from "../api/contracts";
+import type { RunStatus } from "../../api/contracts";
 
 // Glyphs of docs/design/ui-inspiration/README.md § Components, state glyph.
 const COLOR: Record<RunStatus, string> = {

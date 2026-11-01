@@ -31,7 +31,12 @@ struct PackedGeometry {
 
 PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry);
 
+/// Topology of `mesh`; `incidence_twin` stays null (set it from incidence_twins()).
 [[nodiscard]] Topology topology(const MeshView& mesh) noexcept;
+
+/// For each incidence k (entry of the cell -> face CSR) of an interior face f, the incidence of f
+/// in the other cell's list; -1 for boundary faces.
+std::vector<offset_t> incidence_twins(const Mesh& mesh);
 
 /// Copy of `v` converted to T (the storage type of a precision role).
 template <class T>

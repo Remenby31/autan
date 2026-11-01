@@ -1,5 +1,5 @@
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { attribute, clamp, float, mix, texture, uniform, vec2, vec3, vec4 } from "three/tsl";
+import { attribute, clamp, float, mix, texture, uniform, vec2, vec4 } from "three/tsl";
 import * as THREE from "three/webgpu";
 import type { Surface } from "../api/surface";
 import { COOL_WARM, displayRange, sampleColormap } from "./colormap";
@@ -24,6 +24,7 @@ export class SurfaceViewer {
   private readonly resize: ResizeObserver;
   private readonly lut: THREE.DataTexture;
   private readonly range = { min: uniform(0), span: uniform(1) };
+  private readonly accent = uniform(new THREE.Color());
   private mesh: THREE.Mesh | null = null;
   private zones: ZoneMaterial[] = [];
   private pickMaterials: THREE.MeshBasicNodeMaterial[] = [];
@@ -60,7 +61,7 @@ export class SurfaceViewer {
     if (this.backend === "webgl2")
       console.warn("viewer: WebGPU unavailable, rendering with WebGL2");
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.scene.background = token("--bg-0");
+    this.applyTheme();
     this.scene.add(new THREE.HemisphereLight("#dfe8f2", "#2a323c", 1.6));
     const headlight = new THREE.DirectionalLight("#ffffff", 1.6);
     headlight.position.set(0.3, 0.6, 1);
@@ -99,7 +100,6 @@ export class SurfaceViewer {
       0,
       1,
     );
-    const accent = token("--accent");
     const fieldColor = texture(this.lut, vec2(t, float(0.5))).rgb;
     this.zones = surface.zones.map((zone, index) => {
       geometry.addGroup(zone.first_triangle * 3, zone.triangles * 3, index);
@@ -109,7 +109,7 @@ export class SurfaceViewer {
         roughness: 0.65,
         side: THREE.DoubleSide,
       });
-      material.colorNode = mix(fieldColor, vec3(accent.r, accent.g, accent.b), highlight);
+      material.colorNode = mix(fieldColor, this.accent, highlight);
       return { material, highlight };
     });
     this.pickMaterials = surface.zones.map((_, index) => {
@@ -124,6 +124,13 @@ export class SurfaceViewer {
     );
     this.scene.add(this.mesh);
     this.frameAll();
+  }
+
+  /** Re-read the background and selection colours from the design tokens. */
+  applyTheme(): void {
+    this.scene.background = token("--bg-0");
+    this.accent.value.copy(token("--accent"));
+    this.requestRender();
   }
 
   setSelectedZone(index: number | null): void {
