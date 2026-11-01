@@ -17,7 +17,8 @@ std::vector<std::int32_t> colour_greedy(std::span<const offset_t> offsets,
                                         std::span<const index_t> neighbours,
                                         std::span<const std::int64_t> global_id) {
   const std::size_t n = global_id.size();
-  if (offsets.size() != n + 1 || offsets.front() != 0 || at(offsets.back()) != neighbours.size()) {
+  if (offsets.size() != n + 1 || offsets.front() != 0 || at(offsets.back()) != neighbours.size() ||
+      !std::ranges::is_sorted(offsets)) {
     throw Error(ErrorCode::partition_invalid_request,
                 "the graph's offsets do not match its nodes and neighbours");
   }

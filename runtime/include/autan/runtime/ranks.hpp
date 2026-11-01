@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -24,12 +25,16 @@ class Ranks {
   /// The greatest of `value` over all ranks.
   [[nodiscard]] virtual std::int64_t max(std::int64_t value) = 0;
   [[nodiscard]] virtual double max(double value) = 0;
-  /// The least finite `value` over all ranks and the `id` that goes with it,
+  /// The least `value` over all ranks and the `id` (>= 0) that goes with it,
   /// the least id among equal values: the same pair on any number of ranks.
+  /// NaN counts as +infinity, so it wins only when every value is NaN.
   [[nodiscard]] std::pair<double, std::int64_t> argmin(double value, std::int64_t id) {
-    const double least = min(value);
-    const std::int64_t mine = value == least ? -id : std::numeric_limits<std::int64_t>::min();
-    return {least, -max(mine)};
+    constexpr std::int64_t top = std::numeric_limits<std::int64_t>::max();
+    const double key = std::isnan(value) ? std::numeric_limits<double>::infinity() : value;
+    const double least = min(key);
+    // The least id as the greatest top - id: no overflow for ids >= 0.
+    const std::int64_t mine = key == least ? top - id : std::numeric_limits<std::int64_t>::min();
+    return {least, top - max(mine)};
   }
 };
 

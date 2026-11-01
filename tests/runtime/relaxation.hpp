@@ -250,6 +250,15 @@ class Relaxation final : public autan::runtime::Physics {
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
     if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");
+    if (!mean && !smooth_.empty()) {
+      // The swept field, for the tests to compare cell by cell.
+      auto out = state_;
+      for (auto& f : out) {
+        if (f.name == "TurbulentSANuTilde")
+          f.values.assign(smooth_.begin(), smooth_.begin() + context_.mesh.n_owned_cells());
+      }
+      return out;
+    }
     if (!mean) return state_;
     auto out = mean_;
     for (auto& f : out) {

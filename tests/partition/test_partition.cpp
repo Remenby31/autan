@@ -579,6 +579,11 @@ TEST_CASE("Greedy colouring visits nodes by increasing global id", "[partition][
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::colour_greedy(path_offsets, path, std::vector<std::int64_t>{0, 1});
   });
+  // Offsets that go back: their last entry matches, the middle one does not.
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_greedy(std::vector<offset_t>{0, 3, 2}, std::vector<index_t>{1, 0},
+                               std::vector<std::int64_t>{0, 1});
+  });
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::colour_greedy(triangle_offsets, std::vector<index_t>{1, 2, 0, 2, 0, 7},
                                std::vector<std::int64_t>{0, 1, 2});
