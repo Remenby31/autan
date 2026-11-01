@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <span>
@@ -849,6 +850,14 @@ class Run final : public Log {
     } else {
       ghosts_ = std::make_unique<NoGhosts>();
     }
+    if (local_) {
+      face_global_id_ = local_->face_global_id;
+      face_reversed_ = local_->face_reversed;
+    } else {
+      face_global_id_.resize(at(p_.mesh.n_faces()));
+      std::iota(face_global_id_.begin(), face_global_id_.end(), std::int64_t{0});
+      face_reversed_.assign(face_global_id_.size(), 0);
+    }
     // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
@@ -895,7 +904,6 @@ class Run final : public Log {
           {"sha256", p_.mesh_hash}}},
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
-        {"deterministic", in.deterministic},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
         {"started", started_at},
         {"finished", nullptr},
@@ -939,6 +947,12 @@ class Run final : public Log {
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
     if (comm_.size() > 1) log_partition();
+    if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
+      note("info", "solver",
+           "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
+               ", not ranks",
+           "", Json{{"mode", p_.input.reproducibility}, {"ranks", comm_.size()}}.dump());
+    }
     if (gpu_) {
       note(
           "info", "cuda",
@@ -965,7 +979,9 @@ class Run final : public Log {
                                  .boundary_states = p_.boundary_states,
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
-                                 .stream = gpu_ ? gpu_->stream() : nullptr};
+                                 .stream = gpu_ ? gpu_->stream() : nullptr,
+                                 .face_global_id = face_global_id_,
+                                 .face_reversed = face_reversed_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1015,7 +1031,10 @@ class Run final : public Log {
   std::optional<LocalPartition> make_part() {
     const Mesh& mesh = p_.mesh;
     const std::int32_t n = comm_.size();
-    if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
+    // Reproducibility "ranks" computes on a partition, one part on one rank,
+    // so that a physics finds the same global keys on any number of ranks.
+    if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
+      return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
     if (n > 1) parts = partition_cells(mesh, n, {.cell_weights = cell_cost_weights(mesh)});
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
@@ -1489,6 +1508,10 @@ class Run final : public Log {
   std::optional<Gpu> gpu_;
   Geometry geometry_;
   std::optional<LocalPartition> local_;
+  // PhysicsContext's global keys of the physics' faces: the partition's, or
+  // the mesh's own (identity, none reversed).
+  std::vector<std::int64_t> face_global_id_;
+  std::vector<std::uint8_t> face_reversed_;
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial
