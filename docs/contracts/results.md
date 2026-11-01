@@ -10,11 +10,12 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
   case.toml        the case document as run (case-schema.md), every default filled in
   mesh-info.json   the MeshInfo of the mesh read (mesh-info.md)
   history.jsonl    one line per recorded iteration, appended during the run
+  log.jsonl        one line per event, appended during the run (see Log)
   manufactured.json  verification runs only: the manufactured solution, byte for byte
   solution.cgns    solution (CGNS/HDF5), written when the run ends
 ```
 
-The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml`, `mesh-info.json` and, for a verification case, `manufactured.json` (whose SHA-256 is the case's `verification.manufactured.sha256`) into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed before `run.json` leaves `running`; readers do not use it while the run is `running`. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
+The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml`, `mesh-info.json`, the first line of `log.jsonl` and, for a verification case, `manufactured.json` (whose SHA-256 is the case's `verification.manufactured.sha256`) into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed before `run.json` leaves `running`; readers do not use it while the run is `running`. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
 
 `case.toml` keeps `mesh` as the case wrote it, since it is part of the case hash. The mesh actually read is `run.json` `mesh.path`, an absolute path, identified by `mesh.sha256`.
 
@@ -59,7 +60,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}`: the interval actually averaged by an unsteady run with `average_from`, once at least one step past `average_from` is done. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays.
+Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times).
 
 ## History
 
@@ -79,6 +80,25 @@ Forces monitor. Over the faces of the matched boundary zones, with n the unit no
 F = ∫ [(p − p∞) n − τ·n] dA,  M = ∫ (x − x_c) × [(p − p∞) n − τ·n] dA,
 
 reported as `fx` `fy` `fz` (N) and `mx` `my` `mz` (N·m) in mesh axes. With `ref_area` set, `cd`, `cs`, `cl` are F projected on the drag direction e_D = (cos α cos β, −sin β, sin α cos β), the side direction e_S = e_L × e_D and the lift direction e_L = (−sin α, 0, cos α), divided by q∞ `ref_area`, where q∞ = ½ ρ∞ V∞²; with `freestream.ref_length` also set, `cmx` `cmy` `cmz` are M divided by q∞ `ref_area` `ref_length`.
+
+## Log
+
+`log.jsonl` holds one JSON object per line, appended during the run like `history.jsonl` (written in one piece and flushed; while the run is `running` the last line may be incomplete and readers skip it; once it ends every line is complete):
+
+```json
+{"time": "2026-11-01T01:02:03.456Z", "iteration": 812, "level": "error", "source": "solver", "message": "divergence at iteration 812 near cell 3418772", "code": "D0107", "data": {"iteration": 812, "cell": 3418772, "zone": "fluid"}}
+```
+
+| Key | Content |
+|---|---|
+| `time` | Wall-clock UTC, ISO 8601 with milliseconds and `Z`. |
+| `iteration` | The iteration the event belongs to, `null` before the first (mesh reading, partitioning). |
+| `level` | `info`, `warning` or `error`. |
+| `source` | The component that logs: a short identifier matching `[a-z][a-z0-9-]*` (`solver`, `linear`, `io`, `mpi`, `fake`, …). |
+| `message` | Human-readable; never parse it. |
+| `code`, `data` | A registered diagnostic code and its data, as in [case-schema.md](case-schema.md#diagnostics), or `null` and `{}`. |
+
+The first line logs the start of the run and the last one its end with the final status. Every diagnostic of `run.json` also has a line with the same `code` and `data`. The log carries wall-clock times, so it is outside the bitwise guarantee of [run.json](#runjson).
 
 ## solution.cgns
 
@@ -127,4 +147,4 @@ BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` 
 
 ## Results API
 
-`autan.Results.open(path)` reads a run directory and checks its metadata, case, MeshInfo and history against this contract (`E0701` otherwise); it reads `solution.cgns` only on the first `field`, `wall` or `cell_zone` call, which checks it the same way, so listing many runs stays cheap. `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name, mean=False)` a cell-centred field as a NumPy array, `results.wall(name)` a wall field with its face indices, `results.cell_zone(name)` the cell indices of a cell zone.
+`autan.Results.open(path)` reads a run directory and checks its metadata, case, MeshInfo, history and log against this contract (`E0701` otherwise); `results.log` holds the log lines; it reads `solution.cgns` only on the first `field`, `wall` or `cell_zone` call, which checks it the same way, so listing many runs stays cheap. `results.run` returns the run metadata, `results.case` the case, `results.mesh_info` the MeshInfo, `results.history` the residual and monitor time series, `results.forces` the forces monitor when there is exactly one, `results.field(name, mean=False)` a cell-centred field as a NumPy array, `results.wall(name)` a wall field with its face indices, `results.cell_zone(name)` the cell indices of a cell zone.
