@@ -570,3 +570,71 @@ TEST_CASE("oracle-state faces impose their states component by component", "[eul
     for (const double v : field(out.run, name)) CHECK(std::abs(v - value) <= 64 * eps * scale);
   }
 }
+
+TEST_CASE("a point vortex carries the lift of its surfaces and continues bit for bit", "[euler]") {
+  // Unsteady flow at zero incidence over the slip wall zmin, two cell zones at different states;
+  // every other side is farfield with the vortex of zmin's lift below the wall. Kutta-Joukowski:
+  // the circulation after step n is L'/(rho V) of the state of step n - 1, which the forces
+  // monitor reports (zmin spans y in [0, 1]).
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  auto doc = [&](int steps) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, precision);
+      for (auto& b : d["boundaries"]) {
+        if (b["zone"] == "zmin") {
+          b["kind"] = "slip";
+        } else {
+          b["kind"] = "farfield";
+          b["point_vortex"] = {{"zones", {"zmin"}}, {"center", {0.5, 0.0, -0.3}}};
+        }
+      }
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      d["monitors"][0]["zones"] = {"zmin"};
+      d["monitors"][0]["every"] = 1;
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", steps},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", nullptr}};
+    });
+  };
+  const auto whole = run(doc(8));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  const double circulation = field(whole.run, "VortexCirculation0", "RestartState").front();
+  CHECK(circulation != 0.0);
+  const auto lines = history(whole.run);
+  REQUIRE(lines.size() == 8);
+  const Json f = doc(8)["freestream"];
+  const double rho = f["density"].get<double>(), speed = f["speed"].get<double>();
+  const double lift = lines[6]["monitors"]["forces"]["fz"].get<double>();
+  // The monitor sums the face forces in face order, the vortex exactly: round-off of the sum of
+  // face forces of magnitude up to (p + p_inf) over the unit wall.
+  const double p = f["pressure"].get<double>();
+  CHECK(std::abs(circulation - lift / (rho * speed)) <=
+        64 * std::numeric_limits<double>::epsilon() * 4.0 * p / (rho * speed));
+  // The farfield takes the vortex: without it, the flow differs.
+  auto plain = doc(8);
+  for (auto& b : plain["boundaries"]) b["point_vortex"] = nullptr;
+  const auto without = run(plain);
+  REQUIRE(without.status == ExitStatus::finished);
+  CHECK(field(without.run, "VelocityZ") != field(whole.run, "VelocityZ"));
+
+  const auto first = run(doc(4));
+  REQUIRE(first.status == ExitStatus::finished);
+  auto next = doc(8);
+  next["start"] = continue_from(first.run);
+  const auto second = run(next);
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  CHECK(read(first.run / "history.jsonl") + read(second.run / "history.jsonl") ==
+        read(whole.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
+    CHECK(field(second.run, name) == field(whole.run, name));
+  }
+  CHECK(field(second.run, "VortexCirculation0", "RestartState") ==
+        field(whole.run, "VortexCirculation0", "RestartState"));
+}

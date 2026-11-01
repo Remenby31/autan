@@ -219,7 +219,6 @@ class EulerPhysics final : public runtime::Physics {
     // The pressure force exactly as the residual integrates it, minus p_inf S (results.md).
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
-    const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<double> p(nb), face_force(3 * nb);
     face_pressure(p, face_force);
@@ -243,6 +242,15 @@ class EulerPhysics final : public runtime::Physics {
   }
 
  private:
+  struct Vortex {
+    const runtime::BoundaryInput* condition = nullptr;
+    std::array<double, 3> center{};
+    std::vector<index_t> zones;     // the surfaces whose lift gives the circulation
+    double span = 0.0;              // their extent along y
+    std::vector<std::size_t> faces;  // its farfield faces (boundary indices)
+    double circulation = 0.0, next = 0.0;
+  };
+
   static Scheme scheme(const runtime::SolverInput& in) {
     const auto& f = in.freestream;
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
@@ -413,7 +421,7 @@ class EulerPhysics final : public runtime::Physics {
     const auto off = mesh.boundary_zone_offsets();
     for (const auto& bc : ctx_.input.boundaries) {
       if (!bc.point_vortex) continue;
-      Vortex v{.condition = &bc, .center = bc.point_vortex->center};
+      Vortex v{.condition = &bc, .center = bc.point_vortex->center, .zones = {}, .faces = {}};
       double lo = std::numeric_limits<double>::infinity();
       double hi = -lo;
       for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
@@ -697,15 +705,6 @@ class EulerPhysics final : public runtime::Physics {
     euler_.boundary_pressure(p, force);
   }
 
-  struct Vortex {
-    const runtime::BoundaryInput* condition = nullptr;
-    std::array<double, 3> center{};
-    std::vector<index_t> zones;     // the surfaces whose lift gives the circulation
-    double span = 0.0;              // their extent along y
-    std::vector<std::size_t> faces;  // its farfield faces (boundary indices)
-    double circulation = 0.0, next = 0.0;
-  };
-
   PhysicsContext ctx_;
   Gas gas_;
   std::size_t n_;
@@ -788,7 +787,7 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
           .path = "freestream.sideslip",
           .data_json = nlohmann::json{{"zone", b.zone}, {"sideslip", fs.sideslip}}.dump()};
     }
-    const double mach = fs.speed / std::sqrt(first->gamma * fs.pressure / fs.density);
+    const double mach = fs.speed / std::sqrt(*first->gamma * fs.pressure / fs.density);
     if (!(mach < 1.0)) {
       return runtime::PhysicsRefusal{
           .message = "a point vortex needs a subsonic freestream; boundary zone '" + b.zone + "'",
