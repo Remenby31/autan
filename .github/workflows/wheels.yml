@@ -192,6 +192,8 @@ jobs:
           pattern: dist-*
           path: wheelhouse
           merge-multiple: true
+      - name: Give this job priority on the GPU lock
+        run: bench/ci/priority.sh start 15
       - name: Install with install.sh in an empty home, and require native GPU code on GB10
         # Jobs run in the runner container (no Docker); the GPU lock is mounted there.
         run: |
@@ -201,6 +203,9 @@ jobs:
           # job's temp directory) and none of the dev image's uv settings.
           flock /home/admin/autan-gpu/gpu.lock env -u UV_PYTHON -u UV_PYTHON_DOWNLOADS -u UV_CACHE_DIR -u XDG_DATA_HOME \
             HOME="$home" TMPDIR="$home" REQUIRE_GPU=1 sh packaging/test-install.sh "$PWD"
+      - name: Release the GPU lock priority
+        if: always()
+        run: bench/ci/priority.sh stop
       - name: With no GPU visible, the probe falls back to the CPU and still passes
         run: |
           CUDA_VISIBLE_DEVICES="" HOME="$AUTAN_TEST_HOME" \
