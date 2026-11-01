@@ -124,7 +124,7 @@ def _cmd_su2(args: argparse.Namespace) -> None:
         rows = {}
         for run in args.runs:
             conv = history.convergence(history.read_su2(run / "history.csv"), args.orders)
-            rows[str(run)] = asdict(conv)
+            rows[str(run)] = {**asdict(conv), **history.provenance(run)}
             state = "converged" if conv.converged else "NOT converged"
             _say(
                 f"{run}: {state} in {conv.iterations} iterations, CL {conv.cl:.9f}, "

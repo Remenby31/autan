@@ -6,6 +6,9 @@ import csv
 import hashlib
 import json
 import math
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -264,6 +267,80 @@ def test_criterion_is_the_drop_below_the_first_residual() -> None:
     assert history.converged_at(zero, 10.0) == 5 + math.ceil(12 / math.log10(2))
 
 
+def _watcher(script: str) -> str:
+    """The awk program by which a runner script stops SU2."""
+    text = (Path(__file__).parents[1] / "su2" / script).read_text()
+    match = re.search(r"awk -F, [^']*'\n(.*?)' \"\$", text, flags=re.DOTALL)
+    assert match is not None
+    return "\n".join(line.strip() for line in match.group(1).split("\n"))
+
+
+def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
+    header = (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text().split("\n")[0]
+    names = [h.strip().strip('"') for h in header.split(",")]
+    columns = dict(
+        zip(("rms[Rho]", "rms[RhoU]", "rms[RhoV]", "rms[RhoE]"), residuals.values(), strict=True)
+    )
+    n = len(next(iter(residuals.values())))
+    rows = [header]
+    rows += [
+        ",".join(
+            repr(float(np.log10(columns[c][i]))) if c in columns else ("0.01" if c == "Time(sec)" else "0")
+            for c in names
+        )
+        for i in range(n)
+    ]  # fmt: skip
+    path.write_text("\n".join(rows) + "\n")
+
+
+@pytest.mark.skipif(shutil.which("awk") is None, reason="awk is not installed")
+def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
+    program = _watcher("run.sh")
+    assert program == _watcher("campaign.sh")
+    (tmp_path / "watch.awk").write_text(program)
+
+    def stops(residuals: dict[str, np.ndarray]) -> bool:
+        _history_csv(tmp_path / "history.csv", residuals)
+        cmd = [
+            "awk",
+            "-F,",
+            "-v",
+            "orders=10",
+            "-v",
+            "stall=2000",
+            "-f",
+            "watch.awk",
+            "history.csv",
+        ]
+        return subprocess.run(cmd, cwd=tmp_path, check=False).returncode == 0
+
+    it = np.arange(600.0)
+    falling = 1e-2 * 0.9**it
+    # Met: every equation ten orders below its first value, the exempt one staying at round-off.
+    met = {"d": falling, "u": falling, "w": np.full_like(it, 1e-15), "e": falling}
+    assert stops(met)
+    assert history.converged_at(_geometric_like(met), 10.0) is not None
+    # Not met: one equation still above; no stall in 600 rows.
+    short = {**met, "e": np.maximum(falling, 1e-11)}
+    assert not stops(short)
+    assert history.converged_at(_geometric_like(short), 10.0) is None
+    # A slowly falling run is not a stall, whatever the exempt equation does.
+    slow = 1e-2 * 0.9995 ** np.arange(4000.0)  # 0.43 orders per 2000 rows
+    assert not stops({"d": slow, "u": slow, "w": np.full(4000, 1e-15), "e": slow})
+    # A residual that stops falling is a stall.
+    flat = np.maximum(1e-2 * 0.99 ** np.arange(4000.0), 1e-6)
+    assert stops({"d": flat, "u": flat, "w": flat, "e": flat})
+
+
+def _geometric_like(residuals: dict[str, np.ndarray]) -> history.History:
+    n = len(next(iter(residuals.values())))
+    return history.History(
+        iterations=np.arange(n),
+        residuals={k: np.asarray(v, dtype=np.float64) for k, v in residuals.items()},
+        cl=np.zeros(n), cd=np.zeros(n), cmy=np.zeros(n), wall_seconds=None,
+    )  # fmt: skip
+
+
 def test_su2_history_columns_and_axes(tmp_path: Path) -> None:
     two = history.read_su2(DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv")
     three = history.read_su2(DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-3d.csv")
@@ -288,8 +365,13 @@ def test_su2_history_columns_and_axes(tmp_path: Path) -> None:
     (run / "history.csv").write_text(
         (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text()
     )
+    (run / "case.cfg").write_text("SLOPE_LIMITER_FLOW= NONE\n")
+    (run / "provenance.json").write_text(json.dumps({"case_sha256": "a"}))
     assert main(["su2", "history", str(run), "--out", str(tmp_path / "h.json")]) == 0
-    assert json.loads((tmp_path / "h.json").read_text())[str(run)]["cl"] == two.cl[-1]
+    row = json.loads((tmp_path / "h.json").read_text())[str(run)]
+    assert row["cl"] == two.cl[-1]
+    assert row["scheme"] == {"SLOPE_LIMITER_FLOW": "NONE"}
+    assert row["provenance"]["case_sha256"] == "a"
 
 
 # Vassberg and Jameson (2010), Table 3, FLO82 at M 0.8, alpha 1.25 deg, grids 1024, 2048, 4096,

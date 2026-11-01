@@ -151,3 +151,26 @@ def convergence(history: History, orders: float) -> Convergence:
         cmy=float(history.cmy[i]),
         drop={eq: float(np.log10(r[0] / r[i])) for eq, r in history.residuals.items()},
     )
+
+
+# Configuration keys that set the scheme, recorded with a run's convergence.
+SCHEME_KEYS = ("CONV_NUM_METHOD_FLOW", "MUSCL_FLOW", "SLOPE_LIMITER_FLOW", "VENKAT_LIMITER_COEFF",
+               "ENTROPY_FIX_COEFF", "NUM_METHOD_GRAD")  # fmt: skip
+
+
+def provenance(run: Path) -> dict[str, object]:
+    """What identifies a run directory's result: its provenance.json (image, SU2 version, threads,
+    hashes of the configuration and mesh it ran), the precision (SU2 runs in FP64) and the scheme
+    keys of its case.cfg. V0904 if either file is missing."""
+    try:
+        prov = json.loads((run / "provenance.json").read_text())
+        text = (run / "case.cfg").read_text()
+    except FileNotFoundError as err:
+        msg = f"{run}: {err.filename} is missing"
+        raise VVError(msg, code="V0904") from None
+    cfg = dict(line.split("= ", 1) for line in text.splitlines() if "= " in line)
+    return {
+        "provenance": prov,
+        "precision": "fp64",
+        "scheme": {k: cfg[k] for k in SCHEME_KEYS if k in cfg},
+    }
