@@ -323,6 +323,7 @@ class EulerPhysics final : public runtime::Physics {
       v.emplace_back("SolverReferenceResidual" + std::to_string(k),
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
+    v.emplace_back("SolverCflCap", cfl_cap_);
     return v;
   }
 
@@ -336,6 +337,7 @@ class EulerPhysics final : public runtime::Physics {
     if (v[4].second >= 0.0) {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
+    cfl_cap_ = v[9].second;
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
