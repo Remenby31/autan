@@ -1,3 +1,5 @@
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
 import sys
@@ -87,3 +89,59 @@ def test_ci_itself_never_yields(spark, tmp_path):
         assert lines(order) == ["ci"]
     finally:
         priority(spark, "stop")
+
+
+def test_a_self_locking_command_waits_for_ci_then_takes_the_lock_itself(spark, tmp_path):
+    # -n: for autan-bench, which takes the lock itself; nesting it under a held lock would
+    # deadlock. The wrapper only waits for CI and for a free lock.
+    order = tmp_path / "order"
+    lock = spark["AUTAN_GPU_LOCK"]
+    priority(spark, "start", "5")
+    take = f"flock -n {lock} sh -c 'echo agent >> {order}'"
+    proc = subprocess.Popen([str(WRAPPER), "-n", "-m", "agent", "--", "sh", "-c", take], env=spark)
+    time.sleep(1)
+    assert proc.poll() is None
+    ci = ci_step(spark, order)
+    assert ci.wait(timeout=20) == 0
+    priority(spark, "stop")
+    assert proc.wait(timeout=20) == 0
+    assert lines(order) == ["ci", "agent"]
+    assert "start" in events(spark)
+
+
+GUARD = ROOT / "lock" / "autan-gpu-guard"
+
+
+def test_the_guard_records_every_holder_and_never_announces_ci_for_others(spark):
+    lock = spark["AUTAN_GPU_LOCK"]
+    guard = subprocess.Popen([sys.executable, str(GUARD)], env=spark, stderr=subprocess.PIPE)
+    try:
+        time.sleep(1)
+        subprocess.run(["flock", lock, "sleep", "1.5"], check=True)
+        time.sleep(1.5)
+        held = events(spark)
+        assert held[:2] == ["held", "released"]
+        # Not the runner container: ci.lock stays free.
+        assert (
+            subprocess.run(
+                ["flock", "-n", "-x", str(Path(lock).parent / "ci.lock"), "true"], check=False
+            ).returncode
+            == 0
+        )
+    finally:
+        guard.terminate()
+        guard.wait(timeout=10)
+
+
+def test_the_guard_reads_holders_and_waiters_from_proc_locks():
+    loader = importlib.machinery.SourceFileLoader("guard", str(GUARD))
+    spec = importlib.util.spec_from_loader("guard", loader)
+    guard = importlib.util.module_from_spec(spec)
+    loader.exec_module(guard)
+    key = "103:02:6985512"
+    text = (
+        f"22: FLOCK  ADVISORY  WRITE 4242 {key} 0 EOF\n"
+        f"22: -> FLOCK  ADVISORY  WRITE 4343 {key} 0 EOF\n"
+        "23: POSIX  ADVISORY  WRITE 99 103:02:1 0 EOF\n"
+    )
+    assert guard.lock_users(key, text) == ({4242}, {4343})
