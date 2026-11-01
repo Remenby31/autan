@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -15,18 +16,32 @@ namespace ek = autan::kernels::euler;
 
 template <class P>
 struct Euler<P>::Impl {
-  using G = typename P::geom;
   using Gr = typename P::grad;
 
   Scheme scheme;
   kernels::Topology topo{};
-  std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
-      cell_volume, stencil_lsq_weight;
+  // Each geometry array has the element type its Data<P> member stores (the generator stores
+  // geometry that bodies read only as values in P::geom_value).
+  template <class Ptr>
+  using stored = std::vector<std::remove_cvref_t<std::remove_pointer_t<Ptr>>>;
+  using D = ek::Data<P>;
+  stored<decltype(D::face_normal)> face_normal;
+  stored<decltype(D::face_area_magnitude)> face_area_magnitude;
+  stored<decltype(D::face_centroid)> face_centroid;
+  stored<decltype(D::face_moment)> face_moment;
+  stored<decltype(D::cell_centroid)> cell_centroid;
+  stored<decltype(D::cell_volume)> cell_volume;
+  stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
+
+  template <class T, class Source>
+  static void fill(std::vector<T>& to, const Source& from) {
+    to = kernels::converted<T>(from);
+  }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme s) : scheme(s) {
     const auto packed = kernels::pack_geometry(mesh, geometry);
@@ -39,13 +54,13 @@ struct Euler<P>::Impl {
     topo.stencil_offsets = stencil.offsets.data();
     topo.stencil = stencil.entries.data();
     topo.stencil_twin = stencil.twin.data();
-    stencil_lsq_weight = kernels::converted<G>(stencil.lsq_weight);
-    face_normal = kernels::converted<G>(packed.face_normal);
-    face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
-    face_centroid = kernels::converted<G>(packed.face_centroid);
-    face_moment = kernels::converted<G>(packed.face_moment);
-    cell_centroid = kernels::converted<G>(packed.cell_centroid);
-    cell_volume = kernels::converted<G>(packed.cell_volume);
+    fill(stencil_lsq_weight, stencil.lsq_weight);
+    fill(face_normal, packed.face_normal);
+    fill(face_area_magnitude, packed.face_area_magnitude);
+    fill(face_centroid, packed.face_centroid);
+    fill(face_moment, packed.face_moment);
+    fill(cell_centroid, packed.cell_centroid);
+    fill(cell_volume, packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     bc_kind.assign(nf, 0.0);
@@ -155,7 +170,7 @@ struct Euler<P>::Impl {
       };
       if (!weights(false)) weights(true);
     }
-    stencil_lsq_weight = kernels::converted<G>(w);
+    fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();
   }
 
