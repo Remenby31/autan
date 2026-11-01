@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Runs a command under the Spark GPU lock, bounded, and records who held it and why.
+# Usage: autan-gpu-lock -m WHY [-w WAIT_S] [-t HOLD_S] -- COMMAND...
+#   -m WHY     what the command is for (agent, task), written to the holders log; required
+#   -w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
+#   -t HOLD_S  stop the command and release the lock after this long (default and maximum 600)
+# Every wait, take, release, timeout and overrun goes to holders.log next to the lock, one
+# tab-separated line: UTC time, event, who, where, seconds, exit status, why, command.
+# The command does not inherit the lock's descriptor: a process it leaves behind cannot keep
+# the lock. Do not nest autan-bench under it: autan-bench takes the lock itself.
+set -euo pipefail
+
+lock=${AUTAN_GPU_LOCK:-/home/admin/autan-gpu/gpu.lock}
+log=$(dirname "$lock")/holders.log
+max_hold=600
+wait_s=3600
+hold_s=$max_hold
+why=
+usage() { sed -n '2,10p' "$0" >&2; exit 2; }
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -m) why=$2; shift 2 ;;
+    -w) wait_s=$2; shift 2 ;;
+    -t) hold_s=$2; shift 2 ;;
+    --) shift; break ;;
+    *) usage ;;
+  esac
+done
+[[ -n $why && $# -gt 0 ]] || usage
+[[ $wait_s =~ ^[0-9]+$ && $hold_s =~ ^[0-9]+$ ]] || usage
+if ((hold_s > max_hold)); then
+  echo "autan-gpu-lock: -t $hold_s exceeds the ${max_hold} s limit on holding the GPU lock" >&2
+  exit 2
+fi
+
+who=${AUTAN_AGENT:-$(id -un 2>/dev/null || id -u)}
+where=${AUTAN_CONTAINER:-$(hostname)}
+command_text=$(printf '%q ' "$@")
+command_text=${command_text:0:300}
+command_text=${command_text% }
+warned=0
+record() {  # event seconds status
+  local line
+  line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
+    "$who" "$where" "$2" "$3" "${why//$'\t'/ }" "$command_text")
+  if ! { echo "$line" >>"$log"; } 2>/dev/null && ((warned == 0)); then
+    echo "autan-gpu-lock: cannot write $log; this hold is not recorded" >&2
+    warned=1
+  fi
+}
+
+exec 9<"$lock"
+start=$SECONDS
+record wait 0 -
+if ! flock -w "$wait_s" 9; then
+  record timeout $((SECONDS - start)) 75
+  echo "autan-gpu-lock: $lock still held after $wait_s s (see $log)" >&2
+  exit 75
+fi
+taken=$SECONDS
+record take $((taken - start)) -
+# In the background so that a signal to this script stops the command (timeout passes it on to
+# the command's process group) instead of leaving it running without the lock.
+timeout --kill-after=30 "$hold_s" "$@" 9<&- 0<&0 &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null; wait "$child" || true; record killed $((SECONDS - taken)) -; exit 143' TERM INT HUP
+status=0
+wait "$child" || status=$?
+trap - TERM INT HUP
+held=$((SECONDS - taken))
+flock -u 9
+if ((status == 124 || status == 137)) && ((held >= hold_s)); then
+  record overrun "$held" "$status"
+  echo "autan-gpu-lock: stopped after $hold_s s: split the work into shorter holds" >&2
+else
+  record release "$held" "$status"
+fi
+exit "$status"

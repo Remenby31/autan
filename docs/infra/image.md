@@ -28,10 +28,12 @@ image=ghcr.io/remenby31/autan-dev:main                 # or: docker build -t aut
 docker pull "$image"
 docker run --rm -it --gpus all --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -e AUTAN_IMAGE="$(docker image inspect -f '{{index .RepoDigests 0}}' "$image")" \
-  -v /home/admin/autan-gpu:/home/admin/autan-gpu:ro -v "$PWD:/src" -w /src "$image" bash
+  -v /home/admin/autan-gpu:/home/admin/autan-gpu:ro \
+  -v /home/admin/autan-gpu/holders.log:/home/admin/autan-gpu/holders.log \
+  -v "$PWD:/src" -w /src "$image" bash
 ```
 
-Mount the GPU lock's directory (`/home/admin/autan-gpu/gpu.lock`, see [bench.md](bench.md#timing-method)): GPU work in every container then queues on the same lock with `flock /home/admin/autan-gpu/gpu.lock <cmd>`. `AUTAN_IMAGE` records the image digest in benchmark results (for a local build, use `{{.Id}}`). Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Run as your own user so `git` accepts the mounted checkout. Name your containers with an `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
+Mount the GPU lock's directory and its holders log ([bench.md](bench.md#the-gpu-lock)): GPU work in every container then queues on the same lock with `bench/lock/autan-gpu-lock -m "AGENT: what for" -- <cmd>`. `AUTAN_IMAGE` records the image digest in benchmark results (for a local build, use `{{.Id}}`). Use `--gpus all`: one of the two Sparks has no CDI specification, so `--device nvidia.com/gpu=all` fails there. Run as your own user so `git` accepts the mounted checkout. Name your containers with an `autan-` prefix, and never stop or inspect containers you did not start: the Sparks run other teams' stacks.
 
 ## Build and test on a Spark from your workstation
 
@@ -39,7 +41,7 @@ Build on a Spark, not on your laptop. From any worktree:
 
 ```sh
 docker/spark.sh -- 'cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build'
-docker/spark.sh --gpu -- 'flock /home/admin/autan-gpu/gpu.lock ./build/<gpu test>'
+docker/spark.sh --gpu -- 'bench/lock/autan-gpu-lock -m "AGENT: <gpu test>" -- ./build/<gpu test>'
 ```
 
 `docker/spark.sh` keeps one checkout per worktree in `~/autan-work/<worktree>` on the Spark, checks out your `HEAD` when it is pushed (otherwise `origin/main`, and builds that embed the revision record a dirty tree), copies your working files over it, and runs the command in the dev image as your user, limited to 12 CPUs and 48 GB so several agents can build at once. Ignored files such as `build/` stay on the Spark between runs, so rebuilds are incremental. The default host is `spark`; `--host spark-5359` targets the benchmark machine, which is better left quiet. Builds and CPU tests get no GPU and must not take the GPU lock; pass `--gpu` for GPU work and take the lock for anything timed or GPU-heavy. Benchmarks for a pull request still come from a clean, pushed commit ([bench.md](bench.md)).

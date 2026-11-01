@@ -24,6 +24,7 @@ prepare() {
   # do not own with O_CREAT, which flock(1) uses.
   install -d -m 0755 "$lock_dir"
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
+  [[ -e $lock_dir/holders.log ]] || install -m 0666 /dev/null "$lock_dir/holders.log"
   # Internal: no route out. Isolated gateway: the host gets no address on this bridge, so a job
   # cannot reach host services listening on all interfaces.
   if ! docker network inspect "$internal_net" >/dev/null 2>&1; then
