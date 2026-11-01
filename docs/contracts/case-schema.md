@@ -167,7 +167,7 @@ A rule applies a condition to every boundary zone whose name matches `zones`, a 
 | `"outlet"` | `static_pressure` (pressure > 0) | all |
 | `"oracle-state"` | `path` (relative to the case file) and `sha256` of an `autan.face-states/1` file exported for this mesh ([face-states.md](face-states.md)): every face of the zone takes its state | compressible, inviscid or laminar (`E0414` otherwise) |
 
-A farfield's `point_vortex` corrects the far-field state of a 2D lifting body: the farfield takes the velocity of a point vortex at `center`, whose circulation is that of the lift on the boundary zones matched by `surfaces` (wall and slip zones only; wildcards skip periodic zones, `E0425` otherwise). The physics states which flows it accepts (the Euler physics: no sideslip, subsonic freestream, no farfield face at the vortex; `E0706` otherwise).
+A farfield's `point_vortex` corrects the far-field state of a 2D lifting body: the farfield takes the velocity of a point vortex at `center`, whose circulation is that of the lift on the boundary zones matched by `surfaces` (wall and slip zones only; wildcards skip periodic zones, `E0425` otherwise). The physics states which flows it accepts (the Euler physics: no sideslip, subsonic freestream; `E0706` otherwise).
 
 `inlet`, `velocity-inlet` and `outlet` are subsonic conditions. Inlet flow is normal to the boundary face. Where the outflow is supersonic, the outlet extrapolates every variable and ignores `static_pressure`. The solver reports inlet faces with supersonic or reversed flow and outlet faces with reversed flow (codes defined with the M2 boundary conditions).
 
