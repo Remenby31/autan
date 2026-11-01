@@ -79,6 +79,7 @@ function Compare() {
           role: String.fromCharCode(65 + k),
           run: runs[k],
           case: details[k]?.data?.case,
+          pending: details[k]?.isPending || !registry.data,
         })),
       ),
     [ids, runs, details],

@@ -79,20 +79,29 @@ test("each Mach number is its own series, and no run is merged into another", ()
   expect(result.unplotted).toEqual([]);
 });
 
-// Each setting alone, changed in B only: A and B solve different problems.
-test.each<[string, Patch]>([
-  ["Reynolds number", (c) => Object.assign(c.freestream, { re: 5e6, pressure: undefined })],
-  ["sideslip", (c) => Object.assign(c.freestream, { sideslip: "2 deg" })],
-  ["turbulence model", (c) => Object.assign(c.physics, { turbulence: { model: "sa" } })],
-  ["precision", (c) => Object.assign(c.physics, { precision: "fp64" })],
+const reynolds =
+  (re: number): Patch =>
+  (c) => {
+    const { pressure: _, ...rest } = c.freestream;
+    c.freestream = { ...rest, re } as unknown as typeof c.freestream;
+  };
+const same: Patch = () => {};
+
+// Each setting alone, A and B otherwise equal: they solve different problems.
+test.each<[string, Patch, Patch]>([
+  ["Reynolds number", reynolds(5e6), reynolds(6e6)],
+  ["sideslip", same, (c) => Object.assign(c.freestream, { sideslip: "2 deg" })],
+  ["turbulence model", same, (c) => Object.assign(c.physics, { turbulence: { model: "sa" } })],
+  ["precision", same, (c) => Object.assign(c.physics, { precision: "fp64" })],
   [
     "boundary condition",
+    same,
     (c) => Object.assign(c.boundaries[0] ?? {}, { condition: { kind: "symmetry" } }),
   ],
-  ["reference area", (c) => Object.assign(c.monitors[0] ?? {}, { ref_area: "2 m ** 2" })],
-  ["monitored surfaces", (c) => Object.assign(c.monitors[0] ?? {}, { surfaces: "wing.*" })],
-])("a different %s is another series", (_, patch) => {
-  expect(polars([compared("A"), compared("B", patch)]).series).toHaveLength(2);
+  ["reference area", same, (c) => Object.assign(c.monitors[0] ?? {}, { ref_area: "2 m ** 2" })],
+  ["monitored surfaces", same, (c) => Object.assign(c.monitors[0] ?? {}, { surfaces: "wing.*" })],
+])("a different %s is another series", (_, a, b) => {
+  expect(polars([compared("A", a), compared("B", b)]).series).toHaveLength(2);
 });
 
 test("another mesh is another series, named by its hash", () => {
@@ -104,17 +113,23 @@ test("another mesh is another series, named by its hash", () => {
 });
 
 test("names, budgets and other monitors do not split a series", () => {
+  // B's coefficients come from its second monitor, "lift", on the same wall as A's "forces".
   const result = polars([
     compared("A"),
-    compared("B", (c) => {
-      c.name = "naca0012-again";
-      c.mesh = "copy-of-naca.cgns";
-      c.time.max_iterations = 2000;
-      c.monitors = [
-        { kind: "forces", name: "lift", surfaces: "wall", ref_area: "1 m ** 2", every: 7 },
-        { kind: "forces", name: "loads", surfaces: "flap", ref_area: "1 m ** 2", every: 3 },
-      ];
-    }),
+    compared(
+      "B",
+      (c) => {
+        c.name = "naca0012-again";
+        c.mesh = "copy-of-naca.cgns";
+        c.time.max_iterations = 2000;
+        c.monitors = [
+          { kind: "forces", name: "loads", surfaces: "flap", ref_area: "1 m ** 2", every: 3 },
+          { kind: "forces", name: "lift", surfaces: "wall", ref_area: "1 m ** 2", every: 7 },
+        ];
+      },
+      undefined,
+      { monitors: { lift: { cl: 0.1, cd: 0.01, iteration: 9 } } as unknown as Run["monitors"] },
+    ),
   ]);
   expect(result.series).toHaveLength(1);
 });

@@ -20,17 +20,26 @@ function extent(values: number[]): [number, number] {
 }
 
 // About five round steps (1, 2 or 5 times a power of ten) over [low, high], each written with
-// the decimals its step needs, so that neighbouring ticks never read the same.
+// the digits its step needs, so that neighbouring ticks never read the same: decimals for
+// everyday magnitudes, an exponent for very small or large ones.
 function ticks(low: number, high: number): { value: number; text: string }[] {
   const raw = (high - low) / 5;
   const power = 10 ** Math.floor(Math.log10(raw));
   const step = ([1, 2, 5, 10].find((m) => m * power >= raw) ?? 10) * power;
-  const decimals = Math.min(15, Math.max(0, -Math.floor(Math.log10(step))));
+  const order = Math.floor(Math.log10(step));
   const first = Math.ceil(low / step);
   const count = Math.min(20, Math.floor(high / step) - first + 1);
+  const largest = Math.max(Math.abs(low), Math.abs(high));
+  const scientific = largest < 1e-4 || largest >= 1e7;
+  const write = (v: number) =>
+    v === 0
+      ? "0"
+      : scientific
+        ? v.toExponential(Math.min(15, Math.max(0, Math.floor(Math.log10(Math.abs(v))) - order)))
+        : v.toFixed(Math.max(0, -order));
   return Array.from({ length: Math.max(0, count) }, (_, k) => {
     const value = (first + k) * step;
-    return { value, text: (Math.abs(value) < step / 2 ? 0 : value).toFixed(decimals) };
+    return { value, text: write(Math.abs(value) < step / 2 ? 0 : value) };
   });
 }
 

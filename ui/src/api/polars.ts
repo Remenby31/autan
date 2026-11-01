@@ -26,6 +26,8 @@ export interface PolarRun {
   role: string;
   run: Run | undefined;
   case: CaseDocument | undefined;
+  /** Its case is still being read: neither drawn nor reported yet. */
+  pending?: boolean;
 }
 
 export interface PolarPoint {
@@ -104,7 +106,8 @@ function problem(run: Run, document: CaseDocument, monitor: string): Map<string,
 export function polars(compared: PolarRun[]): Polars {
   const unplotted: Polars["unplotted"] = [];
   const groups = new Map<string, { settings: Map<string, string>; points: PolarPoint[] }>();
-  for (const { id, role, run, case: document } of compared) {
+  for (const { id, role, run, case: document, pending } of compared) {
+    if (pending) continue;
     if (!run || !document) {
       unplotted.push({ id, role, reason: "not available" });
       continue;
