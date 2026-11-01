@@ -25,6 +25,9 @@ class Gate:
     relative `norm` error of each field at most `upper` epsilons of the run precision, on every
     run). `fields` None means every field the run writes. `time` and `domain` are prerequisites:
     every run must reach that physical time, and the mesh must span `domain` (per axis, min and max).
+    With `upper_blocks` False, an order above `upper` is a warning, and above `investigate_above` the
+    verdict asks for an explanation; neither fails the gate. With `monotone`, each field's error
+    must decrease strictly from every level to the next finer one.
     """
 
     id: str
@@ -37,6 +40,9 @@ class Gate:
     milestone: str
     time: float | None = None
     domain: tuple[tuple[float, float], ...] | None = None
+    upper_blocks: bool = True
+    investigate_above: float | None = None
+    monotone: bool = False
 
 
 PRESERVED = 64.0
@@ -47,7 +53,19 @@ GATES: dict[str, Gate] = {
         Gate(
             "freestream-preservation", ("freestream",), "max-error", "Linf", None, 0.0, 64.0, "M2"
         ),
-        Gate("euler-mms-order", ("mms-euler",), "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
+        Gate(
+            "euler-mms-order",
+            ("mms-euler",),
+            "order",
+            "L2",
+            CONSERVED,
+            1.9,
+            2.1,
+            "M2",
+            upper_blocks=False,
+            investigate_above=2.6,
+            monotone=True,
+        ),
         Gate("ringleb-order", ("ringleb",), "order", "L2", ("Density", "Entropy"), 1.9, 2.1, "M2"),
         Gate(
             "vortex-order",

@@ -19,7 +19,7 @@ from autan.results import field_names
 from autan.units import K, Pa, kg, m, mol, s
 from autan_vv.cli import main
 from autan_vv.errors import VVError
-from autan_vv.gates import GATES
+from autan_vv.gates import GATES, Gate
 from autan_vv.harness import UNIVERSAL_GAS_CONSTANT, read_geometry, verify
 from autan_vv.meshes.facemesh import FaceMesh
 from autan_vv.meshes.families import cartesian, generate_family
@@ -146,6 +146,29 @@ def test_order_gate_recovers_the_order_of_the_error(
         len(r["mesh_sha256"]) == 64 and len(r["solver_commit"]) == 40 for r in report["runs"]
     )
     assert all(not autan.Results.open(p).run.deterministic for p in runs)
+
+
+@pytest.mark.parametrize(("order", "investigate"), [(2.4, False), (2.8, True)])
+def test_euler_order_gate_warns_above_its_upper_bound(
+    tmp_path: Path, order: float, investigate: bool
+) -> None:
+    runs = _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), "mms-euler", order)
+    verdict = verify(runs, "mms-euler", "euler-mms-order")["verdict"]
+    assert verdict["pass"], verdict["checks"]
+    assert "rho: order above 2.1" in verdict["warnings"]
+    assert verdict["investigate"] is investigate
+
+
+def test_euler_order_gate_needs_errors_decreasing_with_refinement(tmp_path: Path) -> None:
+    # The second level's error, 2.5 times too large, exceeds the first's; the orders stay >= 1.9.
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12, 16))
+    runs = _runs(tmp_path / "a", meshes, "mms-euler", 2.0)
+    (louder,) = _runs(tmp_path / "b", meshes[1:2], "mms-euler", 2.0, amplitude=0.125)
+    verdict = verify([runs[0], louder, *runs[2:]], "mms-euler", "euler-mms-order")["verdict"]
+    rho = next(c for c in verdict["checks"] if c.get("field") == "rho")
+    assert min(rho["fitted_order"], rho["finest_pair_order"]) >= 1.9
+    assert rho["errors_decrease"] is False
+    assert not rho["pass"]
 
 
 def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(tmp_path: Path) -> None:
@@ -308,7 +331,12 @@ def test_every_gate_is_stated_in_acceptance_md() -> None:
             assert gate.upper in numbers, gate.id
 
 
-def test_a_non_finite_error_fails_the_gate_instead_of_being_dropped(tmp_path: Path) -> None:
+def test_a_non_finite_error_fails_the_gate_instead_of_being_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A gate on entropy, the field a negative density makes non-finite.
+    gate = Gate("entropy-order", ("mms-euler",), "order", "L2", ("Entropy",), 1.9, 2.1, "M2")
+    monkeypatch.setitem(GATES, gate.id, gate)
     meshes = _family(tmp_path, "hex", (4, 6, 8, 12, 16))
     runs = _runs(tmp_path, meshes[1:], "mms-euler", 2.0)
     mesh, path, fmt = meshes[0]
@@ -329,7 +357,7 @@ def test_a_non_finite_error_fails_the_gate_instead_of_being_dropped(tmp_path: Pa
                 "--against",
                 "mms-euler",
                 "--gate",
-                "euler-mms-order",
+                "entropy-order",
             ]
         )
 

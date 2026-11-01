@@ -25,7 +25,7 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | Criterion | Threshold | Source |
 |---|---|---|
 | Freestream preservation, gate `freestream-preservation` | uniform freestream kept to L∞ ≤ 64 ε of the run precision, relative, in every field, on every cell family | Discrete conservation of a constant state (closed cells) |
-| MMS `euler`, gate `euler-mms-order` | L2 order 2 ± 0.1 for each conserved variable, 4 cell families, Roe, HLLC, AUSM+-up, FP32 and FP64 | Roy et al. 2004 (design order); [datasets §M2](../research/validation-datasets.md#m2--compressible-euler) |
+| MMS `euler`, gate `euler-mms-order` | L2 order ≥ 1.9 (fit and finest pair) for each conserved variable, errors decreasing strictly from level to level, 4 cell families, Roe, HLLC, AUSM+-up, FP32 and FP64; above 2.1 a warning, above 2.6 the PR explains it | Roy et al. 2004 (design order); [datasets §M2](../research/validation-datasets.md#m2--compressible-euler). *Ours* (lead, 2026-11-01): non-nested families supraconverge (polyhedral duals reach 2.5, as in M1), so only the lower bound blocks |
 | Ringleb flow, gate `ringleb-order` | L2 order 2 ± 0.1 in density and entropy | HiOCFD1 C1.2; datasets §M2 |
 | Isentropic vortex, one period (t = 40 at Mach 0.5), domain [−10, 10]², gate `vortex-order` | spatial order 2 ± 0.1 for each conserved variable; temporal order = RK order ± 0.1 | Spiegel, Huynh and DeBonis, AIAA 2015-2444 |
 | Sod shock tube, gate `sod-order` | density L1 order between 0.6 and 1.1 | Banks, Aslam and Rider 2008 (between 2/3 and 1 for a contact); *ours*: 0.6 and 1.1 allow ±0.1 of fitting noise |
