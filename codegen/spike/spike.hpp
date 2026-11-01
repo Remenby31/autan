@@ -26,6 +26,14 @@ struct SpikeMesh {
   autan::kernels::CellStencil stencil;
   autan::kernels::Topology topo{};
   std::vector<std::int64_t> face_global_id;  ///< partitions: face of the global mesh
+  std::vector<std::uint8_t> face_reversed;   ///< partitions: LocalPartition::face_reversed
+  /// Set by autan_spike_set_global_order: keys and the incidence order they give.
+  std::vector<std::int64_t> cell_key, face_key;
+  autan::kernels::GlobalOrder order;
+  bool global = false;
+  [[nodiscard]] autan::kernels::GlobalKeys keys() const {
+    return {cell_key, face_key, face_reversed};
+  }
 };
 
 inline int fail(char* err, std::size_t len, std::string_view code, std::string_view what) {

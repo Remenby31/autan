@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -32,7 +33,29 @@ struct PackedGeometry {
   std::vector<double> stencil_lsq_weight;
 };
 
-PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry);
+/// The global numbering of a partition (LocalPartition: Mesh::cell_global_id, face_global_id,
+/// face_reversed), so that what a cell sums or a face computes does not depend on how the mesh
+/// was partitioned: bit-for-bit results across rank counts (runtime.md, Ranks).
+struct GlobalKeys {
+  std::span<const std::int64_t> cell;      ///< global id of each local cell
+  std::span<const std::int64_t> face;      ///< global id of each local face
+  std::span<const std::uint8_t> reversed;  ///< 1 where a local face runs against its global one
+};
+
+/// Without `keys`, as the mesh is numbered. With them: face moments computed in each face's
+/// global orientation from a canonical fan start (the node of smallest coordinates) then signed
+/// for the local orientation, and lsq_weight in the incidence order of global_order(mesh, keys).
+PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& geometry,
+                             const GlobalKeys* keys = nullptr);
+
+/// Each cell's faces ordered by global face id (Topology::cell_faces) and their incidence twins
+/// (Topology::incidence_twin): a gather over a cell's faces then adds them in the same order on
+/// every rank count.
+struct GlobalOrder {
+  std::vector<index_t> cell_faces;
+  std::vector<offset_t> twin;
+};
+GlobalOrder global_order(const Mesh& mesh, const GlobalKeys& keys);
 
 /// Topology of `mesh`; `incidence_twin` stays null (set it from incidence_twins()).
 [[nodiscard]] Topology topology(const MeshView& mesh) noexcept;
@@ -63,7 +86,10 @@ struct CellStencil {
   std::vector<double> stencil_lsq_weight;
 };
 
-CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind);
+/// With `keys`, a cell's entries are its stencil cells by global cell id, then its boundary faces
+/// by global face id, and the LSQ weights are summed in that order.
+CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind,
+                         const GlobalKeys* keys = nullptr);
 
 /// Copy of `v` converted to T (the storage type of a precision role).
 template <class T>

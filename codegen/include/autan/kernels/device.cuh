@@ -123,6 +123,10 @@ class DeviceMesh {
     int face_scratch_width = 0;       ///< components per face of the widest store-gather loop
     int incidence_scratch_width = 0;  ///< per entry, of the widest deterministic reduction adjoint
     stream_t stream = nullptr;
+    /// The partition's global numbering (incidences by global face id, reversed faces evaluated
+    /// in their global orientation), for results that do not depend on the partition; the
+    /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
+    const GlobalKeys* global = nullptr;
   };
 
   /// `stencil` may be null (no stencil reductions); it is copied.
@@ -130,7 +134,14 @@ class DeviceMesh {
              Options options)
       : geometry_(geometry), stream_(options.stream) {
     Topology host = kernels::topology(mesh.view());
-    const auto twins = incidence_twins(mesh);
+    GlobalOrder order;
+    if (options.global != nullptr) {
+      order = global_order(mesh, *options.global);
+      host.cell_faces = order.cell_faces.data();
+    } else {
+      order.twin = incidence_twins(mesh);
+    }
+    const auto& twins = order.twin;
     host.incidence_twin = twins.data();
     if (stencil != nullptr) {
       stencil_ = *stencil;
@@ -156,6 +167,10 @@ class DeviceMesh {
     topo_.cell_face_offsets = offsets_.get();
     topo_.cell_faces = cell_faces_.get();
     topo_.incidence_twin = twin_.get();
+    if (options.global != nullptr && !options.global->reversed.empty()) {
+      reversed_ = copy(options.global->reversed);
+      topo_.face_reversed = reversed_.get();
+    }
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
       stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));
@@ -255,6 +270,7 @@ class DeviceMesh {
   stream_t stream_;
   DeviceArray<index_t> owner_, neighbour_, cell_faces_, interior_faces_, boundary_faces_;
   DeviceArray<offset_t> offsets_, twin_;
+  DeviceArray<std::uint8_t> reversed_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
   DeviceArray<index_t> stencil_entries_;
   HostColouring interior_, boundary_;

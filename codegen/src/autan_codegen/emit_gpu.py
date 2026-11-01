@@ -15,6 +15,8 @@ from autan_codegen.emit_cpp import Emitter, at, call_args
 from autan_codegen.emit_cpu import (
     boundary_write_body,
     cell_stores,
+    face_ends,
+    global_left,
     jacobian_lines,
     n_out,
     offsets,
@@ -39,10 +41,11 @@ def _range(lm: LoopModel) -> tuple[str, str]:
 def _face_eval(lm: LoopModel, indent: str, jac: str | None = "true") -> list[str]:
     """Loads l (and r), evaluates the body of face f into `out`, and writes the face's Jacobian
     outputs when `jac` (a C++ condition; None: never) holds."""
-    lines = [f"{indent}const index_t l = d.topo.owner[f];"]
-    if lm.kind == "face":
-        lines.append(f"{indent}const index_t r = d.topo.neighbour[f];")
-    args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"})
+    lines = face_ends(lm.kind, indent)
+    args = call_args(
+        lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"},
+        reversible=lm.kind == "face",
+    )  # fmt: skip
     lines.append(f"{indent}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
     if lm.jac_fns and jac is not None:
         if jac == "true":
@@ -212,7 +215,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
                     else "    out[0] = scratch[f];"
                 )
             if lm.kind == "face":
-                e.w("    const bool left = d.topo.owner[f] == c;")
+                e.w(f"    const bool left = {global_left()} == c;")
         else:
             e.w(f"    typename P::compute out[{n}];")
             for s in _face_eval(lm, "    ", "l == c"):

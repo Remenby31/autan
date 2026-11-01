@@ -425,8 +425,8 @@ void gradients(const SpikeMesh& m, const char* method, const double* q, const do
 }
 
 template <class P>
-void advection(const SpikeMesh& m, const double* q, const double* grad, const double* velocity,
-               double* res) {
+void advection(const SpikeMesh& m, std::string_view strategy, const double* q, const double* grad,
+               const double* velocity, double* res) {
   namespace av = autan::kernels::advection;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   GeomCopy<P> g(m.packed);
@@ -445,7 +445,11 @@ void advection(const SpikeMesh& m, const double* q, const double* grad, const do
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
-  av::cpu::residual(d);
+  if (strategy == "scatter") {
+    av::cpu::residual(d);
+  } else {
+    av::cpu::residual(d, autan::kernels::strategy_of(strategy));
+  }
   copy_out(rs, res);
 }
 
@@ -460,7 +464,7 @@ int dispatch(const char* policy, char* err, std::size_t len, F&& f) {
 
 std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh, autan::Geometry geometry) {
   auto m = std::make_unique<SpikeMesh>(
-      SpikeMesh{std::move(mesh), std::move(geometry), {}, {}, {}, {}, {}});
+      SpikeMesh{.mesh = std::move(mesh), .geometry = std::move(geometry)});
   m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
   m->topo = autan::kernels::topology(m->mesh.view());
   m->twins = autan::kernels::incidence_twins(m->mesh);
@@ -547,7 +551,49 @@ int autan_spike_mesh_partition(const void* global, const std::int32_t* parts, st
     }
     auto m = finish(std::move(lp.mesh), std::move(lg));
     m->face_global_id = std::move(lp.face_global_id);
+    m->face_reversed = std::move(lp.face_reversed);
     *out = m.release();
+  });
+}
+
+/// Orders the mesh by its global numbering (autan::kernels::GlobalKeys): incidences by global
+/// face id, incidence LSQ weights and face moments recomputed accordingly, reversed faces evaluated
+/// in their global orientation, and the cell stencil of `stencil_kind` (0 vertex, 1 face2, -1
+/// none) by global keys. Results then do not depend on the partition.
+int autan_spike_set_global_order(void* mesh, int stencil_kind, char* err, std::size_t err_len) {
+  auto* m = static_cast<SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto nc = static_cast<std::size_t>(m->mesh.n_cells());
+    const auto nf = static_cast<std::size_t>(m->mesh.n_faces());
+    const auto gid = m->mesh.cell_global_id();
+    m->cell_key.resize(nc);
+    m->face_key.resize(nf);
+    for (std::size_t c = 0; c < nc; ++c) {
+      m->cell_key[c] = gid.empty() ? static_cast<std::int64_t>(c) : gid[c];
+    }
+    for (std::size_t f = 0; f < nf; ++f) {
+      m->face_key[f] =
+          m->face_global_id.empty() ? static_cast<std::int64_t>(f) : m->face_global_id[f];
+    }
+    const auto keys = m->keys();
+    m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry, &keys);
+    m->order = autan::kernels::global_order(m->mesh, keys);
+    m->topo.cell_faces = m->order.cell_faces.data();
+    m->topo.incidence_twin = m->order.twin.data();
+    m->topo.face_reversed = m->face_reversed.empty() ? nullptr : m->face_reversed.data();
+    m->global = true;
+    if (stencil_kind >= 0) {
+      m->stencil =
+          autan::kernels::cell_stencil(m->mesh, m->packed,
+                                       stencil_kind == 0 ? autan::kernels::StencilKind::vertex
+                                                         : autan::kernels::StencilKind::face2,
+                                       &keys);
+      m->packed.stencil_lsq_weight = m->stencil.lsq_weight;
+      m->topo.n_stencil = static_cast<offset_t>(m->stencil.entries.size());
+      m->topo.stencil_offsets = m->stencil.offsets.data();
+      m->topo.stencil = m->stencil.entries.data();
+      m->topo.stencil_twin = m->stencil.twin.data();
+    }
   });
 }
 
@@ -734,11 +780,14 @@ int autan_spike_lsq_bounds_derivative(const void* mesh, const char* policy, int 
   });
 }
 
-int autan_spike_advection(const void* mesh, const char* policy, const double* q, const double* grad,
-                          const double* velocity, double* res, char* err, std::size_t err_len) {
+/// `strategy`: "scatter" (the face loop) or a strategy name (store-gather and gather-recompute
+/// gather per cell in Topology::cell_faces order).
+int autan_spike_advection(const void* mesh, const char* policy, const char* strategy,
+                          const double* q, const double* grad, const double* velocity, double* res,
+                          char* err, std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len, [&](auto p) {
-    autan::spike::advection<decltype(p)>(*m, q, grad, velocity, res);
+    autan::spike::advection<decltype(p)>(*m, strategy, q, grad, velocity, res);
   });
 }
 

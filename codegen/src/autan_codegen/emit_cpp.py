@@ -201,14 +201,22 @@ def emit_data_struct(e: Emitter, m: Module) -> None:
     e.w()
 
 
+# Built-in face geometry that changes with the face's orientation: negated, or swapped in pairs.
+ORIENTED = {"face_area", "face_normal", "face_moment"}
+SWAPPED = {"face_r_left": "face_r_right", "face_r_right": "face_r_left"}
+
+
 def call_args(
     sig: Signature,
     bindings: dict[str, dsl.Binding],
     index_of: dict[str, str],
     skip: int = 0,
     layout: str = "soa",
+    reversible: bool = False,
 ) -> list[str]:
-    """Loads of each scalar argument; `index_of[via]` is the index expression of that binding."""
+    """Loads of each scalar argument; `index_of[via]` is the index expression of that binding.
+    With `reversible`, face geometry is read in the face's global orientation when the C++
+    boolean `rev` holds (Topology::face_reversed)."""
     out = []
     for name, t in zip(sig.names[skip:], sig.types[skip:], strict=True):
         b = bindings[name]
@@ -229,7 +237,15 @@ def call_args(
                     and "face" in index_of
                 ):
                     via = "face"
-                out.append(at(b.dataset, index_of[via], c, layout))
+                load = at(b.dataset, index_of[via], c, layout)
+                ds = b.dataset
+                if reversible and isinstance(ds, dsl.Dataset) and ds.geometry:
+                    if ds.name in ORIENTED:
+                        load = f"(rev ? -{load} : {load})"
+                    elif ds.name in SWAPPED:
+                        other = getattr(dsl.geometry, SWAPPED[ds.name])
+                        load = f"(rev ? {at(other, index_of[via], c, layout)} : {load})"
+                out.append(load)
     return out
 
 
