@@ -1,16 +1,16 @@
 ---
-source_hash: "23cd8f754ccc"
+source_hash: "2c010879edb6"
 ---
 
 # Calculs
 
-Un calcul est une exécution d'un cas sur un maillage. Il écrit un répertoire avec ses résultats et ce qui les identifie : le cas tel qu'exécuté, le hash du maillage et le commit du solveur. Sa structure est le [contrat de résultats](../contracts/results.md) ; `autan.Results` le lit.
+Un calcul est une exécution d'un cas sur un maillage. Il écrit un répertoire avec ses résultats et ce qui les identifie : le cas tel qu'exécuté, le hash du maillage et le commit du solveur. Le runtime du solveur `autan-run` et le backend `fake` du SDK écrivent la même structure, le [contrat de résultats](../contracts/results.md) ; `autan.Results` le lit.
 
 ## États d'un calcul
 
 ![États d'un calcul](../assets/diagrams/run-lifecycle.svg)
 
-`autan plan` passe d'abord. S'il trouve une erreur, rien n'est écrit. Sinon le calcul démarre dans l'état `running` et se termine dans un seul état :
+`autan plan` passe d'abord. S'il trouve une erreur, rien n'est écrit ; `autan-run` n'écrit rien non plus quand sa version compilée ne prend pas en charge la physique du cas (`E0706`). Sinon le calcul démarre dans l'état `running` et se termine dans un seul état :
 
 | État | Signification |
 |---|---|
