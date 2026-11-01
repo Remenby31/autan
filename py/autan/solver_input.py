@@ -216,9 +216,12 @@ class StatesRef(_Strict):
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
+Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
+
+
 class PointVortexInput(_Strict):
     zones: Annotated[tuple[str, ...], Field(min_length=1)]
-    center: Vector
+    center: tuple[Coordinate, Coordinate, Coordinate]
 
 
 class BoundaryInput(_Strict):
