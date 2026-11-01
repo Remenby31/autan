@@ -9,8 +9,11 @@ from typing import TYPE_CHECKING, Any
 import autan
 import numpy as np
 from autan import cgns
+from autan.results import field_names
 from autan.schema import (
+    DDES,
     SA,
+    SST,
     Compressible,
     ConstantViscosity,
     IdealGas,
@@ -21,7 +24,7 @@ from autan.schema import (
 from autan.units import si
 
 from autan_vv.errors import VVError
-from autan_vv.gates import GATES, Gate
+from autan_vv.gates import CONSERVED, FLOOR_FACTOR, GATES, MIN_LEVELS, PRESERVED, Gate
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, Zone
 from autan_vv.oracles import Oracle, conserved
 from autan_vv.oracles.registry import get_oracle
@@ -46,6 +49,14 @@ def read_geometry(results: autan.Results) -> FaceMesh:
     A positive face id in a cell's NFACE list means the face normal points out of that cell
     (results.md); that cell becomes the face's owner. Cell i is NFACE element F + 1 + i.
     """
+    try:
+        return _read_geometry(results)
+    except (KeyError, IndexError, ValueError) as exc:
+        msg = f"cannot rebuild the geometry of {results.path.name}: {exc}"
+        raise VVError(msg, code="V0721") from exc
+
+
+def _read_geometry(results: autan.Results) -> FaceMesh:
     zone = cgns.read(results.path / "solution.cgns").child("Base").child("Zone")
     coords = zone.child("GridCoordinates")
     points = np.column_stack(
@@ -65,6 +76,9 @@ def read_geometry(results: autan.Results) -> FaceMesh:
     owner[face[outward]] = cell_of[outward]
     neighbour[face[~outward]] = cell_of[~outward]
     flip = owner < 0  # a face referenced only inward: reverse it so that its only cell owns it
+    if np.any(face_nodes < 0) or np.any(face_nodes >= points.shape[0]) or np.any(face >= n_faces):
+        msg = "a face or node index is out of range"
+        raise VVError(msg, code="V0721")
     if np.any(owner < 0) and np.any(neighbour[flip] < 0):
         msg = "a face belongs to no cell"
         raise VVError(msg, code="V0721")
@@ -89,11 +103,23 @@ def read_geometry(results: autan.Results) -> FaceMesh:
     return mesh
 
 
+def _viscosity(gas: IdealGas, temperature: float) -> float:
+    """Dynamic viscosity of the gas at `temperature` (constant, or Sutherland's law)."""
+    law = gas.viscosity
+    if isinstance(law, ConstantViscosity):
+        return float(si(law.mu, "Pa * s"))
+    t_ref, s = si(law.t_ref, "K"), si(law.s, "K")
+    return float(
+        si(law.mu_ref, "Pa * s") * (temperature / t_ref) ** 1.5 * (t_ref + s) / (temperature + s)
+    )
+
+
 def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
     """The uniform freestream state of a compressible case (case-schema.md, Freestream; T defaults to 288.15 K).
 
     With `pressure`: rho = p/(R T). With `re`: rho = Re mu(T)/(V L) and p = rho R T. V = M sqrt(gamma R T),
-    direction (cos a cos b, -sin b, sin a cos b).
+    direction (cos a cos b, -sin b, sin a cos b). Turbulence (case-schema.md, Physics): SA nu~ =
+    ratio mu/rho; SST k = 1.5 (I V)^2, omega = rho k/(ratio mu).
     """
     physics = spec.physics
     if not isinstance(physics, Compressible) or not isinstance(physics.gas, IdealGas):
@@ -112,17 +138,7 @@ def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
         pressure = si(fs.pressure, "Pa")
         density = pressure / (r * temperature)
     else:
-        law = gas.viscosity
-        if isinstance(law, ConstantViscosity):
-            mu = si(law.mu, "Pa * s")
-        else:
-            t_ref, s = si(law.t_ref, "K"), si(law.s, "K")
-            mu = (
-                si(law.mu_ref, "Pa * s")
-                * (temperature / t_ref) ** 1.5
-                * (t_ref + s)
-                / (temperature + s)
-            )
+        mu = _viscosity(gas, temperature)
         assert fs.re is not None
         assert fs.ref_length is not None
         density = fs.re * mu / (speed * si(fs.ref_length, "m"))
@@ -131,6 +147,17 @@ def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
     velocity = speed * np.array(
         [math.cos(a) * math.cos(b), -math.sin(b), math.sin(a) * math.cos(b)]
     )
+
+    mu = _viscosity(gas, temperature)
+    turbulence = physics.turbulence
+    base = turbulence.base if isinstance(turbulence, DDES) else turbulence
+    extra: dict[str, float] = {}
+    if isinstance(base, SA):
+        extra["TurbulentSANuTilde"] = base.nu_tilde_ratio * mu / density
+    elif isinstance(base, SST):
+        k = 1.5 * (base.intensity * speed) ** 2
+        extra["TurbulentEnergyKinetic"] = k
+        extra["TurbulentDissipationRate"] = density * k / (base.viscosity_ratio * mu)
 
     def evaluate(points: FloatArray, _t: float | None) -> dict[str, FloatArray]:
         one = np.ones(points.shape[0])
@@ -141,9 +168,8 @@ def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
             "VelocityZ": velocity[2] * one,
             "Pressure": pressure * one,
             "Temperature": temperature * one,
-        }
+        } | {name: value * one for name, value in extra.items()}
 
-    turbulence = physics.turbulence
     kind = (
         "euler"
         if isinstance(turbulence, Inviscid)
@@ -178,14 +204,26 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
             reasons.append(
                 f"physics {physics.kind}/{physics.turbulence.model}, oracle needs {oracle.physics}"
             )
-        elif isinstance(physics.gas, IdealGas):
-            r = UNIVERSAL_GAS_CONSTANT / si(physics.gas.molar_mass, "kg / mol")
-            if not math.isclose(physics.gas.gamma, oracle.gamma, rel_tol=1e-12):
-                reasons.append(f"gamma {physics.gas.gamma}, oracle uses {oracle.gamma}")
+        else:
+            gas = physics.gas
+            r = UNIVERSAL_GAS_CONSTANT / si(gas.molar_mass, "kg / mol")
+            if not math.isclose(gas.gamma, oracle.gamma, rel_tol=1e-12):
+                reasons.append(f"gamma {gas.gamma}, oracle uses {oracle.gamma}")
             if not math.isclose(r, oracle.gas_constant, rel_tol=1e-9):
                 reasons.append(
                     f"gas constant {r:.9g} J/(kg K), oracle uses {oracle.gas_constant:.9g}"
                 )
+            if oracle.physics != "euler":
+                viscosity = oracle.parameters.get("viscosity")
+                law = gas.viscosity
+                if viscosity is not None and not (
+                    isinstance(law, ConstantViscosity)
+                    and math.isclose(si(law.mu, "Pa * s"), viscosity, rel_tol=1e-12)
+                ):
+                    reasons.append(f"oracle assumes a constant viscosity {viscosity} Pa s")
+                prandtl = oracle.parameters.get("prandtl")
+                if prandtl is not None and not math.isclose(gas.prandtl, prandtl, rel_tol=1e-12):
+                    reasons.append(f"Prandtl number {gas.prandtl}, oracle uses {prandtl}")
     if oracle.physics == "incompressible-navier-stokes" and not isinstance(physics, Incompressible):
         reasons.append("oracle needs an incompressible case")
     if oracle.unsteady and results.run.time is None:
@@ -195,24 +233,40 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
 
 @dataclass(frozen=True)
 class RunErrors:
-    """Errors of one run against the oracle, with the run's provenance."""
+    """Errors of one run against the oracle, with the run's provenance and mesh extent."""
 
     provenance: dict[str, Any]
     n_cells: int
     volume: float
     h: float
+    bounds: tuple[tuple[float, float], ...]
     errors: dict[str, dict[str, float]]
 
 
 def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
-    """Total volume and mesh size along the oracle's axes: the mesh must be one cell thick along the
-    other directions (V0723), and h = (V / (their extent) / N)^(1/len(axes))."""
+    """Total volume and mesh size along the oracle's axes. Along every other direction each cell must
+    span the whole mesh thickness, one layer (V0723); h = (V / (their extent) / N)^(1/len(axes))."""
     g = mesh.geometry
     volume = float(g.cell_volume.sum())
     span = 1.0
+    cell_of_node = np.repeat(mesh.owner, np.diff(mesh.face_offsets))
+    nb = np.repeat(mesh.neighbour, np.diff(mesh.face_offsets)[: mesh.n_interior])
     for axis in sorted(set(range(3)) - set(axes)):
-        extent = float(np.ptp(mesh.points[:, axis]))
-        if np.ptp(g.cell_centroid[:, axis]) > 1e-9 * max(extent, 1.0):
+        coord = mesh.points[:, axis]
+        lo, hi = float(coord.min()), float(coord.max())
+        extent = hi - lo
+        values = coord[mesh.face_nodes]
+        cell_min = np.full(mesh.n_cells, np.inf)
+        cell_max = np.full(mesh.n_cells, -np.inf)
+        for cells, vals in ((cell_of_node, values), (nb, values[: nb.size])):
+            np.minimum.at(cell_min, cells, vals)
+            np.maximum.at(cell_max, cells, vals)
+        one_layer = (
+            extent > 0
+            and np.all(cell_min - lo <= 1e-9 * extent)
+            and np.all(hi - cell_max <= 1e-9 * extent)
+        )
+        if not one_layer:
             msg = f"the oracle varies along {[('xyz')[a] for a in axes]}: the mesh must be one cell thick along {'xyz'[axis]}"
             raise VVError(msg, code="V0723")
         span *= extent
@@ -220,15 +274,23 @@ def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
 
 
 def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
-    """L1, L2 (volume-weighted) and L-infinity errors of every field the oracle and run share."""
+    """L1, L2 (volume-weighted) and L-infinity errors of every field the oracle and run share.
+
+    The run's cell values are compared with the oracle at the cell centroids (the difference from a
+    cell average is O(h^2), which leaves second-order observed orders unchanged).
+    """
     reasons = _check_compatible(results, oracle)
     if reasons:
         msg = f"run {results.run.run_id} cannot be verified against {oracle.name}: {'; '.join(reasons)}"
         raise VVError(msg, code="V0724")
+    names = field_names(results.case)
+    run = {
+        name: results.field(name) for name in names
+    }  # the Results API checks solution.cgns first
     mesh = read_geometry(results)
     g = mesh.geometry
     exact = oracle.fields(g.cell_centroid, results.run.time)
-    run = {name: results.field(name) for name in exact if name in _field_names(results)}
+    run = {name: value for name, value in run.items() if name in exact}
     if math.isfinite(oracle.gamma) and all(n in run for n in ("Density", "VelocityX", "Pressure")):
         exact |= conserved(exact, oracle.gamma)
         run |= conserved(run, oracle.gamma)
@@ -258,48 +320,109 @@ def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
         "mesh_sha256": run_info.mesh.sha256,
         "time": run_info.time,
     }
-    return RunErrors(provenance, mesh.n_cells, volume, h, errors)
+    bounds = tuple(
+        (float(mesh.points[:, a].min()), float(mesh.points[:, a].max())) for a in range(3)
+    )
+    return RunErrors(provenance, mesh.n_cells, volume, h, bounds, errors)
 
 
-def _field_names(results: autan.Results) -> set[str]:
-    from autan.results import field_names  # noqa: PLC0415
+GROUPS = (("rhou", "rhov", "rhow"), ("VelocityX", "VelocityY", "VelocityZ"))
 
-    return set(field_names(results.case))
+
+def _scale(run: RunErrors, name: str) -> float:
+    """Magnitude a field's error is measured against: the largest of its vector's components (so a
+    component the oracle makes zero is judged against the whole vector), and 1 for a zero field."""
+    group = next((g for g in GROUPS if name in g), (name,))
+    scale = max(run.errors[n]["scale"] for n in group if n in run.errors)
+    return scale if scale > 0.0 else 1.0
+
+
+def _family_problem(opened: list[autan.Results]) -> list[str]:
+    """Reasons runs cannot form one refinement family: one problem, one solver build, one time."""
+    reasons = []
+
+    def problem(results: autan.Results) -> dict[str, Any]:
+        doc: dict[str, Any] = results.case.model_dump(mode="json")
+        doc.pop("mesh", None)
+        doc.pop("name", None)
+        return doc
+
+    first = opened[0]
+    for results in opened[1:]:
+        if problem(results) != problem(first):
+            reasons.append(f"{results.run.run_id} solves a different case than {first.run.run_id}")
+        if (results.run.solver.commit, results.run.solver.backend) != (
+            first.run.solver.commit,
+            first.run.solver.backend,
+        ):
+            reasons.append(f"{results.run.run_id} comes from another solver build or backend")
+        t0, t1 = first.run.time, results.run.time
+        if (t0 is None) != (t1 is None) or (
+            t0 is not None and t1 is not None and not math.isclose(t0, t1, rel_tol=1e-12)
+        ):
+            reasons.append(f"{results.run.run_id} stops at another physical time")
+    return reasons
+
+
+def _fits(runs: list[RunErrors], eps: float) -> dict[str, dict[str, Any]]:
+    """Order of every norm of every field, over the levels whose relative error is at least 100 times
+    the rounding floor of the precision; fewer than two such levels give no fit."""
+    fits: dict[str, dict[str, Any]] = {}
+    for name in runs[0].errors:
+        fits[name] = {}
+        for norm in ("L1", "L2", "Linf"):
+            eligible = [
+                r for r in runs if r.errors[name][norm] >= FLOOR_FACTOR * eps * _scale(r, name)
+            ]
+            entry: dict[str, Any] = {"levels": len(eligible), "excluded": len(runs) - len(eligible)}
+            if len(eligible) >= 2:
+                fit = fit_order([r.h for r in eligible], [r.errors[name][norm] for r in eligible])
+                entry |= {
+                    "order": fit.order,
+                    "pairwise_orders": list(fit.pairwise_orders),
+                    "r_squared": fit.r_squared,
+                }
+            fits[name][norm] = entry
+    return fits
 
 
 def _gate_checks(
-    gate: Gate, runs: list[RunErrors], fits: dict[str, dict[str, Any]]
+    gate: Gate, runs: list[RunErrors], fits: dict[str, dict[str, Any]], eps: float
 ) -> list[dict[str, Any]]:
-    checks = []
-    for name in gate.fields:
-        if gate.measure == "order":
-            fit = fits.get(name, {}).get(gate.norm)
-            if fit is None:
-                checks.append({"field": name, "pass": False, "reason": "not measured"})
-                continue
-            fitted, finest = fit["order"], fit["pairwise_orders"][-1]
-            ok = all(gate.lower <= v <= gate.upper for v in (fitted, finest))
-            checks.append(
-                {
-                    "field": name,
-                    "fitted_order": fitted,
-                    "finest_pair_order": finest,
-                    "lower": gate.lower,
-                    "upper": gate.upper,
-                    "pass": ok,
-                }
-            )
-        else:
-            worst = (
-                max(
-                    r.errors[name][gate.norm]
-                    / max(r.errors[name]["scale"], 1e-300)
-                    / PRECISION_EPS[r.provenance["precision"]]
-                    for r in runs
-                )
-                if all(name in r.errors for r in runs)
-                else math.inf
-            )
+    checks: list[dict[str, Any]] = []
+    if gate.time is not None:
+        times = [r.provenance["time"] for r in runs]
+        ok = all(t is not None and math.isclose(t, gate.time, rel_tol=1e-9) for t in times)
+        checks.append(
+            {"prerequisite": "time", "required": gate.time, "measured": times, "pass": ok}
+        )
+    if gate.domain is not None:
+        ok = all(
+            math.isclose(r.bounds[a][0], lo, abs_tol=1e-9 * (hi - lo))
+            and math.isclose(r.bounds[a][1], hi, abs_tol=1e-9 * (hi - lo))
+            for r in runs
+            for a, (lo, hi) in enumerate(gate.domain)
+        )
+        checks.append(
+            {
+                "prerequisite": "domain",
+                "required": [list(d) for d in gate.domain],
+                "measured": [list(b) for b in runs[0].bounds[: len(gate.domain)]],
+                "pass": ok,
+            }
+        )
+    derived = (*CONSERVED, "Entropy")
+    names = (
+        gate.fields
+        if gate.fields is not None
+        else tuple(n for n in runs[0].errors if n not in derived)
+    )
+    for name in names:
+        if any(name not in r.errors for r in runs):
+            checks.append({"field": name, "pass": False, "reason": "not written by the runs"})
+            continue
+        worst = max(r.errors[name][gate.norm] / _scale(r, name) / eps for r in runs)
+        if gate.measure == "max-error":
             checks.append(
                 {
                     "field": name,
@@ -308,48 +431,93 @@ def _gate_checks(
                     "pass": worst <= gate.upper,
                 }
             )
+            continue
+        if all(r.errors[name]["scale"] == 0.0 for r in runs):
+            checks.append(
+                {
+                    "field": name,
+                    "identically_zero": True,
+                    "max_relative_error_in_eps": worst,
+                    "upper": PRESERVED,
+                    "pass": worst <= PRESERVED,
+                }
+            )
+            continue
+        fit = fits[name][gate.norm]
+        if fit["levels"] < MIN_LEVELS:
+            checks.append(
+                {
+                    "field": name,
+                    "pass": False,
+                    "levels": fit["levels"],
+                    "reason": f"{fit['levels']} levels above {FLOOR_FACTOR:g}x the rounding floor, {MIN_LEVELS} needed",
+                }
+            )
+            continue
+        fitted, finest = fit["order"], fit["pairwise_orders"][-1]
+        checks.append(
+            {
+                "field": name,
+                "fitted_order": fitted,
+                "finest_pair_order": finest,
+                "levels": fit["levels"],
+                "lower": gate.lower,
+                "upper": gate.upper,
+                "pass": all(gate.lower <= v <= gate.upper for v in (fitted, finest)),
+            }
+        )
     return checks
+
+
+def _json_ready(value: Any) -> Any:
+    """Non-finite numbers become null (a failed measurement), so the report is strict JSON."""
+    if isinstance(value, dict):
+        return {k: _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> dict[str, Any]:
     """Compare runs with an oracle and, with `gate_id`, give a verdict (schema autan.vv-verdict/1).
 
     `against` is an oracle name (`autan-vv oracles`) or `freestream`, built from each run's case.
-    Several runs form a refinement family: distinct meshes, same oracle and precision; the observed
-    order of every error norm of every field is fitted over them. `evidence` is false when a run
+    Several runs form a refinement family: one case apart from its mesh, one solver build and
+    backend, one precision, one physical time, distinct meshes (V0726, V0727). Orders are fitted over
+    the levels whose error is at least 100 times the rounding floor. `evidence` is false when a run
     comes from the `fake` backend or the oracle is a numerical reference, whatever the gate says.
     """
-    opened = [autan.Results.open(p) for p in run_dirs]
-    if not opened:
+    if not run_dirs:
         msg = "no run to verify"
         raise VVError(msg, code="V0725")
-    runs = []
-    oracle = None
-    for results in opened:
-        oracle = freestream_oracle(results.case) if against == "freestream" else get_oracle(against)
-        runs.append(run_errors(results, oracle))
-    assert oracle is not None
-    precisions = {r.provenance["precision"] for r in runs}
+    gate = None
+    if gate_id is not None:
+        gate = GATES.get(gate_id)
+        if gate is None:
+            msg = f"unknown gate {gate_id!r}; known: {', '.join(sorted(GATES))}"
+            raise VVError(msg, code="V0728")
+        if against not in gate.oracles:
+            msg = f"gate {gate_id} is checked against {', '.join(gate.oracles)}, not {against}"
+            raise VVError(msg, code="V0728")
+    opened = [autan.Results.open(p) for p in run_dirs]
+    precisions = {r.run.precision for r in opened}
     if len(precisions) > 1:
         msg = f"runs of one family must share a precision, got {sorted(precisions)}"
         raise VVError(msg, code="V0726")
-    fits: dict[str, dict[str, Any]] = {}
+    reasons = _family_problem(opened)
+    if reasons:
+        raise VVError("; ".join(reasons), code="V0727")
+    oracle = freestream_oracle(opened[0].case) if against == "freestream" else get_oracle(against)
+    runs = [run_errors(results, oracle) for results in opened]
     hs = [r.h for r in runs]
-    if len(runs) >= 2:
-        if len(set(hs)) != len(hs) or len({r.provenance["mesh_sha256"] for r in runs}) != len(runs):
-            msg = "a refinement family needs distinct meshes"
-            raise VVError(msg, code="V0727")
-        for name in runs[0].errors:
-            fits[name] = {}
-            for norm in ("L1", "L2", "Linf"):
-                values = [r.errors[name][norm] for r in runs]
-                if min(values) > 0.0:
-                    fit = fit_order(hs, values)
-                    fits[name][norm] = {
-                        "order": fit.order,
-                        "pairwise_orders": list(fit.pairwise_orders),
-                        "r_squared": fit.r_squared,
-                    }
+    if len(set(hs)) != len(hs) or len({r.provenance["mesh_sha256"] for r in runs}) != len(runs):
+        msg = "a refinement family needs distinct meshes"
+        raise VVError(msg, code="V0727")
+    eps = PRECISION_EPS[precisions.pop()]
+    runs.sort(key=lambda r: -r.h)
+    fits = _fits(runs, eps) if len(runs) >= 2 else {}
     report: dict[str, Any] = {
         "schema": VERDICT_SCHEMA,
         "oracle": {
@@ -359,35 +527,35 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
             "parameters": dict(oracle.parameters),
         },
         "runs": [
-            {**r.provenance, "n_cells": r.n_cells, "volume": r.volume, "h": r.h, "errors": r.errors}
-            for r in sorted(runs, key=lambda r: -r.h)
+            {
+                **r.provenance,
+                "n_cells": r.n_cells,
+                "volume": r.volume,
+                "h": r.h,
+                "bounds": r.bounds,
+                "errors": r.errors,
+            }
+            for r in runs
         ],
         "fits": fits,
         "verdict": None,
     }
-    if gate_id is not None:
-        gate = GATES.get(gate_id)
-        if gate is None:
-            msg = f"unknown gate {gate_id!r}; known: {', '.join(sorted(GATES))}"
-            raise VVError(msg, code="V0728")
-        if gate.oracle != oracle.name:
-            msg = f"gate {gate_id} is checked against {gate.oracle}, not {oracle.name}"
-            raise VVError(msg, code="V0728")
-        if gate.measure == "order" and len(runs) < 3:
-            msg = "an order gate needs at least three runs"
+    if gate is not None:
+        if gate.measure == "order" and len(runs) < MIN_LEVELS:
+            msg = f"an order gate needs at least {MIN_LEVELS} runs"
             raise VVError(msg, code="V0729")
-        checks = _gate_checks(gate, runs, fits)
-        reasons = []
+        checks = _gate_checks(gate, runs, fits, eps)
+        not_evidence = []
         if any(r.provenance["backend"] == "fake" for r in runs):
-            reasons.append("fake backend: synthetic results are never evidence")
+            not_evidence.append("fake backend: synthetic results are never evidence")
         if oracle.reference_only:
-            reasons.append("the oracle is a numerical reference, not an exact solution")
+            not_evidence.append("the oracle is a numerical reference, not an exact solution")
         report["verdict"] = {
             "gate": gate.id,
             "milestone": gate.milestone,
             "checks": checks,
             "pass": all(c["pass"] for c in checks),
-            "evidence": not reasons,
-            "not_evidence_because": reasons,
+            "evidence": not not_evidence,
+            "not_evidence_because": not_evidence,
         }
-    return report
+    return _json_ready(report)  # type: ignore[no-any-return]

@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+from autan import CaseError
+
 from autan_vv.errors import VVError
 
 
@@ -178,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         args.func(args)
-    except VVError as err:
+    except (VVError, CaseError) as err:
+        # CaseError: the SDK's coded diagnostics (unreadable run, contract violation).
         sys.stderr.write(f"{err}\n")
         return 2
     return 0

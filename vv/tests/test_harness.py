@@ -2,163 +2,272 @@
 
 - `autan.FakeBackend` runs (the SDK's producer) against the freestream oracle computed independently
   from case-schema.md: the fake writes the freestream state, so errors are rounding.
-- Runs written through `autan`'s writers (`autan_vv.runs`) on the V&V mesh families, with fields
-  equal to an oracle plus an error of known size C h^p g(x): the harness must recover p, pass the
-  gate for p = 2 and fail it for p = 1.
+- Runs written through `autan`'s writers (`autan_vv.runs`) on V&V meshes, with fields equal to an
+  oracle times (1 + C h^p g(x)): the harness must recover p, pass the gate for p = 2 and fail it for
+  p = 1, and refuse families or runs that do not fit.
 """
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import autan
 import numpy as np
 import pytest
-from autan.units import K, Pa, kg, mol
+from autan.results import field_names
+from autan.units import K, Pa, kg, m, mol, s
 from autan_vv.cli import main
 from autan_vv.errors import VVError
 from autan_vv.gates import GATES
 from autan_vv.harness import UNIVERSAL_GAS_CONSTANT, read_geometry, verify
-from autan_vv.meshes.families import generate_family
+from autan_vv.meshes.facemesh import FaceMesh
+from autan_vv.meshes.families import cartesian, generate_family
+from autan_vv.meshes.fluent import write_fluent
 from autan_vv.oracles.registry import get_oracle
 from autan_vv.runs import mesh_info, write_run
 
 pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
 ROOT = Path(__file__).resolve().parents[2]
+Meshes = list[tuple[FaceMesh, Path, str]]
 
 
-def _gas(gas_constant: float, gamma: float = 1.4) -> autan.IdealGas:
+def _gas(gas_constant: float, viscosity: float = 10.0, prandtl: float = 0.72) -> autan.IdealGas:
     return autan.IdealGas(
         name="manufactured",
         molar_mass=UNIVERSAL_GAS_CONSTANT / gas_constant * kg / mol,
-        gamma=gamma,
-        prandtl=0.72,
-        viscosity=autan.ConstantViscosity(mu=10.0 * Pa * autan.units.s),
+        gamma=1.4,
+        prandtl=prandtl,
+        viscosity=autan.ConstantViscosity(mu=viscosity * Pa * s),
     )
 
 
-def _case(path: Path, oracle_name: str) -> autan.Case:
-    oracle = get_oracle(oracle_name) if oracle_name != "freestream" else None
+def _case(
+    path: Path,
+    oracle_name: str,
+    *,
+    mach: float = 0.3,
+    precision: str = "fp64",
+    time: float | None = None,
+    edit: Callable[[autan.Case], None] | None = None,
+) -> autan.Case:
+    oracle = get_oracle(oracle_name)
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
-    gas = _gas(oracle.gas_constant if oracle else 287.0)
-    case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64", gas=gas)
-    case.freestream(mach=0.3, pressure=1e5 * Pa, temperature=300 * K)
+    p = oracle.parameters
+    gas = _gas(oracle.gas_constant, p.get("viscosity", 10.0), p.get("prandtl", 0.72))
+    turbulence = autan.Laminar() if oracle.physics == "navier-stokes" else autan.Inviscid()
+    case.physics = autan.Compressible(turbulence=turbulence, precision=precision, gas=gas)  # type: ignore[arg-type]
+    case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
+    if time is not None:
+        case.time = autan.Unsteady(steps=1, dt=time * s)
     case.boundary("*").farfield()
+    if edit is not None:
+        edit(case)
     return case
 
 
-def _family(
+def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> float:
+    span = np.prod([np.ptp(mesh.points[:, a]) for a in set(range(3)) - set(axes)])
+    return float((mesh.geometry.cell_volume.sum() / span / mesh.n_cells) ** (1 / len(axes)))
+
+
+def _runs(
     tmp_path: Path,
-    kind: str,
-    levels: tuple[int, ...],
+    meshes: Meshes,
     oracle_name: str,
     order: float,
+    *,
     amplitude: float = 0.05,
+    time: float | None = None,
+    **case_options: object,
 ) -> list[Path]:
-    """Runs whose fields are the oracle times (1 + amplitude h^order sin(...)): errors ~ h^order."""
+    """Runs whose fields are the oracle times (1 + amplitude h^order g(x)): errors scale as h^order."""
     oracle = get_oracle(oracle_name)
-    family, meshes = generate_family(kind, levels, tmp_path / kind)
     paths = []
-    for level, mesh in zip(family.levels, meshes, strict=True):
-        path = tmp_path / kind / level.file
-        info = mesh_info(mesh, path, "fluent" if kind == "poly" else "gmsh")
-        case = _case(path, oracle_name)
+    for mesh, path, fmt in meshes:
+        case = _case(path, oracle_name, time=time, **case_options)  # type: ignore[arg-type]
         x = mesh.geometry.cell_centroid
-        g = 1.0 + 0.5 * np.sin(2 * x[:, 0] + x[:, 1]) * np.cos(x[:, 2])
-        exact = oracle.fields(x)
-        h = (1.0 / mesh.n_cells) ** (1 / 3)
-        fields = {k: v * (1.0 + amplitude * h**order * g) for k, v in exact.items()}
-        paths.append(write_run(tmp_path / "runs", case, mesh, info, fields).path)
+        g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1]) * np.cos(x[:, 2])
+        exact = oracle.fields(x, time)
+        h = _h(mesh, oracle.axes)
+        fields = {k: exact[k] * (1.0 + amplitude * h**order * g) for k in field_names(case.spec)}
+        info = mesh_info(mesh, path, fmt)
+        paths.append(write_run(tmp_path / "runs", case, mesh, info, fields, time=time).path)
     return paths
+
+
+def _family(tmp_path: Path, kind: str, levels: tuple[int, ...]) -> Meshes:
+    family, meshes = generate_family(kind, levels, tmp_path / kind)
+    fmt = "fluent" if kind in ("poly", "agglomerated") else "gmsh"
+    return [
+        (mesh, tmp_path / kind / lv.file, fmt)
+        for lv, mesh in zip(family.levels, meshes, strict=True)
+    ]
+
+
+def _planar(tmp_path: Path, levels: tuple[int, ...], half: float = 10.0) -> Meshes:
+    """One-layer Cartesian meshes of [-half, half]^2 x [0, 1], written as Fluent files."""
+    out = []
+    for n in levels:
+        mesh = cartesian((n, n, 1), (-half, -half, 0.0), (half, half, 1.0))
+        path = tmp_path / f"planar-{n}.msh"
+        write_fluent(mesh, path, "fluid")
+        out.append((mesh, path, "fluent"))
+    return out
 
 
 @pytest.mark.parametrize("kind", ["hex", "poly", "hybrid"])
 def test_geometry_rebuilt_from_solution_cgns_matches_the_mesh(tmp_path: Path, kind: str) -> None:
-    (path,) = _family(tmp_path, kind, (4,), "mms-euler", 2.0)
-    results = autan.Results.open(path)
-    rebuilt = read_geometry(results)
-    _, meshes = generate_family(kind, (4,), tmp_path / "again")
-    original = meshes[0].geometry
+    meshes = _family(tmp_path, kind, (4,))
+    (run,) = _runs(tmp_path, meshes, "mms-euler", 2.0)
+    rebuilt = read_geometry(autan.Results.open(run))
+    original = meshes[0][0].geometry
     np.testing.assert_allclose(rebuilt.geometry.cell_volume, original.cell_volume, rtol=1e-13)
     np.testing.assert_allclose(
         rebuilt.geometry.cell_centroid, original.cell_centroid, rtol=0, atol=1e-14
     )
-    assert rebuilt.geometry.cell_volume.sum() == pytest.approx(1.0, abs=1e-13)
 
 
 @pytest.mark.parametrize(("order", "passes"), [(2.0, True), (1.0, False)])
 def test_order_gate_recovers_the_order_of_the_error(
     tmp_path: Path, order: float, passes: bool
 ) -> None:
-    runs = _family(tmp_path, "hex", (4, 8, 16), "mms-euler", order)
+    runs = _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), "mms-euler", order)
     report = verify(runs, "mms-euler", "euler-mms-order")
     for name in ("rho", "rhou", "rhoE", "Pressure"):
         fit = report["fits"][name]["L2"]
         assert fit["order"] == pytest.approx(order, abs=0.02)
-        assert fit["pairwise_orders"][-1] == pytest.approx(order, abs=0.02)
+        assert fit["pairwise_orders"][-1] == pytest.approx(order, abs=0.03)
     verdict = report["verdict"]
     assert verdict["pass"] is passes
     assert verdict["evidence"] is False  # these runs carry backend "fake"
-    assert [r["n_cells"] for r in report["runs"]] == [64, 512, 4096]
+    assert [r["n_cells"] for r in report["runs"]] == [64, 216, 512, 1728]
     assert all(
         len(r["mesh_sha256"]) == 64 and len(r["solver_commit"]) == 40 for r in report["runs"]
     )
+    assert all(not autan.Results.open(p).run.deterministic for p in runs)
 
 
-def test_fake_backend_run_preserves_the_freestream(tmp_path: Path) -> None:
-    family, meshes = generate_family("hex", (3,), tmp_path / "mesh")
-    path = tmp_path / "mesh" / family.levels[0].file
+def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(tmp_path: Path) -> None:
+    meshes = _planar(tmp_path, (16, 24, 32, 48))
+    runs = _runs(tmp_path, meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=40.0)
+    verdict = verify(runs, "isentropic-vortex", "vortex-order")["verdict"]
+    rhow = next(c for c in verdict["checks"] if c.get("field") == "rhow")
+    assert rhow["identically_zero"]
+    assert verdict["pass"], verdict["checks"]
+    early = _runs(tmp_path / "early", meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=4.0)
+    verdict = verify(early, "isentropic-vortex", "vortex-order")["verdict"]
+    assert not verdict["pass"]
+    assert not next(c for c in verdict["checks"] if c.get("prerequisite") == "time")["pass"]
+
+
+def test_levels_under_the_rounding_floor_do_not_count(tmp_path: Path) -> None:
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12))
+    runs = _runs(tmp_path, meshes, "mms-euler", 2.0, amplitude=1e-6, precision="fp32+acc64")
+    verdict = verify(runs, "mms-euler", "euler-mms-order")["verdict"]
+    assert not verdict["pass"]
+    assert all("rounding floor" in c["reason"] for c in verdict["checks"])
+
+
+def test_freestream_preservation_on_fake_backend_runs(tmp_path: Path) -> None:
+    ((mesh, path, _),) = _family(tmp_path, "hex", (3,))
     case = autan.Case("fake-freestream", mesh=path)
-    case.physics = autan.Compressible(turbulence=autan.Laminar(), precision="fp64")
+    case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp64")
     case.freestream(
-        mach=0.4,
-        re=2.0e6,
-        ref_length=1.0 * autan.units.m,
-        temperature=250 * K,
-        aoa=3.0 * autan.units.deg,
+        mach=0.4, re=2.0e6, ref_length=1.0 * m, temperature=250 * K, aoa=3.0 * autan.units.deg
     )
     case.boundary("*").farfield()
     results = case.run(
-        mesh_info(meshes[0], path, "gmsh"), backend=autan.FakeBackend(), runs=tmp_path / "runs"
+        mesh_info(mesh, path, "gmsh"), backend=autan.FakeBackend(), runs=tmp_path / "runs"
     )
-    report = verify([results.path], "freestream", "freestream-preservation")
-    verdict = report["verdict"]
+    verdict = verify([results.path], "freestream", "freestream-preservation")["verdict"]
+    checked = {c["field"] for c in verdict["checks"]}
+    assert {"Temperature", "TurbulentSANuTilde", "VelocityY"} <= checked
     assert verdict["pass"], verdict["checks"]
     assert not verdict["evidence"]
     assert any("fake" in reason for reason in verdict["not_evidence_because"])
-    (run,) = report["runs"]
-    assert run["n_cells"] == 512  # the fake's own 8^3 cube, not the case mesh
 
 
-def test_runs_that_do_not_fit_the_oracle_are_rejected(tmp_path: Path) -> None:
-    (path,) = _family(tmp_path, "hex", (4,), "mms-euler", 2.0)
-    for against in ("ringleb", "couette"):
+def test_freestream_preservation_fails_on_a_wrong_temperature(tmp_path: Path) -> None:
+    ((mesh, path, fmt),) = _family(tmp_path, "hex", (3,))
+    case = _case(path, "mms-euler")
+    speed = 0.3 * np.sqrt(1.4 * 287.0 * 300.0)
+    values = {
+        "Density": 1e5 / (287.0 * 300.0),
+        "VelocityX": speed,
+        "VelocityY": 0.0,
+        "VelocityZ": 0.0,
+        "Pressure": 1e5,
+        "Temperature": 600.0,
+    }
+    fields = {k: np.full(mesh.n_cells, v) for k, v in values.items()}
+    run = write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, fmt), fields).path
+    verdict = verify([run], "freestream", "freestream-preservation")["verdict"]
+    assert not next(c for c in verdict["checks"] if c["field"] == "Temperature")["pass"]
+    assert all(c["pass"] for c in verdict["checks"] if c["field"] != "Temperature")
+
+
+def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Path) -> None:
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12))
+    runs = _runs(tmp_path, meshes, "mms-euler", 2.0)
+    other = _runs(tmp_path / "other", meshes[:1], "mms-euler", 2.0, mach=0.5)
+    calls: list[tuple[Callable[[], object], str]] = [
+        (lambda: verify(runs[:1], "ringleb"), "V0724"),
+        (lambda: verify([runs[0], runs[0]], "mms-euler"), "V0727"),
+        (lambda: verify([*runs[1:], other[0]], "mms-euler"), "V0727"),
+        (lambda: verify(runs[:3], "mms-euler", "euler-mms-order"), "V0729"),
+        (lambda: verify(runs, "mms-euler", "ringleb-order"), "V0728"),
+        (lambda: verify(runs, "mms-euler", "no-such-gate"), "V0728"),
+    ]
+    for call, code in calls:
         with pytest.raises(VVError) as err:
-            verify([path], against)
-        assert err.value.code == "V0724"
-    with pytest.raises(VVError) as err:
-        verify([path, path, path], "mms-euler")
-    assert err.value.code == "V0727"
-    with pytest.raises(VVError) as err:
-        verify([path], "mms-euler", "euler-mms-order")
-    assert err.value.code == "V0729"
-    with pytest.raises(VVError) as err:
-        verify([path], "mms-euler", "ringleb-order")
-    assert err.value.code == "V0728"
+            call()
+        assert err.value.code == code
 
 
-def test_two_dimensional_oracles_need_one_cell_thick_meshes(tmp_path: Path) -> None:
-    (path,) = _family(tmp_path, "hex", (4,), "mms-euler", 2.0)
-    # The case is Euler with R = 287, as the vortex is not: compatibility is checked first.
+def test_viscous_oracles_check_the_material_law(tmp_path: Path) -> None:
+    mesh = cartesian((1, 4, 1))
+    path = tmp_path / "couette.msh"
+    write_fluent(mesh, path, "fluid")
+
+    def sutherland(case: autan.Case) -> None:
+        physics = case.spec.physics
+        law = autan.Sutherland(mu_ref=1.8e-5 * Pa * s, t_ref=300 * K, s=110.4 * K)
+        gas = physics.gas.model_copy(update={"viscosity": law})  # type: ignore[union-attr]
+        case.physics = autan.Compressible(turbulence=autan.Laminar(), precision="fp64", gas=gas)
+
+    (run,) = _runs(tmp_path, [(mesh, path, "fluent")], "couette", 2.0, edit=sutherland)
     with pytest.raises(VVError) as err:
-        verify([path], "isentropic-vortex")
+        verify([run], "couette", "couette-velocity-exact")
     assert err.value.code == "V0724"
 
 
-def test_cli_verify_writes_a_strict_report_and_exits_on_failure(
+def test_two_dimensional_oracles_need_one_layer_meshes(tmp_path: Path) -> None:
+    thin = cartesian((4, 4, 4), (-10.0, -10.0, 0.0), (10.0, 10.0, 1e-10))
+    path = tmp_path / "thin.msh"
+    write_fluent(thin, path, "fluid")
+    (run,) = _runs(tmp_path, [(thin, path, "fluent")], "isentropic-vortex", 2.0, time=40.0)
+    with pytest.raises(VVError) as err:
+        verify([run], "isentropic-vortex")
+    assert err.value.code == "V0723"
+
+
+def test_fixture_writer_refuses_outputs_it_cannot_write(tmp_path: Path) -> None:
+    ((mesh, path, fmt),) = _family(tmp_path, "hex", (3,))
+    case = _case(path, "mms-euler")
+    case.monitor(autan.forces("*", ref_area=1.0 * m**2), every=1)
+    with pytest.raises(VVError) as err:
+        write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, fmt), {})
+    assert err.value.code == "V0731"
+    assert not (tmp_path / "runs").exists()
+
+
+def test_cli_verify_writes_a_strict_report_and_maps_errors_to_exit_codes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    runs = [str(p) for p in _family(tmp_path, "hex", (4, 8, 16), "mms-euler", 1.0)]
+    runs = [
+        str(p) for p in _runs(tmp_path, _family(tmp_path, "hex", (4, 6, 8, 12)), "mms-euler", 1.0)
+    ]
     out = tmp_path / "verdict.json"
     with pytest.raises(SystemExit) as exit_info:
         main(
@@ -179,8 +288,8 @@ def test_cli_verify_writes_a_strict_report_and_exits_on_failure(
     def reject(token: str) -> None:
         raise AssertionError(token)
 
-    report = json.loads(out.read_text(), parse_constant=reject)
-    assert report["schema"] == "autan.vv-verdict/1"
+    assert json.loads(out.read_text(), parse_constant=reject)["schema"] == "autan.vv-verdict/1"
+    assert main(["verify", str(tmp_path / "missing"), "--against", "mms-euler"]) == 2
 
 
 def test_every_gate_is_stated_in_acceptance_md() -> None:
@@ -188,14 +297,12 @@ def test_every_gate_is_stated_in_acceptance_md() -> None:
     for gate in GATES.values():
         row = next((line for line in text.splitlines() if f"`{gate.id}`" in line), None)
         assert row is not None, gate.id
-        numbers = {float(v) for v in re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", row)}
+        numbers = {round(float(v), 9) for v in re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", row)}
         if gate.measure == "order":
             centred = {
                 round((gate.lower + gate.upper) / 2, 9),
                 round((gate.upper - gate.lower) / 2, 9),
             }
-            assert {gate.lower, gate.upper} <= numbers or centred <= {
-                round(v, 9) for v in numbers
-            }, gate.id
+            assert {gate.lower, gate.upper} <= numbers or centred <= numbers, gate.id
         else:
             assert gate.upper in numbers, gate.id

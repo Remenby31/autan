@@ -33,6 +33,8 @@ from autan.results import (
 )
 from autan.version import COMMIT, __version__
 
+from autan_vv.errors import VVError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -228,12 +230,16 @@ def write_run(
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
     `fields` must hold exactly the fields results.md requires for the case's physics, one value per
-    cell in mesh order. The history holds one line with unit residuals.
+    cell in mesh order. The history holds one line with unit residuals. Cases with monitors or time
+    averaging are refused (V0731); runs are marked non-deterministic, since their fields are given.
     """
+    spec = case.spec
+    if spec.monitors or getattr(spec.time, "average_from", None) is not None:
+        msg = "fixture runs carry no monitors and no time averaging"
+        raise VVError(msg, code="V0731")
     plan = case.plan(info)
     if not plan.ok:
         raise autan.CaseError(d for d in plan.diagnostics if d.severity == "error")
-    spec = case.spec
     missing = set(field_names(spec)) ^ set(fields)
     if missing:
         msg = f"fields must be exactly {field_names(spec)}, differing in {sorted(missing)}"
@@ -249,7 +255,8 @@ def write_run(
         mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
         solver=solver,
         precision=spec.physics.precision,
-        deterministic=True,
+        # The fields come from the caller, not from the identified configuration.
+        deterministic=False,
         devices=devices,
         started=iso(started),
         finished=None,

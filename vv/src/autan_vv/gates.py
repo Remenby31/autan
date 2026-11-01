@@ -1,6 +1,6 @@
 """Machine-readable form of the gates of docs/validation/acceptance.md that runs can be checked against.
 
-Each gate names its oracle, what is measured and the accepted interval. acceptance.md states every
+Each gate names its oracles, what is measured and the accepted interval. acceptance.md states every
 gate with its source and its identifier; `test_harness.py` checks the two agree.
 """
 
@@ -9,45 +9,63 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 CONSERVED = ("rho", "rhou", "rhov", "rhow", "rhoE")
+# acceptance.md: orders are fitted over at least four levels, using only levels whose error is at
+# least 100 times the rounding floor of the precision.
+MIN_LEVELS = 4
+FLOOR_FACTOR = 100.0
 
 
 @dataclass(frozen=True)
 class Gate:
-    """`measure` is `order` (fitted L-norm order and finest-pair order of each field must lie in
-    [lower, upper]) or `max-error` (relative L-infinity error of each field at most `upper`
-    machine epsilons of the run precision, on every run)."""
+    """A gate of acceptance.md.
+
+    `measure` is `order` (over at least four levels above the rounding floor, the fitted and the
+    finest-pair order of each field's `norm` error must lie in [lower, upper]; a field the oracle
+    makes identically zero must instead stay zero to `PRESERVED` epsilons) or `max-error` (the
+    relative `norm` error of each field at most `upper` epsilons of the run precision, on every
+    run). `fields` None means every field the run writes. `time` and `domain` are prerequisites:
+    every run must reach that physical time, and the mesh must span `domain` (per axis, min and max).
+    """
 
     id: str
-    oracle: str
+    oracles: tuple[str, ...]
     measure: str
     norm: str
-    fields: tuple[str, ...]
+    fields: tuple[str, ...] | None
     lower: float
     upper: float
     milestone: str
+    time: float | None = None
+    domain: tuple[tuple[float, float], ...] | None = None
 
+
+PRESERVED = 64.0
 
 GATES: dict[str, Gate] = {
     g.id: g
     for g in (
         Gate(
-            "freestream-preservation",
-            "freestream",
-            "max-error",
-            "Linf",
-            ("Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"),
-            0.0,
-            64.0,
-            "M2",
+            "freestream-preservation", ("freestream",), "max-error", "Linf", None, 0.0, 64.0, "M2"
         ),
-        Gate("euler-mms-order", "mms-euler", "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
-        Gate("ringleb-order", "ringleb", "order", "L2", ("Density", "Entropy"), 1.9, 2.1, "M2"),
-        Gate("vortex-order", "isentropic-vortex", "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
-        Gate("sod-order", "sod", "order", "L1", ("Density",), 0.6, 1.1, "M2"),
-        Gate("ns-mms-order", "mms-navier-stokes", "order", "L2", CONSERVED, 1.9, 2.1, "M3"),
+        Gate("euler-mms-order", ("mms-euler",), "order", "L2", CONSERVED, 1.9, 2.1, "M2"),
+        Gate("ringleb-order", ("ringleb",), "order", "L2", ("Density", "Entropy"), 1.9, 2.1, "M2"),
+        Gate(
+            "vortex-order",
+            ("isentropic-vortex",),
+            "order",
+            "L2",
+            CONSERVED,
+            1.9,
+            2.1,
+            "M2",
+            time=40.0,
+            domain=((-10.0, 10.0), (-10.0, 10.0)),
+        ),
+        Gate("sod-order", ("sod",), "order", "L1", ("Density",), 0.6, 1.1, "M2"),
+        Gate("ns-mms-order", ("mms-navier-stokes",), "order", "L2", CONSERVED, 1.9, 2.1, "M3"),
         Gate(
             "rans-sa-mms-order",
-            "mms-rans-sa",
+            ("mms-rans-sa",),
             "order",
             "L2",
             (*CONSERVED, "TurbulentSANuTilde"),
@@ -57,7 +75,7 @@ GATES: dict[str, Gate] = {
         ),
         Gate(
             "couette-velocity-exact",
-            "couette",
+            ("couette",),
             "max-error",
             "Linf",
             ("VelocityX",),
@@ -66,7 +84,14 @@ GATES: dict[str, Gate] = {
             "M3",
         ),
         Gate(
-            "couette-temperature-order", "couette", "order", "L2", ("Temperature",), 1.9, 2.1, "M3"
+            "couette-temperature-order",
+            ("couette",),
+            "order",
+            "L2",
+            ("Temperature",),
+            1.9,
+            2.1,
+            "M3",
         ),
     )
 }

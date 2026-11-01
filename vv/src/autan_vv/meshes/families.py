@@ -311,7 +311,7 @@ def _structured_hybrid(n: int) -> tuple[FloatArray, dict[str, IntArray]]:
 
 
 def _box_boundary(points: FloatArray, cells: dict[str, IntArray]) -> dict[str, IntArray]:
-    """Faces used by one cell only, grouped by the box face they lie on."""
+    """Faces used by one cell only, grouped by the face of the bounding box they lie on."""
     polys = []
     for kind in _CELL_ORDER:
         if kind in cells:
@@ -325,10 +325,38 @@ def _box_boundary(points: FloatArray, cells: dict[str, IntArray]) -> dict[str, I
     out = {}
     for name in BOX_ZONES:
         axis = "xyz".index(name[0])
-        value = 0.0 if name.endswith("min") else 1.0
+        value = points[:, axis].min() if name.endswith("min") else points[:, axis].max()
+        tol = 1e-12 * max(1.0, float(np.ptp(points[:, axis])))
         coord = np.where(single >= 0, points[np.maximum(single, 0), axis], value)
-        out[name] = single[np.all(np.abs(coord - value) < 1e-12, axis=1)]
+        out[name] = single[np.all(np.abs(coord - value) < tol, axis=1)]
     return out
+
+
+def cartesian(
+    cells: tuple[int, int, int],
+    lower: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    upper: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> FaceMesh:
+    """Uniform hexahedral box mesh with `cells` = (nx, ny, nz) and zones `xmin` ... `zmax`.
+
+    With one cell along a direction it is the one-layer mesh of a 1D or 2D problem. Needs no Gmsh.
+    """
+    nx, ny, nz = cells
+    axes = [np.linspace(lo, hi, n + 1) for lo, hi, n in zip(lower, upper, cells, strict=True)]
+    gx, gy, gz = np.meshgrid(*axes, indexing="ij")
+    points = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+    i, j, k = (
+        a.ravel() for a in np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+    )
+
+    def node(a: IntArray, b: IntArray, c: IntArray) -> IntArray:
+        return (a * (ny + 1) + b) * (nz + 1) + c
+
+    bits = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+    conn = {"hex": np.stack([node(i + a, j + b, k + c) for a, b, c in bits], axis=1)}
+    mesh = _to_facemesh(points, conn, _box_boundary(points, conn))
+    mesh.check()
+    return mesh
 
 
 def _gmsh_mesh(
