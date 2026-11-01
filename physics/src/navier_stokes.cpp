@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "autan/kernels/geometry.hpp"
@@ -46,6 +47,9 @@ struct NavierStokes<P>::Impl {
   std::vector<typename P::jac> visc_jac, visc_bnd_jac;
   nk::Data<P> d{};
   const typename P::jac* dwdu = nullptr;
+  mutable std::pair<double, double> fit_norms{};
+  // Per cell, its face neighbours and the faces between them (the block pattern's off-diagonals).
+  std::vector<std::vector<std::pair<std::size_t, std::size_t>>> adjacent;
 
   // The Euler arrays this residual reads; Euler<P> allocates its Jacobian blocks on first use.
   void share() {
@@ -263,6 +267,219 @@ struct NavierStokes<P>::Impl {
     d.q6 = q[6].data();
   }
 
+  // Coefficient i (0-18) of the boundary fit at stencil entry k (kernels/navier_stokes.py order).
+  [[nodiscard]] double coef(std::size_t k, std::size_t i) const {
+    const auto nst = static_cast<std::size_t>(d.topo.n_stencil);
+    return static_cast<double>(q[i / 3][(i % 3) * nst + k]);
+  }
+
+  // Gradient at r of the cubic whose coefficients are those of entry k, and its rise from 0 to s.
+  void basis(std::size_t k, const std::array<double, 3>& r, const std::array<double, 3>& sg,
+             std::array<double, 3>& grad, double& rise) const {
+    std::array<double, 19> c{};
+    for (std::size_t i = 0; i < 19; ++i) c[i] = coef(k, i);
+    auto gradient = [&](const std::array<double, 3>& v) {
+      const double x = v[0], y = v[1], z = v[2];
+      return std::array<double, 3>{
+          c[0] + c[3] * x + c[6] * y + c[7] * z + 0.5 * x * x * c[9] + x * y * c[12] +
+              x * z * c[13] + 0.5 * y * y * c[14] + 0.5 * z * z * c[16] + y * z * c[18],
+          c[1] + c[6] * x + c[4] * y + c[8] * z + 0.5 * y * y * c[10] + 0.5 * x * x * c[12] +
+              x * y * c[14] + y * z * c[15] + 0.5 * z * z * c[17] + x * z * c[18],
+          c[2] + c[7] * x + c[8] * y + c[5] * z + 0.5 * z * z * c[11] + 0.5 * x * x * c[13] +
+              0.5 * y * y * c[15] + x * z * c[16] + y * z * c[17] + x * y * c[18]};
+    };
+    grad = gradient(r);
+    const double x = sg[0], y = sg[1], z = sg[2];
+    rise = c[0] * x + c[1] * y + c[2] * z + 0.5 * (c[3] * x * x + c[4] * y * y + c[5] * z * z) +
+           c[6] * x * y + c[7] * x * z + c[8] * y * z +
+           (c[9] * x * x * x + c[10] * y * y * y + c[11] * z * z * z) / 6.0 +
+           0.5 * (c[12] * x * x * y + c[13] * x * x * z + c[14] * x * y * y) +
+           0.5 * (c[15] * y * y * z + c[16] * x * z * z + c[17] * y * z * z) + c[18] * x * y * z;
+  }
+
+  // The viscous fluxes' dependence through the boundary fit, which the face loops' Jacobians hold
+  // fixed: dF/dU_k = dF/dG dG/dphi_k dphi/dW_k dW/dU_k (phi = T, u, v, w; G their face gradients)
+  // for every stencil entry k, added where the residual's cell and k are the same or face
+  // neighbours (the block pattern); returns the Frobenius norms of the blocks added and of those
+  // left out.
+  std::pair<double, double> fit_jacobian(BlockMatrix& a) const {
+    const auto& t = d.topo;
+    const auto nc = static_cast<std::size_t>(t.n_cells);
+    const auto nf = static_cast<std::size_t>(t.n_faces);
+    const auto ni = static_cast<std::size_t>(t.n_interior_faces);
+    const auto& g = geo;
+    const double rgas = static_cast<double>(d.gas_constant[0]);
+    const double pref = static_cast<double>(d.p_ref[0]);
+    const double gm = static_cast<double>(d.gamma[0]);
+    const double cp = gm * rgas / (gm - 1.0);
+    const double mref = static_cast<double>(d.mu_ref[0]), tref = static_cast<double>(d.t_ref[0]);
+    const double sth = static_cast<double>(d.sutherland_s[0]);
+    const bool law = static_cast<double>(d.sutherland[0]) > 0.5;
+    const double prl = static_cast<double>(d.prandtl[0]), prt = static_cast<double>(d.prandtl_t[0]);
+    auto prim = [&](std::size_t c, std::size_t k) {
+      return static_cast<double>(d.prim[k * nc + c]);
+    };
+    auto temp = [&](std::size_t c) { return (prim(c, 4) + pref) / (prim(c, 0) * rgas); };
+    auto mu = [&](double tt) {
+      return law ? mref * std::pow(tt / tref, 1.5) * (tref + sth) / (tt + sth) : mref;
+    };
+    auto centroid = [&](std::size_t c) {
+      return std::array<double, 3>{g.cell_centroid_x[c], g.cell_centroid_y[c],
+                                   g.cell_centroid_z[c]};
+    };
+    double placed = 0.0, outside = 0.0;
+    // Block (row, k) of the pattern, null outside it.
+    auto block = [&](std::size_t row, std::size_t k) -> double* {
+      if (k == row) return a.diagonal(row);
+      for (const auto& [nb, face] : adjacent[row]) {
+        if (nb == k) {
+          return static_cast<std::size_t>(t.owner[face]) == row ? a.upper(face) : a.lower(face);
+        }
+      }
+      return nullptr;
+    };
+    // dF/dphi (5 x 4) -> block dF/dU_k (5 x 5) into `out` with `sign`.
+    auto chain = [&](const std::array<std::array<double, 4>, 5>& dfdphi, std::size_t k, double* out,
+                     double sign) {
+      const double rho = prim(k, 0), tt = temp(k);
+      std::array<std::array<double, 5>, 4> dphidw{};
+      dphidw[0][0] = -tt / rho;
+      dphidw[0][4] = 1.0 / (rho * rgas);
+      for (std::size_t i = 1; i < 4; ++i) dphidw[i][i] = 1.0;
+      double norm = 0.0;
+      for (std::size_t r = 0; r < 5; ++r) {
+        std::array<double, 5> dfdw{};
+        for (std::size_t c = 0; c < 5; ++c) {
+          for (std::size_t i = 0; i < 4; ++i) dfdw[c] += dfdphi[r][i] * dphidw[i][c];
+        }
+        for (std::size_t c = 0; c < 5; ++c) {
+          double v = 0.0;
+          for (std::size_t j = 0; j < 5; ++j) {
+            v += dfdw[j] * static_cast<double>(dwdu[(5 * j + c) * nc + k]);
+          }
+          if (out != nullptr) out[5 * r + c] += sign * v;
+          norm += v * v;
+        }
+      }
+      return norm;
+    };
+    // One fitted side s of face f: F's derivatives through s's fit, weight w, rise along sg.
+    auto side = [&](std::size_t f, std::size_t s, double w, const std::array<double, 3>& r,
+                    const std::array<double, 3>& sg, double dist, double k_cond, double mue,
+                    const std::array<double, 3>& uf, auto&& place) {
+      const double area =
+          std::sqrt(g.face_area_x[f] * g.face_area_x[f] + g.face_area_y[f] * g.face_area_y[f] +
+                    g.face_area_z[f] * g.face_area_z[f]);
+      const std::array<double, 3> n{g.face_area_x[f] / area, g.face_area_y[f] / area,
+                                    g.face_area_z[f] / area};
+      const std::array<double, 3> e{sg[0] / dist, sg[1] / dist, sg[2] / dist};
+      // dF/dG: F = -A (0, tau n, u . tau n + k grad T . n), tau_ia n_a with
+      // d(tau n)_i / dG_aj = mu (delta_ia n_j + delta_ij n_a - 2/3 delta_aj n_i).
+      std::array<std::array<std::array<double, 3>, 4>, 5> dfdg{};
+      for (std::size_t a2 = 0; a2 < 3; ++a2) {
+        for (std::size_t j = 0; j < 3; ++j) {
+          for (std::size_t i = 0; i < 3; ++i) {
+            const double dt = mue * ((i == a2 ? n[j] : 0.0) + (i == j ? n[a2] : 0.0) -
+                                     (a2 == j ? 2.0 / 3.0 * n[i] : 0.0));
+            dfdg[1 + i][1 + a2][j] = -area * dt;
+            dfdg[4][1 + a2][j] += -area * uf[i] * dt;
+          }
+        }
+      }
+      for (std::size_t j = 0; j < 3; ++j) dfdg[4][0][j] = -area * k_cond * n[j];
+      const auto begin = static_cast<std::size_t>(t.stencil_offsets[s]);
+      const auto end = static_cast<std::size_t>(t.stencil_offsets[s + 1]);
+      std::array<double, 3> self{};
+      for (std::size_t k = begin; k < end; ++k) {
+        std::array<double, 3> bg{};
+        double rise = 0.0;
+        basis(k, r, sg, bg, rise);
+        std::array<double, 3> v{};
+        for (std::size_t j = 0; j < 3; ++j) v[j] = w * (bg[j] - rise / dist * e[j]);
+        for (std::size_t j = 0; j < 3; ++j) self[j] -= v[j];
+        const index_t entry = t.stencil[k];
+        if (entry < 0) continue;  // boundary values are data
+        std::array<std::array<double, 4>, 5> dfdphi{};
+        for (std::size_t row = 0; row < 5; ++row) {
+          for (std::size_t ph = 0; ph < 4; ++ph) {
+            for (std::size_t j = 0; j < 3; ++j) dfdphi[row][ph] += dfdg[row][ph][j] * v[j];
+          }
+        }
+        place(static_cast<std::size_t>(entry), dfdphi);
+      }
+      std::array<std::array<double, 4>, 5> dfdphi{};
+      for (std::size_t row = 0; row < 5; ++row) {
+        for (std::size_t ph = 0; ph < 4; ++ph) {
+          for (std::size_t j = 0; j < 3; ++j) dfdphi[row][ph] += dfdg[row][ph][j] * self[j];
+        }
+      }
+      place(s, dfdphi);
+    };
+    for (std::size_t f = 0; f < ni; ++f) {
+      const auto l = static_cast<std::size_t>(t.owner[f]);
+      const auto r = static_cast<std::size_t>(t.neighbour[f]);
+      const bool fl = static_cast<double>(quad[l]) > 0.5, fr = static_cast<double>(quad[r]) > 0.5;
+      if (!fl && !fr) continue;
+      const auto xl = centroid(l), xr = centroid(r);
+      const std::array<double, 3> xf{g.face_centroid_x[f], g.face_centroid_y[f],
+                                     g.face_centroid_z[f]};
+      const std::array<double, 3> dlr{xr[0] - xl[0], xr[1] - xl[1], xr[2] - xl[2]};
+      const double dist = std::sqrt(dlr[0] * dlr[0] + dlr[1] * dlr[1] + dlr[2] * dlr[2]);
+      const double tf = 0.5 * (temp(l) + temp(r));
+      const double mt = 0.5 * (static_cast<double>(mu_t[l]) + static_cast<double>(mu_t[r]));
+      const double mf = mu(tf);
+      const double k_cond = cp * (mf / prl + mt / prt);
+      const std::array<double, 3> uf{0.5 * (prim(l, 1) + prim(r, 1)),
+                                     0.5 * (prim(l, 2) + prim(r, 2)),
+                                     0.5 * (prim(l, 3) + prim(r, 3))};
+      const double wl = fl && fr ? 0.5 : (fl ? 1.0 : 0.0);
+      const double wr = fl && fr ? 0.5 : (fr ? 1.0 : 0.0);
+      // R_l += F, R_r -= F: a dependence on cell l goes to (l, l) and (r, l), on r to (l, r) and
+      // (r, r).
+      auto place = [&](std::size_t k, const std::array<std::array<double, 4>, 5>& dfdphi) {
+        for (const auto& [row, sign] : {std::pair{l, 1.0}, std::pair{r, -1.0}}) {
+          double* out = block(row, k);
+          (out != nullptr ? placed : outside) += chain(dfdphi, k, out, sign);
+        }
+      };
+      if (fl) {
+        const std::array<double, 3> rf{xf[0] - xl[0], xf[1] - xl[1], xf[2] - xl[2]};
+        side(f, l, wl, rf, dlr, dist, k_cond, mf + mt, uf, place);
+      }
+      if (fr) {
+        // The rise of r's fit runs from r to l, against e: its correction enters with + sign,
+        // which `side` gives through the reversed segment.
+        const std::array<double, 3> rf{xf[0] - xr[0], xf[1] - xr[1], xf[2] - xr[2]};
+        const std::array<double, 3> drl{-dlr[0], -dlr[1], -dlr[2]};
+        side(f, r, wr, rf, drl, dist, k_cond, mf + mt, uf, place);
+      }
+    }
+    const auto* kind = d.bc_kind;
+    for (std::size_t f = ni; f < nf; ++f) {
+      const auto c = static_cast<std::size_t>(t.owner[f]);
+      if (static_cast<double>(quad[c]) <= 0.5) continue;
+      const double kf = static_cast<double>(kind[f]);
+      if (kf > 1.5 && kf < 2.5) continue;  // slip: no viscous flux
+      const bool adiabatic = kf > 4.5 && static_cast<double>(d.bc[f]) <= 0.0;
+      const auto xc = centroid(c);
+      const std::array<double, 3> rf{g.face_centroid_x[f] - xc[0], g.face_centroid_y[f] - xc[1],
+                                     g.face_centroid_z[f] - xc[2]};
+      const double dist = std::sqrt(rf[0] * rf[0] + rf[1] * rf[1] + rf[2] * rf[2]);
+      const double mf = mu(temp(c));
+      const double mt = static_cast<double>(mu_t_b[f]);
+      const double k_cond = adiabatic ? 0.0 : cp * (mf / prl + mt / prt);
+      const std::array<double, 3> ub{static_cast<double>(d.prim_b[1 * nf + f]),
+                                     static_cast<double>(d.prim_b[2 * nf + f]),
+                                     static_cast<double>(d.prim_b[3 * nf + f])};
+      auto place = [&](std::size_t k, const std::array<std::array<double, 4>, 5>& dfdphi) {
+        double* out = block(c, k);
+        (out != nullptr ? placed : outside) += chain(dfdphi, k, out, 1.0);
+      };
+      side(f, c, 1.0, rf, rf, dist, k_cond, mf + mt, ub, place);
+    }
+    return {std::sqrt(placed), std::sqrt(outside)};
+  }
+
   void fit() {
     nk::cpu::temperatures_velocities(d);
     nk::cpu::boundary_temperatures_velocities(d);
@@ -278,6 +495,13 @@ struct NavierStokes<P>::Impl {
     const auto packed = kernels::pack_geometry(mesh, geometry);
     topo = kernels::topology(mesh.view());
     vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+    adjacent.assign(static_cast<std::size_t>(mesh.n_cells()), {});
+    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_interior_faces()); ++f) {
+      const auto o = static_cast<std::size_t>(mesh.owner()[f]);
+      const auto n = static_cast<std::size_t>(mesh.neighbour()[f]);
+      adjacent[o].emplace_back(n, f);
+      adjacent[n].emplace_back(o, f);
+    }
     face_normal =
         kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
     face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(
@@ -462,6 +686,12 @@ void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) co
     const auto o = static_cast<std::size_t>(m.topo.owner[f]);
     add(a.diagonal(o), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
   }
+  m.fit_norms = m.fit_jacobian(a);
+}
+
+template <class P>
+std::pair<double, double> NavierStokes<P>::fit_jacobian_norms() const {
+  return impl_->fit_norms;
 }
 
 template <class P>

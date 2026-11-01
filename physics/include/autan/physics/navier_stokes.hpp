@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <span>
+#include <utility>
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
@@ -51,7 +52,13 @@ class NavierStokes {
   /// R(s) and the approximate Jacobian: Euler<P>'s, plus dF_v/dW of every face with the cell
   /// gradients held fixed.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// A = diag(shift) + J~ into `a`: Euler<P>'s blocks, the viscous face Jacobians and, through
+  /// the boundary fit, the viscous fluxes' dependence on the fitted cell and the face's other cell.
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
+  /// After assemble: Frobenius norms of the boundary fit's Jacobian blocks it added and of those
+  /// outside the block pattern (stencil entries that are not the face's cells), which it leaves
+  /// out.
+  [[nodiscard]] std::pair<double, double> fit_jacobian_norms() const;
   /// After residual(s): per cell, the convective spectral radius plus 4 times the viscous one
   /// (Blazek 2015, eq. 6.20), so that CFL V / lambda is the cell's time step.
   void spectral_radius(std::span<State> lambda);
