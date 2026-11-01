@@ -653,7 +653,16 @@ class EulerPhysics final : public runtime::Physics {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
         linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
       } else {
-        matrix_->factor(owned_);
+        // Every rank sweeps, exchanging after each colour, or none does.
+        bool singular = false;
+        try {
+          matrix_->factor(owned_);
+        } catch (const std::domain_error&) {
+          singular = true;
+        }
+        if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) {
+          throw std::domain_error("singular diagonal block");
+        }
         matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
                               [this](std::span<double> x) { fill_ghosts(x); });
         // A fixed number of sweeps: no residual is measured, only a singular block fails.
