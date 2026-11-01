@@ -375,8 +375,12 @@
               "$ref": "#/$defs/spread"
             },
             "clocks_event_reasons": {
-              "type": "string",
-              "pattern": "^0x[0-9a-f]{16}$"
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^0x[0-9a-f]{16}$",
+              "description": "OR of the clock event reasons seen; null where the platform does not report them."
             },
             "compute_apps_max": {
               "type": [
@@ -457,5 +461,88 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "cuda",
+                  "hip"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "gpu": {
+                "$ref": "#/$defs/cuda_gpu"
+              }
+            }
+          },
+          "conditions": {
+            "properties": {
+              "idle_check": {
+                "properties": {
+                  "compute_apps_max": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "during_run": {
+                "properties": {
+                  "compute_apps_max": {
+                    "type": "integer"
+                  },
+                  "clocks_event_reasons": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "metal"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "gpu": {
+                "$ref": "#/$defs/metal_gpu"
+              },
+              "precision": {
+                "enum": [
+                  "fp32",
+                  "fp32+acc64"
+                ],
+                "description": "Metal has no FP64 arithmetic."
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

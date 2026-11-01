@@ -223,9 +223,10 @@ class Sampler:
             return [v for s in busy if (v := getattr(s, name)) is not None]
 
         listed = [s.compute_apps for s in self.samples if s.compute_apps is not None]
-        reasons = 0
-        for s in busy:
-            reasons |= s.event_reasons or 0
+        masks = [s.event_reasons for s in busy if s.event_reasons is not None]
+        reasons = None
+        for mask in masks:
+            reasons = (reasons or 0) | mask
         return {
             "samples": len(self.samples),
             "busy_samples": len(busy),
@@ -233,6 +234,6 @@ class Sampler:
             "sm_max_mhz": max(values("sm_max_mhz"), default=None),
             "power_w": _spread(values("power_w")),
             "temperature_c": _spread(values("temperature_c")),
-            "clocks_event_reasons": f"0x{reasons:016x}",
+            "clocks_event_reasons": None if reasons is None else f"0x{reasons:016x}",
             "compute_apps_max": max(listed) if listed else None,
         }

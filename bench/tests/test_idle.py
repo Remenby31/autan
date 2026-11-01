@@ -39,7 +39,7 @@ def test_idle_check_needs_a_measured_quiet_gpu(fake_nvidia_smi):
     ]:
         fake_nvidia_smi(utilization, apps)
         with pytest.raises(BenchError) as err:
-            require_idle(interval_s=0.0, timeout_s=0.0)
+            require_idle(window=1, interval_s=0.0, timeout_s=0.0)
         assert err.value.code == code
 
 
@@ -54,5 +54,5 @@ def test_idle_check_on_macos_uses_the_device_utilization(tmp_path, monkeypatch):
             assert require_idle(interval_s=0.0)["compute_apps_max"] is None
         else:
             with pytest.raises(BenchError) as err:
-                require_idle(interval_s=0.0, timeout_s=0.0)
+                require_idle(window=1, interval_s=0.0, timeout_s=0.0)
             assert err.value.code == Code.GPU_BUSY

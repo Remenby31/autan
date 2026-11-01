@@ -116,6 +116,7 @@ def test_run_derives_bandwidth_and_time_per_cell_from_kernel_times(fake_gpu, tmp
     assert doc["provenance"]["devices"]["kind"] == backend
     # macOS lists no GPU processes: contention is recorded as unknown, not as zero.
     assert during["compute_apps_max"] == (1 if backend == "cuda" else None)
+    assert (during["clocks_event_reasons"] is None) == (backend == "metal")
 
 
 def test_run_refuses_an_unverified_result(fake_gpu, tmp_path, capsys):
