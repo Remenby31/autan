@@ -245,8 +245,8 @@ class EulerPhysics final : public runtime::Physics {
   struct Vortex {
     const runtime::BoundaryInput* condition = nullptr;
     std::array<double, 3> center{};
-    std::vector<index_t> zones;     // the surfaces whose lift gives the circulation
-    double span = 0.0;              // their extent along y
+    std::vector<index_t> zones;      // the surfaces whose lift gives the circulation
+    double span = 0.0;               // their extent along y
     std::vector<std::size_t> faces;  // its farfield faces (boundary indices)
     double circulation = 0.0, next = 0.0;
   };
@@ -457,8 +457,7 @@ class EulerPhysics final : public runtime::Physics {
     const auto nb = static_cast<std::size_t>(ctx_.mesh.n_boundary_faces());
     const auto b = i - static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
     const double p_inf = ctx_.input.freestream.pressure;
-    return {face_force[b] - p_inf * g.face_area_x[i],
-            face_force[nb + b] - p_inf * g.face_area_y[i],
+    return {face_force[b] - p_inf * g.face_area_x[i], face_force[nb + b] - p_inf * g.face_area_y[i],
             face_force[2 * nb + b] - p_inf * g.face_area_z[i]};
   }
 
@@ -483,7 +482,8 @@ class EulerPhysics final : public runtime::Physics {
         }
       }
       ctx_.ranks.sum(force);
-      const double lift = -std::sin(fs.aoa) * force[0].value() + std::cos(fs.aoa) * force[1].value();
+      const double lift =
+          -std::sin(fs.aoa) * force[0].value() + std::cos(fs.aoa) * force[1].value();
       v.next = lift / (v.span * fs.density * fs.speed);
     }
   }

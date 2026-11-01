@@ -56,8 +56,8 @@ struct BoundaryInput {
   std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
                      ///< manufactured, oracle-state
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<double> velocity;        ///< velocity-inlet: speed normal to the face (m/s)
-  std::optional<BoundaryStates> states;  ///< oracle-state only
+  std::optional<double> velocity;           ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<BoundaryStates> states;     ///< oracle-state only
   std::optional<PointVortex> point_vortex;  ///< farfield only
 };
 

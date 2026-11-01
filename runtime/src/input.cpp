@@ -278,7 +278,8 @@ BoundaryInput parse_boundary(const Json& value, const std::string& path) {
     invalid(path + ".states", "only an oracle-state boundary takes states");
   }
   if (!o.is_null("point_vortex")) {
-    if (b.kind != "farfield") invalid(path + ".point_vortex", "only a farfield takes a point vortex");
+    if (b.kind != "farfield")
+      invalid(path + ".point_vortex", "only a farfield takes a point vortex");
     const Object v(o.get("point_vortex"), path + ".point_vortex", {"zones", "center"});
     const Json& names = v.get("zones");
     if (!names.is_array() || names.empty()) invalid(v.at("zones"), "expected zone names");
