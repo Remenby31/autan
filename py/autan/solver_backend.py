@@ -48,7 +48,6 @@ class SolverBackend:
     ``KeyboardInterrupt`` after the runtime has finalized it."""
 
     devices: Devices = field(default_factory=lambda: Devices(kind="cpu", count=1))
-    deterministic: bool = False
     executable: Path | None = None
 
     def run(
@@ -57,9 +56,7 @@ class SolverBackend:
         executable = (self.executable or find_executable() or Path()).absolute()
         if not executable.is_file():
             raise CaseError([_not_installed(f"{executable} is not a file")])
-        document = build(
-            case, mesh_info, devices=self.devices, deterministic=self.deterministic, start=start
-        ).document()
+        document = build(case, mesh_info, devices=self.devices, start=start).document()
         runs = runs.absolute()
         runs.mkdir(parents=True, exist_ok=True)
         before = {p.name for p in runs.iterdir()}
@@ -102,7 +99,6 @@ class SolverBackend:
             "mesh": document["mesh"]["sha256"],  # type: ignore[index]
             "precision": document["precision"],
             "devices": self.devices,
-            "deterministic": self.deterministic,
             "start": document["start"],
         }
         found = {
@@ -110,7 +106,6 @@ class SolverBackend:
             "mesh": run.mesh.sha256,
             "precision": run.precision,
             "devices": run.devices,
-            "deterministic": run.deterministic,
             "start": (
                 {"run": document["start"]["run"], **run.start.model_dump(mode="json")}  # type: ignore[index]
                 if run.start is not None
