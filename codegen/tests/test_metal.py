@@ -15,6 +15,7 @@ from autan_codegen.derive import derive
 from autan_codegen.emit_metal import POLICIES as METAL_POLICIES
 from autan_codegen.emit_metal import emit_msl
 from conftest import ROOT
+from test_generate import MODULE
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,8 +39,6 @@ def test_every_dsl_shape_compiles_to_metal(backend: str, tmp_path: Path) -> None
     # writing face data, all derivatives) compiled by the Metal compiler of the device.
     if backend != "metal":
         pytest.skip("needs --backend metal")
-    from test_generate import MODULE
-
     src = tmp_path / "state_gradient.py"
     src.write_text(MODULE)
     m = model.load(src)
