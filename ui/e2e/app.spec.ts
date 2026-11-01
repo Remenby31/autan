@@ -11,7 +11,7 @@ async function runs(page: Page): Promise<Run[]> {
 test("home lists every run directory and filters by state", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(8);
   await page.getByRole("button", { name: "State" }).click();
   await page.getByRole("menuitemcheckbox", { name: /diverged/ }).click();
   await page.keyboard.press("Escape");
@@ -23,7 +23,7 @@ test("home lists every run directory and filters by state", async ({ page }) => 
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
-  await expect(rows).toHaveCount(4);
+  await expect(rows).toHaveCount(8);
 
   const source = (await runs(page))[0] as Run;
   const started = new Date(Date.now() + 60_000).toISOString().replace(/\.\d+Z$/, "Z");
@@ -40,7 +40,7 @@ test("a run written by another process appears and updates live", async ({ page 
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
   renameSync(staging, directory);
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(9);
   await expect(rows.first().getByRole("img", { name: "running" })).toBeVisible();
 
   const history = join(directory, "history.jsonl");
@@ -99,4 +99,29 @@ test("viewer renders on WebGPU and picks the zone under the cursor", async ({ pa
   await expect(zones.getByRole("button", { pressed: true })).toHaveText(/^wing\./);
   await page.mouse.click(box.x + 20, box.y + box.height - 20);
   await expect(zones.getByRole("button", { pressed: true })).toHaveCount(0);
+});
+
+test("runs selected with x compare with c, with a polar for an angle sweep", async ({ page }) => {
+  await page.goto("/");
+  const group = page.locator("li", { has: page.getByTestId("study") });
+  await expect(group.getByTestId("study")).toContainText("α 7.05–21.47 deg");
+  const rows = group.locator("a[data-row]");
+  await rows.first().focus();
+  await page.keyboard.press(" ");
+  await expect(page.getByTestId("peek")).toBeVisible();
+  await page.keyboard.press(" ");
+  await expect(page.getByTestId("peek")).toHaveCount(0);
+  await page.keyboard.press("x");
+  await page.keyboard.press("j");
+  await page.keyboard.press("x");
+  await expect(page.getByTestId("selected-count")).toHaveText("2 selected");
+  await page.keyboard.press("c");
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  await expect(page.getByTestId("compared").getByRole("link")).toHaveCount(2);
+  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+
+  await page.goto("/");
+  await group.getByRole("button", { name: "Compare" }).click();
+  await expect(page.getByTestId("polar")).toBeVisible();
+  await expect(page.getByTestId("settings-diff")).toContainText("freestream.aoa");
 });

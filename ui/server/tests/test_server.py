@@ -6,6 +6,7 @@ import shutil
 import socket
 import threading
 import time
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -238,6 +239,9 @@ def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
     assert len(summary["trend"]) == 30
     assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert summary["settings"]["aoa"] == case["freestream"]["aoa"]
+    assert summary["settings"]["turbulence"] == case["physics"]["turbulence"]["model"]
 
     # Lines appended after the directory was checked are not re-validated by the registry.
     with (source / "history.jsonl").open("a") as history:

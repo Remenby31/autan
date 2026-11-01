@@ -237,3 +237,47 @@ export function useLiveRun(runId: string): LiveRun {
   }, [runId]);
   return state;
 }
+
+/** Live history of several runs at once, keyed by run id; streams close when ids change. */
+export function useRunsHistory(runIds: readonly string[]): Map<string, LiveRun> {
+  const [state, setState] = useState<Map<string, LiveRun>>(() => new Map());
+  const key = runIds.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for the id list
+  useEffect(() => {
+    const sources = runIds.map((runId) => {
+      let history = emptyColumns();
+      const set = (change: (old: LiveRun) => LiveRun) =>
+        setState((s) => {
+          const next = new Map(s);
+          next.set(
+            runId,
+            change(s.get(runId) ?? { run: null, history, connected: false, invalid: null }),
+          );
+          return next;
+        });
+      const source = new EventSource(`/api/runs/${runId}/history/events`);
+      source.addEventListener("run", (e) => {
+        const run = JSON.parse(e.data) as Run;
+        set((old) => ({ ...old, run }));
+      });
+      source.addEventListener("history", (e) => {
+        const records = JSON.parse(e.data) as HistoryRecord[];
+        if (!records.length) return;
+        history = appendHistory(history, records);
+        const next = history;
+        set((old) => ({ ...old, history: next }));
+      });
+      source.addEventListener("invalid", (e) => {
+        const reason = JSON.parse(e.data) as string;
+        source.close();
+        set((old) => ({ ...old, invalid: reason }));
+      });
+      return source;
+    });
+    setState(new Map());
+    return () => {
+      for (const source of sources) source.close();
+    };
+  }, [key]);
+  return state;
+}
