@@ -144,5 +144,11 @@ def test_baseline_pools_several_runs_into_one_median(write_json, tmp_path, capsy
     assert main(["baseline", paths[0], paths[0], "--out", str(out)]) == 2
     assert "error[INCOMPATIBLE]" in capsys.readouterr().err
     other = run_at(QUIET, 50, config={"elements": 1 << 27, "element_bytes": 8})
-    assert main(["baseline", paths[0], str(write_json("o.json", other)), "--out", str(out)]) == 2
-    assert "error[INCOMPATIBLE]" in capsys.readouterr().err
+    driver = run_at(QUIET, 51)
+    driver["provenance"]["driver_version"] = 13010
+    workload = run_at(QUIET, 52)
+    workload["benchmarks"][0]["bytes_per_rep"] = 2**31
+    for k, odd in enumerate((other, driver, workload, pooled)):
+        odd_path = str(write_json(f"odd{k}.json", odd))
+        assert main(["baseline", paths[0], odd_path, "--out", str(tmp_path / "x.json")]) == 2
+        assert "error[INCOMPATIBLE]" in capsys.readouterr().err

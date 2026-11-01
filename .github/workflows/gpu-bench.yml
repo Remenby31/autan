@@ -8,7 +8,7 @@ on:
   push:
     branches: [main]
     paths: &paths
-      [bench/**, docker/**, codegen/**, kernels/**, core/**, io/**, CMakeLists.txt, .github/workflows/gpu-bench.yml]
+      [bench/**, docker/**, codegen/**, kernels/**, core/**, io/**, vv/**, CMakeLists.txt, .github/workflows/gpu-bench.yml]
   pull_request:
     paths: *paths
   workflow_dispatch:
