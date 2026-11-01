@@ -459,6 +459,11 @@ def set_stencil_slice(slice_: int) -> None:
     lib().autan_spike_set_stencil_slice(ctypes.c_int(slice_))
 
 
+def set_incidence_slice(slice_: int) -> None:
+    """Cells per slice of the device incidence layout of the following calls (0: CSR)."""
+    lib().autan_spike_set_incidence_slice(ctypes.c_int(slice_))
+
+
 def gpu_bind_check(m: Mesh) -> tuple[bool, bool]:
     """(built-in face_area bound, a physics' own writable cell_volume left alone) by DeviceMesh."""
     err = ctypes.create_string_buffer(512)

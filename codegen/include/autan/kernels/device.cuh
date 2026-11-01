@@ -126,6 +126,9 @@ class DeviceMesh {
     /// Cells per slice of the sliced stencil layout (Topology::stencil_stride), 0 for CSR. Same
     /// results bit for bit; a warp then reads its cells' stencil entries contiguously.
     int stencil_slice = 0;
+    /// Cells per slice of the sliced incidence layout (Topology::incidence_stride, with the
+    /// column index incidence_cell), 0 for CSR. Same results bit for bit.
+    int incidence_slice = 0;
   };
 
   /// `stencil` may be null (no stencil reductions); it is copied.
@@ -133,8 +136,21 @@ class DeviceMesh {
              Options options)
       : geometry_(geometry), stream_(options.stream) {
     Topology host = kernels::topology(mesh.view());
-    const auto twins = incidence_twins(mesh);
+    auto twins = incidence_twins(mesh);
     host.incidence_twin = twins.data();
+    if (options.incidence_slice > 0) {
+      incidences_ = sliced_incidences(host, options.incidence_slice);
+      geometry_.lsq_weight = sliced_values(incidences_, geometry_.lsq_weight, 3);
+      geometry_.incidence_side = sliced_values(incidences_, geometry_.incidence_side, 1);
+      twins = incidences_.twin;
+      host.incidence_twin = twins.data();
+      host.n_incidences = static_cast<offset_t>(incidences_.cell_faces.size());
+      host.cell_face_offsets = incidences_.cell_face_offsets.data();
+      host.cell_faces = incidences_.cell_faces.data();
+      host.incidence_stride = incidences_.stride;
+      host.incidence_length = incidences_.length.data();
+      host.incidence_cell = incidences_.cell.data();
+    }
     if (stencil != nullptr) {
       csr_entries_ = stencil->entries.size();
       if (options.stencil_slice > 0) {
@@ -169,6 +185,12 @@ class DeviceMesh {
     topo_.cell_face_offsets = offsets_.get();
     topo_.cell_faces = cell_faces_.get();
     topo_.incidence_twin = twin_.get();
+    if (options.incidence_slice > 0) {
+      incidence_length_ = copy(std::span<const index_t>(incidences_.length));
+      incidence_cell_ = copy(std::span<const index_t>(incidences_.cell));
+      topo_.incidence_length = incidence_length_.get();
+      topo_.incidence_cell = incidence_cell_.get();
+    }
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
       stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));
@@ -290,6 +312,8 @@ class DeviceMesh {
   DeviceArray<offset_t> offsets_, twin_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
   DeviceArray<index_t> stencil_entries_, stencil_length_;
+  SlicedIncidences incidences_;
+  DeviceArray<index_t> incidence_length_, incidence_cell_;
   HostColouring interior_, boundary_;
   DeviceArray<double> face_scratch_, incidence_scratch_;
   std::map<std::pair<std::string, std::type_index>, DeviceArray<std::byte>> fields_;

@@ -23,6 +23,7 @@ from autan_codegen.emit_cpp import (
     body_lines,
     call_args,
     ctype,
+    incidence_loop,
     rel_datasets,
     storage_type,
     unique_bodies,
@@ -213,9 +214,7 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
         e.w("    return;")
         e.w("  }")
         e.w(f"  A acc[{n}] = {{}};")
-        e.w(
-            "  for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {"
-        )
+        e.w(incidence_loop("  "))
         e.w("    const index_t f = d.topo.cell_faces[k];")
         # Faces outside the loop's range (halo faces, other kind) were not evaluated.
         cond = (

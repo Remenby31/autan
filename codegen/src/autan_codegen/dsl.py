@@ -169,6 +169,7 @@ class _SetDecl:
 
 cells = _SetDecl(MeshSet.CELLS)
 faces = _SetDecl(MeshSet.FACES)
+incidences = _SetDecl(MeshSet.INCIDENCES)
 
 
 def param(name: str, annotation: object) -> Parameter:
@@ -315,6 +316,7 @@ class Loop:
     over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
     jacobians: list[Jacobian] = field(default_factory=list)
     frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
+    entries: list[Write] = field(default_factory=list)  # reductions: one value per entry
 
 
 def _bindings(raw: dict[str, object]) -> dict[str, Binding]:
@@ -397,6 +399,7 @@ def cell_reduce(
     finalise: Body | None = None,
     finalise_args: dict[str, object] | None = None,
     over: str = INCIDENCES,
+    entries: object = (),
     **args: object,
 ) -> Loop:
     """Reduce `body` over the entries of each owned cell into accumulators, then write them.
@@ -409,6 +412,9 @@ def cell_reduce(
     The body's outputs feed `acc` in order (Sum, Min or Max, each naming its target cell dataset).
     With `finalise`, the accumulated values are passed to it as its first arguments, followed by
     `finalise_args`, and its outputs are written to the accumulators' datasets instead.
+    `entries` (Write outputs to datasets of the iterated set, of a passive role) take the body's
+    outputs after the accumulators' ones, one value per entry, stored at the entry: each entry
+    is written once, by its cell. A loop with entries has no active input (no derivatives).
     """
     if over not in (INCIDENCES, STENCIL):
         raise CodegenError(
@@ -420,6 +426,13 @@ def cell_reduce(
             raise CodegenError(
                 Code.INVALID_LOOP_OUTPUT, "cell_reduce accumulators are Sum, Min or Max"
             )
+    per_entry = _outs(entries) if entries != () else []
+    for w in per_entry:
+        if not isinstance(w, Write) or w.dataset.set.value != over:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT,
+                f"cell_reduce entries are Write outputs to {over} datasets",
+            )
     return Loop(
         "reduce",
         body,
@@ -428,6 +441,7 @@ def cell_reduce(
         finalise,
         _bindings(dict(finalise_args or {})),
         over=over,
+        entries=per_entry,
     )
 
 
@@ -439,4 +453,4 @@ def _intrinsic(*_: object) -> object:
 
 
 dot = cross = norm = sqrt = exp = log = sin = cos = rel = _intrinsic
-transpose = inverse = outer = Vec3 = Vec5 = _intrinsic
+transpose = inverse = identity = outer = Vec3 = Vec5 = _intrinsic

@@ -151,6 +151,17 @@ def at(d: dsl.Dataset | dsl.Parameter, index: str, c: int, layout: str = "soa") 
     return f"d.{d.name}[offset_t({c}) * {stride(d)} + ({index})]" if c else f"d.{d.name}[{index}]"
 
 
+def incidence_loop(indent: str) -> str:
+    """Opening of the loop over the incidences k of cell c, in CSR or sliced layout
+    (Topology::incidence_stride): the same incidences in the same order."""
+    return (
+        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c], kn = d.topo.incidence_stride == 1 "
+        "? d.topo.cell_face_offsets[c + 1] : d.topo.cell_face_offsets[c] + "
+        "offset_t(d.topo.incidence_length[c]) * d.topo.incidence_stride; "
+        "k < kn; k += d.topo.incidence_stride) {"
+    )
+
+
 def at_dynamic(d: dsl.Dataset, index: str, comp: str, layout: str = "soa") -> str:
     """`at` with a component index computed at run time."""
     if layout == "aos":
