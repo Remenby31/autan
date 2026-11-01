@@ -136,6 +136,24 @@ jobs:
           name: mpi-hang-stacks-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mpi-hang-stacks/
           if-no-files-found: ignore
+      # The SDK through a real launcher: autan.SolverBackend starts `mpiexec -n 2` and stops every
+      # rank through the stop file (py/tests, marker mpi; deselected in the Python SDK job).
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - name: Run the SDK's multi-rank tests
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: |
+          set -o pipefail
+          uv sync --locked --no-install-project
+          uv sync --locked --no-build-isolation
+          export AUTAN_RUN_RELAXATION_MPI="$PWD/build/tests/runtime/autan-run-relaxation"
+          uv run --locked --no-sync pytest -m mpi -ra py/tests | tee pytest-mpi.log
+          if grep -q '^SKIPPED' pytest-mpi.log; then echo "::error::the SDK's MPI tests must run, not skip"; exit 1; fi
+          grep -Eq '^=+ [1-9][0-9]* passed' pytest-mpi.log || { echo "::error::no SDK MPI test passed"; exit 1; }
 
   bench-harness:
     # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).

@@ -105,6 +105,23 @@ def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
     assert snapshot.rejected[foreign.name].startswith("E0701")
 
 
+def test_the_registry_lists_the_runs_whose_solution_is_a_result(runs: Path) -> None:
+    # results.md: an ended run's solution.cgns is its result, history or not; a running run's
+    # is not yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+    source = next(p for p in runs.iterdir() if p != early)
+    assert (early / "solution.cgns").is_file()
+    assert sorted(Registry(runs).scan().solutions) == sorted([source.name, early.name])
+
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    assert Registry(runs).scan().solutions == [early.name]
+
+
 def test_registry_rechecks_a_run_when_any_contract_file_changes(runs: Path) -> None:
     source = next(runs.iterdir())
     registry = Registry(runs)
@@ -158,10 +175,12 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
         copy = staging.rename(runs / run["run_id"])
         kind, data = next(events)
         assert (kind, data["run_id"]) == ("run", copy.name)
+        assert next(events) == ("solutions", sorted([source.name, copy.name]))
 
         (copy / "run.json").write_text("{")
-        assert [next(events), next(events)] == [
+        assert [next(events), next(events), next(events)] == [
             ("removed", copy.name),
+            ("solutions", [source.name]),
             ("rejected", [{"dir": copy.name, "reason": ANY}]),
         ]
 
@@ -671,6 +690,24 @@ def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, s
         assert z["triangles"] == int((counts - 2).sum())
     np.testing.assert_allclose(values("field:Cp"), 1.0, rtol=1e-5)
     np.testing.assert_allclose(values("field:Cf"), 1.0, rtol=1e-5)
+
+
+def test_an_inviscid_run_shows_no_skin_friction(tmp_path: Path) -> None:
+    # Euler equations carry no wall shear: Cf is not a field of the run, not a field of zeros.
+    source = (PY / "examples" / "crm_hl.py").read_text()
+    (tmp_path / "case.py").write_text(
+        source.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
+    )
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    run = autan.load(tmp_path / "case.py").run(
+        mesh_info, backend=autan.FakeBackend(iterations=5), runs=tmp_path / "runs"
+    )
+
+    with serving(create_app(tmp_path / "runs", static=None)) as url:
+        message = httpx.get(f"{url}/api/runs/{run.path.name}/surface").content
+
+    header = json.loads(message[4 : 4 + int.from_bytes(message[:4], "little")])
+    assert [f["name"] for f in header["fields"]] == ["Cp", "Pressure"]
 
 
 def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Path) -> None:
