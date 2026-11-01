@@ -35,6 +35,7 @@ struct fp32 {
   using grad = float;
   using residual = float;
   using geom = float;
+  using geom_value = float;  // Geom data that reach bodies only as values
   using param = float;
   using compute = float;
   using accum = float;
@@ -49,6 +50,7 @@ struct fp32_acc64 {
   using grad = float;
   using residual = df64;
   using geom = df64;
+  using geom_value = float;  // Geom data that reach bodies only as values
   using param = df64;
   using compute = float;
   using accum = df64;
