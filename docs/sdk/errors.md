@@ -180,6 +180,22 @@ Two cells share a global id, or one is negative.
 
 Fix: Regenerate the partition; global cell ids must be unique and non-negative.
 
+## E0118
+
+**Invalid periodic pair** (error)
+
+A periodic pair is declared wrongly: zones out of range, empty or not boundary zones of kind periodic, a zone paired with itself or in two pairs, a periodic zone in no pair, or a translation that is zero or not finite.
+
+Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exactly one pair, with a non-zero translation.
+
+## E0119
+
+**Periodic faces do not match** (error)
+
+The faces of a periodic pair do not match one to one under its translation.
+
+Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
+
 ## E0120
 
 **Degenerate face** (error)
@@ -475,6 +491,14 @@ Fix: Remove the boundary rules from the verification case.
 Manufactured solutions are steady, and a run starting from the freestream would keep an initial-condition error at fixed time; `autan.case/1` verification cases are steady.
 
 Fix: Set `case.time = autan.Steady(...)` in the verification case.
+
+## E0424
+
+**Condition on a periodic zone** (error)
+
+A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.
+
+Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic.
 
 ## E0501
 
