@@ -1,0 +1,443 @@
+{
+  "schema": "autan.diagnostics/1",
+  "codes": {
+    "E0001": {
+      "severity": "error",
+      "title": "The case file cannot be read",
+      "fix": "Fix the file at the reported location.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0001"
+    },
+    "E0002": {
+      "severity": "error",
+      "title": "The case file does not define exactly one case",
+      "fix": "Create one case: `case = autan.Case(\"name\", mesh=\"mesh.cgns\")`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0002"
+    },
+    "E0003": {
+      "severity": "error",
+      "title": "The case document does not match the schema",
+      "fix": "Correct the field named in the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0003"
+    },
+    "E0004": {
+      "severity": "error",
+      "title": "Unsupported case schema version",
+      "fix": "Set `schema = \"autan.case/1\"`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0004"
+    },
+    "E0101": {
+      "severity": "error",
+      "title": "Inconsistent mesh array sizes",
+      "fix": "Regenerate the mesh with the meshing tool; the file or partition is corrupt.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0101"
+    },
+    "E0102": {
+      "severity": "error",
+      "title": "Mesh index out of range",
+      "fix": "Regenerate the mesh; an index points past the end of its array.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0102"
+    },
+    "E0103": {
+      "severity": "error",
+      "title": "Face with fewer than 3 nodes",
+      "fix": "Remove or repair the degenerate face in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0103"
+    },
+    "E0104": {
+      "severity": "error",
+      "title": "Face with a repeated node",
+      "fix": "Repair the face in the meshing tool so each node appears once.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0104"
+    },
+    "E0105": {
+      "severity": "error",
+      "title": "Face with the same cell on both sides",
+      "fix": "Repair the mesh connectivity in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0105"
+    },
+    "E0106": {
+      "severity": "error",
+      "title": "Cell with too few faces",
+      "fix": "Repair the cell in the meshing tool, or regenerate the partition.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0106"
+    },
+    "E0107": {
+      "severity": "error",
+      "title": "Cell not closed",
+      "fix": "Repair the cell in the meshing tool: its faces must enclose a volume.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0107"
+    },
+    "D0107": {
+      "severity": "divergence",
+      "title": "Divergence",
+      "fix": "Lower the CFL number or use a more dissipative limiter; check the mesh quality near the cell.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#d0107"
+    },
+    "E0108": {
+      "severity": "error",
+      "title": "Face shared by more than two cells",
+      "fix": "Repair non-manifold faces in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0108"
+    },
+    "E0109": {
+      "severity": "error",
+      "title": "Face does not match its zone's role",
+      "fix": "Put interior and boundary faces in separate zones in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0109"
+    },
+    "E0110": {
+      "severity": "error",
+      "title": "Duplicate zone name",
+      "fix": "Rename one of the zones in the meshing tool; `interior`, `unassigned` and `fluid` are reserved.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0110"
+    },
+    "E0111": {
+      "severity": "error",
+      "title": "Labelled face not found",
+      "fix": "Regenerate the mesh; a zone references a face that does not exist.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0111"
+    },
+    "E0112": {
+      "severity": "error",
+      "title": "Empty mesh",
+      "fix": "Check that the file is the intended mesh and was exported completely.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0112"
+    },
+    "E0113": {
+      "severity": "error",
+      "title": "Mesh too large",
+      "fix": "Partition the mesh, or use a build with 64-bit indices.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0113"
+    },
+    "E0114": {
+      "severity": "error",
+      "title": "Inverted cell",
+      "fix": "Repair the inverted cell in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0114"
+    },
+    "E0115": {
+      "severity": "error",
+      "title": "Face labelled twice",
+      "fix": "Assign each face to one zone in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0115"
+    },
+    "E0116": {
+      "severity": "error",
+      "title": "Face without an owned cell",
+      "fix": "Regenerate the partition; every face needs an owned cell.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0116"
+    },
+    "E0117": {
+      "severity": "error",
+      "title": "Duplicate or negative global cell id",
+      "fix": "Regenerate the partition; global cell ids must be unique and non-negative.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0117"
+    },
+    "E0120": {
+      "severity": "error",
+      "title": "Degenerate face",
+      "fix": "Repair the face in the meshing tool; it has no area.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0120"
+    },
+    "E0121": {
+      "severity": "error",
+      "title": "Non-positive cell volume",
+      "fix": "Repair the cell in the meshing tool; it is inverted or flat.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0121"
+    },
+    "E0130": {
+      "severity": "error",
+      "title": "Mesh file cannot be opened",
+      "fix": "Check the path and the file permissions.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0130"
+    },
+    "E0131": {
+      "severity": "error",
+      "title": "Unknown mesh format",
+      "fix": "Export the mesh as CGNS, Gmsh, Fluent .msh or an OpenFOAM polyMesh.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0131"
+    },
+    "E0132": {
+      "severity": "error",
+      "title": "Malformed mesh file",
+      "fix": "Re-export the mesh; the file does not follow its format specification.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0132"
+    },
+    "E0133": {
+      "severity": "error",
+      "title": "Unsupported mesh feature",
+      "fix": "Export the mesh without the feature named in the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0133"
+    },
+    "E0134": {
+      "severity": "error",
+      "title": "Mesh refers to another file",
+      "fix": "Export a self-contained mesh (no CGNS links to other files).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0134"
+    },
+    "E0135": {
+      "severity": "error",
+      "title": "Entity in several zones",
+      "fix": "Assign each entity to one zone in the meshing tool.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0135"
+    },
+    "E0140": {
+      "severity": "error",
+      "title": "Invalid partition request",
+      "fix": "Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0140"
+    },
+    "E0141": {
+      "severity": "error",
+      "title": "Mesh already partitioned",
+      "fix": "Partition the global mesh, not one of its partitions.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0141"
+    },
+    "E0142": {
+      "severity": "error",
+      "title": "Partitioner unavailable or failed",
+      "fix": "Use a build with the partitioner enabled, or choose the other partitioning method.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0142"
+    },
+    "E0143": {
+      "severity": "error",
+      "title": "Empty partition",
+      "fix": "Run on fewer ranks, or relax the cell weights.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0143"
+    },
+    "E0144": {
+      "severity": "error",
+      "title": "Inconsistent halo",
+      "fix": "Launch one MPI rank per part, each with the partition extracted for its own rank.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0144"
+    },
+    "E0145": {
+      "severity": "error",
+      "title": "Device halo exchange unsupported",
+      "fix": "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0145"
+    },
+    "E0201": {
+      "severity": "error",
+      "title": "No mesh information",
+      "fix": "Pass the MeshInfo JSON: `autan plan case.py --mesh-info mesh.meshinfo.json`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0201"
+    },
+    "E0202": {
+      "severity": "error",
+      "title": "The MeshInfo document is invalid",
+      "fix": "Regenerate the MeshInfo with the mesh reader of the same solver version.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0202"
+    },
+    "E0203": {
+      "severity": "error",
+      "title": "The MeshInfo describes another mesh file",
+      "fix": "Pass the MeshInfo of the case's mesh, or change `mesh` in the case.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0203"
+    },
+    "W0204": {
+      "severity": "warning",
+      "title": "Highly non-orthogonal cells",
+      "fix": "Improve the mesh near the worst cells, or lower the CFL number.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0204"
+    },
+    "W0205": {
+      "severity": "warning",
+      "title": "Mesh file not found",
+      "fix": "Put the mesh at the path the case gives, relative to the case file.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0205"
+    },
+    "E0301": {
+      "severity": "error",
+      "title": "Quantity of the wrong dimension",
+      "fix": "Pass a value of the expected dimension, with a unit from `autan.units`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0301"
+    },
+    "E0302": {
+      "severity": "error",
+      "title": "Missing unit",
+      "fix": "Multiply by a unit: `19.57 * deg`, `7.0 * m`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0302"
+    },
+    "E0303": {
+      "severity": "error",
+      "title": "Unknown unit",
+      "fix": "Write the quantity as `\"<number> <unit>\"`, for example `\"101325 Pa\"`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0303"
+    },
+    "E0304": {
+      "severity": "error",
+      "title": "Value out of range",
+      "fix": "Use a physically valid value.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0304"
+    },
+    "E0305": {
+      "severity": "error",
+      "title": "Turbulence model needs an unsteady run",
+      "fix": "Set `case.time = autan.Unsteady(steps=..., dt=...)`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0305"
+    },
+    "E0306": {
+      "severity": "error",
+      "title": "Freestream does not match the physics",
+      "fix": "Set the freestream parameters required by the physics.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0306"
+    },
+    "E0410": {
+      "severity": "error",
+      "title": "Boundary rule matches no zone",
+      "fix": "Use one of the zone names listed by `autan plan`, or a glob that matches some.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0410"
+    },
+    "E0411": {
+      "severity": "error",
+      "title": "Boundary zone matched by several rules",
+      "fix": "Narrow the patterns so each zone matches one rule.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0411"
+    },
+    "E0412": {
+      "severity": "error",
+      "title": "Boundary zone without a condition",
+      "fix": "Give it a condition: `case.boundary(\"name\").wall()` (or `slip()`, `symmetry()`, `farfield()`, `inlet(...)`, `outlet(...)`).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0412"
+    },
+    "E0413": {
+      "severity": "error",
+      "title": "Mesh boundary type needs values",
+      "fix": "Set them: `case.boundary(\"name\").outlet(static_pressure=101325 * Pa)`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0413"
+    },
+    "E0414": {
+      "severity": "error",
+      "title": "Boundary condition not available for this physics",
+      "fix": "Use the condition matching the physics: `slip()` for inviscid walls, `inlet(...)` or `velocity_inlet(...)`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0414"
+    },
+    "W0415": {
+      "severity": "warning",
+      "title": "Case overrides the mesh boundary type",
+      "fix": "Check that the override is intended.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0415"
+    },
+    "E0501": {
+      "severity": "error",
+      "title": "Cell zone rule matches no zone",
+      "fix": "Use one of the cell zone names listed by `autan plan`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0501"
+    },
+    "E0502": {
+      "severity": "error",
+      "title": "Cell zone matched by several rules",
+      "fix": "Narrow the patterns so each zone matches one rule.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0502"
+    },
+    "E0503": {
+      "severity": "error",
+      "title": "Solid zone without a material",
+      "fix": "Set it: `case.cell_zone(\"name\").solid(autan.materials.COPPER)`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0503"
+    },
+    "E0504": {
+      "severity": "error",
+      "title": "Material does not match the physics",
+      "fix": "Use a material of the right kind for the physics.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0504"
+    },
+    "E0505": {
+      "severity": "error",
+      "title": "Fluids of different materials in contact",
+      "fix": "Use the same material on both sides, or separate them by a solid zone.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0505"
+    },
+    "E0506": {
+      "severity": "error",
+      "title": "Solid zone with incompressible physics",
+      "fix": "Use `autan.Compressible(...)`, or remove the solid zone from the mesh.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0506"
+    },
+    "E0601": {
+      "severity": "error",
+      "title": "Monitor surfaces match no boundary zone",
+      "fix": "Use a pattern that matches the zones to integrate over.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0601"
+    },
+    "E0602": {
+      "severity": "error",
+      "title": "Duplicate monitor name",
+      "fix": "Name them: `autan.forces(\"wing.*\", name=\"wing\")`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0602"
+    },
+    "E0701": {
+      "severity": "error",
+      "title": "The run directory does not conform to autan.results/1",
+      "fix": "Open a directory written by a backend of this solver version.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0701"
+    },
+    "E0702": {
+      "severity": "error",
+      "title": "No such monitor",
+      "fix": "Use `results.history.monitor(name)` with a name from `results.history.monitors`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0702"
+    },
+    "E0703": {
+      "severity": "error",
+      "title": "No such solution data",
+      "fix": "Check `results.run.status`, and use a field name listed in the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0703"
+    },
+    "E0704": {
+      "severity": "error",
+      "title": "The run failed",
+      "fix": "Report the message with the run directory.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0704"
+    },
+    "E0705": {
+      "severity": "error",
+      "title": "Invalid solver input",
+      "fix": "Regenerate the input with `autan prepare` from the same Autan version as the runtime.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0705"
+    },
+    "E0706": {
+      "severity": "error",
+      "title": "Physics not in this solver build",
+      "fix": "Use a build that includes it, or change the case or the devices.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0706"
+    },
+    "W0801": {
+      "severity": "warning",
+      "title": "No NVIDIA GPU found",
+      "fix": "Install the NVIDIA driver, or run on a GPU machine.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0801"
+    },
+    "W0802": {
+      "severity": "warning",
+      "title": "No MPI launcher found",
+      "fix": "Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0802"
+    },
+    "W0803": {
+      "severity": "warning",
+      "title": "Solver core not built",
+      "fix": "Build the C++ core (see README) to run real computations.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0803"
+    },
+    "E0804": {
+      "severity": "error",
+      "title": "No solver backend",
+      "fix": "Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0804"
+    },
+    "E0805": {
+      "severity": "error",
+      "title": "Web UI not installed",
+      "fix": "Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0805"
+    },
+    "E0806": {
+      "severity": "error",
+      "title": "Cannot write the output file",
+      "fix": "Give a writable file path.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0806"
+    }
+  }
+}

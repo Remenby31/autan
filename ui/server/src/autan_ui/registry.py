@@ -5,11 +5,13 @@ import threading
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
 
 import autan
 from autan.errors import CaseError
 
+from autan_ui.confine import Folder, is_link
 from autan_ui.summary import Summaries
 
 log = logging.getLogger(__name__)
@@ -58,13 +60,17 @@ class Registry:
 
     def run_dir(self, run_id: str) -> Path:
         """The directory of an accepted run."""
-        if not RUN_ID.fullmatch(run_id) or not (self.root / run_id).is_dir():
+        if not RUN_ID.fullmatch(run_id):
+            raise RunNotFoundError(run_id)
+        # The path comes from listing the runs directory, never from the requested string.
+        directory = next((child for child in self.root.iterdir() if child.name == run_id), None)
+        if directory is None or not _inside(self.root, directory):
             raise RunNotFoundError(run_id)
         with self._lock:
-            outcome = self._check(self.root / run_id)
+            outcome = self._check(directory)
         if isinstance(outcome, str):
             raise RunRejectedError(outcome)
-        return self.root / run_id
+        return directory
 
     def scan(self) -> Snapshot:
         snapshot = Snapshot()
@@ -72,7 +78,10 @@ class Registry:
             names = set()
             if self.root.is_dir():
                 for child in sorted(self.root.iterdir()):
-                    if not child.is_dir() or child.name.startswith("."):
+                    if child.name.startswith(".") or not child.is_dir():
+                        continue
+                    if not _inside(self.root, child):
+                        snapshot.rejected[child.name] = "is or contains a symbolic link"
                         continue
                     names.add(child.name)
                     outcome = self._check(child)
@@ -80,12 +89,15 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
-                        live = outcome["status"] == "running"
-                        summary = self._summaries.update(child, live=live)
+                        try:
+                            with Folder(child) as folder:
+                                live = outcome["status"] == "running"
+                                summary = self._summaries.update(child.name, folder, live=live)
+                        except OSError:
+                            summary = None
                         if summary is not None:
-                            snapshot.summaries[child.name] = summary | self._budgets.get(
-                                child.name, {}
-                            )
+                            budget = self._budgets.get(child.name, {})
+                            snapshot.summaries[child.name] = summary | budget
             gone = self._checked.keys() - names
             for name in gone:
                 del self._checked[name]
@@ -120,20 +132,34 @@ class Registry:
         return outcome
 
     def details(self, directory: Path) -> dict[str, Any]:
-        outputs = [
-            {"name": path.name, "bytes": stat.st_size, "modified": stat.st_mtime}
-            for path in sorted(directory.iterdir())
-            if path.is_file() and not path.name.startswith(".")
-            for stat in (path.stat(),)
-        ]
-        case_toml = (directory / "case.toml").read_text(encoding="utf-8")
-        return {
-            "outputs": outputs,
-            "run": read_run(directory),
-            "case": tomllib.loads(case_toml),
-            "case_toml": case_toml,
-            "mesh_info": json.loads((directory / "mesh-info.json").read_text(encoding="utf-8")),
-        }
+        with Folder(directory) as folder:
+            case_toml = folder.read("case.toml").decode()
+            outputs = []
+            for name in sorted(path.name for path in folder.path.iterdir()):
+                stat = folder.stat(name)
+                if stat is not None and S_ISREG(stat.st_mode) and not name.startswith("."):
+                    outputs.append({"name": name, "bytes": stat.st_size, "modified": stat.st_mtime})
+            return {
+                "run": read_run(folder),
+                "case": tomllib.loads(case_toml),
+                "case_toml": case_toml,
+                "mesh_info": json.loads(folder.read("mesh-info.json")),
+                "outputs": outputs,
+            }
+
+
+RUN_FILES = (*CHECKED_FILES, "history.jsonl")
+
+
+def _inside(root: Path, directory: Path) -> bool:
+    """A real directory directly under `root` whose run files are not links: every file the
+    server reads for a run then lies under the runs directory."""
+    return (
+        directory.is_dir()
+        and not is_link(directory)
+        and directory.resolve().parent == root
+        and not any(is_link(directory / name) for name in RUN_FILES)
+    )
 
 
 def _stat(path: Path) -> tuple[int, int] | None:
@@ -144,10 +170,10 @@ def _stat(path: Path) -> tuple[int, int] | None:
     return (stat.st_mtime_ns, stat.st_size)
 
 
-def read_run(directory: Path) -> dict[str, Any]:
+def read_run(folder: Folder) -> dict[str, Any]:
     """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
     try:
-        document = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+        document = json.loads(folder.read("run.json"))
         return autan.RunInfo.model_validate(document).document()
     except (OSError, ValueError) as error:
         msg = f"run.json: {error}"

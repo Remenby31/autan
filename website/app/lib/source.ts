@@ -2,19 +2,26 @@ import { llms, loader } from "fumadocs-core/source";
 import { pageSchema } from "fumadocs-core/source/schema";
 import { applyMdxPreset } from "fumadocs-mdx/config";
 import { defineDocs } from "fumadocs-mdx/macro";
+import { z } from "zod";
 import {
   basePath,
+  defaultLocale,
   docsDir,
+  fileLocale,
   introductionPath,
+  type Locale,
+  locales,
   pageSlug,
-} from "../content/paths";
+  sourceOf,
+} from "../content/paths.ts";
 import {
   remarkRepoDocs,
   rewriteMarkdownLinks,
-} from "../content/remark-repo-docs";
+} from "../content/remark-repo-docs.ts";
+import { i18n } from "./i18n.ts";
 
 function isIntroduction(file: string): boolean {
-  const normalized = file.replaceAll("\\", "/");
+  const normalized = sourceOf(file.replaceAll("\\", "/"));
   return (
     (normalized === introductionPath ||
       normalized.endsWith(`/${introductionPath}`)) &&
@@ -26,9 +33,16 @@ export const docs = defineDocs({
   dir: "..",
   docs: {
     async: true,
-    files: ["README.md", "docs/**/*.md", "docs/**/*.mdx"],
+    files: [
+      "README.md",
+      "README.fr.md",
+      "docs/**/*.md",
+      "docs/**/*.mdx",
+      "!docs/assets/**",
+    ],
     schema: ({ path, source }) =>
       pageSchema.extend({
+        lang: z.enum(locales).optional(),
         title: pageSchema.shape.title.default(
           isIntroduction(path)
             ? "Introduction"
@@ -47,28 +61,44 @@ export const docs = defineDocs({
 });
 
 const repoPaths = new Map<string, string>();
+// Fumadocs URL-encodes slugs ("été" → "%C3%A9t%C3%A9"); keys use the decoded form.
+const key = (locale: string | undefined, slug: string) =>
+  `${locale ?? defaultLocale}:${decodeURIComponent(slug)}`;
 
-// Site paths mirror the slugs (contracts/results.md, index.md), so search results show the section.
+// Site paths mirror the slugs (contracts/results.md, index.fr.md), so search results show the section.
 const raw = docs.toFumadocsSource();
 const files: typeof raw.files = raw.files.map((file) => {
   if (file.type !== "page") return file;
   const slug = pageSlug(file.path);
   if (slug === null) throw new Error(`[docs] no site slug for ${file.path}`);
-  const sitePath = `${slug || "index"}.md`;
-  const existing = repoPaths.get(sitePath);
+  const locale = fileLocale(file.path);
+  const existing = repoPaths.get(key(locale, slug));
   if (existing)
     throw new Error(`[docs] ${file.path} and ${existing} both map to /${slug}`);
-  repoPaths.set(sitePath, file.path);
-  return { ...file, path: sitePath };
+  repoPaths.set(key(locale, slug), file.path);
+  const suffix = locale === defaultLocale ? "" : `.${locale}`;
+  return { ...file, path: `${slug || "index"}${suffix}.md` };
 });
 
-export const source = loader({ source: { files }, baseUrl: "/" });
+export const source = loader({ source: { files }, baseUrl: "/", i18n });
 
-/** Repository path of a page, e.g. `docs/contracts/results.md`. */
-export function repoPath(page: { path: string }): string {
-  const path = repoPaths.get(page.path);
-  if (!path) throw new Error(`[docs] unknown page ${page.path}`);
+/** Repository path of a page, e.g. `docs/contracts/results.fr.md`. */
+export function repoPath(page: { slugs: string[]; locale?: string }): string {
+  const slug = page.slugs.join("/");
+  // A locale without a translation of this page serves the English file.
+  const path =
+    repoPaths.get(key(page.locale, slug)) ??
+    repoPaths.get(key(defaultLocale, slug));
+  if (!path)
+    throw new Error(
+      `[docs] unknown page ${page.locale}:${page.slugs.join("/")}`,
+    );
   return path;
+}
+
+/** Whether a translation exists for the page at `slug`. */
+export function isTranslated(slug: string, locale: Locale): boolean {
+  return locale === defaultLocale || repoPaths.has(key(locale, slug));
 }
 
 const withBase = (text: string) => text.replaceAll("](/", `](${basePath}`);
@@ -81,4 +111,5 @@ export const docsLlms = llms(source, {
   },
 });
 
-export const llmsIndex = async () => withBase(await docsLlms.index());
+export const llmsIndex = async () =>
+  withBase(await docsLlms.index(defaultLocale));

@@ -1,7 +1,8 @@
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
+
+from autan_ui.confine import Folder
 
 
 @dataclass(frozen=True)
@@ -10,18 +11,15 @@ class HistoryChunk:
     offset: int
 
 
-def read_history(directory: Path, offset: int, *, live: bool) -> HistoryChunk:
+def read_history(folder: Folder, offset: int, *, live: bool) -> HistoryChunk:
     """Complete lines of history.jsonl after byte `offset`.
 
     While the run is live its last line may still be being written and waits; once the run has
     ended, an unterminated last line violates autan.results/1 and raises ValueError.
     """
-    path = directory / "history.jsonl"
-    if not path.is_file():
+    if folder.stat("history.jsonl") is None:
         return HistoryChunk([], offset)
-    with path.open("rb") as file:
-        file.seek(offset)
-        data = file.read()
+    data = folder.read("history.jsonl", offset)
     end = data.rfind(b"\n") + 1
     if end < len(data) and not live:
         msg = "history.jsonl: the last line is not terminated"

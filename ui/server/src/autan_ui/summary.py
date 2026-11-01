@@ -1,9 +1,9 @@
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from autan_ui.registry_io import read_history
+from autan_ui.confine import Folder
+from autan_ui.history import read_history
 
 TREND_POINTS = 48
 
@@ -44,17 +44,14 @@ class Summaries:
     def __init__(self) -> None:
         self._trends: dict[str, _Trend] = {}
 
-    def update(self, directory: Path, *, live: bool) -> dict[str, Any] | None:
-        trend = self._trends.setdefault(directory.name, _Trend())
+    def update(self, name: str, folder: Folder, *, live: bool) -> dict[str, Any] | None:
+        trend = self._trends.setdefault(name, _Trend())
+        stat = folder.stat("history.jsonl")
+        if (stat.st_size if stat else 0) < trend.offset:
+            trend = self._trends[name] = _Trend()
         try:
-            size = (directory / "history.jsonl").stat().st_size
-        except OSError:
-            size = 0
-        if size < trend.offset:
-            trend = self._trends[directory.name] = _Trend()
-        try:
-            chunk = read_history(directory, trend.offset, live=live)
-        except ValueError:
+            chunk = read_history(folder, trend.offset, live=live)
+        except (OSError, ValueError):
             return None
         for record in chunk.records:
             iteration = record.get("iteration") if isinstance(record, dict) else None

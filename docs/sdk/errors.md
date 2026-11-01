@@ -524,6 +524,22 @@ The backend stopped on an unexpected error; the message names it. The run direct
 
 Fix: Report the message with the run directory.
 
+## E0705
+
+**Invalid solver input** (error)
+
+`autan-run` rejected its input: an unknown or missing key, a wrong type or schema, or a value that the boundary kind or turbulence model requires or forbids. `data.path` is the path of the key. See docs/contracts/solver-input.md.
+
+Fix: Regenerate the input with `autan prepare` from the same Autan version as the runtime.
+
+## E0706
+
+**Physics not in this solver build** (error)
+
+The solver build has no implementation for the requested combination of physics, turbulence model, precision and device kind; `data` names the combination.
+
+Fix: Use a build that includes it, or change the case or the devices.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
@@ -563,3 +579,11 @@ Fix: Pass one explicitly: `case.run(mesh_info, backend=autan.FakeBackend())`.
 `autan ui` needs the optional `autan-ui` package, which this installation lacks.
 
 Fix: Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a checkout).
+
+## E0806
+
+**Cannot write the output file** (error)
+
+The file given to `-o`/`--output` cannot be written: missing directory, a directory in its place, or no permission.
+
+Fix: Give a writable file path.

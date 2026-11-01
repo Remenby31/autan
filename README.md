@@ -62,16 +62,7 @@ Each milestone closes on numbered exit criteria. They are in [the plan](docs/PLA
 
 ## Architecture
 
-The design is in the [plan](docs/PLAN.md), the [research](docs/research/) and the [contracts](docs/contracts/) through which components talk: the [case schema](docs/contracts/case-schema.md), the [MeshInfo summary](docs/contracts/mesh-info.md) and the [results layout](docs/contracts/results.md). The code lands by milestone; the first two rows exist today, in part:
-
-| Component | Role | Milestone |
-|---|---|---|
-| `core/`, `io/` | Face-based mesh, zones, FP64 geometry, Gmsh, Fluent and OpenFOAM readers; then partitioning and CGNS | M0 |
-| `py/` | Python SDK, case schema and `autan` CLI | M0, then M4 |
-| `vv/` | Manufactured solutions, observed-order tools, reference cases | M0 |
-| `bench/`, `docker/` | Development image, bandwidth and time-per-cell benchmarks on DGX Spark | M0 |
-| `kernels/`, `codegen/` | Kernel DSL and the generator to CUDA, HIP and CPU, with tangent and adjoint versions | M1 |
-| `physics/`, `solvers/` | Flux schemes, turbulence models, time stepping, Newton-Krylov, multigrid | M2, M3 |
+Three parts: a C++ core that reads and partitions meshes, a Python SDK that checks cases and reads results, and, from M1, a kernel generator that emits CUDA, HIP and CPU code with its tangent and adjoint. They exchange four documents: the [case](docs/contracts/case-schema.md), the [MeshInfo summary](docs/contracts/mesh-info.md), the [solver input](docs/contracts/solver-input.md) and the [run directory](docs/contracts/results.md). [Architecture](docs/concepts/architecture.md) shows the components and the milestone of each.
 
 ## How correctness and speed are proven
 

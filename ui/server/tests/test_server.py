@@ -1,3 +1,4 @@
+import http.client
 import json
 import math
 import shutil
@@ -5,6 +6,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY
@@ -15,9 +17,11 @@ import numpy as np
 import pytest
 import uvicorn
 from autan_ui import create_app
+from autan_ui.confine import Folder
+from autan_ui.history import read_history
 from autan_ui.registry import Registry
-from autan_ui.registry_io import read_history
 from autan_ui.surface import synthetic_wing
+from fastapi import FastAPI
 
 PY = Path(__file__).parents[3] / "py"
 
@@ -26,24 +30,43 @@ PY = Path(__file__).parents[3] / "py"
 def runs(tmp_path: Path) -> Path:
     case = autan.load(PY / "examples" / "crm_hl.py")
     mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
-    case.run(mesh_info, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
-    return tmp_path
+    case.run(mesh_info, backend=autan.FakeBackend(iterations=30), runs=tmp_path / "runs")
+    return tmp_path / "runs"
 
 
 @pytest.fixture
-def server(runs: Path) -> Iterator[str]:
+def static(tmp_path: Path) -> Path:
+    """A built app next to a file it must never serve, with a link pointing at that file."""
+    (tmp_path / "secret.txt").write_text("SECRET")
+    app = tmp_path / "static"
+    (app / "assets").mkdir(parents=True)
+    (app / "index.html").write_text("INDEX")
+    (app / "assets" / "app.js").write_text("APP")
+    (app / "leak").symlink_to(tmp_path / "secret.txt")
+    return app
+
+
+@contextmanager
+def serving(app: FastAPI) -> Iterator[str]:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    config = uvicorn.Config(create_app(runs, static=None), port=port, log_level="warning")
-    instance = uvicorn.Server(config)
+    instance = uvicorn.Server(uvicorn.Config(app, port=port, log_level="warning"))
     thread = threading.Thread(target=instance.run, daemon=True)
     thread.start()
     while not instance.started:
         time.sleep(0.01)
-    yield f"http://127.0.0.1:{port}"
-    instance.should_exit = True
-    thread.join()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        instance.should_exit = True
+        thread.join()
+
+
+@pytest.fixture
+def server(runs: Path, static: Path) -> Iterator[str]:
+    with serving(create_app(runs, static=static)) as url:
+        yield url
 
 
 def sse_events(response: httpx.Response) -> Iterator[tuple[str, Any]]:
@@ -97,19 +120,21 @@ def test_an_unreadable_run_is_rejected_not_fatal(runs: Path) -> None:
 
 def test_history_holds_a_partial_line_only_while_live(runs: Path) -> None:
     directory = next(runs.iterdir())
-    first = read_history(directory, 0, live=False)
+    folder = Folder(directory)
+    first = read_history(folder, 0, live=False)
     assert [r["iteration"] for r in first.records] == list(range(1, 31))
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
-    assert read_history(directory, first.offset, live=True).records == []
+    assert read_history(folder, first.offset, live=True).records == []
     with pytest.raises(ValueError, match="not terminated"):
-        read_history(directory, first.offset, live=False)
+        read_history(folder, first.offset, live=False)
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('uals": {"density": 1e-9}}\n')
-    chunk = read_history(directory, first.offset, live=True)
+    chunk = read_history(folder, first.offset, live=True)
     assert [r["iteration"] for r in chunk.records] == [31]
+    folder.close()
 
 
 def test_registry_stream_reports_runs_and_rejections_as_they_appear(
@@ -210,6 +235,7 @@ def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     assert summary["iteration"] == 30
     assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
     assert len(summary["trend"]) == 30
+    assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
 
     # Lines appended after the directory was checked are not re-validated by the registry.
     with (source / "history.jsonl").open("a") as history:
@@ -230,6 +256,7 @@ def test_run_details_and_plan(runs: Path, server: str) -> None:
         "history.jsonl",
         "solution.cgns",
     }
+    assert details["case_toml"] == (runs / run_id / "case.toml").read_text()
     mesh_info = json.loads((runs / run_id / "mesh-info.json").read_text())
 
     plan = httpx.get(f"{server}/api/runs/{run_id}/plan").json()
@@ -238,3 +265,88 @@ def test_run_details_and_plan(runs: Path, server: str) -> None:
     assert {b["zone"] for b in plan["boundaries"]} == {
         z["name"] for z in mesh_info["boundary_zones"]
     }
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/../secret.txt",
+        "/%2e%2e/secret.txt",
+        "/assets/..%2f..%2fsecret.txt",
+        "//etc/passwd",
+        "/leak",
+    ],
+)
+def test_static_files_never_leave_the_build(server: str, target: str) -> None:
+    host, port = server.removeprefix("http://").split(":")
+    connection = http.client.HTTPConnection(host, int(port))
+    connection.putrequest("GET", target, skip_accept_encoding=True)
+    connection.endheaders()
+    body = connection.getresponse().read()
+    connection.close()
+    assert body == b"INDEX"
+    assert httpx.get(f"{server}/assets/app.js").text == "APP"
+
+
+def test_static_files_are_checked_when_served(server: str, static: Path, tmp_path: Path) -> None:
+    (static / "added.js").write_text("ADDED")
+    (static / "assets" / "app.js").unlink()
+    (static / "assets" / "app.js").symlink_to(tmp_path / "secret.txt")
+
+    assert httpx.get(f"{server}/added.js").text == "INDEX"
+    assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
+    (static / "assets" / "app.js").unlink()
+    assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
+
+    elsewhere = tmp_path / "elsewhere-assets"
+    elsewhere.mkdir()
+    (elsewhere / "app.js").write_text("SECRET")
+    shutil.rmtree(static / "assets")
+    (static / "assets").symlink_to(elsewhere, target_is_directory=True)
+    assert httpx.get(f"{server}/assets/app.js").text == "INDEX"
+
+
+def test_a_linked_index_disables_static_files(runs: Path, static: Path, tmp_path: Path) -> None:
+    (static / "index.html").unlink()
+    (static / "index.html").symlink_to(tmp_path / "secret.txt")
+    with serving(create_app(runs, static=static)) as url:
+        assert httpx.get(f"{url}/").status_code == 404
+        assert httpx.get(f"{url}/api/runs").status_code == 200
+
+
+@pytest.mark.parametrize("linked", ["directory", "run.json", "history.jsonl"])
+def test_a_run_reached_through_a_link_is_refused(
+    runs: Path, server: str, tmp_path: Path, linked: str
+) -> None:
+    source = next(runs.iterdir())
+    outside = shutil.copytree(source, tmp_path / "elsewhere" / source.name)
+    if linked == "directory":
+        shutil.rmtree(source)
+        source.symlink_to(outside, target_is_directory=True)
+    else:
+        (source / linked).unlink()
+        (source / linked).symlink_to(outside / linked)
+
+    assert httpx.get(f"{server}/api/runs/{source.name}").status_code == 404
+    assert httpx.get(f"{server}/api/runs/{source.name}/history/events").status_code == 404
+    assert Registry(runs).scan().rejected == {source.name: "is or contains a symbolic link"}
+
+
+def test_a_stream_keeps_reading_the_run_it_opened(runs: Path, server: str, tmp_path: Path) -> None:
+    source = next(runs.iterdir())
+    outside = shutil.copytree(source, tmp_path / "elsewhere" / source.name)
+    url = f"{server}/api/runs/{source.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        assert next(events)[0] == "run"
+        assert next(events)[0] == "history"
+
+        moved = source.rename(tmp_path / "moved")
+        source.symlink_to(outside, target_is_directory=True)
+        for directory, iteration in ((outside, 999), (moved, 31)):
+            with (directory / "history.jsonl").open("a") as history:
+                record: dict[str, Any] = {"iteration": iteration, "time": None, "residuals": {}}
+                history.write(json.dumps(record) + "\n")
+
+        _, records = next(e for e in events if e[0] == "history")
+        assert [r["iteration"] for r in records] == [31]
