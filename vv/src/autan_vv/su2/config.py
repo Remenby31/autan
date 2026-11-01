@@ -26,7 +26,7 @@ AUTAN_VENKAT_K = 10.0
 # where the shocks of the NACA 0012 conditions stand.
 MATCH_CENTRE = (0.5, 0.0)
 MATCH_RADIUS = 1.0
-STOP_MARGIN = 0.75
+STOP_MARGIN = 0.5
 
 # SU2's published controls for the inviscid NACA 0012 (inv_NACA0012_Roe.cfg, SU2 v8.6.0).
 SOLVER_CONTROLS = {
@@ -80,15 +80,17 @@ def config(
     span: float,
     max_iterations: int = 20000,
     residual_orders: float = 10.0,
+    stop_margin: float = STOP_MARGIN,
 ) -> str:
     """The SU2 configuration of `case` on the converted `mesh`.
 
     The case must be inviscid compressible with slip, far-field and symmetry boundaries and one
     forces monitor (V0903). In 2D, Autan's (x, z) is SU2's (x, y), the symmetry zones are not in the
     mesh and SU2's coefficients are per unit span, so its reference area is Autan's divided by the
-    slab's `span`. SU2 stops when every residual has dropped `residual_orders` + STOP_MARGIN below
-    its largest value (REL_RMS_*); the iteration that meets the protocol's criterion is read from
-    the history.
+    slab's `span`. SU2 measures a residual's drop from its largest value so far (REL_RMS_*), the
+    protocol from its first: SU2 stops `stop_margin` orders beyond `residual_orders`, to cover the
+    rise of the first iterations, and the iteration that meets the protocol's criterion is read from
+    the history. Too large a margin puts the stop under SU2's FP64 round-off floor.
     """
     spec = case.spec
     physics = spec.physics
@@ -172,9 +174,7 @@ def config(
             if eq != "MOMENTUM-Y" or mesh.dimension == 2
         )
         + " )",
-        # STOP_MARGIN orders beyond: SU2 measures the drop from the largest residual so far, the protocol from
-        # the first, and the residuals rise by up to 0.7 orders in the first iterations.
-        "CONV_RESIDUAL_MINVAL": repr(-residual_orders - STOP_MARGIN),
+        "CONV_RESIDUAL_MINVAL": repr(-residual_orders - stop_margin),
         "CONV_STARTITER": "10",
         "MESH_FILENAME": mesh.file,
         "MESH_FORMAT": "SU2",

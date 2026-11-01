@@ -109,7 +109,11 @@ def _cmd_su2(args: argparse.Namespace) -> None:
             msg = "su2 prepare takes --family and --out, and no run directories"
             raise VVError(msg, code="V0903")
         for run in su2.prepare(
-            args.family, args.out, dimension=args.dimension, max_iterations=args.max_iterations
+            args.family,
+            args.out,
+            dimension=args.dimension,
+            max_iterations=args.max_iterations,
+            stop_margin=args.stop_margin,
         ):
             _say(str(run.relative_to(args.out)))
         return
@@ -271,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
     p.add_argument("--max-iterations", type=int, default=20000)
+    p.add_argument("--stop-margin", type=float, default=0.5, help="prepare: orders SU2 runs on")
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
 

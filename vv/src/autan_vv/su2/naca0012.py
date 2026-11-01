@@ -33,6 +33,7 @@ def prepare(
     dimension: mesh.Dimension = 2,
     conditions: Sequence[str] = tuple(cases.CONDITIONS),
     max_iterations: int = 20000,
+    stop_margin: float = config.STOP_MARGIN,
 ) -> list[Path]:
     """Write OUT/meshes/<level>.su2 and OUT/<condition>/n<NC>/{case.cfg, level.json}; returns the
     case directories. V0805 if `family` is not a naca0012 family."""
@@ -57,6 +58,7 @@ def prepare(
                 span=slab.y1 - slab.y0,
                 max_iterations=max_iterations,
                 residual_orders=cases.RESIDUAL_ORDERS,
+                stop_margin=stop_margin,
             )
             text = text.replace(
                 f"MESH_FILENAME= {record.file}", f"MESH_FILENAME= ../../meshes/{record.file}"
