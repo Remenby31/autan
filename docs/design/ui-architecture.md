@@ -18,11 +18,12 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/runs` | `{runs: [run.json…], rejected: [{dir, reason}], summaries: {run_id: summary}}`, newest first. A summary is read incrementally from `history.jsonl`: the last complete `iteration` (run.json is rewritten only when the status changes), `orders` the slowest residual has dropped since iteration 1, their `trend` (≤ 48 points), and the case's `target_orders` and `max_iterations`. |
+| `GET /api/runs` | `{runs: [run.json…], rejected: [{dir, reason}], summaries: {run_id: summary}}`, newest first. A summary is read incrementally from `history.jsonl`: the last complete `iteration` (run.json is rewritten only when the status changes), `orders` the slowest residual has dropped since iteration 1, their `trend` (≤ 48 points), the case's `target_orders` and `max_iterations`, and the `settings` studies usually sweep (`aoa`, `sideslip`, `mach`, `re`, `turbulence`, `precision`, as the case writes them). |
 | `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json), `removed` (run id), `rejected` (the whole list) and `summaries` as they change |
 | `GET /api/runs/{id}` | `{run, case, case_toml, mesh_info, outputs}`: run.json, case.toml as JSON and as text, mesh-info.json and the files of an accepted run |
 | `GET /api/runs/{id}/plan` | `autan plan --json` of the stored case against the stored MeshInfo, for the run's GPU count |
 | `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 and rejected ones 409 with the reason, before any stream starts. |
+| `GET /api/runs/history/events?run=…&run=…` | The same events for up to 8 runs over one connection (a browser opens at most six per host), payloads `{run_id, data}`; the event id is the JSON map of byte offsets. Used by Compare. |
 | `GET /api/surfaces/synthetic?triangles=N` | A synthetic wing surface for the viewer and its benchmark, until `solution.cgns` surfaces are served |
 
 Live updates come from file-system events (`watchfiles`, 50 ms debounce) and a 1 s timeout: every wake-up rescans, so a change made before the watcher started is still reported. A directory is checked by `autan.Results.open` again only when its `run.json`, `case.toml`, `mesh-info.json` or `solution.cgns` changes; history.jsonl is re-read from the last offset. SSE rather than WebSocket: traffic is server → browser only, `EventSource` reconnects by itself, and FastAPI ships SSE natively.
@@ -79,6 +80,10 @@ Transfer of the 20 M-triangle message (400 MB, loopback): 1.0–1.5 s; at 5 M tr
 
 Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench/results/`. The vtk.js comparison was a one-off prototype and is not kept.
 
+### Studies and Compare
+
+There is no study entity in `autan.results/1` yet: Home groups runs by case name and calls a group a study when its runs differ in the swept settings of their summaries, labelled with the range (`α 7.05–21.47 deg`). On Home, `x` selects the focused row, `Space` previews it, `c` compares the selection (also from a group header). `/compare?runs=[…]` (≤ 8, in selection order, A first) overlays residual drop, CL and CD against iteration with a shared cursor, draws the lift and drag polars from converged runs when the angle of attack varies, and lists the case settings that differ.
+
 ### Component library
 
 `ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition.
@@ -106,6 +111,8 @@ Reproduce: `cd ui && bun run bench:viewer` writes one JSON per case to `ui/bench
 | Input (search) | `SearchInput`, `FilterChip` | Home filters |
 | Toggle | `LiveToggle`, theme toggle group | Log, sidebar |
 | Middle Truncate | `MiddleTruncate` | Mesh hash, solver commit |
+| Checkbox | `Checkbox` | Run selection on Home |
+| Sheet | `Peek` (Space on a row) | Home |
 | Description | `MetaGrid` | Run facts |
 
 ### Viewer

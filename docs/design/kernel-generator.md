@@ -62,7 +62,11 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 | `store_gather` | face values to scratch, then a cell gather in CSR order | yes |
 | `gather_recompute` | each cell evaluates its own faces | yes |
 
-`gpu::Schedule` carries the block size, the colourings (`autan::kernels::colour_faces`), the store-gather scratch and the stream.
+`gpu::Schedule` carries the block size, the colourings (`autan::kernels::colour_faces`), the store-gather and incidence scratch and the stream.
+
+The adjoint of a cell reduction sends values to neighbouring cells, so it takes a strategy too: with `atomic` and `warp_aggregated` it scatters with atomics; with the deterministic strategies it runs in two passes (research §6, store-then-gather on the transposed incidence list): each owned cell adds its own adjoints and stores, per incidence, what it sends across, then each cell, owned or ghost, sums what its owned neighbours stored for it, in the order of its incidences. The twin of an incidence (the same face in the other cell's list) is `Topology::incidence_twin`, from `autan::kernels::incidence_twins(mesh)`.
+
+`autan::kernels::gpu::sum_of_squares` (`norms.cuh`) computes Σ x² in FP64 on the device in chunks of 4096 values and a fixed tree, so the result depends on the data and its length only, never on the launch shape.
 
 **Derivatives.** Active data are cell datasets; geometry, parameters and face datasets (boundary values) are passive. `<loop>_tangent` reads `<d>_tan` of each active input and increments or writes `<d>_tan` of the output. `<loop>_adjoint` transposes access modes (research §4.1): an `Inc` output's adjoint reads `<out>_adj` through the same map with the declared signs; each active gather increments `<d>_adj`; a `Write` output's adjoint is read, then zeroed; a reduction's adjoint recomputes the accumulators and the incidence each `Min`/`Max` selected, then sends adjoints to the incidences. Adjoint datasets have role `Residual`. The adjoint of a residual is the reverse sequence of loop adjoints (example: `advdiff_derivative` in `codegen/spike/capi.cpp`). Branches are linearised on the selected side.
 
@@ -97,6 +101,8 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 | E1102 | `unknown_precision_policy` | A driver receives an unknown policy name. |
 | E1103 | `unknown_race_strategy` | A driver receives an unknown strategy name. |
 | E1104 | `face_scratch_too_narrow` | Store-gather scratch has fewer components per face than the loop's outputs. |
+| E1105 | `incidence_scratch_too_narrow` | The deterministic adjoint of a cell reduction has fewer scratch components per incidence than the values it sends to neighbours. |
+| E1106 | `incidence_twins_missing` | The deterministic adjoint of a cell reduction runs on a topology without incidence twins. |
 
 ## Spike (research §8)
 

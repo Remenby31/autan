@@ -6,6 +6,7 @@ import shutil
 import socket
 import threading
 import time
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -238,6 +239,9 @@ def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     assert summary["orders"] == pytest.approx(slowest, abs=1e-3)
     assert len(summary["trend"]) == 30
     assert (summary["target_orders"], summary["max_iterations"]) == (8.0, 10000)
+    case = tomllib.loads((source / "case.toml").read_text())
+    assert summary["settings"]["aoa"] == case["freestream"]["aoa"]
+    assert summary["settings"]["turbulence"] == case["physics"]["turbulence"]["model"]
 
     # Lines appended after the directory was checked are not re-validated by the registry.
     with (source / "history.jsonl").open("a") as history:
@@ -392,3 +396,24 @@ def test_residual_drop_is_the_slowest_equation(
 ) -> None:
     orders = residual_orders(first, now)
     assert orders == (None if expected is None else pytest.approx(expected))
+
+
+def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
+    first = next(runs.iterdir())
+    second = shutil.copytree(first, runs / ".staging")
+    run = json.loads((second / "run.json").read_text())
+    run |= {"run_id": "run-20261031T235959Z-0123abcd", "started": "2026-10-31T23:59:59Z"}
+    (second / "run.json").write_text(json.dumps(run))
+    second = second.rename(runs / run["run_id"])
+    url = f"{server}/api/runs/history/events?run={first.name}&run={second.name}"
+    resume = {"Last-Event-ID": json.dumps({first.name: 0, second.name: None})}
+    with httpx.stream("GET", url, headers=resume, timeout=10) as response:
+        events = sse_events(response)
+        seen = [next(events) for _ in range(4)]
+    assert sorted((kind, data["run_id"]) for kind, data in seen) == sorted(
+        [(k, r) for k in ("run", "history") for r in (first.name, second.name)]
+    )
+    assert (
+        httpx.get(f"{server}/api/runs/history/events?run=run-20261031T000000Z-deadbeef").status_code
+        == 404
+    )

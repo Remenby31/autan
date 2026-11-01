@@ -424,10 +424,12 @@ int dispatch(const char* policy, char* err, std::size_t len, F&& f) {
 }
 
 std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
-  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}});
+  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}, {}});
   m->geometry = autan::compute_geometry(m->mesh);
   m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
   m->topo = autan::kernels::topology(m->mesh.view());
+  m->twins = autan::kernels::incidence_twins(m->mesh);
+  m->topo.incidence_twin = m->twins.data();
   return m;
 }
 

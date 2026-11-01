@@ -21,6 +21,7 @@ struct SpikeMesh {
   autan::Mesh mesh;
   autan::Geometry geometry;
   autan::kernels::PackedGeometry packed;
+  std::vector<autan::kernels::offset_t> twins;
   autan::kernels::Topology topo{};
 };
 

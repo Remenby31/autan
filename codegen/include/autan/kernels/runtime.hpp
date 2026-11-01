@@ -27,6 +27,9 @@ struct Topology {
   const index_t* neighbour;
   const offset_t* cell_face_offsets;
   const index_t* cell_faces;
+  /// Incidence of the same interior face in the other cell's list (-1 on boundary faces), for
+  /// the deterministic adjoint of cell reductions; null when the caller does not provide it.
+  const offset_t* incidence_twin = nullptr;
 };
 
 /// Precision policies (docs/research/kernel-generator.md section 7): storage type of each role,
