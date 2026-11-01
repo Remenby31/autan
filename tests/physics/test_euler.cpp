@@ -202,7 +202,12 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
   const std::vector<double> data(5 * nb, 0.0);
   Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.1));
   e.set_boundary(kind, data);
-  const Prim w{1.0, {0.0, 0.0, 0.0}, 1e5};
+  // Far from the reference pressure, or closer to it than FP32 resolves p_ref itself: the
+  // stored gauge pressure must survive the boundary conditions.
+  const double p_ref = 0.95e5;
+  const double p = GENERATE_COPY(1e5, p_ref + 1e-3);
+  INFO("p - p_ref = " << p - p_ref);
+  const Prim w{1.0, {0.0, 0.0, 0.0}, p};
   auto absolute = uniform(w, nc);
   for (std::size_t i = 0; i < nc; ++i) {
     const auto x = c.geometry.cell_centroid_x[i];
@@ -214,7 +219,8 @@ TEMPLATE_TEST_CASE("gas at rest under uniform pressure is steady for any density
   const auto u = stored(e, absolute);
   // A 10:1 density jump: the linear reconstruction would make the density negative at some
   // faces, where the scheme falls back to the cell value.
-  const Prim scale{11.0, {0.0, 0.0, 0.0}, 1e5};
+  // At rest only the gauge pressure p - p_ref enters the momentum fluxes.
+  const Prim scale{11.0, {0.0, 0.0, 0.0}, p - p_ref};
   CHECK(relative_residual(e, c, std::span<const typename P::state>(u), scale) <= 64 * eps<P>());
 }
 

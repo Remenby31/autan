@@ -386,19 +386,23 @@ def boundary_value(
     pr: Param,
 ) -> State.Vec5:
     # Gauge interior state in, gauge boundary state out; the conditions and their data use the
-    # absolute pressure. Codes are whole numbers stored in FP64: compare with the midpoints.
+    # absolute pressure, except the mirror, which keeps the gauge pressure: a round trip through
+    # p_ref would round away the variations FP32 stores. Codes are whole numbers stored in FP64:
+    # compare with the midpoints.
     wi = Vec5(wg[0], wg[1], wg[2], wg[3], wg[4] + pr)
+    shift = pr
     if kind < BC_FARFIELD - 0.5:
         w = data
     elif kind < BC_SLIP - 0.5:
         w = farfield_state(wi, data, n, g)
     elif kind < BC_INLET - 0.5:
-        w = mirror_state(wi, n)
+        w = mirror_state(wg, n)
+        shift = 0.0 * pr
     elif kind < BC_OUTLET - 0.5:
         w = inlet_state(wi, data, n, g, rgas)
     else:
         w = outlet_state(wi, data, n, g)
-    return Vec5(w[0], w[1], w[2], w[3], w[4] - pr)
+    return Vec5(w[0], w[1], w[2], w[3], w[4] - shift)
 
 
 # ---------------------------------------------------------------------------- loops
