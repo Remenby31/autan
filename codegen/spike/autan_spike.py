@@ -452,6 +452,20 @@ def gpu_lsq_bounds_adjoint(
     return out
 
 
+def gpu_reductions(x: F64, flags: npt.NDArray[np.bool_]) -> tuple[float, float, int]:
+    """Device min of x in FP64 and in FP32, and the first index where flags is set."""
+    err = ctypes.create_string_buffer(512)
+    m64, m32, first = ctypes.c_double(), ctypes.c_float(), ctypes.c_int64()
+    xs = np.ascontiguousarray(x, dtype=np.float64)
+    fs = np.ascontiguousarray(flags, dtype=np.uint8)
+    rc = lib().autan_spike_gpu_reductions(
+        _p(xs), _p(fs), ctypes.c_int64(xs.size), ctypes.byref(m64), ctypes.byref(m32),
+        ctypes.byref(first), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return m64.value, m32.value, first.value
+
+
 def gpu_sum_of_squares(x: F64) -> float:
     """Fixed-order FP64 sum of squares computed on the device."""
     err = ctypes.create_string_buffer(512)
