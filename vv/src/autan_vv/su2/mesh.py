@@ -46,7 +46,7 @@ class Slab:
 @dataclass(frozen=True)
 class Plane:
     """The slab's grid in the (x, z) plane: points (n, 2), counterclockwise quadrangles, and each
-    lateral zone as edges (k, 2). `source` maps each plane point to its slab point."""
+    lateral zone as edges (k, 2) with the domain on their left. `source` maps each plane point to its slab point."""
 
     points: FloatArray
     quads: IntArray
@@ -132,7 +132,9 @@ def to_plane(slab: Slab) -> tuple[Plane, list[str]]:
         raise _fail(msg)
     quads = np.where((area2 > 0.0)[:, None], quads, quads[:, ::-1])
 
-    edges = np.sort(np.concatenate([quads[:, [k, (k + 1) % 4]] for k in range(4)]), axis=1)
+    directed = np.concatenate([quads[:, [k, (k + 1) % 4]] for k in range(4)])
+    forward = {tuple(e) for e in directed.tolist()}
+    edges = np.sort(directed, axis=1)
     keys, counts = np.unique(edges, axis=0, return_counts=True)
     boundary = {tuple(e) for e in keys[counts == 1].tolist()}
     if np.any(counts > 2):
@@ -160,7 +162,8 @@ def to_plane(slab: Slab) -> tuple[Plane, list[str]]:
             msg = f"zone {name} has an edge that is interior or in another zone"
             raise _fail(msg)
         seen.update(keyed)
-        markers[name] = pairs
+        # Each edge in the direction of its counterclockwise quadrangle: the domain on its left.
+        markers[name] = np.array([p if tuple(p) in forward else p[::-1] for p in pairs.tolist()])
     if seen != boundary:
         msg = "a boundary edge of the plane belongs to no lateral zone"
         raise _fail(msg)

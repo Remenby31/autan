@@ -34,6 +34,7 @@ def prepare(
     conditions: Sequence[str] = tuple(cases.CONDITIONS),
     max_iterations: int = 20000,
     stop_margin: float = config.STOP_MARGIN,
+    scheme: str = "roe",
 ) -> list[Path]:
     """Write OUT/meshes/<level>.su2 and OUT/<condition>/n<NC>/{case.cfg, level.json}; returns the
     case directories. V0805 if `family` is not a naca0012 family."""
@@ -59,6 +60,7 @@ def prepare(
                 max_iterations=max_iterations,
                 residual_orders=cases.RESIDUAL_ORDERS,
                 stop_margin=stop_margin,
+                scheme=scheme,
             )
             text = text.replace(
                 f"MESH_FILENAME= {record.file}", f"MESH_FILENAME= ../../meshes/{record.file}"
@@ -70,6 +72,7 @@ def prepare(
                 "schema": LEVEL_SCHEMA,
                 "condition": condition,
                 "n": level["n"],
+                "scheme": scheme,
                 "venkat_coefficient": venkat,
                 "case_sha256": hashlib.sha256(text.encode()).hexdigest(),
                 "autan_case_sha256": case.spec.hash(),
@@ -87,6 +90,7 @@ class Level:
 
     run: str
     n: int
+    scheme: str
     points: int
     venkat_coefficient: float
     converged: bool
@@ -129,6 +133,7 @@ def read_level(run: Path) -> tuple[Level, str]:
     level = Level(
         run=run.name,
         n=info["n"],
+        scheme=info["scheme"],
         points=info["mesh"]["points"],
         venkat_coefficient=info["venkat_coefficient"],
         converged=conv.converged,
@@ -174,8 +179,9 @@ def study(runs: Sequence[Path]) -> dict[str, Any]:
     if len(conditions) != 1:
         msg = f"the runs mix conditions {sorted(conditions)}"
         raise VVError(msg, code="V0905")
-    if len({lv.image_id for lv in levels}) != 1 or len({lv.n for lv in levels}) != len(levels):
-        msg = "the runs mix SU2 images or repeat a level"
+    distinct = ({lv.image_id for lv in levels}, {lv.scheme for lv in levels})
+    if any(len(d) != 1 for d in distinct) or len({lv.n for lv in levels}) != len(levels):
+        msg = "the runs mix SU2 images or schemes, or repeat a level"
         raise VVError(msg, code="V0905")
     condition = conditions.pop()
     converged = [_as_forces(lv) for lv in levels if lv.converged]
@@ -184,6 +190,7 @@ def study(runs: Sequence[Path]) -> dict[str, Any]:
         "case": "naca0012",
         "condition": condition,
         "su2": levels[0].su2,
+        "scheme": levels[0].scheme,
         "image_id": levels[0].image_id,
         "levels": [asdict(lv) for lv in levels],
     }

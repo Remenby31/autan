@@ -9,7 +9,10 @@ from stat import S_ISREG
 from typing import Any
 
 import autan
-from autan.errors import CaseError
+from autan.errors import CaseError, Location
+from autan.meshinfo import MeshInfo
+from autan.results import check_run_json
+from autan.schema import CaseSpec
 
 from autan_ui.confine import Folder, is_link
 from autan_ui.summary import Summaries
@@ -204,19 +207,32 @@ def _settings(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stat(path: Path) -> tuple[int, int] | None:
+def _stat(path: Path) -> tuple[int, int, int, int] | None:
+    # The inode and change time too: a replacement that keeps the modification time and size
+    # still changes them.
     try:
         stat = path.stat()
     except OSError:
         return None
-    return (stat.st_mtime_ns, stat.st_size)
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
 
 
 def read_run(folder: Folder) -> dict[str, Any]:
-    """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
+    """run.json, checked as `autan.Results.open` checks it against the stored case and
+    MeshInfo (results.md#runjson), all read through `folder`; ValueError otherwise."""
     try:
-        document = json.loads(folder.read("run.json"))
-        return autan.RunInfo.model_validate(document).document()
-    except (OSError, ValueError) as error:
+        document = json.loads(folder.read("run.json").decode())
+        case = CaseSpec.from_document(
+            tomllib.loads(folder.read("case.toml").decode()), Location(file="case.toml")
+        )
+        mesh_info = MeshInfo.from_document(
+            json.loads(folder.read("mesh-info.json").decode()), Location(file="mesh-info.json")
+        )
+    except (OSError, ValueError, CaseError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
+    problems = check_run_json(document, case, mesh_info)
+    if problems:
+        msg = f"run.json: {'; '.join(problems)}"
+        raise ValueError(msg)
+    return autan.RunInfo.model_validate(document).document()

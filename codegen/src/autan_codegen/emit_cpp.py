@@ -71,10 +71,11 @@ def emit_function(
         for k, t in enumerate(sig_types)
         for c in range(t.size)
     ]
-    params.append("typename P::compute* __restrict__ out" if n_out else "typename P::compute*")
+    ct = f"typename P::{fn.compute}"
+    params.append(f"{ct}* __restrict__ out" if n_out else f"{ct}*")
     e.w("template <class P>")
     e.w(f"AUTAN_HD inline void {name or fn.name}({', '.join(params)}) {{")
-    e.w("  using C = typename P::compute;")
+    e.w(f"  using C = {ct};")
     body_lines(e, fn, indent="  ")
     for k, o in enumerate(fn.outputs):
         e.w(f"  out[{k}] = v{o};")
