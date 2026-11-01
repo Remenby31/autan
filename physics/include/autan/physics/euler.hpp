@@ -67,6 +67,10 @@ class Euler {
 
   /// Sets each boundary face's condition and its data (5 x n_boundary_faces).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
+  /// The least-squares weights of the gradient over its stencil (layout of
+  /// kernels::CellStencil::lsq_weight): only the boundary faces whose condition gives the state
+  /// there take part, so they depend on set_boundary.
+  [[nodiscard]] std::vector<double> gradient_weights() const;
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 
