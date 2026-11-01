@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""autan-campaign: CPU campaigns on a DGX Spark that never disturb a GPU measurement.
+
+    autan-campaign start NAME [--cpus 12] [--image autan-dev:local] [--dir DIR] -- COMMAND...
+    autan-campaign status
+    autan-campaign stop NAME
+
+A campaign runs COMMAND in a container limited to --cpus cores at nice 19, without the GPU and
+without the GPU lock. A watcher on the host freezes the whole container (docker pause, the cgroup
+v2 freezer) whenever /home/admin/autan-gpu/gpu.lock is held or waited for, and thaws it when the
+lock is free: on the GB10 the CPU shares the GPU's memory, so a running campaign would lower the
+bandwidth a measurement sees. The watcher publishes each campaign's state next to the lock
+(campaigns/NAME.state: "running" before any start or thaw, "frozen" once frozen, and a heartbeat
+touched at every poll), and autan-bench measures only once every live campaign reads frozen. The container stops by itself when the watcher's
+heartbeat is a minute old, so a campaign never outlives its watcher. The watcher removes the
+campaign if more than 6 threads outside it stay runnable for a minute. See docs/infra/bench.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
+STATES = LOCK.parent / "campaigns"
+PREFIX = "autan-campaign-"
+STATE = Path.home() / "autan-campaigns"
+POLL_S = 0.1
+LOAD_EVERY_S = 1.0
+LOAD_SAMPLES = 10
+MAX_OTHER_LOAD = 6
+LOAD_GRACE_S = 60.0
+DOCKER_TIMEOUT_S = 30
+HEARTBEAT_MAX_AGE_S = 60
+# PID 1 of the container: runs the command, and stops the container when the watcher's heartbeat
+# ($1, mounted read-only) is older than $2 seconds. Frozen with the rest while paused.
+SUPERVISOR = r"""
+heartbeat=$1 max_age=$2; shift 2
+"$@" &
+child=$!
+while kill -0 "$child" 2>/dev/null; do
+  age=$(( $(date +%s) - $(stat -c %Y "$heartbeat") ))
+  if [ "$age" -gt "$max_age" ]; then
+    echo "autan-campaign: watcher heartbeat ${age} s old; stopping" >&2
+    exit 125
+  fi
+  sleep 2
+done
+wait "$child"
+"""
+
+
+def lock_in_use(lock: Path, proc_locks: str) -> bool:
+    """Whether any process holds or waits for a flock on ``lock``, read from /proc/locks."""
+    st = lock.stat()
+    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    # proc(5): "N: FLOCK ADVISORY WRITE PID MAJ:MIN:INODE START END", device numbers in hex;
+    # a process blocked on the lock has its own line with "->" after "N:".
+    return any(key in line.split() for line in proc_locks.splitlines())
+
+
+def _state_of(stat_file: Path) -> bytes | None:
+    try:
+        # proc(5): the state follows the parenthesised command name.
+        return stat_file.read_bytes().rpartition(b")")[2].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def other_runnable(cgroup: Path) -> int:
+    """Threads in state R outside the campaign's cgroup, this watcher excluded. Both counts come
+    from the threads' own states, so CPU-quota throttling does not skew the difference."""
+    total = sum(1 for t in Path("/proc").glob("[0-9]*/task/[0-9]*/stat") if _state_of(t) == b"R")
+    try:
+        tids = (cgroup / "cgroup.threads").read_text().split()
+    except OSError:
+        tids = []
+    mine = sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
+    return max(0, total - mine - 1)
+
+
+def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", *args], check=check, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S
+    )
+
+
+def cgroup_of(name: str) -> Path:
+    """The container's cgroup v2 directory, read from its main process."""
+    for _ in range(50):
+        out = docker("inspect", "-f", "{{.State.Status}} {{.State.Pid}}", name).stdout.split()
+        if out[0] != "running":
+            logs = docker("logs", "--tail", "5", name, check=False)
+            sys.exit(f"autan-campaign: container {name} is {out[0]} right after start:"
+                     f" {logs.stdout[-500:]}{logs.stderr[-500:]}")  # fmt: skip
+        try:
+            relative = Path(f"/proc/{out[1]}/cgroup").read_text().strip().removeprefix("0::")
+        except FileNotFoundError:
+            relative = ""
+        cgroup = Path("/sys/fs/cgroup") / relative.lstrip("/")
+        if relative and (cgroup / "cgroup.threads").exists():
+            return cgroup
+        time.sleep(0.1)
+    sys.exit(f"autan-campaign: no cgroup v2 directory for container {name}")
+
+
+def publish(name: str, state: str) -> None:
+    """Write campaigns/NAME.state atomically: autan-bench reads it before measuring."""
+    STATES.mkdir(mode=0o755, exist_ok=True)
+    tmp = STATES / f".{name}.state"
+    tmp.write_text(state + "\n")
+    tmp.chmod(0o644)
+    tmp.replace(STATES / f"{name}.state")
+
+
+def _say(text: str) -> None:
+    sys.stdout.write(text + "\n")
+
+
+def log(name: str, message: str) -> None:
+    STATE.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with (STATE / f"{name}.log").open("a") as handle:
+        handle.write(f"{stamp} {message}\n")
+
+
+def _start_time(pid: int) -> str | None:
+    try:
+        # proc(5): field 22, starttime; 20th after the parenthesised command name.
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def remove(name: str) -> bool:
+    """Remove the container; True once docker no longer lists it."""
+    container = PREFIX + name
+    for _ in range(3):
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            docker("rm", "-f", container, check=False)
+            if not docker("ps", "-aq", "--filter", f"name=^{container}$").stdout.strip():
+                return True
+        time.sleep(1)
+    return False
+
+
+def watch(name: str) -> int:
+    container = PREFIX + name
+    heartbeat = STATES / f"{name}.heartbeat"
+    stopping = False
+
+    def stop(*_: object) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    pid = os.getpid()
+    (STATE / f"{name}.pid").write_text(f"{pid} {_start_time(pid)}\n")
+    ended = False
+    try:
+        while not stopping and lock_in_use(LOCK, Path("/proc/locks").read_text()):
+            heartbeat.touch()
+            time.sleep(POLL_S)
+        if stopping:
+            log(name, "stopped before it started")
+            return 0
+        # "running" is published before the start, so that a measurement that takes the lock
+        # in between waits for the freeze instead of measuring beside the campaign.
+        publish(name, "running")
+        heartbeat.touch()
+        docker("start", container)
+        cgroup = cgroup_of(container)
+        log(name, "started")
+        frozen = False
+        # No docker call in the steady state: the CLI would load the CPU at every poll,
+        # measurements included. The cgroup directory disappears with the container.
+        samples: list[int] = []
+        next_sample = time.monotonic()
+        busy_since: float | None = None
+        while not stopping:
+            heartbeat.touch()
+            if not cgroup.exists():
+                ended = True
+                log(name, "campaign ended; `docker logs` keeps its output")
+                return 0
+            wanted = lock_in_use(LOCK, Path("/proc/locks").read_text())
+            if wanted and not frozen:
+                docker("pause", container)
+                publish(name, "frozen")
+                frozen = True
+                log(name, "GPU lock in use: frozen")
+            elif not wanted and frozen:
+                publish(name, "running")
+                docker("unpause", container)
+                frozen = False
+                log(name, "GPU lock free: thawed")
+            if frozen:
+                samples.clear()
+                busy_since = None
+            elif time.monotonic() >= next_sample:
+                samples.append(other_runnable(cgroup))
+                next_sample = time.monotonic() + LOAD_EVERY_S
+            if len(samples) >= LOAD_SAMPLES:
+                load = sorted(samples)[len(samples) // 2]
+                samples.clear()
+                now = time.monotonic()
+                if load <= MAX_OTHER_LOAD:
+                    busy_since = None
+                elif busy_since is None:
+                    busy_since = now
+                elif now - busy_since >= LOAD_GRACE_S:
+                    log(name, f"{load} runnable threads outside the campaign for a minute")
+                    return 1
+            time.sleep(POLL_S)
+        log(name, "stopped")
+        return 0
+    finally:
+        # A campaign never outlives its watcher: unwatched, it would run through measurements.
+        if not ended and not remove(name):
+            log(name, f"FAILED to remove {container}; it stops by itself within "
+                      f"{HEARTBEAT_MAX_AGE_S} s, when the heartbeat is stale")  # fmt: skip
+            sys.exit(1)
+        if not ended:
+            log(name, "container removed")
+        (STATES / f"{name}.state").unlink(missing_ok=True)
+        (STATES / f"{name}.heartbeat").unlink(missing_ok=True)
+        (STATE / f"{name}.pid").unlink(missing_ok=True)
+
+
+def start(args: argparse.Namespace) -> int:
+    if not LOCK.exists():
+        sys.exit(f"autan-campaign: {LOCK} is missing; run docker/runner/deploy.sh start")
+    container = PREFIX + args.name
+    STATE.mkdir(exist_ok=True)
+    if docker("ps", "-aq", "--filter", f"name=^{container}$").stdout.strip():
+        sys.exit(f"autan-campaign: {container} already exists")
+    command = args.command
+    if not command:
+        sys.exit("autan-campaign: no command after --")
+    workdir = Path(args.dir).resolve()
+    STATES.mkdir(mode=0o755, exist_ok=True)
+    heartbeat = STATES / f"{args.name}.heartbeat"
+    heartbeat.touch()
+    docker(
+        "create", "--name", container, "--cpus", str(args.cpus), "--cpu-shares", "2",
+        "--memory", "48g",
+        "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp",
+        "-v", f"{workdir}:/work", "-w", "/work",
+        "-v", f"{heartbeat}:/autan-campaign/heartbeat:ro",
+        args.image, "nice", "-n", "19", "sh", "-c", SUPERVISOR, "supervisor",
+        "/autan-campaign/heartbeat", str(HEARTBEAT_MAX_AGE_S), *command,
+    )  # fmt: skip
+    # The watcher starts the container once the GPU lock is free, then freezes and thaws it.
+    with (STATE / f"{args.name}.log").open("a") as errors:
+        subprocess.Popen(
+            [sys.executable, __file__, "_watch", args.name],
+            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=errors,
+        )  # fmt: skip
+    _say(f"created {container}; log: {STATE / (args.name + '.log')}")
+    return 0
+
+
+def status(_: argparse.Namespace) -> int:
+    fmt = "{{.Names}}\t{{.Status}}"
+    names = docker("ps", "-a", "--filter", f"name=^{PREFIX}", "--format", fmt).stdout.strip()
+    _say(names or "no campaign")
+    return 0
+
+
+def stop_campaign(args: argparse.Namespace) -> int:
+    pid_file = STATE / f"{args.name}.pid"
+    if pid_file.exists():
+        pid_text, _, started = pid_file.read_text().partition(" ")
+        pid = int(pid_text)
+        # Only the watcher that wrote the file: a PID reused after a reboot is someone else.
+        cmdline = Path(f"/proc/{pid}/cmdline")
+        ours = (
+            _start_time(pid) == started.strip()
+            and cmdline.exists()
+            and f"_watch\0{args.name}\0" in cmdline.read_text()
+        )
+        if ours:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(600):
+                    os.kill(pid, 0)
+                    time.sleep(0.1)
+    if not remove(args.name):
+        sys.exit(f"autan-campaign: could not remove {PREFIX + args.name}")
+    (STATES / f"{args.name}.state").unlink(missing_ok=True)
+    (STATES / f"{args.name}.heartbeat").unlink(missing_ok=True)
+    _say(f"removed {PREFIX + args.name}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="autan-campaign", description=__doc__.split("\n")[0])
+    sub = parser.add_subparsers(required=True)
+    s = sub.add_parser("start", help="start a campaign")
+    s.add_argument("name")
+    s.add_argument("--cpus", type=float, default=12.0)
+    s.add_argument("--image", default="autan-dev:local")
+    s.add_argument("--dir", default=".", help="directory mounted at /work")
+    s.set_defaults(func=start)
+    sub.add_parser("status", help="list campaigns").set_defaults(func=status)
+    k = sub.add_parser("stop", help="stop a campaign")
+    k.add_argument("name")
+    k.set_defaults(func=stop_campaign)
+    w = sub.add_parser("_watch", help=argparse.SUPPRESS)
+    w.add_argument("name")
+    w.set_defaults(func=lambda a: watch(a.name))
+    argv = sys.argv[1:] if argv is None else argv
+    # argparse.REMAINDER would also swallow the options before "--".
+    split = argv.index("--") if "--" in argv else len(argv)
+    args = parser.parse_args(argv[:split])
+    args.command = argv[split + 1 :]
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
