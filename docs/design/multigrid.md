@@ -13,12 +13,13 @@ Block Gauss-Seidel damps the error components a few cells long. The viscous Jaco
 | Linear or nonlinear (FAS) multigrid | **Linear**, on the Jacobian of the implicit step | Mavriplis (2002, J. Comput. Phys. 175:302–325): with the Jacobian the outer iteration already uses, linear multigrid converges as fast per cycle as FAS and costs less, since no residual, geometry or boundary condition is evaluated on coarse levels. The outer loop (SER CFL, admissible step, first-order start) and its fixed point R(U) = 0 are unchanged, so the converged solution is the same discrete solution. |
 | Coarse operators | **Galerkin** A_c = Pᵀ A P, P constant on each agglomerate | Exact for any agglomerate and any Jacobian (Euler, viscous, boundary blocks, the V/Δt shift) with no coarse geometry: block sums, in a fixed order. Rediscretisation would need the residual's kernels and boundary conditions on agglomerated polyhedra. Its weakness, a coarse diffusion operator about twice too stiff for a 2 × 2 × 2 agglomerate, is corrected by the Krylov acceleration below. |
 | Cycle | **K-cycle** (Notay and Vassilevski 2008, Numer. Linear Algebra Appl. 15:123–145): each coarse solve is two steps of GCR preconditioned by the next level's cycle | V and W cycles with piecewise-constant transfers lose convergence as levels are added on diffusion; the Krylov steps restore it at the cost of two products per level. V and W remain options. |
-| Outer solve | **GCR** preconditioned by one cycle per iteration, to a relative residual of 0.1 (at most 10 iterations) | Inexact Newton: a tighter linear tolerance does not reduce the number of steps of the defect-correction outer loop. A step whose solve stops above the tolerance is taken and logged (`linear` warning in `log.jsonl`); nothing falls back to Gauss-Seidel. |
+| Outer solve | **GCR** preconditioned by one cycle per iteration, to a relative residual of 0.1 (at most 10 iterations), on the residual scaled by its largest entry | Inexact Newton: a tolerance of 0.01 left the steps unchanged (Euler MMS 48³: 59 instead of 60), the outer defect correction sets the rate. A solve that stops above 0.1 is logged (`linear` warning in `log.jsonl`); one that leaves more than 0.9 of the residual, or meets a singular block, has failed: the step is rejected and the next CFL number is half this one. Nothing falls back to Gauss-Seidel. |
+| Start of the pseudo-time continuation | **CFL = 1000 / drop** (SER), instead of 10 / drop | With an exact-enough linear solve, the number of steps is set by the pseudo-time continuation: with the viscous time step ∝ h², a start at 10 made the laminar steps grow as the mesh (51 → 200 from 16³ to 48³). Gauss-Seidel gains nothing from a larger start (its solve is the limit). Checked on Ni's transonic bump from the freestream ([measurements](#measurements)). |
 | Smoother | **Line-implicit block Gauss-Seidel**, one symmetric sweep before and after each coarse correction | Lines are solved exactly by block-tridiagonal elimination; the other cells are point block Gauss-Seidel, as before. Lines of one colour share no face, so their solves are independent; colours are visited forwards then backwards. |
 
 ## Lines
 
-The coupling of a face is w_f = A_f / |x_N − x_O| (that of a boundary face uses the distance to the mirror cell, 2 |x_f − x_c|): the diffusion coefficient a viscous Jacobian has between the two cells. A cell is anisotropic when its strongest coupling is at least 4 times its weakest (aspect ratio ≥ 2). Seeds are the anisotropic cells, boundary cells first, then by decreasing anisotropy. A line grows from its seed, in both directions, through the strongest face whose coupling is at least 4 times the weakest coupling of both cells (Mavriplis 1998, J. Comput. Phys. 145:141–165). On wall layers, each wall cell starts a line normal to the wall that stops where the cells become isotropic.
+The coupling of a face is w_f = A_f / |x_N − x_O| (that of a boundary face uses the distance to the mirror cell, 2 |x_f − x_c|): the diffusion coefficient a viscous Jacobian has between the two cells. A cell is anisotropic when its strongest coupling is at least 4 times its weakest (aspect ratio ≥ 2). Seeds are the anisotropic cells, boundary cells first, then by decreasing anisotropy. A line grows from its seed, in both directions, through the strongest face whose coupling is at least 4 times the weakest coupling of both cells (Mavriplis 1998, J. Comput. Phys. 145:141–165), and starts at its boundary end when it has one. On wall layers, each wall cell starts a line normal to the wall that stops where the cells become isotropic. Lines of fewer than 4 cells (pairs of right prisms across their large face) are smoothed as lines but agglomerated as isotropic cells, whole.
 
 ## Agglomeration
 
@@ -27,13 +28,17 @@ Each level is a graph: nodes (cells, then agglomerates), edges (faces between th
 - never mixes cell zones;
 - holds only boundary zones its seed touches, and boundary faces facing the same side (Σ S_b · Σ S_b' > 0), so that an agglomerate keeps its patches and never wraps around a thin wall.
 
-Lines coarsen first, **in the wall plane**: a line is grouped with the neighbouring lines it touches layer by layer, and layer k of the group becomes one coarse node, so a coarse level keeps lines of the same length and the line smoother keeps working on coarse levels. The other cells form compact isotropic agglomerates of at most 8 nodes, grown from a seed by adding the free neighbour with the most faces on the agglomerate, the nearest to the seed among equals (2 × 2 × 2 blocks of hexahedra); seeds follow an advancing front from the boundary corners inwards (Mavriplis and Venkatakrishnan 1996, Comput. Fluids 25:361–378). A node left alone joins the neighbouring agglomerate it is most coupled to. Coarsening stops at 64 nodes, or when a level would keep more than 80 % of the nodes; the coarsest level is factored densely (LU with partial pivoting) when it has at most 1000 unknowns.
+Lines coarsen first, **in the wall plane**: a group of at most 4 lines grows from a seed line by the free line touching the most lines of the group at the most layers, the nearest among equals (2 × 2 blocks of wall lines), and layer k of the group becomes one coarse node, so a coarse level keeps lines of the same length and the line smoother keeps working on coarse levels. A neighbouring line may run the other way: its layers are matched in the orientation that touches the group at more layers. The other cells form compact isotropic agglomerates of at most 8 nodes, grown from a seed by adding the free neighbour with the most faces on the agglomerate, the nearest to the seed among equals (2 × 2 × 2 blocks of hexahedra); a cell brings the rest of its short line, so that no strong coupling joins two agglomerates. Seeds follow an advancing front from the boundary corners inwards (Mavriplis and Venkatakrishnan 1996, Comput. Fluids 25:361–378). A node left alone joins the neighbouring agglomerate it is most coupled to, beyond 8 if need be. Coarsening stops at 64 nodes, or when a level would keep more than 80 % of the nodes; the coarsest level is factored densely (LU with partial pivoting) when it has at most 1000 unknowns, and smoothed by 10 sweeps otherwise. The steady physics logs the hierarchy at the start of a run (`linear` info event: nodes per level, `lu` or `sweeps`).
 
 The hierarchy is built once from the mesh and its geometry. A mesh with ghost cells is refused (`std::invalid_argument`): coarse levels across partitions are M5.
 
 ## Determinism and precision
 
-Every loop runs in a fixed order and every choice breaks ties by index, so a run is bitwise reproducible. Blocks, vectors and reductions are FP64 in both precision policies; the Jacobian is assembled in FP64 by the physics.
+Every loop runs in a fixed order and every choice breaks ties by index, so a run is bitwise reproducible. Blocks, vectors and reductions are FP64 in both precision policies; the Jacobian is assembled in FP64 by the physics. Work vectors exist only on the levels that use them: about 5 FP64 vectors per fine cell beyond the Jacobian, plus 2 per GCR iteration.
+
+## GPU
+
+The multigrid runs on the host, as the whole implicit step today. The port (#163) follows the device assembly of the Jacobian: BSR products and fixed-order dot products from the kernel generator, Galerkin products, transfers and the line smoother written by hand in `solvers/` as gathers over precomputed lists, one line per thread within a colour.
 
 ## Verification
 
@@ -42,11 +47,45 @@ Every loop runs in a fixed order and every choice breaks ties by index, so a run
 | Agglomerates connected, one cell zone, coarse edges one per adjacent pair; lines join adjacent nodes and partition the nodes; reference meshes and wall layers | definition | `tests/solvers/test_multigrid.cpp` |
 | Wall layers (hexahedra, prisms, first cell 10⁻⁴): one line per wall cell, kept on every coarse level | geometry of the fixture | same |
 | One line sweep solves a block-tridiagonal system | exact solution, 1000 ε | same |
-| Two-level cycle without smoothing = P (PᵀAP)⁻¹ Pᵀ b | dense product and elimination | same |
-| Iterations to a 10⁻⁶ drop on diffusion, isotropic hexahedra and prisms 8 → 32 wide | ≤ 9, growing by at most 2 | same |
-| Wall layers of aspect ratio 10⁴, with and without lines | ≤ 9 with lines, at least twice as many without | same |
+| Two-level cycle without smoothing = P (PᵀAP)⁻¹ Pᵀ b, A(o, n) ≠ A(n, o), coarse edges of both orientations | dense product and elimination | same |
+| Layers whose lines run opposite ways (cell numbering reversed along every other column) coarsen in the plane | ≥ 2:1 at the first level | same |
+| Iterations to a 10⁻⁶ drop on diffusion, isotropic hexahedra and prisms 8 → 32 wide | ≤ 9, growing by at most 2 (measured: hexahedra 7, 6, 7; prisms 6, 7, 8) | same |
+| Wall layers of aspect ratio 10⁴ (first cell 10⁻⁵, growth 1.2), hexahedra and prisms, 8 and 16 wide, with and without lines | ≤ 9 with lines, at least twice as many without (measured: 6–8 with lines, 20–31 without) | same |
 | Steps to ten orders on Euler and laminar Navier-Stokes MMS, hexahedra 16³ → 96³, against Gauss-Seidel alone | [measurements](#measurements) | `physics/mms/study.sh` |
 
 ## Measurements
 
-Filled from the study of the pull request of #148.
+Steps of `autan-run` to ten orders, `fp64`, cpu backend, from the freestream; manufactured solutions on `autan-vv meshes hex` through `physics/mms/study.sh`. Gauss-Seidel: four sweeps per step, CFL = 10 / drop (commit 131c574); multigrid: this design (commit 1cbb3e3). "> 2000": not converged at the study's limit.
+
+| Case | Solver | 16³ | 24³ | 32³ | 48³ | 96³ |
+|---|---|---|---|---|---|---|
+| MMS `euler` | Gauss-Seidel | 87 | 121 | 157 | 232 | GS_E96 |
+| | multigrid | 40 | 47 | 51 | 60 | 78 |
+| MMS `navier_stokes` (μ = 10) | Gauss-Seidel | 111 | 214 | 347 | 700 | GS_N96 |
+| | multigrid, CFL = 10 / drop | 51 | 76 | 112 | 200 | |
+| | multigrid | 24 | 25 | 25 | 28 | 36 |
+| MMS `rans_sa` | Gauss-Seidel | | 369 | | 1057 | |
+| | multigrid (ν̃ still by Gauss-Seidel, #162) | | 65 | | 176 | |
+
+The converged solutions of both solvers differ by at most 7.5 × 10⁻⁹ of each field's range (16³ to 48³, Euler and Navier-Stokes), the residual tolerance's share: the observed orders are those of the discretisation (Euler gate `euler-mms-order` PASS, 1.95–2.18). Two runs of the same case give the same history and solution bit for bit.
+
+Ni's transonic bump (circular arc 10 % thick in a channel, inlet Mach 0.675, Euler, peak Mach 1.39, one hexahedron thick), from the freestream:
+
+| Mesh | Gauss-Seidel | multigrid, CFL = 10 / drop | multigrid | steps shortened / rejected |
+|---|---|---|---|---|
+| 96 × 32 | 2566 | 355 | 54 | 0 / 0 |
+| 192 × 64 | > 4000 | 446 | 95 | 0 / 0 |
+| 384 × 128 | > 3424 | > 975 | 298 | 8 / 0 (first steps) |
+
+Time to ten orders on a quiet GB10 (spark-5359, one Grace core, the run alone under the machine's lock):
+
+| Case | Gauss-Seidel | multigrid | Gain |
+|---|---|---|---|
+| `euler` 24³ | 4.0 s (121 steps) | 2.1 s (47) | 1.9 × |
+| `euler` 48³ | 73.5 s (232) | 28.9 s (60) | 2.5 × |
+| `navier_stokes` 24³ | 10.4 s (214) | 1.8 s (25) | 5.8 × |
+| `navier_stokes` 48³ | 323.6 s (700) | 20.3 s (28) | 15.9 × |
+| `navier_stokes` 96³ | | T_N96 | |
+| `euler` 96³ | | T_E96 | |
+
+A multigrid step costs about 1.5 Gauss-Seidel steps (Euler 48³: 0.48 s against 0.32 s). The remaining growth of the Euler steps (40 → 78) is the outer defect correction's: a linear tolerance of 0.01 gives the same counts.
