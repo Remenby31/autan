@@ -32,7 +32,6 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
   "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
   "precision": "fp32+acc64",
-  "deterministic": true,
   "devices": {"kind": "cpu", "count": 1},
   "started": "2026-10-31T21:40:12Z",
   "finished": "2026-10-31T21:54:40Z",
@@ -56,7 +55,6 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
 | `precision` | Precision as run, from the case. |
-| `deterministic` | Whether the run used the bitwise-deterministic mode. |
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`. |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
@@ -67,7 +65,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `monitors` | The record of every monitor of the case on the run's final state, `{<name>: {iteration, <the quantities of [History](#history)>}}`, `iteration` being `iterations`, whether or not the last iteration was a multiple of the monitor's `every`; equal to the last history line when that line carries the monitor. Given for `converged`, `completed` and `stopped` runs (a run stopped before its first iteration: the initial state, iteration 0); `null` while `running` and for `diverged` and `failed` runs. The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times).
+Two runs of the solver (not the `fake` backend) with the same `identity` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver build, precision, backend, devices and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
 
 ## History
 

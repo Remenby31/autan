@@ -652,6 +652,16 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
 }
 #endif
 
+TEST_CASE("A scope's refusal carries its own code", "[runtime]") {
+  // E0706 unless the physics says more (E1109 for a reproducibility it cannot honour): any
+  // registered code goes through, here E0705.
+  autan_test::RelaxationOptions refusing;
+  refusing.refuse_code = "E0705";
+  const Outcome o = run(input(), refusing);
+  require_error(o, "E0705");
+  CHECK(Json::parse(o.err)["data"]["path"] == "physics");
+}
+
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
   autan::runtime::PhysicsRegistry registry;
@@ -683,7 +693,7 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
 }
 
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
-  const Json doc = input([](Json& d) { d["deterministic"] = true; });
+  const Json doc = input([](Json& d) { d["reproducibility"] = "run"; });
   const Outcome a = run(doc);
   const Outcome b = run(doc);
   CHECK(read(a.run / "history.jsonl") == read(b.run / "history.jsonl"));
@@ -895,7 +905,9 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
     CHECK(l["data"].is_object());
   }
   CHECK(lines.front()["iteration"].is_null());
-  CHECK(lines[1]["message"] == "relaxation physics ready");  // the physics' own line
+  // The physics' own line, after the runtime's (the cell order).
+  CHECK(std::ranges::any_of(
+      lines, [](const Json& l) { return l["message"] == "relaxation physics ready"; }));
   // The run.json diagnostic appears with its code and data.
   const Json info = Json::parse(read(o.run / "run.json"));
   const auto d0107 =
@@ -915,7 +927,7 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   const autan_test::RelaxationOptions options{.growth = 1e-3};
   const auto budget = [&](std::int64_t n) {
     return [steady, n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       if (steady)
         d["time"]["max_iterations"] = n;
@@ -1397,7 +1409,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   options.sleep_at = 15;
   const auto doc = [](std::int64_t n) {
     return input([n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["time"]["max_iterations"] = n;
     });
   };
@@ -1591,7 +1603,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   const int ranks = GENERATE(2, 4);
   CAPTURE(periodic, ranks);
   const auto edit = [](Json& d) {
-    d["deterministic"] = true;
+    d["reproducibility"] = "run";
     d["monitors"][0]["every"] = 1;
     d["time"]["max_iterations"] = 12;
   };
@@ -1605,11 +1617,11 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
-  // In RCM order too (AUTAN_CELL_ORDER): partitioned after renumbering, the
-  // outputs mapped back to the mesh's numbering.
+  // In the mesh's own order too (AUTAN_CELL_ORDER=input; RCM is the
+  // default): partitioned on other cells, the same outputs.
   const fs::path rcm = run_on_ranks(
       doc, ranks,
-      {"AUTAN_CELL_ORDER=rcm", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+      {"AUTAN_CELL_ORDER=input", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
        "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
   CHECK(lines_of(rcm / "history.jsonl") == lines_of(one.run / "history.jsonl"));
   CHECK(solution_field(rcm / "solution.cgns", "FlowSolution", "Pressure") ==
@@ -1635,6 +1647,44 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   CHECK(solution_field(many_swept / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
         swept_one);
   if (!periodic) CHECK(swept_one == swept(autan::io::read_mesh(mesh_path), 12, 2));
+  // Reproducibility "ranks": a partition even on one rank, and face keys that
+  // match the mesh file on 1 and N ranks (the physics checks them); a run on
+  // several ranks in another mode says its results depend on the count.
+  Json keyed = doc;
+  keyed["reproducibility"] = "ranks";
+  autan_test::RelaxationOptions checking = options;
+  checking.check_keys = true;
+  const Outcome one_keyed = run(keyed, checking);
+  REQUIRE(one_keyed.status == ExitStatus::finished);
+  const fs::path many_keyed =
+      run_on_ranks(keyed, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
+  CHECK(Json::parse(read(many_keyed / "run.json"))["status"] == "completed");
+  CHECK(lines_of(many_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
+  CHECK(solution_field(many_keyed / "solution.cgns", "FlowSolution", "Pressure") ==
+        solution_field(one_keyed.run / "solution.cgns", "FlowSolution", "Pressure"));
+  // The keys name the mesh file's faces through the RCM renumbering (the
+  // default) and its flipped faces: in the mesh's own order the physics
+  // finds the same keys, so "ranks" gives the same bits in either order.
+  const fs::path input_keyed = run_on_ranks(
+      keyed, ranks,
+      {"AUTAN_CELL_ORDER=input", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
+  CHECK(lines_of(input_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
+  CHECK(solution_field(input_keyed / "solution.cgns", "FlowSolution", "Pressure") ==
+        solution_field(one_keyed.run / "solution.cgns", "FlowSolution", "Pressure"));
+  // On one rank in "run", the renumbered mesh without a partition: its keys too.
+  if (!periodic) CHECK(run(doc, checking).status == ExitStatus::finished);
+  const auto has_event = [](const fs::path& run_dir) {
+    std::ifstream in(run_dir / "log.jsonl");
+    for (std::string line; std::getline(in, line);) {
+      if (Json::parse(line)["data"].contains("mode")) return true;
+    }
+    return false;
+  };
+  CHECK(has_event(many));
+  CHECK_FALSE(has_event(many_keyed));
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in
@@ -1758,10 +1808,12 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   // rank: the start state is split among the ranks and the mean and restart
   // fields gathered back.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
-  const auto steps = [](std::int64_t n) {
-    return [n](Json& d) {
-      d["deterministic"] = true;
+  const std::string mode = GENERATE("run", "ranks");
+  CAPTURE(ranks, mode);
+  const auto steps = [mode](std::int64_t n) {
+    return [n, mode](Json& d) {
+      d["reproducibility"] = mode;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       d["time"]["steps"] = n;
     };
@@ -1790,13 +1842,14 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
 #endif
 
 TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[runtime][renumber]") {
-  // AUTAN_CELL_ORDER=rcm computes on the mesh renumbered in reverse
+  // By default autan-run computes on the mesh renumbered in reverse
   // Cuthill-McKee order; every output keeps the mesh's numbering.
-  struct Order {
-    Order() { REQUIRE(setenv("AUTAN_CELL_ORDER", "rcm", 1) == 0); }
-    ~Order() { unsetenv("AUTAN_CELL_ORDER"); }
-    Order(const Order&) = delete;
-    Order& operator=(const Order&) = delete;
+  // AUTAN_CELL_ORDER=input keeps the mesh's own order.
+  struct InputOrder {
+    InputOrder() { REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0); }
+    ~InputOrder() { unsetenv("AUTAN_CELL_ORDER"); }
+    InputOrder(const InputOrder&) = delete;
+    InputOrder& operator=(const InputOrder&) = delete;
   };
   SECTION("bit for bit when nothing sums over faces: the relaxation physics") {
     // Fields that vary per cell, forces at every iteration, a cell that
@@ -1804,19 +1857,19 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     const bool periodic = GENERATE(false, true);
     CAPTURE(periodic);
     const auto edit = [](Json& d) {
-      d["deterministic"] = true;
       d["monitors"][0]["every"] = 1;
       d["time"]["max_iterations"] = 12;
     };
     const Json doc = periodic ? periodic_input(1.0, edit) : input(edit);
     const autan_test::RelaxationOptions options{
         .factor = 0.9, .pressure_offset = 1000.0, .growth = 1e-3, .vary = true};
-    const Outcome a = run(doc, options);
-    Outcome b;
+    Outcome a;
     {
-      const Order rcm;
-      b = run(doc, options);
+      const InputOrder input_order;
+      a = run(doc, options);
     }
+    REQUIRE(a.status == ExitStatus::finished);
+    const Outcome b = run(doc, options);
     REQUIRE(b.status == ExitStatus::finished);
     CHECK(lines_of(a.run / "history.jsonl") == lines_of(b.run / "history.jsonl"));
     for (const char* field : {"Density", "VelocityX", "Pressure"}) {
@@ -1833,15 +1886,17 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
       const Outcome o = run(d, {.factor = 0.9, .diverge_at = 3, .diverge_cell = 7});
       return Json::parse(read(o.run / "run.json"))["diagnostics"];
     };
-    const Json in_order = diverged(doc);
-    const Order rcm;
-    CHECK(diverged(doc) == in_order);
+    const Json in_rcm = diverged(doc);
+    {
+      const InputOrder input_order;
+      CHECK(diverged(doc) == in_rcm);
+    }
     if (!periodic) {
       Json plain = doc;
       inviscid(plain);
       const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
       const Outcome c = run(from_file, options);
-      unsetenv("AUTAN_CELL_ORDER");
+      const InputOrder input_order;
       const Outcome d = run(from_file, options);
       CHECK(solution_field(c.run / "solution.cgns", "FlowSolution", "Pressure") ==
             solution_field(d.run / "solution.cgns", "FlowSolution", "Pressure"));
@@ -1880,13 +1935,13 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     });
     autan::runtime::PhysicsRegistry euler;
     autan::physics::register_euler(euler);
-    const Outcome a = run(doc, euler);
-    REQUIRE(a.status == ExitStatus::finished);
-    Outcome b;
+    Outcome a;
     {
-      const Order rcm;
-      b = run(doc, euler);
+      const InputOrder input_order;
+      a = run(doc, euler);
     }
+    REQUIRE(a.status == ExitStatus::finished);
+    const Outcome b = run(doc, euler);
     REQUIRE(b.status == ExitStatus::finished);
     const double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
     for (const char* field : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {

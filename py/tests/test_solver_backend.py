@@ -82,7 +82,7 @@ def test_a_real_run_reads_back_through_the_results_contract(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     case, mesh = hybrid
-    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    backend = autan.SolverBackend(executable=RELAXATION)
     result = case.run(mesh, backend=backend, runs=tmp_path / "runs")
     run = result.run
     assert run.status in ("converged", "completed")
@@ -277,7 +277,7 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
         path.write_text(CASE + f"case.time = autan.Steady(max_iterations={budget})\n")
         return autan.load(path)
 
-    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    backend = autan.SolverBackend(executable=RELAXATION)
     whole = case(10000).run(mesh, backend=backend, runs=tmp_path / "whole")
     first = case(10).run(mesh, backend=backend, runs=tmp_path / "parts")
     assert (first.run.status, first.run.iterations) == ("completed", 10)
@@ -449,7 +449,7 @@ def test_a_file_written_by_the_sdk_starts_the_real_runtime(tmp_path: Path) -> No
     )
     result = autan.load(case).run(
         mesh,
-        backend=autan.SolverBackend(executable=RELAXATION, deterministic=True),
+        backend=autan.SolverBackend(executable=RELAXATION),
         runs=tmp_path / "runs",
     )
     assert (result.path / "states" / f"{digest}.json").is_file()

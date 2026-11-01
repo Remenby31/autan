@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <span>
@@ -778,7 +779,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
       data["path"] = refusal->path;
-      throw InputError(Diagnostic{.code = "E0706",
+      throw InputError(Diagnostic{.code = refusal->code,
                                   .message = std::move(refusal->message),
                                   .path = std::move(refusal->path),
                                   .data_json = data.dump()});
@@ -857,6 +858,7 @@ class Run final : public Log {
     }
     local_states_ = physics_boundary_states();
     colour_cells_of_physics();
+    face_keys();
     // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
@@ -903,7 +905,6 @@ class Run final : public Log {
           {"sha256", p_.mesh_hash}}},
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
-        {"deterministic", in.deterministic},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
         {"started", started_at},
         {"finished", nullptr},
@@ -951,6 +952,12 @@ class Run final : public Log {
            Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
     }
     if (comm_.size() > 1) log_partition();
+    if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
+      note("info", "solver",
+           "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
+               ", not ranks",
+           "", Json{{"mode", p_.input.reproducibility}, {"ranks", comm_.size()}}.dump());
+    }
     if (gpu_) {
       note(
           "info", "cuda",
@@ -979,7 +986,9 @@ class Run final : public Log {
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
                                  .cell_colours = colours_,
-                                 .n_colours = n_colours_};
+                                 .n_colours = n_colours_,
+                                 .face_global_id = face_global_id_,
+                                 .face_reversed = face_reversed_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1029,7 +1038,10 @@ class Run final : public Log {
   std::optional<LocalPartition> make_part() {
     const Mesh& mesh = compute_mesh();
     const std::int32_t n = comm_.size();
-    if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
+    // Reproducibility "ranks" computes on a partition, one part on one rank,
+    // so that a physics finds the same global keys on any number of ranks.
+    if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
+      return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
     if (n > 1) parts = partition_cells(mesh, n, {.cell_weights = cell_cost_weights(mesh)});
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
@@ -1064,19 +1076,20 @@ class Run final : public Log {
     return {global.begin(), global.begin() + mesh.n_owned_cells()};
   }
 
-  // AUTAN_CELL_ORDER=rcm: the mesh's cells in reverse Cuthill-McKee order
-  // (mesh.md, Renumbering), for memory locality; the outputs keep the mesh's
-  // numbering through cell_global_id and face_source. Unset or "input": the
-  // mesh's order.
+  // By default (AUTAN_CELL_ORDER unset or "rcm"), the mesh's cells in reverse
+  // Cuthill-McKee order (mesh.md, Renumbering), for memory locality; the
+  // outputs keep the mesh's numbering through cell_global_id and face_source.
+  // "input": the mesh's order.
   struct Ordered {
     Mesh mesh;
-    std::vector<index_t> face_source;  // the mesh face of each face of `mesh`
+    std::vector<index_t> face_source;         // the mesh face of each face of `mesh`
+    std::vector<std::uint8_t> face_reversed;  // 1 where that face runs against it
   };
   std::optional<Ordered> make_ordered() {
     // Rank 0's environment decides for every rank: ranks partitioning
     // differently numbered meshes would exchange unrelated cells.
     const char* order = std::getenv("AUTAN_CELL_ORDER");
-    const std::string name = comm_.broadcast(order == nullptr ? "input" : order);
+    const std::string name = comm_.broadcast(order == nullptr ? "rcm" : order);
     if (name == "input") return std::nullopt;
     if (name != "rcm") {
       throw std::runtime_error("AUTAN_CELL_ORDER is '" + std::string(name) + "', not input or rcm");
@@ -1086,11 +1099,29 @@ class Run final : public Log {
     Mesh mesh = renumber_cells(p_.mesh, rcm_order(p_.mesh), &map);
     renumber_seconds_ =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    return Ordered{.mesh = std::move(mesh), .face_source = std::move(map.face_source)};
+    return Ordered{.mesh = std::move(mesh),
+                   .face_source = std::move(map.face_source),
+                   .face_reversed = std::move(map.face_reversed)};
   }
   // The mesh the runtime partitions and the physics computes on: the mesh,
   // or its renumbered copy.
   [[nodiscard]] const Mesh& compute_mesh() const { return ordered_ ? ordered_->mesh : p_.mesh; }
+  // Each face of the physics' mesh, keyed in the mesh the run read: its face
+  // in the compute mesh (the partition's, or itself), then in the mesh (the
+  // renumbering's), reversed if one of the two flipped it.
+  void face_keys() {
+    const auto n = at(physics_mesh().n_faces());
+    face_global_id_.resize(n);
+    face_reversed_.resize(n);
+    for (std::size_t f = 0; f < n; ++f) {
+      const auto g =
+          local_ ? static_cast<index_t>(local_->face_global_id[f]) : static_cast<index_t>(f);
+      std::uint8_t reversed = local_ ? local_->face_reversed[f] : 0;
+      if (ordered_) reversed ^= ordered_->face_reversed[at(g)];
+      face_global_id_[f] = mesh_face(static_cast<index_t>(f));
+      face_reversed_[f] = reversed;
+    }
+  }
   // The mesh face of face f of the physics' mesh.
   [[nodiscard]] index_t mesh_face(index_t f) const {
     const auto g = local_ ? static_cast<index_t>(local_->face_global_id[at(f)]) : f;
@@ -1572,6 +1603,10 @@ class Run final : public Log {
   std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
   std::int32_t n_colours_ = 0;
+  // PhysicsContext's global keys of the physics' faces: through the partition
+  // and the renumbering, in the mesh the run read.
+  std::vector<std::int64_t> face_global_id_;
+  std::vector<std::uint8_t> face_reversed_;
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial

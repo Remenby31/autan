@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "autan/io/read_mesh.hpp"
 #include "autan/runtime/physics.hpp"
 
 #ifdef AUTAN_HAVE_CUDA
@@ -50,7 +51,11 @@ struct RelaxationOptions {
   /// each cell of a colour takes the mean of itself and its face neighbours, summed in increasing
   /// global id, then the ghosts are exchanged; the residuals scale by 1 + 1e-3 of the field's RMS.
   int colour_sweeps = 0;
-  int expect_ranks = 0;  ///< its scope refuses a run on another number of ranks; 0: any
+  /// Checks PhysicsContext's face keys against the mesh file: each local face's global face has
+  /// the local face's cells (by global id), swapped when it is marked reversed.
+  bool check_keys = false;
+  std::string refuse_code{};  ///< its scope refuses every input with this code; empty: none
+  int expect_ranks = 0;       ///< its scope refuses a run on another number of ranks; 0: any
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -75,6 +80,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
     read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
+    read("AUTAN_TEST_CHECK_KEYS", o.check_keys);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
@@ -141,6 +147,7 @@ class Relaxation final : public autan::runtime::Physics {
       context_.ranks.sum(sums);
       rms_ = std::sqrt(sums[0].value() / sums[1].value());
     }
+    if (options_.check_keys) check_keys();
     mean_ = state_;
     context_.log.write("info", "solver", "relaxation physics ready", "",
                        "{\"ghosts\": " + std::to_string(mesh.n_cells() - mesh.n_owned_cells()) +
@@ -402,6 +409,52 @@ class Relaxation final : public autan::runtime::Physics {
                             nullptr);
   }
 
+  void check_keys() const {
+    const autan::Mesh global = autan::io::read_mesh(context_.input.mesh_path);
+    const auto& mesh = context_.mesh;
+    const auto ids = mesh.cell_global_id();
+    if (context_.face_global_id.size() != static_cast<std::size_t>(mesh.n_faces()) ||
+        context_.face_reversed.size() != context_.face_global_id.size())
+      throw std::runtime_error("relaxation: face keys of another size than the mesh's faces");
+    for (autan::index_t f = 0; f < mesh.n_faces(); ++f) {
+      const auto i = static_cast<std::size_t>(f);
+      const auto g = static_cast<std::size_t>(context_.face_global_id[i]);
+      const bool reversed = context_.face_reversed[i] != 0;
+      const auto owner = ids[static_cast<std::size_t>(mesh.owner()[i])];
+      if (f >= mesh.n_interior_faces()) {
+        if (reversed ||
+            owner != global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])])
+          throw std::runtime_error("relaxation: a boundary face's key does not match");
+        continue;
+      }
+      // A face to a periodic image has a pair's face of zone a for key: its
+      // neighbour is the owner of the matched face of zone b.
+      const auto neighbour = ids[static_cast<std::size_t>(mesh.neighbour()[i])];
+      const auto global_owner =
+          global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])];
+      std::int64_t global_neighbour = -1;
+      if (g < static_cast<std::size_t>(global.n_interior_faces())) {
+        global_neighbour = global.cell_global_id()[static_cast<std::size_t>(global.neighbour()[g])];
+      } else {
+        const auto offsets = global.boundary_zone_offsets();
+        for (std::size_t p = 0; p < global.periodic_pairs().size(); ++p) {
+          const auto first = static_cast<std::size_t>(
+              offsets[static_cast<std::size_t>(global.periodic_pairs()[p].zone_a)]);
+          const auto partners = global.periodic_partners(p);
+          if (g >= first && g < first + partners.size()) {
+            global_neighbour = global.cell_global_id()[static_cast<std::size_t>(
+                global.owner()[static_cast<std::size_t>(partners[g - first])])];
+          }
+        }
+        if (global_neighbour < 0)
+          throw std::runtime_error("relaxation: a periodic face's key is no zone-a face");
+      }
+      if ((reversed ? neighbour : owner) != global_owner ||
+          (reversed ? owner : neighbour) != global_neighbour)
+        throw std::runtime_error("relaxation: an interior face's key does not match");
+    }
+  }
+
   [[nodiscard]] double scale(std::size_t cell) const {
     return 1.0 + 1e-6 * static_cast<double>(context_.mesh.cell_global_id()[cell]);
   }
@@ -425,6 +478,12 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
       },
       [options](const autan::runtime::SolverInput& /*input*/,
                 int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (options.refuse_code.empty() == false) {
+          return autan::runtime::PhysicsRefusal{.message = "refused with its own code",
+                                                .path = "physics",
+                                                .data_json = "{}",
+                                                .code = options.refuse_code};
+        }
         if (options.expect_ranks == 0 || ranks == options.expect_ranks) return std::nullopt;
         return autan::runtime::PhysicsRefusal{
             .message = "refused on " + std::to_string(ranks) + " ranks",

@@ -291,7 +291,6 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     identity,
     solver,
     devices,
-    deterministic: !source.deterministic,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
   renameSync(staging, join(RUNS, runId));
@@ -304,7 +303,6 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     ["run.devices", "1 CPU", "4 CUDA GPUs"],
     ["run.backend", source.solver.backend, "cuda"],
     ["run.solver", source.solver.commit, solver.commit],
-    ["run.deterministic", String(source.deterministic), String(!source.deterministic)],
   ]) {
     await expect(diff.getByRole("row", { name: new RegExp(`^${key} `) })).toContainText(
       a as string,
