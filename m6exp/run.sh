@@ -6,7 +6,7 @@ B=/src/build-m6
 export UV_PROJECT_ENVIRONMENT=/src/.venv-m6 UV_CACHE_DIR=/tmp/uv-cache
 cmake -S . -B $B -G Ninja -DCMAKE_BUILD_TYPE=Release -DAUTAN_EXPERIMENT_DIAG=ON >/dev/null && cmake --build $B -j 8 --target autan-run >/dev/null || exit 1
 uv sync --locked -q
-D=$B/m6; R=$D/exp3; mkdir -p $R
+D=$B/m6; R=$D/exp4; mkdir -p $R
 uv run --no-sync autan prepare $D/cases/onera-m6-n012.toml --mesh-info $D/n012.meshinfo.json > $D/base.json || exit 1
 python3 - $D/base.json $R <<'PY'
 import json,sys
@@ -16,9 +16,11 @@ def w(name, edit):
 def steady(n):
     def e(d): d["time"]["max_iterations"]=n
     return e
-w("base", steady(300))
+w("base", steady(1500))
+w("mono300", steady(1500))
 PY
 run() { name=$1; shift; rm -rf $R/$name; env "$@" AUTAN_EXP_DUMP=$R/$name nice $B/runtime/autan-run --input $R/$name.json --runs $R/$name > $R/$name.log 2>&1; }
 run base X=1 &
+run mono300 AUTAN_EXP_MONO=300 &
 wait
 echo done
