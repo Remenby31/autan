@@ -66,6 +66,7 @@ class Single final : public Comm {
   void sum(std::span<ExactSum> /*sums*/) override {}
   [[nodiscard]] double min(double value) override { return value; }
   [[nodiscard]] std::int64_t max(std::int64_t value) override { return value; }
+  [[nodiscard]] double max(double value) override { return value; }
   [[nodiscard]] std::string broadcast(std::string text) override { return text; }
   [[nodiscard]] std::vector<double> gather(std::span<const std::int64_t> ids,
                                            std::span<const double> values,
@@ -155,6 +156,11 @@ class World final : public Comm {
   }
   [[nodiscard]] std::int64_t max(std::int64_t value) override {
     check(MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_INT64_T, MPI_MAX, MPI_COMM_WORLD),
+          "MPI_Allreduce");
+    return value;
+  }
+  [[nodiscard]] double max(double value) override {
+    check(MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD),
           "MPI_Allreduce");
     return value;
   }
