@@ -2,7 +2,9 @@
 // solver inputs written by `autan prepare` (tests/data/runtime), edited per test.
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -254,12 +256,8 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  // Under "ranks" the implicit step assembles its Jacobian in global order and orientation.
-  const char* reproducibility = GENERATE("run", "ranks");
-  CAPTURE(precision, reproducibility);
   const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
     d["precision"] = precision;
-    d["reproducibility"] = reproducibility;
     d["time"]["max_iterations"] = 20000;
     d["time"]["residual_orders"] = std::string(precision) == "fp64" ? 10.0 : 5.0;
   });
@@ -457,16 +455,27 @@ void unsteady_through_pairs(Json& d, int steps) {
 
 }  // namespace
 
-TEST_CASE("a steady case with periodic pairs is refused before any directory exists", "[euler]") {
-  // The steady solver's Gauss-Seidel does not take image ghosts: E0706 at `periodic`.
-  const auto doc = input("hybrid.solver-input.json", [&](Json& d) { periodic_box(d, "fp64"); });
+TEST_CASE("steady cases the steady solver cannot run are refused before any directory exists",
+          "[euler]") {
+  // The steady solver's Gauss-Seidel does not take image ghosts: E0706 at `periodic`. Its
+  // multigrid sums in local cell order: reproducibility "ranks" is E1109.
+  const bool periodic = GENERATE(true, false);
+  CAPTURE(periodic);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    if (periodic) {
+      periodic_box(d, "fp64");
+    } else {
+      inviscid_along_x(d, "fp64");
+      d["reproducibility"] = "ranks";
+    }
+  });
   const auto out = run(doc);
   INFO(out.err);
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["location"]["path"] == "periodic");
+  CHECK(diagnostic["code"] == (periodic ? "E0706" : "E1109"));
+  CHECK(diagnostic["location"]["path"] == (periodic ? "periodic" : "reproducibility"));
 }
 
 TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
@@ -686,7 +695,18 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   INFO("norms " << worst_norm << " eps, fields " << worst_field << " eps");
   if (std::string(reproducibility) == "ranks") {
     CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
-    CHECK(worst_field == 0.0);
+    // Bit patterns, so that a signed zero or a NaN cannot pass for an equal value.
+    for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+      INFO(name);
+      const auto a = field(one.run, name), b = field(many, name);
+      REQUIRE(std::ranges::all_of(a, [](double x) { return std::isfinite(x); }));
+      std::vector<std::uint64_t> ba(a.size()), bb(b.size());
+      std::ranges::transform(a, ba.begin(),
+                             [](double x) { return std::bit_cast<std::uint64_t>(x); });
+      std::ranges::transform(b, bb.begin(),
+                             [](double x) { return std::bit_cast<std::uint64_t>(x); });
+      CHECK(ba == bb);
+    }
   } else {
     CHECK(worst_norm <= 256.0);
     CHECK(worst_field <= 256.0);

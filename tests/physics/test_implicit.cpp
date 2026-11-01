@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -289,15 +290,28 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   eb.state(ub, sb);
   ea.residual_and_jacobian(sa, ra);
   eb.residual_and_jacobian(sb, rb);
+  // Bit patterns, so that a signed zero or a NaN cannot pass for an equal value.
+  auto bits_differ = [](auto x, auto y) {
+    static_assert(sizeof(x) == sizeof(y));
+    return std::memcmp(&x, &y, sizeof(x)) != 0;
+  };
+  REQUIRE(std::ranges::all_of(ra, [](auto x) { return std::isfinite(static_cast<double>(x)); }));
   std::size_t residual_differs = 0;
   for (std::size_t c = 0; c < nc; ++c) {
-    for (std::size_t k = 0; k < 5; ++k) residual_differs += rb[k * nc + c] != ra[k * nc + cell(c)];
+    for (std::size_t k = 0; k < 5; ++k) {
+      residual_differs += bits_differ(rb[k * nc + c], ra[k * nc + cell(c)]);
+    }
   }
   CHECK(residual_differs == 0);
   BlockMatrix ma(a), mb(b);
   ea.assemble(shift_a, ma);
   eb.assemble(shift_b, mb);
-  auto same = [](const double* x, const double* y) { return std::equal(x, x + 25, y); };
+  REQUIRE(std::ranges::all_of(ma.diagonals(), [](double x) { return std::isfinite(x); }));
+  REQUIRE(std::ranges::all_of(ma.uppers(), [](double x) { return std::isfinite(x); }));
+  REQUIRE(std::ranges::all_of(ma.lowers(), [](double x) { return std::isfinite(x); }));
+  auto same = [](const double* x, const double* y) {
+    return std::memcmp(x, y, 25 * sizeof(double)) == 0;
+  };
   std::size_t blocks_differ = 0;
   for (std::size_t c = 0; c < nc; ++c) {
     blocks_differ += !same(mb.diagonal(c), ma.diagonal(cell(c)));
