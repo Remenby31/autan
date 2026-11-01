@@ -8,6 +8,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/physics/block_matrix.hpp"
 
 namespace autan::physics {
 
@@ -70,13 +71,21 @@ class Euler {
 
   /// Sets each boundary face's condition and its data (5 x n_boundary_faces).
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
+  /// Switches the linear reconstruction on or off (Scheme::second_order).
+  void set_second_order(bool on);
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 
   /// The stored state of conserved variables u (5 x n_cells, FP64): u - U_ref.
   void state(std::span<const double> u, std::span<State> s) const;
-  /// R(s) into res, s a stored state; both 5 x n_cells.
-  void residual(std::span<const State> s, std::span<Res> res);
+  /// R(s) into res, s a stored state; both 5 x n_cells. With `frozen_limiter`, the limiter of
+  /// the previous evaluation is kept: the residual is then differentiable (Newton-Krylov).
+  void residual(std::span<const State> s, std::span<Res> res, bool frozen_limiter = false);
+  /// R(s) into res, and the approximate Jacobian's blocks: dF/dW of every face with the
+  /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
+  void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
+  void assemble(std::span<const double> shift, BlockMatrix& a) const;
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
   void first_order_tangent(std::span<const State> u, std::span<const State> du,
                            std::span<Res> dres);

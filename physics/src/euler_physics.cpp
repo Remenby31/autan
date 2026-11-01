@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <span>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -22,10 +24,17 @@ using runtime::Loads;
 using runtime::PhysicsContext;
 using runtime::StepReport;
 
-// Three-stage scheme for steady second-order upwind discretisations, stage coefficients and
-// CFL number for upwind schemes of Blazek (2015), chapter 6.
-constexpr std::array<double, 3> steady_stages{0.1481, 0.4, 1.0};
-constexpr double steady_cfl = 1.5;
+// Steady runs: pseudo-transient continuation, (V / dt + dR/dU) du = -R with the approximate
+// Jacobian, local dt = CFL V / lambda, the CFL number following the residual (switched evolution
+// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246).
+constexpr double cfl_start = 10.0;
+constexpr double cfl_min = 1.0;
+constexpr double first_order_drop = 1e-3;
+constexpr int first_order_max_steps = 200;
+constexpr double cfl_max = 1e6;
+constexpr int gauss_seidel_sweeps = 4;
+// No update may lower density or pressure by more than this fraction in one step.
+constexpr double max_decrease = 0.5;
 constexpr double venkatakrishnan_k = 5.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
@@ -55,12 +64,18 @@ class EulerPhysics final : public runtime::Physics {
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)) {
+        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        matrix_(ctx.mesh) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
     if (in.verification) mms.emplace(in.verification->text);
     set_boundaries(mms ? &*mms : nullptr);
+    if (in.time.kind == "steady") {
+      euler_.set_second_order(false);
+    } else {
+      second_order_ = true;
+    }
     if (mms) set_source(*mms);
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
@@ -74,6 +89,8 @@ class EulerPhysics final : public runtime::Physics {
     res_.assign(5 * n_, Res(0));
     lambda_.assign(n_, State(0));
     stage_.assign(5 * n_, 0.0);
+    rhs_.assign(5 * n_, 0.0);
+    du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
   }
 
@@ -268,24 +285,58 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   void steady_step(StepReport& report) {
-    // u_k = u_0 - alpha_k CFL / lambda R(u_{k-1}), the time step local to each cell; the update
-    // accumulates in FP64 (precision fp32+acc64).
-    stage_ = u_;
-    for (std::size_t s = 0; s < steady_stages.size(); ++s) {
-      residual_of(stage_);
-      if (s == 0) {
-        record_norms(report);
-        euler_.spectral_radius(lambda_);
-      }
-      for (std::size_t k = 0; k < 5; ++k) {
-        for (std::size_t c = 0; c < n_; ++c) {
-          const auto i = k * n_ + c;
-          stage_[i] = u_[i] - steady_stages[s] * steady_cfl / static_cast<double>(lambda_[c]) *
-                                  static_cast<double>(res_[i]);
-        }
+    euler_.state(u_, state_);
+    euler_.residual_and_jacobian(state_, res_);
+    record_norms(report);
+    euler_.spectral_radius(lambda_);
+    double drop = 0.0;  // largest relative residual over the equations
+    if (first_norms_.empty()) first_norms_ = report.residuals;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (first_norms_[k] > 0.0) drop = std::max(drop, report.residuals[k] / first_norms_[k]);
+    }
+    // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
+    // solution; second order from the step after the first-order residual has dropped.
+    if (!second_order_ && (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      first_norms_.clear();
+    }
+    // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
+    // after each step the admissibility check shortened and recovering by half otherwise.
+    penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+    if (drop > 0.0) cfl_ = std::clamp(penalty_ * cfl_start / drop, cfl_min, cfl_max);
+    std::vector<double> shift(n_);
+    for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
+    euler_.assemble(shift, matrix_);
+    matrix_.factor();
+    for (std::size_t i = 0; i < 5 * n_; ++i) rhs_[i] = -static_cast<double>(res_[i]);
+    std::fill(du_.begin(), du_.end(), 0.0);
+    matrix_.gauss_seidel(rhs_, du_, gauss_seidel_sweeps);
+    const double alpha = admissible_step();
+    shortened_ = alpha < 1.0;
+    for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+  }
+
+  // Largest fraction of du (at most 1) that keeps every cell's density and pressure above
+  // (1 - max_decrease) of their current values.
+  [[nodiscard]] double admissible_step() const {
+    double alpha = 1.0;
+    for (std::size_t c = 0; c < n_; ++c) {
+      const double rho = u_[c], drho = du_[c];
+      if (drho < 0.0) alpha = std::min(alpha, max_decrease * rho / -drho);
+      const double p = pressure(c, 0.0);
+      for (double a = alpha; a > 1e-6; a *= 0.5) {
+        if (pressure(c, a) >= (1.0 - max_decrease) * p) break;
+        alpha = 0.5 * a;
       }
     }
-    u_ = stage_;
+    return alpha;
+  }
+
+  [[nodiscard]] double pressure(std::size_t c, double a) const {
+    double v[5];
+    for (std::size_t k = 0; k < 5; ++k) v[k] = u_[k * n_ + c] + a * du_[k * n_ + c];
+    return (gas_.gamma - 1.0) * (v[4] - 0.5 * (v[1] * v[1] + v[2] * v[2] + v[3] * v[3]) / v[0]);
   }
 
   void unsteady_step(StepReport& report) {
@@ -365,7 +416,13 @@ class EulerPhysics final : public runtime::Physics {
   Gas gas_;
   std::size_t n_;
   Euler<P> euler_;
-  std::vector<double> u_, stage_, mean_;
+  std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
+  BlockMatrix matrix_;
+  double cfl_ = cfl_start;
+  double penalty_ = 1.0;
+  bool second_order_ = false;
+  int first_order_steps_ = 0;
+  bool shortened_ = false;
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
   std::vector<Res> res_;

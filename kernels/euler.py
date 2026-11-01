@@ -20,6 +20,8 @@ from autan_codegen.dsl import (
     Geom,
     Grad,
     Inc,
+    Jac,
+    Jacobian,
     Max,
     Min,
     Param,
@@ -411,6 +413,12 @@ def primitive(q: State.Vec5, ur: Param.Vec5, g: Param) -> State.Vec5:
 
 primitives = cell_loop(primitive, q=u, ur=u_ref, g=gamma, out=Write(prim))
 
+# For the implicit solvers: dW/dU of every cell, written with the primitives.
+dwdu = cells.field("dwdu", Jac.shape(5, 5))
+primitives_jacobian = cell_loop(
+    primitive, q=u, ur=u_ref, g=gamma, out=[Write(prim), Jacobian(dwdu, wrt="q")]
+)
+
 
 @pointwise
 def boundary_primitive(
@@ -536,9 +544,14 @@ sources = cell_loop(volume_source, s=source, vol=geometry.cell_volume, out=Write
 
 
 @pointwise
-def reconstruct(w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3) -> State.Vec5:
+def reconstruct(
+    w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, pref: Param
+) -> State.Vec5:
+    # Falls back to the cell value where the linear reconstruction would make the density or the
+    # pressure non-positive (the Venkatakrishnan limiter does not preserve positivity).
     d = gw @ r
-    return w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
 
 
 @pointwise
@@ -615,8 +628,8 @@ def roe_face(
     g: Param,
     pref: Param,
 ) -> Residual.Vec5:
-    fl = reconstruct(wl, gl, pl, rel(xf, xl))
-    fr = reconstruct(wr, gr, pr, rel(xf, xr))
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
     return area * roe(fl, fr, n, g, pref) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
 
 
@@ -637,8 +650,8 @@ def hllc_face(
     g: Param,
     pref: Param,
 ) -> Residual.Vec5:
-    fl = reconstruct(wl, gl, pl, rel(xf, xl))
-    fr = reconstruct(wr, gr, pr, rel(xf, xr))
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
     return area * hllc(fl, fr, n, g, pref) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
 
 
@@ -660,8 +673,8 @@ def ausm_face(
     pref: Param,
     minf: Param,
 ) -> Residual.Vec5:
-    fl = reconstruct(wl, gl, pl, rel(xf, xl))
-    fr = reconstruct(wr, gr, pr, rel(xf, xr))
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
     return area * ausm_up(fl, fr, n, g, minf, pref) + warp(
         0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref
     )
@@ -688,6 +701,14 @@ roe_faces = face_loop(roe_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 hllc_faces = face_loop(hllc_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 ausm_faces = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=Inc(res, left=+1, right=-1))
 
+# The same fluxes with their face Jacobians dF/dW_L and dF/dW_R, the reconstruction's gradients
+# and limiter held fixed: the approximate Jacobian of the implicit solvers, fused with the residual.
+face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
+FACE_JAC = [Inc(res, left=+1, right=-1), Jacobian(face_jac, wrt=("wl", "wr"))]
+roe_faces_jacobian = face_loop(roe_face, **FACE_ARGS, out=FACE_JAC)
+hllc_faces_jacobian = face_loop(hllc_face, **FACE_ARGS, out=FACE_JAC)
+ausm_faces_jacobian = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=FACE_JAC)
+
 
 @pointwise
 def wall_flux(wf: State.Vec5, n: Geom.Vec3) -> State.Vec5:
@@ -710,7 +731,7 @@ def roe_boundary(
     pref: Param,
     rgas: Param,
 ) -> Residual.Vec5:
-    wf = reconstruct(wl, gl, pl, rel(xf, xl))
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
@@ -735,7 +756,7 @@ def hllc_boundary(
     pref: Param,
     rgas: Param,
 ) -> Residual.Vec5:
-    wf = reconstruct(wl, gl, pl, rel(xf, xl))
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
@@ -761,7 +782,7 @@ def ausm_boundary(
     rgas: Param,
     minf: Param,
 ) -> Residual.Vec5:
-    wf = reconstruct(wl, gl, pl, rel(xf, xl))
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
@@ -790,6 +811,14 @@ roe_boundaries = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=Inc(res, left=
 hllc_boundaries = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=Inc(res, left=+1))
 ausm_boundaries = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
+)
+
+bnd_jac = faces.field("bnd_jac", Jac.shape(5, 5))
+BOUNDARY_JAC = [Inc(res, left=+1), Jacobian(bnd_jac, wrt="wl")]
+roe_boundaries_jacobian = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
+hllc_boundaries_jacobian = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
+ausm_boundaries_jacobian = boundary_loop(
+    ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=BOUNDARY_JAC
 )
 
 
