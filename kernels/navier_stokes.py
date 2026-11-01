@@ -47,7 +47,7 @@ from autan_codegen.dsl import (
 )
 
 sys.path.insert(0, str(Path(__file__).parent))
-from euler import (  # noqa: E402
+from euler import (
     BC_SLIP,
     BC_WALL,
     bc,
@@ -80,9 +80,7 @@ def temperature(w: State.Vec5, rgas: Param, pref: Param) -> State:
 
 
 @pointwise
-def temperature_gradient(
-    w: State.Vec5, gw: Grad.Mat53, rgas: Param, pref: Param
-) -> Grad.Vec3:
+def temperature_gradient(w: State.Vec5, gw: Grad.Mat53, rgas: Param, pref: Param) -> Grad.Vec3:
     # T = p / (rho R): grad T = (grad p - R T grad rho) / (rho R).
     t = temperature(w, rgas, pref)
     gr = Vec3(gw[0, 0], gw[0, 1], gw[0, 2])
@@ -117,9 +115,10 @@ def viscous_flux(
 ) -> State.Vec5:
     # F_v . n with (tau n)_i = mu (grad u_i . n + d(u . n)/dx_i) - 2/3 mu div u n_i.
     div = gu[0] + gv[1] + gwz[2]
-    tn = mu * (
-        Vec3(dot(gu, n), dot(gv, n), dot(gwz, n)) + n[0] * gu + n[1] * gv + n[2] * gwz
-    ) - (2.0 / 3.0 * mu * div) * n
+    tn = (
+        mu * (Vec3(dot(gu, n), dot(gv, n), dot(gwz, n)) + n[0] * gu + n[1] * gv + n[2] * gwz)
+        - (2.0 / 3.0 * mu * div) * n
+    )
     return Vec5(0.0, tn[0], tn[1], tn[2], dot(v, tn) + k * dot(gt, n))
 
 
@@ -193,7 +192,9 @@ def viscous_face(
     gu = corrected(Vec3(gm[1, 0], gm[1, 1], gm[1, 2]), wr[1] - wl[1], e, inv_d)
     gv = corrected(Vec3(gm[2, 0], gm[2, 1], gm[2, 2]), wr[2] - wl[2], e, inv_d)
     gwz = corrected(Vec3(gm[3, 0], gm[3, 1], gm[3, 2]), wr[3] - wl[3], e, inv_d)
-    gtm = 0.5 * (temperature_gradient(wl, gl, rgas, pref) + temperature_gradient(wr, gr, rgas, pref))
+    gtm = 0.5 * (
+        temperature_gradient(wl, gl, rgas, pref) + temperature_gradient(wr, gr, rgas, pref)
+    )
     gt = corrected(gtm, tr - tl, e, inv_d)
     mu = viscosity(temperature(wf, rgas, pref), mref, tref, s, law)
     mt = 0.5 * (ml + mr)

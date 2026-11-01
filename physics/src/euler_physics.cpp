@@ -80,7 +80,8 @@ Transport transport_of(const runtime::SolverInput& in) {
     const auto& w = *z.medium.viscosity;
     if (w.law != v.law || w.mu_ref != v.mu_ref || w.t_ref != v.t_ref || w.s != v.s ||
         w.mu != v.mu || z.medium.prandtl != m.prandtl) {
-      throw std::invalid_argument("the Navier-Stokes physics takes a single gas for every cell zone");
+      throw std::invalid_argument(
+          "the Navier-Stokes physics takes a single gas for every cell zone");
     }
   }
   return t;
@@ -203,9 +204,9 @@ class EulerPhysics final : public runtime::Physics {
       const auto b = i - ni;
       out[0].values.push_back(p[b]);
       // The tangential part of the viscous traction (results.md, WallSolution).
-      const double a = std::sqrt(g.face_area_x[i] * g.face_area_x[i] +
-                                 g.face_area_y[i] * g.face_area_y[i] +
-                                 g.face_area_z[i] * g.face_area_z[i]);
+      const double a =
+          std::sqrt(g.face_area_x[i] * g.face_area_x[i] + g.face_area_y[i] * g.face_area_y[i] +
+                    g.face_area_z[i] * g.face_area_z[i]);
       const std::array<double, 3> n{g.face_area_x[i] / a, g.face_area_y[i] / a,
                                     g.face_area_z[i] / a};
       const std::array<double, 3> tv{t[b], t[nb + b], t[2 * nb + b]};
@@ -234,13 +235,13 @@ class EulerPhysics final : public runtime::Physics {
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
         const auto i = static_cast<std::size_t>(f);
         const auto b = i - ni;
-        const double a = std::sqrt(g.face_area_x[i] * g.face_area_x[i] +
-                                   g.face_area_y[i] * g.face_area_y[i] +
-                                   g.face_area_z[i] * g.face_area_z[i]);
-        const std::array<double, 3> force{face_force[b] - p_inf * g.face_area_x[i] + a * t[b],
-                                          face_force[nb + b] - p_inf * g.face_area_y[i] + a * t[nb + b],
-                                          face_force[2 * nb + b] - p_inf * g.face_area_z[i] +
-                                              a * t[2 * nb + b]};
+        const double a =
+            std::sqrt(g.face_area_x[i] * g.face_area_x[i] + g.face_area_y[i] * g.face_area_y[i] +
+                      g.face_area_z[i] * g.face_area_z[i]);
+        const std::array<double, 3> force{
+            face_force[b] - p_inf * g.face_area_x[i] + a * t[b],
+            face_force[nb + b] - p_inf * g.face_area_y[i] + a * t[nb + b],
+            face_force[2 * nb + b] - p_inf * g.face_area_z[i] + a * t[2 * nb + b]};
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};

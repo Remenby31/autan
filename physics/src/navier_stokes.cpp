@@ -78,8 +78,8 @@ struct NavierStokes<P>::Impl {
     d.gamma[0] = Pa(gas.gamma);
     d.gas_constant[0] = Pa(gas.gas_constant);
     const auto& r = scheme.reference;
-    d.p_ref[0] = Pa((gas.gamma - 1.0) *
-                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
+    d.p_ref[0] =
+        Pa((gas.gamma - 1.0) * (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     d.mu_ref[0] = Pa(t.mu_ref);
     d.t_ref[0] = Pa(t.sutherland ? t.t_ref : 1.0);
     d.sutherland_s[0] = Pa(t.sutherland ? t.s : 0.0);
@@ -171,14 +171,14 @@ void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) co
   const auto* dwdu = m.dwdu;
   // Entry (i, j) of block k of entity e of an n-entity Jac dataset: (k * 25 + i * 5 + j) * n + e.
   auto add = [](double* out, const typename P::jac* j, std::size_t nj, std::size_t ej,
-                std::size_t kj, const typename P::jac* dm, std::size_t nd, std::size_t ed,
+                std::size_t kj, const typename P::jac* dm, std::size_t n_dm, std::size_t ed,
                 double sign) {
     for (std::size_t r = 0; r < 5; ++r) {
       for (std::size_t c = 0; c < 5; ++c) {
         double t = 0.0;
         for (std::size_t k = 0; k < 5; ++k) {
           t += static_cast<double>(j[(25 * kj + 5 * r + k) * nj + ej]) *
-               static_cast<double>(dm[(5 * k + c) * nd + ed]);
+               static_cast<double>(dm[(5 * k + c) * n_dm + ed]);
         }
         out[5 * r + c] += sign * t;
       }

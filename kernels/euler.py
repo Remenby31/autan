@@ -734,7 +734,7 @@ def roe_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
+    if (kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5) or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * roe(wf, wb, n, g, pref)
@@ -759,7 +759,7 @@ def hllc_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
+    if (kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5) or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * hllc(wf, wb, n, g, pref)
@@ -785,7 +785,7 @@ def ausm_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
+    if (kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5) or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * ausm_up(wf, wb, n, g, minf, pref)
