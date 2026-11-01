@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -70,8 +72,8 @@ fs::path cgns_file(const std::string& name, Edit edit) {
   return path;
 }
 
-void unstructured_tet(int fn, int base, const char* zone_name) {
-  cgsize_t size[3] = {4, 1, 0};
+void unstructured_tet(int fn, int base, const char* zone_name, cgsize_t cells = 1) {
+  cgsize_t size[3] = {4, cells, 0};
   int zone = 0, coord = 0, section = 0;
   REQUIRE(cg_zone_write(fn, base, zone_name, size, CGNS_ENUMV(Unstructured), &zone) == CG_OK);
   const std::array<double, 4> x{0, 1, 0, 0}, y{0, 0, 1, 0}, z{0, 0, 0, 1};
@@ -173,5 +175,114 @@ TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {
     FAIL("expected E0101");
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
+  }
+}
+
+namespace {
+
+// `mesh` with its zones renamed by `names` and an empty boundary zone added.
+autan::Mesh renamed(const autan::Mesh& mesh, const std::map<std::string, std::string>& names) {
+  autan::MeshInput in;
+  in.x.assign(mesh.x().begin(), mesh.x().end());
+  in.y.assign(mesh.y().begin(), mesh.y().end());
+  in.z.assign(mesh.z().begin(), mesh.z().end());
+  in.face_node_offsets.assign(mesh.face_node_offsets().begin(), mesh.face_node_offsets().end());
+  in.face_nodes.assign(mesh.face_nodes().begin(), mesh.face_nodes().end());
+  in.face_zone.assign(mesh.face_zone().begin(), mesh.face_zone().end());
+  in.cell_zone.assign(mesh.cell_zone().begin(), mesh.cell_zone().end());
+  for (index_t f = 0; f < mesh.n_faces(); ++f) {
+    in.face_cell0.push_back(mesh.owner()[at(f)]);
+    in.face_cell1.push_back(f < mesh.n_interior_faces() ? mesh.neighbour()[at(f)] : autan::no_cell);
+  }
+  in.face_zones.assign(mesh.face_zones().begin(), mesh.face_zones().end());
+  in.cell_zones.assign(mesh.cell_zones().begin(), mesh.cell_zones().end());
+  for (auto& z : in.face_zones) {
+    if (names.contains(z.name)) z.name = names.at(z.name);
+  }
+  for (auto& z : in.cell_zones) {
+    if (names.contains(z.name)) z.name = names.at(z.name);
+  }
+  in.face_zones.push_back(autan::FaceZone{
+      .name = "spare", .bc_type = "", .kind = {}, .boundary = true, .provenance = {}});
+  in.source = mesh.source();
+  return autan::assemble(std::move(in));
+}
+
+}  // namespace
+
+TEST_CASE("Zone names outside the node-name rule survive a write and read", "[cgns]") {
+  const autan::Mesh mesh =
+      renamed(autan::io::read_mesh(data_dir / "hybrid" / "polyMesh"), {{"xmin",
+                                                                        "z\xc3\xb4ne d'entr\xc3\xa9"
+                                                                        "e"},
+                                                                       {"xmax", "a/b"},
+                                                                       {"lower", "Zone"}});
+  autan::io::Solution solution = solution_for(mesh);
+  solution.boundary_bc_types.back() = "BCOutflowSubsonic";  // "spare" has no faces
+  fs::create_directories(temp_dir());
+  const fs::path file = temp_dir() / "names.cgns";
+  autan::io::write_solution(file, mesh, solution);
+
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+  int count = 0;
+  REQUIRE(cg_ndescriptors(&count) == CG_OK);
+  for (int d = 1; d <= count; ++d) {
+    char name[33];
+    char* text = nullptr;
+    REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+    const std::string content(text);
+    cg_free(text);
+    CHECK(
+        std::ranges::all_of(content, [](char c) { return static_cast<unsigned char>(c) < 0x80; }));
+  }
+  cg_close(fn);
+
+  const autan::Mesh back = autan::io::read_mesh(file);
+  require_same_mesh(mesh, back);
+  CHECK(zone_named(back, "a/b").bc_type == "BCFarfield");
+  const auto spare = zone_named(back, "spare");
+  CHECK(spare.boundary);
+  CHECK(spare.kind == autan::BcKind::outlet);
+  CHECK(std::ranges::any_of(back.cell_zones(),
+                            [](const autan::CellZone& z) { return z.name == "Zone"; }));
+}
+
+TEST_CASE("CGNS content that contradicts itself is E0132", "[cgns]") {
+  using autan::ErrorCode;
+  SECTION("a zone declaring more cells than it holds") {
+    require_error(ErrorCode::io_malformed, cgns_file("count.cgns", [](int fn, int base) {
+                    unstructured_tet(fn, base, "Zone", 2);
+                  }));
+  }
+  SECTION("a FamilySpecified BC naming no family") {
+    require_error(
+        ErrorCode::io_malformed, cgns_file("family.cgns", [](int fn, int base) {
+          unstructured_tet(fn, base, "Zone");
+          const std::array<cgsize_t, 3> tri{1, 3, 2};
+          int section = 0, bc = 0;
+          REQUIRE(cg_section_write(fn, base, 1, "Face", CGNS_ENUMV(TRI_3), 2, 2, 0, tri.data(),
+                                   &section) == CG_OK);
+          const cgsize_t face = 2;
+          REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(FamilySpecified),
+                                CGNS_ENUMV(PointList), 1, &face, &bc) == CG_OK);
+          REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+          REQUIRE(cg_goto(fn, base, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", bc, "end") == CG_OK);
+          REQUIRE(cg_famname_write("Nowhere") == CG_OK);
+        }));
+  }
+  SECTION("a cell-centred subregion selecting a face") {
+    require_error(
+        ErrorCode::io_malformed, cgns_file("subregion.cgns", [](int fn, int base) {
+          unstructured_tet(fn, base, "Zone");
+          const std::array<cgsize_t, 3> tri{1, 3, 2};
+          int section = 0, region = 0;
+          REQUIRE(cg_section_write(fn, base, 1, "Face", CGNS_ENUMV(TRI_3), 2, 2, 0, tri.data(),
+                                   &section) == CG_OK);
+          const cgsize_t face = 2;
+          REQUIRE(cg_subreg_ptset_write(fn, base, 1, "cells", 3, CGNS_ENUMV(CellCenter),
+                                        CGNS_ENUMV(PointList), 1, &face, &region) == CG_OK);
+        }));
   }
 }
