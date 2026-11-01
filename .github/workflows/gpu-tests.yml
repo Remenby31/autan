@@ -43,10 +43,33 @@ jobs:
           -DAUTAN_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build
+      # CPU tests outside the GPU lock, with no GPU visible: a test that needs one but lacks the
+      # `gpu` label fails here instead of running without the lock. MPI tests one at a time: they
+      # busy-poll, and concurrent ranks on shared cores starve each other.
+      - name: CPU tests (no GPU, outside the lock)
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+        run: |
+          ctest --test-dir build -LE 'gpu|mpi' -j 4 --output-on-failure --no-tests=error
+          ctest --test-dir build -L mpi -LE gpu -j 1 --output-on-failure --no-tests=error
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
-      - name: Test (under the GPU lock)
-        run: flock /home/admin/autan-gpu/gpu.lock ctest --test-dir build -j 8 --output-on-failure
+      - name: GPU tests (under the GPU lock, at most 10 minutes)
+        run: >-
+          bench/lock/autan-gpu-lock -m "gpu-tests: ctest -L gpu" -t 600 --
+          ctest --test-dir build -L gpu -j 1 --output-on-failure --no-tests=error
+      - name: Install the generator's test environment
+        working-directory: codegen
+        run: uv sync --locked
+      # Every generated loop, strategy and policy on the GPU against the host loops (595 tests,
+      # 39 s on the Spark); the slow ones in their own shards below.
+      - name: Generator on the GPU (under the GPU lock)
+        working-directory: codegen
+        env:
+          AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_gpu.so
+        run: >-
+          ../bench/lock/autan-gpu-lock -m "gpu-tests: codegen pytest --backend gpu, not slow" -t 600 --
+          uv run --locked pytest --backend gpu -m "not slow" -q
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop
