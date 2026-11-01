@@ -63,16 +63,16 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.get();
   d.source = ss.get();
-  d.cell_volume = g.cell_volume.get();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -117,13 +117,13 @@ void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strate
   d.qmin = mins.get();
   d.qmax = maxs.get();
   d.gg_sum = acc.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
-  d.cell_volume = g.cell_volume.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  autan::spike::bind(d.cell_volume, g.cell_volume);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   if (method == "lsq") {
     gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule);
   } else {
@@ -156,10 +156,10 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
   d.q = qs.get();
   d.grad = gs.get();
   d.res = rs.get();
-  d.face_r_left = g.face_r_left.get();
-  d.face_r_right = g.face_r_right.get();
-  d.face_normal = g.face_normal.get();
-  d.face_area_magnitude = g.face_area_magnitude.get();
+  autan::spike::bind(d.face_r_left, g.face_r_left);
+  autan::spike::bind(d.face_r_right, g.face_r_right);
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -186,8 +186,8 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   d.topo = dm.topo;
   d.u_cons = us.get();
   d.res = rs.get();
-  d.face_normal = g.face_normal.get();
-  d.face_area_magnitude = g.face_area_magnitude.get();
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
   d.u_cons_tan = u_tan.get();
   d.res_tan = r_tan.get();
   d.res_adj = r_adj.get();
@@ -224,16 +224,16 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.get();
   d.source = ss.get();
-  d.cell_volume = g.cell_volume.get();
+  autan::spike::bind(d.cell_volume, g.cell_volume);
   d.res = rs.get();
-  d.cell_centroid = g.cell_centroid.get();
-  d.face_centroid = g.face_centroid.get();
-  d.face_area = g.face_area.get();
-  d.face_moment = g.face_moment.get();
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.face_area, g.face_area);
+  autan::spike::bind(d.face_moment, g.face_moment);
   d.res_adj = r_adj.get();
   d.q_adj = q_adj.get();
   d.grad_adj = g_adj.get();
@@ -284,8 +284,8 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
   d.grad = gs.get();
   d.qmin = lo.get();
   d.qmax = hi.get();
-  d.lsq_weight = g.lsq_weight.get();
-  d.stencil_lsq_weight = g.stencil_lsq_weight.get();
+  autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad_adj = g_adj.get();
   d.qmin_adj = lo_adj.get();
   d.qmax_adj = hi_adj.get();
