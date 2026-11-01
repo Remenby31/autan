@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -524,6 +525,42 @@ class Reader {
     }
   }
 
+  // A declared pair of faces must coincide under the translation: their node
+  // means differ by it, to 1e-4 of the shortest edge of the face (the core's
+  // matching tolerance), so the file's correspondence is checked, not
+  // replaced by the one the core finds.
+  template <typename Side>
+  void check_periodic_faces(const Side& side) const {
+    const auto mean = [&](cgsize_t id) {
+      const auto& nodes = element(id)->connectivity;
+      std::array<double, 3> m{};
+      for (const cgsize_t p : nodes) {
+        const auto n = at(node(p));
+        m[0] += x_[n] / static_cast<double>(nodes.size());
+        m[1] += y_[n] / static_cast<double>(nodes.size());
+        m[2] += z_[n] / static_cast<double>(nodes.size());
+      }
+      return m;
+    };
+    for (std::size_t k = 0; k < side.faces.size(); ++k) {
+      const auto& nodes = element(side.faces[k])->connectivity;
+      double shortest = std::numeric_limits<double>::infinity();
+      for (std::size_t q = 0; q < nodes.size(); ++q) {
+        const auto u = at(node(nodes[q])), v = at(node(nodes[(q + 1) % nodes.size()]));
+        shortest = std::min(shortest, std::hypot(x_[u] - x_[v], y_[u] - y_[v], z_[u] - z_[v]));
+      }
+      const auto a = mean(side.faces[k]), b = mean(side.donor[k]);
+      const double gap =
+          std::hypot(b[0] - a[0] - side.translation[0], b[1] - a[1] - side.translation[1],
+                     b[2] - a[2] - side.translation[2]);
+      if (!(gap <= 1e-4 * shortest)) {
+        malformed(path_, "periodic connectivity '" + side.name + "' pairs face " +
+                             std::to_string(side.faces[k]) +
+                             " with a face it does not translate onto");
+      }
+    }
+  }
+
   // Periodic pairs: 1-to-1 connections of the zone with itself carrying a
   // Periodic_t translation (SIDS GridConnectivity_t), as two reciprocal
   // connections, each naming the zone of its own faces. The first of a
@@ -557,12 +594,22 @@ class Reader {
         unsupported(path_, std::string("connectivity '") + name +
                                "' other than a face-to-face connection of the zone with itself");
       }
+      std::size_t elements = 0;
+      for (const auto& section : sections_) elements += section.elements.size();
+      if (points < 1 || std::cmp_greater(points, elements)) {
+        malformed(path_, std::string("connectivity '") + name + "' lists " +
+                             std::to_string(points) + " faces");
+      }
       Side side{.name = name,
                 .faces = std::vector<cgsize_t>(at(points)),
                 .donor = std::vector<cgsize_t>(at(points)),
                 .translation = {}};
       ok(cg_conn_read(fn_, 1, 1, i, side.faces.data(), CGNS_ENUMV(LongInteger), side.donor.data()),
          "read connectivity", name);
+      if (dimension_of(side.faces, name) != 2 || dimension_of(side.donor, name) != 2) {
+        malformed(path_,
+                  std::string("connectivity '") + name + "' joins elements that are not faces");
+      }
       if (cg_goto(fn_, 1, "Zone_t", 1, "ZoneGridConnectivity_t", 1, "GridConnectivity_t", i,
                   "GridConnectivityProperty_t", 1, "Periodic_t", 1, "end") != CG_OK) {
         unsupported(path_, std::string("connectivity '") + name + "' that is not periodic");
@@ -620,20 +667,32 @@ class Reader {
       }
       sides.push_back(std::move(side));
     }
+    // Reciprocal connections declare the same face pairs, in any order.
+    const auto pairs_of = [](const Side& side, bool mirrored) {
+      std::vector<std::pair<cgsize_t, cgsize_t>> pairs;
+      for (std::size_t k = 0; k < side.faces.size(); ++k) {
+        pairs.emplace_back(mirrored ? side.donor[k] : side.faces[k],
+                           mirrored ? side.faces[k] : side.donor[k]);
+      }
+      std::ranges::sort(pairs);
+      return pairs;
+    };
     std::vector<char> used(sides.size(), 0);
     for (std::size_t i = 0; i < sides.size(); ++i) {
       if (used[i] != 0) continue;
       const auto& s = sides[i];
+      const auto declared = pairs_of(s, false);
       const std::array<double, 3> back{-s.translation[0], -s.translation[1], -s.translation[2]};
       std::size_t j = i + 1;
-      while (j < sides.size() && (used[j] != 0 || sides[j].faces != s.donor ||
-                                  sides[j].donor != s.faces || sides[j].translation != back)) {
+      while (j < sides.size() && (used[j] != 0 || sides[j].translation != back ||
+                                  pairs_of(sides[j], true) != declared)) {
         ++j;
       }
       if (j == sides.size()) {
         malformed(path_, "periodic connectivity '" + s.name + "' has no reciprocal connection");
       }
       used[i] = used[j] = 1;
+      check_periodic_faces(s);
       const index_t a = add_face_zone(s.name, "", s.faces, -1, s.name.c_str(), BcKind::periodic);
       const index_t b = add_face_zone(sides[j].name, "", sides[j].faces, -1, sides[j].name.c_str(),
                                       BcKind::periodic);
