@@ -10,8 +10,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
+from autan_codegen.derive import ReduceAdjoint
 from autan_codegen.emit_cpp import Emitter, at, call_args
 from autan_codegen.emit_cpu import (
+    boundary_write_body,
     cell_stores,
     n_out,
     offsets,
@@ -152,7 +154,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
     _kernel_head(
         e,
         f"{lm.name}_store",
-        ", const index_t lo, const index_t hi, typename P::accum* __restrict__ scratch",
+        ", const index_t lo, const index_t hi, typename P::compute* __restrict__ scratch",
     )
     e.w(f"  const index_t f = lo + {tid};")
     e.w("  if (f >= hi) {")
@@ -163,16 +165,16 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         e.w(s)
     for k in range(n):
         e.w(
-            f"  scratch[{k} * d.topo.n_faces + f] = A(out[{k}]);"
+            f"  scratch[offset_t({k}) * d.topo.n_faces + f] = out[{k}];"
             if k
-            else "  scratch[f] = A(out[0]);"
+            else "  scratch[f] = out[0];"
         )
     e.w("}")
     e.w()
     # store-gather pass 2 and gather-recompute: one thread per cell, incidence order. Ghost cells
     # too: their sums are the partial contributions a reverse halo exchange sends to their owner.
     for variant in ("gather", "gather_recompute"):
-        extra = ", const typename P::accum* __restrict__ scratch" if variant == "gather" else ""
+        extra = ", const typename P::compute* __restrict__ scratch" if variant == "gather" else ""
         _kernel_head(e, f"{lm.name}_{variant}", extra)
         e.w(f"  const index_t c = {tid};")
         e.w("  if (c >= d.topo.n_cells) {")
@@ -193,7 +195,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
             e.w(f"    A out[{n}];")
             for k in range(n):
                 e.w(
-                    f"    out[{k}] = scratch[{k} * d.topo.n_faces + f];"
+                    f"    out[{k}] = scratch[offset_t({k}) * d.topo.n_faces + f];"
                     if k
                     else "    out[0] = scratch[f];"
                 )
@@ -262,7 +264,7 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
         '        throw std::invalid_argument("E1104: face scratch narrower than the loop outputs");'
     )
     e.w("      }")
-    e.w("      auto* scratch = static_cast<typename P::accum*>(s.face_scratch);")
+    e.w("      auto* scratch = static_cast<typename P::compute*>(s.face_scratch);")
     e.w("      if (hi > lo) {")
     e.w(f"        {lm.name}_store<P><<<grid(hi - lo), block, 0, s.stream>>>(d, lo, hi, scratch);")
     e.w("      }")
@@ -281,6 +283,26 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
 def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     tid = "static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x)"
     _kernel_head(e, f"{lm.name}_kernel")
+    if lm.kind == "boundary_write":
+        e.w(f"  const index_t f = d.topo.n_interior_faces + {tid};")
+        e.w("  if (f >= d.topo.n_faces) {")
+        e.w("    return;")
+        e.w("  }")
+        for s in boundary_write_body(lm, "  "):
+            e.w(s)
+        e.w("}")
+        e.w()
+        e.w("template <class P>")
+        e.w(f"void {lm.name}(const Data<P>& d, const gpu::Schedule& s) {{")
+        e.w("  const index_t n = d.topo.n_faces - d.topo.n_interior_faces;")
+        e.w("  if (n > 0) {")
+        e.w("    const auto grid = static_cast<unsigned>((n + s.block - 1) / s.block);")
+        e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")
+        e.w("  }")
+        e.w(f'  gpu::check(gpu::last_error(), "{lm.name}");')
+        e.w("}")
+        e.w()
+        return
     e.w(f"  const index_t c = {tid};")
     e.w("  if (c >= d.topo.n_owned_cells) {")
     e.w("    return;")
@@ -359,7 +381,10 @@ def emit_reduce_adjoint_deterministic(e: Emitter, lm: LoopModel) -> None:
             '      throw std::invalid_argument("E1105: incidence scratch narrower than the adjoint");'
         )
         e.w("    }")
-        e.w("    if (d.topo.incidence_twin == nullptr) {")
+        assert isinstance(lm.radj, ReduceAdjoint)
+        over = lm.radj.primal.loop.over
+        twin = "stencil_twin" if over == dsl.STENCIL else "incidence_twin"
+        e.w(f"    if (d.topo.{twin} == nullptr) {{")
         e.w(
             '      throw std::invalid_argument("E1106: deterministic reduction adjoint needs incidence twins");'
         )

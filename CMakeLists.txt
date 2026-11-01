@@ -9,6 +9,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(AUTAN_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(
+  AUTAN_BUILD_FUZZERS
+  "Build the libFuzzer harnesses of the mesh readers (clang; needs AUTAN_BUILD_TESTS)"
+  OFF
+)
 option(AUTAN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(AUTAN_ENABLE_CGNS "Read CGNS meshes and write solution.cgns (needs the CGNS library)" ON)
 option(AUTAN_ENABLE_METIS "Partition with METIS" OFF)
@@ -41,6 +46,12 @@ target_compile_options(
 add_subdirectory(core)
 add_subdirectory(io)
 add_subdirectory(partition)
+# autan-run writes solution.cgns: it needs the CGNS library.
+if(AUTAN_ENABLE_CGNS)
+  add_subdirectory(runtime)
+else()
+  message(STATUS "AUTAN_ENABLE_CGNS is OFF: autan-run is not built")
+endif()
 add_subdirectory(codegen)
 
 if(AUTAN_BUILD_TESTS)
@@ -56,5 +67,9 @@ if(AUTAN_BUILD_TESTS)
   include(Catch)
   add_subdirectory(tests/core)
   add_subdirectory(tests/io)
+  add_subdirectory(tests/fuzz)
   add_subdirectory(tests/partition)
+  if(AUTAN_ENABLE_CGNS)
+    add_subdirectory(tests/runtime)
+  endif()
 endif()

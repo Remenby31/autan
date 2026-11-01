@@ -44,6 +44,20 @@ class Real:
 type Val = Real | Bool | Arr | int | float | tuple[Val, ...]
 
 UNARY_MATH = {"sqrt", "exp", "log", "sin", "cos"}
+INTRINSIC_ARITY = {
+    **dict.fromkeys(UNARY_MATH, 1),
+    "abs": 1,
+    "norm": 1,
+    "transpose": 1,
+    "dot": 2,
+    "cross": 2,
+    "outer": 2,
+    "rel": 2,
+    "min": 2,
+    "max": 2,
+    "Vec3": 3,
+    "Vec5": 5,
+}
 INTRINSICS = UNARY_MATH | {
     "dot",
     "cross",
@@ -52,6 +66,7 @@ INTRINSICS = UNARY_MATH | {
     "Vec3",
     "Vec5",
     "transpose",
+    "outer",
     "abs",
     "min",
     "max",
@@ -319,6 +334,11 @@ class _Builder:
                 Code.UNSUPPORTED_CONSTRUCT,
                 f"call to {fname!r}: not a DSL intrinsic or @pointwise body",
             )
+        arity = INTRINSIC_ARITY.get(fname)
+        if arity is not None and len(args) != arity:
+            raise self.err(
+                Code.TYPE_MISMATCH, f"{fname} takes {arity} argument(s), got {len(args)}"
+            )
         if fname in UNARY_MATH:
             (x,) = args
             if isinstance(x, Arr):
@@ -373,6 +393,14 @@ class _Builder:
             if len(args) != n:
                 raise self.err(Code.TYPE_MISMATCH, f"{fname} takes {n} scalars")
             return Arr(tuple(self.real(a) for a in args), (n,))
+        if fname == "outer":
+            a, b = args
+            if not (
+                isinstance(a, Arr) and isinstance(b, Arr) and len(a.shape) == len(b.shape) == 1
+            ):
+                raise self.err(Code.TYPE_MISMATCH, "outer takes two vectors")
+            ids = tuple(self.emit("mul", x, y) for x in a.ids for y in b.ids)
+            return Arr(ids, (a.shape[0], b.shape[0]))
         if fname == "transpose":
             (a,) = args
             if not (isinstance(a, Arr) and len(a.shape) == 2):

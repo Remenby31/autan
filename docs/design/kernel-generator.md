@@ -33,9 +33,9 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
                      out=Inc(res, left=+1, right=-1))
 ```
 
-**Types.** A role (`State`, `Grad`, `Residual`, `Geom`, `Param`) and a shape: `State`, `State.Vec3`, `State.Vec5`, `Geom.Mat3`. The precision policy maps roles to storage types ([Precision](#precision)).
+**Types.** A role (`State`, `Grad`, `Residual`, `Geom`, `Param`) and a shape: `State`, `State.Vec3`, `State.Vec5`, `Geom.Mat3`, `Grad.Mat53` (5 × 3, row i the gradient of component i). The precision policy maps roles to storage types ([Precision](#precision)).
 
-**Bodies** (`@pointwise`) use: arguments, locals, numeric module constants; `+ - * /`, `**` with an integer constant 0–8, `@` (matrix times vector or matrix); `< <= > >=`, `and`, `or`, `not`; `x if c else y` and `if`/`else` (a name assigned in one branch must be assigned in the other; `return` in both or neither); `for i in range(N)` with constant bounds; indexing with constants (`v[0]`, `m[i, j]`, `v.x`); `sqrt exp log sin cos abs min max dot cross norm transpose Vec3 Vec5`; `rel(a, b)`, the difference of two `Geom` arguments in their storage type (FP64 geometry stays FP64 until the difference); calls to other `@pointwise` bodies. Anything else is rejected with a code and the `.py` line. `abs(x)` is `x if x >= 0 else -x`; `min(a, b)` is `a if a <= b else b`, `max(a, b)` is `a if a >= b else b`.
+**Bodies** (`@pointwise`) use: arguments, locals, numeric module constants; `+ - * /`, `**` with an integer constant 0–8, `@` (matrix times vector or matrix); `< <= > >=`, `and`, `or`, `not`; `x if c else y` and `if`/`else` (a name assigned in one branch must be assigned in the other; `return` in both or neither); `for i in range(N)` with constant bounds; indexing with constants (`v[0]`, `m[i, j]`, `v.x`); `sqrt exp log sin cos abs min max dot cross norm outer transpose Vec3 Vec5`; `rel(a, b)`, the difference of two `Geom` arguments in their storage type (FP64 geometry stays FP64 until the difference); calls to other `@pointwise` bodies. Anything else is rejected with a code and the `.py` line. `abs(x)` is `x if x >= 0 else -x`; `min(a, b)` is `a if a <= b else b`, `max(a, b)` is `a if a >= b else b`.
 
 **Data.** `cells.field`, `faces.field`, `param`; built-in FP64 geometry `geometry.face_area` (area vector), `face_normal`, `face_area_magnitude`, `face_centroid`, `face_moment` (Σ over the face's fan triangles of (c_t − x_f) ⊗ S_t, zero on planar faces), `face_r_left`, `face_r_right`, `cell_centroid`, `cell_volume`, `lsq_weight` (per incidence). Geometry is computed by `autan::kernels::pack_geometry` from the core's `Geometry`.
 
@@ -44,9 +44,12 @@ residual = face_loop(upwind, qc=q.left, qn=q.right, n=geometry.face_normal, a=ve
 | Declaration | Iterates | Bindings | Outputs |
 |---|---|---|---|
 | `face_loop` | interior faces | `d.left`, `d.right` (cells), `d` (faces), params | `Inc(d, left=s_L, right=s_R)` |
-| `boundary_loop` | boundary faces | `d.left`, `d` (faces), params | `Inc(d, left=s_L)` |
+| `boundary_loop` | boundary faces | `d.left`, `d` (faces), params | `Inc(d, left=s_L)`, or `Write(d)` of face datasets: no derivatives (face data are passive); reading active data needs `frozen=True` (E1012 otherwise), listed in the module's `frozen_loops` |
 | `cell_loop` | owned cells | `d` (cells), params | `Write(d)` |
-| `cell_reduce` | owned cells, then their faces in CSR order | `d.self_`, `d.other(boundary=f)`, `geometry.lsq_weight`, params | `Sum(d)`, `Min(d)`, `Max(d)`, optional `finalise` body |
+| `cell_reduce` | owned cells, then their faces in CSR order | `d.self_`, `d.other(boundary=f)`, incidence data (`geometry.lsq_weight`), face data of the incidence's face (`d` on faces), params | `Sum(d)`, `Min(d)`, `Max(d)`, optional `finalise` body |
+| `cell_reduce(over=STENCIL)` | owned cells, then their stencil: cells, then boundary faces | `d.self_`, `d.other(boundary=f)` (stencil cell, or `f` of a boundary face), stencil data (`geometry.stencil_lsq_weight`), params | same |
+
+**Stencils.** Least squares over face neighbours leaves the unlimited second-order scheme linearly unstable on tetrahedra (Diskin and Thomas, AIAA J. 49(4), 2011): on the V&V `tet` family at n = 5, −V⁻¹ ∂R/∂q of pure advection has five eigenvalues with positive real part (`tests/test_stencil.py`). `autan::kernels::cell_stencil(mesh, geometry, kind)` builds a wider stencil once per mesh, after renumbering: `vertex` holds the cells and boundary faces sharing a node with the cell (about 63 entries per tetrahedron), `face2` the face neighbours, theirs, and the boundary faces of both (about 13); either removes the unstable eigenvalues. It returns the CSR for `Topology::{stencil_offsets, stencil}`, the twins for `stencil_twin` and the LSQ weights for `geometry.stencil_lsq_weight`. Ghost cells get the stencil their known faces give, so the deterministic adjoint collects what owned cells send them; a partition needs a halo as deep as the stencil.
 
 `Inc` targets have role `Residual` (accumulation type). `Min`/`Max` ties keep the first incidence.
 
@@ -64,7 +67,7 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 
 `gpu::Schedule` carries the block size, the colourings (`autan::kernels::colour_faces`), the store-gather and incidence scratch and the stream.
 
-The adjoint of a cell reduction sends values to neighbouring cells, so it takes a strategy too: with `atomic` and `warp_aggregated` it scatters with atomics; with the deterministic strategies it runs in two passes (research §6, store-then-gather on the transposed incidence list): each owned cell adds its own adjoints and stores, per incidence, what it sends across, then each cell, owned or ghost, sums what its owned neighbours stored for it, in the order of its incidences. The twin of an incidence (the same face in the other cell's list) is `Topology::incidence_twin`, from `autan::kernels::incidence_twins(mesh)`.
+The adjoint of a cell reduction sends values to neighbouring cells, so it takes a strategy too: with `atomic` and `warp_aggregated` it scatters with atomics; with the deterministic strategies it runs in two passes (research §6, store-then-gather on the transposed incidence list): each owned cell adds its own adjoints and stores, per incidence, what it sends across, then each cell, owned or ghost, sums what its owned neighbours stored for it, in the order of its incidences. The twin of an incidence (the same face in the other cell's list) is `Topology::incidence_twin`, from `autan::kernels::incidence_twins(mesh)`; over a stencil, the twin of an entry is the cell's entry in its neighbour's stencil (`stencil_twin`; stencils are symmetric).
 
 `autan::kernels::gpu::sum_of_squares` (`norms.cuh`) computes Σ x² in FP64 on the device in chunks of 4096 values and a fixed tree, so the result depends on the data and its length only, never on the launch shape.
 
@@ -97,7 +100,7 @@ A `Geom` dataset that no body of the module reads through `rel()` reaches bodies
 | E1009 | `invalid_kernel_module` | A kernel module cannot be imported or declares no loop. |
 | E1010 | `unknown_backend` | `--backends` names an unknown backend. |
 | E1011 | `unknown_policy` | `--policies` names an unknown policy. |
-| E1012 | `ad_unsupported` | A loop with several output datasets is differentiated. |
+| E1012 | `ad_unsupported` | A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True. |
 | E1100 | `runtime_failure` | A generated loop or the spike driver fails without a more specific code. |
 | E1101 | `gpu_runtime_error` | A CUDA or HIP call or kernel launch fails. |
 | E1102 | `unknown_precision_policy` | A driver receives an unknown policy name. |

@@ -20,6 +20,7 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "face_weighted_cpu.hpp"
 #include "gradients_cpu.hpp"
 #include "roe_cpu.hpp"
 #include "spike.hpp"
@@ -48,6 +49,18 @@ void copy_out(const std::vector<T>& v, double* p) {
 
 namespace autan::spike {
 
+/// LSQ gradient of the advection-diffusion residual: over the cell stencil when the mesh has one
+/// (autan_spike_set_stencil), else over face neighbours.
+template <class D>
+void lsq(const D& d, const SpikeMesh& m) {
+  namespace ad = autan::kernels::advection_diffusion;
+  if (m.topo.stencil != nullptr) {
+    ad::cpu::lsq_gradient_stencil(d);
+  } else {
+    ad::cpu::lsq_gradient(d);
+  }
+}
+
 /// Residual of the advection-diffusion scheme (kernels/advection_diffusion.py) in policy P:
 /// LSQ gradient, then volume source, interior and boundary fluxes. Inputs and outputs in FP64.
 template <class P>
@@ -67,6 +80,7 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
   d.q = qs.data();
   d.q_b = qbs.data();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.data();
   d.source = ss.data();
   autan::spike::bind(d.cell_volume, g.cell_volume);
@@ -79,7 +93,7 @@ void advdiff_residual(const SpikeMesh& m, const double* q, const double* q_b, co
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::cpu::lsq_gradient(d);
+  lsq(d, m);
   ad::cpu::init_residual(d);
   ad::cpu::flux(d);
   ad::cpu::boundary_flux(d);
@@ -115,6 +129,7 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
   d.q = qs.data();
   d.q_b = qbs.data();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.data();
   d.source = ss.data();
   autan::spike::bind(d.cell_volume, g.cell_volume);
@@ -135,12 +150,16 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::cpu::lsq_gradient(d);
+  lsq(d, m);
   if (mode == 0) {
     for (std::size_t c = 0; c < nc; ++c) {
       q_tan[c] = S(seed[c]);
     }
-    ad::cpu::lsq_gradient_tangent(d);
+    if (m.topo.stencil != nullptr) {
+      ad::cpu::lsq_gradient_stencil_tangent(d);
+    } else {
+      ad::cpu::lsq_gradient_tangent(d);
+    }
     ad::cpu::init_residual_tangent(d);
     ad::cpu::flux_tangent(d);
     ad::cpu::boundary_flux_tangent(d);
@@ -152,7 +171,11 @@ void advdiff_derivative(const SpikeMesh& m, int mode, const double* q, const dou
     ad::cpu::boundary_flux_adjoint(d);
     ad::cpu::flux_adjoint(d);
     ad::cpu::init_residual_adjoint(d);
-    ad::cpu::lsq_gradient_adjoint(d);
+    if (m.topo.stencil != nullptr) {
+      ad::cpu::lsq_gradient_stencil_adjoint(d);
+    } else {
+      ad::cpu::lsq_gradient_adjoint(d);
+    }
     copy_out(q_adj, out);
   }
 }
@@ -177,6 +200,7 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
   d.q = qs.data();
   d.q_b = qbs.data();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.data();
   d.source = ss.data();
   autan::spike::bind(d.cell_volume, g.cell_volume);
@@ -189,7 +213,7 @@ void advdiff_complex_step(const SpikeMesh& m, const double* q, const double* q_b
     d.velocity[i] = velocity[i];
   }
   d.nu[0] = nu;
-  ad::cpu::lsq_gradient(d);
+  lsq(d, m);
   ad::cpu::init_residual(d);
   ad::cpu::flux(d);
   ad::cpu::boundary_flux(d);
@@ -278,6 +302,7 @@ void lsq_bounds_derivative(const SpikeMesh& m, int mode, const double* q, const 
   d.qmin = lo.data();
   d.qmax = hi.data();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.q_tan = q_tan.data();
   d.grad_tan = g_tan.data();
   d.qmin_tan = lo_tan.data();
@@ -305,6 +330,46 @@ void lsq_bounds_derivative(const SpikeMesh& m, int mode, const double* q, const 
   }
 }
 
+/// Test kernel codegen/tests/kernels/face_weighted.py: mode 0 value, 1 tangent (seed dq),
+/// 2 adjoint (seed w-bar -> q-bar).
+template <class P>
+void face_weighted(const SpikeMesh& m, int mode, const double* q, const double* q_b,
+                   const double* seed, double* out) {
+  namespace fw = autan::kernels::face_weighted;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<S>(q, nc);
+  auto qbs = copy_in<S>(q_b, nf);
+  auto q_tan = copy_in<S>(seed, nc);
+  std::vector<S> w(nc), w_tan(nc);
+  std::vector<R> w_adj(seed, seed + nc), q_adj(nc, R(0));
+  fw::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.q_b = qbs.data();
+  d.w = w.data();
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  d.q_tan = q_tan.data();
+  d.w_tan = w_tan.data();
+  d.w_adj = w_adj.data();
+  d.q_adj = q_adj.data();
+  if (mode == 0) {
+    fw::cpu::face_weighted(d);
+    copy_out(w, out);
+  } else if (mode == 1) {
+    fw::cpu::face_weighted_tangent(d);
+    copy_out(w_tan, out);
+  } else {
+    fw::cpu::face_weighted_adjoint(d);
+    copy_out(q_adj, out);
+  }
+}
+
 template <class P>
 void gradients(const SpikeMesh& m, const char* method, const double* q, const double* q_b,
                int iterations, double* grad, double* qmin, double* qmax) {
@@ -326,6 +391,7 @@ void gradients(const SpikeMesh& m, const char* method, const double* q, const do
   d.qmax = maxs.data();
   d.gg_sum = acc.data();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   autan::spike::bind(d.cell_volume, g.cell_volume);
   autan::spike::bind(d.cell_centroid, g.cell_centroid);
   autan::spike::bind(d.face_centroid, g.face_centroid);
@@ -383,7 +449,7 @@ int dispatch(const char* policy, char* err, std::size_t len, F&& f) {
 }
 
 std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
-  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}, {}});
+  auto m = std::make_unique<SpikeMesh>(SpikeMesh{std::move(mesh), {}, {}, {}, {}, {}});
   m->geometry = autan::compute_geometry(m->mesh);
   m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
   m->topo = autan::kernels::topology(m->mesh.view());
@@ -435,6 +501,58 @@ int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::i
 /// Reads a mesh file through the core readers (autan::io::read_mesh).
 int autan_spike_mesh_read(const char* path, void** out, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] { *out = finish(autan::io::read_mesh(path)).release(); });
+}
+
+/// Builds the cell stencil of `kind` (0 vertex, 1 face2) and its LSQ weights, so that the
+/// advection-diffusion residual takes its gradient over it; kind -1 removes it.
+int autan_spike_set_stencil(void* mesh, int kind, std::int64_t* size, char* err,
+                            std::size_t err_len) {
+  auto* m = static_cast<SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    if (kind < 0) {
+      m->stencil = {};
+      m->packed.stencil_lsq_weight.clear();
+      m->topo.n_stencil = 0;
+      m->topo.stencil_offsets = nullptr;
+      m->topo.stencil = nullptr;
+      m->topo.stencil_twin = nullptr;
+    } else {
+      m->stencil = autan::kernels::cell_stencil(
+          m->mesh, m->packed,
+          kind == 0 ? autan::kernels::StencilKind::vertex : autan::kernels::StencilKind::face2);
+      m->packed.stencil_lsq_weight = m->stencil.lsq_weight;
+      m->topo.n_stencil = static_cast<offset_t>(m->stencil.entries.size());
+      m->topo.stencil_offsets = m->stencil.offsets.data();
+      m->topo.stencil = m->stencil.entries.data();
+      m->topo.stencil_twin = m->stencil.twin.data();
+    }
+    *size = m->topo.n_stencil;
+  });
+}
+
+/// Fills the volume and centroid of ghost cells (NaN from compute_geometry until a partitioner
+/// copies them from the owning partition) and repacks the geometry; call it before
+/// autan_spike_set_stencil. `centroid` is 3 x n_cells (structure of arrays), `volume` n_cells;
+/// owned entries are ignored.
+int autan_spike_fill_ghost_geometry(void* mesh, const double* centroid, const double* volume,
+                                    char* err, std::size_t err_len) {
+  auto* m = static_cast<SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto nc = static_cast<std::size_t>(m->mesh.n_cells());
+    for (auto c = static_cast<std::size_t>(m->mesh.n_owned_cells()); c < nc; ++c) {
+      m->geometry.cell_volume[c] = volume[c];
+      m->geometry.cell_centroid_x[c] = centroid[c];
+      m->geometry.cell_centroid_y[c] = centroid[nc + c];
+      m->geometry.cell_centroid_z[c] = centroid[2 * nc + c];
+    }
+    m->packed = autan::kernels::pack_geometry(m->mesh, m->geometry);
+  });
+}
+
+void autan_spike_stencil_arrays(const void* mesh, std::int64_t* offsets, std::int32_t* entries) {
+  const auto& st = static_cast<const SpikeMesh*>(mesh)->stencil;
+  std::copy(st.offsets.begin(), st.offsets.end(), offsets);
+  std::copy(st.entries.begin(), st.entries.end(), entries);
 }
 
 void autan_spike_mesh_free(void* mesh) { delete static_cast<SpikeMesh*>(mesh); }
@@ -522,6 +640,15 @@ int autan_spike_roe_complex_step(const void* mesh, const double* u, const double
                                  double* out, char* err, std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] { autan::spike::roe_complex_step(*m, u, du, h, out); });
+}
+
+int autan_spike_face_weighted(const void* mesh, const char* policy, int mode, const double* q,
+                              const double* q_b, const double* seed, double* out, char* err,
+                              std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::face_weighted<decltype(p)>(*m, mode, q, q_b, seed, out);
+  });
 }
 
 int autan_spike_lsq_bounds_derivative(const void* mesh, const char* policy, int mode,

@@ -119,7 +119,7 @@ Defined in [`tokens.css`](tokens.css), light and dark. Dark is the default for L
 
 | Group | Choice | Why |
 |---|---|---|
-| Type | Geist Sans for UI, Geist Mono for numbers, paths, code (both SIL OFL 1.1, self-hosted). A compact base size, three weights. `font-variant-numeric: tabular-nums` on every number. | Dense UI needs a compact sans; numbers must align in columns and not jitter while they update. |
+| Type | Geist Sans for UI, Geist Mono for numbers, paths, code (both SIL OFL 1.1, self-hosted). A 14 px base (the most common Geist label size), three weights. `font-variant-numeric: tabular-nums` on every number. | Dense UI needs a compact sans; numbers must align in columns and not jitter while they update. |
 | Neutrals | `--bg-0…3`, `--line`, `--line-strong`, `--fg`, `--fg-2`, `--fg-3`. Every text colour, `--fg-3` included, reaches 4.5:1 on `--bg-0` and `--bg-1` in both themes. | Chrome stays out of the way of the colour map. |
 | Accent | One blue, `--accent`: focus, selection, primary action, running state. | A single accent keeps state colours readable. |
 | Semantic | `--success` converged, `--warning` risky (W-codes), `--danger` diverged or failed (D/E-codes), `--info` = accent. Each has a `-soft` fill. | Mirrors the CLI's coded messages. |

@@ -64,6 +64,7 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   d.q = qs.get();
   d.q_b = qbs.get();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.get();
   d.source = ss.get();
   autan::spike::bind(d.cell_volume, g.cell_volume);
@@ -76,7 +77,11 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::gpu_loops::lsq_gradient(d, dm.schedule);
+  if (m.topo.stencil != nullptr) {
+    ad::gpu_loops::lsq_gradient_stencil(d, dm.schedule);
+  } else {
+    ad::gpu_loops::lsq_gradient(d, dm.schedule);
+  }
   ad::gpu_loops::init_residual(d, dm.schedule);
   ad::gpu_loops::flux(d, strategy, dm.schedule);
   ad::gpu_loops::boundary_flux(d, strategy, dm.schedule);
@@ -113,6 +118,7 @@ void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strate
   d.qmax = maxs.get();
   d.gg_sum = acc.get();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   autan::spike::bind(d.cell_volume, g.cell_volume);
   autan::spike::bind(d.cell_centroid, g.cell_centroid);
   autan::spike::bind(d.face_centroid, g.face_centroid);
@@ -219,6 +225,7 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   d.q = qs.get();
   d.q_b = qbs.get();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad = gs.get();
   d.source = ss.get();
   autan::spike::bind(d.cell_volume, g.cell_volume);
@@ -235,11 +242,19 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
     d.velocity[i] = typename P::param(velocity[i]);
   }
   d.nu[0] = typename P::param(nu);
-  ad::gpu_loops::lsq_gradient(d, dm.schedule);
+  if (m.topo.stencil != nullptr) {
+    ad::gpu_loops::lsq_gradient_stencil(d, dm.schedule);
+  } else {
+    ad::gpu_loops::lsq_gradient(d, dm.schedule);
+  }
   ad::gpu_loops::boundary_flux_adjoint(d, strategy, dm.schedule);
   ad::gpu_loops::flux_adjoint(d, strategy, dm.schedule);
   ad::gpu_loops::init_residual_adjoint(d, dm.schedule);
-  ad::gpu_loops::lsq_gradient_adjoint(d, strategy, dm.schedule);
+  if (m.topo.stencil != nullptr) {
+    ad::gpu_loops::lsq_gradient_stencil_adjoint(d, strategy, dm.schedule);
+  } else {
+    ad::gpu_loops::lsq_gradient_adjoint(d, strategy, dm.schedule);
+  }
   synchronise();
   copy_out(q_adj.download(), out);
 }
@@ -270,6 +285,7 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
   d.qmin = lo.get();
   d.qmax = hi.get();
   autan::spike::bind(d.lsq_weight, g.lsq_weight);
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
   d.grad_adj = g_adj.get();
   d.qmin_adj = lo_adj.get();
   d.qmax_adj = hi_adj.get();
