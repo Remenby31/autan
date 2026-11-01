@@ -308,3 +308,52 @@ TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass diverg
     CHECK(std::abs(static_cast<double>(r[i]) - a * v) <= 64 * eps<P>() * a * surface[i]);
   }
 }
+
+TEST_CASE("the local time step bounds the faster side of every face", "[euler]") {
+  // Opposing flows in neighbouring cells: sum over the faces of max over both sides of
+  // (|v . n| + c) A, computed here from the mesh; slip walls mirror the cell.
+  using P = autan::kernels::fp64;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.5));
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip), std::vector<double>(5 * nb));
+  std::vector<Prim> w(nc);
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double s = i % 2 == 0 ? 1.0 : -1.0;
+    w[i] = {1.0 + 0.1 * static_cast<double>(i % 3), {1000.0 * s, 300.0 * s, -200.0 * s}, 1e5};
+    const auto uc = conserved(w[i]);
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
+  }
+  const std::vector<P::state> st(u.begin(), u.end());
+  std::vector<P::residual> r(5 * nc);
+  e.residual(st, r);
+  std::vector<P::state> lambda(nc);
+  e.spectral_radius(lambda);
+  auto speed = [&](std::size_t i, std::size_t f) {
+    const auto& g = c.geometry;
+    const double n[3] = {g.face_area_x[f] / g.face_area[f], g.face_area_y[f] / g.face_area[f],
+                         g.face_area_z[f] / g.face_area[f]};
+    const double vn = w[i].v[0] * n[0] + w[i].v[1] * n[1] + w[i].v[2] * n[2];
+    return (std::abs(vn) + sound(w[i])) * g.face_area[f];
+  };
+  std::vector<double> expected(nc, 0.0);
+  for (std::size_t f = 0; f < ni; ++f) {
+    const auto o = static_cast<std::size_t>(c.mesh.owner()[f]);
+    const auto n = static_cast<std::size_t>(c.mesh.neighbour()[f]);
+    const double m = std::max(speed(o, f), speed(n, f));
+    expected[o] += m;
+    expected[n] += m;
+  }
+  for (std::size_t f = ni; f < ni + nb; ++f) {
+    expected[static_cast<std::size_t>(c.mesh.owner()[f])] +=
+        speed(static_cast<std::size_t>(c.mesh.owner()[f]), f);
+  }
+  for (std::size_t i = 0; i < nc; ++i) {
+    CHECK(std::abs(lambda[i] - expected[i]) <= 1e-12 * expected[i]);
+  }
+}

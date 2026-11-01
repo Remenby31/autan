@@ -246,8 +246,8 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
   ek::cpu::primitives(m.d);
+  ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
-    ek::cpu::boundary_states(m.d);
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
@@ -279,6 +279,56 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
   m.d = d;
   m.faces_tangent();
   m.d = saved;
+}
+
+template <class P>
+void Euler<P>::spectral_radius(std::span<State> lambda) {
+  auto& m = *impl_;
+  m.d.lam = lambda.data();
+  ek::cpu::spectral_radius(m.d);
+}
+
+template <class P>
+void Euler<P>::boundary_pressure(std::span<double> p, std::span<double> force) const {
+  // The face state of the boundary flux (reconstruct in kernels/euler.py, with its fallback to
+  // the cell value) and, for the force, the pressure correction of warped faces (wall_warp).
+  const auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  const auto nb = nf - ni;
+  // grad is 5 x 3 per cell, row-major: component (i, j) at (3 i + j) * n_cells + c.
+  auto g = [&](std::size_t i, std::size_t j, std::size_t c) {
+    return static_cast<double>(m.grad[(3 * i + j) * nc + c]);
+  };
+  for (std::size_t f = ni; f < nf; ++f) {
+    const auto c = static_cast<std::size_t>(m.topo.owner[f]);
+    double drho = 0.0, dp = 0.0;
+    for (std::size_t j = 0; j < 3; ++j) {
+      const double r = static_cast<double>(m.face_centroid[j * nf + f]) -
+                       static_cast<double>(m.cell_centroid[j * nc + c]);
+      drho += g(0, j, c) * r;
+      dp += g(4, j, c) * r;
+    }
+    const double rho_c = static_cast<double>(m.prim[c]);
+    const double p_c = static_cast<double>(m.prim[4 * nc + c]);
+    const double rho_f = rho_c + static_cast<double>(m.phi[c]) * drho;
+    double p_f = p_c + static_cast<double>(m.phi[4 * nc + c]) * dp;
+    if (!(rho_f > 0.0 && p_f > 0.0)) p_f = p_c;
+    p[f - ni] = p_f;
+    if (force.empty()) continue;
+    const double phi_p = static_cast<double>(m.phi[4 * nc + c]);
+    for (std::size_t k = 0; k < 3; ++k) {
+      // p S + phi_p M^T grad p, M row-major 3 x 3 per face: entry (j, k) at (3 j + k) * nf + f.
+      double warp = 0.0;
+      for (std::size_t j = 0; j < 3; ++j) {
+        warp += static_cast<double>(m.face_moment[(3 * j + k) * nf + f]) * g(4, j, c);
+      }
+      const double area_k = static_cast<double>(m.face_normal[k * nf + f]) *
+                            static_cast<double>(m.face_area_magnitude[f]);
+      force[k * nb + (f - ni)] = p_f * area_k + phi_p * warp;
+    }
+  }
 }
 
 template class Euler<kernels::fp64>;

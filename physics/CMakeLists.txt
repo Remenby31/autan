@@ -34,6 +34,7 @@ add_custom_command(
 add_library(
   autan_physics
   src/euler.cpp
+  src/manufactured.cpp
   ${AUTAN_PHYSICS_GENERATED}/euler.hpp
   ${AUTAN_PHYSICS_GENERATED}/euler_cpu.hpp
 )
@@ -43,7 +44,11 @@ target_include_directories(
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   PRIVATE ${AUTAN_PHYSICS_GENERATED}
 )
-target_link_libraries(autan_physics PUBLIC autan::core autan::kernels PRIVATE autan_compile_options)
+target_link_libraries(
+  autan_physics
+  PUBLIC autan::core autan::kernels
+  PRIVATE autan_compile_options nlohmann_json::nlohmann_json
+)
 set_target_properties(autan_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # C ABI over the residual, loaded through ctypes by the manufactured-solution study (mms/).
@@ -62,6 +67,21 @@ add_custom_target(
 )
 add_dependencies(autan_physics_mms autan_physics_mms_build_info)
 target_include_directories(autan_physics_mms PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mms_generated)
+
+# The Euler physics behind autan-run's Physics interface; the runtime needs CGNS.
+if(AUTAN_ENABLE_CGNS)
+  add_library(autan_physics_runtime src/euler_physics.cpp)
+  add_library(autan::physics_runtime ALIAS autan_physics_runtime)
+  target_include_directories(
+    autan_physics_runtime
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(
+    autan_physics_runtime
+    PUBLIC autan::runtime
+    PRIVATE autan::physics autan_compile_options
+  )
+endif()
 
 # The full residual on the GPU, timed by autan-bench (docs/infra/bench.md).
 if(AUTAN_ENABLE_CUDA)
