@@ -35,6 +35,7 @@ from autan.schema import (
     Compressible,
     ConstantDensityFluid,
     ConstantViscosity,
+    Farfield,
     Fluid,
     IdealGas,
     Medium,
@@ -78,6 +79,10 @@ BOUNDARY_VALUES: dict[str, frozenset[str]] = {
     "manufactured": frozenset(),
     "oracle-state": frozenset({"states"}),
 }
+OPTIONAL_VALUES: dict[str, frozenset[str]] = {
+    "wall": frozenset({"temperature"}),
+    "farfield": frozenset({"point_vortex"}),
+}
 BOUNDARY_KEYS = (
     "temperature",
     "total_pressure",
@@ -85,6 +90,7 @@ BOUNDARY_KEYS = (
     "velocity",
     "static_pressure",
     "states",
+    "point_vortex",
 )
 # The face states carry no turbulence variable (face-states.md).
 ORACLE_MODELS = ("inviscid", "laminar")
@@ -210,6 +216,14 @@ class StatesRef(_Strict):
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
+Coordinate = Annotated[float, Field(strict=True, allow_inf_nan=False)]
+
+
+class PointVortexInput(_Strict):
+    zones: Annotated[tuple[str, ...], Field(min_length=1)]
+    center: tuple[Coordinate, Coordinate, Coordinate]
+
+
 class BoundaryInput(_Strict):
     zone: str
     kind: Literal[
@@ -229,14 +243,15 @@ class BoundaryInput(_Strict):
     velocity: Positive | None
     static_pressure: Positive | None
     states: StatesRef | None
+    point_vortex: PointVortexInput | None
 
     @model_validator(mode="after")
     def _values_match_kind(self) -> Self:
         required = BOUNDARY_VALUES[self.kind]
         given = {k for k in BOUNDARY_KEYS if getattr(self, k) is not None}
-        allowed = required | ({"temperature"} if self.kind == "wall" else set())
+        allowed = required | OPTIONAL_VALUES.get(self.kind, frozenset())
         if not required <= given <= allowed:
-            message = f"boundary {self.kind!r} takes {sorted(required)} (wall: temperature)"
+            message = f"boundary {self.kind!r} takes {sorted(required)} (and {sorted(allowed)})"
             raise ValueError(message)
         return self
 
@@ -304,7 +319,7 @@ class ForcesInput(_Strict):
     moment_center: Vector
 
 
-class VerificationInput(_Strict):
+class FileInput(_Strict):
     path: AbsolutePath
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
@@ -349,7 +364,8 @@ class SolverInput(_Strict):
     cell_zones: tuple[CellZoneInput, ...]
     time: Annotated[SteadyInput | UnsteadyInput, Field(discriminator="kind")]
     monitors: tuple[ForcesInput, ...]
-    verification: VerificationInput | None
+    verification: FileInput | None
+    initial_state: FileInput | None
     start: StartInput | None
 
     model_config = ConfigDict(populate_by_name=True)
@@ -366,6 +382,10 @@ class SolverInput(_Strict):
         periodic = {zone for pair in self.periodic for zone in pair.zones}
         if periodic & {b.zone for b in self.boundaries}:
             message = "a periodic zone takes no boundary condition"
+            raise ValueError(message)
+        walls = {b.zone for b in self.boundaries if b.kind in ("wall", "slip")}
+        if any(not set(b.point_vortex.zones) <= walls for b in self.boundaries if b.point_vortex):
+            message = "a point vortex integrates over wall and slip zones only"
             raise ValueError(message)
         if periodic & {zone for m in self.monitors for zone in m.zones}:
             message = "a monitor integrates over no periodic zone"
@@ -385,6 +405,18 @@ class SolverInput(_Strict):
             raise ValueError(message) from None
         if case.hash() != self.case.sha256:
             message = "case.sha256 is not the hash of case.toml"
+            raise ValueError(message)
+        initial = case.initial_state.sha256 if case.initial_state else None
+        if initial != (self.initial_state.sha256 if self.initial_state else None):
+            message = "initial_state differs from the case's initial_state"
+            raise ValueError(message)
+        if self.initial_state is not None and self.start is not None:
+            message = "an initial-state file and a start exclude each other"
+            raise ValueError(message)
+        if self.initial_state is not None and (self.physics.kind, turbulence.model) not in {
+            ("compressible", m) for m in ORACLE_MODELS
+        }:
+            message = "an initial-state file needs compressible inviscid or laminar physics"
             raise ValueError(message)
         recorded = case.verification.manufactured.sha256 if case.verification else None
         if recorded != (self.verification.sha256 if self.verification else None):
@@ -621,6 +653,23 @@ def _si(condition: dict[str, Any], key: str, unit: str) -> float | None:
     return float(parse(condition[key], unit).to(unit).magnitude) if key in condition else None
 
 
+def _point_vortex(
+    spec: CaseSpec, resolution: Any, mesh_info: MeshInfo, plan: Any
+) -> PointVortexInput | None:
+    """The resolved point vortex of a farfield zone's rule, in SI."""
+    from autan.plan import vortex_zones  # noqa: PLC0415 -- plan imports this module
+
+    rule = spec.boundaries[resolution.rule] if resolution.rule is not None else None
+    vortex = rule.condition.point_vortex if rule and isinstance(rule.condition, Farfield) else None
+    if vortex is None:
+        return None
+    zones, _ = vortex_zones(vortex.surfaces, mesh_info, plan.boundaries)
+    return PointVortexInput(
+        zones=tuple(zones),
+        center=(si(vortex.center[0], "m"), si(vortex.center[1], "m"), si(vortex.center[2], "m")),
+    )
+
+
 def build(
     case: Case,
     mesh_info: MeshInfo,
@@ -653,6 +702,7 @@ def build(
                     if condition["kind"] == "oracle-state"
                     else None
                 ),
+                point_vortex=_point_vortex(spec, resolution, mesh_info, plan),
             )
         )
     freestream, turbulence = freestream_state(spec), turbulence_input(spec)
@@ -722,11 +772,18 @@ def build(
             StartInput(run=str(start.run), **start.info.model_dump()) if start is not None else None
         ),
         verification=(
-            VerificationInput(
+            FileInput(
                 path=str(case.resolve(spec.verification.manufactured.path)),
                 sha256=spec.verification.manufactured.sha256,
             )
             if spec.verification is not None
+            else None
+        ),
+        initial_state=(
+            FileInput(
+                path=str(case.resolve(spec.initial_state.path)), sha256=spec.initial_state.sha256
+            )
+            if spec.initial_state is not None
             else None
         ),
     )
@@ -753,9 +810,7 @@ def json_schema() -> dict[str, Any]:
     defs["BoundaryInput"]["allOf"] = [
         {
             "if": {"properties": {"kind": {"const": kind}}},
-            "then": exactly(
-                values, BOUNDARY_KEYS, frozenset({"temperature"}) if kind == "wall" else frozenset()
-            ),
+            "then": exactly(values, BOUNDARY_KEYS, OPTIONAL_VALUES.get(kind, frozenset())),
         }
         for kind, values in BOUNDARY_VALUES.items()
     ]
@@ -782,6 +837,20 @@ def json_schema() -> dict[str, Any]:
         return {"properties": {"boundaries": {"items": {"properties": {"kind": rule}}}}}
 
     schema["allOf"] = [
+        {
+            "if": {"properties": {"initial_state": {"type": "object"}}},
+            "then": {
+                "properties": {
+                    "start": {"type": "null"},
+                    "physics": {
+                        "properties": {
+                            "kind": {"const": "compressible"},
+                            "turbulence": {"properties": {"model": {"enum": list(ORACLE_MODELS)}}},
+                        }
+                    },
+                }
+            },
+        },
         {
             "if": {
                 "properties": {
