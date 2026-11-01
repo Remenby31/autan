@@ -1,5 +1,6 @@
 #include "autan/physics/euler.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -79,6 +80,9 @@ struct Euler<P>::Impl {
     d.stencil_lsq_weight = stencil_lsq_weight.data();
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
+    if (!(scheme.mach_ref > 0.0)) {
+      throw std::invalid_argument("AUSM+-up needs a positive cut-off Mach number");
+    }
     d.mach_ref[0] = typename P::param(scheme.mach_ref);
     // Venkatakrishnan (1995), eq. 5, threshold eps^2 = (K h)^3 made dimensional:
     // eps_k^2 = (K / L)^3 V q_k^2.
@@ -86,6 +90,73 @@ struct Euler<P>::Impl {
     for (std::size_t c = 0; c < 5; ++c) {
       d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);
     }
+  }
+
+  // Least-squares weights over the stencil, 1/|d|^2 weighting as kernels::cell_stencil, but
+  // with only the boundary faces whose condition gives the state there: elsewhere the boundary
+  // value is the adjacent cell's, which sits at the cell centroid and not at the face, and would
+  // make the gradient inconsistent next to slip walls and extrapolating boundaries. A cell whose
+  // remaining entries do not determine a gradient keeps every boundary face.
+  void gradient_weights(std::span<const BoundaryKind> kind) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nst = stencil.entries.size();
+    std::vector<double> w(3 * nst, 0.0);
+    for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
+      const auto begin = static_cast<std::size_t>(stencil.offsets[c]);
+      const auto end = static_cast<std::size_t>(stencil.offsets[c + 1]);
+      auto weights = [&](bool all_boundaries) {
+        std::array<double, 9> a{};
+        std::vector<std::array<double, 4>> offs;  // offset and weight per entry, 0 if excluded
+        for (std::size_t k = begin; k < end; ++k) {
+          const index_t e = stencil.entries[k];
+          std::array<double, 3> x{};
+          bool used = true;
+          if (e >= 0) {
+            for (std::size_t j = 0; j < 3; ++j) {
+              x[j] = static_cast<double>(cell_centroid[j * nc + static_cast<std::size_t>(e)]);
+            }
+          } else {
+            const auto f = static_cast<std::size_t>(-e - 1);
+            used = all_boundaries || kind[f - ni] == BoundaryKind::state;
+            for (std::size_t j = 0; j < 3; ++j) {
+              x[j] = static_cast<double>(face_centroid[j * nf + f]);
+            }
+          }
+          std::array<double, 4> dk{};
+          for (std::size_t j = 0; j < 3; ++j) {
+            dk[j] = x[j] - static_cast<double>(cell_centroid[j * nc + c]);
+          }
+          dk[3] = used ? 1.0 / (dk[0] * dk[0] + dk[1] * dk[1] + dk[2] * dk[2]) : 0.0;
+          for (std::size_t u = 0; u < 3; ++u) {
+            for (std::size_t v = 0; v < 3; ++v) a[3 * u + v] += dk[3] * dk[u] * dk[v];
+          }
+          offs.push_back(dk);
+        }
+        const double det = a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) +
+                           a[2] * (a[3] * a[7] - a[4] * a[6]);
+        const double scale = a[0] * a[4] * a[8];
+        if (!(std::abs(det) > 1e-10 * std::abs(scale))) return false;
+        const std::array<double, 9> inv = {
+            (a[4] * a[8] - a[5] * a[7]) / det, (a[2] * a[7] - a[1] * a[8]) / det,
+            (a[1] * a[5] - a[2] * a[4]) / det, (a[5] * a[6] - a[3] * a[8]) / det,
+            (a[0] * a[8] - a[2] * a[6]) / det, (a[2] * a[3] - a[0] * a[5]) / det,
+            (a[3] * a[7] - a[4] * a[6]) / det, (a[1] * a[6] - a[0] * a[7]) / det,
+            (a[0] * a[4] - a[1] * a[3]) / det};
+        for (std::size_t k = begin; k < end; ++k) {
+          const auto& dk = offs[k - begin];
+          for (std::size_t u = 0; u < 3; ++u) {
+            w[u * nst + k] =
+                dk[3] * (inv[3 * u] * dk[0] + inv[3 * u + 1] * dk[1] + inv[3 * u + 2] * dk[2]);
+          }
+        }
+        return true;
+      };
+      if (!weights(false)) weights(true);
+    }
+    stencil_lsq_weight = kernels::converted<G>(w);
+    d.stencil_lsq_weight = stencil_lsq_weight.data();
   }
 
   void faces() {
@@ -155,6 +226,7 @@ void Euler<P>::set_boundary(std::span<const BoundaryKind> kind, std::span<const 
       m.bc[c * nf + ni + b] = State(data[c * nb + b]);
     }
   }
+  m.gradient_weights(kind);
 }
 
 template <class P>

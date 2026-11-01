@@ -494,8 +494,11 @@ sources = cell_loop(volume_source, s=source, vol=geometry.cell_volume, out=Write
 
 @pointwise
 def reconstruct(w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3) -> State.Vec5:
+    # Falls back to the cell value where the linear reconstruction would make the density or the
+    # pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
     d = gw @ r
-    return w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    return wf if wf[0] > 0.0 and wf[4] > 0.0 else w
 
 
 @pointwise
@@ -662,7 +665,7 @@ def roe_boundary(
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * roe(wf, wb, n, g) + warp(wf, gl, pl, gl, pl, m, g)
+        f = area * roe(wf, wb, n, g)
     return f
 
 
@@ -686,7 +689,7 @@ def hllc_boundary(
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * hllc(wf, wb, n, g) + warp(wf, gl, pl, gl, pl, m, g)
+        f = area * hllc(wf, wb, n, g)
     return f
 
 
@@ -711,7 +714,7 @@ def ausm_boundary(
     if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
-        f = area * ausm_up(wf, wb, n, g, minf) + warp(wf, gl, pl, gl, pl, m, g)
+        f = area * ausm_up(wf, wb, n, g, minf)
     return f
 
 
