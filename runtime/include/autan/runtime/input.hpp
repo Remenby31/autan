@@ -45,13 +45,26 @@ struct BoundaryStates {
   std::string sha256;  ///< its expected SHA-256
 };
 
+/// The point vortex a farfield condition adds to the freestream (case-schema.md, Boundaries).
+struct PointVortex {
+  std::vector<std::string> zones;  ///< the wall or slip zones whose lift gives the circulation
+  std::array<double, 3> center{};  ///< the vortex position (m)
+};
+
+/// The initial-state file of a case (docs/contracts/initial-state.md).
+struct InitialStateFile {
+  std::string path;    ///< absolute path of the autan.initial-state/1 file
+  std::string sha256;  ///< its expected SHA-256
+};
+
 struct BoundaryInput {
   std::string zone;
   std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
                      ///< manufactured, oracle-state
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<double> velocity;        ///< velocity-inlet: speed normal to the face (m/s)
-  std::optional<BoundaryStates> states;  ///< oracle-state only
+  std::optional<double> velocity;           ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<BoundaryStates> states;     ///< oracle-state only
+  std::optional<PointVortex> point_vortex;  ///< farfield only
 };
 
 struct Turbulence {
@@ -134,6 +147,7 @@ struct SolverInput {
   /// Present for verification cases: every boundary is then "manufactured".
   std::optional<Verification> verification;
   std::optional<Start> start;
+  std::optional<InitialStateFile> initial_state;  ///< never with start
   std::vector<PeriodicInput> periodic;
 };
 

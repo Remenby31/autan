@@ -328,6 +328,24 @@ def test_stencil_gradient_residual_and_adjoint_equal_host(
         runs.add((dev.tobytes(), dbar.tobytes()))
     if strategy in s.DETERMINISTIC:
         assert len(runs) == 1
+    # The sliced stencil layout visits each cell's entries in the same order: same bits.
+    if backend == "metal":
+        return  # DeviceMesh (and its sliced layout) is CUDA/HIP
+    s.set_stencil_slice(32)
+    try:
+        dev_s, _, _ = s.gpu_advdiff_residual(
+            m, pol, strategy, 64, q, q_b, src, mms.VELOCITY, mms.NU
+        )
+        dbar_s = s.gpu_advdiff_adjoint(
+            m, pol, strategy, 64, q, q_b, src, mms.VELOCITY, mms.NU, ybar
+        )
+    finally:
+        s.set_stencil_slice(0)
+    if strategy in s.DETERMINISTIC:
+        assert (dev_s.tobytes(), dbar_s.tobytes()) in runs
+    else:
+        assert np.abs(dev_s - host).max() <= 500 * eps(pol) * np.abs(host).max()
+        assert np.abs(dbar_s - hbar).max() <= 500 * eps(pol) * np.abs(hbar).max()
 
 
 @pytest.mark.parametrize("stencil", ["vertex", "face2"])

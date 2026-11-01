@@ -123,6 +123,9 @@ class DeviceMesh {
     int face_scratch_width = 0;       ///< components per face of the widest store-gather loop
     int incidence_scratch_width = 0;  ///< per entry, of the widest deterministic reduction adjoint
     stream_t stream = nullptr;
+    /// Cells per slice of the sliced stencil layout (Topology::stencil_stride), 0 for CSR. Same
+    /// results bit for bit; a warp then reads its cells' stencil entries contiguously.
+    int stencil_slice = 0;
   };
 
   /// `stencil` may be null (no stencil reductions); it is copied.
@@ -133,7 +136,17 @@ class DeviceMesh {
     const auto twins = incidence_twins(mesh);
     host.incidence_twin = twins.data();
     if (stencil != nullptr) {
-      stencil_ = *stencil;
+      csr_entries_ = stencil->entries.size();
+      if (options.stencil_slice > 0) {
+        auto s = sliced(*stencil, options.stencil_slice);
+        stencil_ = std::move(s.stencil);
+        position_ = std::move(s.position);
+        length_ = std::move(s.length);
+        host.stencil_stride = s.stride;
+        host.stencil_length = length_.data();
+      } else {
+        stencil_ = *stencil;
+      }
       geometry_.stencil_lsq_weight = stencil_.lsq_weight;
       host.n_stencil = static_cast<offset_t>(stencil_.entries.size());
       host.stencil_offsets = stencil_.offsets.data();
@@ -163,6 +176,10 @@ class DeviceMesh {
       topo_.stencil_offsets = stencil_offsets_.get();
       topo_.stencil = stencil_entries_.get();
       topo_.stencil_twin = stencil_twin_.get();
+      if (!length_.empty()) {
+        stencil_length_ = copy(std::span<const index_t>(length_));
+        topo_.stencil_length = stencil_length_.get();
+      }
     }
     // Scratch holds compute values (face) or accumulation values (incidence): at most 8 bytes.
     face_scratch_ = DeviceArray<double>(
@@ -213,14 +230,26 @@ class DeviceMesh {
 #undef AUTAN_BIND_GEOMETRY
   }
 
-  /// Replaces what bind() gives stencil_lsq_weight: 3 x n_stencil values in the entry order of
-  /// the stencil given at construction (component-major). Data structs bound before keep the
-  /// previous weights, still allocated, until bound again.
+  /// Replaces what bind() gives stencil_lsq_weight: 3 x n values in the entry order of the
+  /// stencil given at construction (component-major, n its entries), whatever the device
+  /// layout. Data structs bound before keep the previous weights, still allocated, until bound
+  /// again.
   void set_stencil_weights(std::span<const double> weights) {
-    if (weights.size() != 3 * stencil_.entries.size()) {
+    if (weights.size() != 3 * csr_entries_) {
       throw std::invalid_argument("E1101: stencil weights of the wrong size");
     }
-    geometry_.stencil_lsq_weight.assign(weights.begin(), weights.end());
+    if (position_.empty()) {
+      geometry_.stencil_lsq_weight.assign(weights.begin(), weights.end());
+    } else {
+      const std::size_t n = stencil_.entries.size();
+      geometry_.stencil_lsq_weight.assign(3 * n, 0.0);
+      for (std::size_t k = 0; k < csr_entries_; ++k) {
+        for (std::size_t i = 0; i < 3; ++i) {
+          geometry_.stencil_lsq_weight[i * n + static_cast<std::size_t>(position_[k])] =
+              weights[i * csr_entries_ + k];
+        }
+      }
+    }
     for (auto it = fields_.begin(); it != fields_.end();) {
       if (it->first.first == "stencil_lsq_weight") {
         retired_.push_back(std::move(it->second));
@@ -252,11 +281,14 @@ class DeviceMesh {
 
   PackedGeometry geometry_;
   CellStencil stencil_;
+  std::size_t csr_entries_ = 0;
+  std::vector<offset_t> position_;  // sliced layout: where each CSR entry went
+  std::vector<index_t> length_;
   stream_t stream_;
   DeviceArray<index_t> owner_, neighbour_, cell_faces_, interior_faces_, boundary_faces_;
   DeviceArray<offset_t> offsets_, twin_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
-  DeviceArray<index_t> stencil_entries_;
+  DeviceArray<index_t> stencil_entries_, stencil_length_;
   HostColouring interior_, boundary_;
   DeviceArray<double> face_scratch_, incidence_scratch_;
   std::map<std::pair<std::string, std::type_index>, DeviceArray<std::byte>> fields_;
