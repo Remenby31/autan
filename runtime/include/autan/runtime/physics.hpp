@@ -2,6 +2,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -65,6 +66,10 @@ struct PhysicsContext {
   const SolverInput& input;
   Log& log;
   const StartState* start;  ///< null unless input.start
+  /// Per face zone (index into mesh.face_zones()) with an oracle-state condition, the states of
+  /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
+  /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
+  const std::map<index_t, std::vector<double>>& boundary_states;
 };
 
 /// A discretisation of the case's equations. The runtime owns the iteration

@@ -1,5 +1,6 @@
 // The Euler physics through autan-run's public entry point, run_case, on tests/data/mesh/hybrid:
 // solver inputs written by `autan prepare` (tests/data/runtime), edited per test.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 
+#include "autan/io/mesh_info.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/run.hpp"
 
@@ -300,4 +302,75 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(diagnostic["data"][field] == value);
   CHECK(diagnostic["data"]["zone"] ==
         (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][2]["zone"]));
+}
+
+TEST_CASE("oracle-state faces take their paired states, whatever the row order", "[euler]") {
+  // tests/data/mesh/ringleb with the exact Ringleb states (autan-vv) on its four in-plane sides,
+  // in the oracle's units (R = 1/gamma); the same rows in reverse order within each zone give
+  // the same solution bit for bit, because faces pair with rows by centroid (face-states.md).
+  const fs::path dir = data_dir / "mesh" / "ringleb";
+  auto doc_for = [&](bool reversed) {
+    Json states = Json::parse(read(dir / "ringleb-n004.states.json"));
+    if (reversed) {
+      for (auto& [name, z] : states["zones"].items()) {
+        std::reverse(z["centroids"].begin(), z["centroids"].end());
+        std::reverse(z["values"].begin(), z["values"].end());
+      }
+    }
+    const std::string bytes = states.dump();
+    std::random_device random;
+    const fs::path file =
+        fs::temp_directory_path() / ("autan_ringleb-" + std::to_string(random()) + ".json");
+    std::ofstream(file, std::ios::binary) << bytes;
+    std::string sha;
+    picosha2::hash256_hex_string(bytes, sha);
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      const fs::path mesh = dir / "ringleb-n004.msh";
+      d["mesh"]["path"] = fs::absolute(mesh).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+      const double gamma = 1.4, rho = 0.8, p = 0.6, r = 1.0 / gamma;
+      auto& f = d["freestream"];
+      f["density"] = rho;
+      f["pressure"] = p;
+      f["temperature"] = p / (rho * r);
+      f["speed"] = 0.5;
+      f["velocity"] = {0.0, -0.5, 0.0};
+      f["mach"] = 0.5 / std::sqrt(gamma * p / rho);
+      Json zone = d["cell_zones"][0];
+      zone["zone"] = "fluid";
+      zone["medium"]["gas_constant"] = r;
+      zone["initial"]["density"] = rho;
+      zone["initial"]["pressure"] = p;
+      zone["initial"]["temperature"] = p / (rho * r);
+      zone["initial"]["velocity"] = f["velocity"];
+      d["cell_zones"] = Json::array({zone});
+      Json boundaries = Json::array();
+      for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+        Json b = d["boundaries"][0];
+        for (auto& [key, value] : b.items()) {
+          if (key != "zone" && key != "kind") value = nullptr;
+        }
+        b["zone"] = name;
+        const bool side = std::string(name) != "back" && std::string(name) != "front";
+        b["kind"] = side ? "oracle-state" : "symmetry";
+        if (side) b["states"] = Json{{"path", file.string()}, {"sha256", sha}};
+        boundaries.push_back(b);
+      }
+      d["boundaries"] = boundaries;
+      d["monitors"][0]["zones"] = {"k-min"};
+      d["time"]["max_iterations"] = 200;
+    });
+  };
+  const auto a = run(doc_for(false));
+  INFO(a.err);
+  REQUIRE(a.status == ExitStatus::finished);
+  const auto b = run(doc_for(true));
+  REQUIRE(b.status == ExitStatus::finished);
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "Pressure"}) {
+    CHECK(field(a.run, name) == field(b.run, name));
+  }
+  // The states reach the cells: the flow is no longer the uniform initial state.
+  const auto rho = field(a.run, "Density");
+  CHECK(*std::ranges::max_element(rho) - *std::ranges::min_element(rho) > 0.1);
 }

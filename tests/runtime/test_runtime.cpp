@@ -830,3 +830,87 @@ TEST_CASE("A mesh with periodic pairs is E0706 until the runtime solves them", "
   require_error(run(with_pairs(1.0)), "E0706");
   require_error(run(with_pairs(2.0)), "E0705");
 }
+
+// face-states.md: tests/data/mesh/ringleb, its states written by autan-vv, on the four in-plane
+// sides; `edit` changes the document before it is written beside the input.
+Json ringleb_input(const std::function<void(Json&)>& edit = {}) {
+  const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
+  Json states = Json::parse(read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json"));
+  std::string bytes = read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json");
+  if (edit) {
+    edit(states);
+    bytes = states.dump();
+  }
+  const fs::path file = fresh_dir() / "ringleb.states.json";
+  std::ofstream(file, std::ios::binary) << bytes;
+  std::string sha;
+  picosha2::hash256_hex_string(bytes, sha);
+  return input([&](Json& d) {
+    d["mesh"]["path"] = fs::absolute(mesh).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+    d["physics"]["turbulence"]["model"] = "inviscid";
+    d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+    d["freestream"]["nu_tilde"] = nullptr;
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    zone["initial"]["nu_tilde"] = nullptr;
+    d["cell_zones"] = Json::array({zone});
+    Json boundaries = Json::array();
+    for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+      Json b = d["boundaries"][0];
+      for (auto& [key, value] : b.items()) {
+        if (key != "zone" && key != "kind") value = nullptr;
+      }
+      b["zone"] = name;
+      const bool sides = std::string(name) != "back" && std::string(name) != "front";
+      b["kind"] = sides ? "oracle-state" : "symmetry";
+      if (sides) b["states"] = Json{{"path", fs::absolute(file).string()}, {"sha256", sha}};
+      boundaries.push_back(b);
+    }
+    d["boundaries"] = boundaries;
+    d["monitors"][0]["zones"] = {"k-min"};
+  });
+}
+
+TEST_CASE("Face states pair with their zone's faces and are archived with the run", "[runtime]") {
+  const Json doc = ringleb_input();
+  const Outcome o = run(doc);
+  INFO(o.err);
+  REQUIRE(o.status == ExitStatus::finished);
+  const std::string sha = doc["boundaries"][0]["states"]["sha256"];
+  CHECK(read(o.run / "states" / (sha + ".json")) ==
+        read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json"));
+}
+
+TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[runtime]") {
+  SECTION("E0420 another file than states.sha256") {
+    Json doc = ringleb_input();
+    doc["boundaries"][0]["states"]["sha256"] = std::string(64, '0');
+    require_error(run(doc), "E0420");
+  }
+  SECTION("E0420 not a face-state document") {
+    require_error(run(ringleb_input([](Json& s) { s["variables"][4] = "temperature"; })), "E0420");
+  }
+  SECTION("E0422 exported for another mesh") {
+    require_error(run(ringleb_input([](Json& s) { s["mesh_sha256"] = std::string(64, 'a'); })),
+                  "E0422");
+  }
+  SECTION("E0423 a zone missing or with another face count") {
+    require_error(run(ringleb_input([](Json& s) { s["zones"].erase("inflow"); })), "E0423");
+    require_error(run(ringleb_input([](Json& s) {
+                    auto& z = s["zones"]["inflow"];
+                    z["faces"] = z["faces"].get<int>() - 1;
+                    z["centroids"].erase(z["centroids"].size() - 1);
+                    z["values"].erase(z["values"].size() - 1);
+                  })),
+                  "E0423");
+  }
+  SECTION("E0421 a centroid away from every face") {
+    // The zone spans about 1 m: 1e-6 m is far beyond the 1e-9 x extent tolerance.
+    require_error(run(ringleb_input([](Json& s) {
+                    auto& c = s["zones"]["k-max"]["centroids"][1];
+                    c[0] = c[0].get<double>() + 1e-6;
+                  })),
+                  "E0421");
+  }
+}

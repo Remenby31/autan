@@ -10,9 +10,11 @@
 #include <ctime>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -22,6 +24,7 @@
 #include <picosha2.h>
 
 #include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -118,6 +121,9 @@ struct Prepared {
   const PhysicsFactory* factory = nullptr;
   std::optional<StartState> start;  // input.start, read and checked
   Json start_averaging;             // `continue`: the previous run's averaging
+  // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
+  std::map<index_t, std::vector<double>> boundary_states;
+  std::map<std::string, std::string> state_files;
 };
 
 [[noreturn]] void start_mismatch(const std::string& code, const std::string& message,
@@ -262,6 +268,132 @@ void load_start(Prepared& p) {
   p.start = std::move(state);
 }
 
+// face-states.md: the file of each oracle-state condition, checked by its hash, as a document
+// and against the mesh, then each face of the zone paired with exactly one row by centroid.
+void load_states(Prepared& p) {
+  std::optional<Geometry> geometry;
+  const auto offsets = p.mesh.boundary_zone_offsets();
+  for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
+    const auto& b = p.input.boundaries[i];
+    if (!b.states) continue;
+    const std::string key = "boundaries[" + std::to_string(i) + "].states";
+    const auto fail = [&](const char* code, const std::string& message, const std::string& sub,
+                          const nlohmann::json& data = nlohmann::json::object()) {
+      throw InputError(Diagnostic{
+          .code = code, .message = message, .path = key + sub, .data_json = data.dump()});
+    };
+    std::ifstream in(b.states->path, std::ios::binary);
+    if (!in) fail("E0420", "cannot read '" + b.states->path + "'", ".path");
+    std::ostringstream text;
+    text << in.rdbuf();
+    const std::string bytes = text.str();
+    const std::string found = sha256_hex(bytes);
+    if (found != b.states->sha256) {
+      fail("E0420", "the face-state file's SHA-256 differs from states.sha256", ".sha256",
+           {{"expected", b.states->sha256}, {"found", found}});
+    }
+    const auto invalid_document = [&](const std::string& why) {
+      fail("E0420", "'" + b.states->path + "' is not an autan.face-states/1 document: " + why,
+           ".path");
+    };
+    const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
+    if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
+    if (doc.value("schema", "") != "autan.face-states/1") invalid_document("schema");
+    if (doc.value("variables", nlohmann::json()) !=
+        nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"}) {
+      invalid_document("variables");
+    }
+    if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string())
+      invalid_document("mesh_sha256");
+    if (doc["mesh_sha256"] != p.mesh_hash) {
+      fail("E0422", "the face states were exported for another mesh", ".path",
+           {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
+    }
+    if (!doc.contains("zones") || !doc["zones"].is_object()) invalid_document("zones");
+    if (!doc["zones"].contains(b.zone)) {
+      fail("E0423", "the face states do not cover zone '" + b.zone + "'", ".path",
+           {{"zone", b.zone}});
+    }
+    const auto& z = doc["zones"][b.zone];
+    const index_t zone = p.face_zone.at(b.zone);
+    const auto first = static_cast<std::size_t>(offsets[at(zone)]);
+    const auto n = static_cast<std::size_t>(offsets[at(zone) + 1]) - first;
+    if (!z.is_object() || !z.contains("faces") || !z["faces"].is_number_integer())
+      invalid_document("zones." + b.zone + ".faces");
+    if (z["faces"].get<std::int64_t>() != static_cast<std::int64_t>(n)) {
+      fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
+           {{"zone", b.zone}, {"expected", n}, {"found", z["faces"]}});
+    }
+    const auto rows = [&](const char* key, std::size_t width) {
+      std::vector<double> out;
+      const auto& a = z.contains(key) ? z[key] : nlohmann::json();
+      if (!a.is_array() || a.size() != n) invalid_document("zones." + b.zone + "." + key);
+      for (const auto& row : a) {
+        if (!row.is_array() || row.size() != width) invalid_document("zones." + b.zone + "." + key);
+        for (const auto& v : row) {
+          if (!v.is_number() || !std::isfinite(v.get<double>()))
+            invalid_document("zones." + b.zone + "." + key);
+          out.push_back(v.get<double>());
+        }
+      }
+      return out;
+    };
+    const std::vector<double> centroids = rows("centroids", 3);
+    const std::vector<double> values = rows("values", 5);
+    for (std::size_t r = 0; r < n; ++r) {
+      if (!(values[5 * r] > 0.0) || !(values[5 * r + 4] > 0.0))
+        invalid_document("zones." + b.zone + ".values: density and pressure must be > 0");
+    }
+    if (!geometry) geometry = compute_geometry(p.mesh);
+    const auto& g = *geometry;
+    // Tolerance: 1e-9 times the largest extent of the bounding box of the zone's nodes.
+    std::array<double, 3> lo{}, hi{};
+    lo.fill(std::numeric_limits<double>::infinity());
+    hi.fill(-std::numeric_limits<double>::infinity());
+    const std::array<std::span<const double>, 3> xyz{p.mesh.x(), p.mesh.y(), p.mesh.z()};
+    for (std::size_t f = first; f < first + n; ++f) {
+      for (const index_t v : p.mesh.face_nodes(static_cast<index_t>(f))) {
+        for (std::size_t d = 0; d < 3; ++d) {
+          lo[d] = std::min(lo[d], xyz[d][at(v)]);
+          hi[d] = std::max(hi[d], xyz[d][at(v)]);
+        }
+      }
+    }
+    const double tol = 1e-9 * std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
+    std::vector<std::size_t> by_x(n);
+    for (std::size_t r = 0; r < n; ++r) by_x[r] = r;
+    std::ranges::sort(
+        by_x, [&](std::size_t a, std::size_t c) { return centroids[3 * a] < centroids[3 * c]; });
+    std::vector<char> used(n, 0);
+    std::vector<double> paired(5 * n);
+    for (std::size_t j = 0; j < n; ++j) {
+      const std::size_t f = first + j;
+      const std::array<double, 3> c{g.face_centroid_x[f], g.face_centroid_y[f],
+                                    g.face_centroid_z[f]};
+      auto it = std::ranges::lower_bound(by_x, c[0] - tol, {},
+                                         [&](std::size_t r) { return centroids[3 * r]; });
+      std::size_t match = n, count = 0;
+      for (; it != by_x.end() && centroids[3 * *it] <= c[0] + tol; ++it) {
+        const double* q = &centroids[3 * *it];
+        if (std::hypot(q[0] - c[0], q[1] - c[1], q[2] - c[2]) <= tol) {
+          match = *it;
+          ++count;
+        }
+      }
+      if (count != 1 || used[match] != 0) {
+        fail("E0421",
+             "face " + std::to_string(j) + " of zone '" + b.zone + "' matches " +
+                 std::to_string(count) + " rows of the face states",
+             ".path", {{"zone", b.zone}, {"face", j}, {"centroid", c}, {"matches", count}});
+      }
+      used[match] = 1;
+      for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = values[5 * match + k];
+    }
+    p.boundary_states[zone] = std::move(paired);
+    p.state_files.emplace(found, bytes);
+  }
+}
+
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
@@ -270,7 +402,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
              .monitor_zones = {},
              .factory = nullptr,
              .start = std::nullopt,
-             .start_averaging = {}};
+             .start_averaging = {},
+             .boundary_states = {},
+             .state_files = {}};
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
@@ -354,6 +488,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
     }
     p.monitor_zones.push_back(std::move(ids));
   }
+  load_states(p);
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   if (entry != nullptr && entry->scope) {
@@ -479,7 +614,8 @@ class Run final : public Log {
         log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
                  Json{{"cells", p_.mesh.n_cells()}, {"faces", p_.mesh.n_faces()}}.dump()),
         p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
-                              : std::nullopt);
+                              : std::nullopt,
+        p_.state_files);
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 
@@ -488,7 +624,8 @@ class Run final : public Log {
                                  .geometry = geometry_,
                                  .input = p_.input,
                                  .log = *this,
-                                 .start = p_.start ? &*p_.start : nullptr};
+                                 .start = p_.start ? &*p_.start : nullptr,
+                                 .boundary_states = p_.boundary_states};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
