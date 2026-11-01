@@ -1,10 +1,10 @@
 ---
-source_hash: "8629169282ef"
+source_hash: "5f47608bdd5b"
 ---
 
 # Prise en main du SDK Autan
 
-Vérifiez un cas face à son maillage et écrivez un répertoire de calcul avec le SDK Python, depuis un clone du dépôt. Le runtime du solveur `autan-run` n'a encore aucune physique : il rejette une entrée valide avec `E0706` ; cette page utilise donc le backend `fake` du SDK, qui écrit des résultats synthétiques dans les vrais formats.
+Vérifiez un cas face à son maillage et écrivez un répertoire de calcul avec le SDK Python, depuis un clone du dépôt. Cette page utilise le backend `fake` du SDK, qui écrit des résultats synthétiques dans les vrais formats et ne demande aucune compilation. Le solveur, qu'appelle `autan run --backend cpu`, calcule des écoulements compressibles non visqueux sur CPU et se compile depuis les sources ([autan run](../sdk/run.md#solver-backend)) ; l'exemple ci-dessous utilise un modèle de turbulence, que le solveur ne calcule pas encore.
 
 > Les résultats du backend `fake` sont synthétiques. Ne les utilisez jamais comme données de référence.
 
