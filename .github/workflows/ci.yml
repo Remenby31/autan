@@ -167,6 +167,9 @@ jobs:
         run: bunx tsc --noEmit -p .
       - name: Unit tests (Vitest)
         run: bun run test
+      - name: Server type-check (mypy)
+        working-directory: ui/server
+        run: uv run --locked mypy
       - name: Server tests (pytest)
         working-directory: ui/server
         run: uv run --locked python -m pytest -q tests
