@@ -100,19 +100,22 @@ AUTAN_WALL_HD inline double triangle_distance(const Vec& p, const Vec& a, const 
   return d * scale_;
 }
 
-// Distance from p to a box. It decides which subtrees the traversal skips,
-// and two triangles sharing an edge give that edge's distance with different
-// roundings, so the result depends on it: scaled by the largest gap (no
-// overflow at any size) and built from correctly rounded operations only,
-// for the same bits on every target.
+// A lower bound of the distance from p to a box. It decides which subtrees
+// the traversal skips, and two triangles sharing an edge give that edge's
+// distance with different roundings, so the result depends on it: built
+// from correctly rounded operations only, for the same bits on every target.
+// Each gap is divided by the largest (no reciprocal to overflow when it is
+// subnormal); a product beyond the double range falls back to the largest
+// gap, which still bounds the distance from below.
 AUTAN_WALL_HD inline double box_distance(const Vec& p, const Vec& lo, const Vec& hi) {
   Vec gap{};
   for (std::size_t k = 0; k < 3; ++k)
     gap[k] = p[k] < lo[k] ? lo[k] - p[k] : (p[k] > hi[k] ? p[k] - hi[k] : 0.0);
   const double largest = max_abs(gap);
   if (!(largest > 0.0)) return largest;
-  const Vec g = scale(1.0 / largest, gap);
-  return std::sqrt(dot(g, g)) * largest;
+  const Vec g{gap[0] / largest, gap[1] / largest, gap[2] / largest};
+  const double d = std::sqrt(dot(g, g)) * largest;
+  return d <= std::numeric_limits<double>::max() ? d : largest;
 }
 
 /// The nearest triangle of the tree to p, if nearer than `best`.

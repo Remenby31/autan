@@ -316,9 +316,8 @@ TEST_CASE("The device computes the host's wall distances bit for bit", "[wall][g
     std::size_t differ = 0;
     for (std::size_t i = 0; i < points.size(); ++i) {
       const double host = surface.distance(points[i]);
-      const bool equal = std::isnan(host) ? std::isnan(device[i])
-                                          : std::bit_cast<std::uint64_t>(host) ==
-                                                std::bit_cast<std::uint64_t>(device[i]);
+      const bool equal =
+          std::bit_cast<std::uint64_t>(host) == std::bit_cast<std::uint64_t>(device[i]);
       if (!equal) ++differ;
     }
     CHECK(differ == 0);
@@ -357,6 +356,28 @@ TEST_CASE("The device computes the host's wall distances bit for bit", "[wall][g
       same(autan::WallSurface(box, std::array<index_t, 1>{zone(box, "ymin")}),
            random_points(500, scale));
     }
+  }
+  SECTION("gaps at the ends of the double range") {
+    // A periodic unit cube with wall y = 0: a point 1e-310 above the wall's
+    // copy at x = 1 is at 1e-310, with box gaps that are subnormal. A wall
+    // 1e307 wide seen from just inside DBL_MAX: a finite distance whose
+    // box-distance product would overflow.
+    autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa);
+    cells.face_zones[0].kind = autan::BcKind::periodic;
+    cells.face_zones[1].kind = autan::BcKind::periodic;
+    cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    const autan::Mesh cube = autan::assemble(autan::to_face_based(std::move(cells)));
+    const autan::WallSurface tiny(cube, std::array<index_t, 1>{zone(cube, "ymin")});
+    // Subnormal: about 44 significant bits left.
+    CHECK_THAT(tiny.distance({1.25, 1e-310, 0.375}), Catch::Matchers::WithinRel(1e-310, 1e-9));
+    same(tiny, {{1.25, 1e-310, 0.375}, {0.5, 4e-320, 0.5}});
+    const autan::Mesh big =
+        mapped(autan::test::box(1, autan::test::BoxFill::hexa),
+               [](const Vec& q) { return Vec{1e307 * q[0], q[1], 1e307 * q[2]}; });
+    const autan::WallSurface huge(big, std::array<index_t, 1>{zone(big, "ymin")});
+    const double g = 0x1.6a09e667f3bcbp+1023;
+    CHECK(std::isfinite(huge.distance({-g, g, 3e306})));
+    same(huge, {{-g, g, 3e306}, {-1e308, 1e308, -1e308}});
   }
   SECTION("periodic walls, sheared and along oblique directions") {
     autan::CellwiseMesh sheared = autan::test::box(3, autan::test::BoxFill::hexa);

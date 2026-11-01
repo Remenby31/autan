@@ -28,8 +28,9 @@ std::vector<double> device_distances(const WallSurface& surface,
   ok(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
   const DeviceWallSurface device(surface);
   device.distance(dx, dy, dz, static_cast<std::int64_t>(n), dout, stream);
+  // Read back on that stream: a kernel launched elsewhere would not be waited for.
+  ok(cudaMemcpyAsync(out.data(), dout, n * sizeof(double), cudaMemcpyDeviceToHost, stream));
   ok(cudaStreamSynchronize(stream));
-  ok(cudaMemcpy(out.data(), dout, n * sizeof(double), cudaMemcpyDeviceToHost));
   ok(cudaStreamDestroy(stream));
   for (double* p : {dx, dy, dz, dout}) ok(cudaFree(p));
   return out;
