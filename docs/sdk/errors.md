@@ -771,3 +771,19 @@ Fix: Use one of the race strategies the driver lists.
 Store-gather scratch has fewer components per face than the loop's outputs.
 
 Fix: Regenerate the loop so its scratch holds every output component per face.
+
+## E1105
+
+**Incidence scratch too narrow** (error)
+
+The deterministic adjoint of a cell reduction has fewer scratch components per incidence than the values it sends to neighbours.
+
+Fix: Size the schedule's incidence scratch for the widest reduction adjoint of the module.
+
+## E1106
+
+**Incidence twins missing** (error)
+
+The deterministic adjoint of a cell reduction runs on a topology without incidence twins.
+
+Fix: Set Topology::incidence_twin from autan::kernels::incidence_twins(mesh) and copy it to the device.

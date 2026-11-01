@@ -234,6 +234,24 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   out.push_back({"lsq_gradient_bounds", lsq_bytes, "cell",
                  time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule); })});
 
+  // Its adjoint: atomic scatter against the deterministic two-pass form. Bytes: the primal's
+  // reads, the 5 seeds per cell read and zeroed, q_adj read and written.
+  DeviceArray<R> g_adj(3 * nc), lo_adj(nc), hi_adj(nc), q_adj(nc);
+  gr::Data<P> da = d;
+  da.grad_adj = g_adj.get();
+  da.qmin_adj = lo_adj.get();
+  da.qmax_adj = hi_adj.get();
+  da.q_adj = q_adj.get();
+  const double lsq_adj_bytes = lsq_bytes - cells * (3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
+                               cells * (sizeof(S) + 10.0 * sizeof(R) + 2.0 * sizeof(R));
+  for (auto s : {gpu::Strategy::atomic, gpu::Strategy::store_gather}) {
+    std::string tag = gpu::name(s);
+    std::replace(tag.begin(), tag.end(), '-', '_');
+    out.push_back(
+        {"lsq_gradient_bounds_adjoint_" + tag, lsq_adj_bytes, gpu::name(s),
+         time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds_adjoint(da, s, dm.schedule); })});
+  }
+
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
   namespace rf = autan::kernels::roe;
   std::vector<S> u(5 * nc);
