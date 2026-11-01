@@ -438,6 +438,108 @@
       "title": "Cannot write the output file",
       "fix": "Give a writable file path.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0806"
+    },
+    "E1001": {
+      "severity": "error",
+      "title": "Unsupported kernel construct",
+      "fix": "Rewrite the body with the DSL subset of docs/design/kernel-generator.md.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1001"
+    },
+    "E1002": {
+      "severity": "error",
+      "title": "Argument is not a DSL type",
+      "fix": "Annotate every argument with a role type (Geom, State, Residual, Param, ...).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1002"
+    },
+    "E1003": {
+      "severity": "error",
+      "title": "Invalid loop binding",
+      "fix": "Make the loop's bindings match the body's arguments, their types and the loop kind.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1003"
+    },
+    "E1004": {
+      "severity": "error",
+      "title": "Invalid loop output",
+      "fix": "Give the loop outputs that fit its kind (Inc with signs, Write, accumulators).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1004"
+    },
+    "E1005": {
+      "severity": "error",
+      "title": "Invalid control flow in a kernel",
+      "fix": "Assign each name and return on every branch, and put no code after return.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1005"
+    },
+    "E1006": {
+      "severity": "error",
+      "title": "Type mismatch in a kernel",
+      "fix": "Make the operand shapes and kinds agree.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1006"
+    },
+    "E1007": {
+      "severity": "error",
+      "title": "rel() of a computed value",
+      "fix": "Call rel() on Geom arguments as loaded, not on computed values.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1007"
+    },
+    "E1008": {
+      "severity": "error",
+      "title": "Inc target is not an accumulation",
+      "fix": "Accumulate with Inc only into Residual datasets.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1008"
+    },
+    "E1009": {
+      "severity": "error",
+      "title": "Invalid kernel module",
+      "fix": "Fix the module so it imports and declares at least one loop.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1009"
+    },
+    "E1010": {
+      "severity": "error",
+      "title": "Unknown backend",
+      "fix": "Use a backend listed by the generator's --help.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1010"
+    },
+    "E1011": {
+      "severity": "error",
+      "title": "Unknown policy",
+      "fix": "Use a policy listed by the generator's --help.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1011"
+    },
+    "E1012": {
+      "severity": "error",
+      "title": "Differentiation not supported",
+      "fix": "Differentiate loops with a single output dataset.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1012"
+    },
+    "E1100": {
+      "severity": "error",
+      "title": "Generated loop failed",
+      "fix": "Report the message with the kernel and the input that triggered it.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1100"
+    },
+    "E1101": {
+      "severity": "error",
+      "title": "GPU runtime error",
+      "fix": "Check the driver and the device with `autan doctor`, then report the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1101"
+    },
+    "E1102": {
+      "severity": "error",
+      "title": "Unknown precision policy",
+      "fix": "Use one of the precision policies the driver lists.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1102"
+    },
+    "E1103": {
+      "severity": "error",
+      "title": "Unknown race strategy",
+      "fix": "Use one of the race strategies the driver lists.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1103"
+    },
+    "E1104": {
+      "severity": "error",
+      "title": "Face scratch too narrow",
+      "fix": "Regenerate the loop so its scratch holds every output component per face.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1104"
     }
   }
 }

@@ -587,3 +587,139 @@ Fix: Install the extra: `uv add 'autan[ui]'` (or `uv sync --extra ui` in a check
 The file given to `-o`/`--output` cannot be written: missing directory, a directory in its place, or no permission.
 
 Fix: Give a writable file path.
+
+## E1001
+
+**Unsupported kernel construct** (error)
+
+A body uses a statement, expression or call outside the subset.
+
+Fix: Rewrite the body with the DSL subset of docs/design/kernel-generator.md.
+
+## E1002
+
+**Argument is not a DSL type** (error)
+
+An argument has no annotation, or one that is not a role type.
+
+Fix: Annotate every argument with a role type (Geom, State, Residual, Param, ...).
+
+## E1003
+
+**Invalid loop binding** (error)
+
+Loop bindings do not match the body's arguments, their types, or the loop kind.
+
+Fix: Make the loop's bindings match the body's arguments, their types and the loop kind.
+
+## E1004
+
+**Invalid loop output** (error)
+
+A loop's outputs do not fit its kind (`Inc` signs, `Write`, accumulators).
+
+Fix: Give the loop outputs that fit its kind (Inc with signs, Write, accumulators).
+
+## E1005
+
+**Invalid control flow in a kernel** (error)
+
+A name is assigned in one branch only, `return` is in one branch only, or code follows `return`.
+
+Fix: Assign each name and return on every branch, and put no code after return.
+
+## E1006
+
+**Type mismatch in a kernel** (error)
+
+Shapes or kinds of operands disagree.
+
+Fix: Make the operand shapes and kinds agree.
+
+## E1007
+
+**rel() of a computed value** (error)
+
+`rel()` receives something other than `Geom` arguments as loaded.
+
+Fix: Call rel() on Geom arguments as loaded, not on computed values.
+
+## E1008
+
+**Inc target is not an accumulation** (error)
+
+An `Inc` target does not have role `Residual`.
+
+Fix: Accumulate with Inc only into Residual datasets.
+
+## E1009
+
+**Invalid kernel module** (error)
+
+A kernel module cannot be imported or declares no loop.
+
+Fix: Fix the module so it imports and declares at least one loop.
+
+## E1010
+
+**Unknown backend** (error)
+
+`--backends` names an unknown backend.
+
+Fix: Use a backend listed by the generator's --help.
+
+## E1011
+
+**Unknown policy** (error)
+
+`--policies` names an unknown policy.
+
+Fix: Use a policy listed by the generator's --help.
+
+## E1012
+
+**Differentiation not supported** (error)
+
+A loop with several output datasets is differentiated.
+
+Fix: Differentiate loops with a single output dataset.
+
+## E1100
+
+**Generated loop failed** (error)
+
+A generated loop or the spike driver fails without a more specific code.
+
+Fix: Report the message with the kernel and the input that triggered it.
+
+## E1101
+
+**GPU runtime error** (error)
+
+A CUDA or HIP call or kernel launch fails.
+
+Fix: Check the driver and the device with `autan doctor`, then report the message.
+
+## E1102
+
+**Unknown precision policy** (error)
+
+A driver receives an unknown policy name.
+
+Fix: Use one of the precision policies the driver lists.
+
+## E1103
+
+**Unknown race strategy** (error)
+
+A driver receives an unknown strategy name.
+
+Fix: Use one of the race strategies the driver lists.
+
+## E1104
+
+**Face scratch too narrow** (error)
+
+Store-gather scratch has fewer components per face than the loop's outputs.
+
+Fix: Regenerate the loop so its scratch holds every output component per face.
