@@ -503,6 +503,37 @@ def _finite(value: object) -> bool:
 
 
 UNITS = ("Kilogram", "Meter", "Second", "Kelvin", "Radian")
+# BCType_t values of the CGNS SIDS (section 9.7), as written in files.
+SIDS_BC_TYPES = frozenset(
+    {
+        "Null",
+        "UserDefined",
+        "BCAxisymmetricWedge",
+        "BCDegenerateLine",
+        "BCDegeneratePoint",
+        "BCDirichlet",
+        "BCExtrapolate",
+        "BCFarfield",
+        "BCGeneral",
+        "BCInflow",
+        "BCInflowSubsonic",
+        "BCInflowSupersonic",
+        "BCNeumann",
+        "BCOutflow",
+        "BCOutflowSubsonic",
+        "BCOutflowSupersonic",
+        "BCSymmetryPlane",
+        "BCSymmetryPolar",
+        "BCTunnelInflow",
+        "BCTunnelOutflow",
+        "BCWall",
+        "BCWallInviscid",
+        "BCWallViscous",
+        "BCWallViscousHeatFlux",
+        "BCWallViscousIsothermal",
+        "FamilySpecified",
+    }
+)
 
 
 def solution_problems(
@@ -558,6 +589,8 @@ def _solution_problems(
     if ("FlowSolutionMean" in zone.children) != (run.averaging is not None):
         found.append("FlowSolutionMean must exist exactly when run.json has averaging")
     for bc in zone.child("ZoneBC").with_label("BC_t"):
+        if bc.text() not in SIDS_BC_TYPES:
+            found.append(f"BC {bc.name} has BCType {bc.text()!r}, not a SIDS BCType_t value")
         if not _ids_in(bc.child("PointList").data, 1, faces):
             found.append(f"BC {bc.name} PointList must hold face ids")
     for region in zone.with_label("ZoneSubRegion_t"):
