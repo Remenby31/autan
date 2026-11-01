@@ -156,7 +156,7 @@ class EulerPhysics final : public runtime::Physics {
       return report;
     }
     if (ctx_.input.time.kind == "steady") {
-      steady_step(report);
+      steady_step(report, iteration);
     } else {
       unsteady_step(report);
     }
@@ -361,6 +361,10 @@ class EulerPhysics final : public runtime::Physics {
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
+    v.emplace_back("SolverExemptFloor", exempt_floor_);
+    for (std::size_t k = 0; k < 5; ++k) {
+      v.emplace_back("SolverExempt" + std::to_string(k), exempt_[k] ? 1.0 : 0.0);
+    }
     return v;
   }
 
@@ -375,6 +379,8 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+    exempt_floor_ = v[10].second;
+    for (std::size_t k = 0; k < 5; ++k) exempt_[k] = v[11 + k].second != 0.0;
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -481,7 +487,7 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
-  void steady_step(StepReport& report) {
+  void steady_step(StepReport& report, std::int64_t iteration) {
     euler_.state(u_, state_);
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
@@ -496,12 +502,25 @@ class EulerPhysics final : public runtime::Physics {
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
     euler_.spectral_radius(lambda_);
-    // Largest relative residual over the equations, of the order being solved.
+    // Largest relative residual over the equations, of the order being solved: each residual
+    // relative to its largest value so far in this order, so that the transient of a start from
+    // the freestream (a first residual near zero) does not hold the CFL number at its minimum.
+    // An equation identically zero at the start of the order (below 1e-12 of the largest, the
+    // span momentum of a one-cell-thick mesh) is left out while it stays at that floor, as the
+    // runtime's convergence rule does (case-schema.md#time): its round-off would set the CFL.
     const std::vector<double>& current = norms.empty() ? report.residuals : norms;
+    if (first_norms_.empty()) {
+      first_norms_ = current;
+      exempt_floor_ = 1e-12 * *std::max_element(current.begin(), current.end());
+      for (std::size_t k = 0; k < 5; ++k) exempt_[k] = current[k] < exempt_floor_;
+    }
     double drop = 0.0;
-    if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
+      first_norms_[k] = std::max(first_norms_[k], current[k]);
+      if (exempt_[k] && current[k] > exempt_floor_) exempt_[k] = false;
+      if (!exempt_[k] && first_norms_[k] > 0.0) {
+        drop = std::max(drop, current[k] / first_norms_[k]);
+      }
     }
     // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
     // solution; second order from the step after the first-order residual has dropped.
@@ -514,9 +533,10 @@ class EulerPhysics final : public runtime::Physics {
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
     penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
-    if (drop > 0.0) {
-      cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
-    }
+    // Every active residual at zero: the largest CFL number the cap allows, so that the choice
+    // depends on the restart state only.
+    const double ratio = drop > 0.0 ? penalty_ * cfl_start / drop : cfl_max;
+    cfl_ = std::clamp(std::min(ratio, cfl_cap_), cfl_min, cfl_max);
     cfl_cap_ = cfl_max;
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
@@ -531,15 +551,21 @@ class EulerPhysics final : public runtime::Physics {
       linear = {};  // a singular block: the solve failed
     }
     const bool failed = !(linear.residual_drop <= linear_failure);
-    if (!(linear.residual_drop <= linear_tolerance)) {
-      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
-      if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
-      ctx_.log.write("warning", "linear",
-                     failed ? "the implicit step's linear solve failed: step rejected"
-                            : "the implicit step's linear solve stopped above its tolerance",
-                     {}, data.dump());
+    const nlohmann::json residual_drop =
+        std::isfinite(linear.residual_drop) ? nlohmann::json(linear.residual_drop) : nullptr;
+    if (!failed && !(linear.residual_drop <= linear_tolerance)) {
+      ctx_.log.write(
+          "info", "linear", "the implicit step's linear solve stopped above its tolerance", {},
+          nlohmann::json{{"cycles", linear.cycles}, {"residual_drop", residual_drop}}.dump());
     }
     if (failed) {
+      ctx_.log.write("warning", "solver", "implicit step rejected: its linear solve failed",
+                     "W0711",
+                     nlohmann::json{{"iteration", iteration},
+                                    {"reason", "linear"},
+                                    {"cfl", cfl_},
+                                    {"residual_drop", residual_drop}}
+                         .dump());
       // As a step with no admissible length: the state is kept and the next CFL number is half
       // this one, also when this one was clamped; at the smallest CFL number the run diverged.
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
@@ -555,9 +581,18 @@ class EulerPhysics final : public runtime::Physics {
     if (shortened_) {
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
       cfl_cap_ = 0.5 * cfl_;
-      ctx_.log.write("warning", "solver",
-                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
-                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+      if (alpha < min_step) {
+        ctx_.log.write("warning", "solver", "implicit step rejected: no admissible step length",
+                       "W0711",
+                       nlohmann::json{{"iteration", iteration},
+                                      {"reason", "admissible"},
+                                      {"cfl", cfl_},
+                                      {"residual_drop", nullptr}}
+                           .dump());
+      } else {
+        ctx_.log.write("info", "solver", "step shortened", {},
+                       nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+      }
     }
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
@@ -797,6 +832,9 @@ class EulerPhysics final : public runtime::Physics {
   bool second_order_ = false;
   int first_order_steps_ = 0;
   bool shortened_ = false;
+  // Equations left out of the SER ratio, and their floor (set at the start of each order).
+  std::array<bool, 5> exempt_{};
+  double exempt_floor_ = 0.0;
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
   std::vector<Res> res_;
