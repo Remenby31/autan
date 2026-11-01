@@ -263,7 +263,10 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
     u[4 * nc + c] = S(2.5 + 0.5 * rho * (vx * vx + vy * vy + vz * vz));
   }
   DeviceArray<S> du(ctx, u), du_tan(ctx, u);
-  DeviceArray<R> dr(ctx, 5 * nc), dr_tan(ctx, 5 * nc), dr_adj(ctx, 5 * nc), du_adj(ctx, 5 * nc);
+  // A nonzero adjoint seed, so that the adjoint does its real work.
+  std::vector<R> seed(5 * nc);
+  for (auto& v : seed) v = R(normal(rng));
+  DeviceArray<R> dr(ctx, 5 * nc), dr_tan(ctx, 5 * nc), dr_adj(ctx, seed), du_adj(ctx, 5 * nc);
   rf::Data<P> rd{};
   rd.topo = dm.topo;
   rd.u_cons = du.get();
@@ -281,15 +284,20 @@ void run(mtl::Context& ctx, const Options& o, const SpikeMesh& m, std::vector<Ti
     std::string tag = autan::kernels::name(s);
     std::replace(tag.begin(), tag.end(), '-', '_');
     const char* sn = autan::kernels::name(s);
+    // Each mode reads and writes its 5 increments per cell; the tangent also reads the state
+    // tangent, the adjoint its 5 seeds per cell.
+    const double written = cells * 5.0 * sizeof(R);
     out.push_back({"roe_" + tag, roe_bytes, sn,
-                   time_it(ctx, o, [&] { rf::metal_loops::flux(ctx, rd, s, dm.schedule); })});
-    out.push_back(
-        {"roe_tangent_" + tag, roe_bytes + cells * 5.0 * sizeof(S), sn,
-         time_it(ctx, o, [&] { rf::metal_loops::flux_tangent(ctx, rd, s, dm.schedule); })});
-    out.push_back({"roe_adjoint_" + tag, roe_bytes, sn, time_it(ctx, o, [&] {
-                     rf::metal_loops::flux_adjoint(ctx, rd, s, dm.schedule);
-                   })});
+                   time_it(ctx, o, [&] { rf::metal_loops::flux(ctx, rd, s, dm.schedule); }),
+                   written});
+    out.push_back({"roe_tangent_" + tag, roe_bytes + cells * 5.0 * sizeof(S), sn,
+                   time_it(ctx, o, [&] { rf::metal_loops::flux_tangent(ctx, rd, s, dm.schedule); }),
+                   written});
+    out.push_back({"roe_adjoint_" + tag, roe_bytes + cells * 5.0 * sizeof(R), sn,
+                   time_it(ctx, o, [&] { rf::metal_loops::flux_adjoint(ctx, rd, s, dm.schedule); }),
+                   written});
   }
+  std::fprintf(stderr, "Metal compilation %.3f s\n", ctx.compile_seconds());
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.int_colours.offsets.size() - 1,
                dm.bnd_colours.offsets.size() - 1);
@@ -331,11 +339,10 @@ int main(int argc, char** argv) {
   std::printf("\"config\":{\"mesh\":\"%s\",\"policy\":\"%s\",\"order\":\"%s\",\"layout\":\"soa\","
               "\"n_cells\":%d,\"n_faces\":%d,\"n_interior_faces\":%d,\"n_incidences\":%lld,"
               "\"block\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,\"read_seconds\":%.3f,"
-              "\"renumber_seconds\":%.3f,\"tolerance\":%.1e,\"compile_seconds\":%.3f},",
+              "\"renumber_seconds\":%.3f,\"tolerance\":%.1e},",
               o.mesh.c_str(), o.policy.c_str(), o.order.c_str(), m.topo.n_cells, m.topo.n_faces,
               m.topo.n_interior_faces, static_cast<long long>(m.topo.n_incidences), o.block,
-              o.warmup, o.reps, o.batch, read_seconds, renumber_seconds, tolerance,
-              ctx.compile_seconds());
+              o.warmup, o.reps, o.batch, read_seconds, renumber_seconds, tolerance);
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < timed.size(); ++k) {
     const auto& t = timed[k];

@@ -148,8 +148,9 @@ int main(int argc, char** argv) {
               AUTAN_BENCH_DIRTY);
   std::printf(
       "\"config\":{\"elements\":%ld,\"element_bytes\":4,\"warmup\":%d,\"reps\":%d,\"batch\":%d,"
-      "\"block\":%d,\"compile_seconds\":%.3f},",
-      o.elements, o.warmup, o.reps, o.batch, o.block, ctx.compile_seconds());
+      "\"block\":%d},",
+      o.elements, o.warmup, o.reps, o.batch, o.block);
+  std::fprintf(stderr, "Metal compilation %.3f s\n", ctx.compile_seconds());
   std::printf("\"verified\":%s,\"kernels\":[", verified ? "true" : "false");
   for (std::size_t k = 0; k < kernels.size(); ++k) {
     std::printf("%s{\"name\":\"%s\",\"bytes_per_rep\":%zu,\"seconds\":[", k ? "," : "",

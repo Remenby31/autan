@@ -192,11 +192,13 @@ inline int segment_id(bool head, int lane) {
   return metal::popcount(heads & upto);
 }
 
-// Sum of squares in double-float in a fixed order (autan/kernels/norms.cuh on CUDA): chunks of
-// norm_block * norm_per_thread entries reduced by a tree in threadgroup memory, then the
-// partials (`x` of sum_partials) by one threadgroup. Launched with threadgroups of norm_block
-// threads (autan::kernels::metal::sum_of_squares); the result depends on the data and its
-// length only.
+// Euclidean norm in double-float in a fixed order (autan/kernels/norms.cuh on CUDA). Double-float
+// keeps FP32's exponent range, so entries are first scaled by 2^k, exactly, with k set from the
+// largest magnitude (max_by_chunk, scale_partials); then squares_by_chunk and sum_partials sum
+// (2^k x)^2 by chunks of norm_block * norm_per_thread entries, each reduced by a tree in
+// threadgroup memory, and the partials by one threadgroup. out[0] is the sum, out[1].hi is k.
+// Launched with threadgroups of norm_block threads (autan::kernels::metal::sum_of_squares); the
+// result depends on the data and its length only.
 constant int norm_block = 256;
 constant int norm_per_thread = 16;
 
@@ -207,6 +209,11 @@ struct NormData {
   device df64* out;
   long n;
 };
+
+inline float magnitude(float x) { return metal::fabs(x); }
+inline float magnitude(df64 x) { return metal::fabs(x.hi); }
+inline float scaled_by(float x, int k) { return metal::ldexp(x, k); }
+inline df64 scaled_by(df64 x, int k) { return df64(metal::ldexp(x.hi, k), metal::ldexp(x.lo, k)); }
 
 inline df64 square(float x) {
   const float p = x * x;
@@ -225,17 +232,68 @@ inline void tree_sum(threadgroup float2* s, uint t) {
   }
 }
 
+inline void tree_max(threadgroup float* s, uint t) {
+  for (uint w = norm_block / 2; w > 0; w /= 2) {
+    if (t < w) {
+      s[t] = metal::max(s[t], s[t + w]);
+    }
+    metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  }
+}
+
+template <class T>
+kernel void max_by_chunk(constant NormData<T>& d [[buffer(0)]],
+                         uint t [[thread_position_in_threadgroup]],
+                         uint g [[threadgroup_position_in_grid]]) {
+  threadgroup float s[norm_block];
+  const long base = long(g) * norm_block * norm_per_thread + long(t);
+  float m = 0.0f;
+  for (int j = 0; j < norm_per_thread; ++j) {
+    const long i = base + long(j) * norm_block;
+    if (i < d.n) {
+      m = metal::max(m, magnitude(d.x[i]));
+    }
+  }
+  s[t] = m;
+  metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  tree_max(s, t);
+  if (t == 0) {
+    d.partial[g] = df64(s[0]);
+  }
+}
+
+// k such that 2^k max lies in [0.5, 1); 0 if max is zero or not finite (the sum then carries it).
+[[host_name("scale_partials_df64")]] kernel void scale_partials_df64(
+    constant NormData<df64>& d [[buffer(0)]], uint t [[thread_position_in_threadgroup]]) {
+  threadgroup float s[norm_block];
+  float m = 0.0f;
+  for (long i = long(t); i < d.n; i += norm_block) {
+    m = metal::max(m, d.x[i].hi);
+  }
+  s[t] = m;
+  metal::threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  tree_max(s, t);
+  if (t == 0) {
+    int e = 0;
+    if (s[0] > 0.0f && metal::isfinite(s[0])) {
+      metal::frexp(s[0], e);
+    }
+    d.out[1] = df64(float(-e));
+  }
+}
+
 template <class T>
 kernel void squares_by_chunk(constant NormData<T>& d [[buffer(0)]],
                              uint t [[thread_position_in_threadgroup]],
                              uint g [[threadgroup_position_in_grid]]) {
   threadgroup float2 s[norm_block];
+  const int k = int(d.out[1].hi);
   const long base = long(g) * norm_block * norm_per_thread + long(t);
   df64 acc = df64(0.0f);
   for (int j = 0; j < norm_per_thread; ++j) {
     const long i = base + long(j) * norm_block;
     if (i < d.n) {
-      acc = acc + square(d.x[i]);
+      acc = acc + square(scaled_by(d.x[i], k));
     }
   }
   s[t] = float2(acc.hi, acc.lo);
@@ -246,8 +304,8 @@ kernel void squares_by_chunk(constant NormData<T>& d [[buffer(0)]],
   }
 }
 
-[[host_name("sum_partials_df64")]] kernel void sum_partials_df64(constant NormData<df64>& d [[buffer(0)]],
-                              uint t [[thread_position_in_threadgroup]]) {
+[[host_name("sum_partials_df64")]] kernel void sum_partials_df64(
+    constant NormData<df64>& d [[buffer(0)]], uint t [[thread_position_in_threadgroup]]) {
   threadgroup float2 s[norm_block];
   df64 acc = df64(0.0f);
   for (long i = long(t); i < d.n; i += norm_block) {
@@ -261,6 +319,10 @@ kernel void squares_by_chunk(constant NormData<T>& d [[buffer(0)]],
   }
 }
 
+template [[host_name("max_by_chunk_float")]] kernel void max_by_chunk<float>(
+    constant NormData<float>&, uint, uint);
+template [[host_name("max_by_chunk_df64")]] kernel void max_by_chunk<df64>(
+    constant NormData<df64>&, uint, uint);
 template [[host_name("squares_by_chunk_float")]] kernel void squares_by_chunk<float>(
     constant NormData<float>&, uint, uint);
 template [[host_name("squares_by_chunk_df64")]] kernel void squares_by_chunk<df64>(

@@ -193,7 +193,7 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
     for s in _face_eval(lm, "  "):
         e.w(s)
     for j in range(n):
-        e.w(f"  a.scratch[{j} * d.topo.n_faces + f] = A(out[{j}]);")
+        e.w(f"  a.scratch[offset_t({j}) * d.topo.n_faces + f] = A(out[{j}]);")
     e.w("}")
     e.w()
     # store-gather pass 2 and gather-recompute: one thread per cell (ghosts too), CSR order.
@@ -220,7 +220,7 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
         if variant == "gather":
             e.w(f"    A out[{n}];")
             for j in range(n):
-                e.w(f"    out[{j}] = a.scratch[{j} * d.topo.n_faces + f];")
+                e.w(f"    out[{j}] = a.scratch[offset_t({j}) * d.topo.n_faces + f];")
             if lm.kind == "face":
                 e.w("    const bool left = d.topo.owner[f] == c;")
         else:

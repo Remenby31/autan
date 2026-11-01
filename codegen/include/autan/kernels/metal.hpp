@@ -4,6 +4,7 @@
 // implementation is in codegen/cpp/metal.mm. Buffers live in unified memory (shared storage); the
 // pointers stored in a module's Data<P> are their GPU addresses, which the kernels dereference.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -169,6 +170,8 @@ class Context {
   /// Commits the recorded dispatches, waits for them, and returns the GPU time in seconds
   /// (0 when nothing was recorded).
   double synchronise();
+  /// Drops the recorded dispatches without running them (after an error while recording).
+  void discard();
   /// Seconds spent compiling libraries and pipelines so far (first use of each kernel).
   double compile_seconds() const;
 
@@ -196,19 +199,28 @@ struct NormData {
   std::int64_t n;
 };
 
-/// Records the sum of x[i]^2 (float or df64 entries, GPU addresses), accumulated in double-float
-/// in an order fixed by n, into the device scalar `out`; `partials` holds norm_partials(n)
-/// values. `lib` is any generated module's library.
+/// Records the Euclidean norm of x[0..n) (float or df64 entries, GPU addresses) into the
+/// device array `out` of two values, read with `norm_of(out)`: the sum of (2^k x[i])^2 in
+/// double-float, in an order fixed by n, and k, which keeps the squares in FP32's exponent range.
+/// `partials` holds norm_partials(n) values. `lib` is any generated module's library.
 template <class T>
 void sum_of_squares(Context& ctx, const Library& lib, const T* x, std::int64_t n, df64* partials,
                     df64* out) {
   static_assert(std::is_same_v<T, float> || std::is_same_v<T, df64>);
   const std::int64_t m = norm_partials(n);
   const char* tag = std::is_same_v<T, float> ? "float" : "df64";
-  ctx.dispatch(lib, "squares_by_chunk", tag, NormData<T>{x, partials, nullptr, n},
-               static_cast<index_t>(m * norm_block), norm_block);
+  const auto groups = static_cast<index_t>(m * norm_block);
+  ctx.dispatch(lib, "max_by_chunk", tag, NormData<T>{x, partials, out, n}, groups, norm_block);
+  ctx.dispatch(lib, "scale_partials", "df64", NormData<df64>{partials, nullptr, out, m}, norm_block,
+               norm_block);
+  ctx.dispatch(lib, "squares_by_chunk", tag, NormData<T>{x, partials, out, n}, groups, norm_block);
   ctx.dispatch(lib, "sum_partials", "df64", NormData<df64>{partials, nullptr, out, m}, norm_block,
                norm_block);
+}
+
+/// The norm from the two values sum_of_squares wrote (host view of its `out`).
+inline double norm_of(const df64* out) {
+  return std::ldexp(std::sqrt(static_cast<double>(out[0])), -static_cast<int>(out[1].hi));
 }
 
 }  // namespace autan::kernels::metal

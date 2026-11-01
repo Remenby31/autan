@@ -240,3 +240,24 @@ def test_mms_solution_on_the_device_converges_at_second_order(
         e.append(sol.error_l2)
     fit, _ = mms.observed_order(h, e)
     assert fit >= 1.9
+
+
+@pytest.mark.parametrize("scale", [1e-20, 1.0, 1e20])
+@pytest.mark.parametrize("policy", PRECISIONS)
+def test_device_residual_norm_holds_at_extreme_amplitudes(
+    case: tuple[s.Mesh, dict[str, np.ndarray]], backend: str, policy: str, scale: float
+) -> None:
+    # Squares of 1e-20 and 1e20 leave FP32's exponent range: the norm must still be the norm of
+    # the residual the device returns (computed here in FP64 from those values).
+    m, d = case
+    src = scale * d["src"]
+    zero_q, zero_b = np.zeros(m.n_cells), np.zeros(m.n_faces)
+    call = lambda: s.gpu_advdiff_residual(
+        m, policy, "gather-recompute", 128, zero_q, zero_b, src, mms.VELOCITY, mms.NU
+    )
+    if is_refused(backend, policy, "gather-recompute", call):
+        return
+    res, _, norm = call()
+    expected = float(np.sqrt(np.sum(res * res)))
+    assert expected > 0.0
+    assert abs(norm - expected) <= 1e3 * eps("fp64") * expected

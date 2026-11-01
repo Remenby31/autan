@@ -3,9 +3,12 @@
 
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -29,6 +32,39 @@ namespace {
     msg += error.localizedDescription.UTF8String;
   }
   throw std::runtime_error(msg);
+}
+
+// Runs f in an autorelease pool (Metal returns autoreleased objects and a C++ host has no pool to
+// drain them) and rethrows its exception after the pool is drained, not through it.
+template <class F>
+auto pooled(F&& f) -> decltype(f()) {
+  using R = decltype(f());
+  std::exception_ptr error;
+  if constexpr (std::is_void_v<R>) {
+    @autoreleasepool {
+      try {
+        f();
+      } catch (...) {
+        error = std::current_exception();
+      }
+    }
+    if (error) {
+      std::rethrow_exception(error);
+    }
+  } else {
+    std::optional<R> result;
+    @autoreleasepool {
+      try {
+        result.emplace(f());
+      } catch (...) {
+        error = std::current_exception();
+      }
+    }
+    if (error) {
+      std::rethrow_exception(error);
+    }
+    return std::move(*result);
+  }
 }
 
 }  // namespace
@@ -114,7 +150,7 @@ struct Context::Impl {
 };
 
 Context::Context() : impl_(std::make_unique<Impl>()) {
-  @autoreleasepool {
+  pooled([&] {
     impl_->device = MTLCreateSystemDefaultDevice();
     if (impl_->device == nil) {
       fail("no Metal device");
@@ -123,7 +159,7 @@ Context::Context() : impl_(std::make_unique<Impl>()) {
     if (impl_->queue == nil) {
       fail("cannot create a command queue");
     }
-  }
+  });
 }
 
 Context::~Context() {
@@ -165,8 +201,7 @@ Context::DeviceInfo Context::info() const {
 }
 
 Buffer Context::allocate(std::size_t bytes) {
-  // Metal returns autoreleased objects; a C++ host has no pool to drain them otherwise.
-  @autoreleasepool {
+  return pooled([&] {
     const std::size_t n = bytes == 0 ? 1 : bytes;
     id<MTLBuffer> buf = [impl_->device newBufferWithLength:n options:MTLResourceStorageModeShared];
     if (buf == nil) {
@@ -183,13 +218,13 @@ Buffer Context::allocate(std::size_t bytes) {
       [impl_->encoder useResource:buf usage:MTLResourceUsageRead | MTLResourceUsageWrite];
     }
     return b;
-  }
+  });
 }
 
 void Context::dispatch_raw(const Library& lib, std::string_view kernel, const char* tag,
                            const void* d, std::size_t d_bytes, const void* args,
                            std::size_t args_bytes, index_t threads, int block) {
-  @autoreleasepool {
+  pooled([&] {
     if (threads <= 0) {
       return;
     }
@@ -221,11 +256,11 @@ void Context::dispatch_raw(const Library& lib, std::string_view kernel, const ch
     // Whole threadgroups, as CUDA grids: SIMD-group shuffles see every lane; kernels bound-check.
     [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
-  }
+  });
 }
 
 double Context::synchronise() {
-  @autoreleasepool {
+  return pooled([&] {
     if (impl_->commands == nil) {
       return 0.0;
     }
@@ -239,7 +274,17 @@ double Context::synchronise() {
       fail("command buffer failed", cb.error);
     }
     return cb.GPUEndTime - cb.GPUStartTime;
-  }
+  });
+}
+
+void Context::discard() {
+  pooled([&] {
+    if (impl_->commands != nil) {
+      [impl_->encoder endEncoding];
+      impl_->commands = nil;
+      impl_->encoder = nil;
+    }
+  });
 }
 
 double Context::compile_seconds() const { return impl_->compile_seconds; }

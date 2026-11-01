@@ -52,6 +52,19 @@ mtl::Context& context() {
 
 void synchronise() { context().synchronise(); }
 
+/// guarded() for Metal calls: a request refused while recording drops what it recorded.
+template <class F>
+int metal_guarded(char* err, std::size_t len, F&& body) {
+  return guarded(err, len, [&] {
+    try {
+      body();
+    } catch (...) {
+      context().discard();
+      throw;
+    }
+  });
+}
+
 template <class P>
 void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const double* q,
                       const double* q_b, const double* source, const double* velocity, double nu,
@@ -91,12 +104,12 @@ void advdiff_residual(const SpikeMesh& m, Strategy strategy, int block, const do
   ad::metal_loops::boundary_flux(ctx, d, strategy, dm.schedule);
   const auto n_owned = static_cast<std::int64_t>(m.topo.n_owned_cells);
   DeviceArray<mtl::df64> partials(ctx, static_cast<std::size_t>(mtl::norm_partials(n_owned)));
-  DeviceArray<mtl::df64> sum(ctx, 1);
+  DeviceArray<mtl::df64> sum(ctx, 2);
   mtl::sum_of_squares(ctx, ad::metal_loops::library, rs.get(), n_owned, partials.get(), sum.get());
   synchronise();
   copy_out(rs.download(), res);
   copy_out(gs.download(), grad);
-  *norm = std::sqrt(static_cast<double>(sum.download()[0]));
+  *norm = mtl::norm_of(sum.download().data());
 }
 
 template <class P>
@@ -306,7 +319,7 @@ int autan_spike_gpu_lsq_bounds_adjoint(const void* mesh, const char* policy, con
                                        const double* seed, double* out, char* err,
                                        std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
-  return guarded(err, err_len, [&] {
+  return metal_guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(
         policy, [&](auto p) { lsq_bounds_adjoint<decltype(p)>(*m, s, block, q, q_b, seed, out); });
@@ -327,7 +340,7 @@ int autan_spike_gpu_roe(const void* mesh, const char* policy, const char* strate
                         int mode, const double* u, const double* seed, double* out, char* err,
                         std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
-  return guarded(err, err_len, [&] {
+  return metal_guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(
         policy, [&](auto p) { roe<decltype(p)>(*m, s, block, mode, u, seed, out); });
@@ -340,7 +353,7 @@ int autan_spike_gpu_advdiff_adjoint(const void* mesh, const char* policy, const 
                                     const double* seed, double* out, char* err,
                                     std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
-  return guarded(err, err_len, [&] {
+  return metal_guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(policy, [&](auto p) {
       advdiff_adjoint<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, seed, out);
@@ -354,7 +367,7 @@ int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const
                                      double* res, double* grad, double* norm, char* err,
                                      std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
-  return guarded(err, err_len, [&] {
+  return metal_guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(policy, [&](auto p) {
       advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
@@ -367,7 +380,7 @@ int autan_spike_gpu_gradients(const void* mesh, const char* policy, const char* 
                               int iterations, double* grad, double* qmin, double* qmax, char* err,
                               std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
-  return guarded(err, err_len, [&] {
+  return metal_guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(policy, [&](auto p) {
       gradients<decltype(p)>(*m, method, s, block, q, q_b, iterations, grad, qmin, qmax);
@@ -379,7 +392,7 @@ int autan_spike_gpu_advection(const void* mesh, const char* policy, const char* 
                               const double* q, const double* grad, const double* velocity,
                               double* res, char* err, std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
-  return guarded(err, err_len, [&] {
+  return metal_guarded(err, err_len, [&] {
     const auto s = strategy_of(strategy);
     autan::spike::metal::with_policy(
         policy, [&](auto p) { advection<decltype(p)>(*m, s, block, q, grad, velocity, res); });
