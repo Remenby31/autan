@@ -46,7 +46,7 @@ from autan.schema import (
     Sutherland,
     require_tags,
 )
-from autan.units import parse, si
+from autan.units import metres_per, parse, si
 
 if TYPE_CHECKING:
     from autan.case import Case
@@ -130,6 +130,7 @@ AbsolutePath = Annotated[
 class MeshRef(_Strict):
     path: AbsolutePath
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+    scale: Positive
 
 
 class SutherlandLaw(_Strict):
@@ -755,7 +756,11 @@ def build(
     return SolverInput(
         schema_=SCHEMA_ID,
         case=CaseRef(name=spec.name, sha256=spec.hash(), toml=case.to_toml()),
-        mesh=MeshRef(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
+        mesh=MeshRef(
+            path=str(case.mesh_path),
+            sha256=mesh_info.source.sha256,
+            scale=metres_per(spec.mesh_unit),
+        ),
         precision=spec.physics.precision,
         deterministic=deterministic,
         devices=devices,

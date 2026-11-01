@@ -75,7 +75,8 @@ def _plan_text(result: Plan) -> str:
     lines = [
         f"case        {result.case['name']}  (sha256 {result.case['sha256'][:12]})",
         (
-            f"mesh        {mesh['path']} · {_millions(mesh['cells'])} cells · {poly:.0f} % polyhedra"
+            f"mesh        {mesh['path']} ({mesh['unit']}) · {_millions(mesh['cells'])} cells"
+            f" · {poly:.0f} % polyhedra"
             f" · max non-orth. {mesh['quality']['max_non_orthogonality_deg']:g}°"
         ),
         f"boundaries  {covered}/{needing} zones covered",

@@ -16,7 +16,7 @@ import rfc8785
 from autan.cli import json_schema, main
 from pydantic import ValidationError
 
-from tests.conftest import FIXTURES
+from tests.conftest import CRM_HL, FIXTURES
 
 R_UNIVERSAL = 8.314462618
 
@@ -217,3 +217,27 @@ def test_each_published_schema_has_its_identifier(name: str) -> None:
     schema = json_schema(name)
     assert schema["$id"] == autan.version.SCHEMAS[name]
     assert schema["properties"]["schema"]["const"] == autan.version.SCHEMAS[name]
+
+
+# Exact by definition: the international inch (1959) and foot.
+@pytest.mark.parametrize(("unit", "metres"), [("m", 1.0), ("in", 0.0254), ("ft", 0.3048)])
+def test_mesh_unit_scales_the_mesh_alone(
+    unit: str,
+    metres: float,
+    capsys: pytest.CaptureFixture[str],
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+) -> None:
+    body = CRM_HL.replace('mesh="crm-hl.cgns"', f'mesh="crm-hl.cgns", mesh_unit="{unit}"')
+    path = write_case(body)
+    case = autan.load(path)
+    assert case.spec.document()["mesh_unit"] == unit
+    assert case.plan(crm_mesh).mesh["unit"] == unit
+    status, document = prepare(capsys, path, "crm-hl.meshinfo.json")
+    assert status == 0
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["mesh"]["scale"] == metres
+    # Every other length carries its own unit: the reference length stays 7 m.
+    assert document["monitors"][0]["ref_length"] == pytest.approx(7.0)
+    in_metres = autan.load(write_case(CRM_HL, "metres.py")).spec
+    assert (case.spec.hash() == in_metres.hash()) == (unit == "m")

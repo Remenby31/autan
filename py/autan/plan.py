@@ -43,7 +43,7 @@ from autan.schema import (
     Wall,
 )
 from autan.solver_input import gas_constant
-from autan.units import parse, si
+from autan.units import format_unit, parse, si
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -212,6 +212,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         mesh={
             "path": mesh.source.path,
             "sha256": mesh.source.sha256,
+            "unit": format_unit(spec.mesh_unit),
             "cells": mesh.counts.cells,
             "faces": mesh.counts.faces,
             "cells_by_type": mesh.counts.cells_by_type.model_dump(),
