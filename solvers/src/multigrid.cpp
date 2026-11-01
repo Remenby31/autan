@@ -383,63 +383,11 @@ void Multigrid::cycle(std::span<const double> b, std::span<double> x) { cycle_le
 Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> x, int max_cycles,
                                    double tolerance) {
   const Operator& a = ops_[0];
-  const std::size_t m = 5 * a.n;
-  residual_.resize(m);
+  residual_.resize(5 * a.n);
   a.residual(b, x, residual_);
-  auto dot = [](std::span<const double> u, std::span<const double> v) {
-    double s = 0.0;
-    for (std::size_t k = 0; k < u.size(); ++k) s += u[k] * v[k];
-    return s;
-  };
-  // The iteration runs on the residual scaled by its largest entry, so that no norm underflows.
-  double scale = 0.0;
-  for (const double v : residual_) scale = std::max(scale, std::abs(v));
-  Report report;
-  if (!std::isfinite(scale) ||
-      std::any_of(residual_.begin(), residual_.end(), [](double v) { return std::isnan(v); })) {
-    report.residual_drop = std::numeric_limits<double>::quiet_NaN();
-    return report;
-  }
-  if (scale == 0.0) {
-    report.residual_drop = 0.0;
-    return report;
-  }
-  for (double& v : residual_) v /= scale;
-  const double r0 = std::sqrt(dot(residual_, residual_));
-  const auto kmax = static_cast<std::size_t>(std::max(max_cycles, 0));
-  if (directions_.size() < kmax) {
-    directions_.resize(kmax);
-    images_.resize(kmax);
-  }
-  double rr = r0 * r0;
-  for (std::size_t k = 0; k < kmax; ++k) {
-    std::vector<double>& z = directions_[k];
-    std::vector<double>& w = images_[k];
-    z.assign(m, 0.0);
-    w.resize(m);
-    cycle_level(0, residual_, z);
-    a.multiply(z, w);
-    for (std::size_t j = 0; j < k; ++j) {
-      const double beta = dot(w, images_[j]) / dot(images_[j], images_[j]);
-      for (std::size_t i = 0; i < m; ++i) {
-        z[i] -= beta * directions_[j][i];
-        w[i] -= beta * images_[j][i];
-      }
-    }
-    const double ww = dot(w, w);
-    report.cycles = static_cast<int>(k) + 1;
-    if (!(ww > 0.0)) break;
-    const double alpha = dot(residual_, w) / ww;
-    for (std::size_t i = 0; i < m; ++i) {
-      x[i] += scale * alpha * z[i];
-      residual_[i] -= alpha * w[i];
-    }
-    rr = dot(residual_, residual_);
-    if (std::sqrt(rr) <= tolerance * r0) break;
-  }
-  report.residual_drop =
-      std::isfinite(rr) ? std::sqrt(rr) / r0 : std::numeric_limits<double>::quiet_NaN();
-  return report;
+  return gcr_.solve([&](std::span<const double> v, std::span<double> y) { a.multiply(v, y); },
+                    [&](std::span<const double> r, std::span<double> z) { cycle_level(0, r, z); },
+                    residual_, x, max_cycles, tolerance);
 }
 
 void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<double> x) {
