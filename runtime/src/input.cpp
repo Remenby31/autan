@@ -257,7 +257,7 @@ InitialState parse_initial(const Json& value, const std::string& path, const Sol
 BoundaryInput parse_boundary(const Json& value, const std::string& path) {
   const Object o(value, path,
                  {"zone", "kind", "temperature", "total_pressure", "total_temperature", "velocity",
-                  "static_pressure", "states"});
+                  "static_pressure", "states", "point_vortex"});
   BoundaryInput b;
   b.zone = o.string("zone");
   b.kind = o.tag("kind", {"wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet",
@@ -276,6 +276,20 @@ BoundaryInput parse_boundary(const Json& value, const std::string& path) {
     b.states = std::move(states);
   } else if (!o.is_null("states")) {
     invalid(path + ".states", "only an oracle-state boundary takes states");
+  }
+  if (!o.is_null("point_vortex")) {
+    if (b.kind != "farfield")
+      invalid(path + ".point_vortex", "only a farfield takes a point vortex");
+    const Object v(o.get("point_vortex"), path + ".point_vortex", {"zones", "center"});
+    const Json& names = v.get("zones");
+    if (!names.is_array() || names.empty()) invalid(v.at("zones"), "expected zone names");
+    PointVortex vortex;
+    for (std::size_t j = 0; j < names.size(); ++j) {
+      if (!names[j].is_string()) invalid(indexed(v.at("zones"), j), "expected a zone name");
+      vortex.zones.push_back(names[j].get<std::string>());
+    }
+    vortex.center = v.vector3("center");
+    b.point_vortex = std::move(vortex);
   }
   b.temperature = b.kind == "wall" ? (o.is_null("temperature")
                                           ? std::nullopt

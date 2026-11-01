@@ -31,6 +31,7 @@
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
@@ -573,6 +574,20 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                     d["boundaries"][0]["kind"] = "oracle-state";
                     d["boundaries"][0]["states"] = {{"path", std::string("/s\0.json", 8)},
                                                     {"sha256", std::string(64, 'a')}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 point vortex on a condition other than farfield") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][2]["point_vortex"] = {{"zones", {"ymin"}},
+                                                          {"center", {0.0, 0.0, 0.0}}};
+                  })),
+                  "E0705");
+  }
+  SECTION("E0705 point vortex over a zone that is not a wall") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["point_vortex"] = {{"zones", {"xmax"}},
+                                                          {"center", {0.0, 0.0, 0.0}}};
                   })),
                   "E0705");
   }
@@ -1529,6 +1544,42 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
   return out;
 }
 
+// The relaxation physics' colour sweeps redone on the whole mesh, from the
+// global colouring: each step, `sweeps` symmetric sweeps over the colours,
+// each cell of a colour taking the mean of itself and its face neighbours,
+// summed in increasing global id; the field starts at global id mod 7.
+std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
+  const auto colours = autan::colour_cells(mesh);
+  const std::int32_t n_colours = *std::ranges::max_element(colours) + 1;
+  const auto ids = mesh.cell_global_id();
+  std::vector<double> w(colours.size());
+  for (std::size_t c = 0; c < w.size(); ++c) w[c] = static_cast<double>(ids[c] % 7);
+  const auto colour_sweep = [&](std::int32_t k) {
+    for (autan::index_t c = 0; c < mesh.n_cells(); ++c) {
+      if (colours[static_cast<std::size_t>(c)] != k) continue;
+      std::vector<std::pair<std::int64_t, double>> around{
+          {ids[static_cast<std::size_t>(c)], w[static_cast<std::size_t>(c)]}};
+      for (const autan::index_t f : mesh.cell_faces(c)) {
+        if (f >= mesh.n_interior_faces()) continue;
+        const auto i = static_cast<std::size_t>(f);
+        const autan::index_t o = mesh.owner()[i] == c ? mesh.neighbour()[i] : mesh.owner()[i];
+        around.emplace_back(ids[static_cast<std::size_t>(o)], w[static_cast<std::size_t>(o)]);
+      }
+      std::ranges::sort(around);
+      double sum = 0.0;
+      for (const auto& [id, value] : around) sum += value;
+      w[static_cast<std::size_t>(c)] = sum / static_cast<double>(around.size());
+    }
+  };
+  for (int step = 0; step < steps; ++step) {
+    for (int s = 0; s < sweeps; ++s) {
+      for (std::int32_t k = 0; k < n_colours; ++k) colour_sweep(k);
+      for (std::int32_t k = n_colours - 1; k >= 0; --k) colour_sweep(k);
+    }
+  }
+  return w;
+}
+
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
@@ -1608,6 +1659,26 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // A smoother sweeping the global colours (PhysicsContext::cell_colours),
+  // the ghosts exchanged after each colour, and an argmin over the ranks:
+  // the history of one rank.
+  autan_test::RelaxationOptions sweeping = options;
+  sweeping.colour_sweeps = 2;
+  const Outcome one_swept = run(doc, sweeping);
+  const fs::path many_swept =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2"});
+  CHECK(lines_of(one_swept.run / "history.jsonl") != lines_of(one.run / "history.jsonl"));
+  CHECK(lines_of(many_swept / "history.jsonl") == lines_of(one_swept.run / "history.jsonl"));
+  // The swept field, cell for cell: on one rank, as an independent sweep of
+  // the whole mesh gives it (12 steps of 2 symmetric sweeps); on several,
+  // the same bits.
+  const auto swept_one =
+      solution_field(one_swept.run / "solution.cgns", "FlowSolution", "TurbulentSANuTilde");
+  CHECK(solution_field(many_swept / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
+        swept_one);
+  if (!periodic) CHECK(swept_one == swept(autan::io::read_mesh(mesh_path), 12, 2));
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in

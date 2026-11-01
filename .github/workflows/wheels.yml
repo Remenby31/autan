@@ -36,6 +36,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Set the release version
         if: inputs.version != ''
@@ -127,6 +128,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -190,6 +192,8 @@ jobs:
           pattern: dist-*
           path: wheelhouse
           merge-multiple: true
+      - name: Give this job priority on the GPU lock
+        run: bench/ci/priority.sh start 15
       - name: Install with install.sh in an empty home, and require native GPU code on GB10
         # Jobs run in the runner container (no Docker); the GPU lock is mounted there.
         run: |
@@ -199,6 +203,9 @@ jobs:
           # job's temp directory) and none of the dev image's uv settings.
           flock /home/admin/autan-gpu/gpu.lock env -u UV_PYTHON -u UV_PYTHON_DOWNLOADS -u UV_CACHE_DIR -u XDG_DATA_HOME \
             HOME="$home" TMPDIR="$home" REQUIRE_GPU=1 sh packaging/test-install.sh "$PWD"
+      - name: Release the GPU lock priority
+        if: always()
+        run: bench/ci/priority.sh stop
       - name: With no GPU visible, the probe falls back to the CPU and still passes
         run: |
           CUDA_VISIBLE_DEVICES="" HOME="$AUTAN_TEST_HOME" \

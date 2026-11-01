@@ -491,14 +491,21 @@ TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
 TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
   // E0706 on stderr, exit 2, no run directory; data names the zone and what it holds.
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  const std::string refused = GENERATE("solid", "second gas", "transport", "wall");
+  const std::string refused =
+      GENERATE("solid", "second gas", "transport", "wall", "sideslip", "sonic", "unsteady vortex");
   INFO(precision << " " << refused);
   std::string path = "cell_zones[1].medium";
   std::string field = "medium";
-  std::string value = "helium";
+  Json value = "helium";
+  std::size_t boundary = 2;
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
     auto& z = d["cell_zones"][1];
+    if (refused == "sideslip" || refused == "sonic" || refused == "unsteady vortex") {
+      // A point vortex on the farfield xmin, from the lift of the slip wall ymin.
+      boundary = 0;
+      d["boundaries"][0]["point_vortex"] = {{"zones", {"ymin"}}, {"center", {0.5, 0.0, -1.0}}};
+    }
     if (refused == "solid") {
       z["medium"] = {{"kind", "solid"},
                      {"name", "steel"},
@@ -514,11 +521,30 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
     } else if (refused == "transport") {
       z["medium"]["name"] = "helium";
       z["medium"]["prandtl"] = 0.67;
-    } else {
+    } else if (refused == "wall") {
       d["boundaries"][2]["kind"] = "wall";
       path = "boundaries[2].kind";
       field = "condition";
       value = "wall";
+    } else if (refused == "sideslip") {
+      d["freestream"]["sideslip"] = 0.1;
+      path = "freestream.sideslip";
+      field = "sideslip";
+      value = 0.1;
+    } else if (refused == "sonic") {
+      d["freestream"]["mach"] = 1.0;
+      path = "freestream.mach";
+      field = "mach";
+      value = 1.0;
+    } else {
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", 2},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", nullptr}};
+      path = "time.kind";
+      field = "time";
+      value = "unsteady";
     }
   });
   const auto out = run(doc);
@@ -531,7 +557,7 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(diagnostic["data"]["path"] == path);
   CHECK(diagnostic["data"][field] == value);
   CHECK(diagnostic["data"]["zone"] ==
-        (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][2]["zone"]));
+        (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][boundary]["zone"]));
 }
 
 #ifdef AUTAN_MPIEXEC
@@ -885,4 +911,121 @@ TEST_CASE("oracle-state faces impose their states component by component", "[eul
         std::string(name) == "Density" || std::string(name) == "Pressure" ? std::abs(value) : speed;
     for (const double v : field(out.run, name)) CHECK(std::abs(v - value) <= 64 * eps * scale);
   }
+}
+
+TEST_CASE("a point vortex takes the Kutta-Joukowski circulation of its surfaces' lift", "[euler]") {
+  // tests/data/mesh/hybrid with y halved (span 0.5); the slip walls xmin and zmin carry the
+  // vortex of every other side. Uniform at p1 = 1.3 p_inf, the walls carry (p1 - p_inf) A on
+  // their outward normals -x and -z (A = 0.5 each), so with e_L = (-sin a, 0, cos a) the lift per
+  // unit span is L' = (p1 - p_inf)(sin a - cos a), and the first step's residual gives
+  // Gamma = L' / (rho_inf V_inf).
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  std::random_device random;
+  const fs::path mesh = fs::temp_directory_path() / ("autan_halfspan-" + std::to_string(random()));
+  fs::create_directories(mesh);
+  for (const auto& entry : fs::directory_iterator(mesh_path)) {
+    fs::copy_file(entry.path(), mesh / entry.path().filename());
+  }
+  {
+    std::istringstream in(read(mesh_path / "points"));
+    std::ofstream out(mesh / "points", std::ios::trunc);
+    for (std::string line; std::getline(in, line);) {
+      double x = 0, y = 0, z = 0;
+      if (std::sscanf(line.c_str(), "(%lf %lf %lf)", &x, &y, &z) == 3) {
+        char text[128];
+        std::snprintf(text, sizeof text, "(%.17g %.17g %.17g)", x, 0.5 * y, z);
+        line = text;
+      }
+      out << line << '\n';
+    }
+  }
+  const double a = 0.2;
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    d["mesh"]["path"] = mesh.string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+    auto& f = d["freestream"];
+    const double speed = f["speed"].get<double>();
+    f["aoa"] = a;
+    f["velocity"] = {speed * std::cos(a), 0.0, speed * std::sin(a)};
+    const double r = d["cell_zones"][0]["medium"]["gas_constant"].get<double>();
+    const double p1 = 1.3 * f["pressure"].get<double>();
+    for (auto& z : d["cell_zones"]) {
+      z["initial"]["velocity"] = f["velocity"];
+      z["initial"]["pressure"] = p1;
+      z["initial"]["temperature"] = p1 / (z["initial"]["density"].get<double>() * r);
+    }
+    for (auto& b : d["boundaries"]) {
+      if (b["zone"] == "xmin" || b["zone"] == "zmin") {
+        b["kind"] = "slip";
+      } else {
+        b["kind"] = "farfield";
+        b["point_vortex"] = {{"zones", {"xmin", "zmin"}}, {"center", {0.5, 0.0, -0.5}}};
+      }
+    }
+    d["monitors"] = Json::array();
+    d["time"]["max_iterations"] = 1;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const auto& f = doc["freestream"];
+  const double p = f["pressure"].get<double>(), rho = f["density"].get<double>();
+  const double speed = f["speed"].get<double>();
+  const double expected = 0.3 * p * (std::sin(a) - std::cos(a)) / (rho * speed);
+  const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
+                                                      : std::numeric_limits<float>::epsilon();
+  const double circulation = field(out.run, "VortexCirculation0", "RestartState").front();
+  CHECK(std::abs(circulation - expected) <= 64 * eps * 1.3 * p / (rho * speed));
+}
+
+TEST_CASE("a point vortex reaches the flow and continues bit for bit", "[euler]") {
+  // Steady flow at zero incidence over the slip wall zmin, two cell zones at different states;
+  // every other side is farfield with the vortex of zmin's lift below the wall.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  auto doc = [&](int iterations) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, precision);
+      for (auto& b : d["boundaries"]) {
+        if (b["zone"] == "zmin") {
+          b["kind"] = "slip";
+        } else {
+          b["kind"] = "farfield";
+          b["point_vortex"] = {{"zones", {"zmin"}}, {"center", {0.5, 0.0, -0.3}}};
+        }
+      }
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      d["monitors"][0]["zones"] = {"zmin"};
+      d["time"]["max_iterations"] = iterations;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  const auto whole = run(doc(8));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  CHECK(field(whole.run, "VortexCirculation0", "RestartState").front() != 0.0);
+  auto plain = doc(8);
+  for (auto& b : plain["boundaries"]) b["point_vortex"] = nullptr;
+  const auto without = run(plain);
+  REQUIRE(without.status == ExitStatus::finished);
+  CHECK(field(without.run, "VelocityZ") != field(whole.run, "VelocityZ"));
+
+  const auto first = run(doc(4));
+  REQUIRE(first.status == ExitStatus::finished);
+  auto next = doc(8);
+  next["start"] = continue_from(first.run);
+  const auto second = run(next);
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  CHECK(read(first.run / "history.jsonl") + read(second.run / "history.jsonl") ==
+        read(whole.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
+    CHECK(field(second.run, name) == field(whole.run, name));
+  }
+  CHECK(field(second.run, "VortexCirculation0", "RestartState") ==
+        field(whole.run, "VortexCirculation0", "RestartState"));
 }
