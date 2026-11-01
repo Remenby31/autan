@@ -34,6 +34,8 @@ class Oracle:
     those directions to the power 1/len(axes). `physics` names the
     equations it solves (`euler`, `navier-stokes`, `rans-sa`, `incompressible-navier-stokes`).
     `reference_only` marks a numerical reference, usable for regression but not as an exact oracle.
+    `curved` marks a domain with curved sides along `axes`: meshes approximate it to O(h^2), so the
+    levels of a family differ there, and `evaluate` rejects points outside it (V0706).
     """
 
     name: str
@@ -47,6 +49,7 @@ class Oracle:
     parameters: Mapping[str, float] = field(default_factory=dict)
     references: tuple[str, ...] = ()
     reference_only: bool = False
+    curved: bool = False
 
     def fields(self, points: FloatArray, time: float | None = None) -> dict[str, FloatArray]:
         """Primitive fields at `points` (n, 3), with `Temperature` from the ideal-gas law."""
