@@ -547,6 +547,12 @@
       "fix": "Differentiate loops with a single output dataset.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1012"
     },
+    "E1013": {
+      "severity": "error",
+      "title": "Policy not available on the backend",
+      "fix": "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1013"
+    },
     "E1100": {
       "severity": "error",
       "title": "Generated loop failed",
@@ -576,6 +582,18 @@
       "title": "Face scratch too narrow",
       "fix": "Regenerate the loop so its scratch holds every output component per face.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e1104"
+    },
+    "E1107": {
+      "severity": "error",
+      "title": "Metal runtime error",
+      "fix": "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1107"
+    },
+    "E1108": {
+      "severity": "error",
+      "title": "Strategy not available",
+      "fix": "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e1108"
     }
   }
 }
