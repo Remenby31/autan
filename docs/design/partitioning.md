@@ -11,7 +11,7 @@ How a mesh is cut into one partition per rank and how ranks exchange cell values
 | `metis` (default) | METIS 5 `METIS_PartGraphKway` | Apache-2.0 | `AUTAN_ENABLE_METIS` |
 | `scotch` | Scotch 7 `SCOTCH_graphPart`, quality strategy | CeCILL-C | `AUTAN_ENABLE_SCOTCH` |
 
-ParMETIS is excluded by its licence. Both methods are seeded (`options.seed`) and Scotch runs in its deterministic threading mode, so a mesh and its options always give the same parts. A method the build lacks throws E0142; nothing falls back to the other.
+ParMETIS is excluded by its licence. Both methods are seeded (`options.seed`), and Scotch runs on one thread in a private, seeded context, so a mesh and its options give the same parts on any machine and any core count. Scotch's deterministic option alone is not enough: with 8 or more threads its k-way partitioner returned different parts for the same call. A method the build lacks throws E0142; nothing falls back to the other.
 
 `options.cell_weights` balances cost instead of cell count. `cell_cost_weights(mesh)` gives the number of faces of each cell, the cost of a face loop: a 100-face polyhedron weighs as much as about 17 hexahedra.
 
