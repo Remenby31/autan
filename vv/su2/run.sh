@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run SU2 on one prepared case in the autan-su2 image, at low priority.
+# Run SU2 on one prepared case in the autan-su2 image, at low priority, its memory capped (MEMORY,
+# default 16g: SU2 2D needs about 1 GiB at 512² and 4 GiB at 1024²).
 #   vv/su2/run.sh ROOT CASE THREADS
 # ROOT is the directory `autan-vv su2 prepare` wrote (mounted whole: the meshes are shared), CASE
 # a case directory under it (e.g. m080-a125/n0256). Writes CASE/log.txt and CASE/provenance.json.
@@ -21,7 +22,8 @@ mesh_sha=$(sha256sum "$dir/$mesh" | cut -d' ' -f1)
 rm -f "$dir/history.csv" "$dir/provenance.json"
 name="autan-su2-$$"
 docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -e OMP_NUM_THREADS="$threads" --cpus "$threads" -v "$root:/work" -w "/work/$case" "$image" \
+  -e OMP_NUM_THREADS="$threads" --cpus "$threads" --memory "${MEMORY:-16g}" \
+  -v "$root:/work" -w "/work/$case" "$image" \
   nice -n 10 SU2_CFD -t "$threads" case.cfg >"$dir/log.txt" 2>&1 &
 run=$!
 # SU2 measures a residual's drop from its largest value, the protocol from its first: stop SU2

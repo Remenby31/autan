@@ -1,0 +1,410 @@
+{
+  "roe-m050-a125/n0128": {
+    "converged": true,
+    "iterations": 316,
+    "wall_seconds": 6.49474892904,
+    "cl": 0.1643190276,
+    "cd": -0.001397897621,
+    "cmy": -0.0009830569309,
+    "drop": {
+      "density": 10.731694827,
+      "momentum-x": 10.151663173000001,
+      "momentum-z": 10.019446728,
+      "energy": 10.69794993
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "72670c0b307a7d2caed47a22a8c0853133cf2d4e9891b80228db011fee89e2c6",
+      "mesh_sha256": "8322804565ab42c582673e23e81a6d103a7173ebbd979a18081cb2a06dc53667",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 10.407906579,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "roe-m050-a125/n0256": {
+    "converged": true,
+    "iterations": 515,
+    "wall_seconds": 99.25752543649999,
+    "cl": 0.1738728437,
+    "cd": 0.001373843898,
+    "cmy": -0.00184258787,
+    "drop": {
+      "density": 10.715866730999998,
+      "momentum-x": 10.167981789,
+      "momentum-z": 10.009612463,
+      "energy": 10.675368704
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "5768c1f9e70005bbcce42731fb34a7c788f27d5d94800019f237315ec5b39c1c",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 105.950891779,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "roe-m050-a125/n0512": {
+    "converged": true,
+    "iterations": 1327,
+    "wall_seconds": 585.2075780412,
+    "cl": 0.1773800445,
+    "cd": 0.001050567243,
+    "cmy": -0.002160129316,
+    "drop": {
+      "density": 10.655458588,
+      "momentum-x": 10.134852465,
+      "momentum-z": 10.016792242000001,
+      "energy": 10.613227061000002
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "b5dae62006992721f2192510906f2f79d31adc0e6eb632a23f06234a055c03e2",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 592.220739912,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "roe-m080-a000/n0128": {
+    "converged": false,
+    "iterations": 2156,
+    "wall_seconds": 24.839251917480002,
+    "cl": 9.337060438e-05,
+    "cd": 0.00911201469,
+    "cmy": 1.228493796e-05,
+    "drop": {
+      "density": 1.220352309,
+      "momentum-x": 0.8088788489999996,
+      "momentum-z": 1.6662640670000002,
+      "energy": 1.2402372910000001
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "f29986292e033558ea322b387e249175282840e01c653b3578c31939c356ecff",
+      "mesh_sha256": "8322804565ab42c582673e23e81a6d103a7173ebbd979a18081cb2a06dc53667",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 25.315360318,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "roe-m080-a000/n0256": {
+    "converged": false,
+    "iterations": 2129,
+    "wall_seconds": 184.83198219686,
+    "cl": -1.760255499e-05,
+    "cd": 0.009737644996,
+    "cmy": 5.807604548e-06,
+    "drop": {
+      "density": 0.9445768889999995,
+      "momentum-x": 0.5203605070000004,
+      "momentum-z": 1.4643708229999994,
+      "energy": 0.9385586170000004
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "0166103e997dc7e5c031c488fec9c4c4bd2387f81538080ad37c0c2b1e9ee273",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 185.738242014,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "roe-m080-a000/n0512": {
+    "converged": false,
+    "iterations": 2243,
+    "wall_seconds": 624.8716644809,
+    "cl": -6.073853801e-07,
+    "cd": 0.00935564447,
+    "cmy": 1.336942466e-07,
+    "drop": {
+      "density": 1.1582225840000007,
+      "momentum-x": 0.7312750110000001,
+      "momentum-z": 1.7089142499999994,
+      "energy": 1.1421239090000004
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "d7d2af96d67d6d920bafe8561b6d0e95252890259c21e2537e2ac65fefe968ee",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 627.624393232,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "var-gg-m050-a125/n0256": {
+    "converged": true,
+    "iterations": 516,
+    "wall_seconds": 35.251204747319996,
+    "cl": 0.1739682608,
+    "cd": 0.001629748531,
+    "cmy": -0.001859112991,
+    "drop": {
+      "density": 10.733479921,
+      "momentum-x": 10.176415269,
+      "momentum-z": 10.055354813,
+      "energy": 10.689025884
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "25067e14eae6f0d270f4a6581a615f8498bf79d2ea6143db128031b91dbf399c",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 40.437553112,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "GREEN_GAUSS"
+    }
+  },
+  "var-gg-m050-a125/n0512": {
+    "converged": true,
+    "iterations": 1327,
+    "wall_seconds": 479.7871463257,
+    "cl": 0.1774341114,
+    "cd": 0.001108821459,
+    "cmy": -0.002171202421,
+    "drop": {
+      "density": 10.638638818,
+      "momentum-x": 10.123644335,
+      "momentum-z": 10.002036372000001,
+      "energy": 10.602045911
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "f6da5a94f313fff922718690026ff8fc392c393b8de8b1368f85f8111be3b053",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 486.73802174,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "GREEN_GAUSS"
+    }
+  },
+  "var-hllc-m050-a125/n0256": {
+    "converged": true,
+    "iterations": 509,
+    "wall_seconds": 41.68619881041,
+    "cl": 0.1737903125,
+    "cd": 0.00136894927,
+    "cmy": -0.001838028598,
+    "drop": {
+      "density": 10.694884030999999,
+      "momentum-x": 10.078466849000002,
+      "momentum-z": 10.001633163,
+      "energy": 10.652968934
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "2b311fed76a0e616f6778db09e9bf08f75164741ac05c800259e44b9998639e4",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 45.499543979,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "HLLC",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "var-hllc-m050-a125/n0512": {
+    "converged": true,
+    "iterations": 1326,
+    "wall_seconds": 397.4825663406,
+    "cl": 0.1773577897,
+    "cd": 0.0010470575,
+    "cmy": -0.002155916801,
+    "drop": {
+      "density": 10.696816458,
+      "momentum-x": 10.157368125,
+      "momentum-z": 10.022465992,
+      "energy": 10.665819141
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "d1334b863a67952edf122f9b88337e3efddf861bc2ce1d4a15f1fe1be2fc7d4d",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 406.704013135,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "HLLC",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "var-lsq-m050-a125/n0256": {
+    "converged": true,
+    "iterations": 515,
+    "wall_seconds": 45.230950912249995,
+    "cl": 0.1738226055,
+    "cd": 0.001434790043,
+    "cmy": -0.00183873739,
+    "drop": {
+      "density": 10.718967870999998,
+      "momentum-x": 10.168668218999999,
+      "momentum-z": 10.004890813,
+      "energy": 10.679531664
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "db2c2ba8590bbb7168cfc7aa279360e161a8bc58e815f321d8befce79a91419e",
+      "mesh_sha256": "6083f6dab6a4203780545f363145ff9101969e185b3408927cbb25e09fdd1adb",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 50.482317286,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  },
+  "var-lsq-m050-a125/n0512": {
+    "converged": true,
+    "iterations": 1327,
+    "wall_seconds": 474.6269799645,
+    "cl": 0.1773776863,
+    "cd": 0.001061207515,
+    "cmy": -0.002161686465,
+    "drop": {
+      "density": 10.654470408,
+      "momentum-x": 10.135060405,
+      "momentum-z": 10.019558102,
+      "energy": 10.612003001000001
+    },
+    "provenance": {
+      "schema": "autan.su2-run/1",
+      "image": "autan-su2:v8.6.0-omp",
+      "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "threads": 4,
+      "case_sha256": "ffca257e06e827aeceab09aa37fc790a7c2e455f811853ab2f258f3a05d14901",
+      "mesh_sha256": "ea19a249254dd058bb68b926b594ef6760ca3918c5028fc7ea5f4ab6f47df6af",
+      "cpu": "Cortex-A725+Cortex-X925",
+      "wall_seconds": 481.786779626,
+      "exit_status": 0
+    },
+    "precision": "fp64",
+    "scheme": {
+      "CONV_NUM_METHOD_FLOW": "ROE",
+      "MUSCL_FLOW": "YES",
+      "SLOPE_LIMITER_FLOW": "VENKATAKRISHNAN",
+      "VENKAT_LIMITER_COEFF": "0.01",
+      "NUM_METHOD_GRAD": "WEIGHTED_LEAST_SQUARES"
+    }
+  }
+}

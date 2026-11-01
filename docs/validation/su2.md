@@ -2,7 +2,7 @@
 
 A direct comparison of Autan with [SU2](https://su2code.github.io/) on the same meshes: iterations and wall time to one convergence criterion, and accuracy against published references (issue #195). Source: `vv/src/autan_vv/su2/`, `vv/su2/`.
 
-**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
+**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
 
 ## SU2, an external tool
 
@@ -84,6 +84,29 @@ autan-vv su2 study su2-jst/m080-a125/n* --out m080-a125.json               # cri
 `prepare` writes `OUT/meshes/` and one directory per condition and level with `case.cfg` and `level.json` (`autan.su2-level/1`: scheme, K_SU2, configuration hash, Autan case hash, source mesh hash, conversion record). `study` refuses a run whose configuration or mesh, as hashed when it ran and as on disk, is not the prepared one, or whose SU2 failed (`V0904`), and runs that mix conditions, schemes or SU2 images (`V0905`).
 
 SU2-Roe's K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). In freestream units the threshold ε² = K_SU2³ is 12 at 32², 0.18 at 256² and 0.012 at 1024²; the squared density jump across the M 0.8 shock is about 0.2, so in both codes the limiter barely acts below 256². Autan's threshold uses h³ = V, and on a one-layer slab V includes the span (1 chord here): the same grid with another span limits differently.
+
+## Phase 1: SU2 on the NACA 0012 cases
+
+SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/`. CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count. Continuum estimates come from the three finest levels.
+
+### SU2-JST, the accuracy reference
+
+| Level | M 0.8, α 0°: it. | CD | M 0.8, α 1.25°: it. | CL | CD | CM | M 0.5, α 1.25°: it. | CL | CD |
+|---|---|---|---|---|---|---|---|---|---|
+| 32² | 560 | 0.002683 | 557 | 0.296699 | 0.014153 | −0.024564 | 273 | 0.155056 | −0.013512 |
+| 64² | 367 | 0.006085 | 389 | 0.337825 | 0.019849 | −0.034309 | 170 | 0.172758 | −0.005328 |
+| 128² | 328 | 0.007504 | 286 | 0.349362 | 0.021546 | −0.037310 | 209 | 0.177844 | −0.001673 |
+| 256² | 409 | 0.008124 | 443 | 0.351659 | 0.022237 | −0.037936 | 268 | 0.179315 | −0.000411 |
+| 512² | 632 | 0.008292 | 670 | 0.352357 | 0.022431 | −0.038119 | 373 | 0.179668 | −0.000087 |
+| 1024² | 1 284 | 0.008329 | 1 402 | 0.352232 | 0.022459 | −0.038070 | 487 | 0.179750 | −0.000011 |
+| Continuum (order) | | 0.008340 (2.15) | | — | 0.022464 (2.77) | — | | 0.179775 (2.11) | +0.000012 (2.10) |
+| Vassberg–Jameson | | 0.008342 | | 0.3516–0.3562 | 0.02268 | | | 0.180346 (FLO82) | → 0 |
+
+- **M 0.8, α 0°:** CD converges at order 2.15 to 0.008340, 0.2 count from the paper: gate passed.
+- **M 0.5, α 1.25°:** the drag of this shock-free flow decreases in magnitude at every level, at order 2.1, to +0.12 count: gate passed. CL converges at order 2.1 to 0.17977, 0.3 % below FLO82's continuum.
+- **M 0.8, α 1.25°:** CD converges at order 2.8 to 0.022464, 2.2 counts below the paper: the one-count gate fails. CL lies in the paper's band from 256² but changes direction between 512² and 1024², so it has no Richardson estimate (`V0107`) and its gate cannot be evaluated. Both are what a uniform-freestream far field gives at 148 c: the paper's lifting values come from point-vortex far-field runs, which raise the circulation the boundary sees; without the correction the effective incidence is slightly lower, and lift and drag with it. Autan has the same far field ([cases.md](cases.md#naca-0012-inviscid)), so this gate measures the far field until the correction exists, for both codes.
+
+**What this says about the cases.** SU2's reference scheme reproduces the two non-lifting gates of the paper at second order on these meshes and conditions, and the lifting case to within its far-field model: the meshes, the conditions, the boundaries and the force reference are right.
 
 ## Tests
 
