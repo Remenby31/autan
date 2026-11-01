@@ -405,8 +405,11 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
   }
 
   AssemblyMap map;
-  LocalPartition out{
-      .mesh = assemble(std::move(in), &map), .geometry = {}, .face_global_id = {}, .halo = {}};
+  LocalPartition out{.mesh = assemble(std::move(in), &map),
+                     .geometry = {},
+                     .face_global_id = {},
+                     .face_reversed = {},
+                     .halo = {}};
   const Mesh& mesh = out.mesh;
 
   const auto n_faces = at(mesh.n_faces());
@@ -420,12 +423,14 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
   g.face_centroid_y.resize(n_faces);
   g.face_centroid_z.resize(n_faces);
   out.face_global_id.resize(n_faces);
+  out.face_reversed.resize(n_faces);
   for (std::size_t f = 0; f < n_faces; ++f) {
     const Key& face = face_list[at(map.face_source[f])];
     const auto source = at(face.entity);
     const double sign = map.face_reversed[f] != 0 ? -1.0 : 1.0;
     const auto t = cover.translation(face.shift);
     out.face_global_id[f] = static_cast<std::int64_t>(source);
+    out.face_reversed[f] = map.face_reversed[f];
     g.face_area_x[f] = sign * gg.face_area_x[source];
     g.face_area_y[f] = sign * gg.face_area_y[source];
     g.face_area_z[f] = sign * gg.face_area_z[source];

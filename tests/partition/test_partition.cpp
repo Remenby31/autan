@@ -84,6 +84,8 @@ std::vector<autan::LocalPartition> check_split(const autan::Mesh& global,
       const auto source = at(lp.face_global_id[at(f)]);
       const bool same_orientation = gid[at(m.owner()[at(f)])] == global.owner()[source];
       const double sign = same_orientation ? 1.0 : -1.0;
+      CHECK(lp.face_reversed[at(f)] == (same_orientation ? 0 : 1));
+      if (f >= m.n_interior_faces()) CHECK(lp.face_reversed[at(f)] == 0);
       CHECK(same_bits(lp.geometry.face_area_x[at(f)], sign * gg.face_area_x[source]));
       CHECK(same_bits(lp.geometry.face_area_z[at(f)], sign * gg.face_area_z[source]));
       if (global.periodic_pairs().empty())

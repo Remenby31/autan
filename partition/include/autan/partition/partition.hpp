@@ -91,6 +91,10 @@ struct LocalPartition {
   /// NaN until a forward halo exchange fills them.
   Geometry geometry;
   std::vector<std::int64_t> face_global_id;  ///< face of the global mesh of each local face
+  /// 1 where the local face runs opposite to its global face: its owner is
+  /// the global face's neighbour (or, for a periodic face, the cell across the
+  /// pair), and its area vector is negated. Boundary faces never are.
+  std::vector<std::uint8_t> face_reversed;
   HaloPattern halo;
 };
 
