@@ -20,7 +20,8 @@ struct Euler<P>::Impl {
   Scheme scheme;
   kernels::Topology topo{};
   std::vector<G> face_normal, face_area_magnitude, face_centroid, face_moment, cell_centroid,
-      cell_volume, lsq_weight;
+      cell_volume, stencil_lsq_weight;
+  kernels::CellStencil stencil;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<Gr> grad, zero_grad;
@@ -29,13 +30,21 @@ struct Euler<P>::Impl {
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme s) : scheme(s) {
     const auto packed = kernels::pack_geometry(mesh, geometry);
     topo = kernels::topology(mesh.view());
+    stencil =
+        kernels::cell_stencil(mesh, packed,
+                              s.gradient == GradientStencil::vertex ? kernels::StencilKind::vertex
+                                                                    : kernels::StencilKind::face2);
+    topo.n_stencil = static_cast<kernels::offset_t>(stencil.entries.size());
+    topo.stencil_offsets = stencil.offsets.data();
+    topo.stencil = stencil.entries.data();
+    topo.stencil_twin = stencil.twin.data();
+    stencil_lsq_weight = kernels::converted<G>(stencil.lsq_weight);
     face_normal = kernels::converted<G>(packed.face_normal);
     face_area_magnitude = kernels::converted<G>(packed.face_area_magnitude);
     face_centroid = kernels::converted<G>(packed.face_centroid);
     face_moment = kernels::converted<G>(packed.face_moment);
     cell_centroid = kernels::converted<G>(packed.cell_centroid);
     cell_volume = kernels::converted<G>(packed.cell_volume);
-    lsq_weight = kernels::converted<G>(packed.lsq_weight);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     bc_kind.assign(nf, 0.0);
@@ -67,7 +76,7 @@ struct Euler<P>::Impl {
     d.face_moment = face_moment.data();
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
-    d.lsq_weight = lsq_weight.data();
+    d.stencil_lsq_weight = stencil_lsq_weight.data();
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
     d.mach_ref[0] = typename P::param(scheme.mach_ref);
@@ -169,6 +178,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
     ek::cpu::boundary_states(m.d);
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter) {
+      ek::cpu::bounds(m.d);
       ek::cpu::limiter(m.d);
     }
   }

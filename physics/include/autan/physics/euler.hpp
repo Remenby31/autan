@@ -28,8 +28,14 @@ struct Gas {
   double gas_constant = 287.0;  ///< J/(kg K)
 };
 
+/// Cells whose values enter a cell's least-squares gradient, beyond its face neighbours
+/// (autan::kernels::StencilKind): `face2` adds the face neighbours of face neighbours, `vertex`
+/// every cell sharing a node.
+enum class GradientStencil : std::uint8_t { face2, vertex };
+
 struct Scheme {
   Flux flux = Flux::roe;
+  GradientStencil gradient = GradientStencil::face2;
   /// Linear reconstruction with least-squares gradients; first order otherwise.
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.

@@ -32,6 +32,7 @@ from autan_vv.order import fit_order, mesh_size
 
 F64 = npt.NDArray[np.float64]
 FLUXES = {"roe": 0, "hllc": 1, "ausm-up": 2}
+STENCILS = {"face2": 0, "vertex": 1}
 CONSERVED = ("rho", "rhou", "rhov", "rhow", "rhoE")
 PRIMITIVE = ("rho", "u", "v", "w", "p")
 
@@ -88,11 +89,19 @@ def read(path: Path) -> Mesh:
 class Euler:
     """The residual of autan::physics::Euler on the host; arrays are 5 x n_cells."""
 
-    def __init__(self, m: Mesh, policy: str, flux: str, limiter: bool, mach_ref: float) -> None:
+    def __init__(
+        self,
+        m: Mesh,
+        policy: str,
+        flux: str,
+        limiter: bool,
+        mach_ref: float,
+        stencil: str = "face2",
+    ) -> None:
         self.n = m.n_cells
         err = ctypes.create_string_buffer(512)
         h = ctypes.c_void_p()
-        scheme = np.array([FLUXES[flux], 1, int(limiter)], dtype=np.int32)
+        scheme = np.array([FLUXES[flux], 1, int(limiter), STENCILS[stencil]], dtype=np.int32)
         gamma, rgas = 1.4, 287.0
         real = np.array([gamma, rgas, 5.0, 1.0, mach_ref, 1.0, 100.0, 100.0, 100.0, 1e5])
         _check(
@@ -199,7 +208,9 @@ class Solution:
     gmres: int
 
 
-def solve(m: Mesh, policy: str, flux: str, limiter: bool, tol: float) -> Solution:
+def solve(
+    m: Mesh, policy: str, flux: str, limiter: bool, tol: float, stencil: str = "face2"
+) -> Solution:
     """Newton-Krylov for R_P(u) = 0 from the exact solution; Jacobian-vector products by FD on
     the FP64 residual, preconditioned by ILU of the first-order Jacobian, so that the converged u
     is the discrete solution of policy P."""
@@ -220,8 +231,8 @@ def solve(m: Mesh, policy: str, flux: str, limiter: bool, tol: float) -> Solutio
     mach = float(speed / sound)
     kind = np.zeros(m.n_faces - m.n_interior, dtype=np.uint8)
     data = np.array([wb[k] for k in PRIMITIVE])
-    ep = Euler(m, policy, flux, limiter, mach)
-    e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach)
+    ep = Euler(m, policy, flux, limiter, mach, stencil)
+    e64 = ep if policy == "fp64" else Euler(m, "fp64", flux, limiter, mach, stencil)
     for e in {id(ep): ep, id(e64): e64}.values():
         e.set_boundary(kind, data)
         e.set_source(src)
@@ -302,6 +313,7 @@ def main() -> None:
     ap.add_argument("--fluxes", default="roe,hllc,ausm-up")
     ap.add_argument("--kinds", default="")
     ap.add_argument("--limiter", action="store_true")
+    ap.add_argument("--stencil", default="face2", choices=sorted(STENCILS))
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     commit = subprocess.run(
@@ -318,16 +330,20 @@ def main() -> None:
                 levels = []
                 for lv, m in meshes:
                     t0 = time.perf_counter()
-                    s = solve(m, policy, flux, a.limiter, 1e-10 if policy == "fp64" else 1e-5)
+                    s = solve(
+                        m, policy, flux, a.limiter, 1e-10 if policy == "fp64" else 1e-5, a.stencil
+                    )
                     levels.append({
                         "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),
                         "errors": errors(m, s.u), "mesh_sha256": lv["mesh_sha256"],
                         "solver_commit": commit, "precision": policy, "flux": flux,
-                        "limiter": a.limiter, "relative_residual": s.relative_residual,
+                        "limiter": a.limiter, "stencil": a.stencil, "relative_residual": s.relative_residual,
                         "newton": s.newton, "gmres": s.gmres,
                         "seconds": time.perf_counter() - t0,
                     })  # fmt: skip
-                label = f"{fam.name} {policy} {flux}" + (" limited" if a.limiter else "")
+                label = f"{fam.name} {policy} {flux} {a.stencil}" + (
+                    " limited" if a.limiter else ""
+                )
                 name = label.replace(" ", "-").replace("+", "")
                 (a.out / f"{name}.json").write_text(
                     json.dumps({"label": label, "dim": 3, "levels": levels}, indent=1) + "\n"
