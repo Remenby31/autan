@@ -131,7 +131,9 @@ class DeviceMesh {
     /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
     const GlobalKeys* global = nullptr;
     /// Cells per slice of the sliced incidence layout (Topology::incidence_stride, with the
-    /// column index incidence_cell), 0 for CSR. Same results bit for bit.
+    /// column index incidence_cell), 0 for CSR. Same results bit for bit. 32 for the block
+    /// solvers (kernels/blocks.py: the product reaches 88-93 % of GB10 peak, CSR 31-68 %); CSR
+    /// by default, the explicit Euler step being no faster sliced (+0.4 % tet, +1.1 % hex).
     int incidence_slice = 0;
   };
 

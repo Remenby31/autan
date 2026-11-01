@@ -46,6 +46,7 @@ coupling = face_loop(couple, b=off, vl=x.left, vr=x.right, out=Inc(y, left=+1, r
 # face f adds B_f (x_r - x_l) to its left cell and subtracts it from its right one. A shared
 # library loaded by ctypes, as the spike drivers (no executable to launch).
 DRIVER = r"""
+#include <algorithm>
 #include <vector>
 #include "blocks_cpu.hpp"
 using namespace autan::kernels;
@@ -74,6 +75,21 @@ extern "C" void run(const double* in, double* out) {
   blocks::cpu::diagonal(d);
   blocks::cpu::coupling(d);
   for (std::size_t i = 0; i < y.size(); ++i) out[i] = y[i];
+  // Again as a gather, on the incidences sliced by 2 cells: cells 0 and 1 share a slice of
+  // two rows (entries 0, 1 | 2 padding, 3), cell 2 its own (entry 4 | 5 padding).
+  std::vector<offset_t> starts{0, 1, 4, 6};
+  std::vector<index_t> length{1, 2, 1}, sliced_faces{0, 0, 0, 1, 1, 0}, cell{1, 0, -1, 2, 1, -1};
+  t.n_incidences = 6;
+  t.cell_face_offsets = starts.data();
+  t.cell_faces = sliced_faces.data();
+  t.incidence_stride = 2;
+  t.incidence_length = length.data();
+  t.incidence_cell = cell.data();
+  d.topo = t;
+  std::fill(y.begin(), y.end(), 0.0);
+  blocks::cpu::diagonal(d);
+  blocks::cpu::coupling(d, Strategy::gather_recompute);
+  for (std::size_t i = 0; i < y.size(); ++i) out[y.size() + i] = y[i];
 }
 """
 
@@ -110,7 +126,7 @@ def test_blocks_are_passive_inputs_of_a_block_operator(tmp_path: Path) -> None:
             off.reshape(2, 25).T.ravel(),
         ]
     )
-    y = np.zeros(15)
+    y = np.zeros(30)  # the scatter loop, then the gather on sliced incidences
     ctypes.CDLL(str(lib)).run(
         inputs.ctypes.data_as(ctypes.c_void_p), y.ctypes.data_as(ctypes.c_void_p)
     )
@@ -119,7 +135,8 @@ def test_blocks_are_passive_inputs_of_a_block_operator(tmp_path: Path) -> None:
         flow = off[f] @ (x[right] - x[left])
         expect[left] += flow
         expect[right] -= flow
-    np.testing.assert_allclose(y.reshape(5, 3).T, expect, rtol=1e-14, atol=1e-14)
+    for run in (y[:15], y[15:]):
+        np.testing.assert_allclose(run.reshape(5, 3).T, expect, rtol=1e-14, atol=1e-14)
 
 
 @pytest.mark.parametrize("kind", ["tet", "hex", "poly", "hybrid"])
@@ -520,3 +537,67 @@ def test_block_matrix_assembles_and_multiplies_as_the_host_block_matrix(
         for sliced, csr in zip(runs[1::2], runs[::2], strict=True):
             for got, ref in zip(sliced, csr, strict=True):
                 np.testing.assert_array_equal(got, ref)
+
+
+ACCUM_REDUCTION = """
+from autan_codegen.dsl import JacAccum, Sum, cell_reduce, cells, incidences, pointwise
+
+w = incidences.field("w", JacAccum)
+total = cells.field("total", JacAccum)
+
+
+@pointwise(compute="accum")
+def doubled(v: JacAccum) -> JacAccum:
+    return v + v
+
+
+summed = cell_reduce(doubled, v=w, acc=Sum(total))
+"""
+
+# The chain of DRIVER (incidences 0 | 1 2 | 3) under fp32+acc64: per-incidence values that FP32
+# would round, summed by a body computing in the accumulation type.
+ACCUM_DRIVER = r"""
+#include <vector>
+#include "accum_reduction_cpu.hpp"
+using namespace autan::kernels;
+extern "C" void run(const double* in, double* out) {
+  std::vector<double> w(in, in + 4), total(3, 0.0);
+  std::vector<index_t> owner{0, 1}, neighbour{1, 2}, cell_faces{0, 0, 1, 1};
+  std::vector<offset_t> offsets{0, 1, 3, 4};
+  Topology t{};
+  t.n_cells = t.n_owned_cells = 3;
+  t.n_faces = t.n_interior_faces = t.n_owned_interior_faces = t.n_owned_faces = 2;
+  t.n_incidences = 4;
+  t.owner = owner.data();
+  t.neighbour = neighbour.data();
+  t.cell_face_offsets = offsets.data();
+  t.cell_faces = cell_faces.data();
+  accum_reduction::Data<fp32_acc64> d{};
+  d.topo = t;
+  d.w = w.data();
+  d.total = total.data();
+  accum_reduction::cpu::summed(d);
+  for (int c = 0; c < 3; ++c) out[c] = total[c];
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
+def test_reduction_bodies_compute_in_the_accumulation_type(tmp_path: Path) -> None:
+    src = tmp_path / "accum_reduction.py"
+    src.write_text(ACCUM_REDUCTION)
+    out = tmp_path / "gen"
+    generate(src, out, ["cpu"])
+    (tmp_path / "driver.cpp").write_text(ACCUM_DRIVER)
+    lib = tmp_path / "libaccum.so"
+    subprocess.run(
+        ["c++", "-std=c++20", "-O1", "-shared", "-fPIC", f"-I{ROOT / 'codegen' / 'include'}",
+         f"-I{ROOT / 'core' / 'include'}", f"-I{out}", str(tmp_path / "driver.cpp"), "-o", str(lib)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    w = 1.0 + 2.0 ** -np.arange(30, 34)  # 1 in FP32
+    total = np.zeros(3)
+    ctypes.CDLL(str(lib)).run(
+        w.ctypes.data_as(ctypes.c_void_p), total.ctypes.data_as(ctypes.c_void_p)
+    )
+    np.testing.assert_array_equal(total, [2 * w[0], 2 * w[1] + 2 * w[2], 2 * w[3]])
