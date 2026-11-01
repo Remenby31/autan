@@ -31,11 +31,22 @@ run=$!
 while kill -0 "$run" 2>/dev/null; do
   if [ -f "$dir/history.csv" ] && awk -F, -v orders="${ORDERS:-10}" -v stall="${STALL:-2000}" '
       NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /"rms\[/) col[i] = 1; next }
-      NR == 2 { for (i in col) first[i] = $i + 0 }
+      NR == 2 {
+        top = -1e300
+        for (i in col) { first[i] = $i + 0; if (first[i] > top) top = first[i] }
+        # case-schema.md: an equation starting 12 orders below the largest is identically zero,
+        # exempt while it stays at or below that floor.
+        for (i in col) if (first[i] < top - 12) zero[i] = 1
+      }
       {
         worst = -1e300
-        for (i in col) if ($i + 0 - first[i] > worst) worst = $i + 0 - first[i]
-        if (worst <= -orders) found = 1
+        for (i in col) {
+          if (zero[i] && $i + 0 > top - 12) risen[i] = 1
+          if (zero[i] && !risen[i]) continue
+          if ($i + 0 - first[i] > worst) worst = $i + 0 - first[i]
+        }
+        # 1e-6 order stricter, so that the linear-space test of autan_vv.su2.history agrees.
+        if (worst <= -orders - 1e-6) found = 1
         best[NR] = (NR == 2 || worst < best[NR - 1]) ? worst : best[NR - 1]
         if (NR > stall + 2 && best[NR - stall] - best[NR] < 0.1) found = 1
       }
