@@ -452,7 +452,9 @@ def _multiply(lib: ctypes.CDLL, m: s.Mesh, face_jac: np.ndarray, diag: np.ndarra
     def p(a: np.ndarray) -> ctypes.c_void_p:
         return a.ctypes.data_as(ctypes.c_void_p)
 
-    soa = [np.ascontiguousarray(a.reshape(len(a), -1).T) for a in (face_jac, diag, x)]
+    # face_jac is entity-major (layout="aos"); diag and x are component-major.
+    soa = [np.ascontiguousarray(face_jac.reshape(len(face_jac), -1))]
+    soa += [np.ascontiguousarray(a.reshape(len(a), -1).T) for a in (diag, x)]
     y = np.zeros(5 * m.n_cells)
     lib.run(
         ctypes.c_int(m.n_cells), ctypes.c_int(m.n_faces), ctypes.c_int(m.n_interior),

@@ -107,6 +107,9 @@ class Dataset:
     set: MeshSet
     type: Type
     geometry: bool = False
+    # "soa": component k of entity i at k * n + i; "aos": at i * size + k, one entity's
+    # components contiguous (blocks gathered through an index map).
+    layout: str = "soa"
 
     @property
     def left(self) -> Binding:
@@ -163,8 +166,10 @@ class _SetDecl:
     def __init__(self, s: MeshSet) -> None:
         self._set = s
 
-    def field(self, name: str, annotation: object) -> Dataset:
-        return Dataset(name, self._set, as_type(annotation))
+    def field(self, name: str, annotation: object, layout: str = "soa") -> Dataset:
+        if layout not in ("soa", "aos"):
+            raise CodegenError(Code.INVALID_BINDING, f"{name}: layout {layout!r}: 'soa' or 'aos'")
+        return Dataset(name, self._set, as_type(annotation), layout=layout)
 
 
 cells = _SetDecl(MeshSet.CELLS)
