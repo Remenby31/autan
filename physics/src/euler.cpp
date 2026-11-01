@@ -335,6 +335,13 @@ void Euler<P>::spectral_radius(std::span<State> lambda) {
 }
 
 template <class P>
+typename Euler<P>::Arrays Euler<P>::arrays() noexcept {
+  auto& m = *impl_;
+  return {m.prim.data(), m.grad.data(), m.prim_b.data(), m.bc_kind.data(), m.bc.data(),
+          m.dwdu.data()};
+}
+
+template <class P>
 void Euler<P>::boundary_pressure(std::span<double> p) const {
   const auto& m = *impl_;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);

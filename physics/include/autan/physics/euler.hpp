@@ -22,6 +22,7 @@ enum class BoundaryKind : std::uint8_t {
   slip,      ///< slip wall or symmetry plane; data unused
   inlet,     ///< subsonic, flow normal to the face: (p0, T0, -, -, -)
   outlet,    ///< subsonic: (-, -, -, -, p); supersonic outflow extrapolates
+  wall,      ///< no-slip wall at rest: (T_wall, -, -, -, -), T_wall = 0 when adiabatic
 };
 
 struct Gas {
@@ -93,6 +94,20 @@ class Euler {
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
   void spectral_radius(std::span<State> lambda);
+  /// Arrays of the last evaluation, for physics that add terms to this residual (viscous fluxes,
+  /// docs/design/ns-sa.md): primitives W - (0, 0, 0, 0, p_ref) and their gradients per cell,
+  /// boundary states, codes and data per face, dW/dU per cell after residual_and_jacobian.
+  /// Layouts as the datasets of kernels/euler.py.
+  struct Arrays {
+    State* prim;
+    typename P::grad* grad;
+    State* prim_b;
+    typename P::geom* bc_kind;
+    State* bc;
+    const typename P::jac* dwdu;
+  };
+  [[nodiscard]] Arrays arrays() noexcept;
+
   /// After residual(s): absolute pressure of the reconstruction at every boundary face's centroid,
   /// from its owner cell (n_boundary_faces, FP64).
   void boundary_pressure(std::span<double> p) const;

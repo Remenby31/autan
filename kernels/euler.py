@@ -55,6 +55,7 @@ BC_FARFIELD = 1.0  # `bc` = freestream W; Riemann invariants normal to the face
 BC_SLIP = 2.0  # slip wall and symmetry plane: no flux but pressure
 BC_INLET = 3.0  # subsonic inlet: `bc` = (total pressure, total temperature, 0, 0, 0), flow normal
 BC_OUTLET = 4.0  # subsonic outlet: `bc` = (0, 0, 0, 0, static pressure)
+BC_WALL = 5.0  # no-slip wall at rest: `bc` = (wall temperature, 0, 0, 0, 0), 0 when adiabatic
 
 HARTEN = 0.1  # entropy-fix width as a fraction of the Roe-averaged sound speed
 AUSM_KP = 0.25  # AUSM+-up pressure diffusion, Liou (2006), section 3
@@ -378,6 +379,15 @@ def mirror_state(wi: State.Vec5, n: Geom.Vec3) -> State.Vec5:
 
 
 @pointwise
+def wall_state(wi: State.Vec5, data: State.Vec5, rgas: Param) -> State.Vec5:
+    # No-slip wall at rest: zero velocity and the interior pressure (zero normal pressure gradient);
+    # the wall temperature sets the density when it is given (isothermal), the interior density
+    # otherwise (adiabatic).
+    rb = wi[4] / (rgas * data[0]) if data[0] > 0.0 else wi[0]
+    return Vec5(rb, 0.0, 0.0, 0.0, wi[4])
+
+
+@pointwise
 def boundary_value(
     wg: State.Vec5,
     kind: Geom,
@@ -398,8 +408,10 @@ def boundary_value(
         w = mirror_state(wi, n)
     elif kind < BC_OUTLET - 0.5:
         w = inlet_state(wi, data, n, g, rgas)
-    else:
+    elif kind < BC_WALL - 0.5:
         w = outlet_state(wi, data, n, g)
+    else:
+        w = wall_state(wi, data, rgas)
     return Vec5(w[0], w[1], w[2], w[3], w[4] - pr)
 
 
@@ -722,7 +734,7 @@ def roe_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * roe(wf, wb, n, g, pref) + warp(wf, gl, pl, gl, pl, m, g, pref)
@@ -747,7 +759,7 @@ def hllc_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * hllc(wf, wb, n, g, pref) + warp(wf, gl, pl, gl, pl, m, g, pref)
@@ -773,7 +785,7 @@ def ausm_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 or kind > BC_WALL - 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * ausm_up(wf, wb, n, g, minf, pref) + warp(wf, gl, pl, gl, pl, m, g, pref)

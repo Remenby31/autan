@@ -10,11 +10,13 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/physics/navier_stokes.hpp"
 
 namespace autan::physics {
 
@@ -60,17 +62,39 @@ Gas gas_of(const runtime::SolverInput& in) {
   return *gas;
 }
 
-template <class P>
+Transport transport_of(const runtime::SolverInput& in) {
+  const auto& m = in.cell_zones.front().medium;
+  const auto& v = *m.viscosity;
+  Transport t;
+  t.sutherland = v.law == "sutherland";
+  t.mu_ref = t.sutherland ? *v.mu_ref : *v.mu;
+  if (t.sutherland) {
+    t.t_ref = *v.t_ref;
+    t.s = *v.s;
+  }
+  t.prandtl = *m.prandtl;
+  for (const auto& z : in.cell_zones) {
+    const auto& w = *z.medium.viscosity;
+    if (w.law != v.law || w.mu_ref != v.mu_ref || w.t_ref != v.t_ref || w.s != v.s ||
+        w.mu != v.mu || z.medium.prandtl != m.prandtl) {
+      throw std::invalid_argument("the Navier-Stokes physics takes a single gas for every cell zone");
+    }
+  }
+  return t;
+}
+
+template <class P, class Flow>
 class EulerPhysics final : public runtime::Physics {
  public:
   using State = typename P::state;
   using Res = typename P::residual;
+  static constexpr bool is_viscous = !std::is_same_v<Flow, Euler<P>>;
 
   explicit EulerPhysics(const PhysicsContext& ctx)
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        euler_(make_flow(ctx, gas_)),
         matrix_(ctx.mesh) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
@@ -162,14 +186,27 @@ class EulerPhysics final : public runtime::Physics {
 
   [[nodiscard]] std::vector<io::Field> wall_fields(std::span<const index_t> faces) const override {
     const auto p = face_pressure();
+    const auto t = face_traction();
+    const auto& g = ctx_.geometry;
     const auto ni = static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(ctx_.mesh.n_boundary_faces());
     std::vector<io::Field> out{{.name = "Pressure", .values = {}},
                                {.name = "WallShearStressX", .values = {}},
                                {.name = "WallShearStressY", .values = {}},
                                {.name = "WallShearStressZ", .values = {}}};
     for (const auto f : faces) {
-      out[0].values.push_back(p[static_cast<std::size_t>(f) - ni]);
-      for (std::size_t k = 1; k < 4; ++k) out[k].values.push_back(0.0);
+      const auto i = static_cast<std::size_t>(f);
+      const auto b = i - ni;
+      out[0].values.push_back(p[b]);
+      // The tangential part of the viscous traction (results.md, WallSolution).
+      const double a = std::sqrt(g.face_area_x[i] * g.face_area_x[i] +
+                                 g.face_area_y[i] * g.face_area_y[i] +
+                                 g.face_area_z[i] * g.face_area_z[i]);
+      const std::array<double, 3> n{g.face_area_x[i] / a, g.face_area_y[i] / a,
+                                    g.face_area_z[i] / a};
+      const std::array<double, 3> tv{t[b], t[nb + b], t[2 * nb + b]};
+      const double tn = tv[0] * n[0] + tv[1] * n[1] + tv[2] * n[2];
+      for (std::size_t k = 0; k < 3; ++k) out[1 + k].values.push_back(tv[k] - tn * n[k]);
     }
     return out;
   }
@@ -177,9 +214,11 @@ class EulerPhysics final : public runtime::Physics {
   [[nodiscard]] Loads loads(std::span<const index_t> zones,
                             const std::array<double, 3>& center) const override {
     const auto p = face_pressure();
+    const auto t = face_traction();
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+    const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     const double p_inf = ctx_.input.freestream.pressure;
     const auto offsets = mesh.boundary_zone_offsets();
     Loads loads;
@@ -187,9 +226,14 @@ class EulerPhysics final : public runtime::Physics {
       for (auto f = offsets[static_cast<std::size_t>(z)];
            f < offsets[static_cast<std::size_t>(z) + 1]; ++f) {
         const auto i = static_cast<std::size_t>(f);
-        const double dp = p[i - ni] - p_inf;
-        const std::array<double, 3> force{dp * g.face_area_x[i], dp * g.face_area_y[i],
-                                          dp * g.face_area_z[i]};
+        const auto b = i - ni;
+        const double dp = p[b] - p_inf;
+        const double a = std::sqrt(g.face_area_x[i] * g.face_area_x[i] +
+                                   g.face_area_y[i] * g.face_area_y[i] +
+                                   g.face_area_z[i] * g.face_area_z[i]);
+        const std::array<double, 3> force{dp * g.face_area_x[i] + a * t[b],
+                                          dp * g.face_area_y[i] + a * t[nb + b],
+                                          dp * g.face_area_z[i] + a * t[2 * nb + b]};
         const std::array<double, 3> arm{g.face_centroid_x[i] - center[0],
                                         g.face_centroid_y[i] - center[1],
                                         g.face_centroid_z[i] - center[2]};
@@ -203,6 +247,15 @@ class EulerPhysics final : public runtime::Physics {
   }
 
  private:
+  // Guaranteed copy elision: Flow is neither copyable nor movable.
+  static Flow make_flow(const PhysicsContext& ctx, const Gas& gas) {
+    if constexpr (is_viscous) {
+      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), transport_of(ctx.input));
+    } else {
+      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input));
+    }
+  }
+
   static Scheme scheme(const runtime::SolverInput& in) {
     const auto& f = in.freestream;
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
@@ -322,6 +375,8 @@ class EulerPhysics final : public runtime::Physics {
       };
       if (bc.kind == "slip" || bc.kind == "symmetry") {
         put(BoundaryKind::slip, {});
+      } else if (bc.kind == "wall" && is_viscous) {
+        put(BoundaryKind::wall, {bc.temperature.value_or(0.0), 0.0, 0.0, 0.0, 0.0});
       } else if (bc.kind == "farfield") {
         put(BoundaryKind::farfield, freestream);
       } else if (bc.kind == "inlet") {
@@ -335,7 +390,7 @@ class EulerPhysics final : public runtime::Physics {
         manufactured_index.push_back(b);
       } else {
         throw std::invalid_argument("boundary zone '" + zone + "': condition '" + bc.kind +
-                                    "' does not apply to inviscid flow");
+                                    "' is not supported by this physics");
       }
     }
     if (!manufactured_faces.empty()) {
@@ -502,6 +557,14 @@ class EulerPhysics final : public runtime::Physics {
     return f;
   }
 
+  // Viscous traction -tau n on every boundary face (3 x n_boundary_faces), zero for inviscid flow;
+  // after face_pressure(), which evaluates the residual.
+  [[nodiscard]] std::vector<double> face_traction() const {
+    std::vector<double> t(3 * static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()), 0.0);
+    if constexpr (is_viscous) euler_.viscous_traction(t);
+    return t;
+  }
+
   [[nodiscard]] std::vector<double> face_pressure() const {
     auto& self = const_cast<EulerPhysics&>(*this);
     self.residual_of(u_);
@@ -513,7 +576,7 @@ class EulerPhysics final : public runtime::Physics {
   PhysicsContext ctx_;
   Gas gas_;
   std::size_t n_;
-  Euler<P> euler_;
+  Flow euler_;
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   BlockMatrix matrix_;
   double cfl_ = cfl_start;
@@ -526,18 +589,27 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<Res> res_;
 };
 
-template <class P>
+template <class P, class Flow>
 runtime::PhysicsFactory factory() {
   return [](const PhysicsContext& ctx) -> std::unique_ptr<runtime::Physics> {
-    return std::make_unique<EulerPhysics<P>>(ctx);
+    return std::make_unique<EulerPhysics<P, Flow>>(ctx);
   };
 }
 
 }  // namespace
 
 void register_euler(runtime::PhysicsRegistry& registry) {
-  registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>());
-  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>());
+  registry.add({"compressible", "inviscid", "fp64", "cpu"},
+               factory<kernels::fp64, Euler<kernels::fp64>>());
+  registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
+               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>());
+}
+
+void register_navier_stokes(runtime::PhysicsRegistry& registry) {
+  registry.add({"compressible", "laminar", "fp64", "cpu"},
+               factory<kernels::fp64, NavierStokes<kernels::fp64>>());
+  registry.add({"compressible", "laminar", "fp32+acc64", "cpu"},
+               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>());
 }
 
 }  // namespace autan::physics
