@@ -124,6 +124,9 @@ class EulerPhysics final : public runtime::Physics {
     return out;
   }
 
+  // Replaced by the flux scales of the Euler equations (CFD - Euler).
+  [[nodiscard]] std::vector<double> residual_scales() const override { return {}; }
+
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
     std::vector<io::Field> out;
     const auto f = primitive_fields();

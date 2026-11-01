@@ -858,3 +858,41 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   chain.insert(chain.end(), rest.begin(), rest.end());
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }
+
+TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
+  // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
+  // 0.25 2^-23 1e4 (e + 1) = 2.98e-4 (e + 1), reached at k = 13 for every
+  // equation, before the 8-order drop at k = 28 (case-schema.md#time).
+  const std::string precision = GENERATE("fp32+acc64", "fp64");
+  CAPTURE(precision);
+  autan_test::RelaxationOptions scaled;
+  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
+  const Outcome o = run(input([&](Json& d) { d["precision"] = precision; }), scaled);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  if (precision == "fp64") {
+    CHECK(info["iterations"] == 28);
+    CHECK(info["convergence"].is_null());
+    return;
+  }
+  CHECK(info["iterations"] == 13);
+  const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
+                                           "momentum-z", "energy",     "nu-tilde"};
+  REQUIRE(info["convergence"]["floor"].size() == equations.size());
+  for (std::size_t e = 0; e < equations.size(); ++e) {
+    CHECK(info["convergence"]["floor"][equations[e]] ==
+          std::ldexp(0.25, -23) * 1e4 * static_cast<double>(e + 1));
+  }
+
+  // A physics without scales has no floor; one with the wrong count fails.
+  const Outcome plain = run(input());
+  CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
+  autan_test::RelaxationOptions short_scales;
+  short_scales.scales = {1.0};
+  const Outcome bad = run(input(), short_scales);
+  CHECK(bad.status == ExitStatus::failed);
+  const Json failed = Json::parse(read(bad.run / "run.json"));
+  CHECK(failed["status"] == "failed");
+  CHECK(failed["diagnostics"][0]["code"] == "E0704");
+}

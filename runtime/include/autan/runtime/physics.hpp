@@ -84,6 +84,11 @@ class Physics {
   /// Cell-centred fields with the SIDS names of results.md (field_names()),
   /// current state or time average.
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
+  /// A constant flux scale per equation of residual_names(input), in that
+  /// order, finite and >= 0; empty for none. Called once, after
+  /// construction: in fp32+acc64, an equation converges at a residual of
+  /// 0.25 * 2^-23 times its scale at the latest (docs/contracts/runtime.md).
+  [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;

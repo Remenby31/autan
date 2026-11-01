@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "autan/runtime/physics.hpp"
 
@@ -30,7 +31,8 @@ struct RelaxationOptions {
   /// (excluded; 0: never), where it is 1e-3.
   std::int64_t silent_equation = -1;
   std::int64_t wake_at = 0;
-  std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at 1e-15
+  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
+  std::vector<double> scales{};  ///< residual_scales(); empty: none
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -129,6 +131,8 @@ class Relaxation final : public autan::runtime::Physics {
       }
     }
   }
+
+  [[nodiscard]] std::vector<double> residual_scales() const override { return options_.scales; }
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
     if (!mean) return state_;
