@@ -65,4 +65,4 @@ jobs:
         working-directory: codegen
         env:
           AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_metal.dylib
-        run: uv run --locked pytest tests/test_gpu.py --backend metal -m "not slow"
+        run: uv run --locked pytest tests/test_gpu.py tests/test_metal.py --backend metal -m "not slow"
