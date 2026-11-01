@@ -222,7 +222,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
   }
   constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
   std::vector<std::size_t> agg(g.n, none);
-  std::vector<std::vector<index_t>> members;      // coarse node -> fine nodes
+  std::vector<std::vector<index_t>> members;     // coarse node -> fine nodes
   std::vector<std::vector<std::size_t>> clines;  // coarse lines
 
   // Lines with their neighbouring lines.
@@ -325,8 +325,8 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
     auto admit = [&](std::size_t node) {
       g.for_edges(node, [&](std::size_t, std::size_t m) {
         if (agg[m] != none || !is_point(m) || !compatible(g, seed, m)) return;
-        auto it = std::find_if(inside.begin(), inside.end(),
-                               [&](const auto& x) { return x.first == m; });
+        auto it =
+            std::find_if(inside.begin(), inside.end(), [&](const auto& x) { return x.first == m; });
         if (it == inside.end()) {
           inside.emplace_back(m, 1);
         } else {
@@ -359,8 +359,8 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
     for (const index_t f : members[c]) {
       g.for_edges(static_cast<std::size_t>(f), [&](std::size_t, std::size_t m) {
         if (agg[m] == none && is_point(m)) {
-          front.emplace(std::numeric_limits<std::size_t>::max() - g.boundary[m].size(),
-                        arrival++, m);
+          front.emplace(std::numeric_limits<std::size_t>::max() - g.boundary[m].size(), arrival++,
+                        m);
         }
       });
     }
@@ -386,10 +386,10 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       }
     });
     if (targets.empty()) continue;
-    const auto best = *std::min_element(targets.begin(), targets.end(), [](const auto& a,
-                                                                           const auto& b) {
-      return a.first != b.first ? a.first > b.first : a.second < b.second;
-    });
+    const auto best =
+        *std::min_element(targets.begin(), targets.end(), [](const auto& a, const auto& b) {
+          return a.first != b.first ? a.first > b.first : a.second < b.second;
+        });
     members[best.second].push_back(static_cast<index_t>(node));
     agg[node] = best.second;
     members[c].clear();

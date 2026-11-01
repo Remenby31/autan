@@ -131,7 +131,8 @@ struct Multigrid::Operator {
         for (std::size_t q = 0; q < 5; ++q) s[p] += d[5 * p + q] * x[q * n + i];
       }
       for (auto k = node_offsets[i]; k < node_offsets[i + 1]; ++k) {
-        const auto [a, j] = off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
+        const auto [a, j] =
+            off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
         for (std::size_t p = 0; p < 5; ++p) {
           for (std::size_t q = 0; q < 5; ++q) s[p] += a[5 * p + q] * x[q * n + j];
         }
@@ -144,7 +145,8 @@ struct Multigrid::Operator {
   void coupling(std::size_t i, std::size_t j, double* a) const {
     std::fill(a, a + b2, 0.0);
     for (auto k = node_offsets[i]; k < node_offsets[i + 1]; ++k) {
-      const auto [blk, o] = off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
+      const auto [blk, o] =
+          off(static_cast<std::size_t>(node_edges[static_cast<std::size_t>(k)]), i);
       if (o == j) add5(a, blk);
     }
   }
@@ -162,7 +164,7 @@ struct Multigrid::Smoother {
   std::vector<double> dinv;                       // inverse of the eliminated diagonal, per node
   std::vector<double> lower, gain;                // A(i, prev), D'^-1 A(i, next), per slot
   std::vector<double> work;
-  std::vector<double> dense;                      // coarsest level: LU factors
+  std::vector<double> dense;  // coarsest level: LU factors
   std::vector<std::size_t> pivot;
 
   explicit Smoother(const Level& l) : level(&l) {
@@ -311,7 +313,8 @@ struct Multigrid::Smoother {
     for (std::size_t i = 0; i < n; ++i) {
       put(i, i, &op.diag[b2 * i]);
       for (auto k = op.node_offsets[i]; k < op.node_offsets[i + 1]; ++k) {
-        const auto [a, j] = op.off(static_cast<std::size_t>(op.node_edges[static_cast<std::size_t>(k)]), i);
+        const auto [a, j] =
+            op.off(static_cast<std::size_t>(op.node_edges[static_cast<std::size_t>(k)]), i);
         put(i, j, a);
       }
     }
@@ -400,11 +403,8 @@ void Multigrid::set_operator(std::span<const double> diagonal, std::span<const d
   }
   for (std::size_t l = 0; l < levels_.size(); ++l) {
     const bool coarsest = l + 1 == levels_.size();
-    if (coarsest && 5 * ops_[l].n <= dense_unknowns) {
-      smoothers_[l].factor_dense(ops_[l]);
-    } else {
-      smoothers_[l].factor(ops_[l]);
-    }
+    smoothers_[l].factor(ops_[l]);
+    if (coarsest && 5 * ops_[l].n <= dense_unknowns) smoothers_[l].factor_dense(ops_[l]);
   }
 }
 

@@ -81,16 +81,16 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
                                             v(i + 1, j + 1, k + 1), v(i, j + 1, k + 1)},
                      zone);
         } else {
-          m.add_cell(autan::CellShape::prism,
-                     std::array<index_t, 6>{v(i, j, k), v(i + 1, j, k), v(i + 1, j + 1, k),
-                                            v(i, j, k + 1), v(i + 1, j, k + 1),
-                                            v(i + 1, j + 1, k + 1)},
-                     zone);
-          m.add_cell(autan::CellShape::prism,
-                     std::array<index_t, 6>{v(i, j, k), v(i + 1, j + 1, k), v(i, j + 1, k),
-                                            v(i, j, k + 1), v(i + 1, j + 1, k + 1),
-                                            v(i, j + 1, k + 1)},
-                     zone);
+          m.add_cell(
+              autan::CellShape::prism,
+              std::array<index_t, 6>{v(i, j, k), v(i + 1, j, k), v(i + 1, j + 1, k), v(i, j, k + 1),
+                                     v(i + 1, j, k + 1), v(i + 1, j + 1, k + 1)},
+              zone);
+          m.add_cell(
+              autan::CellShape::prism,
+              std::array<index_t, 6>{v(i, j, k), v(i + 1, j + 1, k), v(i, j + 1, k), v(i, j, k + 1),
+                                     v(i + 1, j + 1, k + 1), v(i, j + 1, k + 1)},
+              zone);
         }
         if (k == 0) {
           // The wall faces, seen from outside the cells.
@@ -99,12 +99,10 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
                                                        v(i + 1, j + 1, 0), v(i + 1, j, 0)},
                                 0);
           } else {
-            m.add_labelled_face(std::array<index_t, 3>{v(i, j, 0), v(i + 1, j + 1, 0),
-                                                       v(i + 1, j, 0)},
-                                0);
-            m.add_labelled_face(std::array<index_t, 3>{v(i, j, 0), v(i, j + 1, 0),
-                                                       v(i + 1, j + 1, 0)},
-                                0);
+            m.add_labelled_face(
+                std::array<index_t, 3>{v(i, j, 0), v(i + 1, j + 1, 0), v(i + 1, j, 0)}, 0);
+            m.add_labelled_face(
+                std::array<index_t, 3>{v(i, j, 0), v(i, j + 1, 0), v(i + 1, j + 1, 0)}, 0);
           }
         }
       }
@@ -232,8 +230,8 @@ void check_hierarchy(const Mesh& mesh, const std::vector<Level>& levels) {
       for (bool grew = true; grew;) {
         grew = false;
         for (std::size_t e = 0; e < lv.owner.size(); ++e) {
-          if (lv.coarse_edge[e] >= 0 || lv.coarse_node[static_cast<std::size_t>(lv.owner[e])] !=
-                                            static_cast<index_t>(C)) {
+          if (lv.coarse_edge[e] >= 0 ||
+              lv.coarse_node[static_cast<std::size_t>(lv.owner[e])] != static_cast<index_t>(C)) {
             continue;
           }
           const bool a = reached.count(lv.owner[e]) != 0, b = reached.count(lv.neighbour[e]) != 0;
@@ -330,7 +328,8 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
   mg.set_operator(s.diag, s.upper, s.lower);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   std::vector<double> x_exact(5 * n);
-  for (std::size_t k = 0; k < x_exact.size(); ++k) x_exact[k] = std::sin(0.37 * static_cast<double>(k));
+  for (std::size_t k = 0; k < x_exact.size(); ++k)
+    x_exact[k] = std::sin(0.37 * static_cast<double>(k));
   const auto b = apply(mesh, s, x_exact);
   std::vector<double> x(5 * n, 0.0);
   mg.smooth(b, x, 1);
@@ -381,7 +380,8 @@ TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^
     }
   }
   for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t c = 0; c < 5; ++c) bc[c * nc + static_cast<std::size_t>(parent[i])] += b[c * n + i];
+    for (std::size_t c = 0; c < 5; ++c)
+      bc[c * nc + static_cast<std::size_t>(parent[i])] += b[c * n + i];
   }
   for (std::size_t k = 0; k < m; ++k) {
     std::size_t p = k;

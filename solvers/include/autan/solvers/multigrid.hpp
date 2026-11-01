@@ -52,8 +52,8 @@ class Multigrid {
   /// One multigrid cycle on A x = b from x.
   void cycle(std::span<const double> b, std::span<double> x);
   struct Report {
-    int cycles = 0;               ///< multigrid cycles applied
-    double residual_drop = 1.0;   ///< |b - A x| / |b - A x0|
+    int cycles = 0;              ///< multigrid cycles applied
+    double residual_drop = 1.0;  ///< |b - A x| / |b - A x0|
   };
   /// Solves A x = b from x by the generalised conjugate residual method preconditioned by one
   /// multigrid cycle per iteration, until |b - A x| <= tolerance |b - A x0| or `max_cycles`

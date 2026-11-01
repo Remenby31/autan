@@ -595,11 +595,10 @@ class EulerPhysics final : public runtime::Physics {
     if (!(linear.residual_drop <= linear_tolerance)) {
       std::array<char, 32> text{};
       std::snprintf(text.data(), text.size(), "%.6g", linear.residual_drop);
-      ctx_.log.write("warning", "linear",
-                     "the implicit step's linear solve stopped above its tolerance", {},
-                     std::string("{\"cycles\": ") + std::to_string(linear.cycles) +
-                         ", \"residual_drop\": " +
-                         (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
+      ctx_.log.write(
+          "warning", "linear", "the implicit step's linear solve stopped above its tolerance", {},
+          std::string("{\"cycles\": ") + std::to_string(linear.cycles) + ", \"residual_drop\": " +
+              (std::isfinite(linear.residual_drop) ? text.data() : "null") + "}");
     }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
