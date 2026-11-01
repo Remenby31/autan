@@ -22,7 +22,7 @@ browser ── HTTP + SSE ──▶ autan_ui (FastAPI, Python) ──▶ <runs>/
 | `GET /api/runs/events` | SSE: `runs` (snapshot), then `run` (upsert, the new run.json), `removed` (run id), `rejected` (the whole list) and `summaries` as they change |
 | `GET /api/runs/{id}` | `{run, case, case_toml, mesh_info, outputs}`: run.json, case.toml as JSON and as text, mesh-info.json and the files of an accepted run |
 | `GET /api/runs/{id}/plan` | `autan plan --json` of the stored case against the stored MeshInfo, for the run's GPU count |
-| `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` batches of history.jsonl records. The event id is the byte offset reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 and rejected ones 409 with the reason, before any stream starts. |
+| `GET /api/runs/{id}/history/events` | SSE: `run`, then `history` and `log` batches (history.jsonl and log.jsonl records; each log line also carries `doc`, the documentation page of its `code`). The event id is the JSON map of byte offsets reached, so a reconnecting `EventSource` resumes without loss or duplicates. A line still being written is held until its newline while the run is running; after it ends, an unterminated line ends the stream with `invalid`. Unknown runs are 404 and rejected ones 409 with the reason, before any stream starts. |
 | `GET /api/runs/history/events?run=…&run=…` | The same events for up to 8 runs over one connection (a browser opens at most six per host), payloads `{run_id, data}`; the event id is the JSON map of byte offsets. Used by Compare. |
 | `GET /api/surfaces/synthetic?triangles=N` | A synthetic wing surface for the viewer and its benchmark, until `solution.cgns` surfaces are served |
 
@@ -130,6 +130,7 @@ cd ui
 bun install --frozen-lockfile
 uv sync --locked --project server
 scripts/sample-runs.sh runs --live &                               # fake-backend runs, one live
+scripts/real-runs.sh runs --live &                                 # runs of the real runtime (relaxation physics); needs the C++ build
 uv run --project server python -m autan_ui --runs runs --no-open    # API on :8765
 bun run dev                                                          # app on :5173, proxies /api
 ```

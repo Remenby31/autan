@@ -107,7 +107,12 @@ class Registry:
         return snapshot
 
     def _check(self, directory: Path) -> dict[str, Any] | str:
-        key = tuple(_stat(directory / name) for name in CHECKED_FILES)
+        # log.jsonl grows during a run like history.jsonl: only its presence can change the
+        # verdict, so its size and time do not trigger a new check.
+        key = (
+            *(_stat(directory / name) for name in CHECKED_FILES),
+            (directory / "log.jsonl").is_file(),
+        )
         cached = self._checked.get(directory.name)
         if cached and cached[0] == key:
             return cached[1]
@@ -151,7 +156,7 @@ class Registry:
             }
 
 
-RUN_FILES = (*CHECKED_FILES, "history.jsonl", "manufactured.json")
+RUN_FILES = (*CHECKED_FILES, "history.jsonl", "log.jsonl", "manufactured.json")
 
 
 def _inside(root: Path, directory: Path) -> bool:

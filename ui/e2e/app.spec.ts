@@ -84,7 +84,13 @@ test("a diverged run shows its diagnostic in the log and the plan of its case", 
   await expect(page.getByRole("cell", { name: "wing.main" })).toBeVisible();
   await page.getByRole("tab", { name: "Log" }).click();
   await expect(page).toHaveURL(/tab=log/);
-  await expect(page.getByTestId("log")).toContainText("D0107");
+  const log = page.getByTestId("log");
+  await expect(log.getByRole("link", { name: "D0107" })).toHaveAttribute("href", /#d0107$/);
+  const lines = log.locator("time");
+  const all = await lines.count();
+  await page.getByRole("button", { name: /^info/ }).click();
+  await expect(lines).not.toHaveCount(all);
+  await expect(log.getByRole("link", { name: "D0107" })).toBeVisible();
 });
 
 test("viewer renders on WebGPU and picks the zone under the cursor", async ({ page }) => {
