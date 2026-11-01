@@ -124,6 +124,29 @@ function CaseEditor() {
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
   const [picked, setPicked] = useState<string | null>(null);
+  // After a change of mesh, the rules whose pattern matches none of its zones, offered for
+  // removal; rules typed afterwards are the user's own business (the plan reports them).
+  const [inherited, setInherited] = useState<{ mesh: string; rules: Set<object> } | null>(null);
+  const cellNames = mesh?.cell_zones.map((z) => z.name) ?? [];
+  const matchesNone = (pattern: string, names: string[]) =>
+    !names.some((n) => globMatches(pattern, n));
+  const isStale = (rule: { zones: string }, names: string[]) =>
+    mesh !== undefined &&
+    inherited?.mesh === form.mesh &&
+    inherited.rules.has(rule) &&
+    matchesNone(rule.zones, names);
+  const stale = [
+    ...form.boundaries.filter((r) => isStale(r, zones)),
+    ...form.cellZones.filter((r) => isStale(r, cellNames)),
+  ];
+  const removeStale = () => {
+    setForm((f) => ({
+      ...f,
+      boundaries: f.boundaries.filter((r) => !isStale(r, zones)),
+      cellZones: f.cellZones.filter((r) => !isStale(r, cellNames)),
+    }));
+    setInherited(null);
+  };
 
   // A zone picked in 3D: the rule whose pattern matches it gets the focus, or a new rule for
   // it, its condition suggested by the type the mesh file gives the zone. A periodic zone takes
@@ -232,6 +255,12 @@ function CaseEditor() {
                   value={form.mesh}
                   onChange={(name) => {
                     const chosen = meshes.data?.find((m) => m.name === name);
+                    setPicked(null);
+                    setNotice(null);
+                    setInherited({
+                      mesh: name,
+                      rules: new Set([...form.boundaries, ...form.cellZones]),
+                    });
                     setForm((f) => ({
                       ...f,
                       mesh: name,
@@ -560,7 +589,30 @@ function CaseEditor() {
         </form>
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
-          {form.mesh && <MeshView mesh={form.mesh} selected={picked} onPick={pick} webgl={webgl} />}
+          {form.mesh && (
+            <MeshView
+              mesh={form.mesh}
+              zones={zones}
+              selected={picked}
+              onPick={pick}
+              webgl={webgl}
+            />
+          )}
+          {stale.length > 0 && (
+            <Note
+              tone="warning"
+              title={`${stale.length} ${stale.length === 1 ? "rule matches" : "rules match"} no zone of ${form.mesh}`}
+              action={
+                <Button size="sm" onClick={removeStale}>
+                  Remove
+                </Button>
+              }
+            >
+              <span className="font-mono" data-testid="stale-rules">
+                {stale.map((r) => r.zones).join(" · ")}
+              </span>
+            </Note>
+          )}
           {notice && (
             <Note tone="info" title="Periodic zone">
               {notice}
@@ -577,7 +629,7 @@ function CaseEditor() {
             <TabsRoot
               defaultValue="python"
               className={cn(
-                "flex min-h-0 min-w-0 flex-col gap-3 transition-opacity",
+                "flex min-w-0 flex-none flex-col gap-3 transition-opacity",
                 (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
               )}
             >
@@ -589,6 +641,15 @@ function CaseEditor() {
                   ]}
                 />
                 <span className="text-fg-3 text-sm">written by the SDK</span>
+                <CaseActions
+                  name={form.name}
+                  // Only the case shown, once it is the form's: an edit not yet rendered waits.
+                  rendered={
+                    rendered.data?.ok && !rendered.isPlaceholderData && settled === form
+                      ? rendered.data
+                      : null
+                  }
+                />
               </div>
               <TabPanel value="python" className="min-w-0 outline-none">
                 <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
@@ -607,9 +668,6 @@ function CaseEditor() {
   );
 }
 
-// Lines never wrap: the code's own line breaks are part of what it shows. A line longer than the
-// panel scrolls, and a fade on the right edge says so until its end is in view (overlay
-// scrollbars stay hidden until a reader scrolls).
 type Comparison =
   | { state: "none" }
   | { state: "checking" }
@@ -660,6 +718,9 @@ function ImportNote({ run, comparison }: { run: string; comparison: Comparison }
   );
 }
 
+// Lines never wrap: the code's own line breaks are part of what it shows. A line longer than the
+// panel scrolls, and a fade on the right edge says so until its end is in view (overlay
+// scrollbars stay hidden until a reader scrolls).
 function Code({ text, testId }: { text: string; testId: string }) {
   const ref = useRef<HTMLPreElement>(null);
   const [more, setMore] = useState(false);
@@ -715,15 +776,62 @@ function Section({
 }
 
 // `current`: the plan is of the case as it now reads; otherwise it is being checked again.
+/** What to do with a case the SDK accepts and plans: copy its code, or save its case file. */
+function CaseActions({
+  name,
+  rendered,
+}: {
+  name: string;
+  rendered: { python: string; toml: string; plan: Plan | null } | null;
+}) {
+  const [copied, setCopied] = useState<"copied" | "refused" | null>(null);
+  const dismiss = useRef<number | undefined>(undefined);
+  useEffect(() => () => clearTimeout(dismiss.current), []);
+  const ready = rendered !== null && rendered.plan?.ok === true;
+  const copy = async () => {
+    if (!rendered) return;
+    try {
+      await navigator.clipboard.writeText(rendered.python);
+      setCopied("copied");
+    } catch {
+      setCopied("refused");
+    }
+    clearTimeout(dismiss.current);
+    dismiss.current = window.setTimeout(() => setCopied(null), 4000);
+  };
+  const save = () => {
+    if (!rendered) return;
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([rendered.toml], { type: "application/toml" }));
+    link.download = `${name.trim() || "case"}.toml`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  return (
+    <span className="ml-auto flex items-center gap-2">
+      <span role="status" className="text-danger text-sm">
+        {copied === "refused" && "The clipboard refused: select the code instead."}
+      </span>
+      <Button size="sm" variant="primary" disabled={!ready} onClick={() => void copy()}>
+        {copied === "copied" ? "Copied" : "Copy case.py"}
+      </Button>
+      <Button size="sm" disabled={!ready} onClick={save}>
+        Save case.toml
+      </Button>
+    </span>
+  );
+}
+
 function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
   const uncovered = plan.boundaries.filter((b) => b.condition === null);
+  const errors = plan.diagnostics.filter((d) => d.severity !== "warning").length;
   return (
     <section className="flex flex-col gap-2" data-testid="plan">
       <h2 className="m-0 flex items-baseline gap-2 font-medium text-base">
         Plan
         {current ? (
-          <span className={plan.ok ? "text-success" : "text-danger"}>
-            {plan.ok ? "ready" : "refused"}
+          <span className={plan.ok ? "text-success" : "text-danger"} data-testid="plan-status">
+            {plan.ok ? "ready" : `refused: ${errors} ${errors === 1 ? "error" : "errors"}`}
           </span>
         ) : (
           <span className="text-fg-3">checking…</span>
