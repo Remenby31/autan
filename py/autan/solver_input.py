@@ -406,6 +406,9 @@ class SolverInput(_Strict):
         if case.hash() != self.case.sha256:
             message = "case.sha256 is not the hash of case.toml"
             raise ValueError(message)
+        if self.reproducibility != case.physics.reproducibility:
+            message = "reproducibility differs from the case's physics.reproducibility"
+            raise ValueError(message)
         initial = case.initial_state.sha256 if case.initial_state else None
         if initial != (self.initial_state.sha256 if self.initial_state else None):
             message = "initial_state differs from the case's initial_state"

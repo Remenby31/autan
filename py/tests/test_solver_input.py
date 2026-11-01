@@ -240,3 +240,14 @@ def test_reproducibility_reaches_the_runtime_and_the_hash(
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["reproducibility"] == mode
+
+
+def test_the_runtime_mode_is_the_case_s(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = write_case(CRM_HL)
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    document["reproducibility"] = "none"  # the embedded case says "run"
+    with pytest.raises(ValidationError, match="reproducibility"):
+        autan.solver_input.SolverInput.model_validate(document)
