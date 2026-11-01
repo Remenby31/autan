@@ -232,7 +232,10 @@ def test_mesh_unit_scales_the_mesh_alone(
     path = write_case(body)
     case = autan.load(path)
     assert case.spec.document()["mesh_unit"] == unit
-    assert case.plan(crm_mesh).mesh["unit"] == unit
+    planned = case.plan(crm_mesh).mesh
+    assert planned["unit"] == unit
+    # The fixture's bounds are in its file's units; plan gives them in metres.
+    assert planned["bounds"]["max"] == [80.0 * metres, 50.0 * metres, 30.0 * metres]
     status, document = prepare(capsys, path, "crm-hl.meshinfo.json")
     assert status == 0
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
