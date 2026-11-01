@@ -25,8 +25,27 @@ case "$*" in
 esac
 """
 
+# A gated binary (--ready): it records whether the GPU lock is held while it sets up and after
+# the go line, then measures as FAKE_BINARY does.
+GATE = """import fcntl, sys
+def held():
+    with open({lock!r}) as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+seen = [held()]
+print("reading the mesh", file=sys.stderr)
+print("autan-bench: ready", file=sys.stderr, flush=True)
+seen += [sys.stdin.readline().strip(), held()]
+pathlib.Path({seen!r}).write_text(json.dumps(seen))
+"""
+
 FAKE_BINARY = """#!{python}
-import pathlib, time
+import json, pathlib, time
+{gate}
 busy = pathlib.Path({busy!r})
 busy.touch()
 time.sleep(0.7)
@@ -106,11 +125,15 @@ def fake_gpu(request, tmp_path, monkeypatch):
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
-    def binary(verified: bool = True) -> Path:
+    def binary(verified: bool = True, gated: bool = False) -> Path:
         path = tmp_path / "kernel-bench"
         raw = tmp_path / "raw.json"
         raw.write_text(json.dumps(raw_output(verified, backend)))
-        path.write_text(FAKE_BINARY.format(python=sys.executable, busy=str(busy), raw=str(raw)))
+        gate = (
+            GATE.format(lock=str(tmp_path / "lock"), seen=str(tmp_path / "seen")) if gated else ""
+        )
+        path.write_text(FAKE_BINARY.format(python=sys.executable, busy=str(busy), raw=str(raw),
+                                           gate=gate))  # fmt: skip
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
         return path
 
@@ -186,3 +209,30 @@ def test_runnable_threads_see_busy_processes():
         for proc in procs:
             proc.kill()
             proc.wait()
+
+
+def test_a_gated_binary_sets_up_without_the_lock_and_measures_under_it(fake_gpu, tmp_path):
+    out = tmp_path / "r.json"
+    (tmp_path / "lock").touch()
+    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu(gated=True)), "--precision",
+            "fp32", "--out", str(out), "--lock", str(tmp_path / "lock"), "--ready", "30"]  # fmt: skip
+    assert main(argv) == 0
+    assert json.loads((tmp_path / "seen").read_text()) == [False, "go", True]
+    conditions = json.loads(out.read_text())["conditions"]
+    assert conditions["setup_outside_lock_s"] >= 0
+
+
+def test_a_gated_binary_that_never_gets_ready_fails_without_the_lock(tmp_path, capsys):
+    lock = tmp_path / "lock"
+    for body, timeout in (("sys.exit(3)", "30"), ("time.sleep(60)", "1")):
+        binary = tmp_path / "setup"
+        binary.write_text(f"#!{sys.executable}\nimport sys, time\n{body}\n")
+        binary.chmod(0o755)
+        argv = ["run", "--suite", "s", "--binary", str(binary), "--precision", "fp32",
+                "--out", str(tmp_path / "r.json"), "--lock", str(lock), "--ready", timeout]  # fmt: skip
+        start = time.monotonic()
+        assert main(argv) == 2
+        assert time.monotonic() - start < 10
+        assert "error[BINARY_FAILED]" in capsys.readouterr().err
+        # The lock was never created, hence never taken.
+        assert not lock.exists()
