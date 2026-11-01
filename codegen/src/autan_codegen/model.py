@@ -91,7 +91,8 @@ ALLOWED_VIA = {
     "reduce": {
         dsl.MeshSet.CELLS: {"self", "other"},
         dsl.MeshSet.INCIDENCES: {"direct"},
-        dsl.MeshSet.FACES: {"direct"},  # the face of the incidence
+        # The face of the incidence; near, far and on_boundary load only where they are valid.
+        dsl.MeshSet.FACES: {"direct", "near", "far", "on_boundary"},
     },
 }
 
@@ -111,7 +112,15 @@ def _check_bindings(
     for name, t in zip(sig.names[skip:], sig.types[skip:], strict=True):
         b = bindings[name]
         ds = b.dataset
-        if ds.type.shape != t.shape or ds.type.role is not t.role:
+        halves = b.via in ("near", "far")
+        shape = ds.type.shape[1:] if halves and ds.type.shape[:1] == (2,) else ds.type.shape
+        if halves and ds.type.shape[:1] != (2,):
+            raise CodegenError(
+                Code.INVALID_BINDING,
+                f"{name}: near and far read a dataset of shape (2, ...)",
+                where,
+            )
+        if shape != t.shape or ds.type.role is not t.role:
             raise CodegenError(
                 Code.INVALID_BINDING,
                 f"argument {name} is {t.role.value}{t.shape}, data {ds.name} is {ds.type.role.value}{ds.type.shape}",
@@ -132,10 +141,10 @@ def _check_bindings(
             )
         if b.via == "other":
             bd = b.boundary
-            if bd is None or bd.set is not dsl.MeshSet.FACES or bd.type != ds.type:
+            if bd is not None and (bd.set is not dsl.MeshSet.FACES or bd.type != ds.type):
                 raise CodegenError(
                     Code.INVALID_BINDING,
-                    f"{name}: other() needs a face dataset of the same type",
+                    f"{name}: other() takes None or a face dataset of the same type",
                     where,
                 )
 

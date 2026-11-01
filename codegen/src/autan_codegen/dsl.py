@@ -120,6 +120,24 @@ class Dataset:
     def self_(self) -> Binding:
         return Binding(self, "self")
 
+    @property
+    def near(self) -> Binding:
+        """In an incidence reduction, half [0] of a face dataset of shape (2, ...) if the cell is
+        the face's owner, half [1] if it is the neighbour; zero on boundary faces."""
+        return Binding(self, "near")
+
+    @property
+    def far(self) -> Binding:
+        """The half `near` does not take: [1] for the owner, [0] for the neighbour; zero on
+        boundary faces."""
+        return Binding(self, "far")
+
+    @property
+    def on_boundary(self) -> Binding:
+        """In an incidence reduction, the face's value on a boundary face, zero on an interior
+        face."""
+        return Binding(self, "on_boundary")
+
     def other(self, boundary: Dataset | None) -> Binding:
         """Value across each incidence of a cell; `boundary` (a face dataset) on boundary faces,
         zero when None."""
@@ -137,7 +155,7 @@ class Binding:
     """How a body argument is loaded: directly, or through the face/incidence -> cell maps."""
 
     dataset: Dataset | Parameter
-    via: str = "direct"  # direct | left | right | self | other
+    via: str = "direct"  # direct | left | right | self | other | near | far | on_boundary
     boundary: Dataset | None = None
 
 

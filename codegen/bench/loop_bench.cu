@@ -405,6 +405,39 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   if (max_rel_diff(as_double(dinv.download()), as_double(hinv)) > tolerance) verified = false;
   out.push_back({"block_inverse", cells * 50.0 * sizeof(A), "cell",
                  time_it(o, [&] { bk::gpu_loops::invert_diagonal(db, dm.schedule); })});
+
+  // y = A x with the diagonal blocks above and random face blocks on interior faces.
+  using J = typename P::jac;
+  std::vector<J> hjac(50 * nf, J(0));
+  for (std::size_t k = 0; k < 50; ++k) {
+    for (std::size_t f = 0; f < static_cast<std::size_t>(ni); ++f)
+      hjac[k * nf + f] = J(normal(rng));
+  }
+  std::vector<R> hx(5 * nc), hy(5 * nc);
+  for (auto& v : hx) v = R(normal(rng));
+  bk::Data<P> hm = hb;
+  hm.face_jac = hjac.data();
+  hm.x = hx.data();
+  hm.y = hy.data();
+  autan::spike::bind(hm.incidence_side, hg.incidence_side);
+  bk::cpu::multiply(hm);
+  DeviceArray<J> djac(hjac);
+  DeviceArray<R> dx(hx), dy(5 * nc);
+  bk::Data<P> dmul{};
+  dm.bind(dmul);
+  dmul.diag = ddiag.get();
+  dmul.face_jac = djac.get();
+  dmul.x = dx.get();
+  dmul.y = dy.get();
+  bk::gpu_loops::multiply(dmul, dm.schedule);
+  if (max_rel_diff(as_double(dy.download()), as_double(hy)) > tolerance) verified = false;
+  // Analytic minimum: per cell its diagonal block, x, y and CSR offset; per interior face its
+  // two blocks and its owner and neighbour; per incidence its face and side.
+  const double mul_bytes = cells * (25.0 * sizeof(A) + 10.0 * sizeof(R) + sizeof(offset_t)) +
+                           ni * (50.0 * sizeof(J) + 2 * sizeof(index_t)) +
+                           inc * (sizeof(index_t) + sizeof(*dmul.incidence_side));
+  out.push_back({"block_multiply", mul_bytes, "gather",
+                 time_it(o, [&] { bk::gpu_loops::multiply(dmul, dm.schedule); })});
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.schedule.interior.offsets.size() - 1,
                dm.schedule.boundary.offsets.size() - 1);

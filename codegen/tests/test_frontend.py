@@ -220,6 +220,11 @@ def in_place(x: Residual) -> Residual:
     return 2.0 * x
 
 
+@pointwise
+def block_value(b: dsl.Jac) -> Residual:
+    return b
+
+
 @pointwise(compute="accum")
 def scaled_in_accum(x: Geom) -> Residual:
     return 2.0 * x
@@ -245,6 +250,15 @@ def test_loop_declarations_are_checked() -> None:
     for x in (q, cells.field("volume", Geom)):
         with pytest.raises(CodegenError) as info:
             build_loop("bad", dsl.cell_loop(scaled_in_accum, x=x, out=dsl.Write(r)))
+        assert info.value.code == "E1003"
+    # near and far take a half of a (2, ...) face dataset, in incidence reductions only.
+    single, pair = dsl.faces.field("single", dsl.Jac), dsl.faces.field("pair", dsl.Jac.shape(2))
+    for loop in (
+        lambda: dsl.cell_reduce(block_value, b=single.near, acc=dsl.Sum(r)),
+        lambda: dsl.face_loop(block_value, b=pair.far, out=dsl.Inc(r, left=1, right=-1)),
+    ):
+        with pytest.raises(CodegenError) as info:
+            build_loop("bad", loop())
         assert info.value.code == "E1003"
 
 

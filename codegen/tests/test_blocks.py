@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from autan_codegen.errors import Code, CodegenError
 from autan_codegen.generate import generate
-from conftest import PRECISIONS
+from conftest import PRECISIONS, eps
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -125,30 +125,33 @@ def test_blocks_are_passive_inputs_of_a_block_operator(tmp_path: Path) -> None:
 ASSEMBLY = """
 from autan_codegen.dsl import Geom, Jac, JacAccum, Sum, cell_reduce, cells, faces, geometry, pointwise
 
-jl = faces.field("jl", Jac.Mat5)
-jr = faces.field("jr", Jac.Mat5)
+face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
+bnd_jac = faces.field("bnd_jac", Jac.Mat5)
 diag = cells.field("diag", JacAccum.Mat5)
 
 
 @pointwise
-def diagonal_term(a: Jac.Mat5, b: Jac.Mat5, s: Geom) -> JacAccum.Mat5:
-    return a if s > 0.0 else -b
+def diagonal_term(j: Jac.Mat5, jb: Jac.Mat5, s: Geom) -> JacAccum.Mat5:
+    return s * j + jb
 
 
-assembled = cell_reduce(diagonal_term, a=jl, b=jr, s=geometry.incidence_side, acc=Sum(diag))
+assembled = cell_reduce(
+    diagonal_term, j=face_jac.near, jb=bnd_jac.on_boundary, s=geometry.incidence_side,
+    acc=Sum(diag),
+)
 """
 
 # The chain of DRIVER plus boundary face 2 on cell 2: a cell's diagonal block sums, over its
-# faces in incidence order, the face's left block where it is the left cell (or on a boundary
-# face) and minus its right block where it is the right cell.
+# faces in incidence order, the face's owner block face_jac[0] where it is the owner, minus its
+# neighbour block face_jac[1] where it is the neighbour, and bnd_jac on a boundary face.
 ASSEMBLY_DRIVER = r"""
 #include <vector>
 #include "assembly_cpu.hpp"
 using namespace autan::kernels;
 extern "C" void run(const double* in, double* out) {
   constexpr index_t nc = 3, nf = 3;
-  std::vector<double> jl(in, in + 25 * nf), jr(in + 25 * nf, in + 50 * nf),
-      side(in + 50 * nf, in + 50 * nf + 5), diag(25 * nc, 0.0);
+  std::vector<double> face_jac(in, in + 50 * nf), bnd_jac(in + 50 * nf, in + 75 * nf),
+      side(in + 75 * nf, in + 75 * nf + 5), diag(25 * nc, 0.0);
   std::vector<index_t> owner{0, 1, 2}, neighbour{1, 2}, cell_faces{0, 0, 1, 1, 2};
   std::vector<offset_t> offsets{0, 1, 3, 5};
   Topology t{};
@@ -162,8 +165,8 @@ extern "C" void run(const double* in, double* out) {
   t.cell_faces = cell_faces.data();
   assembly::Data<fp64> d{};
   d.topo = t;
-  d.jl = jl.data();
-  d.jr = jr.data();
+  d.face_jac = face_jac.data();
+  d.bnd_jac = bnd_jac.data();
   d.incidence_side = side.data();
   d.diag = diag.data();
   assembly::cpu::assembled(d);
@@ -173,7 +176,7 @@ extern "C" void run(const double* in, double* out) {
 
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
-def test_diagonal_blocks_assemble_from_face_blocks_by_incidence_side(tmp_path: Path) -> None:
+def test_diagonal_blocks_assemble_from_the_blocks_valid_on_each_face(tmp_path: Path) -> None:
     src = tmp_path / "assembly.py"
     src.write_text(ASSEMBLY)
     out = tmp_path / "gen"
@@ -186,20 +189,28 @@ def test_diagonal_blocks_assemble_from_face_blocks_by_incidence_side(tmp_path: P
         check=True, capture_output=True,
     )  # fmt: skip
     rng = np.random.default_rng(4)
-    jl, jr = rng.standard_normal((3, 5, 5)), rng.standard_normal((3, 5, 5))
+    face_jac, bnd_jac = rng.standard_normal((3, 2, 5, 5)), rng.standard_normal((3, 5, 5))
+    # Blocks a face does not have are never written by the physics: NaN must not reach a sum.
+    face_jac[2] = np.nan
+    bnd_jac[:2] = np.nan
     owner, neighbour = [0, 1, 2], [1, 2]
     incidences = [(0, 0), (1, 0), (1, 1), (2, 1), (2, 2)]  # (cell, face) in CSR order
     side = [1.0 if f >= len(neighbour) or owner[f] == c else -1.0 for c, f in incidences]
     inputs = np.concatenate(
-        [jl.reshape(3, 25).T.ravel(), jr.reshape(3, 25).T.ravel(), np.array(side)]
+        [face_jac.reshape(3, 50).T.ravel(), bnd_jac.reshape(3, 25).T.ravel(), np.array(side)]
     )
     diag = np.zeros(75)
     ctypes.CDLL(str(lib)).run(
         inputs.ctypes.data_as(ctypes.c_void_p), diag.ctypes.data_as(ctypes.c_void_p)
     )
     expect = np.zeros((3, 5, 5))
-    for (c, f), sign in zip(incidences, side, strict=True):
-        expect[c] += jl[f] if sign > 0 else -jr[f]
+    for c, f in incidences:
+        if f >= len(neighbour):
+            expect[c] += bnd_jac[f]
+        elif owner[f] == c:
+            expect[c] += face_jac[f, 0]
+        else:
+            expect[c] -= face_jac[f, 1]
     np.testing.assert_array_equal(diag.reshape(25, 3).T.reshape(3, 5, 5), expect)
 
 
@@ -351,3 +362,138 @@ def test_diagonal_blocks_invert_as_the_host_block_matrix(
         assert (np.abs(dev[:N_REGULAR] - host[:N_REGULAR]) <= bound).all()
         assert np.isnan(dev[N_REGULAR:]).all()
         np.testing.assert_array_equal(_invert(lib, blocks), dev)
+
+
+# kernels/blocks.py `multiply` on a mesh's topology, every input given as doubles (component-major)
+# and stored in the type the policy gives its dataset.
+MULTIPLY_DRIVER = r"""
+#include <type_traits>
+#include <vector>
+#include "blocks.hpp"
+#ifdef __CUDACC__
+#include "blocks_gpu.cuh"
+#else
+#include "blocks_cpu.hpp"
+#endif
+using namespace autan::kernels;
+using P = POLICY;
+using D = blocks::Data<P>;
+template <class T> using Of = std::remove_cvref_t<T>;
+#ifdef __CUDACC__
+template <class T> T* place(const std::vector<T>& v) {
+  T* p = nullptr;
+  cudaMalloc(&p, sizeof(T) * v.size());
+  cudaMemcpy(p, v.data(), sizeof(T) * v.size(), cudaMemcpyHostToDevice);
+  return p;
+}
+#else
+template <class T> T* place(std::vector<T>& v) { return v.data(); }
+#endif
+template <class T> std::vector<T> as(const double* p, std::size_t n) { return {p, p + n}; }
+extern "C" void run(int nc, int nf, int ni, long long nk, const index_t* owner,
+                    const index_t* neighbour, const offset_t* offsets, const index_t* cell_faces,
+                    const double* side, const double* face_jac, const double* diag,
+                    const double* x, double* y) {
+  D d{};
+  auto o = std::vector<index_t>(owner, owner + nf);
+  auto n = std::vector<index_t>(neighbour, neighbour + ni);
+  auto off = std::vector<offset_t>(offsets, offsets + nc + 1);
+  auto cf = std::vector<index_t>(cell_faces, cell_faces + nk);
+  auto s = as<Of<decltype(*d.incidence_side)>>(side, nk);
+  auto fj = as<Of<decltype(*d.face_jac)>>(face_jac, 50 * nf);
+  auto dg = as<Of<decltype(*d.diag)>>(diag, 25 * nc);
+  auto xv = as<Of<decltype(*d.x)>>(x, 5 * nc);
+  std::vector<Of<decltype(*d.y)>> yv(5 * nc);
+  Topology t{};
+  t.n_cells = t.n_owned_cells = nc;
+  t.n_faces = t.n_owned_faces = nf;
+  t.n_interior_faces = t.n_owned_interior_faces = ni;
+  t.n_incidences = nk;
+  t.owner = place(o);
+  t.neighbour = place(n);
+  t.cell_face_offsets = place(off);
+  t.cell_faces = place(cf);
+  d.topo = t;
+  d.incidence_side = place(s);
+  d.face_jac = place(fj);
+  d.diag = place(dg);
+  d.x = place(xv);
+  d.y = place(yv);
+#ifdef __CUDACC__
+  blocks::gpu_loops::multiply(d, gpu::Schedule{});
+  cudaMemcpy(yv.data(), d.y, sizeof(yv[0]) * yv.size(), cudaMemcpyDeviceToHost);
+#else
+  blocks::cpu::multiply(d);
+#endif
+  for (std::size_t i = 0; i < yv.size(); ++i) y[i] = double(yv[i]);
+}
+"""
+
+
+def _build_multiply(tmp_path: Path, backend: str, policy: str) -> ctypes.CDLL:
+    out = tmp_path / f"gen_{backend}"
+    generate(ROOT / "kernels" / "blocks.py", out, [backend], policies=[policy])
+    source = tmp_path / ("multiply.cu" if backend == "gpu" else "multiply.cpp")
+    source.write_text(MULTIPLY_DRIVER)
+    lib = tmp_path / f"libmultiply_{backend}.so"
+    flags = [f"-DPOLICY={POLICY_TYPES[policy]}", f"-I{ROOT / 'codegen' / 'include'}",
+             f"-I{ROOT / 'core' / 'include'}", f"-I{out}", "-o", str(lib)]  # fmt: skip
+    if backend == "gpu":
+        nvcc = shutil.which("nvcc")
+        assert nvcc is not None, "the GPU backend tests need nvcc on PATH"
+        cmd = [nvcc, "-std=c++20", "-O2", "-shared", "-Xcompiler", "-fPIC", *flags, str(source)]
+    else:
+        cmd = ["c++", "-std=c++20", "-O2", "-shared", "-fPIC", *flags, str(source)]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return ctypes.CDLL(str(lib))
+
+
+def _multiply(lib: ctypes.CDLL, m: s.Mesh, face_jac: np.ndarray, diag: np.ndarray, x: np.ndarray):
+    def p(a: np.ndarray) -> ctypes.c_void_p:
+        return a.ctypes.data_as(ctypes.c_void_p)
+
+    soa = [np.ascontiguousarray(a.reshape(len(a), -1).T) for a in (face_jac, diag, x)]
+    y = np.zeros(5 * m.n_cells)
+    lib.run(
+        ctypes.c_int(m.n_cells), ctypes.c_int(m.n_faces), ctypes.c_int(m.n_interior),
+        ctypes.c_longlong(m.n_incidences), p(m.owner), p(m.neighbour), p(m.cell_face_offsets),
+        p(m.cell_faces), p(m.incidence_side), *(p(a) for a in soa), p(y),
+    )  # fmt: skip
+    return y.reshape(5, m.n_cells).T
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
+@pytest.mark.parametrize("policy", PRECISIONS)
+@pytest.mark.parametrize("kind", ["tet", "hex", "poly", "hybrid"])
+def test_block_product_equals_the_assembled_matrix(
+    tmp_path: Path, backend: str, policy: str, kind: str
+) -> None:
+    if backend == "metal":
+        pytest.skip("kernels/blocks.py is not generated for Metal (E1013, see the inverse test)")
+    m = s.mesh(meshes.build(kind, 4, 0.15, seed=9))
+    nc, ni = m.n_cells, m.n_interior
+    rng = np.random.default_rng(9)
+    face_jac = rng.standard_normal((m.n_faces, 2, 5, 5))
+    face_jac[ni:] = np.nan  # boundary faces have no face blocks: never read
+    diag, x = rng.standard_normal((nc, 5, 5)), rng.standard_normal((nc, 5))
+    if policy != "fp64":
+        face_jac = face_jac.astype(np.float32).astype(np.float64)  # Jac is stored in FP32
+    # The matrix of physics BlockMatrix: per interior face, A(owner, neighbour) = face_jac[1],
+    # A(neighbour, owner) = -face_jac[0].
+    a = np.zeros((nc, 5, nc, 5))
+    for c in range(nc):
+        a[c, :, c, :] = diag[c]
+    for f in range(ni):
+        o, nb = m.owner[f], m.neighbour[f]
+        a[o, :, nb, :] += face_jac[f, 1]
+        a[nb, :, o, :] -= face_jac[f, 0]
+    a = a.reshape(5 * nc, 5 * nc)
+    expect = (a @ x.ravel()).reshape(nc, 5)
+    bound = 64 * eps(policy) * (np.abs(a) @ np.abs(x.ravel())).reshape(nc, 5)
+    host = _multiply(_build_multiply(tmp_path, "cpu", policy), m, face_jac, diag, x)
+    assert (np.abs(host - expect) <= bound).all()
+    if backend == "gpu":
+        lib = _build_multiply(tmp_path, "gpu", policy)
+        dev = _multiply(lib, m, face_jac, diag, x)
+        assert (np.abs(dev - expect) <= bound).all()
+        np.testing.assert_array_equal(_multiply(lib, m, face_jac, diag, x), dev)
