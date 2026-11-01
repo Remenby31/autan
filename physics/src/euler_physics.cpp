@@ -37,32 +37,41 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
                                                         "MomentumZ", "EnergyStagnationDensity"};
 
 // Steady runs: pseudo-transient continuation, (V / dt + dR/dU) du = -R with the approximate
-// Jacobian, local dt = CFL V / lambda, the CFL number following the residual (switched evolution
-// relaxation, Mulder and van Leer 1985, J. Comput. Phys. 59:232-246). The multigrid solves the
-// step's system at any CFL number, so the start is large: the pseudo-time step then no longer
-// scales with the viscous time step h^2 (docs/design/multigrid.md, measurements).
-constexpr double cfl_start = 1000.0;
-constexpr double cfl_min = 1.0;
+// Jacobian, local dt = CFL V / lambda. The CFL number, the step length and the line search are
+// ADflow's approximate Newton-Krylov (ANK) phase (Yildirim, Kenway, Mader and Martins 2019,
+// J. Comput. Phys. 397:108741, secs. 3.5-3.7), with its published defaults.
+constexpr double cfl_start = 5.0;          // CFL^(0)
+constexpr double cfl_max = 1e5;            // CFL_max
+constexpr double cfl_ramp = 10.0;          // alpha of the mRDM ramp, eq. 18
+constexpr double cfl_floor_exponent = 0.5;  // beta of the SER floor, eq. 19
+constexpr double omega_ramp = 0.4;          // a step longer than this ramps the CFL number up
+constexpr double omega_min = 0.01;          // a step shorter than this is not taken
+constexpr double cfl_cut = 0.5;             // theta_red
+constexpr double backtrack = 0.7;           // theta_bt
+constexpr double physical_fraction = 0.2;   // theta_phys of density and energy, eq. 15
 constexpr double first_order_drop = 1e-3;
 constexpr int first_order_max_steps = 200;
-constexpr double cfl_max = 1e6;
-// Each step's linear system is solved to this relative residual (inexact Newton), with at most
-// this many multigrid-preconditioned iterations.
-constexpr double linear_tolerance = 0.1;
+// Each step's linear system is solved to this relative residual (eta_lin), with at most this
+// many multigrid-preconditioned iterations; a solve that misses it still gives the step.
+constexpr double linear_tolerance = 0.05;
 constexpr int linear_max_cycles = 10;
-// A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
-// diverge on a system the CFL number made too weakly diagonal): the step is rejected.
+// Newton-Krylov phases (fp64): in second order, each step solves (V / dt + dR/dU) du = -R with
+// dR/dU v by a finite difference of the residual, the limiter frozen (ANK's R1 level), the
+// multigrid on the approximate Jacobian as preconditioner (ANK eq. 11); n_lin = 40.
+constexpr int newton_max_iterations = 40;
+// Below this relative residual, ANK hands over to Newton-Krylov with the full residual and
+// HANIM's controls (Wang, Diskin, Nielsen and Liu 2021, AIAA SciTech, sec. II.D).
+constexpr double newton_drop = 1e-5;
+constexpr double hanim_cfl_increase = 2.0;
+constexpr double hanim_cfl_decrease = 0.1;
+constexpr double hanim_cfl_min = 1e-12;
+constexpr double hanim_cfl_max = 1e10;
+constexpr double hanim_tolerance = 0.1;
 constexpr double linear_failure = 0.9;
-// Newton-Krylov end phase (fp64): once the second-order residual is this far below its largest
-// value, each step solves (V / dt + dR/dU) du = -R with dR/dU v by a finite difference of the
-// residual itself, the multigrid on the approximate Jacobian as preconditioner, so that the
-// steps no longer stall where the approximate Jacobian departs from dR/dU (#185).
-constexpr double newton_drop = 1e-3;
-constexpr int newton_max_iterations = 20;
-// No update may lower density or pressure by more than this fraction in one step; a step
-// shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
-constexpr double min_step = 1e-6;
+template <class State>
+constexpr double round_off_correction =
+    std::max(1e-12, 8.0 * static_cast<double>(std::numeric_limits<State>::epsilon()));
 constexpr double venkatakrishnan_k = 10.0;
 
 Gas gas_of(const runtime::SolverInput& in) {
@@ -332,35 +341,37 @@ class EulerPhysics final : public runtime::Physics {
 
   [[nodiscard]] std::vector<std::pair<std::string, double>> solver_state() const {
     std::vector<std::pair<std::string, double>> v = {
-        {"SolverPenalty", penalty_},
-        {"SolverShortened", shortened_ ? 1.0 : 0.0},
+        {"SolverCfl", cfl_},
         {"SolverSecondOrder", second_order_ ? 1.0 : 0.0},
         {"SolverFirstOrderSteps", static_cast<double>(first_order_steps_)}};
     for (std::size_t k = 0; k < 5; ++k) {
       v.emplace_back("SolverReferenceResidual" + std::to_string(k),
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
-    v.emplace_back("SolverCflCap", cfl_cap_);
     v.emplace_back("SolverExemptFloor", exempt_floor_);
     for (std::size_t k = 0; k < 5; ++k) {
       v.emplace_back("SolverExempt" + std::to_string(k), exempt_[k] ? 1.0 : 0.0);
     }
+    v.emplace_back("SolverPreviousResidual", previous_norm_);
+    v.emplace_back("SolverPreviousStep", previous_omega_);
+    v.emplace_back("SolverFreestreamResidual", freestream_norm_);
     return v;
   }
 
   void set_solver_state(const std::vector<std::pair<std::string, double>>& v) {
-    penalty_ = v[0].second;
-    shortened_ = v[1].second != 0.0;
-    second_order_ = v[2].second != 0.0;
+    cfl_ = v[0].second;
+    second_order_ = v[1].second != 0.0;
     euler_.set_second_order(second_order_);
-    first_order_steps_ = static_cast<int>(v[3].second);
+    first_order_steps_ = static_cast<int>(v[2].second);
     first_norms_.clear();
-    if (v[4].second >= 0.0) {
-      for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
+    if (v[3].second >= 0.0) {
+      for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[3 + k].second);
     }
-    cfl_cap_ = v[9].second;
-    exempt_floor_ = v[10].second;
-    for (std::size_t k = 0; k < 5; ++k) exempt_[k] = v[11 + k].second != 0.0;
+    exempt_floor_ = v[8].second;
+    for (std::size_t k = 0; k < 5; ++k) exempt_[k] = v[9 + k].second != 0.0;
+    previous_norm_ = v[14].second;
+    previous_omega_ = v[15].second;
+    freestream_norm_ = v[16].second;
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -502,22 +513,22 @@ class EulerPhysics final : public runtime::Physics {
         drop = std::max(drop, current[k] / first_norms_[k]);
       }
     }
-    // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
-    // solution; second order from the step after the first-order residual has dropped.
-    if (!second_order_ &&
-        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
-      second_order_ = true;
-      euler_.set_second_order(true);
-      first_norms_.clear();
+    // The CFL number of this step (ANK eqs. 18-20) from the previous step's length and residual,
+    // never below the SER floor (|R_fs| / |R|)^beta, R_fs the residual at the first step.
+    const double norm = scaled_norm(res_, {}, 0.0);
+    if (freestream_norm_ <= 0.0) freestream_norm_ = norm;
+    const double floor =
+        norm > 0.0 ? std::pow(freestream_norm_ / norm, cfl_floor_exponent) : cfl_max;
+    if (previous_norm_ > 0.0) {
+      if (previous_omega_ > omega_ramp) {
+        const double gamma = std::max((previous_norm_ - norm) / previous_norm_, 0.0);
+        cfl_ = std::min(cfl_ * std::pow(cfl_ramp, gamma), cfl_max);
+      } else if (previous_omega_ > omega_min) {
+        cfl_ = std::max(cfl_, floor);
+      } else {
+        cfl_ = std::max(cfl_cut * cfl_, floor);
+      }
     }
-    // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
-    // after each step the admissibility check shortened and recovering by half otherwise.
-    penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
-    // Every active residual at zero: the largest CFL number the cap allows, so that the choice
-    // depends on the restart state only.
-    const double ratio = drop > 0.0 ? penalty_ * cfl_start / drop : cfl_max;
-    cfl_ = std::clamp(std::min(ratio, cfl_cap_), cfl_min, cfl_max);
-    cfl_cap_ = cfl_max;
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
@@ -545,59 +556,102 @@ class EulerPhysics final : public runtime::Physics {
         linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
       }
     } catch (const std::domain_error&) {
-      linear = {};  // a singular block: the solve failed
+      linear = {};  // a singular block
+      linear.residual_drop = std::numeric_limits<double>::quiet_NaN();
     }
-    const bool failed = !(linear.residual_drop <= linear_failure);
     const nlohmann::json residual_drop =
         std::isfinite(linear.residual_drop) ? nlohmann::json(linear.residual_drop) : nullptr;
-    if (!failed && !(linear.residual_drop <= linear_tolerance)) {
+    if (!(linear.residual_drop <= linear_tolerance) && std::isfinite(linear.residual_drop)) {
       ctx_.log.write(
           "info", "linear", "the implicit step's linear solve stopped above its tolerance", {},
           nlohmann::json{{"cycles", linear.cycles}, {"residual_drop", residual_drop}}.dump());
     }
-    if (failed) {
-      ctx_.log.write("warning", "solver", "implicit step rejected: its linear solve failed",
+    // Physicality (ANK eq. 15, density and energy) then backtracking on the unsteady residual
+    // |w V/dt du + R(u + w du)| until it is below |R(u)| (ANK eq. 17, algorithm 2).
+    double omega = 0.0;
+    if (std::isfinite(linear.residual_drop)) {
+      omega = physical_step();
+      double unsteady = scaled_norm(trial_residual(omega), shift, omega);
+      while (!(unsteady <= norm) && omega > omega_min) {
+        omega *= backtrack;
+        unsteady = scaled_norm(trial_residual(omega), shift, omega);
+      }
+      // At the CFL floor the step is taken whatever its length (ANK sec. 3.6), unless it is
+      // not finite: the run has diverged.
+      if (!(unsteady <= norm) && (cfl_ > floor || !std::isfinite(unsteady))) {
+        if (!std::isfinite(unsteady) && cfl_ <= floor) {
+          report.diverged_cell = static_cast<index_t>(worst_cell());
+        }
+        omega = 0.0;
+      }
+    }
+    if (!(omega > 0.0)) {
+      ctx_.log.write("warning", "solver", "implicit step rejected: no decrease of the residual",
                      "W0711",
                      nlohmann::json{{"iteration", iteration},
-                                    {"reason", "linear"},
+                                    {"reason", std::isfinite(linear.residual_drop) ? "nonlinear"
+                                                                                   : "linear"},
                                     {"cfl", cfl_},
                                     {"residual_drop", residual_drop}}
                          .dump());
-      // As a step with no admissible length: the state is kept and the next CFL number is half
-      // this one, also when this one was clamped; at the smallest CFL number the run diverged.
-      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
-      cfl_cap_ = 0.5 * cfl_;
-      shortened_ = true;
-      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
-      return;
+    } else if (omega < 1.0) {
+      ctx_.log.write("info", "solver", "line search", {},
+                     nlohmann::json{{"omega", omega}, {"cfl", cfl_}}.dump());
     }
-    const double alpha = admissible_step();
-    shortened_ = alpha < 1.0;
-    // The next step halves the penalty; starting from the CFL number actually used, so that the
-    // CFL number halves also when it was clamped.
-    if (shortened_) {
-      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
-      cfl_cap_ = 0.5 * cfl_;
-      if (alpha < min_step) {
-        ctx_.log.write("warning", "solver", "implicit step rejected: no admissible step length",
-                       "W0711",
-                       nlohmann::json{{"iteration", iteration},
-                                      {"reason", "admissible"},
-                                      {"cfl", cfl_},
-                                      {"residual_drop", nullptr}}
-                           .dump());
-      } else {
-        ctx_.log.write("info", "solver", "step shortened", {},
-                       nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+    for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += omega * du_[i];
+    previous_omega_ = omega;
+    previous_norm_ = norm;
+    // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
+    // solution; second order from the step after the first-order residual has dropped.
+    if (!second_order_ &&
+        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      first_norms_.clear();
+      previous_norm_ = 0.0;  // the norms are scaled per order
+    }
+  }
+
+  // Largest fraction of du (at most 1) that changes no cell's density or total energy by more
+  // than physical_fraction of its value (ANK eq. 15).
+  [[nodiscard]] double physical_step() const {
+    double worst = 1.0;
+    for (std::size_t c = 0; c < n_; ++c) {
+      for (const std::size_t k : {std::size_t{0}, std::size_t{4}}) {
+        const std::size_t i = k * n_ + c;
+        worst = std::max(worst, std::abs(du_[i]) / (physical_fraction * std::abs(u_[i])));
       }
     }
-    if (alpha < min_step) {
-      // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
-      // number the run has diverged.
-      if (cfl_ <= cfl_min) report.diverged_cell = static_cast<index_t>(worst_cell());
-      return;
+    return 1.0 / worst;
+  }
+
+  // R(u + w du), the residual of the order being solved, into trial_res_.
+  std::span<const Res> trial_residual(double omega) {
+    trial_u_.resize(5 * n_);
+    trial_state_.resize(5 * n_);
+    trial_res_.resize(5 * n_);
+    for (std::size_t i = 0; i < 5 * n_; ++i) trial_u_[i] = u_[i] + omega * du_[i];
+    euler_.state(trial_u_, trial_state_);
+    euler_.residual(trial_state_, trial_res_);
+    return trial_res_;
+  }
+
+  // Norm of r + w shift du over the equations the ratio follows, each equation scaled by its
+  // largest residual so far in the order (ADflow scales nondimensional states instead).
+  [[nodiscard]] double scaled_norm(std::span<const Res> r, std::span<const double> shift,
+                                   double omega) const {
+    double s = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (exempt_[k] || !(first_norms_[k] > 0.0)) continue;
+      for (std::size_t c = 0; c < n_; ++c) {
+        const std::size_t i = k * n_ + c;
+        double v = static_cast<double>(r[i]);
+        if (!shift.empty()) v += omega * shift[c] * du_[i];
+        v /= first_norms_[k];
+        s += v * v;
+      }
     }
-    for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
+    return std::sqrt(s / static_cast<double>(n_));
   }
 
   // GCR on (V / dt + dR/dU) du = -R from du = 0, dR/dU v = (R(u + eps v) - R(u)) / eps with
@@ -666,19 +720,6 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     return worst;
-  }
-
-  // Largest fraction of du (at most 1) that keeps every cell's density and pressure above
-  // (1 - max_decrease) of their current values.
-  [[nodiscard]] double admissible_step() const {
-    double alpha = 1.0;
-    for (std::size_t c = 0; c < n_; ++c) {
-      const double rho = u_[c], drho = du_[c];
-      if (drho < 0.0) alpha = std::min(alpha, max_decrease * rho / -drho);
-      const double p = pressure(c, 0.0);
-      while (alpha >= min_step && !(pressure(c, alpha) >= (1.0 - max_decrease) * p)) alpha *= 0.5;
-    }
-    return alpha;
   }
 
   [[nodiscard]] double pressure(std::size_t c, double a) const {
@@ -794,13 +835,16 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<double> newton_u_, newton_r_, newton_v_;
   std::vector<State> newton_state_;
   std::vector<Res> newton_res_;
-  bool newton_ = false;       // logging only: the phase follows from the restart state
-  double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
+  bool newton_ = false;
+  double previous_norm_ = 0.0;
+  double previous_omega_ = 1.0;
+  double freestream_norm_ = 0.0;
+  std::vector<double> trial_u_;
+  std::vector<State> trial_state_;
+  std::vector<Res> trial_res_;
   double cfl_ = cfl_start;
-  double penalty_ = 1.0;
   bool second_order_ = false;
   int first_order_steps_ = 0;
-  bool shortened_ = false;
   // Equations left out of the SER ratio, and their floor (set at the start of each order).
   std::array<bool, 5> exempt_{};
   double exempt_floor_ = 0.0;
