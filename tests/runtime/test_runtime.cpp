@@ -1694,6 +1694,11 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi]") {
   Json malformed;
   CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, false).empty());
   CHECK(malformed["code"] == "E0140");
+  // Rank 1 alone fails while the others go on into the partition: every rank ends.
+  Json alone;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, false).empty());
+  CHECK(alone["code"] == "E0140");
+  CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in

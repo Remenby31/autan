@@ -841,6 +841,21 @@ TEST_CASE("Cells across a face or a periodic pair never share a colour, in any c
     for (std::size_t k = 0; k < partners.size(); ++k)
       apart(mesh.owner()[at(first) + k], mesh.owner()[at(partners[k])]);
   }
+  // A group's id is its least cell_global_id, not its place: the cells renumbered (RCM) and
+  // the groups listed backwards, each cell keeps its colour.
+  std::vector<index_t> new_of(at(mesh.n_cells()));
+  for (std::size_t c = 0; c < new_of.size(); ++c)
+    new_of[at(renumbered.cell_global_id()[c])] = static_cast<index_t>(c);
+  std::vector<autan::offset_t> backwards_offsets{0};
+  std::vector<index_t> backwards_cells;
+  for (std::size_t g = group_offsets.size() - 1; g > 0; --g) {
+    for (auto k = group_offsets[g - 1]; k < group_offsets[g]; ++k)
+      backwards_cells.push_back(new_of[at(group_cells[at(k)])]);
+    backwards_offsets.push_back(static_cast<autan::offset_t>(backwards_cells.size()));
+  }
+  const auto regrouped = autan::colour_cells(renumbered, backwards_offsets, backwards_cells);
+  for (std::size_t c = 0; c < regrouped.size(); ++c)
+    CHECK(regrouped[c] == grouped[at(renumbered.cell_global_id()[c])]);
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::colour_cells(mesh, std::vector<autan::offset_t>{0, 2}, std::vector<index_t>{0, 0});
   });
