@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: Runs of the selected tests
+        description: Runs of the selected tests (1 to 500)
         type: number
         default: 50
       tests:
@@ -62,12 +62,20 @@ jobs:
           TESTS: ${{ inputs.tests }}
         run: |
           set +e
+          if ! [[ $RUNS =~ ^[1-9][0-9]*$ ]] || ((RUNS > 500)); then
+            echo "::error::runs must be an integer from 1 to 500, not $RUNS"; exit 1
+          fi
           out=$RUNNER_TEMP/mpi-stress
           mkdir -p "$out"
           n=$(ctest --test-dir build -N -L mpi -R "$TESTS" | sed -n 's/^Total Tests: //p')
           [ "${n:-0}" -ge 1 ] || { echo "::error::no test labelled mpi matches $TESTS"; exit 1; }
-          hangs=0 failures=0
+          # No new run past 240 min: a last run that hangs (120 s, then its dump) and the upload
+          # still fit in the job's 300 min, so the totals below are always written.
+          hangs=0 failures=0 done=0
           for i in $(seq 1 "$RUNS"); do
+            if ((SECONDS > 240 * 60)); then
+              echo "::warning::stopped after $done of $RUNS runs: 240 min reached"; break
+            fi
             bench/ci/ctest-watchdog.sh 120 "$out/stacks-$i" -- \
               ctest --test-dir build -L mpi -R "$TESTS" --output-on-failure >"$out/run-$i.log" 2>&1
             status=$?
@@ -79,9 +87,10 @@ jobs:
               rm -rf "$out/stacks-$i"
               echo "run $i of $RUNS passed"
             fi
+            done=$i
           done
-          echo "### MPI stress: $hangs hung, $failures failed, of $RUNS runs of \`$TESTS\` ($n tests)" >> "$GITHUB_STEP_SUMMARY"
-          [ "$hangs" -eq 0 ] && [ "$failures" -eq 0 ]
+          echo "### MPI stress: $hangs hung, $failures failed, of $done runs ($RUNS requested) of \`$TESTS\` ($n tests)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$hangs" -eq 0 ] && [ "$failures" -eq 0 ] && [ "$done" -eq "$RUNS" ]
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
