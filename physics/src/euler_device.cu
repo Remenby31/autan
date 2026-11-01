@@ -283,6 +283,17 @@ class CudaStepper final : public DeviceStepper<P> {
     for (std::size_t i = 0; i < r.size(); ++i) res[i] = static_cast<double>(r[i]);
   }
 
+  void set_second_order(bool on) override {
+    second_order_ = on;
+    // As the host: without reconstruction gradients and limiter are zero; unlimited, phi is 1.
+    check(cudaMemsetAsync(grad_.get(), 0, grad_.size() * sizeof(*grad_.get()), stream_), "grad");
+    if (on && !scheme_.limiter) {
+      phi_.upload(std::vector<S>(5 * n_, S(1)), stream_);
+    } else {
+      check(cudaMemsetAsync(phi_.get(), 0, phi_.size() * sizeof(*phi_.get()), stream_), "phi");
+    }
+  }
+
   void upload(std::span<const double> u) override { u_.upload(u, stream_); }
   void download(std::span<double> u) override { u_.download(u, stream_); }
 

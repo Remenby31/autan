@@ -126,8 +126,8 @@ class EulerPhysics final : public runtime::Physics {
     if (ctx.start != nullptr) start_from(*ctx.start);
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
-      device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, true, ctx.ranks,
-                                       ctx.stream);
+      device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
+                                       ctx.ranks, ctx.stream);
       device_->upload(u_);
       if (in.time.kind == "steady") {
         ctx.log.write("warning", "solver",
@@ -493,21 +493,8 @@ class EulerPhysics final : public runtime::Physics {
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
     euler_.spectral_radius(lambda_);
-    // Largest relative residual over the equations, of the order being solved.
-    const std::vector<double>& current = norms.empty() ? report.residuals : norms;
-    double drop = 0.0;
-    if (first_norms_.empty()) first_norms_ = current;
-    for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
-    }
-    // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
-    // solution; second order from the step after the first-order residual has dropped.
-    if (!second_order_ &&
-        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
-      second_order_ = true;
-      euler_.set_second_order(true);
-      first_norms_.clear();
-    }
+    const double drop = relative_drop(norms.empty() ? report.residuals : norms);
+    switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
     penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
@@ -694,6 +681,29 @@ class EulerPhysics final : public runtime::Physics {
     euler_.boundary_pressure(p, force);
   }
 
+  // Largest relative residual over the equations, of the order being solved.
+  double relative_drop(const std::vector<double>& current) {
+    double drop = 0.0;
+    if (first_norms_.empty()) first_norms_ = current;
+    for (std::size_t k = 0; k < 5; ++k) {
+      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
+    }
+    return drop;
+  }
+
+  // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
+  // solution; second order from the step after the first-order residual has dropped. The device
+  // starts the same way, so that both solve the same sequence of problems.
+  void switch_order(double drop) {
+    if (!second_order_ &&
+        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      if (device_) device_->set_second_order(true);
+      first_norms_.clear();
+    }
+  }
+
   // One step on the device; the host state is out of date until sync().
   StepReport device_step() {
     StepReport report;
@@ -709,10 +719,17 @@ class EulerPhysics final : public runtime::Physics {
     }
     const auto& t = ctx_.input.time;
     const bool steady = t.kind == "steady";
+    if (steady && !second_order_) {
+      // As the host's steady step: the history reports the second-order residual.
+      device_->set_second_order(true);
+      report.residuals = device_->evaluate().residuals;
+      device_->set_second_order(false);
+    }
     const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
                           : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
     host_stale_ = true;
-    report.residuals = r.residuals;
+    if (steady) switch_order(relative_drop(r.residuals));
+    if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
     return report;

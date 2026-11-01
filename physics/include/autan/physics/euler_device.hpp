@@ -32,6 +32,8 @@ class DeviceStepper {
   virtual Result evaluate() = 0;
   // R of the stored state of `u` (5 x n_cells, FP64) into `res` (5 x n_cells), on the device.
   virtual void residual(std::span<const double> u, std::span<double> res) = 0;
+  // Switches the linear reconstruction on or off, as Euler<P>::set_second_order.
+  virtual void set_second_order(bool on) = 0;
   virtual void upload(std::span<const double> u) = 0;
   virtual void download(std::span<double> u) = 0;
 };
