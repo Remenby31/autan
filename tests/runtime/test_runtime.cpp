@@ -38,6 +38,8 @@ using Catch::Matchers::WithinRel;
 
 const fs::path data_dir{AUTAN_TEST_DATA_DIR};
 const fs::path mesh_path = data_dir / "mesh" / "hybrid" / "polyMesh";
+// The Euler manufactured solution autan-vv exported for the SDK's tests.
+const fs::path mms_path = data_dir / ".." / ".." / "py" / "tests" / "fixtures" / "euler.mms.json";
 const autan::runtime::SolverBuild build{.version = "0.0.0", .commit = std::string(40, 'a')};
 
 std::string read(const fs::path& path) {
@@ -61,6 +63,8 @@ Json input(const std::function<void(Json&)>& edit = {},
            const char* file = "hybrid.solver-input.json") {
   Json doc = Json::parse(read(data_dir / "runtime" / file));
   doc["mesh"]["path"] = fs::absolute(mesh_path).string();
+  if (doc["verification"].is_object())
+    doc["verification"]["path"] = fs::absolute(mms_path).string();
   if (edit) edit(doc);
   return doc;
 }
@@ -456,5 +460,33 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                                    err) == ExitStatus::invalid_input);
     std::fclose(out);
     std::fclose(err);
+  }
+}
+
+TEST_CASE("A verification case archives its manufactured solution", "[runtime]") {
+  // `autan prepare` with verification = Manufactured("euler.mms.json"): every
+  // boundary is manufactured, BCType BCTypeUserDefined in solution.cgns.
+  const Outcome o = run(input({}, "hybrid-verification.solver-input.json"));
+  REQUIRE(o.status == ExitStatus::finished);
+  CHECK(read(o.run / "manufactured.json") == read(mms_path));
+  const autan::Mesh back = autan::io::read_mesh(o.run / "solution.cgns");
+  for (const auto& zone : back.face_zones()) {
+    if (zone.boundary) CHECK(zone.bc_type == "UserDefined");  // SIDS string of BCTypeUserDefined
+  }
+  SECTION("E0206: the file differs from its hash") {
+    require_error(run(input([](Json& d) { d["verification"]["sha256"] = std::string(64, 'a'); },
+                            "hybrid-verification.solver-input.json")),
+                  "E0206");
+  }
+  SECTION("E0207: the file is missing") {
+    require_error(
+        run(input([](Json& d) { d["verification"]["path"] = "/nonexistent/euler.mms.json"; },
+                  "hybrid-verification.solver-input.json")),
+        "E0207");
+  }
+  SECTION("E0705: manufactured boundaries without verification") {
+    require_error(run(input([](Json& d) { d["verification"] = nullptr; },
+                            "hybrid-verification.solver-input.json")),
+                  "E0705");
   }
 }

@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace autan::runtime {
@@ -12,11 +13,13 @@ namespace autan::runtime {
 /// whole line per write.
 class RunDirectory {
  public:
-  /// Creates `.<run_id>` under `runs`, writes the initial files, renames it
+  /// Creates `.<run_id>` under `runs`, writes the initial files (and
+  /// manufactured.json, byte for byte, for a verification case), renames it
   /// to `<run_id>`. Throws std::runtime_error when a step fails.
   RunDirectory(const std::filesystem::path& runs, const std::string& run_id,
                const std::string& run_json, const std::string& case_toml,
-               const std::string& mesh_info_json);
+               const std::string& mesh_info_json,
+               const std::optional<std::string>& manufactured_json = std::nullopt);
   RunDirectory(const RunDirectory&) = delete;
   RunDirectory& operator=(const RunDirectory&) = delete;
   ~RunDirectory();

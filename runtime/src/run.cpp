@@ -103,6 +103,7 @@ std::string_view bc_type(const BoundaryInput& b) {
   if (b.kind == "symmetry") return "BCSymmetryPlane";
   if (b.kind == "farfield") return "BCFarfield";
   if (b.kind == "outlet") return "BCOutflowSubsonic";
+  if (b.kind == "manufactured") return "BCTypeUserDefined";
   return "BCInflowSubsonic";  // inlet, velocity-inlet
 }
 
@@ -139,6 +140,28 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry) {
         .path = "mesh.sha256",
         .data_json =
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
+  }
+  if (p.input.verification) {
+    // The manufactured solution is checked like the mesh: by its hash.
+    auto& v = *p.input.verification;
+    std::ifstream in(v.path, std::ios::binary);
+    if (!in) {
+      throw InputError(Diagnostic{.code = "E0207",
+                                  .message = "cannot read '" + v.path + "'",
+                                  .path = "verification.path",
+                                  .data_json = "{}"});
+    }
+    std::ostringstream text;
+    text << in.rdbuf();
+    v.text = text.str();
+    if (sha256_hex(v.text) != v.sha256) {
+      throw InputError(Diagnostic{
+          .code = "E0206",
+          .message = "the manufactured solution's SHA-256 differs from verification.sha256",
+          .path = "verification.sha256",
+          .data_json =
+              nlohmann::json{{"expected", v.sha256}, {"found", sha256_hex(v.text)}}.dump()});
+    }
   }
   const io::MeshInfoZones zones = io::meshinfo_zones(p.mesh);
   for (const index_t z : zones.boundary) p.face_zone[p.mesh.face_zones()[at(z)].name] = z;
@@ -263,9 +286,11 @@ class Run {
   }
 
   void open(const fs::path& runs) {
-    dir_ = std::make_unique<RunDirectory>(runs, info_["run_id"].get<std::string>(), info_.dump(2),
-                                          p_.input.case_toml,
-                                          io::mesh_info_json(p_.mesh, p_.mesh_hash));
+    dir_ = std::make_unique<RunDirectory>(
+        runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
+        io::mesh_info_json(p_.mesh, p_.mesh_hash),
+        p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
+                              : std::nullopt);
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
 

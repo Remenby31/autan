@@ -250,8 +250,8 @@ BoundaryInput parse_boundary(const Json& value, const std::string& path) {
                   "static_pressure"});
   BoundaryInput b;
   b.zone = o.string("zone");
-  b.kind =
-      o.tag("kind", {"wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet", "outlet"});
+  b.kind = o.tag("kind", {"wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet",
+                          "outlet", "manufactured"});
   b.temperature = b.kind == "wall" ? (o.is_null("temperature")
                                           ? std::nullopt
                                           : std::optional<double>(o.positive("temperature")))
@@ -287,9 +287,10 @@ SolverInput parse_solver_input(const std::string& text) {
   } catch (const Json::exception& e) {
     invalid("", std::string("not JSON: ") + e.what());
   }
-  const Object root(doc, "",
-                    {"schema", "case", "mesh", "precision", "deterministic", "devices", "physics",
-                     "freestream", "boundaries", "cell_zones", "time", "monitors"});
+  const Object root(
+      doc, "",
+      {"schema", "case", "mesh", "verification", "precision", "deterministic", "devices", "physics",
+       "freestream", "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -303,6 +304,16 @@ SolverInput parse_solver_input(const std::string& text) {
     if (!std::filesystem::path(in.mesh_path).is_absolute())
       invalid("mesh.path", "must be an absolute path");
     in.mesh_sha256 = sha256(m, "sha256");
+  }
+  if (!root.is_null("verification")) {
+    const Object v(root.get("verification"), "verification", {"path", "sha256"});
+    Verification verification;
+    verification.path = v.string("path");
+    if (!std::filesystem::path(verification.path).is_absolute()) {
+      invalid("verification.path", "must be an absolute path");
+    }
+    verification.sha256 = sha256(v, "sha256");
+    in.verification = std::move(verification);
   }
   in.precision = root.tag("precision", {"fp32+acc64", "fp64"});
   in.deterministic = root.boolean("deterministic");
@@ -378,6 +389,16 @@ SolverInput parse_solver_input(const std::string& text) {
       invalid("time.kind", "expected steady or unsteady");
     }
   }
+  // With verification every boundary is manufactured; without, none is.
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if ((in.boundaries[i].kind == "manufactured") != in.verification.has_value()) {
+      invalid(indexed("boundaries", i) + ".kind",
+              in.verification ? "a verification case has only manufactured boundaries"
+                              : "manufactured needs verification");
+    }
+  }
+  if (in.verification && in.time.kind != "steady")
+    invalid("time.kind", "verification cases are steady");
   if ((in.turbulence.model == "ddes" || in.turbulence.model == "wmles") &&
       in.time.kind != "unsteady") {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");

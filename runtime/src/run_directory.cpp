@@ -51,7 +51,8 @@ void write_atomically(const fs::path& path, const std::string& text) {
 
 RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
                            const std::string& run_json, const std::string& case_toml,
-                           const std::string& mesh_info_json) {
+                           const std::string& mesh_info_json,
+                           const std::optional<std::string>& manufactured_json) {
   std::error_code ec;
   fs::create_directories(runs, ec);
   if (ec) fail("create", runs);
@@ -60,6 +61,7 @@ RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
   write_file(staging / "run.json", run_json);
   write_file(staging / "case.toml", case_toml);
   write_file(staging / "mesh-info.json", mesh_info_json);
+  if (manufactured_json) write_file(staging / "manufactured.json", *manufactured_json);
   path_ = runs / run_id;
   rename_no_replace(staging, path_);
 }

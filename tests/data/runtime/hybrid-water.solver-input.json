@@ -155,5 +155,6 @@
     "max_iterations": 10000,
     "residual_orders": 8.0
   },
-  "monitors": []
+  "monitors": [],
+  "verification": null
 }

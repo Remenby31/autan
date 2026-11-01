@@ -41,7 +41,8 @@ struct CellZoneInput {
 
 struct BoundaryInput {
   std::string zone;
-  std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet
+  std::string
+      kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet, manufactured
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
   std::optional<double> velocity;  ///< velocity-inlet: speed normal to the face (m/s)
 };
@@ -79,6 +80,13 @@ struct ForcesMonitor {
   std::array<double, 3> moment_center{};
 };
 
+/// A manufactured solution (autan.mms/1) the case is verified against.
+struct Verification {
+  std::string path;    ///< absolute path of the autan.mms/1 file
+  std::string sha256;  ///< its expected SHA-256
+  std::string text;    ///< its bytes, read and checked by autan-run
+};
+
 struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
@@ -93,6 +101,8 @@ struct SolverInput {
   std::vector<CellZoneInput> cell_zones;
   TimeInput time;
   std::vector<ForcesMonitor> monitors;
+  /// Present for verification cases: every boundary is then "manufactured".
+  std::optional<Verification> verification;
 };
 
 /// Parses and checks a solver input: every key present, no unknown key,
