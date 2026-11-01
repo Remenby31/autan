@@ -3,6 +3,11 @@
 
 #include "autan/runtime/run.hpp"
 #include "autan_build_info.hpp"
+#include "comm.hpp"
+
+#ifdef AUTAN_HAVE_MPI
+#include <mpi.h>
+#endif
 
 namespace autan::runtime {
 
@@ -35,7 +40,23 @@ int run_main(int argc, char* const* argv, const PhysicsRegistry& registry) {
     return static_cast<int>(ExitStatus::invalid_input);
   }
   const SolverBuild build{.version = AUTAN_BUILD_VERSION, .commit = AUTAN_BUILD_COMMIT};
+#ifdef AUTAN_HAVE_MPI
+  // MPI starts only under a launcher: a plain autan-run is one rank.
+  int argc_mpi = argc;
+  char** argv_mpi = const_cast<char**>(
+      argv);  // NOLINT(cppcoreguidelines-pro-type-const-cast): MPI_Init's signature
+  if (launched_by_mpi() && MPI_Init(&argc_mpi, &argv_mpi) != MPI_SUCCESS) {
+    std::fputs("autan-run: MPI_Init failed\n", stderr);
+    return static_cast<int>(ExitStatus::failed);
+  }
+  const int status = static_cast<int>(run_case(input, runs, registry, build, stdout, stderr));
+  int initialized = 0;
+  MPI_Initialized(&initialized);
+  if (initialized != 0) MPI_Finalize();
+  return status;
+#else
   return static_cast<int>(run_case(input, runs, registry, build, stdout, stderr));
+#endif
 }
 
 }  // namespace autan::runtime

@@ -158,3 +158,4 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0143 | `partition_empty_part` | A part received no cell. |
 | E0144 | `halo_inconsistent` | The communicator size differs from the partition count, or two ranks disagree on what they exchange. |
 | E0145 | `halo_device_unsupported` | A halo exchange on device memory without CUDA support in the build or in MPI. |
+| E0146 | `mpi_unavailable` | A launcher started several ranks of a build without MPI. |
