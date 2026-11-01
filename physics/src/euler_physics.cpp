@@ -1059,6 +1059,7 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   return std::nullopt;
 }
 
+#ifdef AUTAN_PHYSICS_CUDA
 // On a device, besides euler_scope: one rank, and no point vortex (the device steps do not
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
@@ -1080,6 +1081,7 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
   }
   return euler_scope(in, ranks);
 }
+#endif
 
 }  // namespace
 
