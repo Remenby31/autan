@@ -251,11 +251,11 @@ TEST_CASE("Periodic pairs round-trip through solution.cgns", "[cgns][periodic]")
       CGNS_ENUMT(PointSetType_t) set{}, donor_set{};
       CGNS_ENUMT(ZoneType_t) donor_zone{};
       CGNS_ENUMT(DataType_t) donor_type{};
-      cgsize_t n = 0, nd = 0;
-      REQUIRE(cg_conn_info(fn, 1, 1, i, name, &location, &type, &set, &n, donor_name, &donor_zone,
-                           &donor_set, &donor_type, &nd) == CG_OK);
+      cgsize_t count = 0, donor_count = 0;
+      REQUIRE(cg_conn_info(fn, 1, 1, i, name, &location, &type, &set, &count, donor_name,
+                           &donor_zone, &donor_set, &donor_type, &donor_count) == CG_OK);
       std::vector<cgsize_t> points(static_cast<std::size_t>(n)),
-          donor(static_cast<std::size_t>(nd));
+          donor(static_cast<std::size_t>(donor_count));
       REQUIRE(cg_conn_read(fn, 1, 1, i, points.data(), CGNS_ENUMV(LongInteger), donor.data()) ==
               CG_OK);
       std::array<float, 3> center{}, angle{}, t{};
