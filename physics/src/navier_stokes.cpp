@@ -137,6 +137,13 @@ void NavierStokes<P>::set_eddy_viscosity(std::span<const double> cells,
 }
 
 template <class P>
+typename NavierStokes<P>::Arrays NavierStokes<P>::arrays() noexcept {
+  auto& m = *impl_;
+  return {m.euler.arrays(), m.mu_t.data(), m.mu_t_b.data(), static_cast<double>(m.d.p_ref[0]),
+          static_cast<double>(m.d.gas_constant[0])};
+}
+
+template <class P>
 void NavierStokes<P>::state(std::span<const double> u, std::span<State> s) const {
   impl_->euler.state(u, s);
 }

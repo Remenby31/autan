@@ -60,6 +60,17 @@ class NavierStokes {
   /// viscous stress, -tau n (3 x n_boundary_faces, Pa, n out of the fluid); zero on slip faces.
   void viscous_traction(std::span<double> t) const;
 
+  /// The arrays of the last evaluation and the eddy viscosity per cell and per face, which a
+  /// turbulence model reads and writes (docs/design/ns-sa.md).
+  struct Arrays {
+    typename Euler<P>::Arrays flow;
+    State* mu_t;
+    State* mu_t_b;
+    double p_ref;  ///< Pa: the primitive pressure is p - p_ref
+    double gas_constant;
+  };
+  [[nodiscard]] Arrays arrays() noexcept;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -413,8 +413,8 @@ void Euler<P>::spectral_radius(std::span<State> lambda) {
 template <class P>
 typename Euler<P>::Arrays Euler<P>::arrays() noexcept {
   auto& m = *impl_;
-  return {m.prim.data(),    m.grad.data(), m.prim_b.data(),
-          m.bc_kind.data(), m.bc.data(),   m.dwdu.data()};
+  return {m.prim.data(),  m.grad.data(), m.prim_b.data(), m.bc_kind.data(),
+          m.bc.data(),    m.dwdu.data(), m.topo,          m.stencil_lsq_weight.data()};
 }
 
 template <class P>
