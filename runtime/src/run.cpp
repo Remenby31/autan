@@ -324,15 +324,16 @@ void load_states(Prepared& p) {
       fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
            {{"zone", b.zone}, {"expected", n}, {"found", z["faces"]}});
     }
-    const auto rows = [&](const char* key, std::size_t width) {
+    const auto rows = [&](const char* array, std::size_t width) {
       std::vector<double> out;
-      const auto& a = z.contains(key) ? z[key] : nlohmann::json();
-      if (!a.is_array() || a.size() != n) invalid_document("zones." + b.zone + "." + key);
+      const auto& a = z.contains(array) ? z[array] : nlohmann::json();
+      if (!a.is_array() || a.size() != n) invalid_document("zones." + b.zone + "." + array);
       for (const auto& row : a) {
-        if (!row.is_array() || row.size() != width) invalid_document("zones." + b.zone + "." + key);
+        if (!row.is_array() || row.size() != width)
+          invalid_document("zones." + b.zone + "." + array);
         for (const auto& v : row) {
           if (!v.is_number() || !std::isfinite(v.get<double>()))
-            invalid_document("zones." + b.zone + "." + key);
+            invalid_document("zones." + b.zone + "." + array);
           out.push_back(v.get<double>());
         }
       }
