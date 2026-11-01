@@ -27,6 +27,13 @@ class Role(enum.Enum):
     GEOM = "geom"
     PARAM = "param"
     JAC = "jac"  # blocks of Jacobians, written for preconditioners (not differentiated)
+    # Blocks kept in the accumulation precision (diagonal blocks and their inverses, FP64 in
+    # fp32+acc64), off-diagonal blocks staying in `jac` (mixed-precision preconditioners).
+    JAC_ACCUM = "jac_accum"
+
+
+# Matrix blocks are data of a linear solve, never differentiated.
+PASSIVE_ROLES = frozenset({Role.JAC, Role.JAC_ACCUM})
 
 
 @dataclass(frozen=True)
@@ -67,10 +74,11 @@ Param = RoleAnnotation(Role.PARAM)
 class _JacAnnotation(RoleAnnotation):
     def shape(self, *dims: int) -> Type:
         """`Jac.shape(2, 5, 5)`: a block shape for Jacobian datasets."""
-        return Type(Role.JAC, tuple(dims))
+        return Type(self.role, tuple(dims))
 
 
 Jac = _JacAnnotation(Role.JAC)
+JacAccum = _JacAnnotation(Role.JAC_ACCUM)
 
 
 def as_type(annotation: object) -> Type:
