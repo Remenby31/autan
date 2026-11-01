@@ -111,6 +111,14 @@ TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[perio
                  }
                }));
   require_code(autan::ErrorCode::mesh_periodic_unmatched, shifted(1e-4, false));
+  // The same node moved on both sides: exact translates with subnormal bins.
+  const auto both = periodic_box(3, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
+    for (std::size_t i = 0; i < m.x.size(); ++i) {
+      if ((m.x[i] == 0.0 || m.x[i] == 1.0) && m.z[i] == 0.0 && m.y[i] > 0.3 && m.y[i] < 0.4)
+        m.y[i] = 1e-305;
+    }
+  });
+  CHECK(autan::assemble(both).periodic_partners(0).size() == 9);
 }
 
 TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "[periodic]") {
