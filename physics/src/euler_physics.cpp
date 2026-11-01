@@ -654,6 +654,17 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
         .path = "time.kind",
         .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
   }
+  // Face states are paired with the global mesh's zone faces; a partition holds only its own,
+  // and the physics has no global face numbering to find their rows.
+  for (std::size_t i = 0; ranks > 1 && i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].kind == "oracle-state") {
+      return runtime::PhysicsRefusal{
+          .message = "the Euler physics imposes oracle-state faces on one rank only, not " +
+                     std::to_string(ranks),
+          .path = "boundaries[" + std::to_string(i) + "].kind",
+          .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}, {"ranks", ranks}}.dump()};
+    }
+  }
   if (!in.periodic.empty() && in.time.kind == "steady") {
     return runtime::PhysicsRefusal{
         .message = "the steady Euler solver does not run with periodic pairs yet",
