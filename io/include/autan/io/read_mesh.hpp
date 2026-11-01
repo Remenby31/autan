@@ -7,7 +7,8 @@
 namespace autan::io {
 
 /// Reads a mesh, detecting the format from the content: a Gmsh MSH 4.1 file
-/// (ASCII or binary), a Fluent mesh file (ASCII or binary sections), or an
+/// (ASCII or binary), a Fluent mesh file (ASCII or binary sections), a CGNS
+/// file (HDF5; needs a build with AUTAN_ENABLE_CGNS, else E0133), or an
 /// OpenFOAM polyMesh directory (the directory itself or a case directory
 /// holding constant/polyMesh). Returns the assembled mesh with zones and
 /// provenance; throws autan::Error with an E01xx code (docs/contracts/mesh.md).

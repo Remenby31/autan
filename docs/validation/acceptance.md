@@ -2,7 +2,7 @@
 
 The numbers each milestone gate in [PLAN.md](../PLAN.md) must meet, where they come from, and the `autan-vv` tool that measures them. A threshold marked *ours* is a project decision; its rationale is in the row. Dataset details (files, conditions, licences, further cases) live in [validation-datasets.md](../research/validation-datasets.md); this page states the gate once.
 
-Conventions for every gate:
+Conventions for every gate (a gate identifier in a row means `autan-vv verify <runs> --against <oracle> --gate <id>` checks it; see [harness.md](harness.md)):
 
 - **Order** is the least-squares order of the L2 error over at least four levels and the order of the finest pair, both from `autan-vv order` ([order.md](order.md)). L∞ is reported, not gated: on non-nested unstructured families it fluctuates by ±1 (measured, [order.md](order.md#measured-orders)).
 - **Code-to-code** gates compare our **continuum estimate** (Richardson from the three finest of at least four levels, with its GCI, `autan_vv.order.richardson`) with the published continuum estimate, never level by level.
@@ -24,9 +24,11 @@ Conventions for every gate:
 
 | Criterion | Threshold | Source |
 |---|---|---|
-| MMS `euler` | L2 order 2 ± 0.1 for each conserved variable, 4 cell families, Roe, HLLC, AUSM+-up, FP32 and FP64 | Roy et al. 2004 (design order); [datasets §M2](../research/validation-datasets.md#m2--compressible-euler) |
-| Ringleb flow | L2 order 2 ± 0.1 in density and entropy | HiOCFD1 C1.2; datasets §M2 |
-| Isentropic vortex, one period, domain ≥ [−10, 10]² | spatial order 2 ± 0.1; temporal order = RK order ± 0.1 | Spiegel, Huynh and DeBonis, AIAA 2015-2444 |
+| Freestream preservation, gate `freestream-preservation` | uniform freestream kept to L∞ ≤ 64 ε of the run precision, relative, in every field, on every cell family | Discrete conservation of a constant state (closed cells) |
+| MMS `euler`, gate `euler-mms-order` | L2 order 2 ± 0.1 for each conserved variable, 4 cell families, Roe, HLLC, AUSM+-up, FP32 and FP64 | Roy et al. 2004 (design order); [datasets §M2](../research/validation-datasets.md#m2--compressible-euler) |
+| Ringleb flow, gate `ringleb-order` | L2 order 2 ± 0.1 in density and entropy | HiOCFD1 C1.2; datasets §M2 |
+| Isentropic vortex, one period (t = 40 at Mach 0.5), domain [−10, 10]², gate `vortex-order` | spatial order 2 ± 0.1 for each conserved variable; temporal order = RK order ± 0.1 | Spiegel, Huynh and DeBonis, AIAA 2015-2444 |
+| Sod shock tube, gate `sod-order` | density L1 order between 0.6 and 1.1 | Banks, Aslam and Rider 2008 (between 2/3 and 1 for a contact); *ours*: 0.6 and 1.1 allow ±0.1 of fitting noise |
 | NACA 0012 inviscid, M 0.8, α 0° | continuum CD within 1 count of 0.008342 | Vassberg and Jameson 2010, Tables 10–11 (via datasets §M2) |
 | NACA 0012 inviscid, M 0.8, α 1.25° | CL inside 0.3516–0.3562 widened by our GCI; CD within 1 count of 0.02268 | idem, point-vortex farfield runs |
 | NACA 0012 inviscid, M 0.5, α 1.25° | CD decreases monotonically; extrapolated \|CD\| < 0.5 count | idem (subcritical, CD → 0) |
@@ -36,9 +38,10 @@ Conventions for every gate:
 
 | Criterion | Threshold | Source |
 |---|---|---|
-| MMS `navier_stokes` | L2 order 2 ± 0.1, 4 families + perturbed, FP32 and FP64, non-orthogonal correction on | Roy et al. 2004 |
-| MMS `rans_sa`, `rans_sa_noft2` | L2 order 2 ± 0.1 for the mean flow and ν̂ with second-order turbulence advection | Eça et al. 2007; Oliver et al. 2012; [mms.md](mms.md) |
-| Compressible Couette | velocity exact to 64 ε; T and wall heat flux order 2 ± 0.1 | Exact solution (`test_mms.py` uses the same flow) |
+| MMS `navier_stokes`, gate `ns-mms-order` | L2 order 2 ± 0.1, 4 families + perturbed, FP32 and FP64, non-orthogonal correction on | Roy et al. 2004 |
+| MMS `rans_sa`, gate `rans-sa-mms-order` (the case schema's SA is SA-neg; `rans_sa_noft2` is for codes that offer SA-noft2) | L2 order 2 ± 0.1 for the mean flow and ν̂ with second-order turbulence advection | Eça et al. 2007; Oliver et al. 2012; [mms.md](mms.md) |
+| Compressible Couette, gate `couette-velocity-exact` | velocity exact to 64 ε of the run precision, relative | Exact solution, linear velocity ([oracles.md](oracles.md)) |
+| Compressible Couette, gate `couette-temperature-order` | T order 2 ± 0.1; wall heat flux order 2 ± 0.1 as well once results.md carries it (the gate checks T only until then) | Exact solution, quadratic temperature |
 | TMR flat plate (`tmr-2dzp-flatplate`) | continuum cf(x = 0.97) within 0.5 % of 2.7056×10⁻³ (hex) and 1 % (tet, poly); continuum CD within 0.5 % of 2.8589×10⁻³ | CFL3D and FUN3D continuum estimates from `cf_convergence.dat` and `drag_convergence.dat` (three finest grids): cf 2.70524 / 2.70601×10⁻³ (p = 1.98 / 1.34), CD 2.85924 / 2.85861×10⁻³ (p = 1.75 / 0.80), the orders TMR publishes. *Ours*: 0.5 % is ten times the CFL3D–FUN3D cf spread (0.03 %) |
 | TMR bump-in-channel (`tmr-2dbc-bump`) | continuum CD within 0.5 % of 3.5714×10⁻³ and continuum cf(0.75) within 0.5 % of 6.1536×10⁻³ | CFL3D continuum estimates from `force_convergence.dat` and `cf_convergence_sa.dat` (three finest grids, p = 2.37 and 1.43, GCI 0.03 % and 0.09 %); FUN3D's three finest CD values oscillate, so it has no continuum CD and its finest-grid 3.5611×10⁻³ is reported only. *Ours*: 0.5 % is about the CFL3D–FUN3D finest-grid CD spread (0.3 %) plus the GCI |
 | TMR NACA 0012, α 10°, family II (`tmr-2dn00-naca0012-numerics`) | \|ΔCL\| ≤ 0.002 from 1.0912–1.0913; \|ΔCD\| ≤ 1 count from 0.01221–0.01222 | Diskin et al. 2015 continuum range; *ours*: tighter than the code-to-code SA-neg spread of HLPW-5 test case 1 (ΔCL ≈ 0.005, ΔCD ≈ 5 counts, datasets §M7) because this 2D case is better defined |

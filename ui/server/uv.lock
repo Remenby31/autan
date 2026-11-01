@@ -127,6 +127,7 @@ provides-extras = ["ui"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "editables", specifier = ">=0.6" },
     { name = "hatchling", specifier = ">=1.33.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "mypy", specifier = ">=1.15" },
