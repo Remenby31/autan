@@ -585,12 +585,6 @@ _CODES = [
         "Differentiate loops with a single output dataset.",
     ),
     Code(
-        "E1013",
-        "Policy not available on the backend",
-        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
-        "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
-    ),
-    Code(
         "E1100",
         "Generated loop failed",
         "A generated loop or the spike driver fails without a more specific code.",
@@ -619,18 +613,6 @@ _CODES = [
         "Face scratch too narrow",
         "Store-gather scratch has fewer components per face than the loop's outputs.",
         "Regenerate the loop so its scratch holds every output component per face.",
-    ),
-    Code(
-        "E1107",
-        "Metal runtime error",
-        "A Metal call, library compilation or command buffer fails.",
-        "Check that the Mac has an Apple GPU with `autan doctor`, then report the message.",
-    ),
-    Code(
-        "E1108",
-        "Strategy not available",
-        "A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.",
-        "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
         "W0801",

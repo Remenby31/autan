@@ -732,14 +732,6 @@ A loop with several output datasets is differentiated.
 
 Fix: Differentiate loops with a single output dataset.
 
-## E1013
-
-**Policy not available on the backend** (error)
-
-A precision policy is requested on a backend that cannot run it (`fp64` on Metal).
-
-Fix: Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.
-
 ## E1100
 
 **Generated loop failed** (error)
@@ -779,19 +771,3 @@ Fix: Use one of the race strategies the driver lists.
 Store-gather scratch has fewer components per face than the loop's outputs.
 
 Fix: Regenerate the loop so its scratch holds every output component per face.
-
-## E1107
-
-**Metal runtime error** (error)
-
-A Metal call, library compilation or command buffer fails.
-
-Fix: Check that the Mac has an Apple GPU with `autan doctor`, then report the message.
-
-## E1108
-
-**Strategy not available** (error)
-
-A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.
-
-Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.

@@ -92,14 +92,11 @@ Per module `m`, in namespace `autan::kernels::m`: `template <class P> struct Dat
 | E1010 | `unknown_backend` | `--backends` names an unknown backend. |
 | E1011 | `unknown_policy` | `--policies` names an unknown policy. |
 | E1012 | `ad_unsupported` | A loop with several output datasets is differentiated. |
-| E1013 | `policy_unsupported_by_backend` | A precision policy is requested on a backend that cannot run it (`fp64` on Metal). |
 | E1100 | `runtime_failure` | A generated loop or the spike driver fails without a more specific code. |
 | E1101 | `gpu_runtime_error` | A CUDA or HIP call or kernel launch fails. |
 | E1102 | `unknown_precision_policy` | A driver receives an unknown policy name. |
 | E1103 | `unknown_race_strategy` | A driver receives an unknown strategy name. |
 | E1104 | `face_scratch_too_narrow` | Store-gather scratch has fewer components per face than the loop's outputs. |
-| E1107 | `metal_runtime_error` | A Metal call, library compilation or command buffer fails. |
-| E1108 | `strategy_unavailable` | A face-loop strategy needs atomics the backend lacks for the policy's accumulation type. |
 
 ## Spike (research §8)
 
