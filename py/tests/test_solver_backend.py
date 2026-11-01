@@ -49,7 +49,9 @@ CASE = (
 
 
 @pytest.fixture
-def hybrid(tmp_path: Path) -> tuple[autan.Case, autan.MeshInfo]:
+def hybrid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[autan.Case, autan.MeshInfo]:
+    for name in [n for n in os.environ if n.startswith("AUTAN_TEST_")]:
+        monkeypatch.delenv(name)
     assert MESH_INFO is not None
     info = subprocess.run(
         [str(MESH_INFO), "--json", str(MESH)], capture_output=True, text=True, check=True
@@ -137,7 +139,13 @@ def test_cli_runs_the_runtime_and_stops_it_cleanly(
     out = json.loads(capsys.readouterr().out)
     assert out["run"]["solver"]["backend"] == "cpu"
 
-    env = {**os.environ, "AUTAN_RUN": str(RELAXATION), "AUTAN_TEST_PAUSE_MS": "50"}
+    # factor 1: the residual never decays, so the run only ends when it is stopped.
+    env = {
+        **os.environ,
+        "AUTAN_RUN": str(RELAXATION),
+        "AUTAN_TEST_PAUSE_MS": "20",
+        "AUTAN_TEST_FACTOR": "1.0",
+    }
     command = [str(Path(sys.executable).with_name("autan")), *argv[:-1]]
     command[command.index(str(tmp_path / "runs"))] = str(tmp_path / "stopped")
     process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -146,8 +154,12 @@ def test_cli_runs_the_runtime_and_stops_it_cleanly(
         (tmp_path / "stopped").glob("run-*/history.jsonl")
     ):
         time.sleep(0.02)
-    process.send_signal(signal.SIGTERM)
-    assert process.wait(timeout=30) == 130
+    try:
+        assert list((tmp_path / "stopped").glob("run-*/history.jsonl"))
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=30) == 130
+    finally:
+        process.kill()
     [run_dir] = (tmp_path / "stopped").glob("run-*")
     assert autan.Results.open(run_dir).run.status == "stopped"
 
@@ -162,3 +174,92 @@ def test_missing_runtime_is_e0804(
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(), runs=tmp_path / "runs")
     assert error.value.codes == ["E0804"]
+
+
+SCRIPT = """
+import sys, autan
+from pathlib import Path
+case = autan.load(sys.argv[1])
+mesh = autan.MeshInfo.load(sys.argv[2])
+backend = autan.SolverBackend(executable=Path(sys.argv[3]))
+try:
+    case.run(mesh, backend=backend, runs=Path(sys.argv[4]))
+except KeyboardInterrupt:
+    sys.exit(130)
+"""
+
+
+@pytest.mark.parametrize("signals", [[signal.SIGTERM], [signal.SIGINT, signal.SIGINT]])
+@pytest.mark.usefixtures("hybrid")
+def test_the_sdk_never_orphans_the_runtime(signals: list[int], tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    env = {**os.environ, "AUTAN_TEST_PAUSE_MS": "20", "AUTAN_TEST_FACTOR": "1.0"}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            SCRIPT,
+            str(tmp_path / "hybrid.py"),
+            str(tmp_path / "hybrid.meshinfo.json"),
+            str(RELAXATION),
+            str(runs),
+        ],
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not list(runs.glob("run-*/history.jsonl")):
+            time.sleep(0.02)
+        for number in signals:
+            process.send_signal(number)
+            time.sleep(0.05)
+        # 130 from the script, or the default handler of a signal that arrives once the
+        # run is already finalized.
+        assert process.wait(timeout=30) in (130, -signals[-1])
+    finally:
+        process.kill()
+    [run_dir] = runs.glob("run-*")
+    assert autan.Results.open(run_dir).run.status == "stopped"
+    survivors = subprocess.run(["pgrep", "-f", str(runs)], capture_output=True, check=False)
+    assert survivors.stdout == b""  # the runtime was reaped, not orphaned
+
+
+def _wrapper(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "wrapper.sh"
+    script.write_text("#!/bin/sh\n" + body + "\n")
+    script.chmod(0o755)
+    return script
+
+
+def test_a_run_not_written_by_this_invocation_is_rejected(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    case, mesh = hybrid
+    earlier = case.run(
+        mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / "runs"
+    )
+    replay = _wrapper(tmp_path, f"echo {earlier.path}")
+    with pytest.raises(autan.CaseError) as error:
+        case.run(mesh, backend=autan.SolverBackend(executable=replay), runs=tmp_path / "runs")
+    assert error.value.codes == ["E0704"]
+
+
+def test_exit_status_and_run_status_must_agree(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    case, mesh = hybrid
+    lying = _wrapper(tmp_path, f'"{RELAXATION}" "$@"; exit 1')
+    with pytest.raises(autan.CaseError) as error:
+        case.run(mesh, backend=autan.SolverBackend(executable=lying), runs=tmp_path / "runs")
+    assert error.value.codes[0] == "E0704"
+
+
+def test_a_relative_executable_is_the_one_in_the_working_directory(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case, mesh = hybrid
+    assert RELAXATION is not None
+    monkeypatch.chdir(RELAXATION.parent)
+    monkeypatch.setenv("AUTAN_RUN", f"./{RELAXATION.name}")
+    result = case.run(mesh, backend=autan.SolverBackend(), runs=tmp_path / "runs")
+    assert result.run.status in ("converged", "completed")

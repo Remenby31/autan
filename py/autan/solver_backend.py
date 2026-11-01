@@ -13,6 +13,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -49,54 +51,130 @@ class SolverBackend:
     executable: Path | None = None
 
     def run(self, case: Case, mesh_info: MeshInfo, runs: Path) -> Results:
-        executable = self.executable or find_executable()
-        if executable is None or not executable.is_file():
-            missing = diagnostic(
-                "E0804",
-                f"the solver runtime autan-run is not installed (set ${EXECUTABLE_VARIABLE} "
-                "or put it on the PATH)",
-            )
-            raise CaseError([missing])
+        executable = (self.executable or find_executable() or Path()).absolute()
+        if not executable.is_file():
+            raise CaseError([_not_installed(f"{executable} is not a file")])
         document = build(
             case, mesh_info, devices=self.devices, deterministic=self.deterministic
         ).document()
+        runs = runs.absolute()
         runs.mkdir(parents=True, exist_ok=True)
+        before = {p.name for p in runs.iterdir()}
         with tempfile.TemporaryDirectory(prefix="autan-input-") as folder:
             source = Path(folder) / "solver-input.json"
             source.write_text(json.dumps(document, indent=2) + "\n")
-            process = subprocess.Popen(
-                [str(executable), "--input", str(source), "--runs", str(runs)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            command = [str(executable), "--input", str(source), "--runs", str(runs)]
             try:
-                stdout, stderr = process.communicate()
-            except KeyboardInterrupt:
-                # Let the runtime finalize the run as stopped, with its solution.
-                process.send_signal(signal.SIGINT)
-                process.communicate()
-                raise
-        if process.returncode == 130:
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+            except OSError as error:
+                raise CaseError([_not_installed(str(error))]) from None
+            stdout, stderr, interrupted = _wait(process)
+        if interrupted or process.returncode == 130:
             raise KeyboardInterrupt
         if process.returncode == 2:
             raise CaseError(_diagnostics(stderr))
         lines = stdout.strip().splitlines()
-        if process.returncode not in (0, 1) or not lines:
-            failure = diagnostic(
-                "E0704", f"autan-run exited with {process.returncode}: {stderr.strip()}"
-            )
-            raise CaseError([failure])
-        return Results.open(lines[-1])
+        reported = Path(lines[-1]) if lines else None
+        if process.returncode not in (0, 1) or reported is None:
+            raise CaseError([_failure(process.returncode, stderr)])
+        if reported.parent != runs or reported.name in before or not reported.is_dir():
+            message = f"autan-run reported {reported}, not a new run directory under {runs}"
+            raise CaseError([diagnostic("E0704", message)])
+        results = Results.open(reported)
+        problems = self._mismatches(results, document)
+        expected = {"failed"} if process.returncode == 1 else FINISHED
+        if results.run.status not in expected:
+            problems.append(f"exit {process.returncode} with status {results.run.status!r}")
+        if problems:
+            message = "the run autan-run wrote does not match its input: " + "; ".join(problems)
+            raise CaseError([diagnostic("E0704", message), *_diagnostics(stderr, fallback=False)])
+        return results
+
+    def _mismatches(self, results: Results, document: dict[str, object]) -> list[str]:
+        run = results.run
+        expected = {
+            "case": document["case"]["sha256"],  # type: ignore[index]
+            "mesh": document["mesh"]["sha256"],  # type: ignore[index]
+            "precision": document["precision"],
+            "devices": self.devices,
+            "deterministic": self.deterministic,
+        }
+        found = {
+            "case": run.case.sha256,
+            "mesh": run.mesh.sha256,
+            "precision": run.precision,
+            "devices": run.devices,
+            "deterministic": run.deterministic,
+        }
+        return [f"{key} differs" for key in expected if expected[key] != found[key]]
 
 
-def _diagnostics(stderr: str) -> list[Diagnostic]:
+FINISHED = frozenset({"converged", "completed", "stopped", "diverged"})
+# Seconds the runtime has to finalize a stopped run before it is terminated, then killed.
+GRACE = 60.0
+
+
+def _not_installed(reason: str) -> Diagnostic:
+    return diagnostic(
+        "E0804",
+        f"the solver runtime autan-run cannot be started ({reason}); set "
+        f"${EXECUTABLE_VARIABLE} or put it on the PATH",
+    )
+
+
+def _failure(code: int, stderr: str) -> Diagnostic:
+    return diagnostic("E0704", f"autan-run exited with {code}: {stderr.strip()}")
+
+
+def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
+    """Wait for the runtime. On SIGINT or SIGTERM of this process, forward SIGINT so the
+    runtime finalizes the run as stopped, ignore further interrupts, and terminate then
+    kill it only if it does not finish within GRACE seconds. The runtime is always reaped
+    before this returns."""
+    deadline: float | None = None
+    previous = None
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, _raise_interrupt)
+    try:
+        while True:
+            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except KeyboardInterrupt:
+                if deadline is None:
+                    deadline = time.monotonic() + GRACE
+                    process.send_signal(signal.SIGINT)
+                continue
+            except subprocess.TimeoutExpired:
+                stdout, stderr = _terminate(process)
+            return stdout, stderr, deadline is not None
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
+def _terminate(process: subprocess.Popen[str]) -> tuple[str, str]:
+    process.terminate()
+    try:
+        return process.communicate(timeout=GRACE)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.communicate()
+
+
+def _raise_interrupt(_signal: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+def _diagnostics(stderr: str, *, fallback: bool = True) -> list[Diagnostic]:
     found = []
     for line in stderr.splitlines():
         try:
             found.append(Diagnostic.model_validate(json.loads(line)))
         except ValueError:
             continue
-    if not found:
+    if not found and fallback:
         found.append(diagnostic("E0705", f"autan-run rejected its input: {stderr.strip()}"))
     return found
