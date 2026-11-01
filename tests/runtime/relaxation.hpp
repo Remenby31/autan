@@ -32,10 +32,14 @@ struct RelaxationOptions {
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
   double growth = 0.0;           ///< every field is multiplied by 1 + growth at each step
+  bool signal_on_start = false;  ///< raise SIGTERM once constructed, before iteration 1
+  bool throw_in_loads = false;
+  bool throw_in_fields = false;
   /// Every field and residual varies from cell to cell: values scaled by
   /// 1 + 1e-6 g with g the cell's mesh index, residuals by their RMS.
   bool vary = false;
   bool one_rank = false;  ///< registered as running on one rank only
+  int expect_ranks = 0;   ///< its scope refuses a run on another number of ranks; 0: any
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -43,6 +47,7 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
   std::vector<double> scales{};  ///< residual_scales(); empty: none
+  bool coded_events = false;     ///< logs a coded warning (W0711) at every step
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -59,7 +64,9 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROWTH", o.growth);
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
+    read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
+    read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
     read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
     return o;
@@ -126,9 +133,16 @@ class Relaxation final : public autan::runtime::Physics {
         weight_ = restart.back().values.at(0);
       }
     }
+    if (options_.signal_on_start) std::raise(SIGTERM);
   }
 
   autan::runtime::StepReport step(std::int64_t iteration) override {
+    if (options_.coded_events) {
+      context_.log.write("warning", "solver", "relaxation: coded event", "W0711",
+                         "{\"iteration\": " + std::to_string(iteration) +
+                             ", \"reason\": \"admissible\", \"cfl\": 1.0, "
+                             "\"residual_drop\": null}");
+    }
     if (options_.pause_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(options_.pause_ms));
     if (iteration == options_.throw_at &&
@@ -195,6 +209,7 @@ class Relaxation final : public autan::runtime::Physics {
   [[nodiscard]] std::vector<double> residual_scales() const override { return options_.scales; }
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
+    if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");
     if (!mean) return state_;
     auto out = mean_;
     for (auto& f : out) {
@@ -228,6 +243,9 @@ class Relaxation final : public autan::runtime::Physics {
                                             const std::array<double, 3>& center) const override {
     // Pressure force (p - p_inf) S over the zones' faces, its moment about
     // `center`; the cell's pressure stands for the face's.
+    if (options_.throw_in_loads &&
+        (options_.throw_rank < 0 || options_.throw_rank == context_.ranks.rank()))
+      throw std::runtime_error("relaxation: requested loads failure");
     // Exact sums over this rank's faces, then over the ranks: the same bits
     // on any number of ranks.
     std::array<autan::runtime::ExactSum, 6> sums;
@@ -287,7 +305,15 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
       [options](const autan::runtime::PhysicsContext& context) {
         return std::make_unique<Relaxation>(context, options);
       },
-      {}, !options.one_rank);
+      [options](const autan::runtime::SolverInput& /*input*/,
+                int ranks) -> std::optional<autan::runtime::PhysicsRefusal> {
+        if (options.expect_ranks == 0 || ranks == options.expect_ranks) return std::nullopt;
+        return autan::runtime::PhysicsRefusal{
+            .message = "refused on " + std::to_string(ranks) + " ranks",
+            .path = "physics",
+            .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
+      },
+      !options.one_rank);
   return registry;
 }
 

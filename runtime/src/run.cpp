@@ -14,15 +14,19 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 
 #include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -120,6 +124,9 @@ struct Prepared {
   const PhysicsFactory* factory = nullptr;
   std::optional<StartState> start;  // input.start, read and checked
   Json start_averaging;             // `continue`: the previous run's averaging
+  // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
+  std::map<index_t, std::vector<double>> boundary_states;
+  std::map<std::string, std::string> state_files;
 };
 
 [[noreturn]] void start_mismatch(const std::string& code, const std::string& message,
@@ -264,6 +271,176 @@ void load_start(Prepared& p) {
   p.start = std::move(state);
 }
 
+// One zone of an autan.face-states/1 document: rows of centroids (3) and values (5).
+struct ZoneStates {
+  std::size_t faces = 0;
+  std::vector<double> centroids, values;
+};
+
+// The zones of a face-state document, or why it is not one (face-states.md, Document): every
+// key, every zone and every row are checked, whatever the case uses.
+std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, std::string& why) {
+  std::map<std::string, ZoneStates> zones;
+  const auto fail = [&](std::string what) {
+    why = std::move(what);
+    return std::map<std::string, ZoneStates>{};
+  };
+  if (!doc.is_object()) return fail("not a JSON object");
+  for (const auto& [key, value] : doc.items()) {
+    if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
+        key != "zones")
+      return fail("unknown key '" + key + "'");
+  }
+  const auto string_at = [&](const char* key) {
+    return doc.contains(key) && doc[key].is_string() ? doc[key].get<std::string>() : std::string();
+  };
+  if (string_at("schema") != "autan.face-states/1") return fail("schema");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string()) return fail("oracle");
+  const std::string mesh = string_at("mesh_sha256");
+  if (mesh.size() != 64 || mesh.find_first_not_of("0123456789abcdef") != std::string::npos)
+    return fail("mesh_sha256");
+  if (!doc.contains("variables") ||
+      doc["variables"] !=
+          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+    return fail("variables");
+  if (!doc.contains("zones") || !doc["zones"].is_object()) return fail("zones");
+  for (const auto& [name, z] : doc["zones"].items()) {
+    const std::string at_zone = "zones." + name;
+    if (!z.is_object() || z.size() != 3 || !z.contains("faces") ||
+        !z["faces"].is_number_integer() || z["faces"].get<std::int64_t>() < 0)
+      return fail(at_zone + ".faces");
+    ZoneStates out;
+    out.faces = z["faces"].get<std::size_t>();
+    for (const auto& [array, width] : {std::pair{"centroids", 3}, std::pair{"values", 5}}) {
+      const auto& rows = z.contains(array) ? z[array] : nlohmann::json();
+      if (!rows.is_array() || rows.size() != out.faces) return fail(at_zone + "." + array);
+      auto& to = std::string(array) == "centroids" ? out.centroids : out.values;
+      for (const auto& row : rows) {
+        if (!row.is_array() || row.size() != static_cast<std::size_t>(width))
+          return fail(at_zone + "." + array);
+        for (const auto& v : row) {
+          if (!v.is_number() || !std::isfinite(v.get<double>())) return fail(at_zone + "." + array);
+          to.push_back(v.get<double>());
+        }
+      }
+    }
+    for (std::size_t r = 0; r < out.faces; ++r) {
+      if (!(out.values[5 * r] > 0.0) || !(out.values[5 * r + 4] > 0.0))
+        return fail(at_zone + ".values: density and pressure must be > 0");
+    }
+    zones.emplace(name, std::move(out));
+  }
+  return zones;
+}
+
+// face-states.md: the file of each oracle-state condition, checked by its hash and as a
+// document, then against the mesh and the zone, then each face of the zone paired with exactly
+// one row by centroid.
+void load_states(Prepared& p) {
+  std::optional<Geometry> geometry;
+  const auto offsets = p.mesh.boundary_zone_offsets();
+  for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
+    const auto& b = p.input.boundaries[i];
+    if (!b.states) continue;
+    const std::string key = "boundaries[" + std::to_string(i) + "].states";
+    const auto fail = [&](const char* code, const std::string& message, const std::string& sub,
+                          const nlohmann::json& data = nlohmann::json::object()) {
+      throw InputError(Diagnostic{
+          .code = code, .message = message, .path = key + sub, .data_json = data.dump()});
+    };
+    std::error_code ec;
+    if (!fs::is_regular_file(b.states->path, ec)) {
+      fail("E0420", "'" + b.states->path + "' is not a readable file", ".path");
+    }
+    std::ifstream in(b.states->path, std::ios::binary);
+    if (!in) fail("E0420", "cannot read '" + b.states->path + "'", ".path");
+    std::ostringstream text;
+    text << in.rdbuf();
+    const std::string bytes = text.str();
+    const std::string found = sha256_hex(bytes);
+    if (found != b.states->sha256) {
+      fail("E0420", "the face-state file's SHA-256 differs from states.sha256", ".sha256",
+           {{"expected", b.states->sha256}, {"found", found}});
+    }
+    const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
+    std::string why = doc.is_discarded() ? "not JSON" : "";
+    const auto zones =
+        why.empty() ? face_state_zones(doc, why) : std::map<std::string, ZoneStates>{};
+    if (!why.empty()) {
+      fail("E0420", "'" + b.states->path + "' is not an autan.face-states/1 document: " + why,
+           ".path", {{"problem", why}});
+    }
+    if (doc["mesh_sha256"].get<std::string>() != p.mesh_hash) {
+      fail("E0422", "the face states were exported for another mesh", ".path",
+           {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
+    }
+    const auto it = zones.find(b.zone);
+    if (it == zones.end()) {
+      fail("E0423", "the face states do not cover zone '" + b.zone + "'", ".path",
+           {{"zone", b.zone}});
+    }
+    const ZoneStates& z = it->second;
+    const index_t zone = p.face_zone.at(b.zone);
+    const auto first = static_cast<std::size_t>(offsets[at(zone)]);
+    const auto n = static_cast<std::size_t>(offsets[at(zone) + 1]) - first;
+    if (z.faces != n) {
+      fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
+           {{"zone", b.zone}, {"expected", n}, {"found", z.faces}});
+    }
+    if (!geometry) geometry = compute_geometry(p.mesh);
+    const auto& g = *geometry;
+    // Tolerance: 1e-9 times the largest extent of the bounding box of the zone's nodes.
+    std::array<double, 3> lo{}, hi{};
+    lo.fill(std::numeric_limits<double>::infinity());
+    hi.fill(-std::numeric_limits<double>::infinity());
+    const std::array<std::span<const double>, 3> xyz{p.mesh.x(), p.mesh.y(), p.mesh.z()};
+    for (std::size_t f = first; f < first + n; ++f) {
+      for (const index_t v : p.mesh.face_nodes(static_cast<index_t>(f))) {
+        for (std::size_t d = 0; d < 3; ++d) {
+          lo[d] = std::min(lo[d], xyz[d][at(v)]);
+          hi[d] = std::max(hi[d], xyz[d][at(v)]);
+        }
+      }
+    }
+    std::size_t axis = 0;
+    for (std::size_t d = 1; d < 3; ++d) {
+      if (hi[d] - lo[d] > hi[axis] - lo[axis]) axis = d;
+    }
+    const double tol = 1e-9 * (hi[axis] - lo[axis]);
+    // Rows sorted along the zone's widest axis: a face looks only at the rows within tol on it.
+    std::vector<std::size_t> sorted(n);
+    for (std::size_t r = 0; r < n; ++r) sorted[r] = r;
+    const auto coordinate = [&](std::size_t r) { return z.centroids[3 * r + axis]; };
+    std::ranges::sort(sorted, {}, coordinate);
+    std::vector<char> used(n, 0);
+    std::vector<double> paired(5 * n);
+    for (std::size_t j = 0; j < n; ++j) {
+      const std::size_t f = first + j;
+      const std::array<double, 3> c{g.face_centroid_x[f], g.face_centroid_y[f],
+                                    g.face_centroid_z[f]};
+      std::size_t match = n, count = 0;
+      for (auto r = std::ranges::lower_bound(sorted, c[axis] - tol, {}, coordinate);
+           r != sorted.end() && coordinate(*r) <= c[axis] + tol; ++r) {
+        const double* q = &z.centroids[3 * *r];
+        if (std::hypot(q[0] - c[0], q[1] - c[1], q[2] - c[2]) <= tol) {
+          match = *r;
+          ++count;
+        }
+      }
+      if (count != 1 || used[match] != 0) {
+        fail("E0421",
+             "face " + std::to_string(j) + " of zone '" + b.zone + "' matches " +
+                 std::to_string(count) + " rows of the face states",
+             ".path", {{"zone", b.zone}, {"face", j}, {"centroid", c}, {"matches", count}});
+      }
+      used[match] = 1;
+      for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = z.values[5 * match + k];
+    }
+    p.boundary_states[zone] = std::move(paired);
+    p.state_files.emplace(found, bytes);
+  }
+}
+
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
@@ -272,7 +449,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .monitor_zones = {},
              .factory = nullptr,
              .start = std::nullopt,
-             .start_averaging = {}};
+             .start_averaging = {},
+             .boundary_states = {},
+             .state_files = {}};
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
@@ -363,10 +542,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     }
     p.monitor_zones.push_back(std::move(ids));
   }
+  load_states(p);
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   if (entry != nullptr && entry->scope) {
-    if (auto refusal = entry->scope(p.input)) {
+    if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
       data["path"] = refusal->path;
       throw InputError(Diagnostic{.code = "E0706",
@@ -494,6 +674,7 @@ class Run final : public Log {
         {"averaging", nullptr},
         {"convergence", nullptr},
         {"start", start},
+        {"monitors", nullptr},
         {"diagnostics", Json::array()}};
     if (continued()) {
       info_["iterations"] = in.start->iterations;
@@ -516,7 +697,8 @@ class Run final : public Log {
                           {"ranks", comm_.size()}}
                          .dump()),
             p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
-                                  : std::nullopt);
+                                  : std::nullopt,
+            p_.state_files);
         path = dir_->path().string();
       } catch (...) {
         (void)comm_.broadcast({});
@@ -539,7 +721,8 @@ class Run final : public Log {
                                  .log = *this,
                                  .start = start,
                                  .ghosts = *ghosts_,
-                                 .ranks = comm_};
+                                 .ranks = comm_,
+                                 .boundary_states = p_.boundary_states};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -716,6 +899,17 @@ class Run final : public Log {
   // errors, with their rank in `data`.
   void write(std::string_view level, std::string_view source, std::string_view message,
              std::string_view code, std::string_view data_json) override {
+    // A coded event goes to run.json the first time its code appears, every time to log.jsonl:
+    // run.json stays bounded when a physics repeats it (results.md).
+    if (!code.empty() && std::ranges::find(recorded_codes_, code) == recorded_codes_.end()) {
+      recorded_codes_.emplace_back(code);
+      info_["diagnostics"].push_back(Json::parse(
+          Diagnostic{.code = std::string(code),
+                     .message = std::string(message),
+                     .path = "",
+                     .data_json = data_json.empty() ? std::string("{}") : std::string(data_json)}
+              .json()));
+    }
     if (comm_.rank() == 0) {
       dir_->append_log(log_line(level, source, message, code, data_json));
     } else if (level != "info") {
@@ -746,6 +940,8 @@ class Run final : public Log {
                 {"data", Json::parse(data_json.empty() ? "{}" : data_json)}}
         .dump();
   }
+
+  std::vector<std::string> recorded_codes_;  // codes of physics events already in run.json
 
   // Returns the final status; every value is a string literal.
   std::string_view iterate(std::int64_t& done) {
@@ -901,7 +1097,8 @@ class Run final : public Log {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
-    for (const char* key : {"status", "finished", "iterations", "diagnostics"}) metadata.erase(key);
+    for (const char* key : {"status", "finished", "iterations", "monitors", "diagnostics"})
+      metadata.erase(key);
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
     std::map<std::string, const BoundaryInput*> conditions;
@@ -981,8 +1178,44 @@ class Run final : public Log {
     dir_->publish_solution();
   }
 
+  // The forces of every monitor on the final state, whether or not its last
+  // iteration was a multiple of `every` (results.md, run.json `monitors`).
+  void record_final_monitors(std::int64_t done) {
+    const auto& in = p_.input;
+    Json monitors = Json::object();
+    try {
+      for (std::size_t m = 0; m < in.monitors.size(); ++m) {
+        Json record =
+            forces_record(physics_->loads(p_.monitor_zones[m], in.monitors[m].moment_center),
+                          in.monitors[m], in.freestream);
+        for (const auto& [key, value] : record.items()) {
+          if (!std::isfinite(value.get<double>())) {
+            throw std::runtime_error("monitor '" + in.monitors[m].name + "': " + key +
+                                     " is not finite on the final state");
+          }
+        }
+        record["iteration"] = done;
+        monitors[in.monitors[m].name] = std::move(record);
+      }
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(e.what());
+    }
+    info_["monitors"] = std::move(monitors);
+  }
+
   ExitStatus finish(std::string status, std::int64_t done) {
     info_["iterations"] = done;
+    if (physics_ && status != "failed" && status != "diverged") {
+      try {
+        record_final_monitors(done);
+      } catch (const PhysicsFailure& e) {
+        // A throw on one rank leaves the others inside the collective sum of
+        // loads(): abort them all, as for write_solution below.
+        if (comm_.size() > 1) return fail(e.what(), done);
+        record_failure(e.what());
+        status = "failed";
+      }
+    }
     // results.md: the solution is required unless the run diverged (written
     // if possible) or failed (optional).
     if (physics_ && status != "failed") {
@@ -1001,6 +1234,7 @@ class Run final : public Log {
     }
     // Only rank 0 writes the solution: its status is the run's.
     status = comm_.broadcast(status);
+    if (status == "failed") info_["monitors"] = nullptr;
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",

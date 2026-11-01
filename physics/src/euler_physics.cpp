@@ -92,7 +92,8 @@ class EulerPhysics final : public runtime::Physics {
       : ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)) {
+        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        reference_(scheme(ctx.input).reference) {
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
@@ -130,10 +131,18 @@ class EulerPhysics final : public runtime::Physics {
     if (ctx.start != nullptr) start_from(*ctx.start);
   }
 
-  StepReport step(std::int64_t /*iteration*/) override {
+  StepReport step(std::int64_t iteration) override {
     StepReport report;
+    // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
+    // before a solve turns it into an exception.
+    if (const auto bad = first_invalid_cell()) {
+      residual_of(u_);
+      record_norms(report);
+      report.diverged_cell = bad;
+      return report;
+    }
     if (ctx_.input.time.kind == "steady") {
-      steady_step(report);
+      steady_step(report, iteration);
     } else {
       unsteady_step(report);
     }
@@ -395,6 +404,16 @@ class EulerPhysics final : public runtime::Physics {
         put(BoundaryKind::inlet, {*bc.total_pressure, *bc.total_temperature, 0.0, 0.0, 0.0});
       } else if (bc.kind == "outlet") {
         put(BoundaryKind::outlet, {0.0, 0.0, 0.0, 0.0, *bc.static_pressure});
+      } else if (bc.kind == "oracle-state") {
+        // The runtime paired the zone's faces with the file's rows (face-states.md).
+        const index_t z = mesh.face_zone()[face];
+        const auto& states = ctx_.boundary_states.at(z);
+        const auto off = mesh.boundary_zone_offsets();
+        const auto nz = static_cast<std::size_t>(off[static_cast<std::size_t>(z) + 1] -
+                                                 off[static_cast<std::size_t>(z)]);
+        const auto j = face - static_cast<std::size_t>(off[static_cast<std::size_t>(z)]);
+        put(BoundaryKind::state, {states[j], states[nz + j], states[2 * nz + j], states[3 * nz + j],
+                                  states[4 * nz + j]});
       } else if (bc.kind == "manufactured" && mms != nullptr) {
         kind[b] = BoundaryKind::state;
         manufactured_faces.push_back(
@@ -448,7 +467,7 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
-  void steady_step(StepReport& report) {
+  void steady_step(StepReport& report, std::int64_t iteration) {
     euler_.state(u_, state_);
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
@@ -529,15 +548,21 @@ class EulerPhysics final : public runtime::Physics {
       linear = {};  // a singular block: the solve failed
     }
     const bool failed = !(linear.residual_drop <= linear_failure);
-    if (!(linear.residual_drop <= linear_tolerance)) {
-      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
-      if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
-      ctx_.log.write("warning", "linear",
-                     failed ? "the implicit step's linear solve failed: step rejected"
-                            : "the implicit step's linear solve stopped above its tolerance",
-                     {}, data.dump());
+    const nlohmann::json residual_drop =
+        std::isfinite(linear.residual_drop) ? nlohmann::json(linear.residual_drop) : nullptr;
+    if (!failed && !(linear.residual_drop <= linear_tolerance)) {
+      ctx_.log.write(
+          "info", "linear", "the implicit step's linear solve stopped above its tolerance", {},
+          nlohmann::json{{"cycles", linear.cycles}, {"residual_drop", residual_drop}}.dump());
     }
     if (failed) {
+      ctx_.log.write("warning", "solver", "implicit step rejected: its linear solve failed",
+                     "W0711",
+                     nlohmann::json{{"iteration", iteration},
+                                    {"reason", "linear"},
+                                    {"cfl", cfl_},
+                                    {"residual_drop", residual_drop}}
+                         .dump());
       // As a step with no admissible length: the state is kept and the next CFL number is half
       // this one, also when this one was clamped; at the smallest CFL number the run diverged.
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
@@ -553,9 +578,18 @@ class EulerPhysics final : public runtime::Physics {
     if (shortened_) {
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
       cfl_cap_ = 0.5 * cfl_;
-      ctx_.log.write("warning", "solver",
-                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
-                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+      if (alpha < min_step) {
+        ctx_.log.write("warning", "solver", "implicit step rejected: no admissible step length",
+                       "W0711",
+                       nlohmann::json{{"iteration", iteration},
+                                      {"reason", "admissible"},
+                                      {"cfl", cfl_},
+                                      {"residual_drop", nullptr}}
+                           .dump());
+      } else {
+        ctx_.log.write("info", "solver", "step shortened", {},
+                       nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+      }
     }
     if (alpha < min_step) {
       // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
@@ -670,15 +704,39 @@ class EulerPhysics final : public runtime::Physics {
     report.time_step = dt;
   }
 
+  // The first cell whose state, as the kernels read it, has a non-finite or non-positive
+  // density or pressure (to_primitive of kernels/euler.py: P::state differences from the
+  // reference, the gauge pressure from the differences, all in P::compute, FP32 in
+  // fp32+acc64); else the first cell whose residual is not finite.
   [[nodiscard]] std::optional<index_t> first_invalid_cell() const {
+    using C = typename P::compute;
+    const auto& r = reference_;
+    const C g = static_cast<C>(gas_.gamma);
+    const C r0 = static_cast<C>(r[0]);
+    const std::array<C, 3> mr{static_cast<C>(r[1]), static_cast<C>(r[2]), static_cast<C>(r[3])};
+    const C p_ref = static_cast<C>((gas_.gamma - 1.0) *
+                                   (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
     for (std::size_t c = 0; c < n_; ++c) {
-      const double rho = u_[c];
-      const double q2 = (u_[n_ + c] * u_[n_ + c] + u_[2 * n_ + c] * u_[2 * n_ + c] +
-                         u_[3 * n_ + c] * u_[3 * n_ + c]) /
-                        rho;
-      const double p = (gas_.gamma - 1.0) * (u_[4 * n_ + c] - 0.5 * q2);
-      if (!std::isfinite(rho) || !std::isfinite(p) || rho <= 0.0 || p <= 0.0) {
+      std::array<C, 5> dq{};
+      for (std::size_t k = 0; k < 5; ++k) {
+        dq[k] = static_cast<C>(State(u_[k * n_ + c] - r[k]));
+      }
+      const C rho = r0 + dq[0];
+      C dm_m = 0, mr_mr = 0;
+      for (std::size_t k = 0; k < 3; ++k) {
+        dm_m += dq[k + 1] * (C(2) * mr[k] + dq[k + 1]);
+        mr_mr += mr[k] * mr[k];
+      }
+      const C dk = (dm_m * r0 - mr_mr * dq[0]) / (rho * r0);
+      const C p = (g - C(1)) * (dq[4] - C(0.5) * dk) + p_ref;
+      if (!std::isfinite(static_cast<double>(rho)) || !std::isfinite(static_cast<double>(p)) ||
+          !(rho > C(0)) || !(p > C(0))) {
         return static_cast<index_t>(c);
+      }
+    }
+    for (std::size_t c = 0; c < n_; ++c) {
+      for (std::size_t k = 0; k < 5; ++k) {
+        if (!std::isfinite(static_cast<double>(res_[k * n_ + c]))) return static_cast<index_t>(c);
       }
     }
     return std::nullopt;
@@ -713,6 +771,7 @@ class EulerPhysics final : public runtime::Physics {
   Gas gas_;
   std::size_t n_;
   Euler<P> euler_;
+  std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;
@@ -752,7 +811,7 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and no periodic pairs (it exchanges no ghost cells yet).
-std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in) {
+std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int /*ranks*/) {
   if (!in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message = "the Euler physics does not exchange periodic ghost cells yet",
@@ -783,10 +842,10 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
   for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
     const auto& b = in.boundaries[i];
     if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
-        b.kind != "outlet" && b.kind != "manufactured") {
+        b.kind != "outlet" && b.kind != "manufactured" && b.kind != "oracle-state") {
       return runtime::PhysicsRefusal{
           .message = "the Euler physics has no '" + b.kind + "' condition; boundary zone '" +
-                     b.zone + "' needs slip, symmetry, farfield, inlet or outlet",
+                     b.zone + "' needs slip, symmetry, farfield, inlet, outlet or oracle-state",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }

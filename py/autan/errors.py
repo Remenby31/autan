@@ -609,6 +609,18 @@ _CODES = [
         "breaks during the run usually means a boundary condition breaks it.",
     ),
     Code(
+        "W0711",
+        "Implicit step rejected",
+        "A steady run's implicit step was rejected: no step length kept density and pressure "
+        "admissible, or the step's linear solve failed (it left more than 0.9 of its residual, "
+        "or met a singular block). The state is kept and the next step's CFL number is at most "
+        "half the rejected one. Logged at each rejection; recorded once in run.json. `data` "
+        "gives the iteration, the reason (`admissible` or `linear`), the CFL number of the "
+        "rejected step and, for `linear`, the residual drop of the solve (null otherwise).",
+        "A few rejections are part of the start of a run. Many of them slow the convergence: "
+        "check the boundary conditions and the initial state.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
