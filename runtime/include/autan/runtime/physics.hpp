@@ -111,15 +111,31 @@ struct PhysicsKey {
 
 using PhysicsFactory = std::function<std::unique_ptr<Physics>(const PhysicsContext&)>;
 
+/// Why a physics whose key matches an input cannot run it: the runtime reports it as E0706,
+/// before any directory exists.
+struct PhysicsRefusal {
+  std::string message;
+  std::string path;              ///< document path of the offending key; also `data.path`
+  std::string data_json = "{}";  ///< machine-readable details: the text of a JSON object
+};
+
+/// What a physics supports beyond its key (media, zones, conditions): nullopt when it can run
+/// the input. A scope must not throw: it reports what it refuses as a PhysicsRefusal.
+using PhysicsScope = std::function<std::optional<PhysicsRefusal>(const SolverInput&)>;
+
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
  public:
-  void add(PhysicsKey key, PhysicsFactory factory);
-  /// The factory for `input`, or null when this build has none (E0706).
-  [[nodiscard]] const PhysicsFactory* find(const SolverInput& input) const;
+  struct Entry {
+    PhysicsFactory factory;
+    PhysicsScope scope;  ///< empty: every input the key matches
+  };
+  void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {});
+  /// The entry for `input`, or null when this build has none (E0706).
+  [[nodiscard]] const Entry* find(const SolverInput& input) const;
 
  private:
-  std::vector<std::pair<PhysicsKey, PhysicsFactory>> entries_;
+  std::vector<std::pair<PhysicsKey, Entry>> entries_;
 };
 
 }  // namespace autan::runtime
