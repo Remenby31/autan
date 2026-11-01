@@ -22,25 +22,38 @@ created_b=""
 created_a=""
 
 cleanup() {
-  local status=0
+  local rc=$? status=0
   [[ -z $created_a ]] || ssh "$a" "docker rm -f $created_a >/dev/null" || status=1
   [[ -z $created_b ]] || ssh "$b" "docker rm -f $created_b >/dev/null" || status=1
   [[ -z $remote_dir ]] || ssh "$a" "rm -rf $remote_dir" || status=1
   rm -rf "$local_tmp"
   if [[ $status -ne 0 ]]; then
     echo "error: cleanup failed; remove $run containers and $remote_dir on $a and $b by hand" >&2
+    rc=1
   fi
+  exit "$rc"
 }
 trap cleanup EXIT
 
 # Each lock is held by a remote flock that lives as long as this script keeps its fifo open.
 # Hosts are locked in name order so two concurrent runs cannot deadlock.
+lock_holders=()
 hold_gpu_lock() {
   local host=$1 fifo="$local_tmp/lock-$1"
   mkfifo "$fifo"
   ssh "$host" 'flock /tmp/cfd-gpu.lock sh -c "echo locked; cat >/dev/null"' <"$fifo" >"$fifo.out" &
+  lock_holders+=("$!")
   exec {lock_fd}>"$fifo"
-  until grep -q locked "$fifo.out" 2>/dev/null; do sleep 1; done
+  until grep -q locked "$fifo.out" 2>/dev/null; do
+    kill -0 "$!" 2>/dev/null || { echo "error: could not take the GPU lock on $host" >&2; exit 1; }
+    sleep 1
+  done
+}
+require_locks() {
+  local pid
+  for pid in "${lock_holders[@]}"; do
+    kill -0 "$pid" 2>/dev/null || { echo "error: a GPU lock holder exited; aborting" >&2; exit 1; }
+  done
 }
 for host in $(printf '%s\n' "$a" "$b" | sort); do hold_gpu_lock "$host"; done
 
@@ -73,10 +86,12 @@ mpirun_cmd="mpirun -n 2 --host $ip_a:1,$ip_b:1 --prefix /opt/autan \
   --mca pml ob1 --mca btl tcp,self --mca btl_tcp_if_include tailscale0"
 
 osu() {
+  require_locks
   created_a=$run
   ssh "$a" "docker run --rm --name $run --network host --gpus all --user ubuntu -e HOME=/tmp \
     -v $remote_dir:/mpi:ro $image timeout $lifetime_s bash -c \"$mpirun_cmd $*\""
   created_a=""
+  require_locks
 }
 
 echo "# $a ($ip_a) <-> $b ($ip_b), image $image, TCP over tailscale0"

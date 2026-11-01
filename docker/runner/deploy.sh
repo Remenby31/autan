@@ -63,6 +63,9 @@ start_proxy() {
       --network "$egress_net" --cap-drop ALL --security-opt no-new-privileges \
       --memory 1g --pids-limit 256 --log-opt max-size=20m --log-opt max-file=3 \
       "$proxy_image" >/dev/null
+  fi
+  if ! docker container inspect -f '{{json .NetworkSettings.Networks}}' autan-runner-proxy |
+    grep -q "\"$internal_net\""; then
     docker network connect "$internal_net" autan-runner-proxy
   fi
   docker start autan-runner-proxy >/dev/null
