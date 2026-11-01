@@ -14,7 +14,6 @@
 #include <string>
 #include <vector>
 
-
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"

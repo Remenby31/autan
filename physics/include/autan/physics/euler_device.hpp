@@ -47,7 +47,6 @@ template <class P>
 std::unique_ptr<DeviceStepper<P>> make_device_stepper(const Mesh& mesh, const Geometry& geometry,
                                                       const Euler<P>& host, double gamma,
                                                       bool second_order, runtime::Ranks& ranks,
-                                                      runtime::GhostExchange& ghosts,
-                                                      void* stream);
+                                                      runtime::GhostExchange& ghosts, void* stream);
 
 }  // namespace autan::physics
