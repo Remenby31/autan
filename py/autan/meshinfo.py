@@ -270,9 +270,18 @@ class MeshInfo(_Strict):
         return self.model_dump(mode="json", by_alias=True)
 
 
+def mesh_location(path: Path) -> Path:
+    """The mesh a path names (mesh.md, Readers): a file, a polyMesh directory, or the
+    ``constant/polyMesh`` of an OpenFOAM case directory."""
+    case = path / "constant" / "polyMesh"
+    return case if path.is_dir() and case.is_dir() else path
+
+
 def mesh_sha256(path: Path) -> str:
-    """The mesh hash of a mesh file, or of a polyMesh directory (mesh-info.md, ``source.sha256``)."""
+    """The mesh hash of a mesh file, a polyMesh directory or an OpenFOAM case directory
+    (mesh-info.md, ``source.sha256``)."""
     digest = hashlib.sha256()
+    path = mesh_location(path)
     if path.is_dir():
         for name in POLYMESH_FILES:
             member = path / name

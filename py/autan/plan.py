@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from autan import face_states, initial_state
 from autan.errors import Diagnostic, Location, diagnostic
-from autan.meshinfo import mesh_sha256
+from autan.meshinfo import mesh_location, mesh_sha256
 from autan.schema import (
     DDES,
     SA,
@@ -234,13 +234,14 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
 def groups_file(mesh_file: Path) -> Path:
     """The zone groups file of a mesh: ``<mesh file or polyMesh directory>.zones.json`` next
     to it, symlinks followed, as the runtime finds it from the solver input's path."""
-    return mesh_file.parent / f"{mesh_file.name}.zones.json"
+    mesh = mesh_location(mesh_file).resolve()
+    return mesh.parent / f"{mesh.name}.zones.json"
 
 
 def _check_groups_file(case: Case, mesh: MeshInfo, found: list[Diagnostic]) -> None:
     path = groups_file(case.mesh_path)
     source = mesh.groups_source
-    if path.exists():
+    if os.path.lexists(path):  # a dangling link is there but unreadable, not absent
         try:
             digest: str | None = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
