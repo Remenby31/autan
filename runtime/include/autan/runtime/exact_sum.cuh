@@ -211,6 +211,58 @@ void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int
 #endif
 }
 
+/// The sum the words hold, rounded once to the nearest double (ties to even),
+/// on the device: the bits of ExactSum::value() on the host over the same
+/// words. One thread; +inf, -inf and NaN terms as on the host.
+__device__ inline double exact_value(const ExactWords& words) {
+  using detail::ull;
+  constexpr int limbs = ExactSum::limbs;
+  const double inf = __longlong_as_double(0x7ff0000000000000LL);
+  const long long* in = words.w;
+  if (in[detail::nan_count] > 0 || (in[detail::pos_inf] > 0 && in[detail::neg_inf] > 0))
+    return __longlong_as_double(0x7ff8000000000000LL);
+  if (in[detail::pos_inf] > 0) return inf;
+  if (in[detail::neg_inf] > 0) return -inf;
+  // As ExactSum::value(): carry every limb into [0, 2^32), take the
+  // magnitude, then round its 64 leading bits to 53.
+  long long w[limbs];
+  for (int i = 0; i < limbs; ++i) w[i] = in[i];
+  const auto normalize = [&w] {
+    for (int i = 0; i + 1 < limbs; ++i) {
+      const long long carry = w[i] >> 32;  // floor division by 2^32
+      w[i] -= carry * (1LL << 32);
+      w[i + 1] += carry;
+    }
+  };
+  normalize();
+  const bool negative = w[limbs - 1] < 0;
+  if (negative) {
+    for (int i = 0; i < limbs; ++i) w[i] = -w[i];
+    normalize();
+  }
+  int t = limbs - 1;
+  while (t >= 0 && w[t] == 0) --t;
+  if (t < 0) return 0.0;
+  const auto limb = [&w](int k) { return k < 0 ? ull{0} : static_cast<ull>(w[k]); };
+  const ull top = limb(t);
+  if (top > 0xffffffffULL) return negative ? -inf : inf;    // >= 2^1056
+  const int b = 64 - __clzll(static_cast<long long>(top));  // 1..32
+  const ull below = (limb(t - 1) << 32) | limb(t - 2);
+  const ull lead = (top << (64 - b)) | (below >> b);
+  bool sticky = (below & ((ull{1} << b) - 1)) != 0;
+  for (int k = t - 3; k >= 0 && !sticky; --k) sticky = limb(k) != 0;
+  ull mantissa = lead >> 11;
+  const ull rest = lead & 0x7ff;
+  if (rest > 0x400 || (rest == 0x400 && (sticky || (mantissa & 1) != 0))) ++mantissa;
+  int exponent = 32 * (t - 2) - detail::offset + b + 11;
+  if (mantissa == (ull{1} << 53)) {
+    mantissa >>= 1;
+    ++exponent;
+  }
+  const double magnitude = ldexp(static_cast<double>(mantissa), exponent);
+  return negative ? -magnitude : magnitude;
+}
+
 /// The K sums of `out` on the host, after the work queued on `stream`, ready
 /// for Ranks::sum.
 template <int K>

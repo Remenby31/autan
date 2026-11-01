@@ -8,8 +8,10 @@
 namespace autan_test {
 
 /// The exact sums of `a` and of `b` (same length) by gpu::exact_sums on
-/// device 0, with `blocks` blocks (0: the default).
+/// device 0, with `blocks` blocks (0: the default); `values`, when given,
+/// receives each rounded on the device by gpu::exact_value.
 std::array<autan::runtime::ExactSum, 2> device_sums(const std::vector<double>& a,
-                                                    const std::vector<double>& b, int blocks);
+                                                    const std::vector<double>& b, int blocks,
+                                                    std::array<double, 2>* values = nullptr);
 
 }  // namespace autan_test

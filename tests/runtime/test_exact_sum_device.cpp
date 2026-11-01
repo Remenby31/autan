@@ -1,8 +1,10 @@
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -44,8 +46,12 @@ TEST_CASE("The device exact sum has the host ExactSum's bits on any launch shape
   const std::size_t pairs = (n - 1) / 2;
   for (std::size_t i = 0; i < 2 * pairs; ++i)
     b[i] = (i % 2 == 0 ? 1.0 : -1.0) * std::ldexp(1.0, 600);
-  const auto sums = autan_test::device_sums(a, b, blocks);
+  std::array<double, 2> on_device{};
+  const auto sums = autan_test::device_sums(a, b, blocks, &on_device);
   CHECK(same_bits(sums[0].value(), host_sum(a)));
+  // Rounded on the device: the host's bits.
+  CHECK(same_bits(on_device[0], sums[0].value()));
+  CHECK(same_bits(on_device[1], sums[1].value()));
   CHECK(same_bits(sums[1].value(), static_cast<double>(n - 2 * pairs) * tiny));
   CHECK(same_bits(sums[1].value(), host_sum(b)));
 }
@@ -71,7 +77,11 @@ TEST_CASE("The device exact sum counts non-finite terms as the host does",
   b[10] = -inf;
   b[200000] = -inf;
   b[299999] = std::numeric_limits<double>::quiet_NaN();
-  auto sums = autan_test::device_sums(a, b, 7);
+  std::array<double, 2> on_device{};
+  auto sums = autan_test::device_sums(a, b, 7, &on_device);
+  CHECK(std::isinf(on_device[0]));
+  CHECK(on_device[0] > 0);
+  CHECK(std::isnan(on_device[1]));
   const auto words_a = sums[0].data();
   const auto words_b = sums[1].data();
   constexpr auto limbs = static_cast<std::size_t>(ExactSum::limbs);
@@ -86,4 +96,30 @@ TEST_CASE("The device exact sum counts non-finite terms as the host does",
   // -inf alone stays -inf.
   b[299999] = 1.0;
   CHECK(autan_test::device_sums(a, b, 0)[1].value() == -inf);
+}
+
+TEST_CASE("A device exact sum rounds on the device as ExactSum::value()",
+          "[runtime][exact-sum][gpu]") {
+  // Each sum against IEEE rounding of its exact value: a tie to even down
+  // (2^53 + 1) and up (2^53 + 3), beyond the double range (2 DBL_MAX: +inf,
+  // and -inf), an exact zero, a negative sum and the least subnormal.
+  constexpr double big = std::numeric_limits<double>::max();
+  const double p53 = std::ldexp(1.0, 53);
+  const std::vector<std::pair<std::vector<double>, double>> cases{
+      {{p53, 1.0}, p53},
+      {{p53, 3.0}, p53 + 4.0},
+      {{big, big}, std::numeric_limits<double>::infinity()},
+      {{-big, -big}, -std::numeric_limits<double>::infinity()},
+      {{1.5, -1.5}, 0.0},
+      {{-3.0, 0.25}, -2.75},
+      {{std::numeric_limits<double>::denorm_min(), 0.0}, std::numeric_limits<double>::denorm_min()},
+  };
+  for (const auto& [terms, expected] : cases) {
+    CAPTURE(terms, expected);
+    std::array<double, 2> on_device{};
+    const auto sums =
+        autan_test::device_sums(terms, std::vector<double>(terms.size(), 0.0), 0, &on_device);
+    CHECK(same_bits(sums[0].value(), expected));
+    CHECK(same_bits(on_device[0], expected));
+  }
 }
