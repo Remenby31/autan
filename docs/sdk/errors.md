@@ -592,7 +592,7 @@ Fix: Use a build that includes it, or change the case or the devices.
 
 **Previous run cannot be resumed** (error)
 
-A start needs a previous run that ended converged, completed or stopped and holds its solution; diverged and failed runs, and runs without a solution, cannot be resumed.
+A start needs a previous run that ended converged, completed or stopped after at least one iteration and holds a solution that conforms to its run.json; diverged and failed runs, and runs without a sound solution, cannot be resumed.
 
 Fix: Start from another run, or run the case from the freestream.
 
@@ -600,7 +600,7 @@ Fix: Start from another run, or run the case from the freestream.
 
 **Start does not match the case** (error)
 
-`continue` needs the previous run's case unchanged except its iteration or step budget, and a budget above the iterations already done; `warm` needs the same physics and turbulence model. The message names the difference.
+`continue` needs the previous run's case unchanged except its iteration or step budget, and a budget above the iterations already done; `warm` needs the same physics and transported variables. The message names the difference.
 
 Fix: Change the case, or use `warm` to start a different case from that state.
 

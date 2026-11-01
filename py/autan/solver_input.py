@@ -285,8 +285,9 @@ class StartInput(_Strict):
     run_id: Annotated[str, Field(pattern=r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")]
     identity: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
     mode: Literal["continue", "warm"]
-    iterations: Annotated[int, Field(ge=1)]
+    iterations: Annotated[int, Field(strict=True, ge=1)]
     time: Number | None
+    residual_reference: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]] | None
     solution_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import autan
+import autan.solver_input
 import jsonschema
 import pytest
 from autan.cli import json_schema, main
@@ -22,7 +23,7 @@ def history(result: autan.Results) -> list[str]:
 
 
 @pytest.fixture
-def case(write_case: Callable[[str], Path]) -> autan.Case:
+def case(write_case: Callable[..., Path]) -> autan.Case:
     return autan.load(write_case(CRM_HL))
 
 
@@ -58,6 +59,7 @@ def test_continue_extends_the_run_as_if_it_never_stopped(
         run.devices.kind,
         str(run.devices.count),
         start.identity,
+        "continue",
         "30",
         start.solution_sha256,
     ]
@@ -65,7 +67,7 @@ def test_continue_extends_the_run_as_if_it_never_stopped(
 
 
 def test_warm_start_counts_from_one(
-    write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
 ) -> None:
     previous = autan.load(write_case(CRM_HL)).run(
         crm_mesh, backend=autan.FakeBackend(), runs=tmp_path
@@ -91,7 +93,7 @@ def test_a_start_must_match_the_case(
     change: Callable[[str], str],
     mode: str,
     code: str,
-    write_case: Callable[[str], Path],
+    write_case: Callable[..., Path],
     crm_mesh: autan.MeshInfo,
     tmp_path: Path,
 ) -> None:
@@ -131,7 +133,7 @@ def test_only_finished_runs_on_the_same_mesh_can_be_resumed(
 
 
 def test_unsteady_continue_keeps_time_and_averaging(
-    write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
 ) -> None:
     body = CRM_HL.replace("autan.SA()", "autan.DDES(base=autan.SA())") + (
         "from autan.units import s\n"
@@ -152,7 +154,7 @@ def test_prepare_writes_the_start(
     crm_mesh: autan.MeshInfo,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    write_case: Callable[[str], Path],
+    write_case: Callable[..., Path],
 ) -> None:
     stopped = case.run(crm_mesh, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
     argv = [
@@ -170,3 +172,110 @@ def test_prepare_writes_the_start(
     assert (document["start"]["mode"], document["start"]["iterations"]) == ("continue", 30)
     assert main([*argv, "--warm"]) == 0
     assert json.loads(capsys.readouterr().out)["start"]["mode"] == "warm"
+
+
+def test_continue_and_warm_from_the_same_run_have_different_identities(
+    case: autan.Case, crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    stopped = case.run(crm_mesh, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
+    continued = case.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=stopped)
+    warm = case.run(
+        crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=stopped, mode="warm"
+    )
+    assert continued.run.identity != warm.run.identity
+
+
+def test_a_chain_of_continuations_keeps_the_original_residual_reference(
+    case: autan.Case, crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    first = case.run(crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path)
+    second = case.run(
+        crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path, start=first
+    )
+    third = case.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=second)
+    original = json.loads(history(first)[0])["residuals"]
+    assert third.run.start is not None
+    assert third.run.start.residual_reference == original
+
+
+def test_warm_start_with_no_iteration_keeps_the_source_state(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    source = autan.load(write_case(CRM_HL)).run(
+        crm_mesh, backend=autan.FakeBackend(), runs=tmp_path
+    )
+    other = autan.load(write_case(CRM_HL.replace("mach=0.20", "mach=0.25"), name="b.py"))
+    warm = other.run(
+        crm_mesh, backend=autan.FakeBackend(iterations=0), runs=tmp_path, start=source, mode="warm"
+    )
+    assert warm.field("VelocityX").tobytes() == source.field("VelocityX").tobytes()
+
+
+def test_the_source_must_be_a_sound_restartable_run(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    case = autan.load(write_case(CRM_HL))
+    empty = case.run(crm_mesh, backend=autan.FakeBackend(iterations=0), runs=tmp_path)
+    with pytest.raises(autan.CaseError) as error:
+        case.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=empty)
+    assert error.value.codes == ["E0707"]
+
+    a = case.run(crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path)
+    b = autan.load(write_case(CRM_HL.replace("mach=0.20", "mach=0.25"), name="b.py")).run(
+        crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path
+    )
+    (a.path / "solution.cgns").write_bytes((b.path / "solution.cgns").read_bytes())
+    with pytest.raises(autan.CaseError) as error:
+        case.run(
+            crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=autan.Results.open(a.path)
+        )
+    assert error.value.codes == ["E0707"]
+
+
+def test_warm_start_needs_the_same_transported_variables(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    unsteady = "from autan.units import s\ncase.time = autan.Unsteady(steps=20, dt=1e-3 * s)\n"
+    sa = autan.load(
+        write_case(CRM_HL.replace("autan.SA()", "autan.DDES(base=autan.SA())") + unsteady)
+    )
+    sst = autan.load(
+        write_case(
+            CRM_HL.replace("autan.SA()", "autan.DDES(base=autan.SST())") + unsteady, name="sst.py"
+        )
+    )
+    source = sa.run(crm_mesh, backend=autan.FakeBackend(iterations=5), runs=tmp_path)
+    with pytest.raises(autan.CaseError) as error:
+        sst.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=source, mode="warm")
+    assert error.value.codes == ["E0708"]
+
+
+@pytest.mark.parametrize("value", ["30", True])
+def test_start_counts_are_strict(
+    value: object,
+    case: autan.Case,
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    write_case: Callable[..., Path],
+) -> None:
+    stopped = case.run(crm_mesh, backend=autan.FakeBackend(iterations=30), runs=tmp_path)
+    assert (
+        main(
+            [
+                "prepare",
+                str(write_case(CRM_HL)),
+                "--mesh-info",
+                str(FIXTURES / "crm-hl.meshinfo.json"),
+                "--start",
+                str(stopped.path),
+            ]
+        )
+        == 0
+    )
+    document = json.loads(capsys.readouterr().out)
+    document["start"]["iterations"] = value
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    with pytest.raises(ValueError, match="iterations"):
+        autan.solver_input.SolverInput.model_validate(document)

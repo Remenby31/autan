@@ -69,9 +69,10 @@ class StartInfo(_Strict):
     run_id: Annotated[str, Field(pattern=r"^run-\d{8}T\d{6}Z-[0-9a-f]{8}$")]
     identity: Hex
     mode: Literal["continue", "warm"]
-    iterations: Annotated[int, Field(ge=1)]
+    iterations: Annotated[int, Field(strict=True, ge=1)]
     time: float | None
     solution_sha256: Hex
+    residual_reference: dict[str, float] | None
 
 
 class RunInfo(_Strict):
@@ -92,7 +93,7 @@ class RunInfo(_Strict):
     iterations: Annotated[int, Field(ge=0)]
     time: float | None
     averaging: Averaging | None
-    start: StartInfo | None
+    start: StartInfo | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -120,7 +121,7 @@ def identity(
     """The reproducibility fingerprint of a run (results.md, ``identity``)."""
     parts = [case, mesh, solver.commit, precision, solver.backend, devices.kind, str(devices.count)]
     if start is not None:
-        parts += [start.identity, str(start.iterations), start.solution_sha256]
+        parts += [start.identity, start.mode, str(start.iterations), start.solution_sha256]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -372,6 +373,8 @@ class Results:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
+        if "start" not in document:
+            broken("run.json has no start key (null for a run from the freestream)", "run.json")
         try:
             run = RunInfo.model_validate(document)
         except ValidationError as error:

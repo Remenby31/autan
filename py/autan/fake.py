@@ -270,6 +270,13 @@ class FakeBackend:
         steady = isinstance(spec.time, Steady)
         budget = spec.time.max_iterations if isinstance(spec.time, Steady) else spec.time.steps
         end = min(budget, CONVERGED_AT) if steady else budget
+        # A started run begins from the state of the previous one, which the synthetic
+        # trajectory leaves unchanged.
+        inherited = (
+            {name: Results.open(start.run).field(name) for name in field_names(spec)}
+            if start is not None
+            else None
+        )
         # A continued run goes on counting; its trajectory is that of an uninterrupted run.
         offset = start.info.iterations if start and start.info.mode == "continue" else 0
         cap = offset + self.iterations
@@ -301,7 +308,7 @@ class FakeBackend:
             raise
         finally:
             if status == "stopped":
-                self._finish(writer, spec, result, history, done, "stopped", mesh_info)
+                self._finish(writer, spec, result, history, done, "stopped", mesh_info, inherited)
         if diverges:
             status = "diverged"
         elif done < end:
@@ -310,7 +317,7 @@ class FakeBackend:
             status = "converged" if done == CONVERGED_AT else "completed"
         else:
             status = "completed"
-        self._finish(writer, spec, result, history, done, status, mesh_info)
+        self._finish(writer, spec, result, history, done, status, mesh_info, inherited)
         return Results.open(writer.path)
 
     def _finish(
@@ -322,6 +329,7 @@ class FakeBackend:
         done: int,
         status: str,
         mesh_info: MeshInfo,
+        inherited: dict[str, NDArray[np.float64]] | None = None,
     ) -> None:
         box = Box(
             max(
@@ -356,7 +364,7 @@ class FakeBackend:
                 )
         info = writer.info.model_copy(update=changes)
         staging = writer.path / ".solution.cgns.tmp"
-        _write_solution(staging, spec, plan, history.state, box, layout, info)
+        _write_solution(staging, spec, plan, history.state, box, layout, info, inherited)
         staging.rename(writer.path / "solution.cgns")
         writer.finish(**changes)
 
@@ -443,6 +451,7 @@ def _write_solution(
     box: Box,
     layout: list[str],
     info: RunInfo,
+    inherited: dict[str, NDArray[np.float64]] | None = None,
 ) -> None:
     """Write solution.cgns for the final ``info``."""
     faces, boundary_faces, index = box.faces()
@@ -530,7 +539,7 @@ def _write_solution(
             cgns.node(region, "GridLocation", "GridLocation_t", "CellCenter")
             cgns.node(region, "FamilyName", "FamilyName_t", name)
 
-        fields = _fields(spec, plan, layout)
+        fields = inherited if inherited is not None else _fields(spec, plan, layout)
         for solution_name in ("FlowSolution",) + (
             ("FlowSolutionMean",) if info.averaging is not None else ()
         ):

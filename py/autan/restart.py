@@ -8,7 +8,7 @@ from pathlib import Path  # noqa: TC003 -- dataclass field type, resolved at run
 from typing import TYPE_CHECKING, Any, Literal
 
 from autan.errors import CaseError, Diagnostic, diagnostic
-from autan.results import StartInfo
+from autan.results import StartInfo, residual_names
 from autan.schema import Steady
 
 if TYPE_CHECKING:
@@ -37,49 +37,55 @@ def problems(
 ) -> list[Diagnostic]:
     """Why ``spec`` on ``mesh_info`` cannot start from ``previous`` in ``mode``."""
     run = previous.run
+
+    def problem(code: str, message: str) -> Diagnostic:
+        return diagnostic(code, message, run=run.run_id)
+
     found = []
     if run.status not in RESUMABLE or not (previous.path / "solution.cgns").is_file():
         found.append(
-            diagnostic(
+            problem(
                 "E0707",
-                f"run {run.run_id} is {run.status}; a start needs a converged, completed "
-                "or stopped run with its solution",
-                run=run.run_id,
+                f"run {run.run_id} is {run.status}; a start needs a "
+                "converged, completed or stopped run with its solution",
             )
         )
+    elif run.iterations == 0:
+        found.append(problem("E0707", f"run {run.run_id} stopped before its first iteration"))
+    else:
+        try:
+            previous.field("Density")  # reads the solution and checks it against run.json
+        except CaseError as error:
+            found.append(
+                problem(
+                    "E0707", f"the solution of run {run.run_id} does not conform: {error.codes}"
+                )
+            )
     if run.mesh.sha256 != mesh_info.source.sha256:
-        found.append(
-            diagnostic("E0203", f"run {run.run_id} was computed on another mesh", run=run.run_id)
-        )
+        found.append(problem("E0203", f"run {run.run_id} was computed on another mesh"))
     old = previous.case
     if mode == "continue":
         if _without_budget(old) != _without_budget(spec):
             found.append(
-                diagnostic(
+                problem(
                     "E0708",
-                    "continue needs the same case as the previous run, except its "
-                    "iteration or step budget",
-                    run=run.run_id,
+                    "continue needs the same case as the previous run, "
+                    "except its iteration or step budget",
                 )
             )
         elif _budget(spec) <= run.iterations:
             found.append(
-                diagnostic(
+                problem(
                     "E0708",
-                    f"the budget ({_budget(spec)}) must exceed the {run.iterations} "
-                    "iterations already done",
-                    run=run.run_id,
+                    f"the budget ({_budget(spec)}) must exceed the "
+                    f"{run.iterations} iterations already done",
                 )
             )
-    elif (old.physics.kind, old.physics.turbulence.model) != (
-        spec.physics.kind,
-        spec.physics.turbulence.model,
-    ):
+    elif (old.physics.kind, residual_names(old)) != (spec.physics.kind, residual_names(spec)):
         found.append(
-            diagnostic(
+            problem(
                 "E0708",
-                "warm start needs the same physics and turbulence model as the previous run",
-                run=run.run_id,
+                "warm start needs the same physics and transported variables as the previous run",
             )
         )
     return found
@@ -96,7 +102,20 @@ def start_info(previous: Results, mode: Mode) -> StartInfo:
         iterations=run.iterations,
         time=run.time,
         solution_sha256=digest,
+        residual_reference=_reference(previous) if mode == "continue" else None,
     )
+
+
+def _reference(previous: Results) -> dict[str, float] | None:
+    """Residuals at iteration 1 of the original run, carried along a chain of continuations:
+    the steady convergence criterion is relative to them (case-schema.md#time)."""
+    if not isinstance(previous.case.time, Steady):
+        return None
+    start = previous.run.start
+    if start is not None and start.mode == "continue":
+        return start.residual_reference
+    history = previous.history
+    return {name: float(history.residual(name)[0]) for name in history.equations}
 
 
 @dataclass(frozen=True)
