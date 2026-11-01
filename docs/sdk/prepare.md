@@ -6,4 +6,4 @@
 autan prepare CASE --mesh-info MESHINFO [--device-kind cpu|cuda|hip] [--device-count N] [--deterministic] [-o FILE]
 ```
 
-Without `-o`, it prints the document to stdout. `autan-run` registers no physics yet: it rejects a valid input with `E0706`.
+Without `-o`, it prints the document to stdout. [`autan-run`](run.md#solver-backend) rejects with `E0706` a combination of physics, precision and device it does not implement.

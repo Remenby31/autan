@@ -10,7 +10,9 @@ In Python: `case.run(mesh_info, backend=..., runs="runs")`, which returns `autan
 
 ## Solver backend
 
-`--backend cpu|cuda|hip` (Python: `autan.SolverBackend(devices=autan.Devices(kind="cuda", count=8))`) writes the case's [solver input](../contracts/solver-input.md) and runs the solver runtime `autan-run`, found through `$AUTAN_RUN` or the PATH (`E0804` if neither). The runtime's input errors come back as their own coded diagnostics; `autan-run` registers no physics yet, so a valid input ends with `E0706`.
+`--backend cpu|cuda|hip` (Python: `autan.SolverBackend(devices=autan.Devices(kind="cuda", count=8))`) writes the case's [solver input](../contracts/solver-input.md) and runs the solver runtime `autan-run`, found through `$AUTAN_RUN` or the PATH (`E0804` if neither). The runtime's input errors come back as their own coded diagnostics. `autan-run` runs inviscid compressible cases on the CPU, in `fp64` and `fp32+acc64`; any other combination of physics, turbulence model, precision and device ends with `E0706`.
+
+`autan-run` is not in the wheel yet. Build it from a clone, with the CGNS library installed (`cmake -S . -B build -G Ninja && cmake --build build --target autan-run`) and set `AUTAN_RUN=$PWD/build/runtime/autan-run`.
 
 ## Fake backend
 
