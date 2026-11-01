@@ -185,17 +185,16 @@ TEST_CASE("A device predicate skips the exact sums or does them unchanged",
     CHECK(std::ranges::equal(x.data(), y.data()));
   }
   // Decided on the device between replays of one captured graph: set, clear
-  // (the sums and the count stay those of the previous replay), set again.
-  const auto replays = autan_test::graph_replays(a, b, {1, 0, 1});
+  // (the words and the count stay those of the previous replay), set again.
+  // Another launch shape carries the same sum in other words: values compare.
+  auto replays = autan_test::graph_replays(a, b, {1, 0, 1});
   REQUIRE(replays.size() == 3);
   CHECK(replays[0].evaluated == 2 * n);
   CHECK(replays[1].evaluated == 2 * n);
   CHECK(replays[2].evaluated == 4 * n);
-  for (std::size_t r = 0; r < 3; ++r) {
-    for (std::size_t k = 0; k < 2; ++k) {
-      CAPTURE(r, k);
-      auto x = replays[r].sums[k], y = always[k];
-      CHECK(std::ranges::equal(x.data(), y.data()));
-    }
+  for (std::size_t k = 0; k < 2; ++k) {
+    CAPTURE(k);
+    CHECK(std::ranges::equal(replays[1].sums[k].data(), replays[0].sums[k].data()));
+    for (const auto& r : replays) CHECK(same_bits(r.sums[k].value(), always[k].value()));
   }
 }
