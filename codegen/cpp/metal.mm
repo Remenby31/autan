@@ -10,7 +10,9 @@
 #include <vector>
 
 #import <Foundation/Foundation.h>
+#import <IOKit/IOKitLib.h>
 #import <Metal/Metal.h>
+#include <sys/sysctl.h>
 
 #if !__has_feature(objc_arc)
 #error "codegen/cpp/metal.mm needs -fobjc-arc"
@@ -130,7 +132,26 @@ Context::~Context() {
   }
 }
 
-std::string Context::device_name() const { return impl_->device.name.UTF8String; }
+Context::DeviceInfo Context::info() const {
+  DeviceInfo out{impl_->device.name.UTF8String, impl_->device.registryID, 0,
+                 impl_->device.recommendedMaxWorkingSetSize, 0};
+  io_service_t service =
+      IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AGXAccelerator"));
+  if (service != IO_OBJECT_NULL) {
+    CFTypeRef cores =
+        IORegistryEntryCreateCFProperty(service, CFSTR("gpu-core-count"), kCFAllocatorDefault, 0);
+    if (cores != nullptr && CFGetTypeID(cores) == CFNumberGetTypeID()) {
+      CFNumberGetValue(static_cast<CFNumberRef>(cores), kCFNumberIntType, &out.gpu_cores);
+    }
+    if (cores != nullptr) {
+      CFRelease(cores);
+    }
+    IOObjectRelease(service);
+  }
+  std::size_t len = sizeof(out.memory_bytes);
+  sysctlbyname("hw.memsize", &out.memory_bytes, &len, nullptr, 0);
+  return out;
+}
 
 Buffer Context::allocate(std::size_t bytes) {
   const std::size_t n = bytes == 0 ? 1 : bytes;

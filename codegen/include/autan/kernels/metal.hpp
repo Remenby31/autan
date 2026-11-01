@@ -40,6 +40,7 @@ struct fp32 {
   static constexpr const char* name = "fp32";
   static constexpr const char* tag = "fp32";
   static constexpr bool float_atomics = true;
+  using host = ::autan::kernels::fp32;  ///< the CPU policy this one equals to rounding
 };
 
 struct fp32_acc64 {
@@ -53,6 +54,7 @@ struct fp32_acc64 {
   static constexpr const char* name = "fp32+acc64";
   static constexpr const char* tag = "fp32_acc64";
   static constexpr bool float_atomics = false;
+  using host = ::autan::kernels::fp32_acc64;  ///< the CPU policy this one equals to rounding
 };
 
 /// A generated module's Metal source, in pieces ending with nullptr; `name` keys the compiled
@@ -124,7 +126,15 @@ class Context {
   Context(const Context&) = delete;
   Context& operator=(const Context&) = delete;
 
-  std::string device_name() const;
+  /// Identity of the GPU, as benchmark provenance records it.
+  struct DeviceInfo {
+    std::string name;
+    std::uint64_t registry_id;
+    int gpu_cores;  ///< 0 when the IO registry does not report it
+    std::uint64_t recommended_max_working_set_bytes;
+    std::uint64_t memory_bytes;
+  };
+  DeviceInfo info() const;
   /// A zeroed shared buffer of `bytes` (at least one byte is allocated).
   Buffer allocate(std::size_t bytes);
   template <class T>

@@ -82,6 +82,19 @@ set_target_properties(autan_core autan_io PROPERTIES POSITION_INDEPENDENT_CODE O
 add_library(autan_spike SHARED spike/capi.cpp)
 target_link_libraries(autan_spike PRIVATE autan::kernels autan::io autan_compile_options)
 
+if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_METAL)
+  # Commit of the benchmark binaries, for the provenance autan-bench records.
+  find_package(Git REQUIRED)
+  add_custom_target(
+    autan_codegen_revision
+    COMMAND
+      ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+      -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h -P
+      ${CMAKE_CURRENT_SOURCE_DIR}/bench/revision.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
+  )
+endif()
+
 if(AUTAN_ENABLE_CUDA)
   # Every generated loop instantiated for every policy: the compile-time measure of the spike.
   add_library(autan_kernels_gpu OBJECT ${AUTAN_GENERATED_GPU_UNITS})
@@ -97,15 +110,6 @@ if(AUTAN_ENABLE_CUDA)
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -Xptxas=-warn-spills>
   )
 
-  find_package(Git REQUIRED)
-  add_custom_target(
-    autan_codegen_revision
-    COMMAND
-      ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
-      -DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h -P
-      ${CMAKE_CURRENT_SOURCE_DIR}/bench/revision.cmake
-    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision/revision.h
-  )
   add_executable(autan_loop_bench bench/loop_bench.cu spike/capi.cpp)
   add_dependencies(autan_loop_bench autan_codegen_revision)
   target_include_directories(autan_loop_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike)
@@ -143,7 +147,7 @@ if(AUTAN_ENABLE_METAL)
   target_compile_features(autan_metal PUBLIC cxx_std_20)
   target_link_libraries(
     autan_metal
-    PUBLIC "-framework Metal" "-framework Foundation"
+    PUBLIC "-framework Metal" "-framework Foundation" "-framework IOKit"
     PRIVATE autan_compile_options
   )
   set_target_properties(autan_metal PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -156,4 +160,20 @@ if(AUTAN_ENABLE_METAL)
     autan_spike_metal
     PRIVATE autan::kernels autan::io autan_metal autan_compile_options
   )
+
+  # Peak bandwidth of the Mac's GPU, and the generated loops timed against it.
+  add_executable(autan_metal_stream bench/metal_stream.mm)
+  add_dependencies(autan_metal_stream autan_codegen_revision)
+  target_include_directories(autan_metal_stream PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision)
+  target_compile_options(autan_metal_stream PRIVATE -fobjc-arc)
+  target_link_libraries(autan_metal_stream PRIVATE autan_metal)
+
+  add_executable(autan_metal_loop_bench bench/metal_loop_bench.mm spike/capi.cpp)
+  add_dependencies(autan_metal_loop_bench autan_codegen_revision)
+  target_include_directories(
+    autan_metal_loop_bench
+    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision spike
+  )
+  target_compile_options(autan_metal_loop_bench PRIVATE -fobjc-arc)
+  target_link_libraries(autan_metal_loop_bench PRIVATE autan::kernels autan::io autan_metal)
 endif()

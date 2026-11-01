@@ -85,17 +85,28 @@ class Solution:
     iterations: int
 
 
-def solve(m: s.Mesh, policy: str = "fp64", tol: float = 1e-12) -> Solution:
-    """Solve R(q) = 0 by GMRES; R is affine, so J v = R(v) - R(0) with zero data."""
+def solve(
+    m: s.Mesh, policy: str = "fp64", tol: float = 1e-12, strategy: str | None = None
+) -> Solution:
+    """Solve R(q) = 0 by GMRES; R is affine, so J v = R(v) - R(0) with zero data.
+
+    The residual runs on the host loops, or on the device loops in race `strategy` if given.
+    """
+
+    def residual(*args: object) -> tuple[F64, F64]:
+        if strategy is None:
+            return s.advdiff_residual(m, policy, *args)  # type: ignore[arg-type]
+        return s.gpu_advdiff_residual(m, policy, strategy, 128, *args)  # type: ignore[arg-type]
+
     q_b = np.zeros(m.n_faces)
     q_b[m.n_interior :] = exact(m.face_centroid[m.n_interior :])
     src = source(m.cell_centroid)
     zero_b = np.zeros(m.n_faces)
     zero_s = np.zeros(m.n_cells)
-    r0, _ = s.advdiff_residual(m, policy, np.zeros(m.n_cells), q_b, src, VELOCITY, NU)
+    r0, _ = residual(np.zeros(m.n_cells), q_b, src, VELOCITY, NU)
 
     def matvec(v: F64) -> F64:
-        return s.advdiff_residual(m, policy, v, zero_b, zero_s, VELOCITY, NU)[0]
+        return residual(v, zero_b, zero_s, VELOCITY, NU)[0]
 
     J = spla.LinearOperator((m.n_cells, m.n_cells), matvec=matvec)  # type: ignore[call-arg]
     ilu = spla.spilu(first_order_operator(m).tocsc(), drop_tol=1e-5, fill_factor=20)
@@ -108,7 +119,7 @@ def solve(m: s.Mesh, policy: str = "fp64", tol: float = 1e-12) -> Solution:
     # Defect correction around GMRES, so that the final residual is the one of the policy.
     q = np.zeros(m.n_cells)
     for _ in range(4):
-        r, _g = s.advdiff_residual(m, policy, q, q_b, src, VELOCITY, NU)
+        r, _g = residual(q, q_b, src, VELOCITY, NU)
         dq, _info = spla.gmres(
             J,
             -r,
@@ -121,7 +132,7 @@ def solve(m: s.Mesh, policy: str = "fp64", tol: float = 1e-12) -> Solution:
             callback_type="pr_norm",
         )
         q = q + dq
-    r, _g = s.advdiff_residual(m, policy, q, q_b, src, VELOCITY, NU)
+    r, _g = residual(q, q_b, src, VELOCITY, NU)
     e = q - exact(m.cell_centroid)
     v = m.cell_volume
     return Solution(

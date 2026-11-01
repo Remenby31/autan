@@ -178,3 +178,24 @@ def test_ghost_cells_receive_their_partial_sums_in_every_strategy(
     ghosts = slice(m.n_cells - n_ghost, m.n_cells)
     assert np.abs(host[ghosts]).max() > 0.0
     assert np.abs(dev - host).max() <= 500 * eps(pol) * np.abs(host).max()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("policy", PRECISIONS)
+def test_mms_solution_on_the_device_converges_at_second_order(
+    backend: str, kind: str, policy: str
+) -> None:
+    # The steady manufactured solution solved with the device residual (deterministic strategy).
+    m = s.mesh(meshes.build(kind, 4, 0.15, seed=4))
+    call = lambda: mms.solve(m, policy, 1e-6, "gather-recompute")
+    if is_refused(backend, policy, "gather-recompute", call):
+        return
+    h, e = [], []
+    for n in (8, 16, 24) if kind == "poly" else (4, 8, 16):
+        m = s.mesh(meshes.build(kind, n, 0.15, seed=n))
+        sol = mms.solve(m, policy, 1e-12 if policy == "fp64" else 1e-6, "gather-recompute")
+        h.append(m.h)
+        e.append(sol.error_l2)
+    fit, _ = mms.observed_order(h, e)
+    assert fit >= 1.9
