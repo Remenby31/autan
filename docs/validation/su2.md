@@ -2,7 +2,7 @@
 
 A direct comparison of Autan with [SU2](https://su2code.github.io/) on the same meshes: iterations and wall time to one convergence criterion, and accuracy against published references (issue #195). Source: `vv/src/autan_vv/su2/`, `vv/su2/`.
 
-**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
+**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
 
 ## SU2, an external tool
 
@@ -63,6 +63,27 @@ autan-vv su2 study su2/m080-a125/n0* --out m080-a125.json                 # crit
 `prepare` writes `su2/meshes/` and one directory per condition and level with `case.cfg` and `level.json` (`autan.su2-level/1`: K_SU2, configuration hash, Autan case hash, source mesh hash, conversion record). `study` refuses a run whose configuration or mesh, as hashed when it ran and as on disk, is not the prepared one, or whose SU2 failed (`V0904`), and runs that mix conditions or SU2 images (`V0905`).
 
 K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). In freestream units the threshold ε² = K_SU2³ is 12 at 32², 0.18 at 256² and 0.012 at 1024²; the squared density jump across the M 0.8 shock is about 0.2, so in both codes the limiter barely acts below 256². Autan's threshold uses h³ = V, and on a one-layer slab V includes the span (1 chord here): the same grid with another span limits differently.
+
+## Phase 1: SU2 on the NACA 0012 cases
+
+SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/`. CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count.
+
+| Level | M 0.8, α 0°: it. | CD | M 0.8, α 1.25°: it. | CL | CD | CM | M 0.5, α 1.25°: it. | CL | CD |
+|---|---|---|---|---|---|---|---|---|---|
+| 32² | 459 | −0.004477 | 455 | 0.249619 | 0.005854 | −0.014450 | 180 | 0.115582 | −0.020010 |
+| 64² | 451 | 0.008512 | 474 | 0.316844 | 0.021396 | −0.029516 | 195 | 0.152902 | −0.001639 |
+| 128² | 662 | 0.011083 | 683 | 0.344790 | 0.025040 | −0.036798 | 316 | 0.169238 | 0.002933 |
+| 256² | 916 | 0.010440 | 1 381 | 0.352372 | 0.024654 | −0.038565 | 515 | 0.175435 | 0.002505 |
+| 512² | 1 972 | 0.009574 | 2 072 | 0.352651 | 0.023760 | −0.038453 | 1 326 | 0.177912 | 0.001517 |
+| 1024² | stalls at 7.4 orders (6 511) | 0.009005 | 8 235 | 0.353147 | 0.023198 | −0.038467 | 3 316 | 0.178959 | 0.000831 |
+| Vassberg–Jameson | | 0.008342 | | 0.3516–0.3562 | 0.02268 | | | | → 0 |
+
+- **M 0.8, α 1.25°.** CL lies in the paper's band from 256² on (0.3524–0.3531), but its change grows from level to level (+0.00028, then +0.00050), so it has no Richardson estimate (`V0108`) and the CL gate cannot be evaluated. CD decreases toward the paper's value, 5.2 counts above it at 1024²; from the three finest levels its observed order is 0.67 and its continuum estimate 0.02225 ± 0.00119 (GCI), which overlaps 0.02268 but fails the one-count gate.
+- **M 0.8, α 0°.** CD decreases from 128² on and is 6.6 counts above the paper at 1024²; over the three finest converged levels (128²–512²) its change grows from level to level, so it has no estimate (`V0108`). At 1024² SU2's residuals stall 7.4 orders below their start (the stall rule stopped it after 6 511 iterations).
+- **M 0.5, α 1.25°.** The drag of this shock-free flow should vanish. SU2's falls from 25 counts (256²) to 8.3 counts (1024²), at order 0.53; its continuum estimate is −7 ± 20 counts and the gate (|CD| < 0.5 count, decreasing at every level) fails. CL converges at order 1.24 to 0.1797 (the paper's FLO82 continuum is 0.1803, Table 2).
+- **The limiter is not the cause.** Rerun at 256² and 512² with the limiter off, and with its threshold divided by four, CD moves by at most 0.4 counts at either Mach number (`limiter-sensitivity.json`), against SU2's offsets of 5–25 counts. The offsets and the low orders come from SU2's discretisation on these meshes; a vertex-centred scheme puts a node at the sharp trailing edge, where the wall normal is undefined, which is one candidate the data cannot single out.
+
+**What this says about the cases.** SU2 approaches every value of the paper, with the right sign and trend, and its CL is in the paper's band: nothing points to an error in the meshes, conditions, boundaries or force reference. It does not reproduce the paper's continuum CD to one count on these levels: its CD converges at order 0.5–0.7, so the paper's gates need levels beyond 1024² for SU2 (a 2048² run would take one to two days at 4 threads on the shared Spark). The gates are measured on Autan, which is cell-centred; SU2's levels are a plausibility check, not a substitute for the paper.
 
 ## Tests
 

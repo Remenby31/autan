@@ -1,0 +1,114 @@
+{
+  "sens-k4-m050-a125/n0256": {
+    "converged": true,
+    "iterations": 516,
+    "wall_seconds": 64.106634624,
+    "cl": 0.1748363005,
+    "cd": 0.002488537481,
+    "cmy": -0.002059325327,
+    "drop": {
+      "density": 10.745286200999999,
+      "momentum-x": 10.178946519,
+      "momentum-z": 10.057402553,
+      "energy": 10.695812214
+    }
+  },
+  "sens-k4-m050-a125/n0512": {
+    "converged": true,
+    "iterations": 1326,
+    "wall_seconds": 553.1630359787999,
+    "cl": 0.1776750491,
+    "cd": 0.001502132257,
+    "cmy": -0.002219522877,
+    "drop": {
+      "density": 10.645582228,
+      "momentum-x": 10.133097865,
+      "momentum-z": 10.001675572000002,
+      "energy": 10.604232610999999
+    }
+  },
+  "sens-k4-m080-a000/n0256": {
+    "converged": true,
+    "iterations": 913,
+    "wall_seconds": 290.1481629585,
+    "cl": -1.013633621e-12,
+    "cd": 0.01040430434,
+    "cmy": 1.03108494e-12,
+    "drop": {
+      "density": 10.489987024000001,
+      "momentum-x": 10.064335006,
+      "momentum-z": 10.338287455,
+      "energy": 10.431323738
+    }
+  },
+  "sens-k4-m080-a000/n0512": {
+    "converged": true,
+    "iterations": 2894,
+    "wall_seconds": 1124.6330013151999,
+    "cl": -5.1191551e-12,
+    "cd": 0.00954811926,
+    "cmy": 2.65882108e-12,
+    "drop": {
+      "density": 10.360334883,
+      "momentum-x": 10.003740357,
+      "momentum-z": 10.348008818,
+      "energy": 10.339999137
+    }
+  },
+  "sens-none-m050-a125/n0256": {
+    "converged": true,
+    "iterations": 515,
+    "wall_seconds": 56.7786203745,
+    "cl": 0.175528888,
+    "cd": 0.002499832476,
+    "cmy": -0.00217417999,
+    "drop": {
+      "density": 10.716850720999998,
+      "momentum-x": 10.168408268999999,
+      "momentum-z": 10.007167803,
+      "energy": 10.678879324
+    }
+  },
+  "sens-none-m050-a125/n0512": {
+    "converged": true,
+    "iterations": 1326,
+    "wall_seconds": 566.7349758876,
+    "cl": 0.1779635905,
+    "cd": 0.001514750297,
+    "cmy": -0.002271207284,
+    "drop": {
+      "density": 10.645601658,
+      "momentum-x": 10.135025705,
+      "momentum-z": 10.003828722000002,
+      "energy": 10.604171501000001
+    }
+  },
+  "sens-none-m080-a000/n0256": {
+    "converged": true,
+    "iterations": 934,
+    "wall_seconds": 317.7081638758,
+    "cl": 1.119007664e-12,
+    "cd": 0.01043527876,
+    "cmy": -1.271748332e-12,
+    "drop": {
+      "density": 10.258918504,
+      "momentum-x": 10.025903236,
+      "momentum-z": 10.320853744999999,
+      "energy": 10.319849038000001
+    }
+  },
+  "sens-none-m080-a000/n0512": {
+    "converged": true,
+    "iterations": 2264,
+    "wall_seconds": 783.679313116,
+    "cl": -2.537858812e-12,
+    "cd": 0.009570875742,
+    "cmy": 1.494438254e-12,
+    "drop": {
+      "density": 10.254435473000001,
+      "momentum-x": 10.043084267,
+      "momentum-z": 10.299110628000001,
+      "energy": 10.315548637000001
+    }
+  }
+}
