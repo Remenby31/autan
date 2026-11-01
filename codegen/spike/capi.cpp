@@ -235,7 +235,7 @@ void roe(const SpikeMesh& m, int mode, const double* u, const double* seed, doub
   auto us = copy_in<S>(u, 5 * nc);
   std::vector<S> u_tan(5 * nc, S(0));
   std::vector<R> rs(5 * nc, R(0)), r_tan(5 * nc, R(0)), r_adj(5 * nc, R(0)), u_adj(5 * nc, R(0));
-  std::vector<typename P::jac> js(50 * static_cast<std::size_t>(m.topo.n_faces));
+  std::vector<typename P::jac> js(mode == 3 ? 50 * static_cast<std::size_t>(m.topo.n_faces) : 0);
   rf::Data<P> d{};
   d.topo = m.topo;
   d.face_jac = js.data();

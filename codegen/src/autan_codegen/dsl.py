@@ -323,6 +323,11 @@ def boundary_loop(body: Body, *, out: object, frozen: bool = False, **args: obje
     `frozen_loops`, so runs can label their adjoints approximate)."""
     outs, jacs = _split(out)
     if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
+        if jacs:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT,
+                "a boundary loop writing face data has no Jacobian outputs",
+            )
         return Loop("boundary_write", body, _bindings(args), outs, frozen=frozen)
     for o in outs:
         if not isinstance(o, Inc) or o.right is not None:

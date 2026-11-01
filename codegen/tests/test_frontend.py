@@ -298,6 +298,22 @@ def test_jacobian_outputs_are_checked_against_the_body() -> None:
                 ),
             )
         assert info.value.code == code, dataset.name
+    out = [
+        dsl.Inc(r5, left=1, right=-1),
+        dsl.Jacobian(good, wrt="ql"),
+        dsl.Jacobian(good, wrt="qr"),
+    ]
+    with pytest.raises(CodegenError) as info:
+        build_loop(
+            "bad",
+            dsl.face_loop(two_sided, ql=u5.left, qr=u5.right, n=dsl.geometry.face_normal, out=out),
+        )
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        dsl.boundary_loop(
+            copy_state, x=q.left, out=[dsl.Write(q_face), dsl.Jacobian(good, wrt="x")], frozen=True
+        )
+    assert info.value.code == "E1004"
 
 
 def test_jacobian_columns_are_the_partial_derivatives() -> None:

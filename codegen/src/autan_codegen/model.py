@@ -239,6 +239,11 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         n_acc = len(loop.outputs)
         _check_bindings(where, "cell", fin_sig, loop.finalise_bindings, skip=n_acc)
     lm = LoopModel(name, loop, fn, sig, fin_fn, fin_sig)
+    targets = [j.dataset for j in loop.jacobians]
+    if len({id(t) for t in targets}) != len(targets):
+        raise CodegenError(
+            Code.INVALID_LOOP_OUTPUT, "two Jacobian outputs write the same dataset", where
+        )
     lm.jac_fns = [(j, _jacobian_fn(where, lm, j)) for j in loop.jacobians]
     _check_outputs(where, lm)
     if loop.kind == "boundary_write" and not loop.frozen:

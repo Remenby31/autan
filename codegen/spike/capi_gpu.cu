@@ -182,7 +182,7 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   DeviceArray<S> u_tan(converted_in<S>(seed, 5 * nc));
   DeviceArray<R> r_adj(converted_in<R>(seed, 5 * nc));
   DeviceArray<R> rs(5 * nc), r_tan(5 * nc), u_adj(5 * nc);
-  DeviceArray<typename P::jac> js(50 * static_cast<std::size_t>(m.topo.n_faces));
+  DeviceArray<typename P::jac> js(mode == 3 ? 50 * static_cast<std::size_t>(m.topo.n_faces) : 0);
   rf::Data<P> d{};
   d.topo = dm.topo;
   d.face_jac = js.get();
