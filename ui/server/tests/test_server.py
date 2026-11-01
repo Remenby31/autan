@@ -1,4 +1,3 @@
-import contextlib
 import http.client
 import json
 import shutil
@@ -119,19 +118,21 @@ def test_an_unreadable_run_is_rejected_not_fatal(runs: Path) -> None:
 
 def test_history_holds_a_partial_line_only_while_live(runs: Path) -> None:
     directory = next(runs.iterdir())
-    first = read_history(Folder(directory), 0, live=False)
+    folder = Folder(directory)
+    first = read_history(folder, 0, live=False)
     assert [r["iteration"] for r in first.records] == list(range(1, 31))
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
-    assert read_history(Folder(directory), first.offset, live=True).records == []
+    assert read_history(folder, first.offset, live=True).records == []
     with pytest.raises(ValueError, match="not terminated"):
-        read_history(Folder(directory), first.offset, live=False)
+        read_history(folder, first.offset, live=False)
 
     with (directory / "history.jsonl").open("a") as history:
         history.write('uals": {"density": 1e-9}}\n')
-    chunk = read_history(Folder(directory), first.offset, live=True)
+    chunk = read_history(folder, first.offset, live=True)
     assert [r["iteration"] for r in chunk.records] == [31]
+    folder.close()
 
 
 def test_registry_stream_reports_runs_and_rejections_as_they_appear(
@@ -265,6 +266,7 @@ def test_static_files_never_leave_the_build(server: str, target: str) -> None:
     connection.putrequest("GET", target, skip_accept_encoding=True)
     connection.endheaders()
     body = connection.getresponse().read()
+    connection.close()
     assert body == b"INDEX"
     assert httpx.get(f"{server}/assets/app.js").text == "APP"
 
@@ -317,17 +319,17 @@ def test_a_stream_keeps_reading_the_run_it_opened(runs: Path, server: str, tmp_p
     source = next(runs.iterdir())
     outside = shutil.copytree(source, tmp_path / "elsewhere" / source.name)
     url = f"{server}/api/runs/{source.name}/history/events"
-    with httpx.stream("GET", url, timeout=httpx.Timeout(10, read=2)) as response:
+    with httpx.stream("GET", url, timeout=10) as response:
         events = sse_events(response)
         assert next(events)[0] == "run"
         assert next(events)[0] == "history"
 
-        source.rename(tmp_path / "moved")
+        moved = source.rename(tmp_path / "moved")
         source.symlink_to(outside, target_is_directory=True)
-        with (outside / "history.jsonl").open("a") as history:
-            history.write(json.dumps({"iteration": 999, "time": None, "residuals": {}}) + "\n")
+        for directory, iteration in ((outside, 999), (moved, 31)):
+            with (directory / "history.jsonl").open("a") as history:
+                record: dict[str, Any] = {"iteration": iteration, "time": None, "residuals": {}}
+                history.write(json.dumps(record) + "\n")
 
-        seen: list[tuple[str, Any]] = []
-        with contextlib.suppress(httpx.ReadTimeout):
-            seen.extend(next(events) for _ in range(3))
-        assert all(e[0] != "history" for e in seen)
+        _, records = next(e for e in events if e[0] == "history")
+        assert [r["iteration"] for r in records] == [31]

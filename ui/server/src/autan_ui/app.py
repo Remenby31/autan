@@ -4,6 +4,7 @@ import mimetypes
 import os
 import webbrowser
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -62,8 +63,12 @@ def _open_build(static: Path | None) -> Folder | None:
         return None
     try:
         build = Folder(static)
+    except OSError:
+        return None
+    try:
         os.close(build.open("index.html"))
     except OSError:
+        build.close()
         return None
     return build
 
@@ -83,7 +88,17 @@ def create_app(
     runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
 ) -> FastAPI:
     registry = Registry(runs_root)
-    app = FastAPI(title="Autan", docs_url=None, redoc_url=None)
+    build = _open_build(static)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if build is not None:
+                build.close()
+
+    app = FastAPI(title="Autan", docs_url=None, redoc_url=None, lifespan=lifespan)
     # A page on another origin that rebinds its DNS name to 127.0.0.1 sends its own Host header.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(hosts))
 
@@ -181,7 +196,6 @@ def create_app(
     ) -> Response:
         return Response(synthetic_wing(triangles), media_type="application/octet-stream")
 
-    build = _open_build(static)
     if build is not None:
         # The request only selects an entry by name: it never becomes a path. The file is
         # opened beneath the pinned build directory without following any link, then served

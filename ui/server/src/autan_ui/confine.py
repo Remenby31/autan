@@ -6,6 +6,9 @@ from typing import Self
 
 NOFOLLOW = os.O_NOFOLLOW
 DIRECTORY = os.O_DIRECTORY
+# Search-only access where the platform has it, so a directory without read permission still
+# opens; O_RDONLY elsewhere.
+SEARCH = getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY))
 
 
 def is_link(path: Path) -> bool:
@@ -20,7 +23,7 @@ class Folder:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.fd = os.open(path, os.O_RDONLY | DIRECTORY | NOFOLLOW)
+        self.fd = os.open(path, SEARCH | DIRECTORY | NOFOLLOW)
 
     def __enter__(self) -> Self:
         return self
@@ -45,10 +48,11 @@ class Folder:
                 if part in ("..", "/"):
                     raise FileNotFoundError(relative)
                 parent = current
-                current = os.open(part, os.O_RDONLY | DIRECTORY | NOFOLLOW, dir_fd=parent)
+                current = os.open(part, SEARCH | DIRECTORY | NOFOLLOW, dir_fd=parent)
                 if parent != self.fd:
                     os.close(parent)
-            descriptor = os.open(name, os.O_RDONLY | NOFOLLOW, dir_fd=current)
+            # Non-blocking so that a FIFO is rejected below instead of hanging the open.
+            descriptor = os.open(name, os.O_RDONLY | NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
         finally:
             if current != self.fd:
                 os.close(current)
