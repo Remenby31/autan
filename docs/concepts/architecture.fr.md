@@ -1,5 +1,5 @@
 ---
-source_hash: "999db47e2398"
+source_hash: "c45ecdd4d5b2"
 ---
 
 # Architecture
@@ -21,7 +21,7 @@ Autan est un cœur C++, un générateur de kernels et un SDK Python qui échange
 | `vv/`, `bench/`, `docker/` | Vérification par solutions manufacturées et données de référence ; image de développement et mesures de bande passante. | M0 |
 | `ui/` | Interface web : éditeur de cas et visualisation des résultats. | M10 |
 
-Les composants communiquent par trois schémas, jamais par leurs internes : le [cas](../contracts/case-schema.md) (`autan.case/1`), le [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`) et le [répertoire de calcul](../contracts/results.md) (`autan.results/1`).
+Les composants communiquent par quatre schémas, jamais par leurs internes : le [cas](../contracts/case-schema.md) (`autan.case/1`), le [MeshInfo](../contracts/mesh-info.md) (`autan.mesh-info/1`), l'[entrée du solveur](../contracts/solver-input.md) (`autan.solver-input/1`), qu'`autan prepare` écrit à partir d'un cas planifié, et le [répertoire de calcul](../contracts/results.md) (`autan.results/1`).
 
 ## Comment Autan dérive ses kernels
 

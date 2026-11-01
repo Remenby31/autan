@@ -118,12 +118,15 @@ jobs:
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check
       - name: Install from the lock file
-        run: uv sync --locked
+        # The build backend (hatchling, editables) comes from uv.lock too, not from an isolated build env.
+        run: |
+          uv sync --locked --no-install-project
+          uv sync --locked --no-build-isolation
       - name: Type-check
-        run: uv run --locked mypy
+        run: uv run --locked --no-sync mypy
       - name: Test, failing on any skipped test
         run: |
           set -o pipefail
           command -v cgnscheck
-          uv run --locked pytest -ra | tee pytest.log
+          uv run --locked --no-sync pytest -ra | tee pytest.log
           if grep -q '^SKIPPED' pytest.log; then echo "::error::CI must run every test; see the SKIPPED lines above."; exit 1; fi

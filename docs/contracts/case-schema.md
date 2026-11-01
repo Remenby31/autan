@@ -218,7 +218,7 @@ Every problem is reported as a diagnostic, in this JSON shape wherever diagnosti
 ```json
 {"code": "E0412", "severity": "error", "message": "boundary zone 'empennage' has no condition",
  "location": {"file": "crm-hl.py", "line": 4, "path": "boundaries"},
- "fix": "case.boundary('empennage').wall()", "doc": "https://…/docs/sdk/errors.md#e0412",
+ "fix": "case.boundary('empennage').wall()", "doc": "https://remenby31.github.io/autan/sdk/errors/#e0412",
  "data": {"zone": "empennage"}}
 ```
 
