@@ -151,3 +151,74 @@ TEMPLATE_TEST_CASE("viscous residual of linear velocity and temperature is the d
   // amplified by the stencil's conditioning (measured: 1.1e3 eps on the tetrahedra in fp64).
   CHECK(worst <= 4096 * eps<P>());
 }
+
+// A velocity quadratic in y and vanishing on the wall y = 0, at uniform density and pressure: the
+// stress on the wall is mu (du/dy, 0, dw/dy) at each face centroid, and the quadratic fit of the
+// boundary cells gives it exactly, where a linear fit would be first order.
+TEMPLATE_TEST_CASE("wall shear stress of a quadratic velocity is exact", "[navier-stokes]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  auto velocity = [](double x, double y, double z) {
+    return std::array<double, 3>{y * (30.0 + 8.0 * x - 5.0 * z + 12.0 * y), 4.0 * y * y,
+                                 y * (-10.0 + 6.0 * x)};
+  };
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  std::vector<double> data(5 * nb);
+  std::vector<std::size_t> wall;
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto v = velocity(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    if (zone == "ymin") {
+      kind[b] = BoundaryKind::wall;
+      data[b] = p / (rho * air.gas_constant);
+      wall.push_back(b);
+    } else {
+      data[b] = rho;
+      for (std::size_t k = 0; k < 3; ++k) data[(1 + k) * nb + b] = v[k];
+      data[4 * nb + b] = p;
+    }
+  }
+  ns.set_boundary(kind, data);
+  std::vector<double> u(5 * n);
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto v = velocity(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+    u[c] = rho;
+    for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = rho * v[k];
+    u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  }
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  std::vector<double> traction(3 * nb);
+  ns.viscous_traction(traction);
+  REQUIRE(!wall.empty());
+  double worst = 0.0;
+  for (const auto b : wall) {
+    const auto f = ni + b;
+    const double x = g.face_centroid_x[f], z = g.face_centroid_z[f];
+    const std::array<double, 3> exact{mu * (30.0 + 8.0 * x - 5.0 * z), 0.0, mu * (-10.0 + 6.0 * x)};
+    for (std::size_t k = 0; k < 3; ++k) {
+      worst = std::max(worst, std::abs(traction[k * nb + b] - exact[k]) / (mu * 45.0));
+    }
+  }
+  // Round-off of the fit, amplified by its conditioning like the linear gradients above.
+  CHECK(worst <= 4096 * eps<P>());
+}

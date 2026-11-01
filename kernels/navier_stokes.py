@@ -21,11 +21,14 @@ import sys
 from pathlib import Path
 
 from autan_codegen.dsl import (
+    STENCIL,
+    Dataset,
     Geom,
     Grad,
     Inc,
     Jac,
     Jacobian,
+    MeshSet,
     Param,
     Residual,
     State,
@@ -34,12 +37,14 @@ from autan_codegen.dsl import (
     Vec5,
     Write,
     boundary_loop,
+    cell_loop,
     cell_reduce,
     cells,
     dot,
     face_loop,
     faces,
     geometry,
+    outer,
     param,
     pointwise,
     rel,
@@ -100,6 +105,13 @@ def corrected(gbar: Grad.Vec3, dphi: State, e: Geom.Vec3, inv_d: Geom) -> Grad.V
     # Blazek (2015), eq. 5.69: replaces the component of the averaged gradient along the unit
     # vector e between the two values by their difference quotient.
     return gbar + (dphi * inv_d - dot(gbar, e)) * e
+
+
+@pointwise
+def corrected_boundary(g: Grad.Vec3, dphi: State, e: Geom.Vec3, inv_d: Geom) -> Grad.Vec3:
+    # One-sided derivative along e at the face from the boundary value, the cell value and the
+    # cell gradient, exact for a quadratic along e: 2 (phi_b - phi_c) / d - grad phi_c . e.
+    return g + 2.0 * (dphi * inv_d - dot(g, e)) * e
 
 
 @pointwise
@@ -203,11 +215,97 @@ def viscous_face(
     return -(f + Vec5(0.0, 0.0, 0.0, 0.0, warp_work(gu, gv, gwz, m, mu + mt)))
 
 
+# Boundary cells: weighted least-squares fit of a quadratic to T and the velocity over the cell's
+# stencil, the boundary faces whose condition gives T and the velocity (manufactured, walls)
+# included. Its gradient at a boundary face is exact for quadratic fields, where the linear fit's is
+# first order; the face's viscous flux is then second order, as on interior faces. Per stencil entry,
+# the fit's weights for the gradient at the centroid and the Hessian (diagonal; xy, xz, yz), set by
+# NavierStokes<P> (zero for the other cells, whose `quad` is 0).
+q_grad = Dataset("q_grad", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q_hdiag = Dataset("q_hdiag", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+q_hoff = Dataset("q_hoff", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+quad = cells.field("quad", Geom)
+ut = cells.field("ut", State.Vec5)  # (T, u, v, w, 0)
+ut_b = faces.field("ut_b", State.Vec5)
+fit_g = cells.field("fit_g", Grad.Mat53)
+fit_hd = cells.field("fit_hd", Grad.Mat53)
+fit_ho = cells.field("fit_ho", Grad.Mat53)
+
+
+@pointwise
+def temperature_velocity(w: State.Vec5, rgas: Param, pref: Param) -> State.Vec5:
+    return Vec5(temperature(w, rgas, pref), w[1], w[2], w[3], 0.0)
+
+
+@pointwise
+def boundary_temperature(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    xl: Geom.Vec3,
+    wb: State.Vec5,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    rgas: Param,
+    pref: Param,
+) -> State:
+    # The boundary state's temperature; at adiabatic walls, the cell's extrapolated to the face.
+    adiabatic = kind > BC_WALL - 0.5 and data[0] <= 0.0
+    tl = temperature(wl, rgas, pref)
+    return (
+        tl + dot(temperature_gradient(wl, gl, rgas, pref), rel(xf, xl))
+        if adiabatic
+        else temperature(wb, rgas, pref)
+    )
+
+
+@pointwise
+def boundary_temperature_velocity(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    xl: Geom.Vec3,
+    wb: State.Vec5,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    rgas: Param,
+    pref: Param,
+) -> State.Vec5:
+    tb = boundary_temperature(wl, gl, xl, wb, kind, data, xf, rgas, pref)
+    return Vec5(tb, wb[1], wb[2], wb[3], 0.0)
+
+
+@pointwise
+def quadratic_term(
+    uc: State.Vec5, un: State.Vec5, a: Geom.Vec3, bd: Geom.Vec3, bo: Geom.Vec3
+) -> tuple[Grad.Mat53, Grad.Mat53, Grad.Mat53]:
+    du = un - uc
+    return outer(du, a), outer(du, bd), outer(du, bo)
+
+
+@pointwise
+def quadratic_face_gradient(
+    g: Grad.Vec3, hd: Grad.Vec3, ho: Grad.Vec3, dphi: State, r: Geom.Vec3, e: Geom.Vec3, inv_d: Geom
+) -> Grad.Vec3:
+    # g + H r at the face, its component along e replaced by the secant slope of the values, which
+    # the quadratic gives as (g + H r / 2) . e: the correction vanishes on quadratic fields.
+    hr = Vec3(
+        hd[0] * r[0] + ho[0] * r[1] + ho[1] * r[2],
+        ho[0] * r[0] + hd[1] * r[1] + ho[2] * r[2],
+        ho[1] * r[0] + ho[2] * r[1] + hd[2] * r[2],
+    )
+    return g + hr + (dphi * inv_d - dot(g + 0.5 * hr, e)) * e
+
+
 @pointwise
 def viscous_boundary(
     wl: State.Vec5,
     gl: Grad.Mat53,
     xl: Geom.Vec3,
+    qg: Grad.Mat53,
+    qd: Grad.Mat53,
+    qo: Grad.Mat53,
+    q: Geom,
     wb: State.Vec5,
     mb: State,
     kind: Geom,
@@ -237,11 +335,49 @@ def viscous_boundary(
     gtl = temperature_gradient(wl, gl, rgas, pref)
     wall = kind > BC_WALL - 0.5
     adiabatic = wall and data[0] <= 0.0
-    tb = tl + dot(gtl, r) if adiabatic else temperature(wb, rgas, pref)
-    gu = corrected(Vec3(gl[1, 0], gl[1, 1], gl[1, 2]), wb[1] - wl[1], e, inv_d)
-    gv = corrected(Vec3(gl[2, 0], gl[2, 1], gl[2, 2]), wb[2] - wl[2], e, inv_d)
-    gwz = corrected(Vec3(gl[3, 0], gl[3, 1], gl[3, 2]), wb[3] - wl[3], e, inv_d)
-    gt = corrected(gtl, tb - tl, e, inv_d)
+    tb = boundary_temperature(wl, gl, xl, wb, kind, data, xf, rgas, pref)
+    if q > 0.5:
+        gt = quadratic_face_gradient(
+            Vec3(qg[0, 0], qg[0, 1], qg[0, 2]),
+            Vec3(qd[0, 0], qd[0, 1], qd[0, 2]),
+            Vec3(qo[0, 0], qo[0, 1], qo[0, 2]),
+            tb - tl,
+            r,
+            e,
+            inv_d,
+        )
+        gu = quadratic_face_gradient(
+            Vec3(qg[1, 0], qg[1, 1], qg[1, 2]),
+            Vec3(qd[1, 0], qd[1, 1], qd[1, 2]),
+            Vec3(qo[1, 0], qo[1, 1], qo[1, 2]),
+            wb[1] - wl[1],
+            r,
+            e,
+            inv_d,
+        )
+        gv = quadratic_face_gradient(
+            Vec3(qg[2, 0], qg[2, 1], qg[2, 2]),
+            Vec3(qd[2, 0], qd[2, 1], qd[2, 2]),
+            Vec3(qo[2, 0], qo[2, 1], qo[2, 2]),
+            wb[2] - wl[2],
+            r,
+            e,
+            inv_d,
+        )
+        gwz = quadratic_face_gradient(
+            Vec3(qg[3, 0], qg[3, 1], qg[3, 2]),
+            Vec3(qd[3, 0], qd[3, 1], qd[3, 2]),
+            Vec3(qo[3, 0], qo[3, 1], qo[3, 2]),
+            wb[3] - wl[3],
+            r,
+            e,
+            inv_d,
+        )
+    else:
+        gt = corrected_boundary(gtl, tb - tl, e, inv_d)
+        gu = corrected_boundary(Vec3(gl[1, 0], gl[1, 1], gl[1, 2]), wb[1] - wl[1], e, inv_d)
+        gv = corrected_boundary(Vec3(gl[2, 0], gl[2, 1], gl[2, 2]), wb[2] - wl[2], e, inv_d)
+        gwz = corrected_boundary(Vec3(gl[3, 0], gl[3, 1], gl[3, 2]), wb[3] - wl[3], e, inv_d)
     mu = viscosity(tb, mref, tref, s, law)
     k = 0.0 if adiabatic else g * rgas / (g - 1.0) * (mu / prl + mb / prt)
     fv = area * viscous_flux(velocity(wb), gu, gv, gwz, gt, mu + mb, k, n)
@@ -282,6 +418,10 @@ BOUNDARY_ARGS = {
     "wl": prim.left,
     "gl": grad.left,
     "xl": geometry.cell_centroid.left,
+    "qg": fit_g.left,
+    "qd": fit_hd.left,
+    "qo": fit_ho.left,
+    "q": quad.left,
     "wb": prim_b,
     "mb": mu_t_b,
     "kind": bc_kind,
@@ -292,6 +432,34 @@ BOUNDARY_ARGS = {
     "m": geometry.face_moment,
     **VISCOUS,
 }
+
+temperatures_velocities = cell_loop(
+    temperature_velocity, w=prim, rgas=gas_constant, pref=p_ref, out=Write(ut)
+)
+boundary_temperatures_velocities = boundary_loop(
+    boundary_temperature_velocity,
+    wl=prim.left,
+    gl=grad.left,
+    xl=geometry.cell_centroid.left,
+    wb=prim_b,
+    kind=bc_kind,
+    data=bc,
+    xf=geometry.face_centroid,
+    rgas=gas_constant,
+    pref=p_ref,
+    out=Write(ut_b),
+    frozen=True,
+)
+quadratic_fits = cell_reduce(
+    quadratic_term,
+    over=STENCIL,
+    uc=ut.self_,
+    un=ut.other(boundary=ut_b),
+    a=q_grad,
+    bd=q_hdiag,
+    bo=q_hoff,
+    acc=[Sum(fit_g), Sum(fit_hd), Sum(fit_ho)],
+)
 
 viscous_faces = face_loop(viscous_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 viscous_boundaries = boundary_loop(viscous_boundary, **BOUNDARY_ARGS, out=Inc(res, left=+1))
@@ -348,6 +516,10 @@ def viscous_traction(
     wl: State.Vec5,
     gl: Grad.Mat53,
     xl: Geom.Vec3,
+    qg: Grad.Mat53,
+    qd: Grad.Mat53,
+    qo: Grad.Mat53,
+    q: Geom,
     wb: State.Vec5,
     mb: State,
     kind: Geom,
@@ -368,7 +540,30 @@ def viscous_traction(
 ) -> State.Vec5:
     # Per unit area: components 1-3 are -tau n, the viscous force on the wall.
     f = viscous_boundary(
-        wl, gl, xl, wb, mb, kind, data, xf, n, area, m, g, rgas, pref, mref, tref, s, law, prl, prt
+        wl,
+        gl,
+        xl,
+        qg,
+        qd,
+        qo,
+        q,
+        wb,
+        mb,
+        kind,
+        data,
+        xf,
+        n,
+        area,
+        m,
+        g,
+        rgas,
+        pref,
+        mref,
+        tref,
+        s,
+        law,
+        prl,
+        prt,
     )
     return f / area
 

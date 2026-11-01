@@ -20,7 +20,7 @@ The least-squares gradients are the Euler ones (unlimited, face2 stencil); the l
 
 ## Boundary conditions
 
-A boundary face's gradient joins the cell value to the boundary state at the face centroid, with the same correction along r = x_f − x_c. The boundary state is that of the Euler boundary condition ([euler.md](euler.md#boundary-conditions)), with one more kind:
+A boundary face's gradient comes from a **quadratic** least-squares fit of T and the velocity over the boundary cell's vertex stencil (every cell sharing a node with it, and the boundary faces among them that give T and the velocity: manufactured and wall faces), evaluated at the face, with its component along r = x_f − x_c replaced by the secant slope (φ_b − φ_c)/|r| as on interior faces. The linear least-squares gradient of a boundary cell is first order (its stencil is one-sided), so the half-cell difference built on it makes the viscous flux of boundary faces first order: on the `navier_stokes` MMS (Re ≈ 8 on the unit cube) the density then converges at 1.67–1.84 on the hex, poly and hybrid families, against 2.0 with μ ten or a hundred times smaller. The fit is exact for quadratic fields (tests below); its weights are computed once per mesh for the boundary cells only; a cell whose stencil does not determine a quadratic keeps the linear gradient with the one-sided estimate 2(φ_b − φ_c)/|r| − ∇φ_c · e. The boundary state is that of the Euler boundary condition ([euler.md](euler.md#boundary-conditions)), with one more kind:
 
 | Kind | Values | Boundary state | Viscous flux |
 |---|---|---|---|
@@ -39,4 +39,5 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 | Test | Oracle | Where |
 |---|---|---|
 | Linear velocity and temperature, every cell type, `fp64` and `fp32+acc64`, with and without a no-slip wall (isothermal and adiabatic) | viscous residual = −V (0, 0, 0, 0, τ : ∇u) to round-off | `tests/physics/test_navier_stokes.cpp` |
+| Quadratic velocity vanishing on a wall, every cell type, both precisions | wall shear stress μ ∂u_t/∂y at each face to round-off | same |
 | MMS `navier_stokes` through `autan-run` and `autan-vv verify`, gate `ns-mms-order` | Roy et al. (2004) form, μ = 10, Pr = 0.72 | `physics/mms/study.sh` |

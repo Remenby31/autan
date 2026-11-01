@@ -97,7 +97,7 @@ struct SaState {
           bool ft2)
       : model(mesh, geometry, flow, t, ft2) {}
   SpalartAllmaras<P> model;
-  std::vector<double> rnu, rhs, dx;
+  std::vector<double> rnu, rhs, dx, diag, upper, lower;
   std::vector<typename P::state> s;
   std::vector<typename P::residual> res;
 
@@ -435,6 +435,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
+    t.diag.assign(n_, 0.0);
+    t.upper.assign(static_cast<std::size_t>(mesh.n_interior_faces()), 0.0);
+    t.lower.assign(t.upper.size(), 0.0);
     t.s.assign(n_, typename P::state(0));
     t.res.assign(n_, typename P::residual(0));
   }
@@ -600,7 +603,8 @@ class EulerPhysics final : public runtime::Physics {
       if (second_order_) {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
-        t.model.solve(shift, t.rhs, t.dx, gauss_seidel_sweeps);
+        t.model.assemble(shift, t.diag, t.upper, t.lower);
+        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, gauss_seidel_sweeps);
         for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
       }
       t.model.eddy_viscosity(t.stored(t.rnu));
