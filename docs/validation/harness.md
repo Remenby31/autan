@@ -9,6 +9,8 @@ autan-vv verify runs/run-X --against freestream --gate freestream-preservation
 
 The command prints the worst error of each run, the L2 order of each field and the gate result, and exits with status 1 when the gate fails and 2 on a coded error. `--out` writes the full report.
 
+`autan-vv agree --fp64 <runs> --fp32 <runs>` pairs `fp64` and `fp32+acc64` runs of one case by mesh and checks the precision rule of [acceptance.md](acceptance.md) level by level (same exit statuses, `--out` writes `autan.vv-agreement/1`).
+
 ## What it does
 
 1. Opens each run with `autan.Results.open`, which checks the directory against the contract.
