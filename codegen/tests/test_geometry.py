@@ -46,6 +46,19 @@ def _exact(points: npt.NDArray[np.float64]) -> tuple[Vec, Vec, list[list[Fractio
     return area, xf, moment
 
 
+def _provably_planar(pts: npt.NDArray[np.float64]) -> bool:
+    # A triangle, nodes sharing one coordinate, or nodes with at most two distinct projections
+    # along an axis (two parallel lines).
+    if len(pts) == 3:
+        return True
+    for a in range(3):
+        if (pts[:, a] == pts[0, a]).all():
+            return True
+        if len({tuple(q) for q in np.delete(pts, a, axis=1)}) <= 2:
+            return True
+    return False
+
+
 def _check_moments(fa: meshes.FaceArrays) -> npt.NDArray[np.bool_]:
     # Every face's stored M against the exact one, matched by centroid; returns which faces the
     # exact test proves planar (a triangle, or nodes sharing one coordinate): those hold zeros.
@@ -60,7 +73,7 @@ def _check_moments(fa: meshes.FaceArrays) -> npt.NDArray[np.bool_]:
         np.testing.assert_allclose(
             m.face_moment[f], sign * np.array(exact, dtype=float), rtol=0, atol=64 * EPS * scale
         )
-        proven[f] = len(pts) == 3 or bool((pts == pts[0]).all(axis=0).any())
+        proven[f] = _provably_planar(pts)
         if proven[f]:
             assert np.all(m.face_moment[f] == 0.0)
     return proven
@@ -72,20 +85,29 @@ def test_face_moments_are_exactly_zero_where_planarity_is_exact() -> None:
     # warped (#412). The oracle is M of the stored node coordinates in exact arithmetic.
     assert _check_moments(meshes.build("tet", 3, 0.15, seed=3)).all()
 
-    # Warped hexahedra, then uneven y and z and x' = x + y: the faces on x = 0 lie exactly in the
-    # oblique plane x' = y and nothing proves them planar, so they keep a round-off fan sum.
+    # Warped hexahedra; then uneven y and z on a 2^-12 grid and x' = x + y + z, exact: the faces
+    # normal to x lie exactly in oblique planes, are no extrusion, and nothing proves them planar,
+    # so they keep a round-off fan sum.
     _check_moments(meshes.build("hex", 3, 0.15, seed=3))
     fa = meshes.build("hex", 4)
     pts = fa.points.copy()
-    pts[:, 1:] += 0.03 * np.sin(7.0 * pts[:, 1:])
-    pts[:, 0] += pts[:, 1]
+    pts[:, 1:] += np.round(0.03 * np.sin(7.0 * pts[:, 1:]) * 2.0**12) / 2.0**12
+    pts[:, 0] += pts[:, 1] + pts[:, 2]
     sheared = dataclasses.replace(fa, points=pts)
     proven = _check_moments(sheared)
     m = s.mesh(sheared)
-    in_plane = ~proven & (np.abs(m.face_centroid[:, 0] - m.face_centroid[:, 1]) < 1e-12)
-    assert in_plane.sum() == 16
-    # Their round-off is kept: it is exactly zero on 1 of the 16 by chance.
-    assert (np.abs(m.face_moment[in_plane]).reshape(-1, 9).max(axis=1) > 0.0).sum() >= 12
+    assert (~proven).sum() == 80
+    kept = np.abs(m.face_moment[~proven]).reshape(-1, 9).max(axis=1) > 0.0
+    # The fan sum is exactly zero on most of them with these dyadic coordinates; 16 keep round-off.
+    assert kept.sum() >= 8
+
+    # Uneven in x and y as a function of (x, y) only: a mesh extruded along z, whose side faces
+    # lie on two vertical lines each.
+    fa = meshes.build("hex", 3)
+    pts = fa.points.copy()
+    pts[:, 0] += 0.04 * np.sin(5.0 * pts[:, 1] + 3.0 * pts[:, 0])
+    pts[:, 1] += 0.04 * np.sin(4.0 * pts[:, 0] - 2.0 * pts[:, 1])
+    assert _check_moments(dataclasses.replace(fa, points=pts)).all()
 
     # A saddle quad whose area vector is along z although it is warped: not proven planar.
     fa = meshes.build("hex", 1)

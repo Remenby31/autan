@@ -19,15 +19,35 @@ Vec cross(const Vec& a, const Vec& b) {
   return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
 
+// Planarity proven with == on the node coordinates, no tolerance: a triangle; nodes sharing one
+// coordinate (a plane x_a = c); or nodes with at most two distinct projections along an axis (two
+// parallel lines, which are coplanar: the side faces of a mesh extruded along that axis).
 template <class Point>
-bool exactly_axis_aligned(std::size_t nn, const Point& point) {
+bool exactly_planar(std::size_t nn, const Point& point) {
+  if (nn == 3) {
+    return true;
+  }
   const Vec p0 = point(0);
   for (std::size_t a = 0; a < 3; ++a) {
-    bool same = true;
-    for (std::size_t i = 1; i < nn && same; ++i) {
-      same = point(i)[a] == p0[a];
+    const std::size_t b = (a + 1) % 3;
+    const std::size_t c = (a + 2) % 3;
+    bool shared = true;
+    bool two_lines = true;
+    std::size_t second = 0;
+    for (std::size_t i = 1; i < nn && (shared || two_lines); ++i) {
+      const Vec q = point(i);
+      shared = shared && q[a] == p0[a];
+      if (q[b] == p0[b] && q[c] == p0[c]) {
+        continue;
+      }
+      if (second == 0) {
+        second = i;
+      } else {
+        const Vec s = point(second);
+        two_lines = two_lines && q[b] == s[b] && q[c] == s[c];
+      }
     }
-    if (same) {
+    if (shared || two_lines) {
       return true;
     }
   }
@@ -188,9 +208,9 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
   // Face moments over a fan of triangles (m, p_i, p_i+1), m the node mean. The fan starts at the
   // node of smallest (x, y, z) and runs in the face's global orientation (keys->reversed), and
   // the sum is signed for the local one: a face gives the same bits however it is numbered.
-  // M is zero on a planar face, where the fan sum leaves only round-off (#412). A face is planar
-  // here when that is exact: a triangle, or nodes sharing one coordinate (compared with ==).
-  // Any other face, planar or not, keeps its fan sum.
+  // M is zero on a planar face, where the fan sum leaves only round-off (#412): it is stored as a
+  // signed zero where exactly_planar proves planarity. Any other face, planar or not, keeps its
+  // fan sum.
   const auto x = mesh.x(), y = mesh.y(), z = mesh.z();
   for (index_t f = 0; f < mesh.n_faces(); ++f) {
     const auto nodes = mesh.face_nodes(f);
@@ -201,7 +221,7 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
       return Vec{x[n], y[n], z[n]};
     };
     const bool reversed = keys != nullptr && !keys->reversed.empty() && keys->reversed[fi] != 0;
-    if (nn == 3 || exactly_axis_aligned(nn, point)) {
+    if (exactly_planar(nn, point)) {
       // Signed for the local orientation like any moment: +0 in the global one on every rank.
       for (std::size_t j = 0; j < 9; ++j) {
         p.face_moment[j * nf + fi] = reversed ? -0.0 : 0.0;
