@@ -19,6 +19,14 @@ internal_net=autan-runner-internal
 egress_net=autan-runner-egress
 state=autan-runner-state$instance
 work=autan-runner-work$instance
+# Several runners on one Spark share its cores and memory: AUTAN_RUNNER_CPUS caps a runner's
+# cores and the parallelism of its builds (each CUDA compiler process takes up to 2 GB), and
+# AUTAN_RUNNER_MEMORY its host memory. Device memory is not bounded by it: autan-gpu-lock's
+# floor protects the host from that.
+cpus=${AUTAN_RUNNER_CPUS:-}
+memory=${AUTAN_RUNNER_MEMORY:-64g}
+# A whole number: it is also CMake's build parallelism.
+[[ -z $cpus || $cpus =~ ^[1-9][0-9]?$ ]] || { echo "error: AUTAN_RUNNER_CPUS must be a whole number of cores, not $cpus" >&2; exit 2; }
 lock_dir=/home/admin/autan-gpu
 lock=$lock_dir/gpu.lock
 here=$(cd "$(dirname "$0")" && pwd)
@@ -62,7 +70,8 @@ runner_args=(
   --network "$internal_net"
   --cap-drop ALL
   --security-opt no-new-privileges
-  --memory 64g --pids-limit 8192
+  --memory "$memory" --memory-swap "$memory" --pids-limit 8192
+  ${cpus:+--cpus "$cpus" -e CMAKE_BUILD_PARALLEL_LEVEL="$cpus"}
   -e HTTP_PROXY=http://autan-runner-proxy:3128 -e HTTPS_PROXY=http://autan-runner-proxy:3128
   -e http_proxy=http://autan-runner-proxy:3128 -e https_proxy=http://autan-runner-proxy:3128
   -e NO_PROXY=localhost,127.0.0.1 -e no_proxy=localhost,127.0.0.1
