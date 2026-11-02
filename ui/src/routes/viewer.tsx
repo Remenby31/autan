@@ -157,18 +157,25 @@ function ProbeReadout({
   name,
   where,
 }: {
-  probed: { x: number; y: number; probe: Probe };
+  probed: { x: number; y: number; probe: Probe; width: number; height: number };
   name: string;
   where: string;
 }) {
-  const { x, y, probe } = probed;
+  const { x, y, probe, width, height } = probed;
+  // Beside the pointer, on the side where it fits in the view.
+  const left = x > width - 280;
+  const up = y > height - 64;
   const unit = UNITS[name];
   return (
     <div
       className="pointer-events-none absolute rounded-md border border-line bg-glass px-2 py-1 font-mono text-xs backdrop-blur"
       role="status"
       aria-live="polite"
-      style={{ left: x + 14, top: y + 14 }}
+      style={{
+        left: left ? x - 14 : x + 14,
+        top: up ? y - 14 : y + 14,
+        transform: `translate(${left ? "-100%" : "0"}, ${up ? "-100%" : "0"})`,
+      }}
       data-testid="probe"
       data-value={probe.value}
       data-point={probe.point.join(",")}
@@ -372,7 +379,13 @@ function Viewer() {
 
   // The value under the pointer: one probe at a time, the latest position when it ends; none
   // while a button is held (the camera is moving).
-  const [probed, setProbed] = useState<{ x: number; y: number; probe: Probe } | null>(null);
+  const [probed, setProbed] = useState<{
+    x: number;
+    y: number;
+    probe: Probe;
+    width: number;
+    height: number;
+  } | null>(null);
   const pending = useRef<{ x: number; y: number } | null>(null);
   const probing = useRef(false);
   const hovering = useRef(false);
@@ -387,7 +400,12 @@ function Viewer() {
         const started = generation.current;
         const probe = await viewer.current?.probe(x, y);
         const current = started === generation.current && hovering.current;
-        setProbed(probe && current ? { x, y, probe } : null);
+        const view = canvas.current;
+        setProbed(
+          probe && current && view
+            ? { x, y, probe, width: view.clientWidth, height: view.clientHeight }
+            : null,
+        );
       }
     } catch {
       setProbed(null);
