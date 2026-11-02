@@ -116,6 +116,7 @@ jobs:
       contents: read
     outputs:
       results: ${{ steps.results.outputs.artifact-id }}
+      health: ${{ steps.health.outputs.state }}
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
       # Every wait for the GPU lock fails clearly after 25 minutes instead of waiting forever
@@ -153,6 +154,24 @@ jobs:
         run: >-
           REQUIRE_GPU=1 bench/lock/autan-gpu-lock -m "gpu-bench: image smoke test"
           -w "$AUTAN_BENCH_LOCK_TIMEOUT" -t 600 -- docker/dev/smoke/run.sh build/smoke
+      # The health precondition: STREAM built from the GB10 baseline's own commit, never the
+      # binary under test (a change that slows STREAM still fails its gate), measured first. More
+      # than 3 % below the baseline, the Spark is DEGRADED (other tenants take the shared memory's
+      # bandwidth, #284): the job fails with no verdict on the change, and nothing is gated,
+      # published or bisected.
+      - name: Machine health (reference STREAM against the GB10 baseline)
+        id: health
+        if: needs.changes.outputs.bench == 'true'
+        run: bench/ci/health.sh bench/baselines/gb10.json "$RUNNER_TEMP/health" >> "$GITHUB_OUTPUT"
+      - name: MACHINE DEGRADED, rerun later (no verdict on this change)
+        if: failure() && steps.health.outputs.state == 'degraded'
+        run: |
+          echo "::error title=MACHINE DEGRADED::the reference STREAM is more than 3 % below the GB10 baseline: this Spark cannot measure now. No verdict on this change; rerun the job once the machine is healthy."
+          {
+            echo "### MACHINE DEGRADED: no verdict on this change"
+            echo "The health probe (STREAM built from the baseline's commit) is more than 3 % below \`bench/baselines/gb10.json\` on this Spark. Nothing was gated or published; rerun this job later."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
       - name: STREAM bandwidth
         if: needs.changes.outputs.bench == 'true'
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
@@ -216,7 +235,7 @@ jobs:
         run: bench/ci/priority.sh stop
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: results
-        if: always() && needs.changes.outputs.bench == 'true'
+        if: always() && needs.changes.outputs.bench == 'true' && steps.health.outputs.state != 'degraded'
         with:
           name: gpu-bench-${{ github.sha }}
           path: results/
@@ -227,7 +246,7 @@ jobs:
     # Write access only here, on a GitHub-hosted runner and for main, never on the Spark.
     if: >-
       always() && needs.bench.result == 'failure' && github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' && needs.bench.outputs.health != 'degraded'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
