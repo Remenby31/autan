@@ -1,4 +1,4 @@
-import type { Run, RunRegistry, RunSettings } from "./contracts";
+import type { Run, RunRegistry, RunSettings, RunSummary } from "./contracts";
 import { degrees } from "./units";
 
 /** "α 7.05–21.47 deg" for the settings that vary across a group; null when none does. Angles
@@ -34,19 +34,31 @@ export function study(settings: (RunSettings | undefined)[]): string | null {
   return parts.length ? parts.join(", ") : null;
 }
 
-/** The studies of a registry: runs grouped by case name whose summaries vary in a swept
- * setting, newest run first, with their label (`α 7.05–21.47 deg`); at most `limit` runs each. */
+/** The runs of a registry in their studies (results.md#studies), in registry order; a run
+ * without a summary yet stands alone. `name` lists the case names its runs carry. */
+export function groupByStudy(
+  runs: Run[],
+  summaries: Record<string, RunSummary> | undefined,
+): { key: string; name: string; runs: Run[] }[] {
+  const groups = new Map<string, Run[]>();
+  for (const run of runs) {
+    const key = summaries?.[run.run_id]?.study ?? run.run_id;
+    groups.set(key, [...(groups.get(key) ?? []), run]);
+  }
+  return [...groups].map(([key, members]) => ({
+    key,
+    name: [...new Set(members.map((r) => r.case.name))].join(" · "),
+    runs: members,
+  }));
+}
+
+/** The studies of a registry that sweep a setting, newest run first, with their label
+ * (`α 7.05–21.47 deg`); at most `limit` runs each. */
 export function studies(
   registry: RunRegistry | undefined,
   limit = 8,
 ): { name: string; label: string; ids: string[] }[] {
-  const byCase = new Map<string, Run[]>();
-  for (const run of registry?.runs ?? []) {
-    const group = byCase.get(run.case.name);
-    if (group) group.push(run);
-    else byCase.set(run.case.name, [run]);
-  }
-  return [...byCase].flatMap(([name, runs]) => {
+  return groupByStudy(registry?.runs ?? [], registry?.summaries).flatMap(({ name, runs }) => {
     const label = study(runs.map((r) => registry?.summaries[r.run_id]?.settings));
     const ids = [...runs]
       .sort((a, b) => b.started.localeCompare(a.started))

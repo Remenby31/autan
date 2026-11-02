@@ -684,12 +684,20 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
 });
 
 test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {
-  // The crm-hl runs of scripts/sample-runs.sh form a study: one case name, several angles; the
-  // newest eight are compared, newest first.
-  const crm = (await runs(page))
-    .filter((r) => r.case.name === "crm-hl")
-    .sort((a, b) => b.started.localeCompare(a.started));
-  const newest = crm.slice(0, 8).map((r) => r.run_id);
+  // The crm-hl sweep of scripts/sample-runs.sh is one study (results.md#studies): the same
+  // case at four angles, with the runs other tests add to it. Its newest eight are compared,
+  // newest first.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const sweep = (registry.runs as Run[]).find(
+    (r) => registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
+  ) as Run;
+  const key = registry.summaries[sweep.run_id].study;
+  const newest = (registry.runs as Run[])
+    .filter((r) => registry.summaries[r.run_id]?.study === key)
+    .sort((a, b) => b.started.localeCompare(a.started))
+    .slice(0, 8)
+    .map((r) => r.run_id);
+  expect(newest.length).toBeGreaterThan(1);
   const compared = () =>
     JSON.parse(new URL(page.url()).searchParams.get("runs") ?? "[]") as string[];
   await page.goto("/");
