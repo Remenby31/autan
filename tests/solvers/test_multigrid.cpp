@@ -8,6 +8,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/dense.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace {
@@ -331,6 +333,28 @@ void check_hierarchy(const Mesh& mesh, const std::vector<Level>& levels) {
   for (std::size_t l = 0; l < levels.size(); ++l) {
     const Level& lv = levels[l];
     INFO("level " << l);
+    // The smoother's colouring: every line in one colour, no two lines of a colour adjacent.
+    std::vector<int> colour_of(lv.n_lines(), -1);
+    const auto colours = autan::solvers::line_colours(lv);
+    for (std::size_t c = 0; c < colours.size(); ++c) {
+      for (const std::size_t li : colours[c]) {
+        REQUIRE(li < lv.n_lines());
+        CHECK(colour_of[li] == -1);
+        colour_of[li] = static_cast<int>(c);
+      }
+    }
+    CHECK(std::ranges::find(colour_of, -1) == colour_of.end());
+    std::vector<std::size_t> line_of(lv.n_nodes);
+    for (std::size_t li = 0; li < lv.n_lines(); ++li) {
+      for (auto k = lv.line_offsets[li]; k < lv.line_offsets[li + 1]; ++k) {
+        line_of[static_cast<std::size_t>(lv.line_nodes[static_cast<std::size_t>(k)])] = li;
+      }
+    }
+    for (std::size_t e = 0; e < lv.owner.size(); ++e) {
+      const auto a = line_of[static_cast<std::size_t>(lv.owner[e])];
+      const auto b = line_of[static_cast<std::size_t>(lv.neighbour[e])];
+      if (a != b) CHECK(colour_of[a] != colour_of[b]);
+    }
     // Lines partition the nodes, consecutive nodes adjacent.
     std::set<std::pair<index_t, index_t>> edges;
     for (std::size_t e = 0; e < lv.owner.size(); ++e) {
@@ -743,4 +767,28 @@ TEST_CASE("line smoothing keeps the iterations bounded on wall layers of aspect 
     CHECK(with_lines <= 9);
     CHECK(without >= 2 * with_lines);
   }
+}
+
+TEST_CASE("the dense LU of the coarsest level solves its system", "[multigrid]") {
+  // A random diagonally dominant 40 x 40 system with a known solution, then a singular one.
+  const std::size_t m = 40;
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  std::vector<double> a(m * m), x_exact(m), b(m, 0.0);
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) a[i * m + j] = u(rng) + (i == j ? 2.0 * m : 0.0);
+    x_exact[i] = u(rng);
+  }
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) b[i] += a[i * m + j] * x_exact[j];
+  }
+  std::vector<std::size_t> pivot(m);
+  autan::solvers::factor_dense(a, m, pivot);
+  std::vector<double> x = b;
+  autan::solvers::solve_dense(a, pivot, x);
+  for (std::size_t i = 0; i < m; ++i) {
+    CHECK(std::abs(x[i] - x_exact[i]) <= 1e3 * std::numeric_limits<double>::epsilon());
+  }
+  std::vector<double> singular(m * m, 1.0);
+  CHECK_THROWS_AS(autan::solvers::factor_dense(singular, m, pivot), std::domain_error);
 }
