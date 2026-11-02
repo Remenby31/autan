@@ -121,8 +121,12 @@ class Euler {
   /// both for residual_frozen. Leaves what residual() last evaluated untouched.
   void freeze(std::span<const State> s);
   /// R(s) into res with the limiter and the reconstruction branches of freeze()'s state, in a
-  /// workspace of its own: equal to residual(s) bit for bit at that state. Throws
-  /// std::logic_error before freeze() and after set_second_order(), which drops what freeze held.
+  /// workspace of its own: equal to residual(s) bit for bit at that state. The numerical flux's
+  /// own switches are not held (Roe's |v.n|, HLLC's wave speeds, AUSM+-up's split functions, the
+  /// characteristic boundary states' branches): a difference quotient is a secant across one
+  /// wherever a face's v.n, or a branch's argument, lies within the step's change of it from zero.
+  /// Throws std::logic_error before freeze() and after set_second_order(), which drops what
+  /// freeze held.
   void residual_frozen(std::span<const State> s, std::span<Res> res);
   /// Frees what freeze() allocated.
   void release_frozen();
