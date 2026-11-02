@@ -146,10 +146,16 @@ class Lines(_Strict):
     long_cells: Annotated[int, Field(strict=True, ge=0)]
 
 
+class Multigrid(_Strict):
+    cells_by_level: Annotated[tuple[Positive, ...], Field(min_length=1)]
+    edges_by_level: Annotated[tuple[Count, ...], Field(min_length=1)]
+
+
 class Quality(_Strict):
     max_non_orthogonality_deg: Annotated[float, Field(strict=True, ge=0, le=180)]
     max_faces_per_cell: Annotated[int, Field(strict=True, ge=4)]
     lines: Lines
+    multigrid: Multigrid
 
 
 ByRank = Annotated[tuple[Count, ...], Field(min_length=1)]
@@ -193,6 +199,11 @@ class MeshInfo(_Strict):
         lines = self.quality.lines
         if not lines.long_cells <= lines.cells <= self.counts.cells:
             problems.append("quality.lines must hold long_cells <= cells <= counts.cells")
+        hierarchy = self.quality.multigrid
+        if len(hierarchy.cells_by_level) != len(hierarchy.edges_by_level):
+            problems.append("quality.multigrid gives cells and edges for the same levels")
+        if hierarchy.cells_by_level[0] != self.counts.cells:
+            problems.append("quality.multigrid's finest level is the mesh's cells")
         if self.counts.face_nodes < 3 * self.counts.faces:
             problems.append("counts.face_nodes is below 3 nodes per face")
         if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):

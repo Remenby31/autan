@@ -27,6 +27,7 @@ def small(document: dict[str, Any]) -> None:
     """The CRM-HL MeshInfo with four fluid cells."""
     document["counts"]["cells"] = CELLS
     document["quality"]["lines"].update(cells=0, long_cells=0)
+    document["quality"]["multigrid"] = {"cells_by_level": [CELLS], "edges_by_level": [3]}
     document["counts"]["cells_by_type"] = dict.fromkeys(document["counts"]["cells_by_type"], 0)
     document["counts"]["cells_by_type"]["hexa"] = CELLS
     document["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": CELLS}]
@@ -299,6 +300,7 @@ def test_an_unresolved_zone_does_not_count_as_fluid(
         small(document)
         document["counts"]["cells"] = CELLS + 1
         document["counts"]["cells_by_type"]["hexa"] = CELLS + 1
+        document["quality"]["multigrid"]["cells_by_level"] = [CELLS + 1]
         document["cell_zones"].append(
             {"name": "block", "type": "solid", "native_type": None, "cells": 1}
         )

@@ -12,11 +12,7 @@ if TYPE_CHECKING:
 
 DeviceKind = Literal["cpu", "cuda", "hip"]
 _CUDA_CONTEXT = 512 * 2**20
-# Multigrid levels below the finest: the cells of long lines (at least 4 cells) pair along
-# them, at most halving per level, so their levels sum to at most as many again; the others
-# agglomerate isotropically, by up to 8, summed to 0.142-0.144 of them on the calibration
-# meshes, bounded here at 0.15; 7 coupled neighbours per coarse cell.
-_COARSE_ALONG_LINES, _COARSE_ISOTROPIC, _COARSE_DEGREE = 1.0, 0.15, 7
+# The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
 
 
@@ -207,13 +203,11 @@ def _rank(
             "jacobian",
             3 * n * n * f * s + n * n * c * s + block * c + 2 * block * fi + 8 * c + 4 * k + 8 * c,
         )
-        lines = mesh.quality.lines
-        in_lines, in_long = min(lines.cells, c), min(lines.long_cells, c)
-        name, persistent, setup = _linear_solver(
-            spec.time.linear_solver, c, fi, block, in_lines, in_long
+        name, persistent, solver_setup = _linear_solver(
+            spec.time.linear_solver, c, fi, block, min(mesh.quality.lines.cells, c), mesh
         )
         add(name, persistent)
-        add(f"{name} setup", setup, transient=True)
+        add(f"{name} setup", solver_setup, transient=True)
 
     # The peak holds every persistent component and the largest transient one: transients
     # are freed in turn, and later allocations reuse their memory.
@@ -234,7 +228,7 @@ def _rank(
 
 
 def _linear_solver(
-    solver: str, cells: int, interior: int, block: int, lines: int, long_lines: int
+    solver: str, cells: int, interior: int, block: int, lines: int, mesh: MeshInfo
 ) -> tuple[str, float, float]:
     scale = block / 200
     graph = 300 * cells + 60 * interior
@@ -243,13 +237,16 @@ def _linear_solver(
     if solver == "lines":
         # Persistent 1 700 n0 + 8 E0, and the lines built on the whole mesh at setup.
         return "lines", scale * 1700 * cells + 8 * interior, graph
-    coarse = _COARSE_ALONG_LINES * long_lines + _COARSE_ISOTROPIC * (cells - long_lines)
-    # Line smoothing on every level: the finest level's cells in lines (MeshInfo
-    # quality.lines, the multigrid's own count); a coarse level has at most min(n_l, s_0) in
-    # lines, bounded here by its cells whenever there are lines.
+    # The hierarchy the run builds (MeshInfo quality.multigrid, one rank): per coarse level its
+    # nodes and edges; line smoothing on the finest level's cells in lines (quality.lines) and,
+    # when there are lines, on every coarse node.
+    hierarchy = mesh.quality.multigrid
+    coarse = sum(hierarchy.cells_by_level[1:])
     finest = 1200 * cells + 400 * lines + 21 * interior
-    levels = 1000 * coarse + 400 * (coarse if lines else 0) + 410 * _COARSE_DEGREE * coarse
+    levels = (
+        1000 * coarse + 400 * (coarse if lines else 0) + 410 * sum(hierarchy.edges_by_level[1:])
+    )
     # The coarsest level, factored densely up to 1000 unknowns of 5 equations: LU and pivots.
-    unknowns = min(5 * cells, _DENSE_UNKNOWNS)
-    dense = 8 * unknowns * unknowns + 8 * unknowns
+    unknowns = 5 * hierarchy.cells_by_level[-1]
+    dense = 8 * unknowns * unknowns + 8 * unknowns if unknowns <= _DENSE_UNKNOWNS else 0
     return "multigrid", scale * (finest + levels + dense), graph

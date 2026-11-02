@@ -237,6 +237,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "max_non_orthogonality_deg": 0.0,
                 "max_faces_per_cell": 6,
                 "lines": {"order": "rcm", "scale": 1.0, "cells": 0, "long_cells": 0},
+                "multigrid": {"cells_by_level": [10], "edges_by_level": [20]},
             },
         },
         autan.Location(),
@@ -299,6 +300,16 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
     assert by_name["solution output"].bytes_host == 2 * 34 * 80
+    # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
+    # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
+    two_levels = tiny_mesh(20).document()
+    two_levels["quality"]["multigrid"] = {"cells_by_level": [10, 2], "edges_by_level": [20, 1]}
+    deeper = autan.load(write_case(TINY)).plan(
+        autan.MeshInfo.from_document(two_levels, autan.Location()), device_kind="cpu"
+    )
+    multigrid = {c.name: c for c in deeper.memory.components}["multigrid"].bytes_host
+    dense = 8 * 50 * 50 + 8 * 50, 8 * 10 * 10 + 8 * 10
+    assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
 
 
 @pytest.mark.parametrize(
