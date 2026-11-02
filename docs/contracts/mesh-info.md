@@ -12,7 +12,8 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   "source": {"path": "crm-hl.cgns", "format": "cgns", "sha256": "9f2c…"},
   "counts": {
     "cells": 48200000, "faces": 151000000, "nodes": 52000000, "face_nodes": 512000000,
-    "cells_by_type": {"tetra": 964000, "pyramid": 0, "prism": 13014000, "hexa": 0, "polyhedron": 34222000}
+    "cells_by_type": {"tetra": 964000, "pyramid": 0, "prism": 13014000, "hexa": 0, "polyhedron": 34222000},
+    "stencil_entries": 3856000000, "periodic_ghosts": 0
   },
   "bounds": {"min": [-1.2e3, 0.0, -2.1e2], "max": [2.9e3, 1.16e3, 5.6e2]},
   "boundary_zones": [
@@ -22,7 +23,10 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   "cell_zones": [{"name": "fluid", "type": null, "native_type": null, "cells": 48200000}],
   "interfaces": [],
   "periodic": [],
-  "quality": {"max_non_orthogonality_deg": 62.0, "max_faces_per_cell": 214}
+  "quality": {
+    "max_non_orthogonality_deg": 62.0, "max_faces_per_cell": 214,
+    "lines": {"order": "rcm", "scale": 0.0254, "cells": 13014000, "long_cells": 13014000}
+  }
 }
 ```
 
@@ -54,8 +58,12 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `periodic[].faces` | integer ≥ 1 | Faces of each zone of the pair. |
 | `quality.max_non_orthogonality_deg` | number in [0, 180] | Max over interior faces of the angle between the face normal and the vector joining the two cell centroids; over boundary faces, between the normal and the vector from the cell centroid to the face centroid. |
 | `quality.max_faces_per_cell` | integer ≥ 4 | Largest face count of any cell. |
+| `counts.stencil_entries` | integer ≥ 0 | Entries of the face2 gradient stencil (`kernels::cell_stencil`) on the local mesh of a single-rank run, periodic images included. |
+| `counts.periodic_ghosts` | integer ≥ 0 | Ghost cells a single-rank run creates for its periodic pairs; 0 without them. |
+| `quality.lines` | `{order, scale, cells, long_cells}` | The line smoother's lines (`smoother_lines`) in cell order `order` (`"rcm"`, the runtime's default, or `"input"`), on the mesh scaled by `scale` metres per mesh unit (> 0): `cells` the cells in lines of at least 2 cells, `long_cells` in lines of at least 4; `long_cells` ≤ `cells` ≤ `counts.cells`. |
+| `partition` | object, present only when `autan-mesh-info --ranks N` asks for it | The run's partition on `ranks` ≥ 2 ranks, the same as the runtime forms: `groups` (`"none"`, or `"lines"`: the line smoother's lines kept whole, `--groups lines`), and per rank `cells_by_rank` (owned, summing to `counts.cells`), `ghosts_by_rank`, `faces_by_rank`, `interior_faces_by_rank`, `stencil_entries_by_rank`, each a list of `ranks` integers. |
 
-Unknown fields are rejected. Readers fill every field; there are no optional fields. A mesh must be self-contained: the mesh hash covers one file (or one polyMesh directory), so readers reject CGNS links to other files. Reader errors (malformed files, external links, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
+Unknown fields are rejected. Readers fill every field; `partition` is the one field present only on request. The derived counts (`counts.stencil_entries`, `counts.periodic_ghosts`, `quality.lines`, `partition`) are for one run: `autan plan` refuses a MeshInfo whose lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks without a partition for that rank count and the groups its linear solver keeps whole (`E0210`); the runtime writes the MeshInfo it was given as the run's `mesh-info.json` ([solver-input.md](solver-input.md)). A mesh must be self-contained: the mesh hash covers one file (or one polyMesh directory), so readers reject CGNS links to other files. Reader errors (malformed files, external links, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
 
 ## Normalized boundary types
 

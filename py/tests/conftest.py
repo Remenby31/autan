@@ -43,6 +43,31 @@ def mesh_document(name: str) -> dict[str, Any]:
     return document
 
 
+def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) -> dict[str, Any]:
+    """``document`` as autan-mesh-info writes it for a run at ``scale`` metres per mesh unit on
+    ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition. The
+    partition is an even split without ghosts or groups: these tests plan something else."""
+    document = copy.deepcopy(document)
+    document["quality"]["lines"]["scale"] = scale
+    if ranks > 1:
+        counts = document["counts"]
+        interior = counts["faces"] - sum(z["faces"] for z in document["boundary_zones"])
+
+        def split(total: int) -> list[int]:
+            return [total // ranks + (r < total % ranks) for r in range(ranks)]
+
+        document["partition"] = {
+            "ranks": ranks,
+            "groups": "none",
+            "cells_by_rank": split(counts["cells"]),
+            "ghosts_by_rank": [0] * ranks,
+            "faces_by_rank": split(counts["faces"]),
+            "interior_faces_by_rank": split(interior),
+            "stencil_entries_by_rank": split(counts["stencil_entries"]),
+        }
+    return document
+
+
 def place_meshes(directory: Path) -> None:
     for name, content in MESH_FILES.items():
         (directory / name).write_bytes(content)

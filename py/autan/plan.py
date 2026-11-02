@@ -39,6 +39,7 @@ from autan.schema import (
     Slip,
     SolidZone,
     StateFile,
+    Steady,
     Symmetry,
     VelocityInlet,
     Wall,
@@ -178,6 +179,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind =
         _check_initial_state(case, spec.initial_state, mesh, count, found)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
+    _check_prepared(case, spec, mesh, gpus, device_kind, found)
 
     scale = metres_per(spec.mesh_unit)
     return Plan(
@@ -199,6 +201,43 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind =
         memory=estimate(spec, mesh, equations=equations(spec), ranks=gpus, device_kind=device_kind),
         diagnostics=tuple(found),
     )
+
+
+def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
+    """The groups a run's partition keeps whole: the line smoother's lines of a steady CPU run
+    with ``linear_solver = "lines"``, none otherwise (docs/contracts/mesh-info.md)."""
+    lines = isinstance(spec.time, Steady) and spec.time.linear_solver == "lines"
+    return "lines" if lines and device_kind == "cpu" else "none"
+
+
+def _check_prepared(
+    case: Case,
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    gpus: int,
+    device_kind: DeviceKind,
+    found: list[Diagnostic],
+) -> None:
+    """The MeshInfo's derived counts are for the run planned: its scale, and on several ranks
+    the same partition (mesh-info.md)."""
+    problems = []
+    scale = metres_per(spec.mesh_unit)
+    if not math.isclose(mesh.quality.lines.scale, scale, rel_tol=1e-12):
+        problems.append(
+            f"quality.lines was computed at scale {mesh.quality.lines.scale:g}, "
+            f"the case's mesh_unit is {scale:g} m"
+        )
+    partition = mesh.partition
+    if gpus > 1:
+        groups = partition_groups(spec, device_kind)
+        if partition is None:
+            problems.append(f"a run on {gpus} ranks needs the MeshInfo's partition for {gpus}")
+        elif (partition.ranks, partition.groups) != (gpus, groups):
+            problems.append(
+                f"the partition is for {partition.ranks} ranks with groups {partition.groups!r}, "
+                f"the run is on {gpus} with groups {groups!r}"
+            )
+    found.extend(diagnostic("E0210", problem, location=case.locate("mesh")) for problem in problems)
 
 
 def _matches(pattern: str, names: list[str]) -> list[str]:

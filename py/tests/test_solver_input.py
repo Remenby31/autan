@@ -16,26 +16,28 @@ import rfc8785
 from autan.cli import json_schema, main
 from pydantic import ValidationError
 
-from tests.conftest import CRM_HL, FIXTURES
+from tests.conftest import CRM_HL, FIXTURES, mesh_document, prepared
 
 R_UNIVERSAL = 8.314462618
 
 
 def prepare(
-    capsys: pytest.CaptureFixture[str], case: Path, mesh: str, *extra: str
+    capsys: pytest.CaptureFixture[str], case: Path, mesh: str | Path, *extra: str
 ) -> tuple[int, Any]:
     status = main(["prepare", str(case), "--mesh-info", str(FIXTURES / mesh), *extra])
-    out = capsys.readouterr().out
-    return status, json.loads(out) if status == 0 else out
+    out, err = capsys.readouterr()
+    return status, json.loads(out) if status == 0 else out + err
 
 
 def test_crm_hl_input_is_resolved_and_closed_in_si(
-    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path]
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path], tmp_path: Path
 ) -> None:
+    mesh_info = tmp_path / "crm-hl.meshinfo.json"
+    mesh_info.write_text(json.dumps(prepared(mesh_document("crm-hl"), ranks=8)))
     status, document = prepare(
         capsys,
         example("crm_hl.py"),
-        "crm-hl.meshinfo.json",
+        mesh_info,
         "--device-kind",
         "cuda",
         "--device-count",
@@ -45,7 +47,7 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["devices"] == {"kind": "cuda", "count": 8}
     planned = autan.load(example("crm_hl.py")).plan(
-        autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json"), gpus=8, device_kind="cuda"
+        autan.MeshInfo.load(mesh_info), gpus=8, device_kind="cuda"
     )
     assert document["memory"] == {
         "bytes_host": planned.memory.bytes_host,
@@ -53,12 +55,11 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     }
     assert document["reproducibility"] == "run"  # the case's default (case-schema.md#physics)
     # solver-input.md: the MeshInfo the plan used travels with the input, for the same mesh.
-    mesh_info = autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json")
-    assert document["mesh_info"] == mesh_info.document()
+    assert document["mesh_info"] == autan.MeshInfo.load(mesh_info).document()
     document["mesh"]["sha256"] = "1" * 64
     with pytest.raises(ValidationError):
         autan.solver_input.SolverInput.model_validate(document)
-    document["mesh"]["sha256"] = mesh_info.source.sha256
+    document["mesh"]["sha256"] = document["mesh_info"]["source"]["sha256"]
 
     # The case hash is SHA-256 of the RFC 8785 form of the (fully defaulted) case document.
     canonical = rfc8785.dumps(tomllib.loads(document["case"]["toml"]))
@@ -248,6 +249,7 @@ def test_mesh_unit_scales_the_mesh_alone(
     capsys: pytest.CaptureFixture[str],
     write_case: Callable[..., Path],
     crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
 ) -> None:
     body = CRM_HL.replace('mesh="crm-hl.cgns"', f'mesh="crm-hl.cgns", mesh_unit="{unit}"')
     path = write_case(body)
@@ -257,7 +259,14 @@ def test_mesh_unit_scales_the_mesh_alone(
     assert planned["unit"] == unit
     # The fixture's bounds are in its file's units; plan gives them in metres.
     assert planned["bounds"]["max"] == [80.0 * metres, 50.0 * metres, 30.0 * metres]
-    status, document = prepare(capsys, path, "crm-hl.meshinfo.json")
+    # mesh-info.md: the lines are counted on the mesh at the case's scale.
+    status, refused = prepare(capsys, path, "crm-hl.meshinfo.json")
+    assert (status == 0) == (unit == "m")
+    if unit != "m":
+        assert "E0210" in refused
+    mesh_info = tmp_path / "scaled.meshinfo.json"
+    mesh_info.write_text(json.dumps(prepared(mesh_document("crm-hl"), scale=metres)))
+    status, document = prepare(capsys, path, mesh_info)
     assert status == 0
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["mesh"]["scale"] == metres

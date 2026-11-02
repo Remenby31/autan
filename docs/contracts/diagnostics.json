@@ -283,6 +283,12 @@
       "fix": "Build the case gas from the solution's parameters, or export the solution the case needs.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0209"
     },
+    "E0210": {
+      "severity": "error",
+      "title": "MeshInfo prepared for another run",
+      "fix": "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0210"
+    },
     "E0301": {
       "severity": "error",
       "title": "Quantity of the wrong dimension",

@@ -16,7 +16,9 @@
       "prism": 300000,
       "hexa": 700000,
       "polyhedron": 200000
-    }
+    },
+    "stencil_entries": 43500000,
+    "periodic_ghosts": 0
   },
   "bounds": {
     "min": [
@@ -104,6 +106,7 @@
     "max_faces_per_cell": 18,
     "lines": {
       "order": "rcm",
+      "scale": 1.0,
       "cells": 0,
       "long_cells": 0
     }

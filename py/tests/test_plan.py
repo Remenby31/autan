@@ -7,7 +7,7 @@ from typing import Any
 import autan
 import pytest
 
-from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER
+from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER, mesh_document, prepared
 
 HEAT = HEAT_EXCHANGER
 
@@ -218,6 +218,8 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                     "hexa": 10,
                     "polyhedron": 0,
                 },
+                "stencil_entries": 240,
+                "periodic_ghosts": 0,
             },
             "bounds": {"min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]},
             "boundary_zones": [
@@ -234,7 +236,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
             "quality": {
                 "max_non_orthogonality_deg": 0.0,
                 "max_faces_per_cell": 6,
-                "lines": {"order": "rcm", "cells": 0, "long_cells": 0},
+                "lines": {"order": "rcm", "scale": 1.0, "cells": 0, "long_cells": 0},
             },
         },
         autan.Location(),
@@ -269,8 +271,18 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert gs.bytes_host < cpu.bytes_host
     unsteady = memory(CRM_HL + "case.time = autan.Unsteady(steps=10, cfl=1.0)\n", device_kind="cpu")
     assert not names(unsteady) & {"jacobian", "multigrid"}
-    # Every rank keeps the global mesh; its share of the rest shrinks with the ranks.
-    four = memory(gpus=4, device_kind="cuda")
+    # Every rank keeps the global mesh; its share of the rest shrinks with the ranks, from the
+    # partition the MeshInfo gives for them (mesh-info.md), without which the plan is refused.
+    assert "E0210" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))
+    on_four = autan.MeshInfo.from_document(
+        prepared(mesh_document("crm-hl"), ranks=4), autan.Location()
+    )
+    four = autan.load(write_case(CRM_HL)).plan(on_four, gpus=4, device_kind="cuda").memory
+    # A steady CPU run with the lines solver keeps its lines whole: a partition without them is
+    # not the run's.
+    lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
+    assert "E0210" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
+    assert "E0210" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3

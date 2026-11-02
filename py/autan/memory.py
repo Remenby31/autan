@@ -11,9 +11,6 @@ if TYPE_CHECKING:
     from autan.schema import CaseSpec
 
 DeviceKind = Literal["cpu", "cuda", "hip"]
-# Gradient stencil entries per cell: the largest measured on the V&V families (the
-# combinatorial bound f² for pyramids, which were not measured).
-_STENCIL = {"tetra": 16, "pyramid": 25, "prism": 19, "hexa": 24, "polyhedron": 105}
 _CUDA_CONTEXT = 512 * 2**20
 # Multigrid levels below the finest: the cells of long lines (at least 4 cells) pair along
 # them, at most halving per level, so their levels sum to at most as many again; the others
@@ -50,19 +47,66 @@ class Memory(BaseModel):
 def estimate(
     spec: CaseSpec, mesh: MeshInfo, *, equations: int, ranks: int, device_kind: DeviceKind
 ) -> Memory:
+    return max(
+        (
+            _rank(spec, mesh, share, equations=equations, ranks=ranks, device_kind=device_kind)
+            for share in _shares(mesh, ranks)
+        ),
+        key=lambda memory: memory.bytes_per_gpu,
+    )
+
+
+def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int]]:
+    """Per rank: its cells with ghosts, faces, interior faces and stencil entries."""
+    counts, partition = mesh.counts, mesh.partition
+    if partition is not None and partition.ranks == ranks:
+        return list(
+            zip(
+                (
+                    a + b
+                    for a, b in zip(partition.cells_by_rank, partition.ghosts_by_rank, strict=True)
+                ),
+                partition.faces_by_rank,
+                partition.interior_faces_by_rank,
+                partition.stencil_entries_by_rank,
+                strict=True,
+            )
+        )
+    interior = counts.faces - sum(zone.faces for zone in mesh.boundary_zones)
+    if ranks == 1:
+        # A single rank's periodic images, each with at most max_faces_per_cell faces.
+        extra = counts.periodic_ghosts * mesh.quality.max_faces_per_cell
+        cells = counts.cells + counts.periodic_ghosts
+        return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries)]
+    # No partition for these ranks: the plan refuses the run (E0210), the estimate omits halos.
+    return [
+        (
+            -(-counts.cells // ranks),
+            -(-counts.faces // ranks),
+            -(-interior // ranks),
+            -(-counts.stencil_entries // ranks),
+        )
+    ]
+
+
+def _rank(
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    share: tuple[int, int, int, int],
+    *,
+    equations: int,
+    ranks: int,
+    device_kind: DeviceKind,
+) -> Memory:
     counts = mesh.counts
     n = equations
     s = 8 if spec.physics.precision == "fp64" else 4
     cells, faces, nodes = counts.cells, counts.faces, counts.nodes
-    boundary = sum(zone.faces for zone in mesh.boundary_zones)
-    interior = faces - boundary
-    # Per rank: the cells and faces a rank solves; the global mesh is kept on every rank.
-    c, f, fi = -(-cells // ranks), -(-faces // ranks), -(-interior // ranks)
+    interior = faces - sum(zone.faces for zone in mesh.boundary_zones)
+    boundary = faces - interior
+    c, f, fi, stencil = share
     fb = f - fi
     k = 2 * fi + fb
-    stencil = -(
-        -sum(_STENCIL[t] * m for t, m in counts.cells_by_type.model_dump().items()) // ranks
-    )
 
     parts: list[Component] = []
 
@@ -135,7 +179,7 @@ def estimate(
             3 * n * n * f * s + n * n * c * s + block * c + 2 * block * fi + 8 * c + 4 * k + 8 * c,
         )
         lines = mesh.quality.lines
-        in_lines, in_long = (-(-x // ranks) for x in (lines.cells, lines.long_cells))
+        in_lines, in_long = min(lines.cells, c), min(lines.long_cells, c)
         name, persistent, setup = _linear_solver(
             spec.time.linear_solver, c, fi, block, in_lines, in_long
         )

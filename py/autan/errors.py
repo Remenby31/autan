@@ -321,6 +321,17 @@ _CODES = [
         "Build the case gas from the solution's parameters, or export the solution the case needs.",
     ),
     Code(
+        "E0210",
+        "MeshInfo prepared for another run",
+        "The MeshInfo's derived counts are not for this run: its lines were computed at another "
+        "scale than the case's `mesh_unit`, or a run on several ranks has no partition for that "
+        "rank count and the groups its linear solver keeps whole. The message names the "
+        "difference.",
+        "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with "
+        "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run "
+        "on N ranks.",
+    ),
+    Code(
         "W0204",
         "Highly non-orthogonal cells",
         "The maximum face non-orthogonality exceeds 70°, the threshold above which "
