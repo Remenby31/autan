@@ -1,3 +1,4 @@
+import calendar
 import contextlib
 import fcntl
 import logging
@@ -132,12 +133,13 @@ def _held(path: Path) -> bool:
         return False
 
 
-def ci_waiting(lock: Path) -> bool:
+def ci_waiting(lock: Path, bypass: bool = False) -> bool:
     """Whether a job with priority waits for or holds the GPU (docs/infra/bench.md): outside CI,
-    any CI job (it holds ``ci.lock`` shared); in a CI job that is not on main, a job on main
-    (``main.lock``). A job on main never yields."""
+    any CI job (it holds ``ci.lock`` shared), or during an agent's turn (``bypass``), a job on
+    main only (``main.lock``); in a CI job that is not on main, a job on main. A job on main
+    never yields."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
-        return _held(lock.parent / "ci.lock")
+        return _held(lock.parent / ("main.lock" if bypass else "ci.lock"))
     if os.environ.get("GITHUB_REF") == "refs/heads/main":
         return False
     return _held(lock.parent / "main.lock")
@@ -161,15 +163,18 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
     with os.fdopen(fd) as handle:
         start = time.monotonic()
         warned = False
+        # A turn autan-gpu-lock -n took for this run (#360), bounded by its -t; autan-bench alone
+        # never takes one, since nothing bounds how long it holds the lock.
+        bypass = os.environ.get("AUTAN_GPU_LOCK_BYPASS") == "1"
         while True:
             # CI goes first; a lock taken just as CI announced itself is given back.
-            if not ci_waiting(path):
+            if not ci_waiting(path, bypass):
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     pass
                 else:
-                    if not ci_waiting(path):
+                    if not ci_waiting(path, bypass):
                         break
                     fcntl.flock(handle, fcntl.LOCK_UN)
             if not warned:
@@ -216,6 +221,33 @@ def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
                 Code.HOST_BUSY, f"CPU campaigns still running under the GPU lock: {running}"
             )
         time.sleep(0.1)
+
+
+FOREIGN_MAX_AGE_S = 120
+
+
+def foreign_tenants(lock: Path = DEFAULT_LOCK) -> list[str] | None:
+    """The GPU's processes outside Autan's containers, as autan-gpu-guard last listed them in
+    `foreign-gpu` next to the lock (bench/lock/autan-gpu-guard): one "name (container, MiB)"
+    each; None when there is no list, or one older than FOREIGN_MAX_AGE_S or that could not be
+    taken (unknown, not empty)."""
+    try:
+        text = (lock.parent / "foreign-gpu").read_text()
+    except OSError:
+        return None
+    lines = text.splitlines()
+    match = re.match(r"# (\S+Z) (\d+) foreign", lines[0]) if lines else None
+    if match is None:
+        return None
+    stamp = calendar.timegm(time.strptime(match[1], "%Y-%m-%dT%H:%M:%SZ"))
+    if time.time() - stamp > FOREIGN_MAX_AGE_S:
+        return None
+    tenants = []
+    for row in lines[1:]:
+        fields = row.split("\t")
+        if len(fields) == 4:
+            tenants.append(f"{fields[3]} ({fields[1]}, {fields[2]})")
+    return tenants
 
 
 def require_idle(

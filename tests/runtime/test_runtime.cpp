@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <random>
 #include <regex>
@@ -21,6 +23,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
 #include <fcntl.h>
+#include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <signal.h>
@@ -28,6 +31,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -142,6 +146,17 @@ Json periodic_input(double tx, const std::function<void(Json&)>& edit = {}) {
     d["monitors"][0]["zones"] = Json::array({"zmin"});
     if (edit) edit(d);
   });
+}
+
+// The data of the run's `memory` event (#325); null without one.
+Json memory_event(const fs::path& run) {
+  std::ifstream in(run / "log.jsonl");
+  Json found = nullptr;
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "memory") found = event["data"];
+  }
+  return found;
 }
 
 std::vector<Json> history(const fs::path& run) {
@@ -669,6 +684,15 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
   const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
   const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
   REQUIRE(o.status == ExitStatus::finished);
+  // The device figures are sampled over the whole device, which other
+  // processes share (unified memory): only their shape is certain here.
+  const Json memory = memory_event(o.run);
+  const auto peak = memory["device_peak_bytes"].get<std::int64_t>();
+  CHECK(peak >= 0);
+  CHECK(memory["after_setup"]["device"].get<std::int64_t>() <= peak);
+  CHECK(memory["device_peak_bytes_by_rank"] == Json::array({peak}));
+  // Once the stream exists, the process's resident memory is positive.
+  CHECK(memory["host_at_device_start_bytes_by_rank"][0].get<std::int64_t>() > 0);
   std::ifstream log_in(o.run / "log.jsonl");
   Json ready, cuda;
   for (std::string line; std::getline(log_in, line);) {
@@ -1225,6 +1249,30 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
                   }),
                   "E0707");
   }
+  SECTION("the previous solution keeps data in another file") {
+    // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's
+    // structure alone: the donor is gone when the run starts.
+    const auto form =
+        GENERATE(autan_test::Outside::cgns_link, autan_test::Outside::external_link,
+                 autan_test::Outside::external_storage, autan_test::Outside::virtual_dataset);
+    CAPTURE(autan_test::outside_name(form));
+    const fs::path previous = fresh_dir();
+    fs::copy_file(a.run / "solution.cgns", previous / "solution.cgns");
+    std::string control;
+    const std::string node = autan_test::move_outside(previous / "solution.cgns", form,
+                                                      previous / "donor", 1.5, control);
+    for (const double v : autan_test::read_doubles(previous / "solution.cgns", control))
+      CHECK(v == 1.5);
+    fs::remove(previous / "donor");
+    const Outcome o = from([&](Json& d) {
+      d["start"]["run"] = previous.string();
+      d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
+    });
+    require_error(o, "E0134");
+    const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
+    CHECK(refusal["data"]["node"] == node);
+    CHECK(refusal["location"]["path"] == "start.run");
+  }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.
     const fs::path copy = fresh_dir() / "polyMesh";
@@ -1660,6 +1708,23 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int gr
   return w;
 }
 
+// The ranks of a run, by the markers relaxation_main.cpp writes once
+// run_main returns ("<status> <pid>\n" in exit-<rank>): those whose marker is
+// missing or malformed, holds another status, or whose process still exists.
+std::vector<std::string> ranks_not_returned(const fs::path& exits, int ranks, int expected) {
+  std::vector<std::string> wrong;
+  const std::regex marker(R"(^(\d+) (\d+)\n$)");
+  for (int r = 0; r < ranks; ++r) {
+    std::ifstream in(exits / ("exit-" + std::to_string(r)));
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::smatch m;
+    const bool ok = std::regex_match(text, m, marker) && std::stoi(m[1]) == expected &&
+                    kill(static_cast<pid_t>(std::stol(m[2])), 0) != 0 && errno == ESRCH;
+    if (!ok) wrong.push_back(std::to_string(r));
+  }
+  return wrong;
+}
+
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
@@ -1684,7 +1749,16 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
+  // Each rank writes its exit status to exit-<rank> (relaxation_main.cpp), in
+  // the directory the test names or in exits/.
+  fs::path exits = dir / "exits";
+  for (const auto& o : options) {
+    if (o.starts_with("AUTAN_TEST_EXIT_DIR=")) exits = o.substr(20);
+  }
+  fs::create_directories(exits);
+  REQUIRE(fs::is_empty(exits));  // no marker of another launch
   std::vector<std::string> env = options;
+  env.push_back("AUTAN_TEST_EXIT_DIR=" + exits.string());
   for (char** e = environ; *e != nullptr; ++e) env.emplace_back(*e);
   std::vector<char*> envp;
   for (auto& e : env) envp.push_back(e.data());
@@ -1699,8 +1773,22 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   posix_spawn_file_actions_destroy(&actions);
   int status = 0;
   REQUIRE(waitpid(pid, &status, 0) == pid);
-  REQUIRE(WIFEXITED(status));
-  CHECK(WEXITSTATUS(status) == expected_status);
+  if (WIFSIGNALED(status)) {
+    // #304: the launcher can hang in its cleanup once every rank has ended,
+    // and the CI watchdog then kills it. The run is judged by the ranks
+    // themselves: every one must have returned with the expected status.
+    const auto wrong = ranks_not_returned(exits, ranks, expected_status);
+    INFO("launcher ended by signal " << WTERMSIG(status)
+                                     << "; ranks not returned as expected: " << wrong.size());
+    REQUIRE(wrong.empty());
+    WARN("launcher killed after every rank ended (#304)");
+  } else {
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == expected_status);
+    // A run every rank finishes leaves each rank's status, as the watchdog's
+    // judgement above reads it (a failing rank may end the others first).
+    if (expected_status == 0) CHECK(ranks_not_returned(exits, ranks, 0).empty());
+  }
   if (diagnostic != nullptr) {
     std::ifstream in(err_file);
     for (std::string line; std::getline(in, line);) {
@@ -1716,6 +1804,33 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
 }
 
 }  // namespace
+
+TEST_CASE("A launcher killed after its ranks is judged by their markers", "[runtime]") {
+  // #304: a rank counts as returned only by a well-formed "<status> <pid>\n"
+  // marker of the expected status whose process no longer exists.
+  const fs::path exits = fresh_dir();
+  const pid_t gone = fork();
+  if (gone == 0) _exit(0);
+  int ended = 0;
+  REQUIRE(waitpid(gone, &ended, 0) == gone);
+  const std::string finished = std::to_string(gone);
+  const auto marker = [&](int r, const std::string& text) {
+    std::ofstream(exits / ("exit-" + std::to_string(r))) << text;
+  };
+  marker(0, "2 " + finished + "\n");
+  marker(1, "2 " + finished + "\n");
+  CHECK(ranks_not_returned(exits, 2, 2).empty());
+  CHECK(ranks_not_returned(exits, 2, 0) == std::vector<std::string>{"0", "1"});
+  CHECK(ranks_not_returned(exits, 3, 2) == std::vector<std::string>{"2"});
+  for (const std::string& text :
+       std::vector<std::string>{"garbage\n", "2\n", "2 " + finished + "\n1\n", "2 " + finished}) {
+    CAPTURE(text);
+    marker(1, text);
+    CHECK(ranks_not_returned(exits, 2, 2) == std::vector<std::string>{"1"});
+  }
+  marker(1, "2 " + std::to_string(getpid()) + "\n");  // a process that still runs
+  CHECK(ranks_not_returned(exits, 2, 2) == std::vector<std::string>{"1"});
+}
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to
@@ -1872,6 +1987,21 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   const auto wall = wall_solution(one.run / "solution.cgns");
   CHECK(wall.contains("Pressure"));
   CHECK(wall_solution(many / "solution.cgns") == wall);
+  // The memory event names every rank's peak: the last rank alone holds
+  // 256 MiB, which its slot and the maximum show, not rank 0's.
+  {
+    constexpr std::int64_t held = std::int64_t{256} << 20;
+    const Json memory =
+        memory_event(run_on_ranks(doc, ranks,
+                                  {"AUTAN_TEST_HOLD_BYTES=" + std::to_string(held),
+                                   "AUTAN_TEST_HOLD_RANK=" + std::to_string(ranks - 1)}));
+    const auto& by_rank = memory["host_peak_bytes_by_rank"];
+    REQUIRE(by_rank.size() == static_cast<std::size_t>(ranks));
+    CHECK(by_rank.back().get<std::int64_t>() >= held);
+    CHECK(by_rank.front().get<std::int64_t>() < held);
+    CHECK(memory["host_peak_bytes"] == by_rank.back());
+    CHECK(memory["device_peak_bytes_by_rank"].size() == static_cast<std::size_t>(ranks));
+  }
   // Rank 0 logged the partition: every cell owned once.
   std::int64_t owned = 0;
   std::ifstream log_in(many / "log.jsonl");
@@ -1995,6 +2125,25 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   }
 }
 #endif
+
+TEST_CASE("A run logs the memory it used", "[runtime]") {
+  // The physics holds 256 MiB of host memory from its construction on: the
+  // peak and the after-setup figures count it; a CPU run uses no device memory.
+  autan_test::RelaxationOptions holding;
+  holding.hold_bytes = std::int64_t{256} << 20;
+  const Outcome o = run(input(), holding);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json memory = memory_event(o.run);
+  REQUIRE(memory.is_object());
+  const auto host = memory["host_peak_bytes"].get<std::int64_t>();
+  CHECK(host >= holding.hold_bytes);
+  CHECK(memory["after_setup"]["host"].get<std::int64_t>() >= holding.hold_bytes);
+  CHECK(memory["after_setup"]["host"].get<std::int64_t>() <= host);
+  CHECK(memory["host_peak_bytes_by_rank"] == Json::array({host}));
+  CHECK(memory["device_peak_bytes"] == 0);
+  CHECK(memory["device_peak_bytes_by_rank"] == Json::array({0}));
+  CHECK(memory["host_at_device_start_bytes_by_rank"] == Json::array({0}));
+}
 
 TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime][unit]") {
   // The hybrid mesh, and a copy whose points are divided by 0.0254 and

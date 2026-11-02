@@ -211,7 +211,7 @@ function RunView() {
           />
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
+          <div className="flex flex-col gap-6 px-8 py-6">
             <header className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <h1 className="m-0 font-semibold text-xl">
                 {run?.case.name ?? <Skeleton className="h-8 w-40" />}
@@ -271,8 +271,8 @@ function RunView() {
             ))}
 
             <TabPanel value="run" className="flex flex-col gap-6 outline-none">
-              <section className="grid grid-cols-1 gap-6 rounded-lg border border-line bg-bg-0 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-                <div className="h-96 min-w-0 rounded-md border border-line bg-bg-1 p-3">
+              <section className="grid grid-cols-1 items-start gap-6 border-line border-b pb-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+                <div className="h-96 min-w-0">
                   <ResidualChart
                     history={history}
                     floors={run?.convergence?.floor}
@@ -299,7 +299,7 @@ function RunView() {
                 )}
               </section>
 
-              <section className="rounded-lg border border-line bg-bg-0">
+              <section className="border-line border-b">
                 <Collapse
                   title="Plan"
                   meta={
@@ -379,15 +379,12 @@ function RunView() {
 
             <TabPanel value="case" className="flex flex-col gap-4 outline-none">
               <Snippet text={`autan run case.toml --mesh-info mesh-info.json`} />
-              <pre className="m-0 overflow-auto rounded-lg border border-line bg-bg-0 p-4 font-mono text-sm leading-6">
+              <pre className="m-0 overflow-auto rounded-md bg-bg-1 p-4 font-mono text-sm leading-6">
                 {details.data?.case_toml}
               </pre>
             </TabPanel>
 
-            <TabPanel
-              value="outputs"
-              className="rounded-lg border border-line bg-bg-0 px-4 outline-none"
-            >
+            <TabPanel value="outputs" className="border-line border-y px-4 outline-none">
               {details.data && (
                 <OutputList
                   runId={runId}
