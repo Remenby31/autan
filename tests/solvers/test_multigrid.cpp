@@ -5,8 +5,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -20,6 +22,7 @@
 #include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/dense.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace {
@@ -40,8 +43,10 @@ enum class Fill { hexa, prism };
 // Box [0,1]^2 x [0,h] of nx x nx x nz cells: hexahedra, or prisms extruded along z. The
 // spacing in z grows geometrically from `first` at the wall z = 0 (zone "wall") up to
 // `largest` (the in-plane spacing by default), then stays uniform up to z = 1/2. Cells with
-// x < 1/2 are in a second cell zone when `two_zones`.
-Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double largest = 0.0) {
+// x < 1/2 are in a second cell zone when `two_zones`. With `slab` > 0 the box is one cell of
+// that thickness in y, as the meshes of two-dimensional cases.
+Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double largest = 0.0,
+                 double slab = 0.0) {
   autan::CellwiseMesh m;
   for (const char* name : {"a", "b"}) {
     autan::CellZone z;
@@ -61,19 +66,21 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
     if (d == top && z.back() >= 0.5) break;
   }
   const int nz = static_cast<int>(z.size()) - 1;
-  const int p = nx + 1;
+  const int ny = slab > 0.0 ? 1 : nx;
+  const double dy = slab > 0.0 ? slab : dx;
+  const int p = nx + 1, q = ny + 1;
   for (int k = 0; k <= nz; ++k) {
-    for (int j = 0; j <= nx; ++j) {
+    for (int j = 0; j <= ny; ++j) {
       for (int i = 0; i <= nx; ++i) {
         m.x.push_back(i * dx);
-        m.y.push_back(j * dx);
+        m.y.push_back(j * dy);
         m.z.push_back(z[static_cast<std::size_t>(k)]);
       }
     }
   }
-  auto v = [&](int i, int j, int k) { return static_cast<index_t>(i + p * (j + p * k)); };
+  auto v = [&](int i, int j, int k) { return static_cast<index_t>(i + p * (j + q * k)); };
   for (int k = 0; k < nz; ++k) {
-    for (int j = 0; j < nx; ++j) {
+    for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
         const index_t zone = two_zones && 2 * i < nx ? 1 : 0;
         if (fill == Fill::hexa) {
@@ -110,6 +117,136 @@ Mesh layered_box(int nx, double first, Fill fill, bool two_zones = false, double
       }
     }
   }
+  return autan::assemble(autan::to_face_based(std::move(m)));
+}
+
+// One-cell-thick slab in the x-z plane: the x spacing grows by 1.3 from 1e-3 on either side of
+// x = 0, the z spacing by 1.3 from 1e-3 at the wall z = 0 (zone "wall"). Above the wall, cells
+// are stretched along z near x = 0, so lines run along x and, in each row, begin where the cells
+// become anisotropic enough: they start at different columns, as above a flat plate's leading
+// edge.
+Mesh staggered_slab(int n) {
+  autan::CellwiseMesh m;
+  autan::CellZone zone;
+  zone.name = "a";
+  zone.kind = autan::CellKind::fluid;
+  m.cell_zones.push_back(zone);
+  autan::FaceZone wall;
+  wall.name = "wall";
+  wall.kind = autan::BcKind::wall;
+  m.face_zones.push_back(wall);
+  std::vector<double> half{0.0}, z{0.0};
+  for (double d = 1e-3; static_cast<int>(half.size()) <= n; d *= 1.3)
+    half.push_back(half.back() + d);
+  for (double d = 1e-3; static_cast<int>(z.size()) <= n; d *= 1.3) z.push_back(z.back() + d);
+  std::vector<double> x;
+  for (auto it = half.rbegin(); it != half.rend(); ++it) x.push_back(-*it);
+  for (std::size_t i = 1; i < half.size(); ++i) x.push_back(half[i]);
+  const int nx = static_cast<int>(x.size()) - 1, nz = static_cast<int>(z.size()) - 1;
+  const int p = nx + 1;
+  for (int k = 0; k <= nz; ++k) {
+    for (int j = 0; j <= 1; ++j) {
+      for (int i = 0; i <= nx; ++i) {
+        m.x.push_back(x[static_cast<std::size_t>(i)]);
+        m.y.push_back(j * 1e-2);
+        m.z.push_back(z[static_cast<std::size_t>(k)]);
+      }
+    }
+  }
+  auto v = [&](int i, int j, int k) { return static_cast<index_t>(i + p * (j + 2 * k)); };
+  for (int k = 0; k < nz; ++k) {
+    for (int i = 0; i < nx; ++i) {
+      m.add_cell(autan::CellShape::hexa,
+                 std::array<index_t, 8>{v(i, 0, k), v(i + 1, 0, k), v(i + 1, 1, k), v(i, 1, k),
+                                        v(i, 0, k + 1), v(i + 1, 0, k + 1), v(i + 1, 1, k + 1),
+                                        v(i, 1, k + 1)},
+                 0);
+      if (k == 0) {
+        m.add_labelled_face(
+            std::array<index_t, 4>{v(i, 0, 0), v(i, 1, 0), v(i + 1, 1, 0), v(i + 1, 0, 0)}, 0);
+      }
+    }
+  }
+  return autan::assemble(autan::to_face_based(std::move(m)));
+}
+
+// One column of cells of aspect ratio 4 and more along z, as layered_box(1, 1e-5, Fill::hexa,
+// false, 0.25), with a short line on its side: four cells thin in x against the middle cell.
+Mesh column_with_branch() {
+  autan::CellwiseMesh m;
+  autan::CellZone zone;
+  zone.name = "a";
+  zone.kind = autan::CellKind::fluid;
+  m.cell_zones.push_back(zone);
+  std::vector<double> z{0.0};
+  for (double d = 1e-5; z.size() < 400; d = std::min(0.25, 1.2 * d)) {
+    z.push_back(z.back() + d);
+    if (d == 0.25 && z.back() >= 0.5) break;
+  }
+  const int nz = static_cast<int>(z.size()) - 1;
+  const int mid = nz / 2;
+  std::map<std::array<double, 3>, index_t> nodes;  // shared vertices
+  auto node = [&](double x, double y, double zz) {
+    const auto [it, added] = nodes.try_emplace({x, y, zz}, static_cast<index_t>(m.x.size()));
+    if (added) {
+      m.x.push_back(x);
+      m.y.push_back(y);
+      m.z.push_back(zz);
+    }
+    return it->second;
+  };
+  auto hexa = [&](double x0, double x1, double z0, double z1) {
+    m.add_cell(
+        autan::CellShape::hexa,
+        std::array<index_t, 8>{node(x0, 0, z0), node(x1, 0, z0), node(x1, 1, z0), node(x0, 1, z0),
+                               node(x0, 0, z1), node(x1, 0, z1), node(x1, 1, z1), node(x0, 1, z1)},
+        0);
+  };
+  for (int k = 0; k < nz; ++k) {
+    hexa(0.0, 1.0, z[static_cast<std::size_t>(k)], z[static_cast<std::size_t>(k) + 1]);
+  }
+  const double h = 0.01 * (z[static_cast<std::size_t>(mid) + 1] - z[static_cast<std::size_t>(mid)]);
+  for (int i = 0; i < 4; ++i) {
+    hexa(1.0 + i * h, 1.0 + (i + 1) * h, z[static_cast<std::size_t>(mid)],
+         z[static_cast<std::size_t>(mid) + 1]);
+  }
+  return autan::assemble(autan::to_face_based(std::move(m)));
+}
+
+// Four cells 1 x 1 x 0.01 stacked along z, one line, whose boundary patches are A (bottom
+// face), B (a side face of each middle cell) and C (top face): only the middle pair may share an
+// agglomerate.
+Mesh four_cell_line() {
+  autan::CellwiseMesh m;
+  autan::CellZone zone;
+  zone.name = "a";
+  zone.kind = autan::CellKind::fluid;
+  m.cell_zones.push_back(zone);
+  for (const char* name : {"A", "B", "C"}) {
+    autan::FaceZone f;
+    f.name = name;
+    f.kind = autan::BcKind::wall;
+    m.face_zones.push_back(f);
+  }
+  for (int k = 0; k <= 4; ++k) {
+    for (const auto& [x, y] : {std::pair{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}}) {
+      m.x.push_back(x);
+      m.y.push_back(y);
+      m.z.push_back(0.01 * k);
+    }
+  }
+  auto v = [](int k, int i) { return static_cast<index_t>(4 * k + i); };
+  for (int k = 0; k < 4; ++k) {
+    m.add_cell(autan::CellShape::hexa,
+               std::array<index_t, 8>{v(k, 0), v(k, 1), v(k, 2), v(k, 3), v(k + 1, 0), v(k + 1, 1),
+                                      v(k + 1, 2), v(k + 1, 3)},
+               0);
+  }
+  m.add_labelled_face(std::array<index_t, 4>{v(0, 0), v(0, 3), v(0, 2), v(0, 1)}, 0);
+  for (int k = 1; k <= 2; ++k) {
+    m.add_labelled_face(std::array<index_t, 4>{v(k, 1), v(k, 2), v(k + 1, 2), v(k + 1, 1)}, 1);
+  }
+  m.add_labelled_face(std::array<index_t, 4>{v(4, 0), v(4, 1), v(4, 2), v(4, 3)}, 2);
   return autan::assemble(autan::to_face_based(std::move(m)));
 }
 
@@ -196,6 +333,28 @@ void check_hierarchy(const Mesh& mesh, const std::vector<Level>& levels) {
   for (std::size_t l = 0; l < levels.size(); ++l) {
     const Level& lv = levels[l];
     INFO("level " << l);
+    // The smoother's colouring: every line in one colour, no two lines of a colour adjacent.
+    std::vector<int> colour_of(lv.n_lines(), -1);
+    const auto colours = autan::solvers::line_colours(lv);
+    for (std::size_t c = 0; c < colours.size(); ++c) {
+      for (const std::size_t li : colours[c]) {
+        REQUIRE(li < lv.n_lines());
+        CHECK(colour_of[li] == -1);
+        colour_of[li] = static_cast<int>(c);
+      }
+    }
+    CHECK(std::ranges::find(colour_of, -1) == colour_of.end());
+    std::vector<std::size_t> line_of(lv.n_nodes);
+    for (std::size_t li = 0; li < lv.n_lines(); ++li) {
+      for (auto k = lv.line_offsets[li]; k < lv.line_offsets[li + 1]; ++k) {
+        line_of[static_cast<std::size_t>(lv.line_nodes[static_cast<std::size_t>(k)])] = li;
+      }
+    }
+    for (std::size_t e = 0; e < lv.owner.size(); ++e) {
+      const auto a = line_of[static_cast<std::size_t>(lv.owner[e])];
+      const auto b = line_of[static_cast<std::size_t>(lv.neighbour[e])];
+      if (a != b) CHECK(colour_of[a] != colour_of[b]);
+    }
     // Lines partition the nodes, consecutive nodes adjacent.
     std::set<std::pair<index_t, index_t>> edges;
     for (std::size_t e = 0; e < lv.owner.size(); ++e) {
@@ -309,9 +468,12 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   }
   CHECK(first_layer == wall_cells);
   CHECK(lines >= wall_cells);
-  // The coarse levels agglomerate in the wall plane: the line length is kept.
+  // The coarse levels agglomerate in the wall plane while neighbouring lines remain (8 x 8 wall
+  // cells, groups of 4: two levels), keeping the line length; then lines coarsen along
+  // themselves down to a direct solve.
   REQUIRE(levels.size() >= 3);
-  for (std::size_t l = 1; l < levels.size(); ++l) {
+  CHECK(5 * levels.back().n_nodes <= 1000);
+  for (std::size_t l = 1; l < 3; ++l) {
     std::size_t longest = 0;
     for (std::size_t li = 0; li < levels[l].n_lines(); ++li) {
       longest = std::max(longest, static_cast<std::size_t>(levels[l].line_offsets[li + 1] -
@@ -319,6 +481,70 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
     }
     CHECK(longest >= 20);
   }
+}
+
+TEST_CASE(
+    "wall layers of a one-cell-thick mesh form wall-normal lines and coarsen to a direct solve",
+    "[multigrid]") {
+  // The two side planes of a two-dimensional case couple each cell through faces much larger
+  // than its others: they must neither make every cell a line seed nor block agglomeration.
+  const int nx = 32;
+  const auto mesh = layered_box(nx, 1e-5, Fill::hexa, false, 0.0, 1.0);
+  const auto g = autan::compute_geometry(mesh);
+  const auto levels = autan::solvers::agglomerate(mesh, g);
+  const auto& l0 = levels[0];
+  std::size_t wall_lines = 0;
+  for (std::size_t li = 0; li < l0.n_lines(); ++li) {
+    const auto b = static_cast<std::size_t>(l0.line_offsets[li]);
+    const auto e = static_cast<std::size_t>(l0.line_offsets[li + 1]);
+    if (e - b < 2) continue;
+    // A line stays in one column: every node has the x of its first node.
+    const auto first = static_cast<std::size_t>(l0.line_nodes[b]);
+    for (std::size_t k = b; k < e; ++k) {
+      const auto c = static_cast<std::size_t>(l0.line_nodes[k]);
+      CHECK(std::abs(g.cell_centroid_x[c] - g.cell_centroid_x[first]) < 0.5 / nx);
+    }
+    if (g.cell_centroid_z[first] < 1e-5) {
+      ++wall_lines;
+      CHECK(e - b >= 20);
+    }
+  }
+  CHECK(wall_lines == static_cast<std::size_t>(nx));
+  REQUIRE(levels.size() >= 3);
+  CHECK(5 * levels.back().n_nodes <= 1000);
+  check_hierarchy(mesh, levels);
+}
+
+TEST_CASE("a line with no neighbouring line coarsens along itself", "[multigrid]") {
+  // One column of cells of aspect ratio 4 and more: a single line, no line to group with.
+  const auto mesh = layered_box(1, 1e-5, Fill::hexa, false, 0.25);
+  const auto g = autan::compute_geometry(mesh);
+  autan::solvers::AgglomerationOptions options;
+  options.coarsest_nodes = 8;
+  const auto levels = autan::solvers::agglomerate(mesh, g, options);
+  REQUIRE(levels[0].n_lines() == 1);
+  REQUIRE(levels.size() >= 2);
+  // Two layers per coarse node, the coarse level still one line.
+  CHECK(levels[1].n_nodes == (levels[0].n_nodes + 1) / 2);
+  CHECK(levels[1].n_lines() == 1);
+  check_hierarchy(mesh, levels);
+  // A short line touching its middle joins it there; its other layers still pair along it.
+  const auto branched = column_with_branch();
+  const auto gb = autan::compute_geometry(branched);
+  const auto with_branch = autan::solvers::agglomerate(branched, gb, options);
+  REQUIRE(with_branch.size() >= 2);
+  CHECK(2 * with_branch[1].n_nodes <= with_branch[0].n_nodes + 4);
+  check_hierarchy(branched, with_branch);
+  // Pairs along the line are taken wherever two consecutive nodes may share an agglomerate, not
+  // at a fixed parity: here the middle pair.
+  const auto patched = four_cell_line();
+  const auto gp = autan::compute_geometry(patched);
+  options.coarsest_nodes = 1;
+  const auto four = autan::solvers::agglomerate(patched, gp, options);
+  REQUIRE(four[0].n_lines() == 1);
+  REQUIRE(four.size() >= 2);
+  CHECK(four[1].n_nodes == 3);
+  check_hierarchy(patched, four);
 }
 
 TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigrid]") {
@@ -346,6 +572,50 @@ TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigr
     CHECK(2 * levels[1].n_nodes <= levels[0].n_nodes);
     check_hierarchy(*m, levels);
   }
+  // Lines that start at different columns: their layers are matched with a shift, so the
+  // coarsening reaches the coarsest size instead of stalling.
+  const auto slab = staggered_slab(24);
+  const auto g = autan::compute_geometry(slab);
+  const autan::solvers::AgglomerationOptions options;
+  const auto levels = autan::solvers::agglomerate(slab, g, options);
+  REQUIRE(levels.size() >= 2);
+  CHECK(2 * levels[1].n_nodes <= levels[0].n_nodes);
+  CHECK(levels.back().n_nodes <= options.coarsest_nodes);
+  check_hierarchy(slab, levels);
+  // On the fine level, the wall-plane grouping holds: nearly every node of a long line shares
+  // its agglomerate with a node of another line, and the nodes of long lines left alone are at
+  // most the ends of runs (two per line).
+  const Level& fine = levels[0];
+  std::vector<std::size_t> line_of(fine.n_nodes), size_of(fine.n_nodes);
+  std::size_t long_lines = 0;
+  for (std::size_t l = 0; l < fine.n_lines(); ++l) {
+    const auto b = static_cast<std::size_t>(fine.line_offsets[l]);
+    const auto e = static_cast<std::size_t>(fine.line_offsets[l + 1]);
+    if (e - b >= options.min_line) ++long_lines;
+    for (std::size_t k = b; k < e; ++k) {
+      line_of[static_cast<std::size_t>(fine.line_nodes[k])] = l;
+      size_of[static_cast<std::size_t>(fine.line_nodes[k])] = e - b;
+    }
+  }
+  std::vector<std::vector<std::size_t>> aggregates(levels[1].n_nodes);
+  for (std::size_t c = 0; c < fine.n_nodes; ++c) {
+    aggregates[static_cast<std::size_t>(fine.coarse_node[c])].push_back(c);
+  }
+  std::size_t in_long = 0, grouped = 0, alone = 0;
+  for (const auto& a : aggregates) {
+    if (a.size() == 1 && size_of[a[0]] >= options.min_line) ++alone;
+    for (const std::size_t x : a) {
+      if (size_of[x] < options.min_line) continue;
+      ++in_long;
+      if (std::any_of(a.begin(), a.end(), [&](std::size_t y) {
+            return line_of[y] != line_of[x] && size_of[y] >= options.min_line;
+          })) {
+        ++grouped;
+      }
+    }
+  }
+  CHECK(10 * grouped >= 9 * in_long);
+  CHECK(alone <= 2 * long_lines);
 }
 
 TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigrid]") {
@@ -497,4 +767,68 @@ TEST_CASE("line smoothing keeps the iterations bounded on wall layers of aspect 
     CHECK(with_lines <= 9);
     CHECK(without >= 2 * with_lines);
   }
+}
+
+TEST_CASE("the dense LU of the coarsest level solves its system", "[multigrid]") {
+  // A random diagonally dominant 40 x 40 system with a known solution, then a singular one.
+  const std::size_t m = 40;
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  std::vector<double> a(m * m), x_exact(m), b(m, 0.0);
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) a[i * m + j] = u(rng) + (i == j ? 2.0 * m : 0.0);
+    x_exact[i] = u(rng);
+  }
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) b[i] += a[i * m + j] * x_exact[j];
+  }
+  std::vector<std::size_t> pivot(m);
+  autan::solvers::factor_dense(a, m, pivot);
+  std::vector<double> x = b;
+  autan::solvers::solve_dense(a, pivot, x);
+  for (std::size_t i = 0; i < m; ++i) {
+    CHECK(std::abs(x[i] - x_exact[i]) <= 1e3 * std::numeric_limits<double>::epsilon());
+  }
+  std::vector<double> singular(m * m, 1.0);
+  CHECK_THROWS_AS(autan::solvers::factor_dense(singular, m, pivot), std::domain_error);
+  // Partial pivoting by hand: [[1, 2, 3], [4, 5, 6], [7, 8, 10]] takes row 2 at step 0, then the
+  // former row 0 (now row 2) at step 1, where |2 - 8/7| > |5 - 32/7|; x = (1, 1, 1).
+  std::vector<double> p3{1, 2, 3, 4, 5, 6, 7, 8, 10};
+  std::vector<std::size_t> pv(3);
+  autan::solvers::factor_dense(p3, 3, pv);
+  CHECK(pv == std::vector<std::size_t>{2, 2, 2});
+  std::vector<double> x3{6, 15, 25};
+  autan::solvers::solve_dense(p3, pv, x3);
+  for (const double v : x3) CHECK(std::abs(v - 1.0) <= 16 * std::numeric_limits<double>::epsilon());
+  // A tie keeps the first row; a pivot that is not finite is refused.
+  std::vector<double> tie{2, 1, -2, 3};
+  std::vector<std::size_t> pv2(2);
+  autan::solvers::factor_dense(tie, 2, pv2);
+  CHECK(pv2[0] == 0);
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    std::vector<double> nf{bad, 1, 1, 1};
+    CHECK_THROWS_AS(autan::solvers::factor_dense(nf, 2, pv2), std::domain_error);
+  }
+}
+
+TEST_CASE("lines take the least colour no earlier neighbouring line has", "[multigrid]") {
+  // Five one-node lines: 0-1, 0-2, 1-2 (a triangle), 0-3, 3-4. Greedy in line order: 0 -> 0,
+  // 1 -> 1, 2 -> 2, 3 -> 1, 4 -> 0.
+  Level l;
+  l.n_nodes = 5;
+  l.owner = {0, 0, 1, 0, 3};
+  l.neighbour = {1, 2, 2, 3, 4};
+  l.line_offsets = {0, 1, 2, 3, 4, 5};
+  l.line_nodes = {0, 1, 2, 3, 4};
+  using C = std::vector<std::vector<std::size_t>>;
+  CHECK(autan::solvers::line_colours(l) == C{{0, 4}, {1, 3}, {2}});
+  // One two-node line {0, 1} and three single nodes: 2 and 3 touch the line, 4 touches 2 and 3.
+  Level m;
+  m.n_nodes = 5;
+  m.owner = {0, 1, 2, 3, 0};
+  m.neighbour = {1, 2, 4, 4, 3};
+  m.line_offsets = {0, 2, 3, 4, 5};
+  m.line_nodes = {0, 1, 2, 3, 4};
+  CHECK(autan::solvers::line_colours(m) == C{{0, 3}, {1, 2}});
 }

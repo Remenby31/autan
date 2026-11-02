@@ -22,10 +22,12 @@ case.monitor(autan.forces("wing.*", ref_area=191.84 * m**2), every=10)
 schema = "autan.case/1"
 name = "crm-hl"
 mesh = "crm-hl.cgns"
+mesh_unit = "m"
 
 [physics]
 kind = "compressible"
 precision = "fp32+acc64"
+reproducibility = "run"
 turbulence = { model = "sa", nu_tilde_ratio = 3.0 }
 gas = { kind = "ideal-gas", name = "air", molar_mass = "0.0289647 kg / mol", gamma = 1.4, prandtl = 0.72, viscosity = { law = "sutherland", mu_ref = "1.716e-05 Pa * s", t_ref = "273.15 K", s = "110.4 K" } }
 
@@ -76,6 +78,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `schema` | `"autan.case/1"` | required (`E0004` otherwise) |
 | `name` | non-empty string | required |
 | `mesh` | path, relative to the case file | required |
+| `mesh_unit` | unit of length of the mesh file's coordinates, as Pint writes it (`"m"`, `"mm"`, `"in"`); never read from the file. Only the mesh's coordinates, and what MeshInfo reports from the file (`periodic[].transform`), are in this unit; every other length of the case carries its own. `E0301` for a unit of another dimension, `E0303` for text that is not a unit | `"m"` |
 | `physics` | [Physics](#physics) | required |
 | `freestream` | [Freestream](#freestream) | required |
 | `time` | [Time](#time) | `{kind = "steady"}` |
@@ -93,6 +96,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `gas` | [IdealGas](#materials) | air |
 
 `kind = "incompressible"`: pressure-based solver.
@@ -101,9 +105,12 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `fluid` | [ConstantDensityFluid](#materials) | required |
 
 `precision = "fp32+acc64"` computes in FP32 and accumulates solution updates, norms and geometry in FP64 (see `docs/PLAN.md`). `"fp64"` computes everything in FP64.
+
+`reproducibility` sets which bits a run repeats ([results.md](results.md#runjson)). `"run"` repeats them from run to run on the same number of ranks. `"ranks"` also repeats them on any number of ranks, one included, and in any cell order, at the cost of gathering sums in a fixed order; a physics that cannot honour it refuses the case before any directory exists (`E1109`). `"none"` repeats nothing and allows floating-point atomics.
 
 `gas` and `fluid` are the default medium of every fluid cell zone.
 

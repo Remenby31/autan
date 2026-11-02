@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Box, Copy, FilePlus2 } from "lucide-react";
+import { Box, Copy, FilePlus2, SearchX } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { CaseDocument } from "../api/cases";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import {
   type HistoryColumns,
+  HttpError,
   planQuery,
   runQuery,
   runsQuery,
@@ -27,6 +28,7 @@ import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Collapse } from "../components/ui/Collapse";
 import { cn } from "../components/ui/cn";
+import { EmptyState } from "../components/ui/EmptyState";
 import { Gauge } from "../components/ui/Gauge";
 import { LoadingDots } from "../components/ui/LoadingDots";
 import { MetaGrid } from "../components/ui/MetaGrid";
@@ -116,6 +118,28 @@ function RunView() {
     { label: <span className="font-mono">{runId.slice(-8)}</span> },
   ];
 
+  // A run the server does not have, or refuses, is said so, never left as a skeleton.
+  const missing = !run && details.isError ? details.error : null;
+  if (missing) {
+    const absent = missing instanceof HttpError && missing.status === 404;
+    const reason = missing instanceof HttpError ? missing.detail : missing.message;
+    return (
+      <>
+        <TopBar crumbs={[{ label: "Runs", to: "/" }, { label: runId.slice(-8) }]} />
+        <div className="flex flex-1 items-start justify-center px-8 py-16">
+          <EmptyState
+            icon={<SearchX className="size-5" />}
+            title={absent ? "No such run" : "This run cannot be read"}
+            description={absent ? `There is no run ${runId} in this runs directory.` : reason}
+          >
+            <Link to="/" className="self-center">
+              <Button>Go to Runs</Button>
+            </Link>
+          </EmptyState>
+        </div>
+      </>
+    );
+  }
   return (
     <>
       <TopBar
@@ -321,7 +345,13 @@ function RunView() {
                     )
                   }
                 >
-                  {details.data && <OutputList outputs={details.data.outputs} />}
+                  {details.data && (
+                    <OutputList
+                      runId={runId}
+                      running={details.data.run.status === "running"}
+                      outputs={details.data.outputs}
+                    />
+                  )}
                 </Collapse>
                 <Collapse
                   title="Log"
@@ -355,7 +385,13 @@ function RunView() {
             </TabPanel>
 
             <TabPanel value="outputs" className="border-line border-y px-4 outline-none">
-              {details.data && <OutputList outputs={details.data.outputs} />}
+              {details.data && (
+                <OutputList
+                  runId={runId}
+                  running={details.data.run.status === "running"}
+                  outputs={details.data.outputs}
+                />
+              )}
             </TabPanel>
           </div>
         </div>
