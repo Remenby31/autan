@@ -22,8 +22,9 @@ test(`${mesh ?? "no mesh"} surface on ${backend}`, async ({ page }) => {
     expect(response.status()).toBe(200);
     return { ms: performance.now() - start, bytes: body.length };
   };
-  const cold = await timed();
-  const warm = await timed();
+  // The first request is cold only on a server just started (as the config's own is).
+  const first = await timed();
+  const repeat = await timed();
 
   const webgl = backend === "webgl2" ? "&webgl=1" : "";
   await page.goto(`/viewer?bench=1&mesh=${encodeURIComponent(mesh ?? "")}${webgl}`);
@@ -34,9 +35,9 @@ test(`${mesh ?? "no mesh"} surface on ${backend}`, async ({ page }) => {
   const result = {
     mesh,
     backend,
-    messageBytes: cold.bytes,
-    serverColdMs: Math.round(cold.ms),
-    serverWarmMs: Math.round(warm.ms),
+    messageBytes: first.bytes,
+    serverFirstMs: Math.round(first.ms),
+    serverRepeatMs: Math.round(repeat.ms),
     triangles: report.triangles,
     nodes: report.nodes,
     sinceNavigationMs: Math.round(report.sinceNavigationMs),

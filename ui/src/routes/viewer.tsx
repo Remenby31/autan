@@ -34,7 +34,9 @@ export const Route = createFileRoute("/viewer")({
     if (Number.isFinite(triangles) && triangles > 0) search.triangles = triangles;
     if (raw.webgl === true || raw.webgl === 1 || raw.webgl === "1") search.webgl = true;
     if (raw.bench === true || raw.bench === 1 || raw.bench === "1") search.bench = true;
-    if (typeof raw.mesh === "string" && raw.mesh) search.mesh = raw.mesh;
+    // A mesh named by digits arrives parsed as a number.
+    if ((typeof raw.mesh === "string" && raw.mesh) || typeof raw.mesh === "number")
+      search.mesh = String(raw.mesh);
     return search;
   },
   component: Analysis,
@@ -233,7 +235,7 @@ function Viewer() {
                 { label: <span className="font-mono">{run.slice(-8)}</span>, to: `/runs/${run}` },
                 { label: "Analysis" },
               ]
-            : [{ label: "Analysis", to: "/viewer" }, { label: "Synthetic surface" }]
+            : [{ label: "Analysis", to: "/viewer" }, { label: mesh ?? "Synthetic surface" }]
         }
         actions={
           surface && surface.fields.length > 1 ? (
@@ -249,7 +251,9 @@ function Viewer() {
               <TabList tabs={surface.fields.map((f) => ({ value: f.name, label: f.name }))} />
             </TabsRoot>
           ) : !run ? (
-            <span className="text-fg-3 text-sm">Synthetic surface · viewer benchmark</span>
+            <span className="text-fg-3 text-sm">
+              {mesh ? `${mesh} · viewer benchmark` : "Synthetic surface · viewer benchmark"}
+            </span>
           ) : null
         }
       />

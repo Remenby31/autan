@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ class Meshes:
         # The last messages built, by mesh and the identity of both its files: a CRM-HL surface
         # takes seconds to check and encode, and the editor asks for it again on every visit.
         self._messages: dict[tuple[object, ...], bytes] = {}
+        self._lock = threading.Lock()  # Requests run on a thread pool.
 
     def names(self) -> list[str]:
         if self.root is None or not self.root.is_dir():
@@ -62,7 +64,8 @@ class Meshes:
             name,
             *((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats),
         )
-        cached = self._messages.get(key)
+        with self._lock:
+            cached = self._messages.get(key)
         if cached is not None:
             return cached
         try:
@@ -80,9 +83,10 @@ class Meshes:
                 msg = f"{name}{SURFACE} is not a regular file: {error}"
                 raise ValueError(msg) from error
         message = mesh_surface(data, mesh_info)
-        if len(self._messages) >= 4:
-            self._messages.pop(next(iter(self._messages)))
-        self._messages[key] = message
+        with self._lock:
+            self._messages[key] = message
+            while len(self._messages) > 4:
+                self._messages.pop(next(iter(self._messages)))
         return message
 
     def summaries(self) -> list[dict[str, Any]]:

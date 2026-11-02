@@ -1,6 +1,7 @@
 import json
 import shutil
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -235,3 +236,19 @@ def test_a_surface_served_again_follows_its_file(tmp_path: Path) -> None:
     path.with_suffix(".new").replace(path)
 
     assert client.get(url).status_code == 422
+
+
+def test_surfaces_served_at_once_from_many_threads_all_arrive(tmp_path: Path) -> None:
+    # Five meshes for four kept messages: requests at once on the server's thread pool.
+    meshes = tmp_path / "meshes"
+    meshes.mkdir()
+    for name in FORMATS:
+        for suffix in (".meshinfo.json", ".surface"):
+            shutil.copy(DATA / f"{name}{suffix}", meshes / f"{name}{suffix}")
+    shutil.copy(DATA / "polyMesh.meshinfo.json", meshes / "again.meshinfo.json")
+    shutil.copy(DATA / "polyMesh.surface", meshes / "again.surface")
+    app = create_app(tmp_path / "runs", static=None, hosts=("testserver",), meshes_root=meshes)
+    names = [*FORMATS, "again"] * 20
+    with TestClient(app) as client, ThreadPoolExecutor(16) as pool:
+        codes = list(pool.map(lambda n: client.get(f"/api/meshes/{n}/surface").status_code, names))
+    assert codes == [200] * len(names)
