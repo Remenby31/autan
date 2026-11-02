@@ -1534,6 +1534,16 @@ TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged",
   CHECK(wide["status"] == "converged");
   CHECK(wide["iterations"] == 28);
   CHECK(wide["convergence"].is_null());
+  // A residual left at one cell, the others at their floor from k = 13: the run is not at its
+  // floor until every cell is, here after the 8-order drop at k = 28 (the hot cell's ratio is
+  // 2^(33-k)), however many cells already are.
+  autan_test::RelaxationOptions hot = floored;
+  hot.floor_hot = 1;
+  const Json held = Json::parse(
+      read(run(input([](Json& d) { d["precision"] = "fp32+acc64"; }), hot).run / "run.json"));
+  CHECK(held["status"] == "converged");
+  CHECK(held["iterations"] == 28);
+  convergence(held, 28, std::ldexp(1.0, 5), (cells - 1.0) / cells);
   // Floors out of range fail the run, in fp64 too, where they set nothing.
   autan_test::RelaxationOptions overcounting = floored;
   overcounting.floor_overcount = true;
