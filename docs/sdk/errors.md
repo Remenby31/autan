@@ -548,6 +548,30 @@ The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zon
 
 Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.
 
+## E0426
+
+**Coupled turbulence not applicable** (error)
+
+`time.coupled_turbulence` is set on a case whose physics has no coupled turbulence step: only compressible physics with the SA model has one.
+
+Fix: Remove `coupled_turbulence=True`, or use compressible SA physics.
+
+## W0426
+
+**Coupled turbulence outside its validated domain** (warning)
+
+`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate only (#429). `autan plan` reports it, and the run logs it at its first coupled step.
+
+Fix: Compare with a run without the option before relying on the result.
+
+## E0427
+
+**Coupled turbulence needs the host multigrid** (error)
+
+The coupled turbulence step runs in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs.
+
+Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
+
 ## E0501
 
 **Cell zone rule matches no zone** (error)

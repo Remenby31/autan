@@ -409,6 +409,24 @@
       "fix": "Give a pattern that matches the walls of the lifting body, e.g. `surfaces=\"wing.*\"`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0425"
     },
+    "E0426": {
+      "severity": "error",
+      "title": "Coupled turbulence not applicable",
+      "fix": "Remove `coupled_turbulence=True`, or use compressible SA physics.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0426"
+    },
+    "W0426": {
+      "severity": "warning",
+      "title": "Coupled turbulence outside its validated domain",
+      "fix": "Compare with a run without the option before relying on the result.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0426"
+    },
+    "E0427": {
+      "severity": "error",
+      "title": "Coupled turbulence needs the host multigrid",
+      "fix": "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0427"
+    },
     "E0501": {
       "severity": "error",
       "title": "Cell zone rule matches no zone",
