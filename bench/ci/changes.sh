@@ -18,7 +18,7 @@ set -euo pipefail
 # feeds the loop benchmark (what the mesh job's cache key hashes), and this filter, its list and
 # its check, so that a change to any of them is checked against the real build graph.
 files=${AUTAN_MEASURED_FILES:-$(dirname "$0")/measured-files.txt}
-measured_paths='^docker/dev/|^bench/(src|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/(meshes|oracles)/|^vv/src/autan_vv/(cli|errors|__init__)\.py$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py|measured-files\.txt)$|^\.github/workflows/gpu-bench\.yml$'
+measured_paths='^docker/dev/|^bench/(src|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/(meshes|oracles)/|^vv/src/autan_vv/(cli|errors|__init__)\.py$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py|measured-files\.txt)$|^codegen/src/autan_codegen/[^/]*\.py$|^\.github/workflows/gpu-bench\.yml$'
 if [[ ${1:-} == --measured ]]; then
   echo "$measured_paths"; exit 0
 fi

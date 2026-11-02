@@ -29,12 +29,20 @@ class Row:
     verdict: str
 
 
+def _device(doc: dict[str, Any]) -> str:
+    """What a result's numbers belong to: the GPU's name, or for a host benchmark (backend cpu)
+    the core, its maximum frequency and the CPUs it was pinned to."""
+    dev = doc["provenance"]["gpu"]
+    if doc["provenance"].get("backend") != "cpu":
+        return dev["name"]
+    return f"{dev['name']} at {dev['max_khz']} kHz on CPUs {dev['cpus']}"
+
+
 def compare(
     current: dict[str, Any], baseline: dict[str, Any], threshold: float = DEFAULT_THRESHOLD
 ) -> list[Row]:
     """Judge every baseline benchmark: ok, regression, or inconclusive (see the verdicts above)."""
-    gpu_now = current["provenance"]["gpu"]["name"]
-    gpu_base = baseline["provenance"]["gpu"]["name"]
+    gpu_now, gpu_base = _device(current), _device(baseline)
     if gpu_now != gpu_base:
         raise BenchError(
             Code.GPU_MISMATCH, f"result is from {gpu_now!r}, baseline from {gpu_base!r}"

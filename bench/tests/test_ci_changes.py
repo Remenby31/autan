@@ -164,6 +164,8 @@ def test_without_a_readable_base_everything_runs(repo):
         ("kernels/flux_test.cu", "false", "false"),
         ("solvers/src/gauss_seidel.cpp", "false", "false"),
         ("bench/ci/measured-files.txt", "true", "true"),
+        # A new pass of the generator: CMake's glob makes it an input of the generated loops.
+        ("codegen/src/autan_codegen/new_pass.py", "true", "false"),
         ("docker/dev/Dockerfile", "true", "true"),
         ("bench/src/autan_bench/stats.py", "true", "true"),
         ("bench/stream/stream.cu", "true", "true"),

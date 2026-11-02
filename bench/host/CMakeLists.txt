@@ -16,6 +16,10 @@ target_include_directories(
   autan_host_bench
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision ${PROJECT_BINARY_DIR}/physics/generated
 )
+# The loops are timed: optimized whatever the tree's build type, as CMake's Release (an empty
+# CMAKE_BUILD_TYPE, gpu-bench's, compiles at -O0).
+target_compile_options(autan_host_bench PRIVATE -O3)
+target_compile_definitions(autan_host_bench PRIVATE NDEBUG)
 target_link_libraries(
   autan_host_bench
   PRIVATE autan::physics autan::io autan::kernels autan_compile_options

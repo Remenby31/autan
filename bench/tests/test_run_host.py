@@ -9,13 +9,14 @@ import time
 from pathlib import Path
 
 import pytest
-from autan_bench import gpu
+from autan_bench import compare, gpu
 from autan_bench.cli import main
+from autan_bench.errors import BenchError
 
 # The binary and nvidia-smi are faked. The fake GPU reads idle unless `gpu-busy` exists: a host
 # benchmark must find it idle throughout.
 FAKE_SMI = """#!/bin/sh
-if [ -e "{busy}" ]; then util=90; apps=1; else util=0; apps=0; fi
+if [ -e "{busy}" ]; then util=90; apps=1; elif [ -e "{busy}.warm" ]; then util=25; apps=0; else util=0; apps=0; fi
 case "$*" in
   *query-compute-apps*) [ "$apps" = 1 ] && echo 4242; exit 0 ;;
   *) echo "$util, 210, 3003, 5.0, 45, 0x0000000000000000" ;;
@@ -27,8 +28,11 @@ import os, pathlib, time
 busy = pathlib.Path({busy!r})
 if os.environ.get("HOST_BENCH_TOUCHES_GPU"):
     busy.touch()
+if os.environ.get("HOST_BENCH_WARMS_GPU"):
+    pathlib.Path(str(busy) + ".warm").touch()
 time.sleep(0.7)
 busy.unlink(missing_ok=True)
+pathlib.Path(str(busy) + ".warm").unlink(missing_ok=True)
 print(pathlib.Path({raw!r}).read_text())
 """
 CORE = {"name": "Cortex-X925", "cpus": [9], "midr": "0x00000000410fd851", "max_khz": 3900000,
@@ -112,6 +116,26 @@ def test_a_gpu_busy_during_a_host_benchmark_fails_it(host, tmp_path, capsys, mon
     assert run(host, tmp_path / "r.json") != 0
     assert "GPU_CONTENDED" in capsys.readouterr().err
     assert not (tmp_path / "r.json").exists()
+
+
+def test_a_gpu_working_without_a_process_still_fails_a_host_benchmark(host, tmp_path, capsys,
+                                                                    monkeypatch):  # fmt: skip
+    # 25 % utilization with no compute process listed (graphics, another context): not idle.
+    monkeypatch.setenv("HOST_BENCH_WARMS_GPU", "1")
+    assert run(host, tmp_path / "r.json") != 0
+    assert "GPU_CONTENDED" in capsys.readouterr().err
+
+
+def test_identically_named_cores_at_other_frequencies_are_not_compared(host, tmp_path):
+    out = tmp_path / "r.json"
+    assert run(host, out) == 0
+    doc = json.loads(out.read_text())
+    other = json.loads(out.read_text())
+    other["provenance"]["gpu"]["max_khz"] = 2800000
+    with pytest.raises(BenchError) as err:
+        compare.compare(doc, other)
+    assert err.value.code.value == "GPU_MISMATCH"
+    assert compare.compare(doc, json.loads(out.read_text()))  # the same core: compared
 
 
 def test_a_host_benchmark_waits_for_the_cpu_campaigns_to_freeze(

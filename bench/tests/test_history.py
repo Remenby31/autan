@@ -163,6 +163,8 @@ def test_a_host_loop_s_bandwidth_is_not_a_fraction_of_the_gpu_peak(tmp_path):
     stream = json.loads((out / NEW / "stream.json").read_text())
     host = json.loads(json.dumps(stream))
     host["provenance"]["backend"] = "cpu"
+    host["provenance"]["gpu"] = {"name": "Cortex-X925", "cpus": [9], "midr": "0x00000000410fd851",
+                                 "max_khz": 3900000, "online_cpus": 20}  # fmt: skip
     host["created"] = "9999-01-01T00:00:00+00:00"
     for b in host["benchmarks"]:
         b["name"] = "host.euler.roe_faces" + b["name"].removeprefix("stream.copy")
@@ -170,5 +172,10 @@ def test_a_host_loop_s_bandwidth_is_not_a_fraction_of_the_gpu_peak(tmp_path):
     (out / NEW / "host.json").write_text(json.dumps(host))
     rec = build(out, order)["records"][1]
     assert "percent_of_peak" not in rec["benchmarks"]["host.euler.roe_faces"]
+    assert (
+        rec["benchmarks"]["host.euler.roe_faces"]["device"]
+        == "Cortex-X925 at 3900000 kHz on CPUs [9]"
+    )
+    assert "device" not in rec["benchmarks"]["stream.copy"]
     assert "percent_of_peak" in rec["benchmarks"]["stream.copy"]
     assert rec["gpu"] == stream["provenance"]["gpu"]["name"]  # the earliest result's device

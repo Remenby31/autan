@@ -57,6 +57,10 @@ def record(docs: list[dict], peak: float) -> dict | None:
             # The peak is the GPU's STREAM: a host loop's bandwidth is not a fraction of it.
             if b["unit"] == "GB/s" and doc["provenance"]["backend"] != "cpu":
                 entry["percent_of_peak"] = 100 * b["stats"]["median"] / peak
+            if doc["provenance"]["backend"] == "cpu":
+                # The record's gpu is the GPU's; a host loop keeps its own core.
+                dev = doc["provenance"]["gpu"]
+                entry["device"] = f"{dev['name']} at {dev['max_khz']} kHz on CPUs {dev['cpus']}"
             benchmarks[b["name"]] = entry
     return {
         "commit": commits.pop(),

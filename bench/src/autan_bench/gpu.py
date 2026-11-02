@@ -331,7 +331,17 @@ class Sampler:
         # Clocks, power and temperature describe the GPU while it works: setup and host-side
         # verification leave it idle at base clock for part of the run.
         threshold = BUSY_UTILIZATION_PCT_MACOS if sys.platform == "darwin" else BUSY_UTILIZATION_PCT
-        busy = [s for s in self.samples if (s.utilization_pct or 0.0) > threshold]
+        if not gpu_work:
+            # A host benchmark needs the GPU idle, as before any run: an unknown utilization
+            # does not prove it.
+            threshold = IDLE_UTILIZATION_PCT
+            busy = [
+                s
+                for s in self.samples
+                if s.utilization_pct is None or s.utilization_pct > threshold
+            ]
+        else:
+            busy = [s for s in self.samples if (s.utilization_pct or 0.0) > threshold]
         if gpu_work and not busy:
             raise BenchError(Code.NO_SAMPLES, "no clock sample was taken while the GPU was busy")
         if not gpu_work and busy:

@@ -18,6 +18,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <span>
 #include <string>
@@ -174,9 +175,13 @@ std::vector<double> time_it(const Options& o, const std::function<void()>& reset
   return out;
 }
 
+/// The largest difference relative to b's largest magnitude; infinite when either holds a value
+/// that is not finite, so that a NaN or an overflow never verifies.
 double max_rel_diff(std::span<const double> a, std::span<const double> b) {
   double scale = 0.0, diff = 0.0;
   for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!std::isfinite(a[i]) || !std::isfinite(b[i]))
+      return std::numeric_limits<double>::infinity();
     scale = std::max(scale, std::abs(b[i]));
     diff = std::max(diff, std::abs(a[i] - b[i]));
   }
