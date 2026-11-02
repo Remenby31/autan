@@ -110,7 +110,7 @@ class EulerPhysics final : public runtime::Physics {
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
       // Under reproducibility "ranks", each row sums its neighbours in global face order.
-      if (keys_) matrix_->order_rows(keys_->face);
+      if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
         nlohmann::json nodes = nlohmann::json::array();
@@ -235,7 +235,7 @@ class EulerPhysics final : public runtime::Physics {
     }
     for (std::size_t i = 0; i < vortices_.size(); ++i) {
       out.push_back({.name = "VortexCirculation" + std::to_string(i),
-                     .values = std::vector<double>(n_, vortices_[i].circulation)});
+                     .values = std::vector<double>(owned_, vortices_[i].circulation)});
     }
     return out;
   }

@@ -785,19 +785,22 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
   // orders, the fields agree within 1e-9 of their magnitude (the largest speed for velocity
   // components), and a fixed rank count repeats bit for bit. Under "ranks" every sum follows the
   // global order: bit for bit. Two zones at different states on the hybrid mesh, farfield around.
+  // fp32+acc64 drops 5 orders, and its fields agree within 1e-5.
   const int ranks = GENERATE(2, 4);
   const char* reproducibility = GENERATE("run", "ranks");
-  CAPTURE(ranks, reproducibility);
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool fp64 = std::string(precision) == "fp64";
+  CAPTURE(ranks, reproducibility, precision);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     d["reproducibility"] = reproducibility;
-    inviscid_along_x(d, "fp64");
+    inviscid_along_x(d, precision);
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
     auto& init = d["cell_zones"].back()["initial"];
     init["density"] = 1.2 * init["density"].get<double>();
     init["pressure"] = 1.3 * init["pressure"].get<double>();
     d["time"]["linear_solver"] = "gauss-seidel";
     d["time"]["max_iterations"] = 2000;
-    d["time"]["residual_orders"] = 10.0;
+    d["time"]["residual_orders"] = fp64 ? 10.0 : 5.0;
   });
   const auto one = run(doc);
   INFO(one.err);
@@ -822,7 +825,7 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
     }
     if (std::string(name).starts_with("Velocity")) scale = speed;
     INFO(name << " differs by " << diff / scale << " of its magnitude");
-    CHECK(diff <= 1e-9 * scale);
+    CHECK(diff <= (fp64 ? 1e-9 : 1e-5) * scale);
   }
   if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
   const fs::path again = run_on_ranks(doc, ranks);
@@ -835,9 +838,11 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
   // fields agree within 1e-9 of their magnitude, and bit for bit under reproducibility "ranks".
   const int ranks = GENERATE(2, 4);
   const char* reproducibility = GENERATE("run", "ranks");
-  CAPTURE(ranks, reproducibility);
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool fp64 = std::string(precision) == "fp64";
+  CAPTURE(ranks, reproducibility, precision);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    periodic_box(d, "fp64");
+    periodic_box(d, precision);
     d["reproducibility"] = reproducibility;
     const double speed = d["freestream"]["speed"].get<double>();
     d["cell_zones"][0]["initial"]["velocity"] = {0.6 * speed, 0.7 * speed, -0.3 * speed};
@@ -850,6 +855,15 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
   REQUIRE(one.status == ExitStatus::finished);
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
+  // Both ran their 40 steps (not an early divergence with finite fields) and the flow moved.
+  for (const fs::path& r : {one.run, many}) {
+    const Json info = Json::parse(read(r / "run.json"));
+    CHECK(info["status"] == "completed");
+    CHECK(info["iterations"] == 40);
+  }
+  const double rho0 = doc["cell_zones"][0]["initial"]["density"].get<double>();
+  const auto density = field(one.run, "Density");
+  CHECK(std::ranges::any_of(density, [&](double r) { return std::abs(r - rho0) > 1e-3 * rho0; }));
   const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
              vz = field(one.run, "VelocityZ");
   double speed = 0.0;
@@ -866,7 +880,7 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
     }
     if (std::string(name).starts_with("Velocity")) scale = speed;
     INFO(name << " differs by " << diff / scale << " of its magnitude");
-    CHECK(diff <= 1e-9 * scale);
+    CHECK(diff <= (fp64 ? 1e-9 : 1e-5) * scale);
   }
   if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
 }
@@ -1221,6 +1235,29 @@ TEST_CASE("a point vortex takes the Kutta-Joukowski circulation of its surfaces'
                                                       : std::numeric_limits<float>::epsilon();
   const double circulation = field(out.run, "VortexCirculation0", "RestartState").front();
   CHECK(std::abs(circulation - expected) <= 64 * eps * 1.3 * p / (rho * speed));
+}
+
+TEST_CASE("a point vortex over periodic image ghosts writes its circulation for the owned cells",
+          "[euler]") {
+  // The periodic box on one rank holds image ghosts after its cells; restart fields, the
+  // circulation included, cover the cells of the mesh only (results.md, RestartState).
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    periodic_box(d, "fp64");
+    for (auto& b : d["boundaries"]) {
+      if (b["zone"] == "zmax") {
+        b["kind"] = "farfield";
+        b["point_vortex"] = {{"zones", {"zmin"}}, {"center", {0.5, 0.5, -0.5}}};
+      }
+    }
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 2;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  CHECK(Json::parse(read(out.run / "run.json"))["status"] == "completed");
+  CHECK(field(out.run, "VortexCirculation0", "RestartState").size() ==
+        field(out.run, "Density").size());
 }
 
 TEST_CASE("a point vortex reaches the flow and continues bit for bit", "[euler]") {

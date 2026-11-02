@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace autan::physics {
@@ -90,15 +91,21 @@ BlockMatrix::BlockMatrix(const Mesh& mesh)
   lower_.assign(25 * ni, 0.0);
 }
 
-void BlockMatrix::order_rows(std::span<const std::int64_t> face_key) {
+void BlockMatrix::order_rows(const kernels::GlobalKeys& keys) {
+  // keys.shift holds the ghosts', which follow the owned cells.
+  const std::size_t owned = n_cells_ - keys.shift.size();
+  const std::array<double, 3> none{};
   for (std::size_t c = 0; c < n_cells_; ++c) {
     const auto first = cell_faces_.begin() + cell_offsets_[c];
     const auto last = cell_faces_.begin() + cell_offsets_[c + 1];
-    std::sort(first, last, [&](index_t a, index_t b) {
-      const auto ka = face_key[static_cast<std::size_t>(a)];
-      const auto kb = face_key[static_cast<std::size_t>(b)];
-      return ka != kb ? ka < kb : a < b;
-    });
+    auto key = [&](index_t f) {
+      const auto i = static_cast<std::size_t>(f);
+      const auto other = static_cast<std::size_t>(
+          static_cast<std::size_t>(owner_[i]) == c ? neighbour_[i] : owner_[i]);
+      return std::tuple(keys.face[i], keys.reversed.empty() ? 0 : keys.reversed[i],
+                        other < owned ? none : keys.shift[other - owned]);
+    };
+    std::sort(first, last, [&](index_t a, index_t b) { return key(a) < key(b); });
   }
 }
 
