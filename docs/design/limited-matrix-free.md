@@ -52,7 +52,7 @@ Before any code, on states the current solver already produces, the criterion is
 - Nobody had read that file before 67d2fb14.
 - So the remaining-gap verdict applies. The share of matrix-free rows is reported next to it.
 
-**Declared limit of this check.** The diagnostic reads the stored φ, so it counts a tie, min_f ψ_f = 1, as eligible. In FP64 an exact tie is not expected on these states. Its effect could only raise the share of matrix-free rows, which the reading does not gate.
+**Declared limit of this check.** The diagnostic reads the stored φ, so it counts a tie, min_f ψ_f = 1, as eligible. In FP64 an exact tie is not expected on these states. Counting one would make its rows matrix-free, which lowers the remaining gap: the check would err on the favourable side by the gap on those rows.
 
 ## Change
 
