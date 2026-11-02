@@ -704,6 +704,7 @@ TEMPLATE_TEST_CASE(
   e.freeze(at);
   e.residual_frozen(at, frozen);
   CHECK(bits(frozen, r));
+  CHECK(e.frozen_switches() == 0);
   // Every boundary kind residual() knows is held alike: at its own state, one kind on every
   // boundary face, the frozen residual is the residual.
   {
@@ -774,11 +775,33 @@ TEMPLATE_TEST_CASE(
   const auto first = smooth(0.0), second = smooth(0.25);
   e.freeze(first);
   e.residual_frozen(second, held);
+  CHECK(e.frozen_switches() == 0);
   e.residual(second, direct);
   if (limiter) {
     CHECK_FALSE(bits(held, direct));
   } else {
     CHECK(bits(held, direct));
+  }
+  // The density of the cell nearest x = 0, on the boundary, down to 1e-3 of its value: the
+  // reconstructions in and around it reach a non-positive density, so face sides leave their
+  // held branch.
+  {
+    const auto low = static_cast<std::size_t>(std::ranges::min_element(c.geometry.cell_centroid_x) -
+                                              c.geometry.cell_centroid_x.begin());
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i];
+      const double s = std::sin(2.0 * std::numbers::pi * x) * std::cos(std::numbers::pi * y);
+      const double thin = i == low ? 1e-3 : 1.0;
+      const auto q = conserved({thin * w.rho * (1.0 + 0.1 * s),
+                                {w.v[0] * (1.0 + 0.1 * s), w.v[1], w.v[2]},
+                                w.p * (1.0 + 0.05 * s)});
+      for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+    }
+    e.residual_frozen(stored(e, u), held);
+    CHECK(e.frozen_switches() > 0);
+    e.residual_frozen(second, held);
+    CHECK(e.frozen_switches() == 0);
   }
   // An order switch drops what freeze held, and so does release_frozen.
   e.set_second_order(false);
@@ -788,6 +811,7 @@ TEMPLATE_TEST_CASE(
   e.release_frozen();
   CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
   CHECK_THROWS_AS(e.frozen_data(), std::logic_error);
+  CHECK_THROWS_AS(static_cast<void>(e.frozen_switches()), std::logic_error);
 }
 
 TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one after another",
@@ -855,4 +879,94 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
   ek::cpu::roe_faces(d);
   ek::cpu::roe_boundaries(d);
   CHECK(std::memcmp(r.data(), ref.data(), r.size() * sizeof(r[0])) == 0);
+}
+
+TEST_CASE("the frozen residual's difference quotients are smooth at the product's step",
+          "[euler]") {
+  // At the matrix-free product's step h = sqrt(eps) (Knoll and Keyes 2004), the forward and
+  // backward quotients of a C2 function differ by at most h |R''| plus R's rounding, of order
+  // eps f_k A_i / h (f_k the face flux scale, A_i the cell's surface); across a switch of the
+  // flux, by O(1). The flow rises from the slip wall at y = 0, so v.n is small on the faces near
+  // it, close to the switch residual_frozen does not hold (Roe's |v.n|). R'' is measured by a
+  // second difference at 1e-3, where these states are smooth. With u_x = 0 at the state, v.n is
+  // exactly zero on the faces normal to x, and the path crosses the switch there; a density
+  // that the reconstruction does not follow exactly gives the contact wave a jump across those
+  // faces, so that the switch's kink shows.
+  using P = autan::kernels::fp64;
+  using Res = P::residual;
+  const char* file = GENERATE(from_range(meshes));
+  const bool limiter = GENERATE(false, true);
+  INFO(file << " limiter " << limiter);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  auto base = [](double x, double y, double z, double ux, double rx) {
+    return Prim{1.2 * (1.0 + rx * std::sin(9.0 * x)),
+                {ux * y, 6.0 * y, -10.0 * y},
+                1e5 + 2000.0 * x + 500.0 * z};
+  };
+  const double sound = std::sqrt(air.gamma * 1e5 / 1.2);
+  const double q = 30.0 + sound;
+  const std::array<double, 5> f{1.2 * q, 1.2 * q * q + 1e5, 1.2 * q * q + 1e5, 1.2 * q * q + 1e5,
+                                (1e5 / (air.gamma - 1.0) + 1e5) * q};
+  const auto surface = c.cell_surface();
+  const double eps = std::numeric_limits<double>::epsilon();
+  const double h = std::sqrt(eps), e0 = 1e-3;
+  // The largest |q+ - q-| over its bound, for the flow u_x = ux y + (a + tau) sin(7x + 3z) and
+  // the density 1.2 (1 + rx sin 9x).
+  auto worst = [&](double ux, double a, double rx) {
+    std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+    std::vector<double> data(5 * nb);
+    for (std::size_t b = 0; b < nb; ++b) {
+      const auto fb = ni + b;
+      const auto w = base(c.geometry.face_centroid_x[fb], c.geometry.face_centroid_y[fb],
+                          c.geometry.face_centroid_z[fb], ux, rx);
+      if (c.zone(b) == "ymin") {
+        kind[b] = BoundaryKind::slip;
+      } else {
+        const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+        for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = v[k];
+      }
+    }
+    auto scheme = second_order(Flux::roe, 0.1);
+    scheme.limiter = limiter;
+    scheme.reference = conserved({1.2, {0.0, 0.0, 0.0}, 1e5});
+    Euler<P> e(c.mesh, c.geometry, air, scheme);
+    e.set_boundary(kind, data);
+    auto along = [&](double tau) {
+      std::vector<double> u(5 * nc);
+      for (std::size_t i = 0; i < nc; ++i) {
+        const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i],
+                     z = c.geometry.cell_centroid_z[i];
+        auto w = base(x, y, z, ux, rx);
+        w.v[0] += (a + tau) * std::sin(7.0 * x + 3.0 * z);
+        w.p += (1.0 + tau) * 300.0 * std::cos(5.0 * y);
+        const auto cq = conserved(w);
+        for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = cq[k];
+      }
+      return stored(e, u);
+    };
+    auto residual = [&](double tau) {
+      std::vector<Res> r(5 * nc);
+      e.residual_frozen(along(tau), r);
+      return r;
+    };
+    e.freeze(along(0.0));
+    const auto r0 = residual(0.0), rp = residual(h), rm = residual(-h);
+    const auto sp = residual(e0), sm = residual(-e0);
+    double ratio = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t i = 0; i < nc; ++i) {
+        const std::size_t j = k * nc + i;
+        const double qp = (rp[j] - r0[j]) / h, qm = (r0[j] - rm[j]) / h;
+        const double curvature = std::abs(sp[j] - 2.0 * r0[j] + sm[j]) / (e0 * e0);
+        const double bound = 8.0 * (h * curvature + 4.0 * eps * f[k] * surface[i] / h);
+        ratio = std::max(ratio, std::abs(qp - qm) / bound);
+      }
+    }
+    return ratio;
+  };
+  CHECK(worst(30.0, 1.0, 0.0) <= 1.0);
+  if (std::string(file) == "hex/hex.ascii.msh") CHECK(worst(0.0, 0.0, 0.5) > 1.0);
 }
