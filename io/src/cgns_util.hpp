@@ -148,10 +148,16 @@ class CgioTree {
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> extent{};
     check(cgio_get_dimensions(cgio_, node, &dims, extent.data()), "read dimensions");
     if (dims != 1) throw Error(ErrorCode::io_malformed, "CGNS: '" + name(node) + "' is not 1-D");
-    const cgsize_t start = first + 1, end = first + static_cast<cgsize_t>(out.size()), stride = 1;
+    // cgio reads one start, end and stride per dimension of the node: every one is given.
+    std::array<cgsize_t, CGIO_MAX_DIMENSIONS> start{}, end{}, stride{};
+    start.fill(1);
+    end.fill(1);
+    stride.fill(1);
+    start[0] = first + 1;
+    end[0] = first + static_cast<cgsize_t>(out.size());
     const cgsize_t size = static_cast<cgsize_t>(out.size()), one = 1;
-    check(cgio_read_data_type(cgio_, node, &start, &end, &stride, "I8", 1, &size, &one, &size,
-                              &stride, out.data()),
+    check(cgio_read_data_type(cgio_, node, start.data(), end.data(), stride.data(), "I8", 1, &size,
+                              &one, &size, &one, out.data()),
           "read an integer node");
   }
   /// The data of a C1 node as text.
