@@ -264,10 +264,10 @@ def test_slices_asked_while_one_is_cut_leave_only_the_newest(
     import time  # noqa: PLC0415
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
-    import autan_ui.app  # noqa: PLC0415
+    from autan_ui.slice import slice_surface  # noqa: PLC0415
 
     started, release = threading.Event(), threading.Event()
-    cut = autan_ui.app.slice_surface
+    cut = slice_surface
     calls: list[float] = []
 
     def held(folder: Any, origin: Any, normal: Any) -> bytes:
@@ -276,7 +276,7 @@ def test_slices_asked_while_one_is_cut_leave_only_the_newest(
         release.wait(30)
         return cut(folder, origin, normal)
 
-    monkeypatch.setattr(autan_ui.app, "slice_surface", held)
+    monkeypatch.setattr("autan_ui.app.slice_surface", held)
     url = f"/api/runs/{run.name}/slice?normal=1,0,0&origin="
     waiting_count = 48
     # One event loop serves every request, as uvicorn does.
