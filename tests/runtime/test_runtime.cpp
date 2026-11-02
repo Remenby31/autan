@@ -1342,6 +1342,51 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
                 "E0705");
 }
 
+TEST_CASE("A run moves periodic nodes matched within the tolerance and reports it",
+          "[runtime][periodic]") {
+  // mesh.md, Periodic pairs: periodic-box with every node of xmax (x = 1) moved by 5e-10 in z,
+  // far within the matching tolerance (the reader checks the $Periodic pairs to 1e-9 of the
+  // translation). The run moves one side of each matched class back, as many
+  // nodes as xmax holds, and reports W0150 with them.
+  const fs::path box = data_dir / "mesh" / "periodic-box" / "periodic-box.ascii.msh";
+  std::istringstream in(read(box));
+  std::string out;
+  std::int64_t on_xmax = 0;
+  bool nodes = false;
+  for (std::string line; std::getline(in, line);) {
+    if (line == "$Nodes") nodes = true;
+    if (line == "$EndNodes") nodes = false;
+    std::istringstream fields(line);
+    double x = 0.0, y = 0.0, z = 0.0;
+    std::string rest;
+    if (nodes && (fields >> x >> y >> z) && !(fields >> rest) && x == 1.0) {
+      ++on_xmax;
+      std::array<char, 96> buffer{};
+      std::snprintf(buffer.data(), buffer.size(), "%.17g %.17g %.17g", x, y, z + 5e-10);
+      line = buffer.data();
+    }
+    out += line + "\n";
+  }
+  REQUIRE(on_xmax > 0);
+  const fs::path moved = fresh_dir() / "periodic-box.ascii.msh";
+  std::ofstream(moved, std::ios::binary) << out;
+  const Outcome o = run(periodic_input(1.0, [&](Json& d) {
+    d["mesh"]["path"] = fs::absolute(moved).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(moved);
+  }));
+  INFO(o.err);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  Json reported;
+  for (const auto& d : info["diagnostics"]) {
+    if (d["code"] == "W0150") reported = d["data"];
+  }
+  REQUIRE(reported.is_object());
+  CHECK(reported["nodes"] == on_xmax);
+  CHECK(reported["max_relative"].get<double>() > 0.0);
+  CHECK(reported["max_relative"].get<double>() <= 1.0);
+}
+
 // face-states.md: tests/data/mesh/ringleb, its states written by autan-vv, on the four in-plane
 // sides; `edit` changes the document before it is written beside the input.
 Json ringleb_input(const std::function<void(Json&)>& edit = {}) {
