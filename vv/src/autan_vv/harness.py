@@ -44,7 +44,8 @@ PRECISION_EPS = {
     "fp32": float(np.finfo(np.float32).eps),
     "fp32+acc64": float(np.finfo(np.float32).eps),
 }
-FINISHED = ("converged", "completed")
+# Statuses whose state the harness measures; each gate then says which of them it accepts.
+MEASURED = ("converged", "floor", "completed")
 
 
 def read_geometry(results: autan.Results) -> FaceMesh:
@@ -197,8 +198,10 @@ def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
     """Reasons the run cannot be compared with the oracle (empty if it can)."""
     spec = results.case
     reasons = []
-    if results.run.status not in FINISHED:
-        reasons.append(f"status {results.run.status}, not converged or completed")
+    if results.run.status not in MEASURED:
+        reasons.append(
+            f"status {results.run.status}: only a converged, floor or completed run holds a final state"
+        )
     physics = spec.physics
     expected = {"euler": Inviscid, "navier-stokes": Laminar, "rans-sa": SA}
     if any(isinstance(rule.medium, SolidZone) for rule in spec.cell_zones):
@@ -450,6 +453,15 @@ def _gate_checks(
     gate: Gate, runs: list[RunErrors], fits: dict[str, dict[str, Any]], eps: float
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
+    statuses = [r.provenance["status"] for r in runs]
+    checks.append(
+        {
+            "prerequisite": "status",
+            "required": list(gate.statuses),
+            "measured": statuses,
+            "pass": all(s in gate.statuses for s in statuses),
+        }
+    )
     if gate.time is not None:
         times = [r.provenance["time"] for r in runs]
         ok = all(t is not None and math.isclose(t, gate.time, rel_tol=1e-9) for t in times)

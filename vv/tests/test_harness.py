@@ -89,7 +89,8 @@ def _runs(
     oracle = get_oracle(oracle_name)
     paths = []
     for mesh, path, fmt in meshes:
-        case = _case(path, oracle_name, time=time, **case_options)  # type: ignore[arg-type]
+        options = {k: v for k, v in case_options.items() if k != "status"}
+        case = _case(path, oracle_name, time=time, **options)  # type: ignore[arg-type]
         x = mesh.geometry.cell_centroid
         g = 1.0 + 0.5 * np.sin(0.2 * x[:, 0] + 0.1 * x[:, 1]) * np.cos(x[:, 2])
         exact = oracle.fields(x, time)
@@ -100,7 +101,13 @@ def _runs(
             for k in field_names(case.spec)
         }
         info = mesh_info(mesh, path, fmt)
-        paths.append(write_run(tmp_path / "runs", case, mesh, info, fields, time=time).path)
+        # An unsteady run ends `completed` after its steps; a steady one `converged`, or `status`.
+        status = str(
+            case_options.get("status") or ("completed" if time is not None else "converged")
+        )
+        paths.append(
+            write_run(tmp_path / "runs", case, mesh, info, fields, time=time, status=status).path
+        )
     return paths
 
 
@@ -233,7 +240,7 @@ def test_levels_under_the_rounding_floor_do_not_count(tmp_path: Path) -> None:
     runs = _runs(tmp_path, meshes, "mms-euler", 2.0, amplitude=1e-6, precision="fp32+acc64")
     verdict = verify(runs, "mms-euler", "euler-mms-order")["verdict"]
     assert not verdict["pass"]
-    assert all("rounding floor" in c["reason"] for c in verdict["checks"])
+    assert all("rounding floor" in c["reason"] for c in verdict["checks"] if "field" in c)
 
 
 def test_freestream_preservation_on_fake_backend_runs(tmp_path: Path) -> None:
@@ -248,7 +255,7 @@ def test_freestream_preservation_on_fake_backend_runs(tmp_path: Path) -> None:
         mesh_info(mesh, path, "gmsh"), backend=autan.FakeBackend(), runs=tmp_path / "runs"
     )
     verdict = verify([results.path], "freestream", "freestream-preservation")["verdict"]
-    checked = {c["field"] for c in verdict["checks"]}
+    checked = {c["field"] for c in verdict["checks"] if "field" in c}
     assert {"Temperature", "TurbulentSANuTilde", "VelocityY"} <= checked
     assert verdict["pass"], verdict["checks"]
     assert not verdict["evidence"]
@@ -270,8 +277,8 @@ def test_freestream_preservation_fails_on_a_wrong_temperature(tmp_path: Path) ->
     fields = {k: np.full(mesh.n_cells, v) for k, v in values.items()}
     run = write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, fmt), fields).path
     verdict = verify([run], "freestream", "freestream-preservation")["verdict"]
-    assert not next(c for c in verdict["checks"] if c["field"] == "Temperature")["pass"]
-    assert all(c["pass"] for c in verdict["checks"] if c["field"] != "Temperature")
+    assert not next(c for c in verdict["checks"] if c.get("field") == "Temperature")["pass"]
+    assert all(c["pass"] for c in verdict["checks"] if c.get("field") != "Temperature")
 
 
 def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Path) -> None:
@@ -443,8 +450,8 @@ def test_couette_velocity_gate_checks_every_component(tmp_path: Path) -> None:
     fields["VelocityY"] += 10.0
     run = write_run(tmp_path / "runs", case, mesh, mesh_info(mesh, path, "fluent"), fields).path
     verdict = verify([run], "couette", "couette-velocity-exact")["verdict"]
-    assert not next(c for c in verdict["checks"] if c["field"] == "VelocityY")["pass"]
-    assert next(c for c in verdict["checks"] if c["field"] == "VelocityX")["pass"]
+    assert not next(c for c in verdict["checks"] if c.get("field") == "VelocityY")["pass"]
+    assert next(c for c in verdict["checks"] if c.get("field") == "VelocityX")["pass"]
 
 
 def test_malformed_fields_and_degenerate_boxes_are_coded_errors(tmp_path: Path) -> None:
@@ -551,3 +558,37 @@ def test_fp32_agreement_measures_the_relative_difference_in_units_of_eps32(tmp_p
             assert pair["fields"]["Density"] == pytest.approx(delta / EPS32, rel=1e-9)
             assert pair["fields"]["Pressure"] == 0.0
         assert report["pass"] is (delta / EPS32 <= 500.0)
+
+
+def test_each_gate_accepts_only_the_run_statuses_it_declares(tmp_path: Path) -> None:
+    # A `floor` run (steady fp32+acc64, stopped at its round-off floor) is measured, but an order
+    # gate that demands `converged` fails its status prerequisite; a gate on round-off accepts it.
+    meshes = _family(tmp_path, "hex", (4, 6, 8, 12))
+    floor = _runs(
+        tmp_path / "floor", meshes, "mms-euler", 2.0, status="floor", precision="fp32+acc64"
+    )
+    report = verify(floor, "mms-euler", "euler-mms-order")
+    assert {r["status"] for r in report["runs"]} == {"floor"}
+    assert report["fits"]
+    status = next(c for c in report["verdict"]["checks"] if c.get("prerequisite") == "status")
+    assert status == {
+        "prerequisite": "status",
+        "required": ["converged"],
+        "measured": ["floor"] * 4,
+        "pass": False,
+    }
+    assert not report["verdict"]["pass"]
+    converged = _runs(tmp_path / "converged", meshes, "mms-euler", 2.0)
+    verdict = verify(converged, "mms-euler", "euler-mms-order")["verdict"]
+    assert verdict["pass"], verdict["checks"]
+    # The same `completed` (budget reached) run fails a steady gate and meets an unsteady one.
+    budget = _runs(tmp_path / "budget", meshes, "mms-euler", 2.0, status="completed")
+    assert not verify(budget, "mms-euler", "euler-mms-order")["verdict"]["pass"]
+    assert GATES["vortex-order"].statuses == ("completed",)
+    assert "floor" in GATES["freestream-preservation"].statuses
+    assert all("floor" not in g.statuses for g in GATES.values() if g.measure == "order")
+    # A run without a final state is refused before any measurement.
+    stopped = _runs(tmp_path / "stopped", meshes[:1], "mms-euler", 2.0, status="stopped")
+    with pytest.raises(VVError) as err:
+        verify(stopped, "mms-euler")
+    assert err.value.code == "V0724"
