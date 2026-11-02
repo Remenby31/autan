@@ -193,16 +193,20 @@ class Turn:
 
     def end(self) -> None:
         """A used turn's lock goes to a sleeper for COOLDOWN_S (in a session of its own, so that
-        it outlives this process); an unused one is given back."""
+        it outlives this process); if none can be started, this process keeps it that long
+        itself, so that the cooldown is never lost. An unused turn is given back."""
         if self.fd is None:
             return
         if self.used:
-            with contextlib.suppress(OSError):
+            try:
                 subprocess.Popen(
-                    [sys.executable, "-c", f"import time; time.sleep({COOLDOWN_S})"],
-                    pass_fds=(self.fd,), start_new_session=True, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    ["sleep", str(COOLDOWN_S)], pass_fds=(self.fd,), start_new_session=True,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )  # fmt: skip
+            except OSError as err:
+                sys.stderr.write(f"autan-gpu-lock: no sleeper for the turn's cooldown ({err}); "
+                                 f"keeping it {COOLDOWN_S:.0f} s here\n")  # fmt: skip
+                time.sleep(COOLDOWN_S)
         os.close(self.fd)
         self.fd = None
 

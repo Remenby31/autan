@@ -293,6 +293,44 @@ def test_a_turn_s_hold_counts_from_its_start_memory_wait_included(spark, tmp_pat
     assert "bypass" in events(spark)
 
 
+def test_a_turn_s_memory_wait_ends_within_its_hold(spark, tmp_path):
+    # Memory that never comes back: a turn (-t 6, TERM 3 s before) refuses within its hold,
+    # not after -r's 30 s, which would take the time CI is promised.
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal: {128 << 20} kB\nMemAvailable: {5 << 20} kB\n")
+    env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "0", "AUTAN_MEMINFO": str(meminfo)}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        start = time.monotonic()
+        turn = subprocess.run(
+            [str(WRAPPER), "-f", "10G", "-r", "30", "-t", "6", "-m", "agent", "-n", "--", "true"],
+            env=env, capture_output=True, timeout=60, check=False,
+        )  # fmt: skip
+        assert turn.returncode == 71
+        assert time.monotonic() - start < 6
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+
+
+def test_a_turn_s_cooldown_survives_a_failed_sleeper(spark):
+    # No `sleep` to start (an empty PATH): the wrapper keeps the turn's lock for the cooldown
+    # itself, so that no other turn follows at once.
+    env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "3", "PATH": ""}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        start = time.monotonic()
+        turn = subprocess.Popen([sys.executable, str(WRAPPER), *NO_FLOOR, "-m", "agent", "--",
+                                 "/bin/true"], env=env, stderr=subprocess.PIPE, text=True)  # fmt: skip
+        _, err = turn.communicate(timeout=30)
+        assert turn.returncode == 0, err
+        assert "no sleeper for the turn's cooldown" in err
+        # Fair after 3 s, then the 3 s cooldown kept in-process.
+        assert time.monotonic() - start >= 3 + 3
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    assert "bypass" in events(spark)
+
+
 def test_autan_bench_alone_never_takes_a_turn(spark):
     # Nothing bounds how long autan-bench alone holds the lock: it waits behind a pull request's
     # job however long it has waited (a fresh process, so that a delay read at import would
