@@ -17,7 +17,7 @@ from autan_vv.cases import naca0012 as cases
 from autan_vv.cli import main
 from autan_vv.errors import VVError
 from autan_vv.meshes import naca0012
-from autan_vv.su2 import config, history, mesh
+from autan_vv.su2 import compare, config, history, mesh
 from autan_vv.su2 import naca0012 as su2
 
 DATA = Path(__file__).parent / "data"
@@ -490,3 +490,53 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         su2.study(runs)
     assert err.value.code == "V0904"
+
+
+def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
+    import autan  # noqa: PLC0415
+    from autan.units import m  # noqa: PLC0415
+    from autan_vv.runs import mesh_info  # noqa: PLC0415
+
+    family, meshes = naca0012.generate_family((8, 16, 32, 64), tmp_path / "family")
+    su2_runs = su2.prepare(tmp_path / "family", tmp_path / "su2", conditions=("m080-a125",))
+    for run, cl, cd in zip(su2_runs, FLO82_CL, FLO82_CD, strict=True):
+        _write_run(run, cl, cd, converged=True)
+    (tmp_path / "su2.json").write_text(json.dumps(su2.study(su2_runs)))
+
+    def autan_run(case: autan.Case, level: int) -> Path:
+        path = tmp_path / "family" / family.levels[level].file
+        info = mesh_info(meshes[level], path, "gmsh")
+        return case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "autan").path
+
+    def mesh(level: int) -> str:
+        return str(tmp_path / "family" / family.levels[level].file)
+
+    runs = [autan_run(cases.case("m080-a125", mesh(i)), i) for i in range(4)]
+    report = compare.compare(runs, tmp_path / "su2.json")
+    assert report["autan"]["point_vortex"]
+    for row, run, cl, cd in zip(report["levels"], runs, FLO82_CL, FLO82_CD, strict=True):
+        forces = autan.Results.open(run).forces
+        assert row["difference"]["cl"] == pytest.approx(float(forces.cl[-1]) - cl, abs=8 * EPS)
+        assert row["difference"]["cd"] == pytest.approx(float(forces.cd[-1]) - cd, abs=8 * EPS)
+    # SU2's side is extrapolated as the gates do: FLO82's continuum of Table 3.
+    assert report["continuum"]["su2"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
+    # A family mixing the point-vortex far field with the plain one, or another condition, is refused.
+    plain = autan.Case("naca0012-m080-a125", mesh=mesh(0))
+    plain.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+    plain.freestream(
+        mach=0.8, aoa=1.25 * autan.units.deg, pressure=101325.0 * autan.units.ureg.Pa,
+        ref_length=1.0 * m,
+    )  # fmt: skip
+    plain.time = autan.Steady(max_iterations=200000, residual_orders=10.0)
+    plain.boundary("airfoil").slip()
+    plain.boundary("farfield").farfield()
+    plain.boundary("back").symmetry()
+    plain.boundary("front").symmetry()
+    plain.monitor(
+        autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
+    )
+    for odd in (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0)):
+        with pytest.raises(VVError) as err:
+            compare.compare([*runs[1:], odd], tmp_path / "su2.json")
+        assert err.value.code == "V0905"
