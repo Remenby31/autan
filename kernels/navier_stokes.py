@@ -23,6 +23,7 @@ from pathlib import Path
 from autan_codegen.dsl import (
     STENCIL,
     Dataset,
+    Flag,
     Geom,
     Grad,
     Inc,
@@ -33,6 +34,7 @@ from autan_codegen.dsl import (
     Residual,
     State,
     Sum,
+    Vec2,
     Vec3,
     Vec5,
     Write,
@@ -163,10 +165,15 @@ def warp_work(gu: Grad.Vec3, gv: Grad.Vec3, gwz: Grad.Vec3, m: Geom.Mat3, mu: St
 
 
 @pointwise
+def falls_back(wf: State.Vec5, pref: Param) -> State:
+    return 0.0 if wf[0] > 0.0 and wf[4] + pref > 0.0 else 1.0
+
+
+@pointwise
 def face_value(w: State.Vec5, gw: Grad.Mat53, r: Geom.Vec3, pref: Param) -> State.Vec5:
     # Linear reconstruction, the cell value where it would make density or pressure non-positive.
     wf = w + gw @ r
-    return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
+    return w if falls_back(wf, pref) > 0.5 else wf
 
 
 @pointwise
@@ -858,4 +865,52 @@ def viscous_traction(
 traction = faces.field("traction", State.Vec5)
 viscous_tractions = boundary_loop(
     viscous_traction, **BOUNDARY_ARGS, out=Write(traction), frozen=True
+)
+
+
+# For the implicit step's matrix-free product: per face side in the face's global orientation, 1
+# where face_value keeps the cell value (the viscous terms' and Spalart-Allmaras's face states),
+# which NavierStokes<P> compares between freeze()'s state and a probe's.
+viscous_keep = faces.field("viscous_keep", Flag.Vec2)
+
+
+@pointwise
+def viscous_face_fallbacks(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    pref: Param,
+) -> Flag.Vec2:
+    return Vec2(falls_back(wl + gl @ rel(xf, xl), pref), falls_back(wr + gr @ rel(xf, xr), pref))
+
+
+@pointwise
+def viscous_boundary_fallbacks(
+    wl: State.Vec5, gl: Grad.Mat53, xl: Geom.Vec3, xf: Geom.Vec3, pref: Param
+) -> Flag.Vec2:
+    return Vec2(falls_back(wl + gl @ rel(xf, xl), pref), 0.0)
+
+
+VISCOUS_FALLBACK_ARGS = {
+    "wl": prim.left,
+    "gl": grad.left,
+    "xl": geometry.cell_centroid.left,
+    "xf": geometry.face_centroid,
+    "pref": p_ref,
+}
+viscous_fallbacks_faces = face_loop(
+    viscous_face_fallbacks,
+    **VISCOUS_FALLBACK_ARGS,
+    wr=prim.right,
+    gr=grad.right,
+    xr=geometry.cell_centroid.right,
+    out=Write(viscous_keep),
+    frozen=True,
+)
+viscous_fallbacks_boundaries = boundary_loop(
+    viscous_boundary_fallbacks, **VISCOUS_FALLBACK_ARGS, out=Write(viscous_keep), frozen=True
 )

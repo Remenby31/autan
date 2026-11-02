@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <span>
@@ -84,6 +85,14 @@ class NavierStokes {
   /// viscous terms read them.
   void residual_frozen(std::span<const State> s, std::span<Res> res,
                        const std::function<void()>& eddy);
+  /// After residual_frozen: how many face sides took the other branch of a reconstruction's
+  /// positivity fallback (the cell value where the reconstructed density or pressure would be
+  /// non-positive) than at freeze()'s state, for the convective (limited) reconstruction, whose
+  /// branch residual_frozen holds, or for the unlimited one of the viscous terms and the
+  /// turbulence model's face states, whose branch it does not. Nonzero: the evaluation is not the
+  /// smooth continuation of the residual at freeze()'s state. Throws std::logic_error before
+  /// freeze().
+  [[nodiscard]] std::size_t frozen_switches() const;
   /// During and after residual_frozen: arrays() of its state, in freeze()'s workspace.
   [[nodiscard]] Arrays frozen_arrays();
   /// Frees what freeze() allocated.

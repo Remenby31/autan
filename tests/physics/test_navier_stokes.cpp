@@ -359,7 +359,9 @@ TEMPLATE_TEST_CASE("the frozen residual is the residual at its state and keeps t
     }
   }
   ns.set_boundary(kind, data);
-  auto conserved = [&](double amplitude) {
+  // `thin`: a cell whose conserved state is scaled by 1e-3.
+  auto conserved = [&](double amplitude,
+                       std::size_t thin = std::numeric_limits<std::size_t>::max()) {
     std::vector<double> u(5 * n);
     for (std::size_t c = 0; c < n; ++c) {
       const double x = g.cell_centroid_x[c], y = g.cell_centroid_y[c], z = g.cell_centroid_z[c];
@@ -370,6 +372,9 @@ TEMPLATE_TEST_CASE("the frozen residual is the residual at its state and keeps t
       for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = w[0] * w[1 + k];
       u[4 * n + c] =
           w[4] / (air.gamma - 1.0) + 0.5 * w[0] * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]);
+      if (c == thin) {
+        for (std::size_t k = 0; k < 5; ++k) u[k * n + c] *= 1e-3;
+      }
     }
     std::vector<typename P::state> s(5 * n);
     ns.state(u, s);
@@ -383,11 +388,20 @@ TEMPLATE_TEST_CASE("the frozen residual is the residual at its state and keeps t
   ns.freeze(s1);
   ns.residual_frozen(s1, rf);
   CHECK(r == rf);
+  CHECK(ns.frozen_switches() == 0);
   ns.residual_frozen(s2, other);
+  CHECK(ns.frozen_switches() == 0);
   ns.viscous_traction(after);
   CHECK(traction == after);
+  // One cell's density down to 1e-3 of its value: its neighbours' reconstructions towards it
+  // reach a non-positive density, so face sides switch to the cell value.
+  ns.residual_frozen(conserved(1.0, n / 2), other);
+  CHECK(ns.frozen_switches() > 0);
+  ns.residual_frozen(s1, rf);
+  CHECK(ns.frozen_switches() == 0);
   ns.release_frozen();
   CHECK_THROWS_AS(ns.residual_frozen(s1, rf), std::logic_error);
+  CHECK_THROWS_AS(static_cast<void>(ns.frozen_switches()), std::logic_error);
 }
 
 TEMPLATE_TEST_CASE(
