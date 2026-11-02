@@ -602,7 +602,7 @@ void Euler<P>::boundary_pressure(std::span<double> p, std::span<double> force) c
     const double p_c = static_cast<double>(m.d.p_ref[0]) + static_cast<double>(m.prim[4 * nc + c]);
     const double rho_f = rho_c + static_cast<double>(m.phi[c]) * drho;
     double p_f = p_c + static_cast<double>(m.phi[4 * nc + c]) * dp;
-    if (rho_f <= 0.0 || p_f <= 0.0) p_f = p_c;
+    if (!(rho_f > 0.0 && p_f > 0.0)) p_f = p_c;
     p[f - ni] = p_f;
     if (force.empty()) continue;
     const double phi_p = static_cast<double>(m.phi[4 * nc + c]);
