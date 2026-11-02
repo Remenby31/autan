@@ -159,7 +159,7 @@ TEST_CASE("Periodic nodes matched within the tolerance become exact translates",
     const auto off = moved.boundary_zone_offsets();
     const auto partners = moved.periodic_partners(p);
     for (std::size_t i = 0; i < partners.size(); ++i) {
-      const auto a = static_cast<index_t>(off[at(moved.periodic_pairs()[p].zone_a)] + i);
+      const index_t a = off[at(moved.periodic_pairs()[p].zone_a)] + static_cast<index_t>(i);
       for (const index_t na : moved.face_nodes(a)) {
         bool found = false;
         for (const index_t nb : moved.face_nodes(partners[i])) {

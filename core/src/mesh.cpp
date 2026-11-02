@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
 #include <limits>
 #include <numeric>
 #include <string>
@@ -20,9 +20,10 @@ namespace {
 // A number for a diagnostic's JSON data: null when not finite.
 std::string json_number(double v) {
   if (!std::isfinite(v)) return "null";
+  // to_chars: the shortest round-trip form, whatever the C locale.
   std::array<char, 32> text{};
-  std::snprintf(text.data(), text.size(), "%.17g", v);
-  return text.data();
+  const auto written = std::to_chars(text.data(), text.data() + text.size(), v);
+  return {text.data(), written.ptr};
 }
 
 // mesh.md, Periodic pairs: moving the periodic nodes made a valid face or cell degenerate.
