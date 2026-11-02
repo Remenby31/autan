@@ -25,8 +25,33 @@ Wang, Diskin, Nielsen and Liu 2021, "Improvements in Iterative Convergence of FU
 
 ## Change
 
-*(CFD - Multigrille, to complete with NS: from the second order on, on the host's steady step of `NavierStokes` with SA: the unknowns (U, ρν̃), six a cell; GCR (≤ 10 iterations, tolerance 0.1, as now) on (V/Δt + J) Δ = −R(U, ρν̃) with J the coupled Jacobian by finite differences of the coupled residual — the flow residual with μ_t from the perturbed ν̃, ν̃'s residual from the perturbed flow — ε by #397's rule on the scaled unknowns (ν̃'s scale ρ∞ν̃∞) and its admissible and representable probes, the limiter and fallback frozen at U (#402, NS's `residual_frozen`, and the same for ν̃'s residual if it has a limiter); the preconditioner: the flow's multigrid cycle on V/Δt + J̃_flow, then ν̃'s implicit solve on V/Δt + J̃_ν̃ with the flow's correction (HANIM's consecutive order); the ν̃ clip applied to the accepted update's ν̃ component as today, and μ_t from the updated ν̃; restart state; ranks.)*
+From the step after the switch to second order, on the host's steady step of `NavierStokes` with SA (laminar runs, Euler and the device unchanged), the step's unknowns are (U, ρν̃), six a cell, and one GCR solves
+
+  (V/Δt + J) Δ = −R(U, ρν̃),   J the coupled Jacobian,
+
+with the solve's tolerance (0.1), iteration limit (10) and failure rule (0.9: the step rejected) unchanged.
+
+**The product** is the finite-difference derivative of the coupled residual, its non-differentiable switches frozen at the current state (HANIM eq. 6, with #397's step rule; NS's API, CFD - Navier-Stokes SA codes it):
+1. μ_t from the perturbed ν̃, into a buffer of the caller's (`eddy_viscosity_into`), not into the flow's cache;
+2. the flow's residual at U + ε v_U with that μ_t (`NavierStokes::residual_frozen`, #402's frozen limiter and fallback, NS's viscous workspace);
+3. ν̃'s residual at ρν̃ + ε v_ν̃ reading the perturbed flow (`SpalartAllmaras::freeze` and `residual_frozen`, a workspace of its own). Its switches are held at the current state, as #402's `keep`: the upwind side of its second-order convection (the mass flux's sign), the branches of its source (Allmaras, Johnson and Spalart 2012, Note 1(c)'s S̃ limit, r = min(·, 10), S̃'s sign), the SA-neg branch on ν̃'s sign, and the flow face values' positivity fallback.
+
+ε is #397's: √ε_R (1 + ‖S⁻¹(U, ρν̃)‖) / ‖S⁻¹ v‖, with the flow's freestream scales and, for ρν̃, the root mean square of the current ρν̃ over the owned cells (it reaches 10³–10⁴ ρ∞ν̃∞ in the boundary layer; the freestream value would weigh it wrongly); the probes' admissibility (density and pressure within 10 %, ρν̃ within the bounds below) and representability as in #397. The rows of equations at the round-off floor take the assembled operator's rows, as in #397.
+
+**The preconditioner** is the two existing solves in consecutive order (HANIM §II.D.1): one multigrid cycle (or the line sweeps) on the flow's V/Δt + J̃, then ν̃'s implicit solve on its V/Δt + J̃_ν̃ with the flow's correction applied to ν̃'s right-hand side through its existing Jacobian blocks if NS's J̃_ν̃ has them, and without them otherwise (stated in the code and the tests). It is not a linear operator of fixed form across iterations unless both are run to a fixed count, which they are (one cycle; ν̃'s fixed sweeps), so GCR's flexible form is unchanged.
+
+**The update and its bounds.** The loose step's clip of ρν̃'s update to −0.5 … +2 × max(|ρν̃|, ρν̃∞) moves into the step's admissibility check: the accepted fraction α is the largest that keeps every cell's density and pressure above (1 − 0.5) of their values, as now, and ρν̃'s change within those bounds; the step is shortened as a whole (α on all six unknowns), not clipped component by component, which would leave the Newton direction. SA-neg allows ρν̃ < 0, so the bound is relative to max(|ρν̃|, ρν̃∞), not ρν̃ ≥ 0. μ_t follows the accepted ν̃.
+
+**State, ranks, cost.** No new restart state beyond the loose step's (ρν̃ is already a field). Every reduction is an exact sum over the owned unknowns, ε the same on every rank. Per GCR iteration: one coupled frozen residual (the flow's and ν̃'s), the preconditioner's two solves; per step, the two `freeze` and the frozen residuals at the current state.
 
 ## Gate, declared before any run
 
-*(To complete: the TMR flat plate — SA 69×49 ≤ 3332 steps, SA 35×25 ≤ 2260, SA 137×97 within 6000 (#395's measure); the laminar plate unchanged (no ν̃); RAE 2822 case 9 when its grid exists; the SA MMS orders (`rans-sa-mms-order`) unchanged, fp32+acc64 agreeing with fp64; Euler bit for bit (no SA); cost per step against the loose step with the matrix-free flow, measured alone under the GPU lock.)*
+On `physics/ns-sa` with this change and the flow product of #397 (the matrix-free flow model, positive on the laminar plate), fp64 unless stated, against the same branch with the loose step and the same flow product (the case files identical):
+
+- **TMR flat plate, SA** (`physics/tmr/case.sh flatplate`, 6000 steps; #395's measure: ten orders below each equation's peak, the identically zero z-momentum excepted, every such equation at most 10⁻¹⁰ of its peak at the last step, no W0710): 69×49 in at most 3332 steps, 35×25 in at most 2260, 137×97 within the 6000.
+- **The converged solution is the discretisation's**: on 69×49, the skin friction along the plate and the velocity and ν̃ profiles at x = 0.97 within 10⁻⁶ of their magnitude of an independent run converged with the CFL number held at 1 (the loose step converged there, #395).
+- **Unchanged**: the laminar plate (no ν̃: bit for bit with the flow product alone); the Euler cases (no SA: bit for bit with `main`).
+- **RAE 2822 case 9** (transonic SA, limiter active), once its grid exists: reported, and this change cannot be accepted for transonic SA before it runs.
+- **Accuracy** (AGENTS.md): the discretisation does not change; the SA manufactured solution's observed orders (`rans-sa-mms-order`) unchanged in fp64, fp32+acc64 agreeing with fp64 level by level (`autan-vv agree`).
+- **Cost**: CPU time per step against the loose step with the same flow product, measured alone under the GPU lock, reported with the time to convergence.
+- **Tests** (public seams): the coupled product agrees with central differences of the coupled residual at a fixed state (SA MMS state, limiter off) to O(ε); a run continued at a coupled step repeats the uninterrupted one bit for bit; a step whose ν̃ update would leave the bounds is shortened (α < 1, logged), not clipped.
