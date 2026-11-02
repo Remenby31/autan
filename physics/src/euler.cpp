@@ -415,16 +415,16 @@ void Euler<P>::floor_terms(std::span<const State> s, std::span<Res> terms) {
   ek::cpu::floor_sources(m.d);
   switch (m.scheme.flux) {
     case Flux::roe:
-      ek::cpu::roe_faces_floor(m.d);
-      ek::cpu::roe_boundaries_floor(m.d);
+      m.run([&](auto... strategy) { ek::cpu::roe_faces_floor(m.d, strategy...); });
+      m.run([&](auto... strategy) { ek::cpu::roe_boundaries_floor(m.d, strategy...); });
       break;
     case Flux::hllc:
-      ek::cpu::hllc_faces_floor(m.d);
-      ek::cpu::hllc_boundaries_floor(m.d);
+      m.run([&](auto... strategy) { ek::cpu::hllc_faces_floor(m.d, strategy...); });
+      m.run([&](auto... strategy) { ek::cpu::hllc_boundaries_floor(m.d, strategy...); });
       break;
     case Flux::ausm_up:
-      ek::cpu::ausm_faces_floor(m.d);
-      ek::cpu::ausm_boundaries_floor(m.d);
+      m.run([&](auto... strategy) { ek::cpu::ausm_faces_floor(m.d, strategy...); });
+      m.run([&](auto... strategy) { ek::cpu::ausm_boundaries_floor(m.d, strategy...); });
       break;
   }
   std::copy(m.floor.begin(), m.floor.end(), terms.begin());

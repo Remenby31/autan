@@ -279,7 +279,7 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   // solver-input.md, reproducibility "ranks": what a cell sums must not depend on how the mesh is
   // numbered. Renumbering the cells (reverse Cuthill-McKee) re-sorts the faces and flips some,
   // as a partition does; with the global keys of the original mesh the second-order residual,
-  // limiter on, and every block of the Jacobian must keep their bits.
+  // limiter on, its round-off floors and every block of the Jacobian must keep their bits.
   using P = TestType;
   const char* file = GENERATE(from_range(meshes));
   INFO(file);
@@ -395,6 +395,17 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
     }
   }
   CHECK(residual_differs == 0);
+  // The round-off floors' terms (case-schema.md#time) are sums over each cell's faces too.
+  std::vector<typename P::residual> ta(5 * nc), tb(5 * nc);
+  ea.floor_terms(sa, ta);
+  eb.floor_terms(sb, tb);
+  std::size_t floor_differs = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (std::size_t k = 0; k < 5; ++k) {
+      floor_differs += bits_differ(tb[k * nc + c], ta[k * nc + cell(c)]);
+    }
+  }
+  CHECK(floor_differs == 0);
   BlockMatrix ma(a), mb(b);
   ea.assemble(shift_a, ma);
   eb.assemble(shift_b, mb);
