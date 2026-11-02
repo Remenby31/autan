@@ -6,6 +6,7 @@
 set -euo pipefail
 lock=${AUTAN_GPU_LOCK:-/home/admin/autan-gpu/gpu.lock}
 ci_lock=$(dirname "$lock")/ci.lock
+main_lock=$(dirname "$lock")/main.lock
 pid_file=${RUNNER_TEMP:?}/autan-ci-priority.pid
 
 case ${1:-} in
@@ -17,7 +18,14 @@ case ${1:-} in
     fi
     # setsid: the holder is its own process group, stopped as a whole; -o: sleep does not keep
     # the lock if flock is killed. Bounded by MINUTES if the stop step never runs.
-    setsid flock -o -s "$ci_lock" sleep $(($2 * 60)) </dev/null >/dev/null 2>&1 &
+    # A job on main also holds main.lock: other CI jobs then wait behind it (main is measured
+    # first, the reference every pull request is compared with).
+    hold=(flock -o -s "$ci_lock")
+    if [[ ${GITHUB_REF:-} == refs/heads/main ]]; then
+      [[ -f $main_lock ]] || { echo "::error::$main_lock is missing: run docker/runner/deploy.sh start" >&2; exit 1; }
+      hold+=(flock -o -s "$main_lock")
+    fi
+    setsid "${hold[@]}" sleep $(($2 * 60)) </dev/null >/dev/null 2>&1 &
     echo $! >"$pid_file"
     # Held once an exclusive attempt fails.
     for _ in $(seq 100); do
