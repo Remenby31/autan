@@ -179,19 +179,22 @@ TEST_CASE("restricting signed zeros gives +0.0, as a sum that starts from +0.0",
   }
 }
 
-TEST_CASE("an agglomerate of more than eight nodes restricts in increasing host index",
-          "[multigrid][gpu]") {
-  // Twelve fine nodes in coarse node 1, two in coarse node 0, interleaved.
+TEST_CASE("large agglomerates restrict in increasing host index", "[multigrid][gpu]") {
+  // Coarse node 1 holds every fine node but two, interleaved with coarse node 0's: beyond eight
+  // children, and beyond what a block stages in shared memory.
+  const std::size_t n = GENERATE(14, 1100);
+  INFO(n << " fine nodes");
   std::vector<Level> levels(2);
-  levels[0].n_nodes = 14;
-  levels[0].coarse_node = {1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1};
+  levels[0].n_nodes = n;
+  levels[0].coarse_node.assign(n, 1);
+  levels[0].coarse_node[2] = levels[0].coarse_node[n - 3] = 0;
   levels[1].n_nodes = 2;
   const autan::solvers::gpu::Transfers transfers(levels);
-  const auto r = spread(5 * 14, 7);
+  const auto r = spread(5 * n, 7);
   std::vector<double> bc(10, 0.0);
   for (std::size_t c = 0; c < 5; ++c) {
-    for (std::size_t i = 0; i < 14; ++i) {
-      bc[c * 2 + static_cast<std::size_t>(levels[0].coarse_node[i])] += r[c * 14 + i];
+    for (std::size_t i = 0; i < n; ++i) {
+      bc[c * 2 + static_cast<std::size_t>(levels[0].coarse_node[i])] += r[c * n + i];
     }
   }
   const Device dr(r);
