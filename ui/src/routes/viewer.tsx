@@ -26,6 +26,8 @@ interface Search {
   /** Where along the axis, as a fraction of the wall surface's extent. */
   at?: number;
   sliceField?: string;
+  /** With `bench`: a listed mesh's boundary surface instead of the synthetic one. */
+  mesh?: string;
 }
 
 export const Route = createFileRoute("/viewer")({
@@ -41,6 +43,9 @@ export const Route = createFileRoute("/viewer")({
     const at = Number(raw.at);
     if (raw.at !== undefined && Number.isFinite(at) && at >= 0 && at <= 1) search.at = at;
     if (typeof raw.sliceField === "string" && raw.sliceField) search.sliceField = raw.sliceField;
+    // A mesh name is a string; links write it as a JSON string, so that "1e6" or "false" stay
+    // names and are not parsed as a number or a boolean.
+    if (typeof raw.mesh === "string" && raw.mesh) search.mesh = raw.mesh;
     return search;
   },
   component: Analysis,
@@ -114,6 +119,8 @@ export interface BenchReport {
   nodes: number;
   fetchMs: number;
   firstFrameMs: number;
+  /** From navigation to the first frame completed on the GPU. */
+  sinceNavigationMs: number;
   frameMs: number[];
 }
 
@@ -200,6 +207,7 @@ function Viewer() {
     slice: axis,
     at = 0.5,
     sliceField = "Pressure",
+    mesh,
   } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const registry = useQuery(runsQuery);
@@ -221,7 +229,11 @@ function Viewer() {
     setSelected(null);
     setError(null);
     const surfaceRequest = fetchSurface(
-      run ? `/api/runs/${run}/surface` : `/api/surfaces/synthetic?triangles=${triangles}`,
+      run
+        ? `/api/runs/${run}/surface`
+        : bench && mesh
+          ? `/api/meshes/${encodeURIComponent(mesh)}/surface`
+          : `/api/surfaces/synthetic?triangles=${triangles}`,
       abort.signal,
     );
     surfaceRequest.catch(() => {});
@@ -242,12 +254,14 @@ function Viewer() {
       if (!bench) return;
       await v.benchmark(1);
       const firstFrame = performance.now() - fetched;
+      const sinceNavigation = performance.now();
       window.__bench = {
         backend: v.backend,
         triangles: s.indices.length / 3,
         nodes: s.positions.length / 3,
         fetchMs: fetched - t0,
         firstFrameMs: firstFrame,
+        sinceNavigationMs: sinceNavigation,
         frameMs: await v.benchmark(BENCH_FRAMES),
       };
     })().catch((e: unknown) => {
@@ -259,7 +273,7 @@ function Viewer() {
       viewer.current?.dispose();
       viewer.current = null;
     };
-  }, [run, triangles, webgl, bench]);
+  }, [run, triangles, webgl, bench, mesh]);
 
   useEffect(() => {
     if (surface?.fields.some((f) => f.name === fieldName)) viewer.current?.setField(fieldName);
@@ -339,7 +353,7 @@ function Viewer() {
                 { label: <span className="font-mono">{run.slice(-8)}</span>, to: `/runs/${run}` },
                 { label: "Analysis" },
               ]
-            : [{ label: "Analysis", to: "/viewer" }, { label: "Synthetic surface" }]
+            : [{ label: "Analysis", to: "/viewer" }, { label: mesh ?? "Synthetic surface" }]
         }
         actions={
           surface && surface.fields.length > 1 ? (
@@ -355,7 +369,9 @@ function Viewer() {
               <TabList tabs={surface.fields.map((f) => ({ value: f.name, label: f.name }))} />
             </TabsRoot>
           ) : !run ? (
-            <span className="text-fg-3 text-sm">Synthetic surface · viewer benchmark</span>
+            <span className="text-fg-3 text-sm">
+              {mesh ? `${mesh} · viewer benchmark` : "Synthetic surface · viewer benchmark"}
+            </span>
           ) : null
         }
       />
