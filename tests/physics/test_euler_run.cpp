@@ -293,7 +293,8 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
   std::ifstream log_in(out.run / "log.jsonl");
   for (std::string line; std::getline(log_in, line);) {
     const Json event = Json::parse(line);
-    if (event["message"] == "agglomeration multigrid") built = event["data"];
+    // The linear solver's event of the hierarchy: its nodes and edges per level.
+    if (event["source"] == "linear" && event["data"].contains("edges")) built = event["data"];
   }
   REQUIRE(built.is_object());
   const Json& published = doc["mesh_info"]["quality"]["multigrid"];

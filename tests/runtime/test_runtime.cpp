@@ -669,6 +669,10 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m["bounds"]["min"][0] = 1e9; },
         [](Json& m) { m["quality"]["lines"]["long_cells"] = m["counts"]["cells"].get<int>() + 1; },
         [](Json& m) {
+          auto& edges = m["quality"]["multigrid"]["edges_by_level"][0];
+          edges = edges.get<int>() + 1;
+        },
+        [](Json& m) {
           const int cells = m["counts"]["cells"].get<int>();
           m["partition"] = {{"ranks", 2},
                             {"groups", "none"},
@@ -1200,6 +1204,10 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     Json malformed = state;
     malformed["mesh_sha256"] = "not-a-sha256";
     require_error(run(with_initial_state(input(inviscid), malformed)), "E0508");
+    // A rows member inside a row: no second member opens there.
+    Json nested = state;
+    nested["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
+    require_error(run(with_initial_state(input(inviscid), nested)), "E0508");
   }
   SECTION("E0705: a turbulence model, whose variables the file lacks") {
     require_error(run(with_initial_state(input(), state)), "E0705");
@@ -1471,7 +1479,11 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
              [](Json& rows) { rows["values"][1][2] = "fast"; },
              [](Json& rows) { rows["values"][0][0] = Json::array({1.0}); },
              [](Json& rows) { rows["centroids"].erase(rows["centroids"].size() - 1); },
-             [](Json& rows) { rows["values"] = Json::object(); }}) {
+             [](Json& rows) { rows["values"] = Json::object(); },
+             // A rows member inside a row: no second member opens there.
+             [](Json& rows) {
+               rows["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
+             }}) {
       require_error(run(ringleb_input([&](Json& s) { edit(s["zones"]["inflow"]); })), "E0420");
     }
     require_error(run(ringleb_input([](Json& s) {

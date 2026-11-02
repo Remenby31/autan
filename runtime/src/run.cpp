@@ -401,8 +401,9 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
           f.kind = Kind::row;
         } else if (parent != Kind::plain) {
           current->ok = false;  // an object in the rows, or anything nested in a row
-        } else if (f.array && member && (pending == "centroids" || pending == "values")) {
-          f.kind = Kind::rows;
+        } else if (f.array && member && current == nullptr &&
+                   (pending == "centroids" || pending == "values")) {
+          f.kind = Kind::rows;  // not inside another rows member, which this one would replace
         }
         pending.clear();
         stack.push_back(f);
