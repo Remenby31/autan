@@ -28,6 +28,23 @@ Relation to the SER and to #356: the SER stays the law the CFL number grows by; 
 
 ## Gate, declared before any run
 
-*(CFD - Multigrille: the plate, unchanged from #395 — laminar 69×49 ≤ 3332 steps, SA 35×25 ≤ 2260, SA 69×49 ≤ 3332, SA 137×97 < 6000, ten orders below each equation's peak and every such equation ≤ 10⁻¹⁰ of its peak at the last step; the transonic SA case with an active limiter (case, mesh and reference from CFD - Navier-Stokes SA).)*
+All runs fp64 unless stated, against `main` at the merge base (the reference), the case files identical across the two.
+
+**TMR flat plate** (`physics/tmr/case.sh flatplate`, 6000 steps; #395's measure: the first step at which every equation but the identically zero z-momentum is ten orders below its peak, and every such equation at most 10⁻¹⁰ of its peak at the last step), unchanged from #395:
+
+- laminar 69×49: at most 3332 steps;
+- SA 35×25: at most 2260 steps;
+- SA 69×49: at most 3332 steps;
+- SA 137×97: within the 6000 steps.
+
+**Transonic SA with an active limiter**: RAE 2822, AGARD AR-138 case 9 (M 0.73, α 2.79° corrected, Re 6.5 × 10⁶ per chord; `vv` catalog `rae2822`), on the NPARC study #4 C-grid (369 × 65, one layer, `physics/tmr/plot3d.py`), 10 000 steps. To be set up by CFD - Navier-Stokes SA before any run (grid licence checked; the case added to `case.sh`); the limiter is active by construction (no manufactured solution). Pass:
+
+- ten orders below each equation's peak within the 10 000 steps (the plate's measure), and steps at most `main`'s when `main` converges;
+- CL, CD and CM at the last step within 10⁻⁸ |c| + 10⁻¹⁰ of `main`'s when `main` converges; when it does not, of a reference run of `main` with the CFL number held at 1 to ten orders (the iteration converged on the plate at CFL 1, #395), so that both runs compare one discrete solution;
+- reported, not gated: CN, CD, CM against the case 9 experiment (CN 0.803, CM −0.099, CD 0.0168).
+
+**Accuracy** (AGENTS.md): the discretisation does not change; the Euler MMS observed orders on hex, tet, poly and hybrid in fp64 (`euler-mms-order` PASS) and fp32+acc64 agreeing with fp64 level by level (`autan-vv agree`), unchanged from `main`'s.
+
+**Cost**: CPU time per step and to convergence on the plate and the Euler cases, measured alone under the GPU lock, reported against `main` (one product J̃ ΔU and three norms per step: expected below 2 % per step).
 
 *(CFD - Euler: the Euler no-regression gate, tolerances in numbers.)*
