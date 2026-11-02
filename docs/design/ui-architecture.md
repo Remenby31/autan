@@ -99,7 +99,7 @@ Home groups runs by study ([results.md](../contracts/results.md#studies): the sa
 
 ### Component library
 
-`ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition.
+`ui/src/components/ui/` rebuilds the patterns of Vercel's public Geist design system on Base UI and `tokens.css`; no Vercel code or asset is used. Each component states its rule in one line at its definition. Every screen uses the window's full width; sections are separated by thin rules, not framed in cards.
 
 | Geist pattern | Component | Used on |
 |---|---|---|
