@@ -106,7 +106,7 @@ function RunView() {
     : [];
   const [cl, cd] =
     finalForces.length === 1
-      ? [finalForces[0]?.cl, finalForces[0]?.cd]
+      ? [finalForces[0]?.cs, finalForces[0]?.cd]
       : [forces?.cl.at(-1), forces?.cd.at(-1)];
 
   const crumbs = [
