@@ -144,13 +144,22 @@ struct Setup {
     a.start(u, s, rnu, nt_inf, shift, {});
   }
 
-  // Root mean square of S^-1 x over the six unknowns, S the product's scales, as the product's
-  // contract states eps (an exact sum, as the product sums).
-  double scaled_rms(const MatrixFreeProduct<P>& a, std::span<const double> x) const {
+  // The scales S of the product's contract: the freestream's for the flow (those product_of
+  // passes), the root mean square of rho nt for rho nt.
+  std::array<double, 6> scales(std::span<const double> rnu) const {
+    const double c = std::sqrt(air.gamma * p0 / rho);
+    autan::runtime::ExactSum sum;
+    for (const double x : rnu) sum.add(x * x);
+    const double nt = rnu.empty() ? 1.0 : std::sqrt(sum.value() / static_cast<double>(rnu.size()));
+    return {rho, rho * c, rho * c, rho * c, energy, nt};
+  }
+
+  // Root mean square of S^-1 x over the six unknowns (an exact sum, as the product sums).
+  double scaled_rms(const std::array<double, 6>& scale, std::span<const double> x) const {
     std::array<autan::runtime::ExactSum, 2> sums;
     for (std::size_t k = 0; k < 6; ++k) {
       for (std::size_t c = 0; c < n; ++c) {
-        const double q = x[k * n + c] / a.scale()[k];
+        const double q = x[k * n + c] / scale[k];
         sums[0].add(q * q);
       }
     }
@@ -159,10 +168,11 @@ struct Setup {
   }
 
   // eps = relative (1 + |S^-1 X|) / |S^-1 v|, X = (u, rnu).
-  double eps(const MatrixFreeProduct<P>& a, std::span<const double> rnu, double relative) const {
+  double eps(std::span<const double> rnu, double relative) const {
+    const auto scale = scales(rnu);
     std::vector<double> x(u);
     x.insert(x.end(), rnu.begin(), rnu.end());
-    return relative * (1.0 + scaled_rms(a, x)) / scaled_rms(a, v);
+    return relative * (1.0 + scaled_rms(scale, x)) / scaled_rms(scale, v);
   }
 
   // [R(X + e v) - R(X)] / e, R the coupled residual with the switches held at start()'s state.
@@ -178,8 +188,8 @@ struct Setup {
   }
 
   // Central differences along v, the step h = epsilon^(1/3) on the scaled unknowns.
-  std::vector<double> central(const MatrixFreeProduct<P>& a, std::span<const double> rnu) {
-    const double h = eps(a, rnu, std::cbrt(std::numeric_limits<double>::epsilon()));
+  std::vector<double> central(std::span<const double> rnu) {
+    const double h = eps(rnu, std::cbrt(std::numeric_limits<double>::epsilon()));
     std::vector<double> up(5 * n), um(5 * n), np(n), nm(n);
     for (std::size_t i = 0; i < 5 * n; ++i) {
       up[i] = u[i] + h * v[i];
@@ -197,8 +207,8 @@ struct Setup {
 
   // The product's specification at the state of start(): shift v + one-sided difference at the
   // product's eps (no halving at the test states).
-  std::vector<double> expected(const MatrixFreeProduct<P>& a, std::span<const double> rnu) {
-    const double e = eps(a, rnu, std::sqrt(static_cast<double>(std::numeric_limits<S>::epsilon())));
+  std::vector<double> expected(std::span<const double> rnu) {
+    const double e = eps(rnu, std::sqrt(static_cast<double>(std::numeric_limits<S>::epsilon())));
     std::vector<double> y = one_sided(rnu, e);
     for (std::size_t k = 0; k < 6; ++k) {
       for (std::size_t c = 0; c < n; ++c) y[k * n + c] = shift[c] * v[k * n + c] + y[k * n + c];
@@ -267,12 +277,13 @@ TEMPLATE_TEST_CASE("the coupled product is the one-sided difference of the held 
   s.start(a, rnu);
   const double root =
       std::sqrt(static_cast<double>(std::numeric_limits<typename P::state>::epsilon()));
-  fill(0.25 * s.eps(a, rnu, root));
+  fill(0.25 * s.eps(rnu, root));
   s.start(a, rnu);
   std::vector<double> y(6 * s.n);
   a.apply(s.v, y);
   CHECK(a.halvings() == 0);
-  CHECK(y == s.expected(a, rnu));
+  CHECK(a.scale() == s.scales(rnu));
+  CHECK(y == s.expected(rnu));
 }
 
 TEST_CASE("the held coupled residual's one-sided difference converges at first order",
@@ -291,12 +302,12 @@ TEST_CASE("the held coupled residual's one-sided difference converges at first o
     rnu[c] = rho * nu * (2.0 + std::sin(3.0 * s.g.cell_centroid_x[c] + s.g.cell_centroid_z[c]));
   }
   s.start(a, rnu);
-  const auto d = s.central(a, rnu);
+  const auto d = s.central(rnu);
   auto error = [&](double relative) {
-    const auto f = s.one_sided(rnu, s.eps(a, rnu, relative));
+    const auto f = s.one_sided(rnu, s.eps(rnu, relative));
     double e = 0.0;
     for (std::size_t i = 0; i < 6 * s.n; ++i) {
-      const double q = (f[i] - d[i]) / a.scale()[i / s.n];
+      const double q = (f[i] - d[i]) / s.scales(rnu)[i / s.n];
       e += q * q;
     }
     return std::sqrt(e);
@@ -346,8 +357,8 @@ TEMPLATE_TEST_CASE("the flow's product is the assembled operator where that is t
   matrix.multiply(v, w);
   double error = 0.0, magnitude = 0.0;
   for (std::size_t i = 0; i < 5 * s.n; ++i) {
-    error = std::max(error, std::abs(y[i] - w[i]) / a.scale()[i / s.n]);
-    magnitude = std::max(magnitude, std::abs(w[i]) / a.scale()[i / s.n]);
+    error = std::max(error, std::abs(y[i] - w[i]) / s.scales({})[i / s.n]);
+    magnitude = std::max(magnitude, std::abs(w[i]) / s.scales({})[i / s.n]);
   }
   CHECK(a.halvings() == 0);
   CHECK(error <=
@@ -467,7 +478,7 @@ TEMPLATE_TEST_CASE("a probe that switches a face state's fallback is halved", "[
     auto rms = [&](std::span<const double> x) {
       std::array<autan::runtime::ExactSum, 2> sums;
       for (std::size_t i = 0; i < 5 * n; ++i) {
-        const double q = x[i] / a.scale()[i / n];
+        const double q = x[i] / s.scales({})[i / n];
         sums[0].add(q * q);
       }
       sums[1].add(static_cast<double>(5 * n));
