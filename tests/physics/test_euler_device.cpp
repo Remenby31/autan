@@ -85,6 +85,8 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   s.mach_ref = std::hypot(ref[1], ref[2], ref[3]) / c_ref;
   s.scale = {ref[0], 100.0, 100.0, 100.0, ref[4]};
   s.reference = conserved(ref);
+  // A limiter that clips enough of this flow for its effect to exceed the tolerance (below).
+  s.venkat_k = 0.1;
   Euler<P> host(mesh, g, air, s);
   // Every condition: farfield on x, slip walls on y, the flow's state on z.
   std::vector<BoundaryKind> kind(nb);
@@ -120,13 +122,6 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   std::vector<typename P::residual> r_host(5 * n);
   host.residual(stored, r_host);
 
-  autan::runtime::OneRank rank;
-  NoGhosts ghosts;
-  auto device =
-      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
-  std::vector<double> r_device(5 * n);
-  device->residual(u, r_device);
-
   const double q = std::hypot(ref[1], ref[2], ref[3]) + c_ref;
   const double h = c_ref * c_ref / (air.gamma - 1.0) + 0.5 * std::pow(q - c_ref, 2);
   const std::array<double, 5> f_k{ref[0] * q, ref[0] * q * q, ref[0] * q * q, ref[0] * q * q,
@@ -137,14 +132,42 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
     if (f < ni) surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
   }
   const double eps = std::numeric_limits<typename P::state>::epsilon();
-  double worst = 0.0;
-  for (std::size_t k = 0; k < 5; ++k) {
-    for (std::size_t c = 0; c < n; ++c) {
-      const double d = std::abs(r_device[k * n + c] - static_cast<double>(r_host[k * n + c]));
-      REQUIRE(std::isfinite(d));
-      worst = std::max(worst, d / (eps * f_k[k] * surface[c]));
+  // The largest |R - R_host| of a cell, in units of eps f_k A_i.
+  auto distance = [&](const auto& r) {
+    double worst = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < n; ++c) {
+        const double d =
+            std::abs(static_cast<double>(r[k * n + c]) - static_cast<double>(r_host[k * n + c]));
+        if (!std::isfinite(d)) return std::numeric_limits<double>::infinity();
+        worst = std::max(worst, d / (eps * f_k[k] * surface[c]));
+      }
     }
+    return worst;
+  };
+  if (limiter) {
+    // The unlimited residual is more than twice the tolerance away: a device that skipped the
+    // limiter, or limited with other bounds, could not pass.
+    Scheme free = s;
+    free.limiter = false;
+    Euler<P> unlimited(mesh, g, air, free);
+    unlimited.set_boundary(kind, data);
+    unlimited.set_source(source);
+    unlimited.set_second_order(true);
+    std::vector<typename P::residual> r_free(5 * n);
+    unlimited.residual(stored, r_free);
+    INFO("the limiter changes the residual by " << distance(r_free) << " eps f_k A_i");
+    REQUIRE(distance(r_free) >= 1000.0);
   }
+
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto device =
+      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
+  std::vector<double> r_device(5 * n);
+  device->residual(u, r_device);
+  const double worst = distance(r_device);
+  REQUIRE(std::isfinite(worst));
   INFO("worst difference " << worst << " eps f_k A_i");
   CHECK(worst <= 500.0);
 }
