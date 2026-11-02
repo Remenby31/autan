@@ -643,9 +643,7 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
 
 TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one after another",
                    "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
-  // The reference runs the generated loops in the order the scheme defines them (primitives,
-  // boundary states, gradients, limiter, sources, faces, boundary faces) on a second instance's
-  // arrays; the residual must equal it bit for bit, with the limiter active.
+  // The reference runs the loops in the scheme's order on a second instance's arrays.
   namespace ek = autan::kernels::euler;
   using P = TestType;
   const char* file = GENERATE(from_range(meshes));
@@ -660,31 +658,45 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
     const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
     for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
   }
-  // A jump of 2 in density and pressure across x = 0.5, which the limiter must clip there.
-  std::vector<double> u(5 * nc);
+  // Jumps across x = 0.5 in every primitive, which the limiter must clip there, and a source.
+  std::vector<double> u(5 * nc), source(5 * nc);
   for (std::size_t i = 0; i < nc; ++i) {
-    const double f = c.geometry.cell_centroid_x[i] < 0.5 ? 2.0 : 1.0;
-    const auto q = conserved({f * w.rho, w.v, f * w.p});
-    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+    const bool left = c.geometry.cell_centroid_x[i] < 0.5;
+    const double f = left ? 2.0 : 1.0;
+    const std::array<double, 3> v = {left ? 60.0 : w.v[0], left ? -20.0 : w.v[1],
+                                     left ? 40.0 : w.v[2]};
+    const auto q = conserved({f * w.rho, v, f * w.p});
+    for (std::size_t k = 0; k < 5; ++k) {
+      u[k * nc + i] = q[k];
+      source[k * nc + i] = 1e-3 * q[k];
+    }
   }
   Scheme s = second_order(Flux::roe, 0.3);
   s.venkat_k = 0.5;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(kind, data);
-  auto state = stored(e, u);
-  std::vector<typename P::residual> r(5 * nc);
+  e.set_source(source);
+  const auto input = stored(e, u);
+  auto state = input;
+  std::vector<typename P::residual> r(5 * nc, typename P::residual(7));
   e.residual(state, r);
-  std::size_t limited = 0;
-  for (std::size_t i = 0; i < 5 * nc; ++i) {
-    limited += static_cast<double>(e.data().phi[i]) < 1.0 ? 1U : 0U;
+  REQUIRE(state == input);
+  std::array<std::size_t, 5> limited{};
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t i = 0; i < nc; ++i) {
+      limited[k] += static_cast<double>(e.data().phi[k * nc + i]) < 1.0 ? 1U : 0U;
+    }
+    INFO("component " << k);
+    REQUIRE(limited[k] > 0);
   }
-  REQUIRE(limited > 0);
 
   Euler<P> f(c.mesh, c.geometry, air, s);
   f.set_boundary(kind, data);
+  f.set_source(source);
   auto d = f.data();
-  std::vector<typename P::residual> ref(5 * nc);
-  d.u = state.data();
+  auto reference_state = input;
+  std::vector<typename P::residual> ref(5 * nc, typename P::residual(7));
+  d.u = reference_state.data();
   d.res = ref.data();
   ek::cpu::primitives(d);
   ek::cpu::boundary_states(d);
