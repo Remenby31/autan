@@ -485,6 +485,137 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     out.push_back({"block_diagonal" + layout, asm_bytes - inc * 25.0 * sizeof(J), "gather",
                    time_it(o, [&] { dgo::gpu_loops::assemble(dq, dl.schedule); })});
   }
+
+  // Block Gauss-Seidel (kernels/blocks.py `relax`): one forward sweep over a greedy distance-1
+  // colouring in cell order, on the system renumbered by colour (colour_order: each colour a
+  // contiguous range of rows), sliced incidences. Two accountings (kernel-generator.md,
+  // "Benchmark accounting"): the product model, every datum once (relax_sweep), and the lower
+  // bound of a coloured sweep (relax_sweep_bound), R_k computed from this colouring.
+  {
+    const auto& tp = m.topo;
+    std::vector<std::int32_t> colour(nc, -1);
+    std::vector<int> seen;
+    std::int32_t n_colours = 0;
+    for (std::size_t c = 0; c < nc; ++c) {
+      seen.assign(static_cast<std::size_t>(n_colours) + 1, 0);
+      for (auto k = tp.cell_face_offsets[c]; k < tp.cell_face_offsets[c + 1]; ++k) {
+        const index_t f = tp.cell_faces[k];
+        if (f >= tp.n_interior_faces) continue;
+        const auto o = static_cast<std::size_t>(
+            tp.owner[f] == static_cast<index_t>(c) ? tp.neighbour[f] : tp.owner[f]);
+        if (colour[o] >= 0) seen[static_cast<std::size_t>(colour[o])] = 1;
+      }
+      std::int32_t k = 0;
+      while (seen[static_cast<std::size_t>(k)] != 0) ++k;
+      colour[c] = k;
+      n_colours = std::max(n_colours, k + 1);
+    }
+    const auto order = autan::kernels::colour_order(colour, n_colours, tp.n_owned_cells);
+    SpikeMesh mc{autan::renumber_cells(m.mesh, order.new_to_old), {}, {}, {}, {}, {}};
+    mc.geometry = autan::compute_geometry(mc.mesh);
+    mc.packed = autan::kernels::pack_geometry(mc.mesh, mc.geometry);
+    mc.topo = autan::kernels::topology(mc.mesh.view());
+    mc.twins = autan::kernels::incidence_twins(mc.mesh);
+    mc.topo.incidence_twin = mc.twins.data();
+    const auto& tc = mc.topo;
+    const auto ncf = static_cast<std::size_t>(tc.n_faces);
+    std::vector<J> cjac(50 * ncf), cbnd(25 * ncf);
+    for (auto& v : cjac) v = J(normal(rng));
+    for (auto& v : cbnd) v = J(normal(rng));
+    std::vector<A> cshift(nc), cdiag(25 * nc), cinv(25 * nc);
+    for (auto& v : cshift) v = A(20.0 + normal(rng));
+    std::vector<R> cx(5 * nc), crhs(5 * nc);
+    for (auto& v : cx) v = R(normal(rng));
+    for (auto& v : crhs) v = R(normal(rng));
+    std::vector<index_t> rows(nc);
+    for (std::size_t p = 0; p < nc; ++p) rows[p] = static_cast<index_t>(p);
+    // Host reference: the same loops on the CSR topology of the renumbered mesh.
+    std::vector<J> hoff_c(25 * static_cast<std::size_t>(tc.n_incidences));
+    std::vector<R> hx_c = cx, unused(5 * nc);
+    GeomCopy<P> hgc(mc.packed);
+    bk::Data<P> hc{};
+    hc.topo = tc;
+    autan::spike::bind(hc.incidence_side, hgc.incidence_side);
+    hc.face_jac = cjac.data();
+    hc.bnd_jac = cbnd.data();
+    hc.shift = cshift.data();
+    hc.diag = cdiag.data();
+    hc.diag_inv = cinv.data();
+    hc.off = hoff_c.data();
+    hc.x = hx_c.data();
+    hc.rhs = crhs.data();
+    hc.y = unused.data();
+    hc.r = unused.data();
+    bk::cpu::assemble(hc);
+    bk::cpu::invert_diagonal(hc);
+    for (std::int32_t k = 0; k < n_colours; ++k) {
+      const auto lo = order.offsets[static_cast<std::size_t>(k)];
+      bk::cpu::relax(hc, rows.data() + lo, order.offsets[static_cast<std::size_t>(k) + 1] - lo);
+    }
+    autan::spike::incidence_slice() = 32;
+    DeviceMesh dl(mc, o.block);
+    autan::spike::incidence_slice() = 0;
+    bk::Data<P> dd{};
+    dl.bind(dd);
+    DeviceArray<J> dcjac(cjac), dcbnd(cbnd),
+        dcoff(25 * static_cast<std::size_t>(dl.topo.n_incidences));
+    DeviceArray<A> dcshift(cshift), dcdiag(25 * nc), dcinv(25 * nc);
+    DeviceArray<R> dcx(cx), dcrhs(crhs), dcunused(5 * nc);
+    DeviceArray<index_t> drows(rows);
+    dd.face_jac = dcjac.get();
+    dd.bnd_jac = dcbnd.get();
+    dd.shift = dcshift.get();
+    dd.diag = dcdiag.get();
+    dd.diag_inv = dcinv.get();
+    dd.off = dcoff.get();
+    dd.x = dcx.get();
+    dd.rhs = dcrhs.get();
+    dd.y = dcunused.get();
+    dd.r = dcunused.get();
+    bk::gpu_loops::assemble(dd, dl.schedule);
+    bk::gpu_loops::invert_diagonal(dd, dl.schedule);
+    auto sweep = [&] {
+      for (std::int32_t k = 0; k < n_colours; ++k) {
+        const auto lo = order.offsets[static_cast<std::size_t>(k)];
+        bk::gpu_loops::relax(dd, drows.get() + lo,
+                             order.offsets[static_cast<std::size_t>(k) + 1] - lo, dl.schedule);
+      }
+    };
+    sweep();
+    if (max_rel_diff(as_double(dcx.download()), as_double(hx_c)) > tolerance) verified = false;
+    // Product model: per cell its inverse block, rhs read, x read across once and written,
+    // row offset and length; per interior incidence its block; per incidence its column.
+    const double row = sizeof(offset_t) + sizeof(index_t);
+    const double base = cells * (25.0 * sizeof(A) + 10.0 * sizeof(R) + row) +
+                        2.0 * ni * 25.0 * sizeof(J) + inc * sizeof(index_t);
+    const double product = base + cells * 5.0 * sizeof(R);
+    // Bound: B0 (base) + S_0 + sum over k >= 1 of max(0, S_k - L), S_k the x values colour k
+    // reads across, L = 40 MiB on GB10 (L2 24 MiB + system-level cache 16 MB).
+    constexpr double on_chip = 40.0 * 1024 * 1024;
+    std::vector<std::int32_t> last(nc, -1);
+    double bound = base;
+    for (std::int32_t k = 0; k < n_colours; ++k) {
+      std::size_t distinct = 0;
+      for (auto p = order.offsets[static_cast<std::size_t>(k)];
+           p < order.offsets[static_cast<std::size_t>(k) + 1]; ++p) {
+        for (auto q = tc.cell_face_offsets[p]; q < tc.cell_face_offsets[p + 1]; ++q) {
+          const index_t f = tc.cell_faces[q];
+          if (f >= tc.n_interior_faces) continue;
+          const auto j = static_cast<std::size_t>(tc.owner[f] == p ? tc.neighbour[f] : tc.owner[f]);
+          if (last[j] != k) {
+            last[j] = k;
+            ++distinct;
+          }
+        }
+      }
+      const double s = 5.0 * sizeof(R) * static_cast<double>(distinct);
+      bound += k == 0 ? s : std::max(0.0, s - on_chip);
+    }
+    const auto seconds = time_it(o, sweep);
+    out.push_back({"relax_sweep", product, "coloured", seconds});
+    out.push_back({"relax_sweep_bound", bound, "coloured", seconds});
+    std::fprintf(stderr, "relax: %d colours\n", n_colours);
+  }
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
                colouring_seconds, dm.schedule.interior.offsets.size() - 1,
                dm.schedule.boundary.offsets.size() - 1);
