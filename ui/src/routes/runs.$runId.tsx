@@ -348,7 +348,7 @@ function RunView() {
                   {details.data && (
                     <OutputList
                       runId={runId}
-                      running={run?.status === "running"}
+                      running={details.data.run.status === "running"}
                       outputs={details.data.outputs}
                     />
                   )}
@@ -391,7 +391,7 @@ function RunView() {
               {details.data && (
                 <OutputList
                   runId={runId}
-                  running={run?.status === "running"}
+                  running={details.data.run.status === "running"}
                   outputs={details.data.outputs}
                 />
               )}
