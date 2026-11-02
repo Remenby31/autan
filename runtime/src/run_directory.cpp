@@ -58,7 +58,7 @@ void write_atomically(const fs::path& path, const std::string& text) {
 RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
                            const std::string& run_json, const std::string& case_toml,
                            const std::string& mesh_info_json, const std::string& first_log_lines,
-                           const std::optional<std::string>& manufactured_json,
+                           const std::string* manufactured_json,
                            const std::map<std::string, std::string>& state_files) {
   std::error_code ec;
   fs::create_directories(runs, ec);
@@ -68,7 +68,7 @@ RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
   write_file(staging / "run.json", run_json);
   write_file(staging / "case.toml", case_toml);
   write_file(staging / "mesh-info.json", mesh_info_json);
-  if (manufactured_json) write_file(staging / "manufactured.json", *manufactured_json);
+  if (manufactured_json != nullptr) write_file(staging / "manufactured.json", *manufactured_json);
   if (!state_files.empty()) {
     if (!fs::create_directory(staging / "states", ec) || ec) fail("create", staging / "states");
     for (const auto& [sha256, bytes] : state_files) {

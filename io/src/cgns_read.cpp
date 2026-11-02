@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -33,6 +34,12 @@ namespace {
 namespace fs = std::filesystem;
 
 std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
+
+// A descriptor's text as the library allocated it: read in place, never copied (#358).
+struct CgFree {
+  void operator()(char* p) const noexcept { cg_free(p); }
+};
+using CgText = std::unique_ptr<char, CgFree>;
 
 // Once the file is open, a library error means its content breaks the SIDS
 // (E0132); opening it is checked by CgnsFile (E0130).
@@ -451,12 +458,11 @@ class Reader {
       char name[33];
       char* text = nullptr;
       ok(cg_descriptor_read(d, name, &text), "read descriptor");
-      const std::string content = text != nullptr ? text : "";
-      cg_free(text);
+      const CgText owned(text);
       if (std::string_view(name) != "ZoneNames") continue;
       nlohmann::json names;
       try {
-        names = nlohmann::json::parse(content);
+        names = nlohmann::json::parse(text != nullptr ? text : "");
         for (auto& zone : face_zones_) {
           if (names.at("boundary").contains(zone.name))
             zone.name = names["boundary"][zone.name].get<std::string>();
@@ -615,11 +621,11 @@ class Reader {
         char descriptor[33];
         char* text = nullptr;
         ok(cg_descriptor_read(d, descriptor, &text), "read descriptor", name);
-        const std::string content = text != nullptr ? text : "";
-        cg_free(text);
+        const CgText owned(text);
         if (std::string_view(descriptor) != "PeriodicTranslation") continue;
         std::array<double, 3> exact{};
-        const nlohmann::json value = nlohmann::json::parse(content, nullptr, false);
+        const nlohmann::json value =
+            nlohmann::json::parse(text != nullptr ? text : "", nullptr, false);
         if (!value.is_array() || value.size() != 3 ||
             !std::ranges::all_of(
                 value, [](const nlohmann::json& v) { return v.is_number() && !v.is_boolean(); })) {

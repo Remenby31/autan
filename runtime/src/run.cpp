@@ -18,7 +18,6 @@
 #include <random>
 #include <set>
 #include <span>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -136,16 +135,14 @@ std::string file_bytes(std::ifstream& in) {
 }
 
 std::string read_text(const fs::path& path) {
-  const std::ifstream in(path, std::ios::binary);
+  std::ifstream in(path, std::ios::binary);
   if (!in) {
     throw InputError(Diagnostic{.code = "E0705",
                                 .message = "cannot read '" + path.string() + "'",
                                 .path = "",
                                 .data_json = "{}"});
   }
-  std::ostringstream text;
-  text << in.rdbuf();
-  return text.str();
+  return file_bytes(in);
 }
 
 [[noreturn]] void invalid(const std::string& path, const std::string& message) {
@@ -971,16 +968,14 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
-    const std::ifstream in(v.path, std::ios::binary);
+    std::ifstream in(v.path, std::ios::binary);
     if (!in) {
       throw InputError(Diagnostic{.code = "E0207",
                                   .message = "cannot read '" + v.path + "'",
                                   .path = "verification.path",
                                   .data_json = "{}"});
     }
-    std::ostringstream text;
-    text << in.rdbuf();
-    v.text = text.str();
+    v.text = file_bytes(in);
     if (sha256_hex(v.text) != v.sha256) {
       throw InputError(Diagnostic{
           .code = "E0206",
@@ -1273,9 +1268,7 @@ class Run final : public Log {
         dir_ = std::make_unique<RunDirectory>(
             runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
             p_.mesh_info, first_lines,
-            p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
-                                  : std::nullopt,
-            p_.state_files);
+            p_.input.verification ? &p_.input.verification->text : nullptr, p_.state_files);
         path = dir_->path().string();
       } catch (...) {
         (void)comm_.broadcast({});
