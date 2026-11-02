@@ -640,3 +640,58 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
           64 * eps * p / std::pow(rho, gamma));
   }
 }
+
+TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one after another",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // The reference runs the generated loops in the order the scheme defines them (primitives,
+  // boundary states, gradients, limiter, sources, faces, boundary faces) on a second instance's
+  // arrays; the residual must equal it bit for bit, with the limiter active.
+  namespace ek = autan::kernels::euler;
+  using P = TestType;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  // A jump of 2 in density and pressure across x = 0.5, which the limiter must clip there.
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double f = c.geometry.cell_centroid_x[i] < 0.5 ? 2.0 : 1.0;
+    const auto q = conserved({f * w.rho, w.v, f * w.p});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  s.venkat_k = 0.5;
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  e.set_boundary(kind, data);
+  auto state = stored(e, u);
+  std::vector<typename P::residual> r(5 * nc);
+  e.residual(state, r);
+  std::size_t limited = 0;
+  for (std::size_t i = 0; i < 5 * nc; ++i) {
+    limited += static_cast<double>(e.data().phi[i]) < 1.0 ? 1U : 0U;
+  }
+  REQUIRE(limited > 0);
+
+  Euler<P> f(c.mesh, c.geometry, air, s);
+  f.set_boundary(kind, data);
+  auto d = f.data();
+  std::vector<typename P::residual> ref(5 * nc);
+  d.u = state.data();
+  d.res = ref.data();
+  ek::cpu::primitives(d);
+  ek::cpu::boundary_states(d);
+  ek::cpu::gradients(d);
+  ek::cpu::limiter(d);
+  ek::cpu::sources(d);
+  ek::cpu::roe_faces(d);
+  ek::cpu::roe_boundaries(d);
+  CHECK(std::memcmp(r.data(), ref.data(), r.size() * sizeof(r[0])) == 0);
+}
