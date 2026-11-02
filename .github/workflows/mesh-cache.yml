@@ -1,0 +1,56 @@
+# Fills main's cache with the benchmark mesh whenever its generator changes on main. A pull
+# request can read only its own cache and its base branch's, and gpu-bench runs on main are too
+# few to keep main's filled (docs/infra/bench.md).
+name: mesh-cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - vv/src/autan_vv/meshes/**
+      - vv/src/autan_vv/oracles/**
+      - vv/src/autan_vv/cli.py
+      - vv/src/autan_vv/errors.py
+      - vv/src/autan_vv/__init__.py
+      - vv/pyproject.toml
+      - vv/uv.lock
+      - vv/.python-version
+      - .github/workflows/mesh-cache.yml
+  workflow_dispatch:
+
+permissions: {}
+
+# Per ref: a dispatch on another branch must not replace main's pending fill.
+concurrency:
+  group: mesh-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mesh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The same key as gpu-bench's mesh job.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: mesh-cache
+        with:
+          path: meshes/
+          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/meshes/**', 'vv/src/autan_vv/oracles/**', 'vv/src/autan_vv/cli.py', 'vv/src/autan_vv/errors.py', 'vv/src/autan_vv/__init__.py', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - name: Install the libraries the Gmsh wheel loads
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
+        run: >-
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
+          libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
+      - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
+        run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes

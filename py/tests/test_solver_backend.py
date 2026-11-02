@@ -15,11 +15,14 @@ import time
 from pathlib import Path
 
 import autan
+import autan.initial_state
+import autan.solver_backend
+import numpy as np
 import pytest
 from autan import cgns
 from autan.cli import main
 
-from tests.conftest import ROOT
+from tests.conftest import ROOT, identity_of
 
 MESH = ROOT / "tests" / "data" / "mesh" / "hybrid" / "polyMesh"
 
@@ -81,25 +84,29 @@ def test_a_real_run_reads_back_through_the_results_contract(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     case, mesh = hybrid
-    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    backend = autan.SolverBackend(executable=RELAXATION)
     result = case.run(mesh, backend=backend, runs=tmp_path / "runs")
     run = result.run
     assert run.status in ("converged", "completed")
     assert run.solver.backend == "cpu"
     assert run.case.sha256 == case.spec.hash()
     assert run.mesh.sha256 == mesh.source.sha256
-    parts = [
-        run.case.sha256,
-        run.mesh.sha256,
-        run.solver.commit,
-        run.precision,
-        run.solver.backend,
-        run.devices.kind,
-        str(run.devices.count),
-    ]
-    assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    assert run.identity == identity_of(run.document())
     assert result.history.iterations[-1] == run.iterations
     assert result.field("Density").size == mesh.counts.cells
+    assert run.timing is not None  # measured by the runtime; checked by Results.open
+    assert (run.timing.iterations, run.timing.solve_seconds > 0) == (run.iterations, True)
+    document = json.loads((result.path / "run.json").read_text())
+    timing = document["timing"]
+    for broken in (
+        timing | {"ns_per_cell_iteration": timing["ns_per_cell_iteration"] * 1.01},
+        timing | {"iterations": timing["iterations"] - 1},
+        timing | {"solve_seconds": timing["wall_seconds"] * 2},
+        None,  # a run of the solver that measured its timing
+    ):
+        assert autan.results.check_run_json(
+            document | {"timing": broken}, result.case, result.mesh_info
+        )
 
 
 def test_divergence_and_interruption_come_back_as_the_contract_says(
@@ -276,7 +283,7 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
         path.write_text(CASE + f"case.time = autan.Steady(max_iterations={budget})\n")
         return autan.load(path)
 
-    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    backend = autan.SolverBackend(executable=RELAXATION)
     whole = case(10000).run(mesh, backend=backend, runs=tmp_path / "whole")
     first = case(10).run(mesh, backend=backend, runs=tmp_path / "parts")
     assert (first.run.status, first.run.iterations) == ("completed", 10)
@@ -293,8 +300,11 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
 PERIODIC_BOX = ROOT / "tests" / "data" / "mesh" / "periodic-box" / "periodic-box.binary.msh"
 
 
-def _box(tmp_path: Path, turbulence: str) -> tuple[autan.Case, autan.MeshInfo]:
+def _box(
+    tmp_path: Path, turbulence: str, mesh_unit: str = "m"
+) -> tuple[autan.Case, autan.MeshInfo]:
     assert MESH_INFO is not None
+    tmp_path.mkdir(parents=True, exist_ok=True)
     info = tmp_path / "box.meshinfo.json"
     info.write_text(
         subprocess.run(
@@ -307,7 +317,7 @@ def _box(tmp_path: Path, turbulence: str) -> tuple[autan.Case, autan.MeshInfo]:
     case = tmp_path / "box.py"
     case.write_text(
         "import autan\nfrom autan.units import K, Pa\n"
-        f"case = autan.Case('box', mesh={str(PERIODIC_BOX)!r})\n"
+        f"case = autan.Case('box', mesh={str(PERIODIC_BOX)!r}, mesh_unit={mesh_unit!r})\n"
         f"case.physics = autan.Compressible(turbulence=autan.{turbulence}())\n"
         "case.freestream(mach=0.2, pressure=101325 * Pa, temperature=300 * K)\n"
         "case.boundary('z*').slip()\n"
@@ -316,34 +326,42 @@ def _box(tmp_path: Path, turbulence: str) -> tuple[autan.Case, autan.MeshInfo]:
     return autan.load(case), autan.MeshInfo.load(info)
 
 
+# results.md#solutioncgns: coordinates and translations are the file's times mesh.scale, the
+# metres in one mesh_unit (0.0254 for the inch, exactly): the run in metres gives the file's.
 def test_a_periodic_run_reads_back_through_the_results_contract(tmp_path: Path) -> None:
-    case, mesh = _box(tmp_path, "Laminar")
-    result = case.run(
-        mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / "runs"
-    )
-    assert result.run.status == "converged"
-    assert result.field("Density").size == mesh.counts.cells  # checks solution.cgns
-    zone = cgns.read(result.path / "solution.cgns").child("Base").child("Zone")
-    connectivity = zone.child("ZoneGridConnectivity")
-    assert {"xmin", "xmax", "ymin", "ymax"} == set(connectivity.children)
-    for pair in mesh.periodic:
-        a, b = pair.zones
-        vector = list(pair.transform.vector)
-        side_a, side_b = connectivity.child(a), connectivity.child(b)
-        assert json.loads(side_a.child("PeriodicTranslation").text()) == vector
-        assert json.loads(side_b.child("PeriodicTranslation").text()) == [-v for v in vector]
-        assert side_a.child("PointList").data.size == pair.faces
-    # The monitor integrates over the slip walls only, every 7 iterations.
-    iterations = result.history.monitor("forces")["iteration"].tolist()
-    assert iterations == list(range(7, result.run.iterations + 1, 7))
+    coordinates = {}
+    for unit, scale in (("m", 1.0), ("in", 0.0254)):
+        case, mesh = _box(tmp_path / unit, "Laminar", unit)
+        result = case.run(
+            mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / unit / "runs"
+        )
+        assert result.run.status == "converged"
+        assert result.field("Density").size == mesh.counts.cells  # checks solution.cgns
+        zone = cgns.read(result.path / "solution.cgns").child("Base").child("Zone")
+        coordinates[unit] = np.stack(
+            [zone.child("GridCoordinates").child(f"Coordinate{a}").data for a in "XYZ"]
+        )
+        connectivity = zone.child("ZoneGridConnectivity")
+        assert {"xmin", "xmax", "ymin", "ymax"} == set(connectivity.children)
+        for pair in mesh.periodic:
+            a, b = pair.zones
+            vector = [v * scale for v in pair.transform.vector]
+            side_a, side_b = connectivity.child(a), connectivity.child(b)
+            assert json.loads(side_a.child("PeriodicTranslation").text()) == vector
+            assert json.loads(side_b.child("PeriodicTranslation").text()) == [-v for v in vector]
+            assert side_a.child("PointList").data.size == pair.faces
+        # The monitor integrates over the slip walls only, every 7 iterations.
+        iterations = result.history.monitor("forces")["iteration"].tolist()
+        assert iterations == list(range(7, result.run.iterations + 1, 7))
+    assert np.array_equal(coordinates["in"], coordinates["m"] * 0.0254)
 
 
-def test_euler_refuses_a_periodic_mesh(tmp_path: Path) -> None:
+def test_euler_refuses_the_multigrid_on_a_periodic_mesh(tmp_path: Path) -> None:
     case, mesh = _box(tmp_path, "Inviscid")
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     [found] = error.value.diagnostics
-    assert (found.code, found.data.get("path")) == ("E0706", "periodic")  # not missing physics
+    assert (found.code, found.data.get("path")) == ("E0706", "time.linear_solver")
     assert not any((tmp_path / "runs").iterdir())
 
 
@@ -384,3 +402,136 @@ def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
     assert case.spec.time.residual_orders == 8.0  # above the fp32+acc64 plateau
     result = case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     assert result.run.status == "converged"
+
+
+MPI_RELAXATION = _binary(
+    "AUTAN_RUN_RELAXATION_MPI", ROOT / "build-mpi" / "tests" / "runtime" / "autan-run-relaxation"
+)
+needs_mpi = pytest.mark.skipif(
+    MPI_RELAXATION is None or autan.solver_backend.find_launcher() is None,
+    reason="an MPI build of autan-run-relaxation (AUTAN_RUN_RELAXATION_MPI) and a launcher",
+)
+
+
+@pytest.mark.mpi
+@needs_mpi
+def test_two_ranks_run_and_stop_through_the_launcher(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    case, mesh = hybrid
+    devices = autan.Devices(kind="cpu", count=2)
+    result = case.run(
+        mesh,
+        backend=autan.SolverBackend(devices=devices, executable=MPI_RELAXATION),
+        runs=tmp_path / "runs",
+    )
+    assert (result.run.status, result.run.devices.count) == ("converged", 2)
+
+    # A stop asked of the SDK reaches every rank through the stop file, not the launcher.
+    runs = tmp_path / "stopped"
+    script = (
+        "import sys, autan\nfrom pathlib import Path\n"
+        "case, mesh = autan.load(sys.argv[1]), autan.MeshInfo.load(sys.argv[2])\n"
+        "backend = autan.SolverBackend(devices=autan.Devices(kind='cpu', count=2), "
+        "executable=Path(sys.argv[3]))\n"
+        "try:\n    case.run(mesh, backend=backend, runs=Path(sys.argv[4]))\n"
+        "except KeyboardInterrupt:\n    sys.exit(130)\n"
+    )
+    env = {**os.environ, "AUTAN_TEST_PAUSE_MS": "20", "AUTAN_TEST_FACTOR": "1.0"}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path / "hybrid.py"),
+            str(tmp_path / "hybrid.meshinfo.json"),
+            str(MPI_RELAXATION),
+            str(runs),
+        ],
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not list(runs.glob("run-*/history.jsonl")):
+            time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=60) == 130
+    finally:
+        process.kill()
+    [run_dir] = runs.glob("run-*")
+    stopped = autan.Results.open(run_dir)
+    assert stopped.run.status == "stopped"
+    assert stopped.field("Density").size == mesh.counts.cells  # the solution was written
+
+
+HEX = ROOT / "tests" / "data" / "mesh" / "hex" / "polyMesh"
+
+
+def _cell_centres(solution: Path) -> list[tuple[float, float, float]]:
+    """The centre of each cell of a mesh of axis-aligned hexahedra, read from solution.cgns:
+    the mean of its eight nodes, which is its centroid."""
+    zone = cgns.read(solution).child("Base").child("Zone")
+    xyz = [zone.child("GridCoordinates").child(f"Coordinate{a}").data for a in "XYZ"]
+    ngon, nface = zone.child("NGonElements"), zone.child("NFaceElements")
+    face_offsets = ngon.child("ElementStartOffset").data.tolist()
+    face_nodes = ngon.child("ElementConnectivity").data.tolist()
+    cell_offsets = nface.child("ElementStartOffset").data.tolist()
+    cell_faces = nface.child("ElementConnectivity").data.tolist()
+    centres = []
+    for c in range(len(cell_offsets) - 1):
+        nodes: set[int] = set()
+        for face in cell_faces[cell_offsets[c] : cell_offsets[c + 1]]:
+            f = abs(face) - 1
+            nodes.update(n - 1 for n in face_nodes[face_offsets[f] : face_offsets[f + 1]])
+        centres.append(tuple(sum(float(axis[n]) for n in nodes) / len(nodes) for axis in xyz))
+    return centres  # type: ignore[return-value]
+
+
+def test_a_file_written_by_the_sdk_starts_the_real_runtime(tmp_path: Path) -> None:
+    assert MESH_INFO is not None
+    info = tmp_path / "hex.meshinfo.json"
+    info.write_text(
+        subprocess.run(
+            [str(MESH_INFO), "--json", str(HEX)], capture_output=True, text=True, check=True
+        ).stdout
+    )
+    mesh = autan.MeshInfo.load(info)
+    # 27 cells of side 1/3 in the unit cube: centroids at (i + 1/2) / 3, the state a function
+    # of position so that a wrong pairing shows; rows in reverse order.
+    centroids = [
+        ((i + 0.5) / 3, (j + 0.5) / 3, (k + 0.5) / 3)
+        for k in range(3)
+        for j in range(3)
+        for i in range(3)
+    ][::-1]
+
+    def state(x: float, y: float, z: float) -> list[float]:
+        return [1.0 + x + 2 * y + 4 * z, 10 * x, 0.0, 0.0, 1e5 * (1 + z)]
+
+    digest = autan.initial_state.write(
+        tmp_path / "state.json",
+        oracle="linear",
+        mesh_sha256=mesh.source.sha256,
+        centroids=centroids,
+        values=[state(*c) for c in centroids],
+    )
+    case = tmp_path / "hex.py"
+    case.write_text(
+        "import autan\nfrom autan.units import K, Pa\n"
+        f"case = autan.Case('hex', mesh={str(HEX)!r})\n"
+        "case.physics = autan.Compressible(turbulence=autan.Laminar())\n"
+        "case.freestream(mach=0.2, pressure=101325 * Pa, temperature=300 * K)\n"
+        "case.boundary('*').slip()\n"
+        f"case.initial_state = autan.StateFile(path='state.json', sha256={digest!r})\n"
+    )
+    result = autan.load(case).run(
+        mesh,
+        backend=autan.SolverBackend(executable=RELAXATION),
+        runs=tmp_path / "runs",
+    )
+    assert (result.path / "states" / f"{digest}.json").is_file()
+    density, pressure = result.field("Density"), result.field("Pressure")
+    for cell, centre in enumerate(_cell_centres(result.path / "solution.cgns")):
+        expected = state(*centre)
+        assert density[cell] == pytest.approx(expected[0], rel=1e-12)
+        assert pressure[cell] == pytest.approx(expected[4], rel=1e-12)

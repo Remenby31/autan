@@ -7,22 +7,28 @@ import re
 import tempfile
 import tomllib
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, BinaryIO
+from urllib.parse import quote
 
 import autan
+import numpy as np
+import numpy.typing as npt
 import uvicorn
 from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 from watchfiles import Change, awatch
 
+from autan_ui.cases import Meshes, materials, render
 from autan_ui.confine import Folder, is_link
 from autan_ui.history import read_lines
 from autan_ui.registry import (
@@ -31,6 +37,7 @@ from autan_ui.registry import (
     RunRejectedError,
     read_run,
 )
+from autan_ui.slice import slice_surface
 from autan_ui.surface import synthetic_wing
 from autan_ui.wall import wall_surface
 
@@ -79,7 +86,7 @@ class Follower:
         self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
         self.read = dict(self.offsets)
         self.run: dict[str, Any] | None = None
-        self.run_mtime: int | None = None
+        self.version: tuple[object, ...] | None = None
         self.sent = False
         self.done = False
 
@@ -88,10 +95,10 @@ class Follower:
         the stream calls `delivered` once it has sent it, so that a reconnection resumes from
         what the client received, not from what was read."""
         events: list[tuple[str, Any]] = []
-        mtime = _mtime(self.folder)
-        if self.run is None or mtime != self.run_mtime:
+        version = _version(self.folder)
+        if self.run is None or version != self.version:
             try:
-                self.run_mtime, self.run = mtime, read_run(self.folder)
+                self.version, self.run = version, read_run(self.folder)
             except ValueError as error:
                 self.done = True
                 return [("invalid", str(error))]
@@ -120,6 +127,21 @@ class Follower:
 
 
 STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
+
+
+class _FileResponse(StreamingResponse):
+    """A stream over an open file, which closes it once the response has run, sent in full or
+    not: neither a background task nor the generator's own cleanup runs when sending fails."""
+
+    def __init__(self, file: BinaryIO, content: Iterator[bytes], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._file = file
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._file.close()
 
 
 def _log_line(record: object) -> dict[str, Any]:
@@ -154,9 +176,11 @@ def _file_offsets(value: object) -> dict[str, int]:
     return {k: v for k, v in value.items() if k in STREAMED and type(v) is int and v >= 0}
 
 
-def _mtime(folder: Folder) -> int | None:
-    stat = folder.stat("run.json")
-    return stat.st_mtime_ns if stat else None
+def _version(folder: Folder) -> tuple[object, ...]:
+    # Every file run.json is checked against: a change to any of them, even one that keeps the
+    # modification time and size, can change the verdict (ctime moves with any write).
+    stats = (folder.stat(name) for name in ("run.json", "case.toml", "mesh-info.json"))
+    return tuple((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats)
 
 
 def _open_build(static: Path | None) -> Folder | None:
@@ -185,10 +209,22 @@ def _list_build(build: Folder) -> set[str]:
     return names
 
 
+def checked_run(folder: Folder) -> dict[str, Any]:
+    try:
+        return read_run(folder)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
 def create_app(
-    runs_root: Path, static: Path | None = STATIC, *, hosts: tuple[str, ...] = LOOPBACK
+    runs_root: Path,
+    static: Path | None = STATIC,
+    *,
+    hosts: tuple[str, ...] = LOOPBACK,
+    meshes_root: Path | None = None,
 ) -> FastAPI:
     registry = Registry(runs_root)
+    meshes = Meshes(meshes_root)
     # The last surface built: reopening a run in the viewer needs no new extraction.
     surfaces: dict[tuple[str, int, int], bytes] = {}
     build = _open_build(static)
@@ -226,7 +262,8 @@ def create_app(
     @app.get("/api/runs/events", response_class=EventSourceResponse)
     async def run_events(request: Request) -> AsyncIterator[ServerSentEvent]:
         """`runs` snapshot first, then `run` (upsert), `removed` (run id), `rejected` (the
-        whole list) and `summaries` (iteration and residual drop of each run) as they change.
+        whole list), `summaries` (iteration and residual drop of each run) and `solutions` (the
+        runs whose solution.cgns is a result) as they change.
         Every wake-up rescans, timeouts included, so a change made before the watcher starts is
         still reported."""
         previous = await asyncio.to_thread(registry.scan)
@@ -243,6 +280,8 @@ def create_app(
                     yield ServerSentEvent(event="removed", data=run_id)
                 if current.summaries != previous.summaries:
                     yield ServerSentEvent(event="summaries", data=current.summaries)
+                if current.solutions != previous.solutions:
+                    yield ServerSentEvent(event="solutions", data=current.solutions)
                 if current.rejected != previous.rejected:
                     yield ServerSentEvent(event="rejected", data=current.document()["rejected"])
                 previous = current
@@ -309,13 +348,65 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
-        return registry.details(find_run(run_id))
+        try:
+            return registry.details(find_run(run_id))
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.get("/api/runs/{run_id}/files/{name}")
+    def run_file(run_id: Annotated[str, Depends(existing_run)], name: str) -> Response:
+        """A regular file of the run directory, as a download; 404 for any name the directory
+        does not list as one, 409 for the solution of a run still running (results.md)."""
+        directory = find_run(run_id)
+        listed = {
+            entry.name: entry.name
+            for entry in directory.iterdir()
+            if not entry.name.startswith(".")
+        }.get(name)
+        if listed is None:
+            raise HTTPException(404, f"run {run_id} has no file {name}")
+        with Folder(directory) as folder:
+            if listed == "solution.cgns" and read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            try:
+                descriptor = folder.open(listed)
+            except OSError as error:
+                raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        file = os.fdopen(descriptor, "rb")
+        # The length as opened: a file still being appended to is sent up to it.
+        size = os.fstat(descriptor).st_size
+
+        def chunks() -> Iterator[bytes]:
+            left = size
+            while left > 0 and (chunk := file.read(min(left, 1 << 20))):
+                left -= len(chunk)
+                yield chunk
+
+        # Closed when the response has run, whatever happened while sending, and here if the
+        # response cannot be built.
+        try:
+            # RFC 6266: an ASCII fallback, and the exact name in UTF-8.
+            fallback = re.sub(r"[^A-Za-z0-9._-]", "_", listed)
+            return _FileResponse(
+                file,
+                chunks(),
+                media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(listed, safe='')}"
+                    ),
+                    "Content-Length": str(size),
+                },
+            )
+        except BaseException:
+            file.close()
+            raise
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         """`autan plan --json` of the run's stored case against its stored MeshInfo."""
         with Folder(find_run(run_id)) as folder:
-            run = read_run(folder)
+            run = checked_run(folder)
             case_toml = folder.read("case.toml")
             mesh_info = folder.read("mesh-info.json")
             manufactured = (
@@ -324,27 +415,35 @@ def create_app(
             # The stored case is planned from a scratch copy built from the pinned folder, so
             # the SDK reads no file of the run directory, nor any file the case names: the mesh
             # path is cut to its name (plan reads only the MeshInfo), a verification case points
-            # at the archived manufactured solution and an oracle-state rule at its archived
-            # face states (results.md, `states/<sha256>.json`).
+            # at the archived manufactured solution, and an oracle-state rule and the initial
+            # state at their archived copies (results.md, `states/<sha256>.json`).
             try:
                 document = tomllib.loads(case_toml.decode())
             except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
                 raise HTTPException(422, f"case.toml: {error}") from error
             states: dict[str, bytes] = {}
-            for rule in document.get("boundaries", []):
-                condition = rule.get("condition") if isinstance(rule, dict) else None
-                if not isinstance(condition, dict) or condition.get("kind") != "oracle-state":
-                    continue
-                sha256 = condition.get("sha256")
-                valid = isinstance(sha256, str) and SHA256.fullmatch(sha256) is not None
+
+            def stage(spec: object) -> None:
+                if not isinstance(spec, dict):
+                    return
+                sha256 = spec.get("sha256")
+                if not isinstance(sha256, str) or SHA256.fullmatch(sha256) is None:
+                    spec["path"] = "states.json"  # Never the source: plan reports the case.
+                    return
                 # Repointed first, whatever follows: the source the case names is never read.
-                condition["path"] = f"{sha256}.json" if valid else "states.json"
-                if not valid or sha256 in states:
-                    continue  # An invalid case, or staged already: plan reports the former.
+                spec["path"] = f"{sha256}.json"
+                if sha256 in states:
+                    return
                 try:
                     states[sha256] = folder.read(f"states/{sha256}.json")
                 except OSError:
-                    continue  # Missing or not a regular file: plan reports it cannot read it.
+                    return  # Missing or not a regular file: plan reports it cannot read it.
+
+            for rule in document.get("boundaries", []):
+                condition = rule.get("condition") if isinstance(rule, dict) else None
+                if isinstance(condition, dict) and condition.get("kind") == "oracle-state":
+                    stage(condition)
+            stage(document.get("initial_state"))
         document["mesh"] = PurePosixPath(str(document.get("mesh", ""))).name or "mesh"
         verification = document.get("verification")
         if isinstance(verification, dict) and isinstance(verification.get("manufactured"), dict):
@@ -405,7 +504,7 @@ def create_app(
         """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
         directory = find_run(run_id)
         with Folder(directory) as folder:
-            if read_run(folder)["status"] == "running":
+            if checked_run(folder)["status"] == "running":
                 # results.md: the solution is not a result while the run is running.
                 raise HTTPException(409, f"run {run_id} is still running")
             stat = folder.stat("solution.cgns")
@@ -421,6 +520,88 @@ def create_app(
                 surfaces.clear()
                 surfaces[key] = message
         return Response(message, media_type="application/octet-stream")
+
+    # One slice cut at a time, each needing memory of the order of its mesh; a slice asked again
+    # for the same run (a moved plane) supersedes the ones still waiting. Waiting holds no worker
+    # thread: only the cut runs in one.
+    slicing = asyncio.Lock()
+    asked: dict[str, int] = {}
+    app.state.slices_asked = asked
+
+    def cut_slice(
+        run_id: str, point: npt.NDArray[np.float64], direction: npt.NDArray[np.float64]
+    ) -> bytes:
+        with Folder(find_run(run_id)) as folder:
+            if read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            if folder.stat("solution.cgns") is None:
+                raise HTTPException(404, f"run {run_id} has no solution.cgns")
+            try:
+                return slice_surface(folder, point, direction)
+            except (OSError, ValueError, KeyError) as error:
+                raise HTTPException(422, f"slice: {error}") from error
+
+    @app.get("/api/runs/{run_id}/slice")
+    async def run_slice(
+        run_id: Annotated[str, Depends(existing_run)], origin: str, normal: str
+    ) -> Response:
+        """The cut of the run's solution by a plane, `origin` and `normal` as three comma-separated
+        numbers, as an `autan-ui.surface/1` message (`slice_surface`). 409 while the run is
+        running (results.md) or when a newer slice of the run was asked for before this one
+        started, 422 for a plane that is not one or meets no cell."""
+        try:
+            point, direction = (
+                np.array([float(x) for x in text.split(",")], dtype=np.float64)
+                for text in (origin, normal)
+            )
+        except ValueError as error:
+            raise HTTPException(
+                422, f"origin and normal are three numbers each: {error}"
+            ) from error
+        if point.shape != (3,) or direction.shape != (3,):
+            raise HTTPException(422, "origin and normal are three numbers each")
+        ticket = asked.get(run_id, 0) + 1
+        asked[run_id] = ticket
+        async with slicing:
+            if asked[run_id] != ticket:
+                raise HTTPException(409, f"a newer slice of run {run_id} was asked for")
+            message = await run_in_threadpool(cut_slice, run_id, point, direction)
+        return Response(message, media_type="application/octet-stream")
+
+    @app.get("/api/meshes")
+    def list_meshes() -> list[dict[str, Any]]:
+        """The MeshInfo files a case can be planned against."""
+        return meshes.summaries()
+
+    @app.get("/api/materials")
+    def list_materials() -> list[dict[str, Any]]:
+        """The SDK's library gases and solids, by the name a case writes them."""
+        return materials()
+
+    @app.get("/api/meshes/{name}/surface")
+    def mesh_surface_message(name: str) -> Response:
+        """The boundary zones of a listed mesh as an `autan-ui.surface/1` message, from the
+        `autan.surface/1` file next to its MeshInfo. 404 without one; 422 when it breaks the
+        contract or is not of that mesh."""
+        try:
+            message = meshes.surface(name)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        return Response(message, media_type="application/octet-stream")
+
+    @app.post("/api/cases/render")
+    def render_case(
+        case: Annotated[dict[str, Any], Body()], mesh: Annotated[str | None, Body()] = None
+    ) -> dict[str, Any]:
+        """A case document as the SDK reads it (its SDK code, its case.toml and its plan against
+        `mesh`), or the SDK's coded diagnostics. 404 for a mesh not listed by /api/meshes."""
+        try:
+            mesh_info = meshes.read(mesh) if mesh is not None else None
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        return render(case, mesh_info)
 
     @app.get("/api/surfaces/synthetic")
     def synthetic_surface(
@@ -458,13 +639,18 @@ def create_app(
 
 
 def serve(
-    runs: Path, host: str = "127.0.0.1", port: int = 8765, *, open_browser: bool = True
+    runs: Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    open_browser: bool = True,
+    meshes: Path | None = None,
 ) -> None:
     """Serve the UI for the run directories under `runs` until interrupted."""
     if not runs.is_dir():
         log.info("creating the runs directory %s", runs)
         runs.mkdir(parents=True)
-    app = create_app(runs, hosts=tuple({*LOOPBACK, host}))
+    app = create_app(runs, hosts=tuple({*LOOPBACK, host}), meshes_root=meshes)
     if open_browser:
         webbrowser.open(f"http://{host}:{port}/")
     uvicorn.run(app, host=host, port=port, log_level="info")

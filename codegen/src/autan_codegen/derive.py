@@ -1,7 +1,7 @@
 """Tangent and adjoint loops of a module's loops (research section 4.1).
 
-Active data are cell datasets; geometry, parameters and face datasets (boundary values) are
-passive. The tangent of a loop reads the tangents of its active inputs and increments or writes
+Active data are cell datasets; geometry, parameters, face datasets (boundary values) and matrix
+blocks (Jac, JacAccum) are passive. The tangent of a loop reads the tangents of its active inputs and increments or writes
 the tangents of its outputs. The adjoint transposes access modes: an increment's adjoint reads the
 target's adjoint through the same map with the declared signs, a gather's adjoint increments the
 source's adjoint, and a write's adjoint reads the target's adjoint and then zeroes it.
@@ -9,6 +9,7 @@ source's adjoint, and a write's adjoint reads the target's adjoint and then zero
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass, field
 
 from autan_codegen import dsl
@@ -18,26 +19,33 @@ from autan_codegen.frontend import Signature
 from autan_codegen.ir import Function, Instr, dce
 from autan_codegen.model import LoopModel, Module
 
-_TAN: dict[int, dsl.Dataset] = {}
-_ADJ: dict[int, dsl.Dataset] = {}
+# Keyed by the dataset itself, weakly: an id() key outlives its dataset and can be reused by
+# another one when one process generates several modules.
+_TAN: weakref.WeakKeyDictionary[dsl.Dataset, dsl.Dataset] = weakref.WeakKeyDictionary()
+_ADJ: weakref.WeakKeyDictionary[dsl.Dataset, dsl.Dataset] = weakref.WeakKeyDictionary()
 
 
 def tan_ds(d: dsl.Dataset) -> dsl.Dataset:
-    if id(d) not in _TAN:
-        _TAN[id(d)] = dsl.Dataset(f"{d.name}_tan", d.set, d.type)
-    return _TAN[id(d)]
+    if d not in _TAN:
+        _TAN[d] = dsl.Dataset(f"{d.name}_tan", d.set, d.type)
+    return _TAN[d]
 
 
 def adj_ds(d: dsl.Dataset) -> dsl.Dataset:
     """Adjoints accumulate in the accumulation type (research section 7, adjoint rows)."""
-    if id(d) not in _ADJ:
-        _ADJ[id(d)] = dsl.Dataset(f"{d.name}_adj", d.set, dsl.Type(dsl.Role.RESIDUAL, d.type.shape))
-    return _ADJ[id(d)]
+    if d not in _ADJ:
+        _ADJ[d] = dsl.Dataset(f"{d.name}_adj", d.set, dsl.Type(dsl.Role.RESIDUAL, d.type.shape))
+    return _ADJ[d]
 
 
 def _is_active(b: dsl.Binding) -> bool:
     d = b.dataset
-    return isinstance(d, dsl.Dataset) and not d.geometry and d.set is dsl.MeshSet.CELLS
+    return (
+        isinstance(d, dsl.Dataset)
+        and not d.geometry
+        and d.set is dsl.MeshSet.CELLS
+        and d.type.role not in dsl.PASSIVE_ROLES
+    )
 
 
 def _active(sig: Signature, bindings: dict[str, dsl.Binding], skip: int = 0) -> list[int]:
@@ -238,6 +246,12 @@ def derive(m: Module) -> None:
             lm.fin_sig is not None
             and bool(_active(lm.fin_sig, lm.loop.finalise_bindings, skip=len(lm.loop.outputs)))
         )
+        accum = lm.fn.compute == "accum" or (lm.fin_fn is not None and lm.fin_fn.compute == "accum")
+        if has_active and (lm.loop.entries or accum):
+            raise CodegenError(
+                Code.AD_UNSUPPORTED,
+                f"{lm.name}: per-entry outputs and compute='accum' bodies take no active data",
+            )
         if not has_active or lm.kind == "boundary_write":
             # Nothing active flows in: the tangent output is zero and there is no adjoint to send.
             continue

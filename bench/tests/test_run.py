@@ -1,10 +1,13 @@
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+from autan_bench import gpu
 from autan_bench.cli import main
 
 # The binary and the GPU telemetry tools are external processes; all are faked here. The fake
@@ -22,8 +25,27 @@ case "$*" in
 esac
 """
 
+# A gated binary (--ready): it records whether the GPU lock is held while it sets up and after
+# the go line, then measures as FAKE_BINARY does.
+GATE = """import fcntl, sys
+def held():
+    with open({lock!r}) as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+seen = [held()]
+print("reading the mesh", file=sys.stderr)
+print("autan-bench: ready", file=sys.stderr, flush=True)
+seen += [sys.stdin.readline().strip(), held()]
+pathlib.Path({seen!r}).write_text(json.dumps(seen))
+"""
+
 FAKE_BINARY = """#!{python}
-import pathlib, time
+import json, pathlib, time
+{gate}
 busy = pathlib.Path({busy!r})
 busy.touch()
 time.sleep(0.7)
@@ -73,10 +95,29 @@ def raw_output(verified: bool, backend: str) -> dict:
     }
 
 
+def fake_runnable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int) -> None:
+    """The kernel's count of runnable threads, observer included: /proc/stat, and on macOS
+    `ps -A -M -o stat=`, which appends each thread's state after the truncated command (here
+    with a sleeping process whose arguments look like a state, and a localised %CPU)."""
+    stat_file = tmp_path / "proc-stat"
+    stat_file.write_text(f"cpu  1 2 3 4\nprocs_running {count}\nprocs_blocked 0\n")
+    monkeypatch.setattr(gpu, "PROC_STAT", stat_file)
+    ps = tmp_path / "ps"
+    running = "admin  4242   ??    9,0 R    31T   0:00.01   0:00.02 spin       R"
+    sleeping = "admin  4243   ??    0,0 S    31T   0:00.00   0:00.00 x 1 R 2    S"
+    ps.write_text(
+        "#!/bin/sh\necho 'USER PID TT %CPU STAT PRI STIME UTIME COMMAND'\n"
+        f"i=0; while [ $i -lt {count} ]; do echo '{running}'; i=$((i+1)); done\n"
+        f"echo '{sleeping}'\n"
+    )
+    ps.chmod(ps.stat().st_mode | stat.S_IEXEC)
+
+
 @pytest.fixture(params=[("linux", "cuda"), ("darwin", "metal")], ids=["cuda", "metal"])
 def fake_gpu(request, tmp_path, monkeypatch):
     system, backend = request.param
     monkeypatch.setattr(sys, "platform", system)
+    fake_runnable(tmp_path, monkeypatch, 3)
     busy = tmp_path / "busy"
     for tool, text in (("nvidia-smi", FAKE_SMI), ("ioreg", FAKE_IOREG)):
         script = tmp_path / tool
@@ -84,11 +125,15 @@ def fake_gpu(request, tmp_path, monkeypatch):
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
-    def binary(verified: bool = True) -> Path:
+    def binary(verified: bool = True, gated: bool = False) -> Path:
         path = tmp_path / "kernel-bench"
         raw = tmp_path / "raw.json"
         raw.write_text(json.dumps(raw_output(verified, backend)))
-        path.write_text(FAKE_BINARY.format(python=sys.executable, busy=str(busy), raw=str(raw)))
+        gate = (
+            GATE.format(lock=str(tmp_path / "lock"), seen=str(tmp_path / "seen")) if gated else ""
+        )
+        path.write_text(FAKE_BINARY.format(python=sys.executable, busy=str(busy), raw=str(raw),
+                                           gate=gate))  # fmt: skip
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
         return path
 
@@ -116,6 +161,7 @@ def test_run_derives_bandwidth_and_time_per_cell_from_kernel_times(fake_gpu, tmp
     load = doc["conditions"]["host_load"]
     assert load["cpus"] >= 1
     assert min(load["before_1m"], load["after_1m"]) >= 0
+    assert load["before_runnable"] == load["after_runnable"] == 2
     during = doc["conditions"]["during_run"]
     assert during["busy_samples"] >= 1
     backend = doc["provenance"]["backend"]
@@ -136,14 +182,106 @@ def test_run_refuses_an_unverified_result(fake_gpu, tmp_path, capsys):
 
 
 def test_run_refuses_a_busy_host_when_asked(fake_gpu, tmp_path, monkeypatch, capsys):
-    # The load average is the operating system's: faked at that boundary.
+    # The gate reads runnable threads now, not the load average: a high average left by a
+    # campaign frozen a moment ago does not refuse the run.
+    binary = fake_gpu()
     monkeypatch.setattr(os, "getloadavg", lambda: (100.0, 100.0, 100.0))
     monkeypatch.setattr(os, "cpu_count", lambda: 20)
     out = tmp_path / "r.json"
-    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu()), "--precision", "fp32"]
-    argv += ["--out", str(out), "--lock", str(tmp_path / "l")]
-    assert main([*argv, "--max-load", "2"]) == 2
-    assert "error[HOST_BUSY]" in capsys.readouterr().err
-    assert not out.exists()
+    argv = ["run", "--suite", "codegen", "--binary", str(binary), "--precision", "fp32"]
+    argv += ["--out", str(out), "--lock", str(tmp_path / "l"), "--max-load", "0.15"]
     assert main(argv) == 0
     assert json.loads(out.read_text())["conditions"]["host_load"]["before_1m"] == 100.0
+    out.unlink()
+    fake_runnable(tmp_path, monkeypatch, 5)
+    assert main(argv) == 2
+    assert "error[HOST_BUSY]" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_runnable_threads_see_busy_processes():
+    spin = [sys.executable, "-c", "while True: pass"]
+    procs = [subprocess.Popen(spin) for _ in range(3)]
+    try:
+        time.sleep(0.2)
+        assert gpu.runnable_threads() >= 3
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+
+
+def test_a_gated_binary_sets_up_without_the_lock_and_measures_under_it(fake_gpu, tmp_path):
+    out = tmp_path / "r.json"
+    (tmp_path / "lock").touch()
+    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu(gated=True)), "--precision",
+            "fp32", "--out", str(out), "--lock", str(tmp_path / "lock"), "--ready", "30"]  # fmt: skip
+    assert main(argv) == 0
+    assert json.loads((tmp_path / "seen").read_text()) == [False, "go", True]
+    conditions = json.loads(out.read_text())["conditions"]
+    assert conditions["setup_outside_lock_s"] >= 0
+
+
+def test_a_gated_binary_that_never_gets_ready_fails_without_the_lock(tmp_path, capsys):
+    lock = tmp_path / "lock"
+    for body, timeout in (("sys.exit(3)", "30"), ("time.sleep(60)", "1")):
+        binary = tmp_path / "setup"
+        binary.write_text(f"#!{sys.executable}\nimport sys, time\n{body}\n")
+        binary.chmod(0o755)
+        argv = ["run", "--suite", "s", "--binary", str(binary), "--precision", "fp32",
+                "--out", str(tmp_path / "r.json"), "--lock", str(lock), "--ready", timeout]  # fmt: skip
+        start = time.monotonic()
+        assert main(argv) == 2
+        assert time.monotonic() - start < 10
+        assert "error[BINARY_FAILED]" in capsys.readouterr().err
+        # The lock was never created, hence never taken.
+        assert not lock.exists()
+
+
+GATED_EDGE = """#!{python}
+import os, pathlib, subprocess, sys, time
+{before}
+print("autan-bench: ready", file=sys.stderr, flush=True)
+sys.stdin.readline()
+sys.stderr.buffer.write(b"\\xff not utf-8\\n" * 20000)
+sys.stderr.flush()
+{after}
+busy = pathlib.Path({raw!r}).parent / "busy"
+busy.touch()
+time.sleep(0.7)
+busy.unlink()
+print(pathlib.Path({raw!r}).read_text())
+"""
+
+
+def test_a_gated_binary_that_cannot_receive_go_fails(fake_gpu, tmp_path, capsys):
+    fake_gpu()
+    binary = tmp_path / "closed-stdin"
+    before = "os.close(0)"
+    binary.write_text(GATED_EDGE.format(python=sys.executable, before=before, after="",
+                                        raw=str(tmp_path / "raw.json")))  # fmt: skip
+    binary.chmod(0o755)
+    argv = ["run", "--suite", "codegen", "--binary", str(binary), "--precision", "fp32",
+            "--out", str(tmp_path / "r.json"), "--lock", str(tmp_path / "lock"), "--ready", "30"]  # fmt: skip
+    assert main(argv) == 2
+    assert "error[BINARY_FAILED]" in capsys.readouterr().err
+
+
+def test_a_gated_binary_s_helpers_neither_outlive_it_nor_hold_its_output(fake_gpu, tmp_path):
+    fake_gpu()
+    pid_file = tmp_path / "helper"
+    after = f"h = subprocess.Popen(['sleep', '60']); pathlib.Path({str(pid_file)!r}).write_text(str(h.pid))"
+    binary = tmp_path / "with-helper"
+    binary.write_text(GATED_EDGE.format(python=sys.executable, before="", after=after,
+                                        raw=str(tmp_path / "raw.json")))  # fmt: skip
+    binary.chmod(0o755)
+    out = tmp_path / "r.json"
+    argv = ["run", "--suite", "codegen", "--binary", str(binary), "--precision", "fp32",
+            "--out", str(out), "--lock", str(tmp_path / "lock"), "--ready", "30"]  # fmt: skip
+    start = time.monotonic()
+    assert main(argv) == 0
+    assert time.monotonic() - start < 15
+    assert json.loads(out.read_text())["benchmarks"]
+    helper = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(helper, 0)

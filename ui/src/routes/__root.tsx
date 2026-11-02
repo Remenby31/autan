@@ -1,17 +1,41 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
+import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
+import { SearchX } from "lucide-react";
 import { MotionConfig } from "motion/react";
 import { useState } from "react";
 import { useRegistrySubscription } from "../api/runs";
 import { CommandPalette } from "../components/CommandPalette";
 import { Sidebar } from "../components/shell/Sidebar";
+import { TopBar } from "../components/shell/TopBar";
 import { useTheme } from "../components/shell/theme";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
 import { ToastProvider } from "../components/ui/Toast";
 import { TooltipProvider } from "../components/ui/Tooltip";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
+  notFoundComponent: NotFound,
 });
+
+function NotFound() {
+  return (
+    <>
+      <TopBar crumbs={[{ label: "Not found" }]} />
+      <div className="flex flex-1 items-start justify-center px-8 py-16" data-testid="not-found">
+        <EmptyState
+          icon={<SearchX className="size-5" />}
+          title="Nothing here"
+          description="This address is not a page of Autan."
+        >
+          <Link to="/" className="self-center">
+            <Button>Go to Runs</Button>
+          </Link>
+        </EmptyState>
+      </div>
+    </>
+  );
+}
 
 function Root() {
   useRegistrySubscription();

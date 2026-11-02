@@ -28,38 +28,31 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       bench: ${{ steps.filter.outputs.bench }}
       harness: ${{ steps.filter.outputs.harness }}
+      # The bisection's known-good end; looked up here because gh is not in the runner image.
+      measured: ${{ steps.measured.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Find the last commit of main that was measured
+        id: measured
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(bench/ci/last-measured.sh)" >> "$GITHUB_OUTPUT"
       - name: Decide whether anything measured changed
         id: filter
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DRAFT: ${{ github.event.pull_request.draft }}
-        run: |
-          if [ "$DRAFT" = true ]; then
-            echo "bench=false" >> "$GITHUB_OUTPUT"; echo "bench: skipped, the pull request is a draft"; exit 0
-          fi
-          if [ "$EVENT" = workflow_dispatch ] || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "bench=true" >> "$GITHUB_OUTPUT"; echo "harness=true" >> "$GITHUB_OUTPUT"
-            echo "bench: forced ($EVENT)"; exit 0
-          fi
-          changed=$(git diff --name-only "$BASE" "$GITHUB_SHA")
-          echo "changed files:"; echo "$changed"
-          # Code that is timed or builds what is timed; readers (io/) fix the face and cell order of
-          # the measured mesh; the mesh generator feeds the loop benchmark.
-          pattern='^(runtime|codegen|kernels|physics|solvers|core|io|bench|docker)/|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
-          if echo "$changed" | grep -q -E "$pattern"; then bench=true; else bench=false; fi
-          echo "bench=$bench" >> "$GITHUB_OUTPUT"; echo "bench: $bench"
-          # The harness's own GPU tests and the image smoke test take the GPU lock: only when they changed.
-          if echo "$changed" | grep -q -E '^(bench|docker)/'; then harness=true; else harness=false; fi
-          echo "harness=$harness" >> "$GITHUB_OUTPUT"; echo "harness: $harness"
+          MEASURED: ${{ steps.measured.outputs.sha }}
+        # No pipe: the default shell has no pipefail, so a failing filter would pass unnoticed.
+        run: bench/ci/changes.sh "$EVENT" "$DRAFT" "$MEASURED" >> "$GITHUB_OUTPUT"
 
   mesh:
     needs: changes
@@ -74,14 +67,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      # The mesh is a pure function of the generator, its locked dependencies and its arguments:
+      # cached under their hash, it is generated again only when one of them changes.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: mesh-cache
         with:
+          path: meshes/
+          # What `autan-vv meshes` runs (mesh-cache.yml fills main's cache, the one pull requests read).
+          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/meshes/**', 'vv/src/autan_vv/oracles/**', 'vv/src/autan_vv/cli.py', 'vv/src/autan_vv/errors.py', 'vv/src/autan_vv/__init__.py', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
+        with:
+          version: "0.13.6"
           enable-cache: false
       - name: Install the libraries the Gmsh wheel loads
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
         run: >-
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
           libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
       - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
+        if: steps.mesh-cache.outputs.cache-hit != 'true'
         run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -92,15 +97,25 @@ jobs:
 
   bench:
     needs: [changes, mesh]
+    # One required check: it measures on the bench Spark, or, when only the harness or an image
+    # changed, runs the harness's GPU tests on the tests runner and leaves the bench Spark alone.
     if: >-
-      needs.changes.outputs.bench == 'true' &&
+      !cancelled() && needs.changes.result == 'success' &&
+      (needs.mesh.result == 'success' || needs.mesh.result == 'skipped') &&
+      (needs.changes.outputs.bench == 'true' || needs.changes.outputs.harness == 'true') &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    # `bench`: runners whose GPU is not shared with another team's long-running process.
-    runs-on: [self-hosted, linux, ARM64, gpu, gb10, bench]
-    timeout-minutes: 90
+    # `bench`: runners whose GPU is not shared with another team's long-running process. Main has
+    # its own runner process on the same Spark (`bench-main`, its only label, so no other job can
+    # take it), so it never queues behind pull requests in GitHub; on the machine the GPU lock
+    # orders them, main first. Harness-only changes run on the tests runner.
+    runs-on: ${{ fromJSON(needs.changes.outputs.bench != 'true' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "tests"]' || github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
+    # A bisection on main measures up to 8 commits in this job (bench/ci/bisect.py).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 90 || 240 }}
     permissions:
       contents: read
+    outputs:
+      results: ${{ steps.results.outputs.artifact-id }}
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
       # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
@@ -110,8 +125,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A bisection on main checks out earlier commits of main.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+      - name: Give this job priority on the GPU lock
+        # As long as the job may last: a bisection on main keeps the GPU first through its probes.
+        run: bench/ci/priority.sh start ${{ github.event_name == 'pull_request' && 90 || 240 }}
+      # Builds run under the GPU lock too, briefly: on the bench Spark no measurement ever runs
+      # beside a compilation.
       - name: Build the benchmarks
-        run: cmake -S bench -B build/bench && cmake --build build/bench
+        run: >-
+          bench/lock/autan-gpu-lock -m "gpu-bench: build the benchmarks" -t 600 --
+          bash -c 'cmake -S bench -B build/bench && cmake --build build/bench'
       - name: Install the harness
         run: uv sync --project bench --locked
       - name: Harness tests on the GPU (bench/ or docker/ changed)
@@ -120,39 +144,139 @@ jobs:
       - name: Image smoke test on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: >-
-          REQUIRE_GPU=1 flock --timeout "$AUTAN_BENCH_LOCK_TIMEOUT" --conflict-exit-code 75
-          /home/admin/autan-gpu/gpu.lock docker/dev/smoke/run.sh build/smoke
-          || { s=$?; [ $s -ne 75 ] || echo "::error::GPU lock still held after $AUTAN_BENCH_LOCK_TIMEOUT s"; exit $s; }
+          REQUIRE_GPU=1 bench/lock/autan-gpu-lock -m "gpu-bench: image smoke test"
+          -w "$AUTAN_BENCH_LOCK_TIMEOUT" -t 600 -- docker/dev/smoke/run.sh build/smoke
       - name: STREAM bandwidth
+        if: needs.changes.outputs.bench == 'true'
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)
+        id: stream-gate
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
           uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.changes.outputs.bench == 'true'
         with:
           name: mesh-hex-n128
           path: meshes
       - name: Build the generated loops
+        if: needs.changes.outputs.bench == 'true'
         run: >-
-          cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
-          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench
+          bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
+          bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
+          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
       - name: Generated loops, hex n = 128, fp32, RCM order
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm
       - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
+        id: loops-gate
+        # Its status: 1 only for a regression confirmed by the rerun, which alone starts a bisection.
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
           --out results/codegen-hex-n128-fp32.json
-          -- meshes/hex-n128.msh --policy fp32 --order rcm
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          -- meshes/hex-n128.msh --policy fp32 --order rcm || status=$?;
+          echo "status=${status:-0}" >> "$GITHUB_OUTPUT"; exit "${status:-0}"
+      # A regression of main confirmed by the gate, on a machine that passed STREAM: find its
+      # commit here, on this Spark and with this protocol, before the runner takes other jobs.
+      - name: Bisect the regression
+        if: >-
+          failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+          steps.stream-gate.outcome == 'success' && steps.loops-gate.outputs.status == '1' &&
+          needs.changes.outputs.measured != ''
+        env:
+          GOOD: ${{ needs.changes.outputs.measured }}
+        run: >-
+          mkdir -p "results/bisect/$GITHUB_SHA" &&
+          cp results/stream.json results/codegen-hex-n128-fp32.json "results/bisect/$GITHUB_SHA/" &&
+          python3 bench/ci/bisect.py --good "$GOOD" --bad "$GITHUB_SHA" --out results/bisect
+          --compare bench/ci/compare-points.sh
+          -- bench/ci/measure-point.sh
+      - name: Release the GPU lock priority
         if: always()
+        run: bench/ci/priority.sh stop
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: results
+        if: always() && needs.changes.outputs.bench == 'true'
         with:
           name: gpu-bench-${{ github.sha }}
           path: results/
+          if-no-files-found: error
+
+  report-regression:
+    needs: bench
+    # Write access only here, on a GitHub-hosted runner and for main, never on the Spark.
+    if: >-
+      always() && needs.bench.result == 'failure' && github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The history follows main's first-parent order.
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-bench-${{ github.sha }}
+          path: results
+      - name: Open an issue, and comment on the culprit's pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -f results/bisect/summary.json ]; then
+            python3 bench/ci/report_regression.py results/bisect bench/baselines/gb10-codegen-hex-n128-fp32.json "$RUN_URL"
+          else
+            echo "No bisection: the failure was not a confirmed regression of the tracked loops."
+          fi
+
+  history:
+    needs: [changes, bench]
+    # The performance history of main, rebuilt from every measured run's artifact, this one included.
+    if: >-
+      always() && needs.changes.outputs.bench == 'true' &&
+      needs.bench.outputs.results != '' &&
+      github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The history follows main's first-parent order.
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gpu-bench-${{ github.sha }}
+          path: artifacts/${{ github.run_id }}
+      - name: Download the earlier measurements of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bench/history/fetch.sh artifacts
+      - name: Build the history
+        run: >-
+          git rev-list --first-parent --reverse HEAD > "$RUNNER_TEMP/main-order" &&
+          python3 bench/history/history.py artifacts --order "$RUNNER_TEMP/main-order"
+          --baselines bench/baselines --out perf-history
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-history
+          path: perf-history/
+          retention-days: 90
           if-no-files-found: error

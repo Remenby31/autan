@@ -76,6 +76,19 @@ def test_contract_example_toml_is_the_crm_hl_example() -> None:
         ("case.freestream(mach=0.2, re=float('nan'), ref_length=7 * m)", "E0304"),
         ("case.boundary('w').wall(temperature=300 * Pa)", "E0301"),
         ("case.boundary('w').outlet(static_pressure=101325)", "E0302"),
+        # Its document would write the exponent as 1: a length.
+        (
+            "case.freestream(mach=0.2, re=5e6, ref_length=autan.units.Quantity(1, 'm ** 1.000001'))",
+            "E0301",
+        ),
+        # Its document would write each exponent 1/3 as 0.333333: [length] ** 0.999999.
+        (
+            (
+                "case.freestream(mach=0.2, re=5e6, "
+                "ref_length=autan.units.Quantity(1, 'm ** (1/3) * mm ** (1/3) * cm ** (1/3)'))"
+            ),
+            "E0301",
+        ),
     ],
 )
 def test_builder_rejects_invalid_values_at_the_calling_line(
@@ -305,3 +318,33 @@ def test_error_paths_are_document_paths(tmp_path: Path) -> None:
         autan.load(path)
     paths = sorted(d.location.path or "" for d in error.value.diagnostics if d.location)
     assert paths == ["boundaries[0].condition.temperature", "physics.turbulence.nu_tilde_ratio"]
+
+
+@pytest.mark.parametrize(
+    ("unit", "code"),
+    [
+        ("Pa", "E0301"),
+        ("m**2", "E0301"),
+        ("2 m", "E0303"),
+        ("cubit_x", "E0303"),
+        ("m*dB", "E0301"),  # a length, but logarithmic: no factor to metres
+        ("km**200/m**199", "E0301"),  # a length whose factor overflows
+        # A length whose text, with exponents to 6 digits, is [length] ** 0.999999.
+        ("m**0.3333333333333333 * cm**0.3333333333333333 * mm**0.3333333333333334", "E0301"),
+    ],
+)
+def test_mesh_unit_must_be_a_unit_of_length(
+    unit: str, code: str, write_case: Callable[[str], Path]
+) -> None:
+    path = write_case(
+        "import autan\nfrom autan.units import m\n"
+        f"case = autan.Case('c', mesh='m.cgns', mesh_unit={unit!r})\n"
+        "case.physics = autan.Compressible(turbulence=autan.Inviscid())\n"
+        "case.freestream(mach=0.2, re=5e6, ref_length=7 * m)\n"
+    )
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(path)
+    [found] = error.value.diagnostics
+    assert found.code == code
+    assert found.location is not None
+    assert (found.location.file, found.location.line) == (str(path), 3)

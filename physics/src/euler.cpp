@@ -54,19 +54,75 @@ struct Euler<P>::Impl {
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, grad_band, zero_grad;
   ek::Data<P> d{};
+  GhostFill* ghosts = nullptr;
+  // Under global keys: each cell's faces in global order, their twins and the faces that run
+  // against their global orientation; face loops then gather (no scatter order).
+  kernels::GlobalOrder order;
+  std::vector<std::uint8_t> reversed;
+  bool gather = false;
+
+  // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
+  // The exchange takes at most 16 components a call.
+  template <class T>
+  void fill_ghosts(std::vector<T>& v, std::size_t n) const {
+    if (ghosts == nullptr) return;
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    for (std::size_t first = 0; first < n; first += 16) {
+      const std::size_t count = std::min<std::size_t>(16, n - first);
+      std::array<T*, 16> components{};
+      for (std::size_t k = 0; k < count; ++k) components[k] = v.data() + (first + k) * nc;
+      ghosts->forward(std::span<T* const>(components.data(), count));
+    }
+  }
+
+  // The loops before the faces: primitives (and their Jacobian dW/dU, which the coupling blocks
+  // of faces to ghost cells take), boundary states, gradients and limiter of the owned cells,
+  // each filled into the ghosts before a later loop or the assembly reads it there.
+  void cell_loops(bool jacobian) {
+    if (jacobian) {
+      ek::cpu::primitives_jacobian(d);
+      fill_ghosts(dwdu, 25);
+    } else {
+      ek::cpu::primitives(d);
+    }
+    fill_ghosts(prim, 5);
+    ek::cpu::boundary_states(d);
+    if (scheme.second_order) {
+      if (scheme.boundary_gradient == BoundaryGradient::quadratic) band_gradients();
+      ek::cpu::gradients(d);
+      fill_ghosts(grad, 15);
+      if (scheme.limiter) {
+        ek::cpu::limiter(d);
+        fill_ghosts(phi, 5);
+      }
+    }
+    ek::cpu::sources(d);
+  }
 
   template <class T, class Source>
   static void fill(std::vector<T>& to, const Source& from) {
     to = kernels::converted<T>(from);
   }
 
-  Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme s) : scheme(s) {
-    const auto packed = kernels::pack_geometry(mesh, geometry);
+  Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme s,
+       const kernels::GlobalKeys* keys)
+      : scheme(s) {
+    const auto packed = kernels::pack_geometry(mesh, geometry, keys);
     topo = kernels::topology(mesh.view());
     stencil =
         kernels::cell_stencil(mesh, packed,
                               s.gradient == GradientStencil::vertex ? kernels::StencilKind::vertex
-                                                                    : kernels::StencilKind::face2);
+                                                                    : kernels::StencilKind::face2,
+                              keys);
+    if (keys != nullptr) {
+      order = kernels::global_order(mesh, *keys);
+      reversed.assign(keys->reversed.begin(), keys->reversed.end());
+      topo.cell_faces = order.cell_faces.data();
+      topo.incidence_twin = order.twin.data();
+      topo.face_reversed = reversed.data();
+      topo.rank_independent = true;
+      gather = true;
+    }
     topo.n_stencil = static_cast<kernels::offset_t>(stencil.entries.size());
     topo.stencil_offsets = stencil.offsets.data();
     topo.stencil = stencil.entries.data();
@@ -439,19 +495,29 @@ struct Euler<P>::Impl {
     ek::cpu::band_gradients(b);
   }
 
+  // A face or boundary loop: its gather under global keys, else its scatter.
+  template <class Loop>
+  void run(Loop loop) const {
+    if (gather) {
+      loop(kernels::Strategy::store_gather);
+    } else {
+      loop();
+    }
+  }
+
   void faces() {
     switch (scheme.flux) {
       case Flux::roe:
-        ek::cpu::roe_faces(d);
-        ek::cpu::roe_boundaries(d);
+        run([&](auto... strategy) { ek::cpu::roe_faces(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::roe_boundaries(d, strategy...); });
         break;
       case Flux::hllc:
-        ek::cpu::hllc_faces(d);
-        ek::cpu::hllc_boundaries(d);
+        run([&](auto... strategy) { ek::cpu::hllc_faces(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::hllc_boundaries(d, strategy...); });
         break;
       case Flux::ausm_up:
-        ek::cpu::ausm_faces(d);
-        ek::cpu::ausm_boundaries(d);
+        run([&](auto... strategy) { ek::cpu::ausm_faces(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::ausm_boundaries(d, strategy...); });
         break;
     }
   }
@@ -459,16 +525,16 @@ struct Euler<P>::Impl {
   void faces_jacobian() {
     switch (scheme.flux) {
       case Flux::roe:
-        ek::cpu::roe_faces_jacobian(d);
-        ek::cpu::roe_boundaries_jacobian(d);
+        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::roe_boundaries_jacobian(d, strategy...); });
         break;
       case Flux::hllc:
-        ek::cpu::hllc_faces_jacobian(d);
-        ek::cpu::hllc_boundaries_jacobian(d);
+        run([&](auto... strategy) { ek::cpu::hllc_faces_jacobian(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::hllc_boundaries_jacobian(d, strategy...); });
         break;
       case Flux::ausm_up:
-        ek::cpu::ausm_faces_jacobian(d);
-        ek::cpu::ausm_boundaries_jacobian(d);
+        run([&](auto... strategy) { ek::cpu::ausm_faces_jacobian(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::ausm_boundaries_jacobian(d, strategy...); });
         break;
     }
   }
@@ -476,24 +542,25 @@ struct Euler<P>::Impl {
   void faces_tangent() {
     switch (scheme.flux) {
       case Flux::roe:
-        ek::cpu::roe_faces_tangent(d);
-        ek::cpu::roe_boundaries_tangent(d);
+        run([&](auto... strategy) { ek::cpu::roe_faces_tangent(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::roe_boundaries_tangent(d, strategy...); });
         break;
       case Flux::hllc:
-        ek::cpu::hllc_faces_tangent(d);
-        ek::cpu::hllc_boundaries_tangent(d);
+        run([&](auto... strategy) { ek::cpu::hllc_faces_tangent(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::hllc_boundaries_tangent(d, strategy...); });
         break;
       case Flux::ausm_up:
-        ek::cpu::ausm_faces_tangent(d);
-        ek::cpu::ausm_boundaries_tangent(d);
+        run([&](auto... strategy) { ek::cpu::ausm_faces_tangent(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::ausm_boundaries_tangent(d, strategy...); });
         break;
     }
   }
 };
 
 template <class P>
-Euler<P>::Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme)
-    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme)) {}
+Euler<P>::Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
+                const kernels::GlobalKeys* keys)
+    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, keys)) {}
 
 template <class P>
 Euler<P>::~Euler() = default;
@@ -524,6 +591,20 @@ void Euler<P>::set_boundary(std::span<const BoundaryKind> kind, std::span<const 
     }
   }
   m.compute_gradient_weights(kind);
+}
+
+template <class P>
+void Euler<P>::set_boundary_data(std::span<const double> data) {
+  auto& m = *impl_;
+  const auto nb = static_cast<std::size_t>(n_boundary_faces());
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  if (data.size() != 5 * nb) {
+    throw std::invalid_argument("boundary data does not match the boundary faces");
+  }
+  for (std::size_t b = 0; b < nb; ++b) {
+    for (std::size_t c = 0; c < 5; ++c) m.bc[c * nf + ni + b] = State(data[c * nb + b]);
+  }
 }
 
 template <class P>
@@ -600,16 +681,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   auto& m = *impl_;
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
-  ek::cpu::primitives(m.d);
-  ek::cpu::boundary_states(m.d);
-  if (m.scheme.second_order) {
-    if (m.scheme.boundary_gradient == BoundaryGradient::quadratic) m.band_gradients();
-    ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
-      ek::cpu::limiter(m.d);
-    }
-  }
-  ek::cpu::sources(m.d);
+  m.cell_loops(false);
   m.faces();
 }
 
@@ -629,16 +701,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
   }
   m.d.u = const_cast<State*>(s.data());
   m.d.res = res.data();
-  ek::cpu::primitives_jacobian(m.d);
-  ek::cpu::boundary_states(m.d);
-  if (m.scheme.second_order) {
-    if (m.scheme.boundary_gradient == BoundaryGradient::quadratic) m.band_gradients();
-    ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
-      ek::cpu::limiter(m.d);
-    }
-  }
-  ek::cpu::sources(m.d);
+  m.cell_loops(true);
   m.faces_jacobian();
 }
 
@@ -667,27 +730,40 @@ void Euler<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
       }
     }
   };
+  // The face loops evaluate each face in its global orientation (Topology::face_reversed):
+  // face_jac holds dF/dW of its global left (block 0) and right (block 1) cells, with
+  // R_left += F, R_right -= F. The blocks are placed in the local orientation of BlockMatrix.
+  auto left = [&](std::size_t f) {
+    const bool rev = m.topo.face_reversed != nullptr && m.topo.face_reversed[f] != 0;
+    return static_cast<std::size_t>(rev ? m.topo.neighbour[f] : m.topo.owner[f]);
+  };
   a.zero();
+  // Each diagonal block gathers its cell's faces in Topology::cell_faces order (global order
+  // under global keys), as the device gather does, so that both sum in the same order.
   for (std::size_t c = 0; c < nc; ++c) {
     double* dg = a.diagonal(c);
     for (std::size_t i = 0; i < 5; ++i) dg[6 * i] += shift[c];
+    const auto dc = block(m.dwdu, nc, c, 0);
+    for (auto k = m.topo.cell_face_offsets[c]; k < m.topo.cell_face_offsets[c + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(m.topo.cell_faces[k]);
+      if (f >= ni) {
+        add_product(dg, block(m.bnd_jac, nf, f, 0), dc, 1.0);
+      } else if (left(f) == c) {
+        add_product(dg, block(m.face_jac, nf, f, 0), dc, 1.0);
+      } else {
+        add_product(dg, block(m.face_jac, nf, f, 1), dc, -1.0);
+      }
+    }
   }
   for (std::size_t f = 0; f < ni; ++f) {
     const auto o = static_cast<std::size_t>(m.topo.owner[f]);
     const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
-    const auto jl = block(m.face_jac, nf, f, 0);
-    const auto jr = block(m.face_jac, nf, f, 1);
-    const auto dl = block(m.dwdu, nc, o, 0);
-    const auto dr = block(m.dwdu, nc, n, 0);
-    // R_o += F, R_n -= F.
-    add_product(a.diagonal(o), jl, dl, 1.0);
-    add_product(a.upper(f), jr, dr, 1.0);
-    add_product(a.lower(f), jl, dl, -1.0);
-    add_product(a.diagonal(n), jr, dr, -1.0);
-  }
-  for (std::size_t f = ni; f < nf; ++f) {
-    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
-    add_product(a.diagonal(o), block(m.bnd_jac, nf, f, 0), block(m.dwdu, nc, o, 0), 1.0);
+    // A(left, right) = +J_right D_right and A(right, left) = -J_left D_left.
+    const bool rev = left(f) != o;
+    add_product(rev ? a.lower(f) : a.upper(f), block(m.face_jac, nf, f, 1),
+                block(m.dwdu, nc, rev ? o : n, 0), 1.0);
+    add_product(rev ? a.upper(f) : a.lower(f), block(m.face_jac, nf, f, 0),
+                block(m.dwdu, nc, rev ? n : o, 0), -1.0);
   }
 }
 
@@ -713,6 +789,26 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
   m.d = d;
   m.faces_tangent();
   m.d = saved;
+}
+
+template <class P>
+const kernels::euler::Data<P>& Euler<P>::data() const {
+  return impl_->d;
+}
+
+template <class P>
+const kernels::CellStencil& Euler<P>::stencil() const {
+  return impl_->stencil;
+}
+
+template <class P>
+const Scheme& Euler<P>::scheme() const {
+  return impl_->scheme;
+}
+
+template <class P>
+void Euler<P>::set_ghosts(GhostFill* ghosts) noexcept {
+  impl_->ghosts = ghosts;
 }
 
 template <class P>

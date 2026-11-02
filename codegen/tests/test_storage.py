@@ -61,3 +61,32 @@ def test_boundary_sources_of_rel_and_written_geom_keep_the_geom_type(tmp_path: P
     assert stored["cell_centroid"] == "geom"
     assert stored["area_sum"] == "geom"
     assert stored["face_area_magnitude"] == "geom_value"
+
+
+PAIR = """
+from autan_codegen.dsl import Geom, Inc, Residual, State, cells, face_loop, geometry, pointwise, rel
+
+q = cells.field("q", State)
+res = cells.field("res", Residual)
+
+
+@pointwise
+def lean(ql: State, rl: Geom.Vec3, xf: Geom.Vec3) -> Residual:
+    return ql * {body}
+
+
+flux = face_loop(lean, ql=q.left, rl=geometry.face_r_left, xf=geometry.face_centroid,
+                 out=Inc(res, left=+1, right=-1))
+"""
+
+
+def test_a_reversed_face_reads_the_other_offset_in_the_same_storage(tmp_path: Path) -> None:
+    # A reversed face (Topology::face_reversed) reads face_r_left from face_r_right: binding one
+    # brings the other into Data<P>, stored in the same type whether rel() reads it or not.
+    for body, kind in (("rl[0]", "geom_value"), ("rel(rl, xf)[0]", "geom")):
+        src = tmp_path / "pair.py"
+        src.write_text(PAIR.format(body=body))
+        generate(src, tmp_path / kind, ["cpu"])
+        header = (tmp_path / kind / "pair.hpp").read_text()
+        stored = {name: k for k, name in re.findall(r"typename P::(\w+)\* (\w+);", header)}
+        assert stored["face_r_left"] == stored["face_r_right"] == kind

@@ -58,6 +58,7 @@ class Function:
     instrs: list[Instr] = field(default_factory=list)
     outputs: list[int] = field(default_factory=list)
     source: str = ""
+    compute: str = "compute"  # the policy type the body computes in: "compute" or "accum"
 
     def add(self, instr: Instr) -> int:
         self.instrs.append(instr)
@@ -69,7 +70,7 @@ class Function:
 
 def optimise(fn: Function) -> Function:
     """Constant folding of trivial identities, value numbering and dead-code elimination."""
-    out = Function(fn.name, fn.arg_names, fn.arg_sizes, source=fn.source)
+    out = Function(fn.name, fn.arg_names, fn.arg_sizes, source=fn.source, compute=fn.compute)
     remap: dict[int, int] = {}
     table: dict[tuple[object, ...], int] = {}
 
@@ -119,7 +120,7 @@ def dce(fn: Function) -> Function:
     # Inputs are kept so that the function signature never changes.
     keep = [v for v, i in enumerate(fn.instrs) if v in live or i.op == "input"]
     index = {v: k for k, v in enumerate(keep)}
-    out = Function(fn.name, fn.arg_names, fn.arg_sizes, source=fn.source)
+    out = Function(fn.name, fn.arg_names, fn.arg_sizes, source=fn.source, compute=fn.compute)
     for v in keep:
         i = fn.instrs[v]
         out.add(Instr(i.op, tuple(index[a] for a in i.args), i.attr, i.line))

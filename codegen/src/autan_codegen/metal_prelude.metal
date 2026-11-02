@@ -35,6 +35,13 @@ struct Topology {
   device const offset_t* stencil_offsets;
   device const index_t* stencil;
   device const offset_t* stencil_twin;
+  offset_t stencil_stride;
+  device const index_t* stencil_length;
+  device const uchar* face_reversed;
+  bool rank_independent;
+  offset_t incidence_stride;
+  device const index_t* incidence_length;
+  device const index_t* incidence_cell;
 };
 
 // Double-float: x = hi + lo with |lo| <= ulp(hi) / 2, about 48 significant bits.

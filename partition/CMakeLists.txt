@@ -1,10 +1,31 @@
-add_library(autan_partition src/partition.cpp src/extract.cpp src/self_exchange.cpp)
+add_library(
+  autan_partition
+  src/partition.cpp
+  src/extract.cpp
+  src/self_exchange.cpp
+  src/colouring.cpp
+  src/graph.cpp
+)
 add_library(autan::partition ALIAS autan_partition)
 target_include_directories(
   autan_partition
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_link_libraries(autan_partition PUBLIC autan::core PRIVATE autan_compile_options)
+
+# Periodic images in device memory: CUDA kernels, or a build without CUDA that refuses them.
+if(AUTAN_ENABLE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  # nvcc does not take the host warning flags of autan_compile_options.
+  add_library(autan_partition_cuda OBJECT src/device_self.cu)
+  target_link_libraries(autan_partition_cuda PRIVATE autan::core CUDA::cudart)
+  target_include_directories(autan_partition_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  set_target_properties(autan_partition_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+  target_sources(autan_partition PRIVATE $<TARGET_OBJECTS:autan_partition_cuda>)
+  target_link_libraries(autan_partition PUBLIC CUDA::cudart)
+else()
+  target_sources(autan_partition PRIVATE src/device_self_host.cpp)
+endif()
 
 if(AUTAN_ENABLE_METIS)
   find_path(METIS_INCLUDE_DIR metis.h REQUIRED)

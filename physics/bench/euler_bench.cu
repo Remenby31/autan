@@ -5,7 +5,10 @@
 // host residual (autan::physics::Euler) before timing.
 //
 //   euler_bench MESH [--policy fp64|fp32+acc64] [--flux roe|hllc|ausm-up] [--block N]
-//                    [--warmup N] [--reps N] [--batch N]
+//                    [--stencil-slice N]   (cells per slice of the sliced stencil layout, 0: CSR)
+//                    [--warmup N] [--reps N] [--batch N] [--gate 1]
+//   --gate 1: after the host setup, print `autan-bench: ready` on stderr and wait for a line on
+//   stdin before any CUDA call (autan-bench run --ready takes the GPU lock only then).
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -13,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -42,6 +46,8 @@ struct Options {
   std::string policy = "fp32+acc64";
   std::string flux = "roe";
   int block = 256;
+  int stencil_slice = 0;
+  bool gate = false;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -50,6 +56,21 @@ struct Options {
 [[noreturn]] void fail(const std::string& msg) {
   std::fprintf(stderr, "error: %s\n", msg.c_str());
   std::exit(2);
+}
+
+/// With --gate 1 (autan-bench run --ready): the host setup is done, so announce it on stderr and
+/// wait for autan-bench to take the GPU lock and say go on stdin. No CUDA call comes before this,
+/// so the waiting process holds no device context.
+void wait_for_go(bool gate) {
+  if (!gate) {
+    return;
+  }
+  std::fprintf(stderr, "autan-bench: ready\n");
+  std::fflush(stderr);
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    fail("--gate: stdin closed before go");
+  }
 }
 
 Options parse(int argc, char** argv) {
@@ -65,6 +86,10 @@ Options parse(int argc, char** argv) {
       o.flux = v;
     else if (f == "--block")
       o.block = std::stoi(v);
+    else if (f == "--gate")
+      o.gate = std::stoi(v) != 0;
+    else if (f == "--stencil-slice")
+      o.stencil_slice = std::stoi(v);
     else if (f == "--warmup")
       o.warmup = std::stoi(v);
     else if (f == "--reps")
@@ -184,6 +209,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   std::vector<R> reference(5 * nc);
   host.residual(us, reference);
 
+  wait_for_go(o.gate);
   // Device copies of every dataset of the module.
   DeviceArray<index_t> owner(std::vector<index_t>(topo.owner, topo.owner + nf));
   DeviceArray<index_t> neighbour(std::vector<index_t>(topo.neighbour, topo.neighbour + ni));
@@ -191,9 +217,13 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
       std::vector<offset_t>(topo.cell_face_offsets, topo.cell_face_offsets + nc + 1));
   DeviceArray<index_t> cell_faces(
       std::vector<index_t>(topo.cell_faces, topo.cell_faces + topo.n_incidences));
-  DeviceArray<offset_t> st_offsets(stencil.offsets);
-  DeviceArray<index_t> st_entries(stencil.entries);
-  DeviceArray<offset_t> st_twin(stencil.twin);
+  // The device stencil: CSR, or the sliced layout (same entries per cell in the same order).
+  const auto sl = autan::kernels::sliced(stencil, std::max(o.stencil_slice, 1));
+  const auto& dev_stencil = o.stencil_slice > 0 ? sl.stencil : stencil;
+  DeviceArray<offset_t> st_offsets(dev_stencil.offsets);
+  DeviceArray<index_t> st_entries(dev_stencil.entries);
+  DeviceArray<offset_t> st_twin(dev_stencil.twin);
+  DeviceArray<index_t> st_length(o.stencil_slice > 0 ? sl.length : std::vector<index_t>(1));
   const auto interior = autan::kernels::colour_faces(topo, 0, topo.n_interior_faces);
   const auto boundary = autan::kernels::colour_faces(topo, topo.n_interior_faces, topo.n_faces);
   DeviceArray<index_t> int_faces(interior.faces), bnd_faces(boundary.faces);
@@ -212,7 +242,18 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   auto face_moment = conv(D{}.face_moment, packed.face_moment);
   auto cell_centroid = conv(D{}.cell_centroid, packed.cell_centroid);
   auto cell_volume = conv(D{}.cell_volume, packed.cell_volume);
-  auto st_weight = conv(D{}.stencil_lsq_weight, host.gradient_weights());
+  std::vector<double> weights = host.gradient_weights();
+  if (o.stencil_slice > 0) {
+    const std::size_t n = dev_stencil.entries.size(), ne = stencil.entries.size();
+    std::vector<double> w(3 * n, 0.0);
+    for (std::size_t k = 0; k < ne; ++k) {
+      for (std::size_t i = 0; i < 3; ++i) {
+        w[i * n + static_cast<std::size_t>(sl.position[k])] = weights[i * ne + k];
+      }
+    }
+    weights = std::move(w);
+  }
+  auto st_weight = conv(D{}.stencil_lsq_weight, weights);
   std::vector<double> bc_kind(nf, 0.0);
   std::vector<S> bc(5 * nf, S(0));
   for (std::size_t b = 0; b < nb; ++b) {
@@ -231,10 +272,14 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   topo.neighbour = neighbour.get();
   topo.cell_face_offsets = offsets.get();
   topo.cell_faces = cell_faces.get();
-  topo.n_stencil = static_cast<offset_t>(stencil.entries.size());
+  topo.n_stencil = static_cast<offset_t>(dev_stencil.entries.size());
   topo.stencil_offsets = st_offsets.get();
   topo.stencil = st_entries.get();
   topo.stencil_twin = st_twin.get();
+  if (o.stencil_slice > 0) {
+    topo.stencil_stride = sl.stride;
+    topo.stencil_length = st_length.get();
+  }
   ek::Data<P> d{};
   d.topo = topo;
   d.u = d_u.get();
@@ -284,8 +329,10 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
                sFC = sizeof(*d.face_centroid), sM = sizeof(*d.face_moment),
                sC = sizeof(*d.cell_centroid), sV = sizeof(*d.cell_volume),
                sW = sizeof(*d.stencil_lsq_weight);
-  const double face_geometry = 3 * sN + sA + 3 * sFC + 9 * sM;          // per face, 16 values
-  const double gather = cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO;  // values over the stencil
+  const double face_geometry = 3 * sN + sA + 3 * sFC + 9 * sM;  // per face, 16 values
+  // Values over the stencil; the sliced layout also reads each cell's row length.
+  const double gather =
+      cs * 5 * sS + bs * 5 * sS + st * sI + cs * sO + (o.stencil_slice > 0 ? cs * sI : 0.0);
   std::vector<index_t> owners(mesh.owner().begin() + static_cast<std::ptrdiff_t>(ni),
                               mesh.owner().end());
   std::sort(owners.begin(), owners.end());
@@ -448,10 +495,11 @@ int main(int argc, char** argv) {
   std::printf(
       "\"config\":{\"mesh_file\":\"%s\",\"mesh_sha256\":\"%s\",\"policy\":\"%s\",\"flux\":\"%s\","
       "\"order\":\"rcm\",\"gradient_stencil\":\"face2\",\"limiter\":true,\"n_cells\":%d,"
-      "\"n_faces\":%d,\"block\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,\"tolerance\":%.1e},",
+      "\"n_faces\":%d,\"block\":%d,\"stencil_slice\":%d,\"warmup\":%d,\"reps\":%d,\"batch\":%d,"
+      "\"tolerance\":%.1e},",
       std::filesystem::path(o.mesh).filename().string().c_str(), sha.c_str(), o.policy.c_str(),
-      o.flux.c_str(), mesh.n_cells(), mesh.n_faces(), o.block, o.warmup, o.reps, o.batch,
-      r.tolerance);
+      o.flux.c_str(), mesh.n_cells(), mesh.n_faces(), o.block, o.stencil_slice, o.warmup, o.reps,
+      o.batch, r.tolerance);
   std::printf("\"setup_seconds\":{\"read\":%.3f,\"renumber\":%.3f},",
               std::chrono::duration<double>(t1 - t0).count(),
               std::chrono::duration<double>(t2 - t1).count());

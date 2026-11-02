@@ -75,9 +75,16 @@ def _plan_text(result: Plan) -> str:
     lines = [
         f"case        {result.case['name']}  (sha256 {result.case['sha256'][:12]})",
         (
-            f"mesh        {mesh['path']} · {_millions(mesh['cells'])} cells · {poly:.0f} % polyhedra"
+            f"mesh        {mesh['path']} ({mesh['unit']}) · {_millions(mesh['cells'])} cells"
+            f" · {poly:.0f} % polyhedra"
             f" · max non-orth. {mesh['quality']['max_non_orthogonality_deg']:g}°"
         ),
+        "extent      "
+        + " x ".join(
+            f"{high - low:.4g}"
+            for low, high in zip(mesh["bounds"]["min"], mesh["bounds"]["max"], strict=True)
+        )
+        + " m",
         f"boundaries  {covered}/{needing} zones covered",
     ]
     width = max([len(b.zone) for b in result.boundaries] + [4])
@@ -128,7 +135,6 @@ def command_run(args: argparse.Namespace) -> int:
             if args.backend == "fake"
             else SolverBackend(
                 devices=Devices(kind=args.backend, count=args.device_count),
-                deterministic=args.deterministic,
             )
         )
         previous = signal.signal(signal.SIGTERM, _interrupt)
@@ -168,7 +174,13 @@ def command_ui(args: argparse.Namespace) -> int:
     except ImportError:
         missing = diagnostic("E0805", "the autan-ui package is not installed")
         return _fail(CaseError([missing]), as_json=False)
-    autan_ui.serve(Path(args.runs), "127.0.0.1", args.port, open_browser=not args.no_open)
+    autan_ui.serve(
+        Path(args.runs),
+        "127.0.0.1",
+        args.port,
+        open_browser=not args.no_open,
+        meshes=Path(args.meshes) if args.meshes is not None else None,
+    )
     return 0
 
 
@@ -181,9 +193,7 @@ def command_prepare(args: argparse.Namespace) -> int:
         start = resolve_start(
             case.spec, mesh_info, _start(args), "warm" if args.warm else "continue"
         )
-        document = build_solver_input(
-            case, mesh_info, devices=devices, deterministic=args.deterministic, start=start
-        ).document()
+        document = build_solver_input(case, mesh_info, devices=devices, start=start).document()
         text = json.dumps(document, indent=2) + "\n"
         if args.output:
             try:
@@ -311,7 +321,7 @@ def json_schema(name: str) -> dict[str, Any]:
     require_tags(schema)
     if name == "results":
         # Optional in RunInfo only for writers' convenience; run.json always carries them.
-        schema["required"] = [*schema["required"], "start", "convergence", "monitors"]
+        schema["required"] = [*schema["required"], "start", "convergence", "monitors", "timing"]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMAS[name],
@@ -371,7 +381,6 @@ def parser() -> argparse.ArgumentParser:
         help="fake (synthetic results) or the device kind autan-run runs on (default: fake)",
     )
     sub.add_argument("--device-count", type=_positive, default=1, help="autan-run: devices")
-    sub.add_argument("--deterministic", action="store_true", help="autan-run: bitwise mode")
     sub.add_argument("--start", help="run directory to start from (default: the freestream)")
     sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
     sub.add_argument("--runs", default="runs", help="directory of run directories")
@@ -388,7 +397,6 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--mesh-info", required=True, help="MeshInfo JSON of the case's mesh")
     sub.add_argument("--device-kind", choices=["cpu", "cuda", "hip"], default="cpu")
     sub.add_argument("--device-count", type=_positive, default=1)
-    sub.add_argument("--deterministic", action="store_true", help="bitwise-deterministic run")
     sub.add_argument("--start", help="run directory to start from (default: the freestream)")
     sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
     sub.add_argument("-o", "--output", help="file to write (default: stdout)")
@@ -399,6 +407,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--runs", default="runs", help="directory of run directories")
     sub.add_argument("--port", type=int, default=8765, help="local port (default 8765)")
     sub.add_argument("--no-open", action="store_true", help="do not open a browser")
+    sub.add_argument("--meshes", help="directory of the *.meshinfo.json the case editor plans on")
     sub.set_defaults(func=command_ui)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")

@@ -22,9 +22,7 @@ namespace {
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
 using autan::spike::DeviceArray;
-using autan::spike::DeviceGeom;
 using autan::spike::DeviceMesh;
-using autan::spike::GeomCopy;
 using autan::spike::guarded;
 using autan::spike::SpikeMesh;
 using autan::spike::strategy_of;
@@ -52,8 +50,6 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
   DeviceArray<typename P::state> qbs(converted_in<typename P::state>(q_b, nf));
   DeviceArray<typename P::state> ss(converted_in<typename P::state>(source, nc));
@@ -63,16 +59,12 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  dm.bind(d);
   d.grad = gs.get();
   d.source = ss.get();
-  autan::spike::bind(d.cell_volume, g.cell_volume);
+  dm.bind(d);
   d.res = rs.get();
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -102,8 +94,6 @@ void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strate
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
   DeviceArray<typename P::state> qbs(converted_in<typename P::state>(q_b, nf));
   DeviceArray<typename P::grad> gs(converted_in<typename P::grad>(grad, 3 * nc));
@@ -117,13 +107,7 @@ void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strate
   d.qmin = mins.get();
   d.qmax = maxs.get();
   d.gg_sum = acc.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
-  autan::spike::bind(d.cell_volume, g.cell_volume);
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   if (method == "lsq") {
     gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule);
   } else {
@@ -146,8 +130,6 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
   namespace av = autan::kernels::advection;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
   DeviceArray<typename P::grad> gs(converted_in<typename P::grad>(grad, 3 * nc));
   DeviceArray<typename P::residual> rs(nc);
@@ -156,10 +138,7 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
   d.q = qs.get();
   d.grad = gs.get();
   d.res = rs.get();
-  autan::spike::bind(d.face_r_left, g.face_r_left);
-  autan::spike::bind(d.face_r_right, g.face_r_right);
-  autan::spike::bind(d.face_normal, g.face_normal);
-  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(d);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -176,8 +155,6 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   using R = typename P::residual;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> us(converted_in<S>(u, 5 * nc));
   DeviceArray<S> u_tan(converted_in<S>(seed, 5 * nc));
   DeviceArray<R> r_adj(converted_in<R>(seed, 5 * nc));
@@ -188,8 +165,7 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   d.face_jac = js.get();
   d.u_cons = us.get();
   d.res = rs.get();
-  autan::spike::bind(d.face_normal, g.face_normal);
-  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(d);
   d.u_cons_tan = u_tan.get();
   d.res_tan = r_tan.get();
   d.res_adj = r_adj.get();
@@ -221,8 +197,6 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> qs(converted_in<S>(q, nc)), qbs(converted_in<S>(q_b, nf)),
       ss(converted_in<S>(source, nc));
   DeviceArray<typename P::grad> gs(3 * nc);
@@ -231,16 +205,12 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  dm.bind(d);
   d.grad = gs.get();
   d.source = ss.get();
-  autan::spike::bind(d.cell_volume, g.cell_volume);
+  dm.bind(d);
   d.res = rs.get();
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   d.res_adj = r_adj.get();
   d.q_adj = q_adj.get();
   d.grad_adj = g_adj.get();
@@ -277,8 +247,6 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> qs(converted_in<S>(q, nc)), qbs(converted_in<S>(q_b, nf));
   DeviceArray<typename P::grad> gs(3 * nc);
   DeviceArray<S> lo(nc), hi(nc);
@@ -291,8 +259,7 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
   d.grad = gs.get();
   d.qmin = lo.get();
   d.qmax = hi.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  dm.bind(d);
   d.grad_adj = g_adj.get();
   d.qmin_adj = lo_adj.get();
   d.qmax_adj = hi_adj.get();
@@ -328,6 +295,50 @@ int autan_spike_gpu_sum_of_squares(const double* x, std::int64_t n, double* out,
     gpu::sum_of_squares(dx.get(), n, partials.get(), sum.get(), nullptr);
     synchronise();
     *out = sum.download()[0];
+  });
+}
+
+/// Cells per slice of the stencil layout of the following device calls (0: CSR).
+void autan_spike_set_stencil_slice(int slice) { autan::spike::stencil_slice() = slice; }
+
+/// Cells per slice of the incidence layout of the following device calls (0: CSR).
+void autan_spike_set_incidence_slice(int slice) { autan::spike::incidence_slice() = slice; }
+
+/// Binds a Data-like struct holding built-in face_area (read-only) and a physics' own writable
+/// cell_volume: out[0] = 1 if face_area was bound, out[1] = 1 if cell_volume was left alone.
+int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    struct Data {
+      autan::kernels::Topology topo;
+      const double* face_area = nullptr;
+      double* cell_volume = nullptr;
+    } d;
+    double own = 0.0;
+    d.cell_volume = &own;
+    DeviceMesh dm(*m, 128);
+    dm.bind(d);
+    out[0] = d.face_area != nullptr ? 1 : 0;
+    out[1] = d.cell_volume == &own ? 1 : 0;
+  });
+}
+
+/// gpu::min of n doubles and of the same values as floats; gpu::first_index of n flags, given
+/// as bytes and as doubles.
+int autan_spike_gpu_reductions(const double* x, const std::uint8_t* flags, std::int64_t n,
+                               double* min64, float* min32, std::int64_t* first,
+                               std::int64_t* first64, char* err, std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    const auto count = static_cast<std::size_t>(n);
+    std::vector<float> xf(x, x + count);
+    DeviceArray<double> dx(x, count);
+    DeviceArray<float> dxf(xf);
+    DeviceArray<std::uint8_t> df(flags, count);
+    DeviceArray<double> df64(std::vector<double>(flags, flags + count));
+    *min64 = gpu::min(static_cast<index_t>(n), dx.get());
+    *min32 = gpu::min(static_cast<index_t>(n), dxf.get());
+    *first = gpu::first_index(static_cast<index_t>(n), df.get());
+    *first64 = gpu::first_index(static_cast<index_t>(n), df64.get());
   });
 }
 
