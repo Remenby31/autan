@@ -10,6 +10,16 @@
 
 namespace autan::physics {
 
+namespace {
+
+template <class T>
+bool finite(const std::vector<T>& v) {
+  return std::all_of(v.begin(), v.end(),
+                     [](const T& x) { return std::isfinite(static_cast<double>(x)); });
+}
+
+}  // namespace
+
 double nt_step_fraction(std::span<const double> rho, std::span<const double> rnu,
                         std::span<const double> dnt, double nt_inf, NtBounds bounds) {
   double alpha = 1.0;
@@ -172,9 +182,19 @@ void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
     }
     const double ratio = std::sqrt(sums[0].value() / sums[1].value());
     if (worst <= 0.1 && ratio <= 1e-2) {
-      halvings_ = std::max(halvings_, halving);
-      representation_ = std::max(representation_, ratio);
-      break;
+      // Also admissible: no positivity fallback of a face state switched from the held one (a
+      // kink the difference would take for a derivative), and a finite residual.
+      flow_.residual_frozen(probe_state_, res_, [&] { model_.eddy_viscosity_frozen(nt_); });
+      bool held = flow_.frozen_switches() == 0 && finite(res_);
+      if (held) {
+        model_.residual_frozen(nt_, res_nt_);
+        held = finite(res_nt_);
+      }
+      if (held) {
+        halvings_ = std::max(halvings_, halving);
+        representation_ = std::max(representation_, ratio);
+        break;
+      }
     }
     if (halving == 10) {
       halvings_ = halving;
@@ -185,8 +205,6 @@ void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
     }
     eps *= 0.5;
   }
-  flow_.residual_frozen(probe_state_, res_, [&] { model_.eddy_viscosity_frozen(nt_); });
-  model_.residual_frozen(nt_, res_nt_);
   for (std::size_t k = 0; k < 6; ++k) {
     if (left_out_[k]) continue;
     for (std::size_t c = 0; c < n_; ++c) {

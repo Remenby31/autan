@@ -28,8 +28,10 @@ struct NtBounds {
 /// of each cell, equation-major (rho, rho u, rho v, rho w, rho E, rho nt), R the coupled
 /// residual with its switches held at X by NavierStokes::freeze and SpalartAllmaras::freeze.
 /// eps follows Knoll and Keyes (2004) on S^-1-scaled unknowns, halved until the probe is
-/// admissible (density and pressure within 10 %, rho nt within its step bounds) and
-/// representable in the stored state; after 10 halvings every later product is NaN. Equations
+/// admissible (density and pressure within 10 %, rho nt within its step bounds, no face state's
+/// positivity fallback switched from the held one, NavierStokes::frozen_switches, and a finite
+/// residual) and representable in the stored state; after 10 halvings every later product is
+/// NaN. Equations
 /// left out have zero rows and their entries of v are ignored. One rank: every cell is owned.
 template <class P>
 class CoupledProduct {
