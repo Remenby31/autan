@@ -514,9 +514,11 @@ def gpu_bind_check(m: Mesh) -> tuple[bool, ...]:
     first bound after release_host() refused with E1101, a sliced stencil without twins or
     weights accepted with a null stencil_twin, a deterministic adjoint over it refused with
     E1106, an upload range that wraps around refused with E1101, weights given after
-    release_host() bound in the sliced layout while a pointer bound before keeps the old ones)."""
+    release_host() bound in the sliced layout while a pointer bound before keeps the old ones,
+    weights of another type refused until set for it then bound, bind_and_release() binding the
+    host's values and refusing a field it did not upload)."""
     err = ctypes.create_string_buffer(512)
-    out = np.zeros(9, dtype=np.int32)
+    out = np.zeros(11, dtype=np.int32)
     _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
     return tuple(bool(v) for v in out)
 

@@ -352,10 +352,10 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
                          {.block = 128,
                           .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
                           .stencil_slice = 4});
-    lean.set_stencil_weights(weights);
+    autan::kernels::advection_diffusion::Data<autan::kernels::fp64> ad{};
+    lean.set_stencil_weights<decltype(ad)>(weights);
     out[5] = lean.topology().stencil_twin == nullptr && lean.topology().stencil != nullptr ? 1 : 0;
     // A deterministic reduction adjoint over that stencil needs the twins: refused (E1106).
-    autan::kernels::advection_diffusion::Data<autan::kernels::fp64> ad{};
     lean.bind(ad);
     try {
       autan::kernels::advection_diffusion::gpu_loops::lsq_gradient_stencil_adjoint(
@@ -383,7 +383,7 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     lean.release_host();
     std::vector<double> doubled(weights);
     for (auto& w : doubled) w *= 2.0;
-    lean.set_stencil_weights(doubled);
+    lean.set_stencil_weights<Weights>(doubled);
     lean.bind(after);
     auto full =
         autan::kernels::cell_stencil(m->mesh, m->packed, autan::kernels::StencilKind::face2);
@@ -406,6 +406,44 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
                      host(before.stencil_lsq_weight) == want
                  ? 1
                  : 0;
+    // The weights live on the device only, in the type they were set for: another type is
+    // refused until weights are set for it, from float values here.
+    struct FloatWeights {
+      autan::kernels::Topology topo;
+      const float* stencil_lsq_weight = nullptr;
+    } narrow;
+    bool refused = false;
+    try {
+      lean.bind(narrow);
+    } catch (const std::invalid_argument& e) {
+      refused = std::string_view(e.what()).starts_with("E1101");
+    }
+    const std::vector<float> doubled32(doubled.begin(), doubled.end());
+    lean.set_stencil_weights<FloatWeights>(std::span<const float>(doubled32));
+    lean.bind(narrow);
+    std::vector<float> got32(n);
+    gpu::check(cudaMemcpy(got32.data(), narrow.stencil_lsq_weight, sizeof(float) * n,
+                          cudaMemcpyDeviceToHost),
+               "download");
+    const std::vector<float> want32(want2.begin(), want2.end());
+    out[9] = refused && got32 == want32 ? 1 : 0;
+    // bind_and_release(): the fields bound equal the host's (in chunks of 7 values, each freed
+    // once uploaded); a field it did not upload is refused afterwards.
+    gpu::DeviceMesh once(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
+    Data last{};
+    last.cell_volume = &own;
+    once.bind_and_release(last);
+    std::vector<double> area2(m->packed.face_area.size());
+    gpu::check(cudaMemcpy(area2.data(), last.face_area, sizeof(double) * area2.size(),
+                          cudaMemcpyDeviceToHost),
+               "download");
+    bool late_refused = false;
+    try {
+      once.bind(late);
+    } catch (const std::invalid_argument& e) {
+      late_refused = std::string_view(e.what()).starts_with("E1101");
+    }
+    out[10] = area2 == m->packed.face_area && last.cell_volume == &own && late_refused ? 1 : 0;
   });
 }
 

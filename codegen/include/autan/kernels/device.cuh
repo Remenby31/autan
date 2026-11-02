@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <ranges>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -301,24 +302,37 @@ class DeviceMesh {
 #undef AUTAN_BIND_GEOMETRY
   }
 
-  /// Replaces what bind() gives stencil_lsq_weight: 3 x n values in the entry order of the
-  /// stencil given at construction (component-major, n its entries), whatever the device
-  /// layout. Data structs bound before keep the previous weights, still allocated, until bound
+  /// Replaces what bind() gives Data::stencil_lsq_weight: `weights`, 3 x n numbers in the
+  /// entry order of the stencil given at construction (component-major, n its entries),
+  /// whatever the device layout. They are converted to that member's type and uploaded at once,
+  /// `Options::upload_chunk` values at a time (one component at a time for a sliced stencil); no
+  /// host copy is kept, so a Data struct whose stencil_lsq_weight has another type is refused
+  /// (E1101). Data structs bound before keep the previous weights, still allocated, until bound
   /// again.
-  void set_stencil_weights(std::span<const double> weights) {
-    if (weights.size() != 3 * csr_entries_) {
+  template <class Data, std::ranges::contiguous_range R>
+  void set_stencil_weights(const R& weights) {
+    using T = std::remove_cvref_t<decltype(*std::declval<Data&>().stencil_lsq_weight)>;
+    const auto w = std::span(std::ranges::data(weights), std::ranges::size(weights));
+    if (w.size() != 3 * csr_entries_) {
       throw std::invalid_argument("E1101: stencil weights of the wrong size");
     }
+    const std::size_t n = position_.empty() ? csr_entries_ : stencil_entries_n_;
+    DeviceArray<std::byte> a(3 * n * sizeof(T), stream_);
+    std::vector<T> part;
     if (position_.empty()) {
-      geometry_.stencil_lsq_weight.assign(weights.begin(), weights.end());
+      for (std::size_t first = 0; first < w.size(); first += chunk_) {
+        const auto count = std::min(chunk_, w.size() - first);
+        const auto from = w.subspan(first, count);
+        part.assign(from.begin(), from.end());
+        a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
+      }
     } else {
-      const std::size_t n = stencil_entries_n_;
-      geometry_.stencil_lsq_weight.assign(3 * n, 0.0);
-      for (std::size_t k = 0; k < csr_entries_; ++k) {
-        for (std::size_t i = 0; i < 3; ++i) {
-          geometry_.stencil_lsq_weight[i * n + static_cast<std::size_t>(position_[k])] =
-              weights[i * csr_entries_ + k];
+      for (std::size_t i = 0; i < 3; ++i) {
+        part.assign(n, T(0));
+        for (std::size_t k = 0; k < csr_entries_; ++k) {
+          part[static_cast<std::size_t>(position_[k])] = static_cast<T>(w[i * csr_entries_ + k]);
         }
+        a.upload_part(std::as_bytes(std::span<const T>(part)), i * n * sizeof(T), stream_);
       }
     }
     for (auto it = fields_.begin(); it != fields_.end();) {
@@ -329,6 +343,10 @@ class DeviceMesh {
         ++it;
       }
     }
+    fields_.emplace(std::make_pair(std::string("stencil_lsq_weight"), std::type_index(typeid(T))),
+                    std::move(a));
+    std::vector<double>().swap(geometry_.stencil_lsq_weight);
+    device_weights_ = true;
   }
 
   /// Frees the host copy of the built-in geometry once the physics has bound its Data structs:
@@ -339,6 +357,22 @@ class DeviceMesh {
     released_ = true;
   }
 
+  /// bind(d) then release_host(), freeing each host field as soon as it is uploaded: the host
+  /// copy and the device copy of the geometry never coexist whole. For the last Data struct
+  /// bound before the run.
+  template <class Data>
+  void bind_and_release(Data& d) {
+    consume_ = true;
+    try {
+      bind(d);
+    } catch (...) {
+      consume_ = false;
+      throw;
+    }
+    consume_ = false;
+    release_host();
+  }
+
  private:
   template <class T>
   DeviceArray<T> copy(std::span<const T> host) {
@@ -346,13 +380,17 @@ class DeviceMesh {
   }
 
   template <class T>
-  const T* field(const std::string& name, const std::vector<double>& host) {
+  const T* field(const std::string& name, std::vector<double>& host) {
     const auto key = std::make_pair(name, std::type_index(typeid(T)));
     auto it = fields_.find(key);
     if (it == fields_.end()) {
       if (released_ && host.empty()) {
         throw std::invalid_argument("E1101: " + name +
                                     " bound after release_host() without being uploaded before");
+      }
+      if (device_weights_ && name == "stencil_lsq_weight") {
+        throw std::invalid_argument(
+            "E1101: stencil_lsq_weight bound in a type set_stencil_weights() was not given");
       }
       DeviceArray<std::byte> a(host.size() * sizeof(T), stream_);
       std::vector<T> part;
@@ -363,6 +401,9 @@ class DeviceMesh {
         a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
       }
       it = fields_.emplace(key, std::move(a)).first;
+      if (consume_) {
+        std::vector<double>().swap(host);
+      }
     }
     return reinterpret_cast<const T*>(it->second.get());
   }
@@ -372,6 +413,8 @@ class DeviceMesh {
   std::size_t stencil_entries_n_ = 0;  // entries of the device stencil (sliced: with padding)
   std::size_t chunk_ = 0;
   bool released_ = false;
+  bool consume_ = false;            // bind_and_release(): free each host field once uploaded
+  bool device_weights_ = false;     // set_stencil_weights() put the weights on the device only
   std::vector<offset_t> position_;  // sliced layout: where each CSR entry went
   std::vector<index_t> length_;
   stream_t stream_;
