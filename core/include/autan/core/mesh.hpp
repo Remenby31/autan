@@ -61,6 +61,8 @@ struct MeshSource {
   std::string
       format;  ///< "gmsh", "fluent", "polymesh", "cgns", or "memory" for meshes built in code
   std::string path;
+  /// The nodes the source holds, before assembly drops those no face uses; 0 until assembled.
+  std::int64_t nodes = 0;
 };
 
 /// Two boundary zones of kind `periodic` whose faces coincide under a

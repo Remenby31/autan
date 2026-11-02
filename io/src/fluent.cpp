@@ -351,7 +351,7 @@ class FluentReader {
 
   MeshInput build() {
     MeshInput in;
-    in.source = MeshSource{.format = "fluent", .path = c_.path()};
+    in.source = MeshSource{.format = "fluent", .path = c_.path(), .nodes = 0};
     if (n_nodes_ == 0 || face_blocks_.empty()) c_.fail("no nodes or no faces");
     for (std::int64_t p = 0; p < n_nodes_; ++p) {
       if (static_cast<std::size_t>(p) >= node_seen_.size() ||

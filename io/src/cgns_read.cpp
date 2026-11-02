@@ -839,7 +839,7 @@ class Reader {
     in.x = x_;
     in.y = y_;
     in.z = z_;
-    in.source = MeshSource{.format = "cgns", .path = path_};
+    in.source = MeshSource{.format = "cgns", .path = path_, .nodes = 0};
     return in;
   }
 
@@ -872,7 +872,7 @@ class Reader {
     mesh.face_zones = face_zones_;
     mesh.cell_zones = cell_zones_;
     mesh.periodic = periodic_;
-    mesh.source = MeshSource{.format = "cgns", .path = path_};
+    mesh.source = MeshSource{.format = "cgns", .path = path_, .nodes = 0};
     return to_face_based(std::move(mesh));
   }
 

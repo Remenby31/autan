@@ -76,7 +76,7 @@ autan::MeshInput two_cubes() {
                       .provenance = {}}};
   in.cell_zones = {autan::CellZone{
       .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}}};
-  in.source = autan::MeshSource{.format = "memory", .path = ""};
+  in.source = autan::MeshSource{.format = "memory", .path = "", .nodes = 0};
   return in;
 }
 

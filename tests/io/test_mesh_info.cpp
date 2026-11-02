@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <random>
 #include <string>
@@ -362,5 +363,30 @@ TEST_CASE("MeshInfo counts the nodes of every face", "[mesh-info]") {
         autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path), {}));
     CHECK(doc["counts"]["face_nodes"] ==
           nodes_per_face * doc["counts"]["faces"].get<std::int64_t>());
+  }
+}
+
+TEST_CASE("MeshInfo counts the nodes the file holds, those no face uses too", "[mesh-info]") {
+  // tests/data/mesh/tet/polyMesh holds 27 points, every one on a face; the copy adds two that
+  // none uses, which assembly drops.
+  const fs::path original = data_dir / "tet" / "polyMesh";
+  const fs::path copy = fresh_dir("polyMesh");
+  for (const auto& entry : fs::directory_iterator(original))
+    fs::copy_file(entry.path(), copy / entry.path().filename());
+  std::ifstream in(original / "points", std::ios::binary);
+  std::string points((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto count = points.find("\n27\n(\n");
+  const auto end = points.rfind("\n)\n");
+  REQUIRE(count != std::string::npos);
+  REQUIRE(end != std::string::npos);
+  points.insert(end, "\n(5 5 5)\n(6 6 6)");
+  points.replace(count, 4, "\n29\n");
+  write(copy / "points", points);
+  for (const auto& [path, held] : {std::pair{original, 27}, std::pair{copy, 29}}) {
+    CAPTURE(path);
+    const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+        autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path), {}));
+    CHECK(doc["counts"]["nodes"] == 27);
+    CHECK(doc["counts"]["source_nodes"] == held);
   }
 }

@@ -376,6 +376,7 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   mesh.face_zones_ = std::move(in.face_zones);
   mesh.cell_zones_ = std::move(in.cell_zones);
   mesh.source_ = std::move(in.source);
+  if (mesh.source_.nodes == 0) mesh.source_.nodes = static_cast<std::int64_t>(in.x.size());
 
   check_cells_closed(mesh);
   mesh.periodic_partners_ = match_periodic_faces(mesh, in.periodic);

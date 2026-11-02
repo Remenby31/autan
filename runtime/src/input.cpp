@@ -187,10 +187,10 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   }
 
   const Object counts(root.get("counts"), root.at("counts"),
-                      {"cells", "faces", "nodes", "face_nodes", "cells_by_type", "stencil_entries",
-                       "periodic_ghosts"});
+                      {"cells", "faces", "nodes", "source_nodes", "face_nodes", "cells_by_type",
+                       "stencil_entries", "periodic_ghosts"});
   const std::int64_t cells = counts.integer("cells", 1), faces = counts.integer("faces", 1);
-  (void)counts.integer("nodes", 1);
+  (void)counts.integer("source_nodes", counts.integer("nodes", 1));
   (void)counts.integer("face_nodes", 3 * faces);
   (void)count(counts, "stencil_entries");
   (void)count(counts, "periodic_ghosts");

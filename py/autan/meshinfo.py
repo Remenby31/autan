@@ -59,6 +59,7 @@ class Counts(_Strict):
     cells: Positive
     faces: Positive
     nodes: Positive
+    source_nodes: Positive
     face_nodes: Positive
     cells_by_type: CellsByType
     stencil_entries: Count
@@ -208,6 +209,8 @@ class MeshInfo(_Strict):
         interior = self.counts.faces - sum(zone.faces for zone in self.boundary_zones)
         if hierarchy.edges_by_level[0] != interior:
             problems.append("quality.multigrid's finest level has the mesh's interior faces")
+        if self.counts.source_nodes < self.counts.nodes:
+            problems.append("counts.source_nodes is below counts.nodes")
         if self.counts.face_nodes < 3 * self.counts.faces:
             problems.append("counts.face_nodes is below 3 nodes per face")
         if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):

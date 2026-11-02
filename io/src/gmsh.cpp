@@ -430,7 +430,7 @@ class GmshReader {
       mesh_.y[p] = xyz_[3 * p + 1];
       mesh_.z[p] = xyz_[3 * p + 2];
     }
-    mesh_.source = MeshSource{.format = "gmsh", .path = c_.path()};
+    mesh_.source = MeshSource{.format = "gmsh", .path = c_.path(), .nodes = 0};
     return to_face_based(std::move(mesh_));
   }
 

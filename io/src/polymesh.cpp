@@ -377,7 +377,7 @@ Mesh read_polymesh(const fs::path& directory) {
   }
 
   MeshInput in;
-  in.source = MeshSource{.format = "polymesh", .path = directory.string()};
+  in.source = MeshSource{.format = "polymesh", .path = directory.string(), .nodes = 0};
   {
     FoamFile file(dir / "points");
     file.require_class({"vectorField"});

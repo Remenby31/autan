@@ -11,7 +11,8 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   "schema": "autan.mesh-info/1",
   "source": {"path": "crm-hl.cgns", "format": "cgns", "sha256": "9f2c…", "bytes": 28400000000},
   "counts": {
-    "cells": 48200000, "faces": 151000000, "nodes": 52000000, "face_nodes": 512000000,
+    "cells": 48200000, "faces": 151000000, "nodes": 52000000, "source_nodes": 52000000,
+    "face_nodes": 512000000,
     "cells_by_type": {"tetra": 964000, "pyramid": 0, "prism": 13014000, "hexa": 0, "polyhedron": 34222000},
     "stencil_entries": 3856000000, "periodic_ghosts": 0
   },
@@ -40,6 +41,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `source.sha256` | 64 lowercase hex chars | The **mesh hash** recorded by every run: SHA-256 of the mesh file bytes. For a polyMesh directory, SHA-256 of the concatenation, for each file in the order `points`, `faces`, `owner`, `neighbour`, `boundary`, `cellZones` (when present), of `<name>\n<byte length in decimal>\n<bytes>`. |
 | `source.bytes` | integer ≥ 1 | The size of what the mesh hash covers: the file's bytes, or the sum of the polyMesh files'. |
 | `counts.cells`, `counts.faces`, `counts.nodes` | integer ≥ 1 | Global counts after reading, before partitioning. `faces` counts each face once, interior and boundary. |
+| `counts.source_nodes` | integer ≥ `nodes` | The nodes the mesh file holds, those no face uses included: `nodes` counts only the nodes faces use, which assembly keeps ([mesh.md](mesh.md#building-a-mesh)). |
 | `counts.face_nodes` | integer ≥ 3 × `faces` | The nodes of every face, summed over the faces: the length of the face-to-node connectivity, which sizes the mesh in memory ([mesh.md](mesh.md)). |
 | `counts.cells_by_type` | object, keys `tetra` `pyramid` `prism` `hexa` `polyhedron`, integers ≥ 0 | Cells by shape. A cell is `polyhedron` unless it is exactly one of the four standard shapes. The values sum to `counts.cells`. |
 | `bounds.min`, `bounds.max` | three numbers each | The least and greatest x, y and z over the mesh's nodes, in the file's units: the mesh's extent before the case's `mesh_unit` scales it. |

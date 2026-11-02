@@ -210,6 +210,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "cells": 10,
                 "faces": 40,
                 "nodes": 30,
+                "source_nodes": 30,
                 "face_nodes": 160,
                 "cells_by_type": {
                     "tetra": 0,
