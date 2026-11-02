@@ -10,10 +10,7 @@ const record = (iteration: number, monitors?: HistoryRecord["monitors"]): Histor
   ...(monitors ? { monitors } : {}),
 });
 
-const run = (
-  start: Pick<RunStart, "residual_reference" | "woken">,
-  floor?: Record<string, number>,
-): Pick<Run, "start" | "convergence"> => ({
+const run = (start: Pick<RunStart, "residual_reference" | "woken">): Pick<Run, "start"> => ({
   start: {
     run_id: "",
     identity: "",
@@ -23,7 +20,6 @@ const run = (
     solution_sha256: "",
     ...start,
   },
-  convergence: floor ? { floor } : null,
 });
 
 // Drops in orders of magnitude, to round-off of log10 on the platform.
@@ -117,14 +113,23 @@ test("an identically zero equation is exempt at its floor and woken above it, fo
   expect(drops([1e-30, 1e-33], ["my"])[1]).toBeCloseTo(3);
 });
 
-test("an equation at its round-off floor has converged; all of them, and the drop is infinite", () => {
+test("a residual plateau is a plateau: the drop is the slowest equation's, floor or not", () => {
+  // case-schema.md#time: the round-off floor is judged cell by cell, never from these RMS
+  // residuals, and reaching it is not convergence.
   const rows = [
     { iteration: 1, time: null, residuals: { density: 1, energy: 1 } },
     { iteration: 2, time: null, residuals: { density: 1e-4, energy: 1e-6 } },
     { iteration: 3, time: null, residuals: { density: 1e-4, energy: 1e-8 } },
   ];
-  const floors = run({ residual_reference: null, woken: null }, { density: 1e-4, energy: 1e-8 });
-  expectOrders(appendHistory(empty(), rows, floors).orders, [0, 6, Number.POSITIVE_INFINITY]);
+  const plain = run({ residual_reference: null, woken: null });
+  expectOrders(appendHistory(empty(), rows, plain).orders, [0, 4, 4]);
+  // Whatever a run.json says of floors, even in the per-equation form of an earlier contract
+  // ({floor: {equation: value}}), nothing ends the drop but the residuals themselves.
+  const floors = {
+    ...plain,
+    convergence: { floor: { density: 1e-4, energy: 1e-8 } },
+  } as unknown as Pick<Run, "start">;
+  expectOrders(appendHistory(empty(), rows, floors).orders, [0, 4, 4]);
 });
 
 test("an equation missing from a continued run's reference leaves the drop undefined", () => {

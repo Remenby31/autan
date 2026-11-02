@@ -112,7 +112,6 @@ class Registry:
                                     live=live,
                                     reference=start.get("residual_reference"),
                                     woken=start.get("woken"),
-                                    floors=(outcome.get("convergence") or {}).get("floor"),
                                     target=self._budgets.get(child.name, {}).get("target_orders"),
                                 )
                         except (OSError, ValueError, ArithmeticError) as error:

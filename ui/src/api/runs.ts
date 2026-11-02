@@ -183,11 +183,11 @@ export function shownOrders(orders: number | undefined, target: number | undefin
   return orders ?? Number.NaN;
 }
 
-type Rule = Pick<Run, "start" | "convergence"> | null | undefined;
+type Rule = Pick<Run, "start"> | null | undefined;
 
 /** The inputs of the convergence rule a run's drop depends on, as a comparable key. */
 export function ruleKey(run: Rule): string {
-  return JSON.stringify([run?.start?.residual_reference, run?.start?.woken, run?.convergence]);
+  return JSON.stringify([run?.start?.residual_reference, run?.start?.woken]);
 }
 
 /** `orders` from row `from` on, by the steady convergence rule of case-schema.md#time, as the
@@ -195,7 +195,6 @@ export function ruleKey(run: Rule): string {
  * every equation is, NaN when one cannot be compared. */
 function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
   const reference = run?.start?.residual_reference ?? null;
-  const floors = run?.convergence?.floor ?? {};
   if (from === 0) {
     columns.orders.length = 0;
     columns.woken = new Set(run?.start?.woken ?? []);
@@ -218,8 +217,6 @@ function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
         if (value >= 0 && value <= floor) continue;
         columns.woken.add(name);
       }
-      const limit = floors[name];
-      if (limit !== undefined && value >= 0 && value <= limit) continue;
       if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0 && first < Infinity && value < Infinity)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
@@ -238,7 +235,7 @@ function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
 }
 
 /** Appends in place, so a long history is never copied; returns a new handle for React.
- * `run` gives the convergence rule's inputs (its `start` and `convergence`). */
+ * `run` gives the convergence rule's inputs (its `start`). */
 export function appendHistory(
   columns: HistoryColumns,
   records: HistoryRecord[],
@@ -263,8 +260,8 @@ export function appendHistory(
   return { ...columns, version: columns.version + 1 };
 }
 
-/** Recomputes the whole drop when the rule's inputs of `run` changed (`floors` arrive once the
- * runtime has built its physics, results.md); the same handle otherwise. */
+/** Recomputes the whole drop when the rule's inputs of `run` changed (its `start`, which a
+ * continued run carries); the same handle otherwise. */
 export function reapplyRule(columns: HistoryColumns, before: Rule, run: Rule): HistoryColumns {
   if (ruleKey(before) === ruleKey(run)) return columns;
   computeOrders(columns, run, 0);
