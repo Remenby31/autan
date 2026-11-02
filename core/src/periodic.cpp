@@ -270,64 +270,33 @@ PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const do
       periodic[at(a)] = periodic[at(b)] = 1;
     }
   }
-  // Classes: the nodes joined by matched pairs, either way.
-  std::vector<std::vector<index_t>> joined(n);
-  for (std::size_t p = 0; p < pairs.size(); ++p) {
-    for (const auto& [a, b] : match.nodes[p]) {
-      joined[at(a)].push_back(b);
-      joined[at(b)].push_back(a);
-    }
-  }
   std::vector<std::array<double, 3>> position(n);
-  std::vector<char> placed(n, 0), classed(n, 0);
-  std::vector<index_t> members, queue;
-  std::vector<char> reached(n, 0);
-  // The nodes forward steps from `root` reach, placed at root + the translations on the way.
-  const auto walk = [&](index_t root) {
-    queue.assign(1, root);
-    reached[at(root)] = 1;
-    position[at(root)] = {x[at(root)], y[at(root)], z[at(root)]};
+  std::vector<char> placed(n, 0);
+  std::vector<index_t> queue;
+  // A root stays where it is; forward steps from it place every node not placed yet.
+  const auto walk = [&](std::size_t root) {
+    placed[root] = 1;
+    position[root] = {x[root], y[root], z[root]};
+    queue.assign(1, static_cast<index_t>(root));
     for (std::size_t next = 0; next < queue.size(); ++next) {
       const auto from = at(queue[next]);
       for (const auto& [to, p] : forward[from]) {
-        if (reached[at(to)] != 0) continue;
-        reached[at(to)] = 1;
+        if (placed[at(to)] != 0) continue;
+        placed[at(to)] = 1;
         const auto& t = pairs[p].translation;
         position[at(to)] = {position[from][0] + t[0], position[from][1] + t[1],
                             position[from][2] + t[2]};
         queue.push_back(to);
       }
     }
-    for (const index_t q : queue) reached[at(q)] = 0;
-    return queue.size();
   };
-  for (std::size_t first = 0; first < n; ++first) {
-    if (periodic[first] == 0 || classed[first] != 0) continue;
-    members.assign(1, static_cast<index_t>(first));
-    classed[first] = 1;
-    for (std::size_t next = 0; next < members.size(); ++next) {
-      for (const index_t q : joined[at(members[next])]) {
-        if (classed[at(q)] != 0) continue;
-        classed[at(q)] = 1;
-        members.push_back(q);
-      }
-    }
-    std::ranges::sort(members);
-    // The root: the smallest node that is zone b of no pair, else the smallest node, from which
-    // forward steps reach the whole class.
-    index_t root = -1;
-    for (const bool zone_a_only : {true, false}) {
-      for (const index_t q : members) {
-        if (root >= 0 || (zone_a_only && zone_b[at(q)] != 0)) continue;
-        if (walk(q) == members.size()) root = q;
-      }
-    }
-    if (root < 0) {
-      unmatched(concat("periodic node ", std::to_string(first),
-                       ": no node of its class reaches the others by the pairs' translations"));
-    }
-    (void)walk(root);
-    for (const index_t q : members) placed[at(q)] = 1;
+  // Roots: every node that is zone b of no pair; then, for the nodes they do not reach (classes
+  // that are cycles, as sides split into pairs of opposite translations), the smallest left.
+  for (std::size_t i = 0; i < n; ++i) {
+    if (periodic[i] != 0 && zone_b[i] == 0 && placed[i] == 0) walk(i);
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (periodic[i] != 0 && placed[i] == 0) walk(i);
   }
   const auto ulp = [](double v) {
     const double a = std::abs(v);

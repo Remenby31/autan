@@ -218,6 +218,39 @@ TEST_CASE("A cell already degenerate keeps its own error whatever the periodic m
                periodic_box(2, BoxFill::hexa, {0}, inside_out));
 }
 
+TEST_CASE("A class with several roots is placed when its pairs agree", "[periodic]") {
+  // n = 2, periodic in x on the whole of xmin -> xmax and in y only on the half x > 1/2 of ymin
+  // -> ymax, walls elsewhere. The corner classes {(0,0), (1,0), (0,1), (1,1)} have two roots,
+  // (0,0) and (0,1): each reaches only part of the class, and the pairs agree.
+  using autan::test::BoxFill;
+  const autan::Mesh mesh =
+      autan::assemble(periodic_box(2, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
+        const auto first = static_cast<index_t>(m.face_zones.size());
+        for (const index_t side : {2, 3}) {
+          autan::FaceZone half = m.face_zones[at(side)];
+          half.name += "-half";
+          half.kind = autan::BcKind::periodic;
+          m.face_zones.push_back(half);
+        }
+        for (std::size_t f = 0; f < m.labelled_face_zone.size(); ++f) {
+          const index_t zone = m.labelled_face_zone[f];
+          if (zone != 2 && zone != 3) continue;
+          double x = 0.0;
+          const auto begin = m.labelled_face_node_offsets[f];
+          const auto end = m.labelled_face_node_offsets[f + 1];
+          for (auto k = begin; k < end; ++k)
+            x += m.x[at(m.labelled_face_nodes[static_cast<std::size_t>(k)])];
+          if (x / static_cast<double>(end - begin) > 0.5)
+            m.labelled_face_zone[f] = first + zone - 2;
+        }
+        m.periodic.push_back(
+            {.zone_a = first, .zone_b = first + 1, .translation = {0.0, 1.0, 0.0}});
+      }));
+  REQUIRE(mesh.periodic_pairs().size() == 2);
+  CHECK(mesh.periodic_snap().nodes == 0);
+  check_partners(mesh);
+}
+
 TEST_CASE("Periodic pairs that place a node in two ways are a coded error", "[periodic]") {
   // n = 2: the upper halves of xmin and xmax become a second pair, translated by (1, 0, 2e-5),
   // within the tolerance (5e-5). Their seam nodes are matched by both pairs, which place them

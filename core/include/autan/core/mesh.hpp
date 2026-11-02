@@ -256,12 +256,12 @@ struct PeriodicMatch {
 /// that do not match one to one. Called by assemble().
 PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPair> pairs);
 
-/// Where the periodic nodes go: each class of nodes joined by matched pairs is placed from its
-/// root by forward steps x_b = x_a + translation, the root being the smallest node that is zone b
-/// of no pair, else the smallest node, from which such steps reach the whole class; then every
-/// pair is checked to 4 ulps. Lists the nodes whose position changes,
-/// with their new position, and counts those that move by more than round-off. Throws E0119 for
-/// a class without a root or a pair the placement contradicts. Called by assemble().
+/// Where the periodic nodes go: every node that is zone b of no pair is a root and stays; in
+/// increasing order, forward steps x_b = x_a + translation from each root place the nodes not yet
+/// placed; nodes no root reaches take the smallest of them as a further root. Every pair is then
+/// checked to 4 ulps, which is what makes two roots of one class agree. Lists the nodes whose
+/// position changes, with their new position, and counts those that move by more than
+/// round-off. Throws E0119 for a pair the placement contradicts. Called by assemble().
 struct PeriodicMoves {
   std::vector<index_t> nodes;
   std::vector<std::array<double, 3>> to;
