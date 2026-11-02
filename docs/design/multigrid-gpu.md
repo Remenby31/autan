@@ -32,12 +32,23 @@ The device operator is E2's sliced block CSR: per cell, its diagonal block and o
 
 ## Transfers
 
-Precomputed on the host from `Level::coarse_node`, uploaded once:
+`autan::solvers::gpu::Transfers` (`solvers/include/autan/solvers/multigrid_gpu.hpp`) builds its lists on the host from `Level::coarse_node`, uploads them once, and numbers each coarse level on the device:
 
-- **Restriction** b_c = Pᵀ r: one thread per coarse node and component sums the residuals of its children, read from a CSR list of children in increasing fine index. This is the host's order (`cycle_level` adds fine nodes in increasing index), so the result is bitwise the host's.
-- **Prolongation** e = P x_c: injection, `e[i] = x_c[coarse_node[i]]`, exact. It is fused with the correction x += α e when α is known on the device.
+- **Device numbering.** Level 0 keeps the mesh's numbering. A coarse node takes the rank of its least child in the finer level's device numbering (`Transfers::order(l)` gives the host index of each device node), so consecutive coarse nodes gather nearby fine nodes. Every device structure of a coarse level uses this numbering. Values are the host's, stored at other indices: lists keep the host's summation order, a colour is a set, and an exact sum does not depend on order.
+- **Restriction** b_c = Pᵀ r: each block takes 64 consecutive coarse nodes. Its threads first gather the children's values, one list entry each, into shared memory. Then one thread per coarse node sums its entries from +0.0 in increasing host fine index, the host's order (`cycle_level`). A block whose lists exceed 1024 entries sums from global memory in the same order. The result is bitwise the host's.
+- **Prolongation** e = P x_c is injection, exact. The correction x += α P x_c rounds α · e_i, then adds it, without fused multiply-add. One thread per fine node handles all 5 components, so each index is read once.
 
-No atomics: each output is written by one thread. Every sum starts from +0.0 and adds its terms in list order, as the host does, so a list of −0.0 terms gives +0.0 on both sides.
+No atomics: each output is written by one thread. Every sum starts from +0.0, as the host's does, so a list of −0.0 terms gives +0.0 on both sides.
+
+Measured with `autan_mg_transfers_bench` (`autan-bench`, spark-5359, FP64, finest pair of levels):
+
+| Kernel | hex n128 (2.1 M cells) | tet n96 (3.9 M cells) |
+|---|---|---|
+| restriction | 189 GB/s, 80 % | 162 GB/s, **69 %: gate failed** |
+| prolongation | 218 GB/s, 92 % | 218 GB/s, 92 % |
+| correction | 219 GB/s, 93 % | 211 GB/s, 89 % |
+
+The tet restriction is limited by the fine cell order, not by the kernel. In RCM order an agglomerate's 8 tetrahedra span about one band (47 k cells), so a gather uses 38 % of each sector it fetches (hex: 60 %). A bare gather in restriction order reaches 175 GB/s against 214 GB/s for a coalesced copy, which caps any restriction near 66 %. Numbering the coarse nodes differently leaves the sector use between 31 % and 41 %. A fine order that keeps agglomerates together is studied in #342.
 
 ## Galerkin coarse operator
 
