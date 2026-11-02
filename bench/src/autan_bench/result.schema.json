@@ -445,6 +445,111 @@
           "type": "number",
           "minimum": 0,
           "description": "Seconds a gated binary (autan-bench run --ready) spent setting up before the GPU lock was taken; absent for an ungated binary."
+        },
+        "host_activity": {
+          "type": "object",
+          "required": [
+            "before",
+            "after"
+          ],
+          "additionalProperties": false,
+          "description": "Host-wide activity just before and just after the run (Linux): load, pressure (PSI), reclaim and compaction counters (/proc/vmstat), memory. Only the host's counters, no other tenant's container (#400). Runs before 2026-11-02 lack it.",
+          "properties": {
+            "before": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "loadavg": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "procs_running": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "procs_blocked": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "pressure": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                },
+                "vmstat": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer"
+                  }
+                },
+                "meminfo_bytes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "after": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "loadavg": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "procs_running": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "procs_blocked": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "pressure": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                },
+                "vmstat": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer"
+                  }
+                },
+                "meminfo_bytes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

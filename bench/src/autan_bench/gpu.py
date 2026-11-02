@@ -398,6 +398,58 @@ def runnable_threads(window_s: float = 1.0, samples: int = 10) -> float:
     return float(statistics.median(counts))
 
 
+# Host-wide activity around a measurement (#400): pressure, reclaim and compaction, memory. Only
+# the host's own counters: no other tenant's container is read. Tests point PROC elsewhere.
+PROC = Path("/proc")
+VMSTAT = re.compile(r"^(pgscan|pgsteal|compact|pgmigrate|thp)_\w+$|^pgfault$|^pgmajfault$")
+MEMINFO = ("MemFree", "MemAvailable", "Cached", "Dirty", "Writeback", "AnonPages")
+
+
+def host_activity() -> dict[str, object] | None:
+    """The host's load, pressure (PSI), reclaim and compaction counters and memory now; None off
+    Linux. A counter that cannot be read is left out, so that a reading never fails a run."""
+    if sys.platform != "linux":
+        return None
+    out: dict[str, object] = {}
+    with contextlib.suppress(OSError, ValueError):
+        out["loadavg"] = [float(v) for v in (PROC / "loadavg").read_text().split()[:3]]
+    try:
+        for line in (PROC / "stat").read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if key in ("procs_running", "procs_blocked"):
+                out[key] = int(value)
+    except (OSError, ValueError):
+        pass
+    pressure: dict[str, dict[str, dict[str, float]]] = {}
+    for resource in ("cpu", "memory", "io"):
+        try:
+            lines = (PROC / "pressure" / resource).read_text().splitlines()
+        except OSError:
+            continue
+        pressure[resource] = {
+            kind: {k: float(v) for k, v in (f.split("=") for f in fields)}
+            for kind, *fields in (line.split() for line in lines)
+        }
+    if pressure:
+        out["pressure"] = pressure
+    with contextlib.suppress(OSError, ValueError):
+        out["vmstat"] = {
+            k: int(v)
+            for k, v in (line.split() for line in (PROC / "vmstat").read_text().splitlines())
+            if VMSTAT.match(k)
+        }
+    try:
+        mem = {}
+        for line in (PROC / "meminfo").read_text().splitlines():
+            key, _, rest = line.partition(":")
+            if key in MEMINFO:
+                mem[key] = int(rest.split()[0]) * 1024
+        out["meminfo_bytes"] = mem
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
 def host_load() -> dict[str, float | int]:
     """Runnable threads and 1-minute load average of the host, and its CPU count."""
     return {

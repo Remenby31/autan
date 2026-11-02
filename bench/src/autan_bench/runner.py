@@ -222,6 +222,7 @@ def _measure(
     gpu.require_campaigns_frozen(lock)
     idle = gpu.require_idle()
     before = gpu.host_load()
+    activity_before = gpu.host_activity()
     per_cpu = before["runnable"] / before["cpus"]
     if max_load_per_cpu is not None and per_cpu > max_load_per_cpu:
         raise BenchError(
@@ -239,6 +240,7 @@ def _measure(
         raw = gated.go() if gated else _run_binary(binary, args)
     during = sampler.summary()
     after = gpu.host_load()
+    activity_after = gpu.host_activity()
     if (during["compute_apps_max"] or 0) > 1:
         raise BenchError(
             Code.GPU_CONTENDED,
@@ -273,6 +275,11 @@ def _measure(
                 "after_1m": after["load_1m"],
             },
             "during_run": during,
+            **(
+                {"host_activity": {"before": activity_before, "after": activity_after}}
+                if activity_before is not None and activity_after is not None
+                else {}
+            ),
             **({"setup_seconds": raw["setup_seconds"]} if "setup_seconds" in raw else {}),
         },
         "config": raw["config"],
