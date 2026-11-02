@@ -300,6 +300,30 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
   }
 }
 
+TEST_CASE("a residual left at a slip wall keeps a steady fp32+acc64 run from its floor",
+          "[euler]") {
+  // case-schema.md#time: the floor is judged cell by cell. The freestream meets the slip wall
+  // ymin at 1e-5 rad: from the uniform start only the wall cells have a residual, 5.5 times their
+  // floor in density and energy, while the residual's norm over all cells is 0.61 times the
+  // floors' (measured through Euler::floor_terms): a rule on norms would end the run `floor` at
+  // iteration 1, with the flow still through the wall.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp32+acc64");
+    auto& f = d["freestream"];
+    const double speed = f["speed"].get<double>();
+    f["velocity"] = {speed, -1e-5 * speed, 0.0};
+    for (auto& z : d["cell_zones"]) z["initial"]["velocity"] = f["velocity"];
+    d["time"]["max_iterations"] = 500;
+    d["time"]["residual_orders"] = 10.0;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "floor");
+  CHECK(info["iterations"].get<int>() > 1);
+}
+
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
