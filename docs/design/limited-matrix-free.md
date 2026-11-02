@@ -12,22 +12,22 @@ Design for #395 (the flow's model; the coupled SA solve is note 2), written befo
 ## The activity criterion
 
 **What switches.** Between its switches the residual is C∞ in U: the fluxes of the selected states are rational in W, and Venkatakrishnan's ψ(d) = (Δ² + ε² + 2dΔ) / (Δ² + 2d² + dΔ + ε²) has a denominator (Δ + d/2)² + 7d²/4 + ε² > 0 ([euler.md](euler.md), Venkatakrishnan 1995, eq. 5; `venkat` in `kernels/euler.py`). The reconstruction's discrete selections, per cell c and component k, all read from `kernels/euler.py`:
-- s1, `at_most_one`: whether φ_ck = min(min_f ψ_f, 1) takes the 1 (min_f ψ_f > 1);
+- s1, `at_most_one`: whether φ_ck = min(min_f ψ_f, 1) takes the 1. The criterion reads the strict condition before the clamp, min_f ψ_f > 1. A tie, min_f ψ_f = 1, also gives φ = 1, but with one-sided derivatives (Δ = ε² = 1, d = ½: d(φd)/dd is 1 on one side and 5/6 on the other, where the frozen product gives 1); a tie is therefore not eligible;
 - s2, the limiter's `Min` over the cell's faces: the face attaining min_f ψ_f;
 - s3, the bounds' `Min` and `Max` over the gradient stencil, boundary states included: the entries attaining W_min and W_max;
 - s4, `venkat`'s `dp = dmax if d > 0.0 else dmin`: the bound each face's increment is measured against (ψ is continuous at d = 0, its slope is not);
 - s5, `reconstruct`'s positivity select on each face side: the reconstructed value or the cell value.
 
-**Where the frozen product is the true Jacobian.** #402's frozen residual holds φ and the s5 branches at U and recomputes everything else. Where s1 takes the 1 for every component, φ ≡ 1 in a neighbourhood of U (min_f ψ_f > 1 is an open condition): there R does not depend on φ, so s2–s4 and the bounds play no part, and holding φ costs nothing. Where φ < 1, φ varies smoothly with U and the frozen product drops its derivative: d(φ d) = φ δd + d δφ, of which the product keeps φ δd (with d = Δ = ε² = 1, φ = 0.8 and d(φd)/dd = 0.4 against 0.8 frozen). Such cells are therefore never matrix-free, switched or not: the matrix-free rows apply the true Jacobian, not #397's frozen one.
+**Where the frozen product is the true Jacobian.** #402's frozen residual holds φ and the s5 branches at U and recomputes everything else. Where min_f ψ_f > 1 for every component, φ ≡ 1 in a neighbourhood of U (an open condition): there R does not depend on φ, so s2–s4 and the bounds play no part, and holding φ costs nothing. Where φ < 1, φ varies smoothly with U and the frozen product drops its derivative: d(φ d) = φ δd + d δφ, of which the product keeps φ δd (with d = Δ = ε² = 1, φ = 0.8 and d(φd)/dd = 0.4 against 0.8 frozen). Such cells are therefore never matrix-free, switched or not: the matrix-free rows apply the true Jacobian, not #397's frozen one.
 
-**The criterion.** A cell is eligible at step n when, at both of the last two base states U_{n−1} and U_n, s1 takes the 1 for all five components (or the limiter is off), and its face sides' s5 branches are the same at both. A row of the step's operator is matrix-free when its cell and every face neighbour are eligible, and assembled (J̃) otherwise: R_i reads only the reconstructions of cell i and of its face neighbours. Each `residual_and_jacobian` at a base state records, per owned cell, one flag (s1 for all components) and a 64-bit hash of its s5 branches, filled into the ghosts; a rejected step keeps U, its record and therefore the mask. The first second-order step has no previous record, so all its rows are assembled, as on `main`; a continuation carries the base state's record (Change). The mask is fixed for a whole linear solve, so the Krylov operator is one linear operator.
+**The criterion.** A cell is eligible at step n when, at both of the last two base states U_{n−1} and U_n, min_f ψ_f > 1 for all five components (or the limiter is off), and its face sides' s5 branches are the same at both. A row of the step's operator is matrix-free when its cell and every face neighbour are eligible, and assembled (J̃) otherwise: R_i reads only the reconstructions of cell i and of its face neighbours. Each `residual_and_jacobian` at a base state records, per owned cell, one flag (min_f ψ_f > 1 for all components) and a 64-bit hash of its s5 branches, filled into the ghosts; a rejected step keeps U, its record and therefore the mask. The first second-order step has no previous record, so all its rows are assembled, as on `main`; a continuation carries the base state's record (Change). The mask is fixed for a whole linear solve, so the Krylov operator is one linear operator.
 
 **Why zero is the threshold.** The step's model, R(U_n) + J ΔU for whatever J, is the first-order Taylor expansion of R along ΔU; its remainder is bounded by the second derivative along the segment only where R is C² there (Taylor's theorem). An s5 branch that changed between U_{n−1} and U_n, or a φ below 1, means that R is not smooth or not frozen-exact on the segment just travelled, at the step's own scale ‖ΔU‖, and no finite margin would be justified a priori: the tests are properties (a flag, an equality), not values fitted to any case.
 
 **Declared limits.**
 - The criterion is a predictor: it reads the step just taken, not the next. A switch first crossed by step n + 1 is seen at step n + 2, and a switch crossed and crossed back between two base states is not seen.
 - The flux functions' own switches (|λ| and Harten's entropy fix in Roe, the wave-speed selections of HLLC, AUSM+-up's split functions, the characteristic boundary states' sub- or supersonic and in- or outflow branches) are not in the criterion. They are the first-order scheme's: J̃ linearises across them the same way, so they do not separate the two operators. The finite-difference quotient (scale h ‖v‖, h ≈ √ε relative, Knoll and Keyes 2004) crosses one only where its argument is within that distance of the switch, such as |v·n| at a stagnation point or a stationary contact; there the quotient is a secant across the kink, as #397's was.
-- Cost: one flag and one hash per cell per base state, one ghost exchange of them, one comparison per step; no extra residual evaluation. The flag reads φ, which the residual stores. The s5 branches are not stored: the record is one more pass over the faces that re-evaluates them from the primitives, gradients and φ the residual left (as `Euler::boundary_pressure` re-evaluates the face state).
+- Cost: one flag and one hash per cell per base state, one ghost exchange of them, one comparison per step; no extra residual evaluation. Neither is stored by the residual: the clamped φ cannot tell a tie from min_f ψ_f > 1, the fused limiter keeps the bounds in registers (#414), and the s5 branches are not written. The record is therefore one more pass over the gradient stencil and the faces: it recomputes the bounds and min_f ψ_f, and re-evaluates the s5 branches from the primitives, gradients and φ the residual left (as `Euler::boundary_pressure` re-evaluates the face state). Test (public seam): a cell built with min_f ψ_f = 1 exactly in one component is not eligible; with min_f ψ_f > 1 it is.
 
 ## Coverage check, declared before measuring
 
@@ -35,17 +35,19 @@ Before any code, on states the current solver already produces, the criterion is
 
 **States.** The base-state pairs (999, 1000), (1999, 2000) and (2999, 3000) of the run that wanders at −3 to −4 (#395).
 
-**What is counted.** A row is matrix-free when its cell and every face neighbour have φ = 1 in all five components at both base states of the pair, and unchanged fallback branches (the criterion above). Two shares of rows are counted: over the wall ring (the cells with a face on the plate, #395's ring) and over the domain.
+**What is measured.** At each pair:
+- Rows: a row is matrix-free when its cell and every face neighbour are eligible at both base states of the pair (the criterion above).
+- Gap: g = J v − J̃ v on the wall ring's continuity rows (the cells with a face on the plate, #395's ring), for #395's three random v. J v is taken by central differences with ε = 10⁻⁵, and J̃ v by the assembled operator.
+- Remaining gap: ‖g restricted to the rows that are not matrix-free‖ / ‖g‖. It is what the mixed operator leaves on the ring if its matrix-free rows are exact.
+- Shares of matrix-free rows over the ring and over the domain: reported.
 
-**Threshold, set now.** The note can only address #395's symptom if the wall ring's matrix-free rows can halve the ring's gap: note 1's threshold, ‖(J − J̃) v‖ ≤ 0.5 × its value on the ring's continuity rows.
-- Rows switched to the true Jacobian lose their gap. On rows whose gap is spread evenly, the norm over the ring falls to √(1 − f) of its value, f being the share of matrix-free rows.
-- √(1 − f) ≤ 0.5 needs f ≥ 0.75.
+**Threshold, set now.** The remaining gap must be at most 0.5 for each of the three v at all three pairs. That is note 1's threshold, ‖(J − J̃) v‖ ≤ 0.5 × its value on the ring's continuity rows, applied to the mixed operator. The gap is measured, not modelled: no assumption on how it is spread over the rows.
 
 **Reading.**
-- If the ring's share is at least 75 % at all three pairs, the note proceeds to its PR.
-- If it is below 75 % at any pair, the matrix-free rows do not reach enough of the cells where J̃ misses 38–70 %. The note then does not address #395's symptom: that is recorded in #395 and nothing is coded.
-- The domain's share is reported, not gated.
-- The even-spread assumption is declared. The per-row gap on the ring's continuity rows is reported alongside the share, so the reading can be checked against it, but the threshold is not changed after the fact.
+- If the threshold is met, the note proceeds to its PR.
+- If any value is above 0.5, the matrix-free rows do not reach enough of the gap where J̃ misses 38–70 %. The note then does not address #395's symptom: that is recorded in #395 and nothing is coded.
+
+**Declared limit of this check.** The diagnostic reads the stored φ, so it counts a tie, min_f ψ_f = 1, as eligible. In FP64 an exact tie is not expected on these states. Its effect could only raise the share of matrix-free rows, which the reading does not gate.
 
 ## Change
 
