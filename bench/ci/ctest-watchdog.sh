@@ -42,6 +42,16 @@ running() {  # PID: alive and not a zombie (a hung launcher may never reap its r
   [[ ${stat%% *} != Z ]]
 }
 
+gone() {  # PID LAUNCHER: the process no longer exists, as run_on_ranks requires (kill -0 gives
+  # ESRCH), or is a zombie of the launcher, reaped as soon as the launcher is killed
+  local stat
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+  stat=${stat##*) }
+  local state ppid
+  read -r state ppid _ <<<"$stat"
+  [[ $state == Z && $ppid == "$2" ]]
+}
+
 cmdline() { tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null; }
 
 started() {  # PID: its start time, in clock ticks since boot (with the PID, a process's identity)
@@ -58,7 +68,7 @@ markers() {  # launcher PID: "FOUND/N" proven-ended ranks; empty if N or the dir
   for ((i = 0; i < ${#args[@]}; i++)); do
     case ${args[i]} in
       -n | -np | --np | -c) [[ -z $n ]] && n=${args[i + 1]:-} ;;
-      -n=* | -np=* | --np=*) [[ -z $n ]] && n=${args[i]#*=} ;;
+      -n=* | -np=* | --np=* | -c=*) [[ -z $n ]] && n=${args[i]#*=} ;;
       --runs) runs=${args[i + 1]:-} ;;
       --runs=*) runs=${args[i]#*=} ;;
     esac
@@ -66,6 +76,8 @@ markers() {  # launcher PID: "FOUND/N" proven-ended ranks; empty if N or the dir
   exits=$(tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | sed -n 's/^AUTAN_TEST_EXIT_DIR=//p' | head -1)
   [[ -z $exits && -n $runs ]] && exits=$(dirname "$runs")/exits
   [[ $n =~ ^[1-9][0-9]*$ && -n $exits ]] || return 0
+  # A relative path is the launcher's, not this script's.
+  [[ $exits == /* ]] || exits=$(readlink "/proc/$1/cwd")/$exits
   since=$((boot + $(started "$1") / clk_tck))
   for ((rank = 0; rank < n; rank++)); do
     file=$exits/exit-$rank
@@ -73,7 +85,7 @@ markers() {  # launcher PID: "FOUND/N" proven-ended ranks; empty if N or the dir
     content=$(<"$file")
     [[ $content =~ ^[0-9]+\ ([0-9]+)$ ]] || continue
     pid=${BASH_REMATCH[1]}
-    running "$pid" && continue
+    gone "$pid" "$1" || continue
     found=$((found + 1))
   done
   echo "$found/$n"
@@ -98,8 +110,8 @@ net_kill() {  # launcher PID whose ranks have all ended
       echo "\`$(cmdline "$launcher")\` (test \`${test:-unknown}\`, rank exit markers ${marks:-not found}); its stack is in the job log."
     } >>"$GITHUB_STEP_SUMMARY"
   fi
-  kill -TERM "$launcher" 2>/dev/null
-  for _ in 1 2 3 4 5; do running "$launcher" || return 0; sleep 1; done
+  # KILL, not TERM: a launcher that handles TERM by exiting would end normally, and its test would
+  # judge its status instead of the markers.
   kill -KILL "$launcher" 2>/dev/null
 }
 

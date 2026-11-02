@@ -212,3 +212,29 @@ def test_a_process_still_living_below_the_launcher_holds_the_net_back(tmp_path):
     (dump,) = stacks.iterdir()
     assert done.exists()
     assert dump.stat().st_mtime >= done.stat().st_mtime
+
+
+def test_a_launcher_that_handles_term_still_ends_by_a_signal(tmp_path):
+    # The test judges the markers only when its launcher was killed by a signal: one that would
+    # exit cleanly on TERM is killed outright.
+    d = exits(tmp_path)
+    body = "trap 'exit 1' TERM; " + launcher(rank(0), rank(1))
+    env = {**fake_tools(tmp_path, body), **NET}
+    command = f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog; echo launcher=$?"
+    proc = watchdog(env, 60, tmp_path / "stacks", command)
+    assert "outlived every rank" in proc.stdout
+    assert "launcher=137" in proc.stdout
+
+
+@pytest.mark.parametrize("count", ["-c=2", "-np=2", "-n=2"])
+def test_markers_relative_to_the_launcher_s_directory_are_found(tmp_path, count):
+    # The launcher runs in case/ with AUTAN_TEST_EXIT_DIR=exits: case/exits, not the watchdog's.
+    case = tmp_path / "case"
+    (case / "exits").mkdir(parents=True)
+    env = {**fake_tools(tmp_path, launcher(rank(0), rank(1))), **NET}
+    command = (
+        f"cd {case} && AUTAN_TEST_EXIT_DIR=exits RANK_DIR={case}/exits mpiexec {count} prog; exit 0"
+    )
+    proc = watchdog(env, 60, tmp_path / "stacks", command)
+    assert proc.returncode == 0, proc.stdout
+    assert "ranks proven ended by their exit markers: 2/2" in proc.stdout
