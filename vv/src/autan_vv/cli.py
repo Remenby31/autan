@@ -171,7 +171,7 @@ def _cmd_su2(args: argparse.Namespace) -> None:
         if args.su2 is None or not args.runs:
             msg = "su2 compare takes --su2 REPORT and the Autan run directories of one condition"
             raise VVError(msg, code="V0905")
-        report = compare.compare(args.runs, args.su2)
+        report = compare.compare(args.runs, args.su2, args.su2_root)
         if args.out is not None:
             args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
         for row in report["levels"]:
@@ -182,6 +182,13 @@ def _cmd_su2(args: argparse.Namespace) -> None:
                 else "no converged SU2 level"
             )
             _say(f"{row['n']}²: Autan CL {a['cl']:.6f}, CD {a['cd']:.7f}; {gap}")
+            if "cp" in row:
+                cp = row["cp"]
+                _say(
+                    f"    Cp: max |dCp| {cp['all']['max_abs']:.4f} ({cp['outside_shocks']['max_abs']:.4f}"
+                    f" outside shocks), upper shock x Autan {cp['shock_upper']['autan']},"
+                    f" SU2 {cp['shock_upper']['su2']}"
+                )
         for code, estimates in report["continuum"].items():
             for name, est in estimates.items():
                 value = f"{est['estimate']:.7f}" if "estimate" in est else est["error"]
@@ -408,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stop-margin", type=float, default=2.0, help="prepare: orders SU2 runs on")
     p.add_argument("--orders", type=float, default=10.0, help="history: residual drop criterion")
     p.add_argument("--su2", type=Path, help="compare: the SU2 study report of the condition")
+    p.add_argument("--su2-root", type=Path, help="compare: SU2's prepared runs, for wall Cp")
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
 

@@ -540,3 +540,76 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
         with pytest.raises(VVError) as err:
             compare.compare([*runs[1:], odd], tmp_path / "su2.json")
         assert err.value.code == "V0905"
+
+
+def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
+    import autan  # noqa: PLC0415
+    import h5py  # type: ignore[import-untyped]  # noqa: PLC0415
+    from autan.units import deg, m  # noqa: PLC0415
+    from autan_vv.runs import mesh_info, write_run  # noqa: PLC0415
+
+    nc, mach, gamma, p_inf = 32, 0.8, 1.4, 101325.0
+    family, meshes = naca0012.generate_family((nc,), tmp_path / "family")
+    path = tmp_path / "family" / family.levels[0].file
+    # The run writer refuses monitors; Cp needs the freestream and the solution only.
+    case = autan.Case("naca0012-m080-a125", mesh=str(path))
+    case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+    pressure = p_inf * autan.units.ureg.Pa
+    case.freestream(mach=mach, aoa=1.25 * deg, pressure=pressure, ref_length=1.0 * m)
+    case.time = autan.Steady(max_iterations=100, residual_orders=10.0)
+    case.boundary("airfoil").slip()
+    case.boundary("farfield").farfield()
+    case.boundary("back").symmetry()
+    case.boundary("front").symmetry()
+    n = meshes[0].n_cells
+    fields = {"Density": np.ones(n), "VelocityX": np.zeros(n), "VelocityY": np.zeros(n),
+              "VelocityZ": np.zeros(n), "Pressure": np.full(n, p_inf),
+              "Temperature": np.full(n, 288.15)}  # fmt: skip
+    info = mesh_info(meshes[0], path, "gmsh")
+    run = write_run(tmp_path / "runs", case, meshes[0], info, fields).path
+
+    def cp_of(x: np.ndarray, shock: float | None) -> np.ndarray:
+        # Linear in x, so a face's value is the mean of its end nodes'; a jump of 0.5 at `shock`.
+        return -0.4 + 0.3 * x + (0.0 if shock is None else 0.5 * (x > shock))
+
+    # Autan side: the face pressure of p = p_inf + q_inf Cp at each face centre (x along the chord).
+    with h5py.File(run / "solution.cgns", "r+") as f:
+        zone = f["Base/Zone"]
+        xyz = np.stack([zone[f"GridCoordinates/Coordinate{c}/ data"][()] for c in "XYZ"], 1)
+        offset = zone["NGonElements/ElementStartOffset/ data"][()]
+        conn = zone["NGonElements/ElementConnectivity/ data"][()] - 1
+        faces = zone["WallSolution/PointList/ data"][()].ravel() - 1
+        centre = np.array([xyz[conn[offset[k] : offset[k + 1]]].mean(axis=0) for k in faces])
+        q_inf = 0.5 * gamma * p_inf * mach**2
+        zone["WallSolution/Pressure/ data"][...] = p_inf + q_inf * cp_of(centre[:, 0], 0.6)
+
+    # SU2 side: conservative variables at rest, in units where p_inf = rho_inf = 1, at the wall
+    # nodes of the converted 2D mesh.
+    def surface(name: str, shift: float, shock: float | None) -> Path:
+        record = mesh.convert(path, tmp_path / f"{name}.su2", 2)
+        _, _, points, markers = _read_su2_mesh(tmp_path / record.file)
+        nodes = np.unique(markers["airfoil"][:, 1:])
+        p = 1.0 + 0.5 * gamma * mach**2 * (cp_of(points[nodes, 0], shock) + shift)
+        lines = ['"PointID","x","y","Density","Momentum_x","Momentum_y","Energy"']
+        lines += [f"{k}, {points[k, 0]:.15e}, {points[k, 1]:.15e}, 1.0, 0.0, 0.0, {pk / (gamma - 1.0):.17g}"
+                  for k, pk in zip(nodes, p, strict=True)]  # fmt: skip
+        out = tmp_path / f"{name}.csv"
+        out.write_text("\n".join(lines) + "\n")
+        return out
+
+    same = compare.compare_cp(run, surface("same", 0.0, 0.6))
+    assert same["faces"] == nc
+    # Only the face across the jump differs: its centre is past it, one of its nodes is not.
+    assert same["all"]["max_abs"] == pytest.approx(0.25, abs=1e-9)
+    assert same["outside_shocks"]["max_abs"] < 1e-9
+    assert same["shock_upper"]["autan"] == same["shock_upper"]["su2"]
+    assert same["shock_upper"]["autan"] == pytest.approx(0.6, abs=0.1)
+    shifted = compare.compare_cp(run, surface("shifted", 0.01, 0.6))
+    assert shifted["outside_shocks"]["max_abs"] == pytest.approx(0.01, abs=1e-9)
+    # A shock SU2 puts further aft: the faces between and around the two shocks are left out.
+    moved = compare.compare_cp(run, surface("moved", 0.0, 0.75))
+    assert moved["shock_upper"]["su2"] == pytest.approx(0.75, abs=0.1)
+    assert moved["shock_upper"]["su2"] > moved["shock_upper"]["autan"]
+    assert moved["all"]["max_abs"] == pytest.approx(0.5, abs=1e-9)
+    assert moved["outside_shocks"]["max_abs"] < 1e-9
