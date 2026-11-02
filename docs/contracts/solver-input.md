@@ -8,15 +8,16 @@ Producer: `autan prepare` / `autan.solver_input.build` (owner: CFD - SDK & contr
 
 ```text
 autan-run --input solver-input.json --runs DIR [--stop-file PATH]
+          [--memory-margin BYTES] [--allow-oversubscription]
 ```
 
-`autan-run` creates `DIR/<run_id>/` as [results.md](results.md) specifies, writing `case.toml` (the `case.toml` text of the input, unchanged), its own `mesh-info.json`, `run.json`, `history.jsonl` and `solution.cgns`, with `identity` and `run_id` computed from its own commit. It prints the run directory path on one line of stdout (rank 0 alone, on several ranks). With `--stop-file`, the run stops between two iterations once `PATH` exists, on every rank together, as for SIGINT: the way to stop a run started through an MPI launcher, which turns a signal into an abort.
+`autan-run` creates `DIR/<run_id>/` as [results.md](results.md) specifies, writing `case.toml` (the `case.toml` text of the input, unchanged), its own `mesh-info.json`, `run.json`, `history.jsonl` and `solution.cgns`, with `identity` and `run_id` computed from its own commit. It prints the run directory path on one line of stdout (rank 0 alone, on several ranks). With `--stop-file`, the run stops between two iterations once `PATH` exists, on every rank together, as for SIGINT: the way to stop a run started through an MPI launcher, which turns a signal into an abort. Before reading the mesh, every rank weighs `memory` against the memory its host can still give, less `--memory-margin` (default 2 GiB): the ranks of a host share its memory, and its devices in turn; on the CPU or a device whose memory is the host's (`cudaDevAttrIntegrated`, GB10), a rank's host and device shares come from one pool, the lower of `MemAvailable` and every cgroup v2 limit above the process less its usage; on a discrete device, the device share comes from the device's free memory. A run that does not fit is refused on every rank (`E0711`, exit 2); `--allow-oversubscription` starts it with `W0712`, the largest need and the least available memory of the ranks short of it.
 
 | Exit | Meaning |
 |---|---|
 | 0 | The run ended `converged`, `completed`, `stopped` or `diverged`; the status is in `run.json`. |
 | 1 | The run `failed`; `run.json` carries `E0704`. |
-| 2 | The input cannot be run: invalid document (`E0705`, `data.path` names the key), mesh hash different from `mesh.sha256` (`E0203`), or no implementation of the physics, turbulence model, precision and device kind in this build, or of the case's media and zones ([runtime.md](runtime.md#registration)) (`E0706`). No directory is created; the diagnostics go to stderr as JSON in the shape of [case-schema.md](case-schema.md#diagnostics), with `fix` and `doc` taken from [`diagnostics.json`](diagnostics.json), as for every diagnostic the runtime writes. |
+| 2 | The input cannot be run: invalid document (`E0705`, `data.path` names the key), not enough memory (`E0711`), mesh hash different from `mesh.sha256` (`E0203`), or no implementation of the physics, turbulence model, precision and device kind in this build, or of the case's media and zones ([runtime.md](runtime.md#registration)) (`E0706`). No directory is created; the diagnostics go to stderr as JSON in the shape of [case-schema.md](case-schema.md#diagnostics), with `fix` and `doc` taken from [`diagnostics.json`](diagnostics.json), as for every diagnostic the runtime writes. |
 | 130 | Stopped by SIGINT, SIGTERM or the stop file; the run is finalized as `stopped` with its solution. |
 
 ## Document
