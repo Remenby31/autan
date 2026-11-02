@@ -629,6 +629,38 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
   }
 });
 
+test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {
+  // The crm-hl runs of scripts/sample-runs.sh form a study: one case name, several angles; the
+  // newest eight are compared, newest first.
+  const crm = (await runs(page))
+    .filter((r) => r.case.name === "crm-hl")
+    .sort((a, b) => b.started.localeCompare(a.started));
+  const newest = crm.slice(0, 8).map((r) => r.run_id);
+  const compared = () =>
+    JSON.parse(new URL(page.url()).searchParams.get("runs") ?? "[]") as string[];
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("compare crm-hl");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  expect(compared()).toEqual(newest);
+
+  await page.goto("/compare");
+  const add = page.getByRole("button", { name: "Add a run" });
+  await expect(add).toHaveText("Add a run");
+  await add.click();
+  // Each run to add says its conditions: crm-hl at M 0.2 and its angle.
+  await expect(page.getByRole("menuitem").filter({ hasText: "crm-hl" }).first()).toContainText(
+    /M 0\.2 · α \d/,
+  );
+  await page.keyboard.press("Escape");
+  await page.getByTestId("study-choice").filter({ hasText: "crm-hl" }).click();
+  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+  expect(compared()).toEqual(newest);
+  await expect(page.getByRole("heading", { name: "Compare" })).toBeFocused();
+});
+
 test("an unknown run or address says so, and outputs download as they are", async ({ page }) => {
   await page.goto("/runs/run-20200101T000000Z-deadbeef");
   await expect(page.getByRole("heading", { name: "No such run" })).toBeVisible();
