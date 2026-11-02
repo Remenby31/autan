@@ -1,6 +1,6 @@
-# The true Jacobian where the limiter does not switch
+# The true Jacobian where the limiter is inactive
 
-Design for #395 (the flow's model; the coupled SA solve is note 2), written before any code by CFD - Euler and CFD - Multigrille. The steady implicit step solves (V/Δt + J̃) ΔU = −R(U) with the assembled approximate Jacobian J̃. This note applies the true Jacobian matrix-free in the step's linear solve, as #397 did, but only while an objective test finds the limiter and the reconstruction's fallback inactive over the step, and keeps J̃ elsewhere.
+Design for #395 (the flow's model; the coupled SA solve is note 2), written before any code by CFD - Euler and CFD - Multigrille. The steady implicit step solves (V/Δt + J̃) ΔU = −R(U) with the assembled approximate Jacobian J̃. This note applies the true Jacobian matrix-free in the step's linear solve, as #397 did, but only on the rows whose cells the limiter leaves untouched (φ = 1 in every component, the reconstruction's fallback unchanged, at the step's two base states), where the frozen product is the true Jacobian, and keeps J̃ elsewhere.
 
 ## Problem and what was measured
 
@@ -41,8 +41,10 @@ From the step after the switch to second order, on the host's steady step with `
 - The preconditioner is unchanged (one multigrid cycle, or the line sweeps, on V/Δt + J̃); tolerance, iteration limit, failure rule and SER unchanged.
 - The difference quotient is a linear operator only to O(ε) (Knoll and Keyes 2004, §2.2: the forward difference's truncation error, and a direction-dependent ε); GCR treats it as linear, as every Jacobian-free Newton-Krylov method does. This is a declared approximation of the inexact Newton step, not checked per product; its effect is what the gate measures.
 - A step with no matrix-free row computes no difference: it is `main`'s step, bit for bit (the first second-order step always is: the criterion has no record before it).
-- State between steps: each owned cell's selection hash of the last step, restart state (8 bytes a cell), so that a continued run rebuilds the same mask and repeats the uninterrupted one bit for bit; the hashes are exchanged to the ghosts and compared per cell, so the mask is the same on any number of ranks, and every reduction of the product is #397's (exact sums over the owned unknowns).
-- Logged: a `linear` info event at the first step with matrix-free rows; per run, the fraction of matrix-free rows (smallest, mean, largest over the second-order steps) in the run's end event, so that the gate can report how much of each case ran matrix-free.
+- State between steps: each owned cell's record of the last base state (its eligibility flag and its fallback hash, criterion section), restart state (1 flag and 8 bytes a cell), so that a continued run rebuilds the same mask and repeats the uninterrupted one bit for bit; the hashes are exchanged to the ghosts and compared per cell, so the mask is the same on any number of ranks, and every reduction of the product is #397's (exact sums over the owned unknowns).
+- Logged: a `linear` info event at the first step with matrix-free rows; per step, the share of matrix-free rows in the `linear` events' data, and per run its smallest, mean and largest over the second-order steps in the run's end event, so that the gate reports how much of each case ran matrix-free.
+
+A risk stated before any measurement: where the limiter is active over much of the domain (φ < 1 in many cells, as it may be in the plate's boundary layer), most rows stay on J̃, and this change can do much less than #397's 1655 steps on the laminar plate. The gate decides; the share of matrix-free rows per step is reported with it.
 
 Cost: on a step with matrix-free rows, `freeze` at U (primitives, boundary states, gradients and bounds, limiter, ghost exchanges, fallback flags), one frozen residual at U and one per GCR iteration (at most 10), the probes' checks and their reductions (#397's), one assembled-matrix product per GCR iteration for the assembled rows, and the criterion's record pass (Euler's section); on a step without, the record pass only. All of it is in the cost gate.
 
