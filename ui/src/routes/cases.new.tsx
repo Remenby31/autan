@@ -124,8 +124,16 @@ function CaseEditor() {
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
   const [picked, setPicked] = useState<string | null>(null);
-  // The code beside the stage, which can give its width to the mesh.
-  const [codeOpen, setCodeOpen] = useState(true);
+  // The code beside the stage, which can give its width to the mesh; on a narrow window it
+  // starts hidden. Its tab is kept while it is, and focus goes to the button that undoes.
+  const [codeOpen, setCodeOpen] = useState(() => window.innerWidth >= 1280);
+  const [codeTab, setCodeTab] = useState<string>("python");
+  const showCode = useRef<HTMLButtonElement>(null);
+  const hideCode = useRef<HTMLButtonElement>(null);
+  const toggleCode = (open: boolean) => {
+    setCodeOpen(open);
+    requestAnimationFrame(() => (open ? hideCode : showCode).current?.focus());
+  };
   // After a change of mesh, the rules whose pattern matches none of its zones, offered for
   // removal; rules typed afterwards are the user's own business (the plan reports them).
   const [inherited, setInherited] = useState<{ mesh: string; rules: Set<object> } | null>(null);
@@ -663,7 +671,7 @@ function CaseEditor() {
                 Choose a mesh to see its boundary.
               </p>
             )}
-            <div className="pointer-events-none absolute inset-x-4 top-4 flex max-w-xl flex-col items-start gap-2 [&>*]:pointer-events-auto">
+            <div className="pointer-events-none absolute inset-x-4 top-4 flex max-h-[45%] max-w-xl flex-col items-start gap-2 overflow-y-auto [&>*]:pointer-events-auto">
               {form.mesh && byKind.size > 0 && (
                 <ul
                   className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1 rounded-lg border border-line bg-glass px-3 py-2 text-fg-2 text-sm backdrop-blur"
@@ -718,15 +726,15 @@ function CaseEditor() {
             <p role="status" className="sr-only">
               {announcement}
             </p>
-            <div className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2 [&>*]:pointer-events-auto">
+            <div className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2">
               <div className="min-w-0">
                 {rendered.data?.ok && rendered.data.plan && (
-                  <div className="w-fit max-w-2xl rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
+                  <div className="pointer-events-auto max-h-[40vh] w-fit max-w-2xl overflow-y-auto rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
                     <PlanSummary plan={rendered.data.plan} current={!rendered.isPlaceholderData} />
                   </div>
                 )}
               </div>
-              <div className="flex flex-none items-center gap-2 self-end">
+              <div className="pointer-events-auto flex flex-none items-center gap-2 self-end">
                 <CaseActions
                   name={form.name}
                   // Only the case shown, once it is the form's: an edit not yet rendered waits.
@@ -741,7 +749,8 @@ function CaseEditor() {
                     size="sm"
                     variant="secondary"
                     icon={<PanelRightOpen className="size-4" />}
-                    onClick={() => setCodeOpen(true)}
+                    ref={showCode}
+                    onClick={() => toggleCode(true)}
                   >
                     Code
                   </Button>
@@ -751,7 +760,7 @@ function CaseEditor() {
           </section>
           {codeOpen && (
             <aside
-              className="relative flex min-h-0 w-[min(30rem,40%)] flex-none flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5"
+              className="relative flex min-h-0 w-[min(30rem,40%)] min-w-[19rem] flex-none flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5"
               aria-label="The case's code"
             >
               <Button
@@ -759,8 +768,9 @@ function CaseEditor() {
                 variant="tertiary"
                 className="absolute top-4 right-4"
                 icon={<PanelRightClose className="size-4" />}
+                ref={hideCode}
                 aria-label="Hide the code"
-                onClick={() => setCodeOpen(false)}
+                onClick={() => toggleCode(false)}
               />
               {rendered.data?.ok === false ? (
                 <Refusal
@@ -769,7 +779,8 @@ function CaseEditor() {
                 />
               ) : (
                 <TabsRoot
-                  defaultValue="python"
+                  value={codeTab}
+                  onValueChange={(v) => setCodeTab(String(v))}
                   className={cn(
                     "flex min-w-0 flex-none flex-col gap-3 transition-opacity",
                     (rendered.isError || rendered.isPlaceholderData) && "opacity-60",

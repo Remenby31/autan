@@ -435,8 +435,27 @@ test("the mesh fills the stage, and the code gives it its width", async ({ page 
   await expect
     .poll(async () => (await fills()).box?.width ?? 0)
     .toBeGreaterThan((before.box?.width ?? 0) + 200);
-  await page.getByRole("button", { name: "Code", exact: true }).click();
+  // From the keyboard, focus lands on the button that undoes; the chosen tab is kept.
+  await expect(page.getByRole("button", { name: "Code", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(code).toBeVisible();
+  await expect(page.getByRole("button", { name: "Hide the code" })).toBeFocused();
+
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mach").fill("0.3");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+  await page.getByRole("tab", { name: "case.toml" }).click();
+  await expect(page.getByTestId("case-toml")).toBeVisible();
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(page.getByTestId("case-toml")).toBeVisible();
+
+  // A narrow window starts with the mesh alone.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto("/cases/new");
+  await expect(page.getByRole("button", { name: "Code", exact: true })).toBeVisible();
+  await expect(code).toHaveCount(0);
 });
 
 test("rules a new mesh does not have are offered for removal", async ({ page }) => {
