@@ -118,9 +118,10 @@ jobs:
       results: ${{ steps.results.outputs.artifact-id }}
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
-      # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
-      # behind other measurements on the shared Spark.
-      AUTAN_BENCH_LOCK_TIMEOUT: "900"
+      # Every wait for the GPU lock fails clearly after 25 minutes instead of waiting forever
+      # behind other measurements on the shared Spark: CI waits at most for the hold in
+      # progress and one agent's turn, 10 minutes each (docs/infra/bench.md).
+      AUTAN_BENCH_LOCK_TIMEOUT: "1500"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -172,6 +173,11 @@ jobs:
           bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
           bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
           -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
+      # changes.sh's measured directories are exactly those both benchmarks are built from, so
+      # that no change goes unmeasured and none waits for a measurement of nothing it changed.
+      - name: The measured paths are the benchmarks' build graph
+        if: needs.changes.outputs.bench == 'true'
+        run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
       - name: Generated loops, hex n = 128, fp32, RCM order
         if: needs.changes.outputs.bench == 'true'
         run: >-
