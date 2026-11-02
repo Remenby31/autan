@@ -544,7 +544,8 @@ def reconstruct(
     # (absolute) pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
     d = gw @ r
     wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
-    return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
+    # Written as the test for non-positive values, so that a NaN face value is kept, not replaced.
+    return w if wf[0] <= 0.0 or wf[4] + pref <= 0.0 else wf
 
 
 @pointwise
