@@ -55,7 +55,7 @@ jobs:
           - compiler: clang-20
             cc: clang
             cxx: clang++
-            conda: clangxx=20.1.8
+            conda: clangxx=20.1.8 clang-tools=20.1.8
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
