@@ -2,7 +2,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Link } from "@tanstack/react-router";
 import { Ellipsis, Menu } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
-import { useOpenNav } from "./nav";
+import { useNavDrawer } from "./nav";
 
 export interface Crumb {
   label: ReactNode;
@@ -11,13 +11,15 @@ export interface Crumb {
 
 /** Where you are, as a path you can click back up. */
 export function TopBar({ crumbs, actions }: { crumbs: Crumb[]; actions?: ReactNode }) {
-  const openNav = useOpenNav();
+  const { open, openNav } = useNavDrawer();
   return (
     <header className="flex h-14 flex-none items-center gap-3 border-line border-b bg-bg-1 px-3 md:px-6">
       <button
         type="button"
         onClick={openNav}
         aria-label="Open navigation"
+        aria-expanded={open}
+        aria-controls="nav-drawer"
         className="flex size-8 flex-none items-center justify-center rounded-md text-fg-2 hover:bg-bg-2 hover:text-fg md:hidden"
       >
         <Menu className="size-4" />

@@ -11,7 +11,7 @@ import {
   Search,
   Sun,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
 import { Kbd } from "../ui/Kbd";
 import { setTheme, type ThemeChoice, useResolvedTheme, useTheme } from "./theme";
 
@@ -41,32 +41,50 @@ export function Sidebar({
   const theme = useTheme();
   const resolved = useResolvedTheme();
   const drawer = useRef<HTMLElement>(null);
-  // Opened, the drawer takes focus and Escape closes it.
+  // Dismissed (Escape, backdrop), the drawer hands focus back to the button that opened it.
+  const dismiss = useCallback(() => {
+    onClose();
+    // Once the page behind is no longer inert.
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>('[aria-controls="nav-drawer"]')?.focus(),
+    );
+  }, [onClose]);
+  // Opened, it takes focus, and Escape closes it before any page shortcut sees it.
   useEffect(() => {
     if (!open) return;
     drawer.current?.querySelector<HTMLElement>("nav a[href]")?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      dismiss();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [open, dismiss]);
   return (
     <>
       {open && (
         <div
           aria-hidden
           className="fixed inset-0 z-30 bg-black/30 md:hidden"
-          onClick={onClose}
+          onClick={dismiss}
           data-testid="nav-backdrop"
         />
       )}
       <aside
         className={`${open ? "flex" : "hidden"} fixed inset-y-0 left-0 z-40 w-60 flex-none flex-col gap-3 border-line border-r bg-bg-1 px-3 py-3 shadow-tooltip md:static md:flex md:shadow-none`}
         ref={drawer}
+        id="nav-drawer"
         aria-label="Navigation"
+        {...(open ? { role: "dialog", "aria-modal": true } : {})}
       >
-        <Link to="/" className="flex h-8 items-center gap-2 px-2" aria-label="Autan, runs">
+        <Link
+          to="/"
+          className="flex h-8 items-center gap-2 px-2"
+          aria-label="Autan, runs"
+          onClick={onClose}
+        >
           <img src={`/logo-${resolved}.svg`} alt="" className="size-6" />
           <img src={`/wordmark-${resolved}.svg`} alt="Autan" className="h-[18px]" />
         </Link>

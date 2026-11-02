@@ -48,10 +48,11 @@ function Root() {
     <MotionConfig reducedMotion="user" transition={{ duration: 0.12 }}>
       <TooltipProvider delay={400}>
         <ToastProvider>
-          <NavDrawer.Provider value={() => setNav(true)}>
+          <NavDrawer.Provider value={{ open: nav, openNav: () => setNav(true) }}>
             <div className="flex h-full">
               <Sidebar onFind={() => setFind(true)} open={nav} onClose={closeNav} />
-              <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1">
+              {/* Behind the open drawer, the page takes neither focus nor pointer. */}
+              <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1" inert={nav}>
                 <Outlet />
               </main>
             </div>

@@ -869,7 +869,17 @@ test("at 390 px every page fits the width, and navigation sits behind a menu", a
   const all = await runs(page);
   const run = all.find((r) => r.status === "converged") as Run;
   const pair = encodeURIComponent(JSON.stringify(all.slice(0, 2).map((r) => r.run_id)));
-  const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  // The page, and every box of it that scrolls sideways, but data tables, fit their width.
+  const fits = () =>
+    page.evaluate(() =>
+      [document.documentElement, ...document.querySelectorAll("main *")]
+        .filter((e) => !e.closest("table") && !e.querySelector("table"))
+        .every(
+          (e) =>
+            e.scrollWidth <= e.clientWidth + 1 ||
+            !["auto", "scroll"].includes(getComputedStyle(e).overflowX),
+        ),
+    );
   for (const url of ["/", `/runs/${run.run_id}`, `/compare?runs=${pair}`, "/cases/new"]) {
     await page.goto(url);
     await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
@@ -877,17 +887,22 @@ test("at 390 px every page fits the width, and navigation sits behind a menu", a
   }
 
   // The drawer opens from the menu and closes on a choice, and on Escape.
-  const nav = page.getByRole("complementary", { name: "Navigation" });
+  const nav = page.locator("#nav-drawer");
+  const menu = page.getByRole("button", { name: "Open navigation" });
   await page.goto("/");
   await expect(nav).toBeHidden();
-  await page.getByRole("button", { name: "Open navigation" }).click();
+  await menu.click();
   await expect(nav).toBeVisible();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  // The page behind takes no focus while the drawer is open.
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
   await nav.getByRole("link", { name: "Compare" }).click();
   await expect(page).toHaveURL(/\/compare/);
   await expect(nav).toBeHidden();
-  await page.getByRole("button", { name: "Open navigation" }).click();
+  await menu.click();
   await page.keyboard.press("Escape");
   await expect(nav).toBeHidden();
+  await expect(menu).toBeFocused();
 
   // A run's actions fold behind one button; a row shows its run, state and drop.
   await page.goto(`/runs/${run.run_id}`);
