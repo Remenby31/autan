@@ -115,9 +115,12 @@ class Euler {
   /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
   /// The magnitudes of the terms each cell's residual sums (case-schema.md#time, round-off
-  /// floor): per equation, over the cell's faces, T = 1/2 (|F_L| + |F_R| + |F_L + F_R - 2F|) times
-  /// the area, the warp correction's and the source's magnitudes; the same face states as the
-  /// residual of `s`. Layout of the residual; ghost cells hold partial sums.
+  /// floor), from the same face states as the residual of `s`: per equation, over the cell's
+  /// faces, the area times T = 1/2 (|F_L| + |F_R| + |F_L + F_R - 2F| + J_L + J_R), J = s rho
+  /// (1, q + c, q + c, q + c, H) with s = |v . n| + c, plus for AUSM+-up K_p (p_L + p_R) /
+  /// (f_a a) (1, 0, 0, 0, H) in absolute pressures; then the warp correction's and the source's
+  /// magnitudes (docs/design/euler.md#precision). Layout of the residual; ghost cells hold the
+  /// partial sums of their owned faces.
   void floor_terms(std::span<const State> s, std::span<Res> terms);
   /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
   void assemble(std::span<const double> shift, BlockMatrix& a) const;

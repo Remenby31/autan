@@ -251,12 +251,15 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
   // iteration where every cell's residual is at most its floor, with status `floor`.
   const char* linear = GENERATE("multigrid", "gauss-seidel");
   INFO(linear);
-  const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
-    d["precision"] = "fp32+acc64";
-    d["time"]["linear_solver"] = linear;
-    d["time"]["max_iterations"] = 20000;
-    d["time"]["residual_orders"] = 10.0;
-  });
+  auto with = [&](const char* precision, int iterations) {
+    return input("hybrid-verification.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      d["time"]["linear_solver"] = linear;
+      d["time"]["max_iterations"] = iterations;
+      d["time"]["residual_orders"] = 10.0;
+    });
+  };
+  const auto doc = with("fp32+acc64", 20000);
   const auto out = run(doc);
   INFO(out.err);
   REQUIRE(out.status == ExitStatus::finished);
@@ -269,6 +272,31 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
     INFO(name);
     CHECK(ratio.get<double>() <= 1.0);
     CHECK(c["cells_at_floor"][name].get<double>() == 1.0);
+  }
+  // The floors certify the solution the run saved: continued, its first iteration is at its
+  // floor too.
+  auto more = with("fp32+acc64", info["iterations"].get<int>() + 1);
+  more["start"] = continue_from(out.run);
+  const auto next = run(more);
+  INFO(next.err);
+  REQUIRE(next.status == ExitStatus::finished);
+  const Json after = Json::parse(read(next.run / "run.json"));
+  CHECK(after["status"] == "floor");
+  CHECK(after["iterations"] == info["iterations"].get<int>() + 1);
+  // Independently of the floors: the solution agrees with the fp64 one converged ten orders
+  // within 256 eps32 of each field's magnitude (measured 1.9e-5 at most; with c = 64 the stop
+  // comes earlier and velocities differ by up to 1.2e-4).
+  const auto exact = run(with("fp64", 20000));
+  REQUIRE(Json::parse(read(exact.run / "run.json"))["status"] == "converged");
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    const auto a = field(exact.run, name), b = field(out.run, name);
+    double diff = 0.0, scale = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      diff = std::max(diff, std::abs(a[i] - b[i]));
+      scale = std::max(scale, std::abs(a[i]));
+    }
+    INFO(name << " differs by " << diff / scale << " of its magnitude");
+    CHECK(diff <= 256 * std::numeric_limits<float>::epsilon() * scale);
   }
 }
 

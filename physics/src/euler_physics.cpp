@@ -633,9 +633,11 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t c = 0; c < owned_; ++c) {
         const double r = std::abs(static_cast<double>(res_[k * n_ + c]));
         const double f = round_off_bound * unit * static_cast<double>(floor_[k * n_ + c]);
-        if (r <= f) ++report.floor_cells[k];
-        // 0 where both are 0; a residual above a zero floor, or not finite, is the largest ratio.
-        const double q = r == 0.0 ? 0.0 : r / f;
+        // 0 where both are 0; a residual above a zero floor, or a residual or floor that is not
+        // finite, is the largest ratio and not at its floor.
+        const bool finite = std::isfinite(r) && std::isfinite(f);
+        if (finite && r <= f) ++report.floor_cells[k];
+        const double q = !finite ? largest : r == 0.0 ? 0.0 : r / f;
         report.floor_ratio[k] =
             std::max(report.floor_ratio[k], std::isnan(q) ? largest : std::min(q, largest));
       }

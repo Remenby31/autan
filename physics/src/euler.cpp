@@ -38,7 +38,7 @@ struct Euler<P>::Impl {
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
-  std::vector<Res> floor;  // floor_terms(), allocated on first use
+  std::vector<Res> floor;  // floor_terms()
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
   GhostFill* ghosts = nullptr;
@@ -380,7 +380,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
 template <class P>
 void Euler<P>::floor_terms(std::span<const State> s, std::span<Res> terms) {
   auto& m = *impl_;
-  if (m.floor.empty()) m.floor.assign(5 * static_cast<std::size_t>(m.topo.n_cells), Res(0));
+  m.floor.assign(5 * static_cast<std::size_t>(m.topo.n_cells), Res(0));
   m.d.u = const_cast<State*>(s.data());
   m.d.floor_terms = m.floor.data();
   m.cell_loops(false, false);

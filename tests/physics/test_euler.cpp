@@ -612,14 +612,16 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
 TEST_CASE("the FP32 residual differs from the FP64 one by less than every cell's round-off floor",
           "[euler]") {
   // case-schema.md#time: |R32_ik - R64_ik| <= c u sum_f T_f,k from the same stored state, the
-  // FP64 residual standing for the exact one; low Mach numbers scale AUSM+-up's pressure
-  // diffusion by 1/fa, and every flux's dissipation by 1/M against |F|.
+  // FP64 residual standing for the exact one, over the configurations that declare c
+  // (docs/design/euler.md#precision); low Mach numbers scale AUSM+-up's pressure diffusion by
+  // 1/fa, and every flux's dissipation by 1/M against |F|.
   using autan::kernels::fp32_acc64;
   using autan::kernels::fp64;
   const char* file = GENERATE(from_range(meshes));
   const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
-  const double mach = GENERATE(0.03, 0.8, 2.0);
-  INFO(file << " flux " << static_cast<int>(flux) << " M " << mach);
+  const double mach = GENERATE(0.03, 0.3, 0.8, 2.0);
+  const bool limiter = GENERATE(true, false);
+  INFO(file << " flux " << static_cast<int>(flux) << " M " << mach << " limiter " << limiter);
   const Case c(file);
   const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
   const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
@@ -644,6 +646,7 @@ TEST_CASE("the FP32 residual differs from the FP64 one by less than every cell's
     for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
   }
   auto scheme = second_order(flux, mach);
+  scheme.limiter = limiter;
   scheme.reference = conserved(w);
   Euler<fp32_acc64> single(c.mesh, c.geometry, air, scheme);
   Euler<fp64> twice(c.mesh, c.geometry, air, scheme);
@@ -658,6 +661,7 @@ TEST_CASE("the FP32 residual differs from the FP64 one by less than every cell's
   single.floor_terms(s32, terms);
   const double unit = std::ldexp(1.0, -24);
   for (std::size_t k = 0; k < 5 * nc; ++k) {
+    REQUIRE(std::isfinite(terms[k]));
     CHECK(std::abs(r32[k] - r64[k]) <= autan::physics::round_off_bound * unit * terms[k]);
   }
 }
