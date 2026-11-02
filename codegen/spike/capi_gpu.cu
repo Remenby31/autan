@@ -314,7 +314,7 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     double own = 0.0;
     d.cell_volume = &own;
     // Staged in chunks of 7 values, so that every field crosses chunk boundaries.
-    autan::kernels::DeviceMesh dm(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
+    gpu::DeviceMesh dm(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
     dm.bind(d);
     out[0] = d.face_area != nullptr ? 1 : 0;
     out[1] = d.cell_volume == &own ? 1 : 0;
@@ -345,10 +345,10 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     const std::vector<double> weights = stencil.lsq_weight;
     stencil.twin.clear();
     stencil.lsq_weight.clear();
-    autan::kernels::DeviceMesh lean(m->mesh, m->packed, &stencil,
-                                    {.block = 128,
-                                     .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
-                                     .stencil_slice = 4});
+    gpu::DeviceMesh lean(m->mesh, m->packed, &stencil,
+                         {.block = 128,
+                          .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                          .stencil_slice = 4});
     lean.set_stencil_weights(weights);
     out[5] = lean.topology().stencil_twin == nullptr && lean.topology().stencil != nullptr ? 1 : 0;
     // A deterministic reduction adjoint over that stencil needs the twins: refused (E1106).
