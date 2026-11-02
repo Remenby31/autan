@@ -3,7 +3,8 @@
   "source": {
     "path": "heat-exchanger.msh",
     "format": "fluent",
-    "sha256": "2c5a776f8a65fd979846b7d589de0306154e9683cf3ed8298d3ea0c97b141dba"
+    "sha256": "2c5a776f8a65fd979846b7d589de0306154e9683cf3ed8298d3ea0c97b141dba",
+    "bytes": 412000000
   },
   "counts": {
     "cells": 1200000,
