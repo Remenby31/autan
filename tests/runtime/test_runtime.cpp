@@ -1715,11 +1715,17 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int gr
 // /proc/<pid>/stat: the state follows the last ')' of the command name). A rank reparented to a
 // parent that does not reap, such as a container's first process, stays a zombie.
 bool ended(pid_t pid) {
-  if (kill(pid, 0) != 0 && errno == ESRCH) return true;
-  std::ifstream in("/proc/" + std::to_string(pid) + "/stat");
-  const std::string stat((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto gone = [pid] { return kill(pid, 0) != 0 && errno == ESRCH; };
+  if (gone()) return true;
+  std::string stat;
+  {
+    std::ifstream in("/proc/" + std::to_string(pid) + "/stat");
+    std::getline(in, stat);
+  }
   const auto close = stat.rfind(')');
-  return close != std::string::npos && close + 2 < stat.size() && stat[close + 2] == 'Z';
+  if (close != std::string::npos && close + 2 < stat.size() && stat[close + 2] == 'Z') return true;
+  // Reaped between the two looks: its /proc entry went with it.
+  return gone();
 }
 
 std::vector<std::string> ranks_not_returned(const fs::path& exits, int ranks, int expected) {
