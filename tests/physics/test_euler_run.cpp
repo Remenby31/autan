@@ -981,6 +981,66 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
 }
 #endif
 
+TEST_CASE(
+    "the steady step's products are matrix-free from the step after the switch to second order",
+    "[euler]") {
+  // matrix-free-step.md: the first matrix-free step is logged once, the step after the one that
+  // switched to second order (SolverSecondOrder in the restart state: 0 two steps before, 1 one
+  // step before); runs continued just before it and inside the matrix-free phase repeat the
+  // uninterrupted run bit for bit, so no product leaks into the reported state or residual.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  auto doc = [&](int budget) {
+    return input("hybrid-verification.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  constexpr int budget = 80;
+  const auto whole = run(doc(budget));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  std::vector<int> starts;
+  std::istringstream log(read(whole.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    const auto e = Json::parse(line);
+    if (e["source"] == "linear" && e["level"] == "info" && e["iteration"].is_number() &&
+        e["message"].get<std::string>().starts_with("matrix-free")) {
+      starts.push_back(e["iteration"].get<int>());
+    }
+  }
+  REQUIRE(starts.size() == 1);
+  const int s = starts.front();
+  INFO("first matrix-free step " << s);
+  REQUIRE(s >= 3);
+  REQUIRE(s + 5 < budget);
+  auto second_order = [&](int steps) {
+    const auto r = run(doc(steps));
+    REQUIRE(r.status == ExitStatus::finished);
+    return std::pair{field(r.run, "SolverSecondOrder", "RestartState").front(), r.run};
+  };
+  const auto [before, run_before] = second_order(s - 2);
+  const auto [at, run_at] = second_order(s - 1);
+  CHECK(before == 0.0);
+  CHECK(at == 1.0);
+  const auto all = read(whole.run / "history.jsonl");
+  for (const auto& [from, steps] : {std::pair{run_at, s - 1}, std::pair{fs::path{}, s + 4}}) {
+    fs::path first = from;
+    if (first.empty()) {
+      const auto r = run(doc(steps));
+      REQUIRE(r.status == ExitStatus::finished);
+      first = r.run;
+    }
+    auto next = doc(budget);
+    next["start"] = continue_from(first);
+    const auto rest = run(next);
+    INFO(rest.err);
+    REQUIRE(rest.status == ExitStatus::finished);
+    CHECK(read(first / "history.jsonl") + read(rest.run / "history.jsonl") == all);
+  }
+}
+
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
   // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
   // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
