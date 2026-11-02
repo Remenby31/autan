@@ -388,6 +388,8 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await expect(page).not.toHaveURL(/slice=/);
   await page.mouse.click(box.x + 20, box.y + box.height - 20);
   await expect(picked).toHaveCount(0);
+  // Off the view: no readout over it.
+  await page.mouse.move(0, 0);
   await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
 
   // A link naming a field the slice does not carry shows its first field, in the legend and

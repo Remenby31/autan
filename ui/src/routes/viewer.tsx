@@ -373,18 +373,22 @@ function Viewer() {
   const [probed, setProbed] = useState<{ x: number; y: number; probe: Probe } | null>(null);
   const pending = useRef<{ x: number; y: number } | null>(null);
   const probing = useRef(false);
+  const hovering = useRef(false);
   const probeNext = async () => {
     probing.current = true;
     while (pending.current) {
       const { x, y } = pending.current;
       pending.current = null;
       const probe = await viewer.current?.probe(x, y);
-      setProbed(probe ? { x, y, probe } : null);
+      // The pointer may have left, or pressed a button, while the pixel was read.
+      setProbed(probe && hovering.current ? { x, y, probe } : null);
     }
     probing.current = false;
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    hovering.current = e.buttons === 0;
     if (e.buttons !== 0) {
+      pending.current = null;
       setProbed(null);
       return;
     }
@@ -393,6 +397,7 @@ function Viewer() {
     if (!probing.current) void probeNext();
   };
   const onPointerLeave = () => {
+    hovering.current = false;
     pending.current = null;
     setProbed(null);
   };

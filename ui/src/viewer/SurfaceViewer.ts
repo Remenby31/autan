@@ -243,16 +243,20 @@ export class SurfaceViewer {
   async probe(x: number, y: number): Promise<Probe | null> {
     const id = await this.idAt(x, y, true);
     if (id === null || !this.mesh || !this.surface) return null;
+    // Materials are swapped back on the objects they were taken from: the surface or the slice
+    // can be replaced while the pixel is read.
     const mesh = this.mesh;
     const materials = mesh.material;
-    const sliceMaterial = this.slice?.mesh.material;
-    mesh.material = this.zones.map(() => this.probeMaterial);
-    if (this.slice) this.slice.mesh.material = this.sliceProbeMaterial;
-    const pixel = (await this.pixelAt(x, y, this.probeTarget)) as Float32Array;
-    mesh.material = materials;
-    if (this.slice && sliceMaterial) this.slice.mesh.material = sliceMaterial;
-    this.requestRender();
+    const sliceMesh = this.slice?.mesh;
+    const sliceMaterial = sliceMesh?.material;
     const origin = this.surface.origin;
+    mesh.material = this.zones.map(() => this.probeMaterial);
+    if (sliceMesh) sliceMesh.material = this.sliceProbeMaterial;
+    const pending = this.pixelAt(x, y, this.probeTarget);
+    mesh.material = materials;
+    if (sliceMesh && sliceMaterial) sliceMesh.material = sliceMaterial;
+    const pixel = (await pending) as Float32Array;
+    this.requestRender();
     return {
       zone: id === SLICE_ID ? null : id,
       point: [0, 1, 2].map((k) => (pixel[k] ?? 0) + (origin[k] ?? 0)),
@@ -263,19 +267,22 @@ export class SurfaceViewer {
   // The id drawn at the pixel: zone index, SLICE_ID, or null for the background.
   private async idAt(x: number, y: number, withSlice: boolean): Promise<number | null> {
     if (!this.mesh) return null;
-    const materials = this.mesh.material;
-    const sliceMaterial = this.slice?.mesh.material;
-    this.mesh.material = this.pickMaterials;
-    if (this.slice) {
-      this.slice.mesh.visible = withSlice;
-      this.slice.mesh.material = this.sliceIdMaterial;
+    const mesh = this.mesh;
+    const materials = mesh.material;
+    const sliceMesh = this.slice?.mesh;
+    const sliceMaterial = sliceMesh?.material;
+    mesh.material = this.pickMaterials;
+    if (sliceMesh) {
+      sliceMesh.visible = withSlice;
+      sliceMesh.material = this.sliceIdMaterial;
     }
-    const pixel = (await this.pixelAt(x, y, this.pickTarget)) as Uint8Array;
-    this.mesh.material = materials;
-    if (this.slice && sliceMaterial) {
-      this.slice.mesh.visible = true;
-      this.slice.mesh.material = sliceMaterial;
+    const pending = this.pixelAt(x, y, this.pickTarget);
+    mesh.material = materials;
+    if (sliceMesh && sliceMaterial) {
+      sliceMesh.visible = true;
+      sliceMesh.material = sliceMaterial;
     }
+    const pixel = (await pending) as Uint8Array;
     this.requestRender();
     const id = (pixel[0] ?? 0) + 256 * (pixel[1] ?? 0);
     return id === 0 ? null : id - 1;
