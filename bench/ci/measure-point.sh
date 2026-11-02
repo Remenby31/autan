@@ -23,12 +23,12 @@ bench/lock/autan-gpu-lock -m "gpu-bench: build a bisection probe" -t 600 -- bash
 " >"$out/build.log" 2>&1 || exit 2
 
 # The machine's health, not a regression gate: a 5 % gate passes a machine a few % slow, on which
-# the bandwidth-bound loops read as regressed at every commit (bench/ci/stream-health.py).
+# the bandwidth-bound loops read as regressed at every commit (autan-bench health).
 stream=(stream --binary build/bench/stream --out "$out/stream.json")
 healthy=0
 for _ in 1 2 3; do
   "${bench[@]}" "${stream[@]}" || exit 2
-  bench/ci/stream-health.py "$out/stream.json" bench/baselines/gb10.json
+  "${bench[@]}" health "$out/stream.json" bench/baselines/gb10.json
   case $? in
     0) healthy=1; break ;;
     4) ;;
