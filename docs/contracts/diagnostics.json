@@ -136,7 +136,7 @@
     "E0119": {
       "severity": "error",
       "title": "Periodic faces do not match",
-      "fix": "Regenerate the mesh with conforming periodic faces, and check the translation.",
+      "fix": "Regenerate the mesh with conforming periodic faces, and check the translations.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0119"
     },
     "E0120": {
@@ -228,6 +228,12 @@
       "title": "Several ranks without MPI",
       "fix": "Run this build on one rank, or use a build with MPI, such as the dev image.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0146"
+    },
+    "W0150": {
+      "severity": "warning",
+      "title": "Periodic nodes moved",
+      "fix": "Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0150"
     },
     "E0201": {
       "severity": "error",
@@ -402,6 +408,24 @@
       "title": "Point-vortex surfaces match no wall",
       "fix": "Give a pattern that matches the walls of the lifting body, e.g. `surfaces=\"wing.*\"`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0425"
+    },
+    "E0426": {
+      "severity": "error",
+      "title": "Coupled turbulence not applicable",
+      "fix": "Remove `coupled_turbulence=True`, or use compressible SA physics.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0426"
+    },
+    "W0426": {
+      "severity": "warning",
+      "title": "Coupled turbulence outside its validated domain",
+      "fix": "Compare with a run without the option before relying on the result.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0426"
+    },
+    "E0427": {
+      "severity": "error",
+      "title": "Coupled turbulence needs the host multigrid",
+      "fix": "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0427"
     },
     "E0501": {
       "severity": "error",

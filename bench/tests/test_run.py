@@ -285,3 +285,61 @@ def test_a_gated_binary_s_helpers_neither_outlive_it_nor_hold_its_output(fake_gp
     helper = int(pid_file.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(helper, 0)
+
+
+def test_run_records_the_host_s_activity_around_the_measurement(fake_gpu, tmp_path, monkeypatch):
+    # #400: the host's own counters before and after, never another tenant's container; read on
+    # Linux only (the fixture's macOS variant records none).
+    linux = sys.platform == "linux"
+    fake = tmp_path / "proc"
+    (fake / "pressure").mkdir(parents=True)
+    (fake / "loadavg").write_text("1.0 2.0 3.0 1/10 99\n")
+    (fake / "stat").write_text("procs_running 2\nprocs_blocked 0\n")
+    (fake / "pressure" / "cpu").write_text("some avg10=0.50 avg60=0.40 avg300=0.30 total=10\n")
+    (fake / "vmstat").write_text("pgscan_direct 3\ncompact_stall 1\n")
+    (fake / "meminfo").write_text("MemFree: 4 kB\nMemAvailable: 8 kB\n")
+    monkeypatch.setattr(gpu, "PROC", fake)
+    out = tmp_path / "r.json"
+    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu()), "--precision", "fp32"]
+    assert main([*argv, "--out", str(out), "--lock", str(tmp_path / "lock"), "--", "--x", "1"]) == 0
+    conditions = json.loads(out.read_text())["conditions"]
+    if not linux:
+        assert "host_activity" not in conditions
+        return
+    activity = conditions["host_activity"]
+    for side in ("before", "after"):
+        assert activity[side]["loadavg"] == [1.0, 2.0, 3.0]
+        assert activity[side]["vmstat"] == {"pgscan_direct": 3, "compact_stall": 1}
+        assert activity[side]["pressure"]["cpu"]["some"]["avg10"] == 0.5
+
+
+def test_the_host_activity_brackets_the_run_itself(fake_gpu, tmp_path, monkeypatch):
+    # Before: right before the binary starts; after: right after it returns, before the sampler
+    # stops and the after-load sampling (#400), so that later activity does not enter the delta.
+    if sys.platform != "linux":
+        pytest.skip("the fixture's macOS variant records no host activity")
+    events: list[str] = []
+    real_activity, real_load = gpu.host_activity, gpu.host_load
+    busy = tmp_path / "busy"
+
+    def activity():
+        events.append("activity:" + ("running" if busy.exists() else "idle"))
+        return real_activity()
+
+    def load():
+        events.append("load")
+        return real_load()
+
+    real_exit = gpu.Sampler.__exit__
+
+    def sampler_exit(self, *exc):
+        events.append("sampler-exit")
+        return real_exit(self, *exc)
+
+    monkeypatch.setattr(gpu, "host_activity", activity)
+    monkeypatch.setattr(gpu, "host_load", load)
+    monkeypatch.setattr(gpu.Sampler, "__exit__", sampler_exit)
+    out = tmp_path / "r.json"
+    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu()), "--precision", "fp32"]
+    assert main([*argv, "--out", str(out), "--lock", str(tmp_path / "lock"), "--", "--x", "1"]) == 0
+    assert events == ["load", "activity:idle", "activity:idle", "sampler-exit", "load"]
