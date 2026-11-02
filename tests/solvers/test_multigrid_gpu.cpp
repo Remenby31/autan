@@ -178,3 +178,24 @@ TEST_CASE("restricting signed zeros gives +0.0, as a sum that starts from +0.0",
     CHECK_FALSE(std::signbit(v));
   }
 }
+
+TEST_CASE("an agglomerate of more than eight nodes restricts in increasing host index",
+          "[multigrid][gpu]") {
+  // Twelve fine nodes in coarse node 1, two in coarse node 0, interleaved.
+  std::vector<Level> levels(2);
+  levels[0].n_nodes = 14;
+  levels[0].coarse_node = {1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1};
+  levels[1].n_nodes = 2;
+  const autan::solvers::gpu::Transfers transfers(levels);
+  const auto r = spread(5 * 14, 7);
+  std::vector<double> bc(10, 0.0);
+  for (std::size_t c = 0; c < 5; ++c) {
+    for (std::size_t i = 0; i < 14; ++i) {
+      bc[c * 2 + static_cast<std::size_t>(levels[0].coarse_node[i])] += r[c * 14 + i];
+    }
+  }
+  const Device dr(r);
+  const Device dbc(std::vector<double>(10, 1.0));
+  transfers.restrict_residual(0, dr.get(), dbc.get());
+  CHECK(same_bits(to_host(dbc.host(), transfers.order(1)), bc));
+}
