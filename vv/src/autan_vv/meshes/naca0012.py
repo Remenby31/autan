@@ -192,27 +192,70 @@ def grid(nc: int) -> tuple[FloatArray, dict[str, IntArray], dict[str, IntArray]]
     return pts, {"hex": hexes}, boundary
 
 
-def generate_level(nc: int, path: Path | None = None) -> tuple[FaceMesh, str]:
-    """Level NC as a FaceMesh, optionally written to `path` as MSH 4.1 ASCII; returns the Gmsh version.
+def write_msh(
+    points: FloatArray, hexes: IntArray, boundary: dict[str, IntArray], path: Path
+) -> None:
+    """Write hexahedra and their labelled quadrilateral faces as MSH 4.1 ASCII.
 
-    Coordinates are rounded to the 16 significant digits Gmsh writes, so file and memory agree.
+    The file is byte for byte the one Gmsh 4.15 writes for the same discrete model (one volume
+    entity holding every node, one surface entity per zone, physical groups named after the zones,
+    then `fluid`), without Gmsh, which has no linux-aarch64 build. Coordinates are written to 16
+    significant digits, as Gmsh does.
+    """
+
+    def g(v: float) -> str:
+        return f"{v:.16g}"
+
+    def bbox(ids: IntArray) -> str:
+        p = points[np.unique(ids)]
+        return " ".join(g(float(v)) for v in (*p.min(axis=0), *p.max(axis=0)))
+
+    names = list(boundary)
+    quads = [boundary[name][:, :4] for name in names]
+    n_nodes, n_hex = points.shape[0], hexes.shape[0]
+    total = n_hex + sum(q.shape[0] for q in quads)
+    with path.open("w") as f:
+        f.write("$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$PhysicalNames\n")
+        f.write(f"{len(names) + 1}\n")
+        f.writelines(f'2 {k + 1} "{name}"\n' for k, name in enumerate(names))
+        f.write(f'3 {len(names) + 1} "{families.CELL_ZONE}"\n$EndPhysicalNames\n$Entities\n')
+        f.write(f"0 0 {len(names)} 1\n")
+        f.writelines(f"{k + 1} {bbox(q)} 1 {k + 1} 0 \n" for k, q in enumerate(quads))
+        f.write(f"1 {bbox(hexes)} 1 {len(names) + 1} 0 \n$EndEntities\n$Nodes\n")
+        f.write(f"{len(names) + 1} {n_nodes} 1 {n_nodes}\n")
+        f.writelines(f"2 {k + 1} 0 0\n" for k in range(len(names)))
+        f.write(f"3 1 0 {n_nodes}\n")
+        f.writelines(f"{t}\n" for t in range(1, n_nodes + 1))
+        f.writelines(f"{g(x)} {g(y)} {g(z)}\n" for x, y, z in points.tolist())
+        f.write(f"$EndNodes\n$Elements\n{len(names) + 1} {total} 1 {total}\n")
+        tag = n_hex + 1
+        for k, q in enumerate(quads):
+            f.write(f"2 {k + 1} 3 {q.shape[0]}\n")
+            f.writelines(
+                f"{tag + i} {a + 1} {b + 1} {c + 1} {d + 1} \n"
+                for i, (a, b, c, d) in enumerate(q.tolist())
+            )
+            tag += q.shape[0]
+        f.write(f"3 1 5 {n_hex}\n")
+        f.writelines(
+            f"{i + 1} " + " ".join(str(v + 1) for v in row) + " \n"
+            for i, row in enumerate(hexes.tolist())
+        )
+        f.write("$EndElements\n")
+
+
+def generate_level(nc: int, path: Path | None = None) -> FaceMesh:
+    """Level NC as a FaceMesh, optionally written to `path` as MSH 4.1 ASCII (`write_msh`).
+
+    Coordinates are rounded to the 16 significant digits the file holds, so file and memory agree.
     """
     points, cells, boundary = grid(nc)
     points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
     mesh = families._to_facemesh(points, cells, boundary)
     mesh.check()
-    gmsh = families._gmsh()
-    gmsh.initialize(readConfigFiles=False)
-    try:
-        gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.option.setNumber("Mesh.MshFileVersion", 4.1)
-        gmsh.option.setNumber("Mesh.Binary", 0)
-        version = str(gmsh.__version__)
-        if path is not None:
-            families._write_msh(gmsh, points, cells, boundary, path)
-    finally:
-        gmsh.finalize()
-    return mesh, version
+    if path is not None:
+        write_msh(points, cells["hex"], boundary, path)
+    return mesh
 
 
 def generate_family(
@@ -223,13 +266,14 @@ def generate_family(
     The manifest's h is the in-plane size sqrt(area / cells), the measure of a 2D refinement study.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    records, meshes, version = [], [], ""
+    records, meshes = [], []
     for nc in levels:
         path = out_dir / f"naca0012-n{nc:04d}.msh"
-        mesh, version = generate_level(nc, path)
+        mesh = generate_level(nc, path)
         record = families.level_record(nc, path, mesh)
         records.append(replace(record, h=math.sqrt(record.volume / SPAN / mesh.n_cells)))
         meshes.append(mesh)
-    family = families.Family("naca0012", 0.0, 0, version, tuple(records))
+    # Written without Gmsh (`write_msh`).
+    family = families.Family("naca0012", 0.0, 0, "none", tuple(records))
     families.write_manifest(family, out_dir)
     return family, meshes
