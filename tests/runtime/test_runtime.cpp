@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <random>
 #include <regex>
@@ -21,6 +23,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
 #include <fcntl.h>
+#include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <signal.h>
@@ -28,6 +31,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -1245,6 +1249,30 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
                   }),
                   "E0707");
   }
+  SECTION("the previous solution keeps data in another file") {
+    // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's
+    // structure alone: the donor is gone when the run starts.
+    const auto form =
+        GENERATE(autan_test::Outside::cgns_link, autan_test::Outside::external_link,
+                 autan_test::Outside::external_storage, autan_test::Outside::virtual_dataset);
+    CAPTURE(autan_test::outside_name(form));
+    const fs::path previous = fresh_dir();
+    fs::copy_file(a.run / "solution.cgns", previous / "solution.cgns");
+    std::string control;
+    const std::string node = autan_test::move_outside(previous / "solution.cgns", form,
+                                                      previous / "donor", 1.5, control);
+    for (const double v : autan_test::read_doubles(previous / "solution.cgns", control))
+      CHECK(v == 1.5);
+    fs::remove(previous / "donor");
+    const Outcome o = from([&](Json& d) {
+      d["start"]["run"] = previous.string();
+      d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
+    });
+    require_error(o, "E0134");
+    const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
+    CHECK(refusal["data"]["node"] == node);
+    CHECK(refusal["location"]["path"] == "start.run");
+  }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.
     const fs::path copy = fresh_dir() / "polyMesh";
@@ -1746,6 +1774,23 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int gr
   return w;
 }
 
+// The ranks of a run, by the markers relaxation_main.cpp writes once
+// run_main returns ("<status> <pid>\n" in exit-<rank>): those whose marker is
+// missing or malformed, holds another status, or whose process still exists.
+std::vector<std::string> ranks_not_returned(const fs::path& exits, int ranks, int expected) {
+  std::vector<std::string> wrong;
+  const std::regex marker(R"(^(\d+) (\d+)\n$)");
+  for (int r = 0; r < ranks; ++r) {
+    std::ifstream in(exits / ("exit-" + std::to_string(r)));
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::smatch m;
+    const bool ok = std::regex_match(text, m, marker) && std::stoi(m[1]) == expected &&
+                    kill(static_cast<pid_t>(std::stol(m[2])), 0) != 0 && errno == ESRCH;
+    if (!ok) wrong.push_back(std::to_string(r));
+  }
+  return wrong;
+}
+
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
@@ -1770,7 +1815,16 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
+  // Each rank writes its exit status to exit-<rank> (relaxation_main.cpp), in
+  // the directory the test names or in exits/.
+  fs::path exits = dir / "exits";
+  for (const auto& o : options) {
+    if (o.starts_with("AUTAN_TEST_EXIT_DIR=")) exits = o.substr(20);
+  }
+  fs::create_directories(exits);
+  REQUIRE(fs::is_empty(exits));  // no marker of another launch
   std::vector<std::string> env = options;
+  env.push_back("AUTAN_TEST_EXIT_DIR=" + exits.string());
   for (char** e = environ; *e != nullptr; ++e) env.emplace_back(*e);
   std::vector<char*> envp;
   for (auto& e : env) envp.push_back(e.data());
@@ -1785,8 +1839,22 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   posix_spawn_file_actions_destroy(&actions);
   int status = 0;
   REQUIRE(waitpid(pid, &status, 0) == pid);
-  REQUIRE(WIFEXITED(status));
-  CHECK(WEXITSTATUS(status) == expected_status);
+  if (WIFSIGNALED(status)) {
+    // #304: the launcher can hang in its cleanup once every rank has ended,
+    // and the CI watchdog then kills it. The run is judged by the ranks
+    // themselves: every one must have returned with the expected status.
+    const auto wrong = ranks_not_returned(exits, ranks, expected_status);
+    INFO("launcher ended by signal " << WTERMSIG(status)
+                                     << "; ranks not returned as expected: " << wrong.size());
+    REQUIRE(wrong.empty());
+    WARN("launcher killed after every rank ended (#304)");
+  } else {
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == expected_status);
+    // A run every rank finishes leaves each rank's status, as the watchdog's
+    // judgement above reads it (a failing rank may end the others first).
+    if (expected_status == 0) CHECK(ranks_not_returned(exits, ranks, 0).empty());
+  }
   if (diagnostic != nullptr) {
     std::ifstream in(err_file);
     for (std::string line; std::getline(in, line);) {
@@ -1802,6 +1870,33 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
 }
 
 }  // namespace
+
+TEST_CASE("A launcher killed after its ranks is judged by their markers", "[runtime]") {
+  // #304: a rank counts as returned only by a well-formed "<status> <pid>\n"
+  // marker of the expected status whose process no longer exists.
+  const fs::path exits = fresh_dir();
+  const pid_t gone = fork();
+  if (gone == 0) _exit(0);
+  int ended = 0;
+  REQUIRE(waitpid(gone, &ended, 0) == gone);
+  const std::string finished = std::to_string(gone);
+  const auto marker = [&](int r, const std::string& text) {
+    std::ofstream(exits / ("exit-" + std::to_string(r))) << text;
+  };
+  marker(0, "2 " + finished + "\n");
+  marker(1, "2 " + finished + "\n");
+  CHECK(ranks_not_returned(exits, 2, 2).empty());
+  CHECK(ranks_not_returned(exits, 2, 0) == std::vector<std::string>{"0", "1"});
+  CHECK(ranks_not_returned(exits, 3, 2) == std::vector<std::string>{"2"});
+  for (const std::string& text :
+       std::vector<std::string>{"garbage\n", "2\n", "2 " + finished + "\n1\n", "2 " + finished}) {
+    CAPTURE(text);
+    marker(1, text);
+    CHECK(ranks_not_returned(exits, 2, 2) == std::vector<std::string>{"1"});
+  }
+  marker(1, "2 " + std::to_string(getpid()) + "\n");  // a process that still runs
+  CHECK(ranks_not_returned(exits, 2, 2) == std::vector<std::string>{"1"});
+}
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to

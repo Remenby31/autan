@@ -10,11 +10,14 @@
 
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
+#include <hdf5.h>
+#include <nlohmann/json.hpp>
 
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "fixtures.hpp"
+#include "outside_data.hpp"
 #include "support.hpp"
 
 using autan::index_t;
@@ -193,6 +196,37 @@ TEST_CASE("CGNS files outside the supported layout are coded errors", "[cgns]") 
     CHECK(mesh.n_cells() == 1);
     CHECK(zone_named(mesh, "unassigned").boundary);
   }
+}
+
+TEST_CASE("A CGNS file whose data lives in another file is refused before any read", "[cgns]") {
+  // mesh.md, E0134: a CGNS link, an HDF5 external link, a dataset with external storage or a
+  // virtual dataset, in a mesh or a solution. HDF5 first reads the donor's values through the
+  // file (the control that the form is real); with the donor gone, a read of it would fail
+  // with another code, so E0134 and its node come from the file's structure alone.
+  const auto form = GENERATE(Outside::cgns_link, Outside::external_link, Outside::external_storage,
+                             Outside::virtual_dataset);
+  CAPTURE(outside_name(form));
+  const autan::Mesh mesh = autan::io::read_mesh(data_dir / "hex" / "polyMesh");
+  const fs::path dir = temp_dir() / ("outside-" + std::to_string(static_cast<int>(form)));
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  const fs::path file = dir / "solution.cgns";
+  autan::io::write_solution(file, mesh, solution_for(mesh));
+  std::string control;
+  const std::string node = move_outside(file, form, dir / "donor", 7.25, control);
+  for (const double v : read_doubles(file, control)) CHECK(v == 7.25);
+  fs::remove(dir / "donor");
+  const auto refused = [&](auto read) {
+    try {
+      read();
+      FAIL("expected E0134");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::io_external_reference);
+      CHECK(nlohmann::json::parse(e.data_json()) == nlohmann::json{{"node", node}});
+    }
+  };
+  refused([&] { (void)autan::io::read_mesh(file); });
+  refused([&] { (void)autan::io::read_solution(file); });
 }
 
 TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {

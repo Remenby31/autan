@@ -36,7 +36,7 @@ class Gpu {
   void* stream_ = nullptr;
   std::string name_;
   [[maybe_unused]] std::int64_t free_at_start_ = 0;
-  std::int64_t last_ = 0;
+  [[maybe_unused]] std::int64_t last_ = 0;
   std::int64_t peak_ = 0;
 };
 

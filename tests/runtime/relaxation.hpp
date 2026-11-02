@@ -596,6 +596,15 @@ inline void check_groups(const autan::runtime::PhysicsContext& context, int n,
   }
 }
 
+// This process's rank as its launcher names it: Open MPI's variable, then
+// PMIx's (PRRTE 4 sets only it), then the PMI one; nullptr outside a launcher.
+inline const char* launcher_rank() {
+  for (const char* name : {"OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK"}) {
+    if (const char* rank = std::getenv(name)) return rank;
+  }
+  return nullptr;
+}
+
 inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions options) {
   autan::runtime::PhysicsRegistry registry;
   // Cells per group, recorded when the runtime asks for the groups, and how many times it did.
@@ -609,8 +618,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   }
   if (options.groups == -2) {
     groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
-      const char* rank = std::getenv("OMPI_COMM_WORLD_RANK");
-      if (rank == nullptr) rank = std::getenv("PMI_RANK");
+      const char* rank = launcher_rank();
       if (rank == nullptr) throw std::runtime_error("no launcher rank");
       if (std::string(rank) == "1")
         throw autan::Error(autan::ErrorCode::partition_invalid_request, "rank 1 refuses");
