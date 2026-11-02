@@ -514,6 +514,28 @@ test("a mesh without a 3D view lists its zones to pick from", async ({ page }) =
   const rule = page.getByRole("group", { name: "Boundary rule 1" });
   await expect(rule.getByLabel("Zones")).toHaveValue("symmetry");
   await expect(rule.getByLabel("Condition")).toHaveValue("symmetry");
+
+  // However tall the refusal laid over the stage, the last zone scrolls clear of it.
+  await page.setViewportSize({ width: 860, height: 600 });
+  for (const label of ["Mach", "Reynolds number"]) {
+    await page.getByLabel(label, { exact: true }).fill("-1");
+  }
+  await expect(page.getByTestId("stage")).toContainText("E0304");
+  const last = list.getByRole("button").last();
+  await last.evaluate((el) => el.closest(".overflow-auto")?.scrollTo(0, 1e6));
+  await expect
+    .poll(async () => {
+      const button = await last.boundingBox();
+      const stage = await page.getByTestId("stage").boundingBox();
+      const cover = await page
+        .getByTestId("stage")
+        .evaluate((el) =>
+          Number.parseFloat(getComputedStyle(el).getPropertyValue("--overlay-bottom")),
+        );
+      if (!button || !stage) return false;
+      return button.y + button.height <= stage.y + stage.height - 16 - cover;
+    })
+    .toBe(true);
 });
 
 test("a new case asks for what it lacks before showing errors", async ({ page }) => {

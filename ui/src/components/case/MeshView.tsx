@@ -132,8 +132,8 @@ export function MeshView({
         }}
       />
       {error && (
-        // Below the legend, and with room to scroll every zone above the plan laid over the stage.
-        <div className="absolute inset-0 overflow-auto bg-bg-0 px-16 pt-24 pb-[50vh]">
+        // Clear of what lies over the stage (its --overlay-top and --overlay-bottom heights).
+        <div className="absolute inset-0 overflow-auto bg-bg-0 px-16 pt-[calc(var(--overlay-top,0px)+2rem)] pb-[calc(var(--overlay-bottom,0px)+2rem)]">
           <div className="mx-auto flex max-w-xl flex-col gap-3">
             <p className="m-0 text-fg-2 text-sm">
               {error.includes("404")

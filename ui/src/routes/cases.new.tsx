@@ -130,6 +130,22 @@ function CaseEditor() {
   const [codeTab, setCodeTab] = useState<string>("python");
   const showCode = useRef<HTMLButtonElement>(null);
   const hideCode = useRef<HTMLButtonElement>(null);
+  // The heights of what lies over the stage, as --overlay-top and --overlay-bottom on it: what
+  // is drawn under them (the zone list of a mesh without a 3D view) keeps clear of them.
+  const stage = useRef<HTMLElement>(null);
+  const overlayTop = useRef<HTMLDivElement>(null);
+  const overlayBottom = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const observer = new ResizeObserver(() => {
+      const top = overlayTop.current?.offsetHeight ?? 0;
+      const bottom = overlayBottom.current?.offsetHeight ?? 0;
+      stage.current?.style.setProperty("--overlay-top", `${top}px`);
+      stage.current?.style.setProperty("--overlay-bottom", `${bottom}px`);
+    });
+    for (const element of [overlayTop.current, overlayBottom.current])
+      if (element) observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const toggleCode = (open: boolean) => {
     setCodeOpen(open);
     requestAnimationFrame(() => (open ? hideCode : showCode).current?.focus());
@@ -656,7 +672,11 @@ function CaseEditor() {
 
         <div className="relative flex min-h-0 min-w-0">
           {/* The mesh fills the stage; what concerns it lies over it. */}
-          <section className="relative min-w-0 flex-1 overflow-hidden bg-bg-0" data-testid="stage">
+          <section
+            ref={stage}
+            className="relative min-w-0 flex-1 overflow-hidden bg-bg-0"
+            data-testid="stage"
+          >
             {form.mesh ? (
               <MeshView
                 mesh={form.mesh}
@@ -671,7 +691,10 @@ function CaseEditor() {
                 Choose a mesh to see its boundary.
               </p>
             )}
-            <div className="pointer-events-none absolute inset-x-4 top-4 flex max-h-[45%] max-w-xl flex-col items-start gap-2 overflow-y-auto [&>*]:pointer-events-auto">
+            <div
+              ref={overlayTop}
+              className="pointer-events-none absolute inset-x-4 top-4 flex max-h-[45%] max-w-xl flex-col items-start gap-2 overflow-y-auto [&>*]:pointer-events-auto"
+            >
               {form.mesh && byKind.size > 0 && (
                 <ul
                   className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1 rounded-lg border border-line bg-glass px-3 py-2 text-fg-2 text-sm backdrop-blur"
@@ -726,7 +749,10 @@ function CaseEditor() {
             <p role="status" className="sr-only">
               {announcement}
             </p>
-            <div className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2">
+            <div
+              ref={overlayBottom}
+              className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2"
+            >
               <div className="min-w-0">
                 {rendered.data?.ok === false ? (
                   <div className="pointer-events-auto max-h-[40vh] w-fit max-w-2xl overflow-y-auto rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
