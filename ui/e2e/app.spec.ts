@@ -397,6 +397,73 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await expect(view).toHaveAttribute("data-slice-field", firstField);
 });
 
+// Density = x + 2y + 3z at each cell's centroid (the mean of its nodes, a hexahedron's centroid):
+// the manufactured field of a run's solution.cgns, written by h5py from its own connectivity.
+const MANUFACTURE = `
+import sys, h5py, numpy as np
+with h5py.File(sys.argv[1], "r+") as tree:
+    zone = tree["Base"]["Zone"]
+    coords = np.stack([zone["GridCoordinates"][f"Coordinate{a}"][" data"][()] for a in "XYZ"], 1)
+    fs = zone["NGonElements"]["ElementStartOffset"][" data"][()]
+    fn = zone["NGonElements"]["ElementConnectivity"][" data"][()] - 1
+    cs = zone["NFaceElements"]["ElementStartOffset"][" data"][()]
+    cf = np.abs(zone["NFaceElements"]["ElementConnectivity"][" data"][()]) - 1
+    values = []
+    for c in range(len(cs) - 1):
+        nodes = np.unique(np.concatenate([fn[fs[f]:fs[f + 1]] for f in cf[cs[c]:cs[c + 1]]]))
+        values.append(coords[nodes].mean(axis=0) @ [1.0, 2.0, 3.0])
+    zone["FlowSolution"]["Density"][" data"][...] = values
+`;
+
+test("hovering a slice reads the value drawn there and where it is", async ({ page }) => {
+  const dir = mkdtempSync(join(tmpdir(), "autan-probe-"));
+  const name = `probe-${Date.now()}`;
+  writeFileSync(
+    join(dir, "case.py"),
+    readFileSync("../py/examples/crm_hl.py", "utf8").replace('"crm-hl"', `"${name}"`),
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
+  ]);
+  const run = (await runs(page)).find((r) => r.case.name === name) as Run;
+  try {
+    const solution = join(RUNS, run.run_id, "solution.cgns");
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c", MANUFACTURE, solution],
+    ]);
+    await page.goto(`/viewer?run=${run.run_id}&slice=y&at=0.4&sliceField=Density`);
+    await expect(page.getByTestId("slice-legend")).toContainText("slice · Density");
+    await expect(page.getByTestId("viewport")).toHaveAttribute("data-slice-field", "Density");
+    const box = await page.getByTestId("viewport").boundingBox();
+    if (!box) throw new Error("no viewport");
+
+    // Off the centre, away from the lines where cells meet in the default view.
+    await page.mouse.move(box.x + box.width * 0.47, box.y + box.height * 0.43);
+    const probe = page.getByTestId("probe");
+    await expect(probe).toContainText("slice ·");
+    await expect(probe).toContainText("Density");
+    const point = ((await probe.getAttribute("data-point")) ?? "").split(",").map(Number);
+    const value = Number(await probe.getAttribute("data-value"));
+    // On the plane, inside the unit cube; the value is that of a cell holding the point (one
+    // of two where it lies on a face between cells, to FP32 rounding).
+    const tolerance = 64 * 2 ** -23;
+    expect(Math.abs((point[1] ?? 0) - 0.4)).toBeLessThan(1e-3);
+    const cells = (v: number) =>
+      [v - 1e-4, v + 1e-4].map((u) => (Math.min(7, Math.max(0, Math.floor(u * 8))) + 0.5) / 8);
+    const expected = cells(point[0] ?? 0).flatMap((x) =>
+      cells(point[1] ?? 0).flatMap((y) => cells(point[2] ?? 0).map((z) => x + 2 * y + 3 * z)),
+    );
+    expect(expected.some((e) => Math.abs(value - e) < tolerance * 6)).toBe(true);
+
+    await page.mouse.move(box.x + 4, box.y + 4);
+    await expect(probe).toHaveCount(0);
+  } finally {
+    rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
   // py/examples/crm_hl.py: M 0.2, α 19.57°, Re 5.49e6, SA, on crm-hl.cgns.
   const registry = await (await page.request.get("/api/runs")).json();

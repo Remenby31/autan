@@ -13,7 +13,7 @@ import { RelativeTime } from "../components/ui/RelativeTime";
 import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
 import { colormapFor, cssGradient, displayRange } from "../viewer/colormap";
-import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
+import { type Backend, type Probe, SurfaceViewer } from "../viewer/SurfaceViewer";
 import { slicePlane } from "../viewer/slice";
 
 interface Search {
@@ -149,6 +149,38 @@ function shownField(surface: Surface, name: string): string {
 
 const format = (v: number) =>
   Math.abs(v) >= 1e4 || (v !== 0 && Math.abs(v) < 1e-2) ? v.toExponential(2) : v.toFixed(3);
+
+/** The field's value at the probed point, beside the pointer: what is drawn there, with the
+ * point and the zone (or the slice) it lies on. */
+function ProbeReadout({
+  probed,
+  name,
+  where,
+}: {
+  probed: { x: number; y: number; probe: Probe };
+  name: string;
+  where: string;
+}) {
+  const { x, y, probe } = probed;
+  const unit = UNITS[name];
+  return (
+    <div
+      className="pointer-events-none absolute rounded-md border border-line bg-glass px-2 py-1 font-mono text-xs backdrop-blur"
+      style={{ left: x + 14, top: y + 14 }}
+      data-testid="probe"
+      data-value={probe.value}
+      data-point={probe.point.join(",")}
+    >
+      <div className="text-fg-1">
+        {name} {format(probe.value)}
+        {unit ? ` ${unit}` : ""}
+      </div>
+      <div className="text-fg-3">
+        {where} · {probe.point.map((v, k) => `${"xyz"[k]} ${format(v)}`).join(" ")}
+      </div>
+    </div>
+  );
+}
 
 /** A field's colour scale and its range, or "uniform" and its value when the field is. */
 function Legend({
@@ -336,6 +368,35 @@ function Viewer() {
     setSelected(zone ?? null);
   };
 
+  // The value under the pointer: one probe at a time, the latest position when it ends; none
+  // while a button is held (the camera is moving).
+  const [probed, setProbed] = useState<{ x: number; y: number; probe: Probe } | null>(null);
+  const pending = useRef<{ x: number; y: number } | null>(null);
+  const probing = useRef(false);
+  const probeNext = async () => {
+    probing.current = true;
+    while (pending.current) {
+      const { x, y } = pending.current;
+      pending.current = null;
+      const probe = await viewer.current?.probe(x, y);
+      setProbed(probe ? { x, y, probe } : null);
+    }
+    probing.current = false;
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.buttons !== 0) {
+      setProbed(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    pending.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (!probing.current) void probeNext();
+  };
+  const onPointerLeave = () => {
+    pending.current = null;
+    setProbed(null);
+  };
+
   const field = surface?.fields.find((f) => f.name === fieldName) ?? surface?.fields[0];
   return (
     <>
@@ -374,11 +435,22 @@ function Viewer() {
         <canvas
           ref={canvas}
           onClick={onClick}
+          onPointerMove={onPointerMove}
+          onPointerLeave={onPointerLeave}
           className="block h-full w-full touch-none"
           aria-label="3D surface"
           data-testid="viewport"
           data-slice-field={drawn ?? ""}
         />
+        {probed && (
+          <ProbeReadout
+            probed={probed}
+            name={probed.probe.zone === null ? (cutField?.name ?? "") : (field?.name ?? "")}
+            where={
+              probed.probe.zone === null ? "slice" : (surface?.zones[probed.probe.zone]?.name ?? "")
+            }
+          />
+        )}
         {error && <p className="absolute top-4 left-4 m-0 text-danger">{error}</p>}
         {surface && (
           <aside
