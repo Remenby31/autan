@@ -36,6 +36,7 @@
 #include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
+#include "host_memory.hpp"
 #include "run_directory.hpp"
 
 namespace autan::runtime {
@@ -132,9 +133,10 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
-  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
-  std::optional<StartState> start;          // input.start, read and checked
-  Json start_averaging;                     // `continue`: the previous run's averaging
+  const PartitionGroups* groups = nullptr;   // the physics' groups; null or empty: none
+  std::optional<Diagnostic> memory_warning;  // W0712: started beyond its memory
+  std::optional<StartState> start;           // input.start, read and checked
+  Json start_averaging;                      // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -636,7 +638,57 @@ void load_initial(Prepared& p) {
   p.state_files.emplace(found, bytes);
 }
 
-Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
+// solver-input.md, `memory`: the memory one rank needs beyond what its host can still give it
+// less the margin, as {required, available}; nullopt when it fits. The ranks of a host share
+// its memory, and its devices in turn (Gpu).
+std::optional<std::pair<std::int64_t, std::int64_t>> memory_shortfall(const SolverInput& in,
+                                                                      const Comm& comm,
+                                                                      std::int64_t margin) {
+  const auto times = [](std::int64_t n, std::int64_t bytes) {
+    constexpr std::int64_t top = std::numeric_limits<std::int64_t>::max();
+    return bytes > top / n ? top : n * bytes;
+  };
+  const auto short_of =
+      [&](std::int64_t required,
+          std::int64_t available) -> std::optional<std::pair<std::int64_t, std::int64_t>> {
+    if (required > available - margin) return std::pair{required, available};
+    return std::nullopt;
+  };
+  const std::int64_t ranks = comm.local_size();
+  const std::int64_t host = host_available_bytes();
+  if (in.device_kind == "cuda" && visible_gpus() > 0) {
+    const DeviceMemory device = device_memory(comm.local_rank());
+    if (!device.integrated) {
+      const std::int64_t sharing = (ranks + visible_gpus() - 1) / visible_gpus();
+      if (auto s = short_of(times(sharing, in.memory_bytes_device), device.free_bytes)) return s;
+      return short_of(times(ranks, in.memory_bytes_host), host);
+    }
+  }
+  // The CPU, or a device whose memory is the host's (GB10): one pool for both.
+  const std::int64_t both =
+      in.memory_bytes_device > std::numeric_limits<std::int64_t>::max() - in.memory_bytes_host
+          ? std::numeric_limits<std::int64_t>::max()
+          : in.memory_bytes_host + in.memory_bytes_device;
+  return short_of(times(ranks, both), host);
+}
+
+Diagnostic memory_diagnostic(const char* code, const SolverInput& in, std::int64_t required,
+                             std::int64_t available, std::int64_t margin) {
+  return Diagnostic{.code = code,
+                    .message = "the run needs " + std::to_string(required) + " bytes; " +
+                               std::to_string(available) + " are available, less a margin of " +
+                               std::to_string(margin),
+                    .path = "memory",
+                    .data_json = Json{{"required_bytes", required},
+                                      {"available_bytes", available},
+                                      {"margin_bytes", margin},
+                                      {"device_kind", in.device_kind}}
+                                     .dump()};
+}
+
+Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, const Comm& comm,
+                 const MemoryPolicy& memory) {
+  const int ranks = comm.size();
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
              .mesh_hash = {},
@@ -648,6 +700,14 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .boundary_states = {},
              .state_files = {},
              .initial = std::nullopt};
+  if (const auto s = memory_shortfall(p.input, comm, memory.margin_bytes)) {
+    if (!memory.allow_oversubscription) {
+      throw InputError(
+          memory_diagnostic("E0711", p.input, s->first, s->second, memory.margin_bytes));
+    }
+    p.memory_warning =
+        memory_diagnostic("W0712", p.input, s->first, s->second, memory.margin_bytes);
+  }
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
@@ -964,6 +1024,7 @@ class Run final : public Log {
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
     if (comm_.size() > 1) log_partition();
+    if (p_.memory_warning) add_diagnostic(*p_.memory_warning);
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
       note("info", "solver",
            "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
@@ -1655,7 +1716,7 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
-                    std::FILE* err, const fs::path& stop_file) {
+                    std::FILE* err, const fs::path& stop_file, const MemoryPolicy& memory) {
   const auto launched = std::chrono::steady_clock::now();
   // Every rank reads and checks the same input, so all reach the same
   // verdict; rank 0 prints it.
@@ -1677,7 +1738,7 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   std::optional<Prepared> prepared;
   std::optional<Diagnostic> refusal;
   try {
-    prepared.emplace(prepare(input_file, registry, comm->size()));
+    prepared.emplace(prepare(input_file, registry, *comm, memory));
   } catch (const InputError& e) {
     refusal = e.diagnostic();
   } catch (const std::exception& e) {
@@ -1691,6 +1752,20 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   if (first != none) {
     if (first == key) std::fprintf(err, "%s\n", refusal->json().c_str());
     return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
+  }
+  // W0712 when any rank starts beyond its memory, on every rank: the largest need and the least
+  // memory available of those ranks.
+  {
+    const auto& warning = prepared->memory_warning;
+    const Json data = warning ? Json::parse(warning->data_json) : Json::object();
+    const std::int64_t required =
+        comm->max(warning ? data["required_bytes"].get<std::int64_t>() : std::int64_t{-1});
+    const std::int64_t least = comm->max(warning ? -data["available_bytes"].get<std::int64_t>()
+                                                 : std::numeric_limits<std::int64_t>::min());
+    if (required >= 0) {
+      prepared->memory_warning =
+          memory_diagnostic("W0712", prepared->input, required, -least, memory.margin_bytes);
+    }
   }
   stop_requested = 0;
   const SignalGuard signals;

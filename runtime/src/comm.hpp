@@ -18,6 +18,8 @@ class Comm : public Ranks {
  public:
   /// This rank's index among the ranks of its host.
   [[nodiscard]] virtual int local_rank() const noexcept = 0;
+  /// The number of ranks on this rank's host.
+  [[nodiscard]] virtual int local_size() const noexcept = 0;
   /// Rank 0's `text`, on every rank.
   [[nodiscard]] virtual std::string broadcast(std::string text) = 0;
   /// On rank 0, the n values whose global indices `ids` each rank gives

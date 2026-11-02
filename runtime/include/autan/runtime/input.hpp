@@ -139,6 +139,8 @@ struct SolverInput {
   std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip
   std::int64_t device_count = 1;
+  /// `memory`: what one rank allocates at its peak, on the host and on its device.
+  std::int64_t memory_bytes_host = 0, memory_bytes_device = 0;
   std::string physics_kind;  ///< compressible, incompressible
   Turbulence turbulence;
   Freestream freestream;

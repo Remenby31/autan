@@ -27,6 +27,17 @@ int visible_gpus() {
   return count;
 }
 
+DeviceMemory device_memory(int local_rank) {
+  const int index = local_rank % visible_gpus();
+  check(cudaSetDevice(index), "cudaSetDevice");
+  std::size_t free = 0, total = 0;
+  check(cudaMemGetInfo(&free, &total), "cudaMemGetInfo");
+  int integrated = 0;
+  check(cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, index),
+        "cudaDeviceGetAttribute");
+  return {.free_bytes = static_cast<std::int64_t>(free), .integrated = integrated != 0};
+}
+
 Gpu::Gpu(int local_rank) : index_(local_rank % visible_gpus()) {
   check(cudaSetDevice(index_), "cudaSetDevice");
   cudaDeviceProp properties{};
@@ -44,6 +55,10 @@ Gpu::~Gpu() {
 #else
 
 int visible_gpus() { return 0; }
+
+DeviceMemory device_memory(int /*local_rank*/) {
+  throw std::runtime_error("this build of autan-run has no CUDA");
+}
 
 Gpu::Gpu(int /*local_rank*/) { throw std::runtime_error("this build of autan-run has no CUDA"); }
 
