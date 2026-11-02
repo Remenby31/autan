@@ -135,7 +135,8 @@ def _pair_table(rows: list[pair.Row]) -> str:
 def _pair(args: argparse.Namespace) -> int:
     if args.pairs < pair.MIN_PAIRS:
         raise BenchError(
-            Code.TOO_FEW_RUNS, f"{args.pairs} pair(s) asked, the paired gate needs {pair.MIN_PAIRS}"
+            Code.INSUFFICIENT_PAIRS,
+            f"{args.pairs} pair(s) asked, the paired gate needs {pair.MIN_PAIRS}",
         )
     binary_args = args.binary_args[1:] if args.binary_args[:1] == ["--"] else args.binary_args
     if args.suite == "stream" and not binary_args:
@@ -154,6 +155,12 @@ def _pair(args: argparse.Namespace) -> int:
     # A first series that is not ok is confirmed by a second, in a hold of its own, which
     # decides (as gate.sh does for the absolute gate); never a third.
     for number in (1, 2) if args.confirm else (1,):
+        directory = args.out / f"series-{number}"
+        directory.mkdir(exist_ok=True)
+
+        def keep(i: int, side: str, doc: dict, directory: Path = directory) -> None:
+            result.write(doc, directory / f"{i + 1:02d}-{side}.json")
+
         series = runner.pair_series(
             args.change,
             args.base,
@@ -164,23 +171,21 @@ def _pair(args: argparse.Namespace) -> int:
             lock=args.lock,
             lock_timeout_s=args.lock_timeout,
             max_load_per_cpu=args.max_load,
+            on_run=keep,
         )
-        directory = args.out / f"series-{number}"
-        directory.mkdir(exist_ok=True)
-        for i, (side, doc) in enumerate(zip(series.sides, series.docs, strict=True)):
-            result.write(doc, directory / f"{i + 1:02d}-{side}.json")
         change = [d for s, d in zip(series.sides, series.docs, strict=True) if s == "change"]
         base = [d for s, d in zip(series.sides, series.docs, strict=True) if s == "base"]
         rows = pair.judge_all(change, base, args.threshold)
         final = pair.outcome(rows)
         summary["series"].append(pair.series_record(series.sides, series.lock_wait_s,
                                                     series.hold_s, rows, final))  # fmt: skip
+        # Written after each series: a failed confirmation keeps the first series' record.
+        summary["outcome"] = final
+        (args.out / "pair.json").write_text(json.dumps(summary, indent=2) + "\n")
         _say(f"series {number}: {len(series.sides)} runs, lock held {series.hold_s:.0f} s")
         _say(_pair_table(rows))
         if final == pair.OK:
             break
-    summary["outcome"] = final
-    (args.out / "pair.json").write_text(json.dumps(summary, indent=2) + "\n")
     if args.summary:
         with args.summary.open("a") as out:
             out.write(pair.markdown(summary))

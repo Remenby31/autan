@@ -91,12 +91,26 @@ def test_a_missing_base_is_base_build_failed(repo):
     assert "BASE BUILD FAILED: no such commit" in out.stdout
 
 
-@pytest.mark.parametrize("status", ["75", "124"])
+@pytest.mark.parametrize("status", ["1", "75", "124"])
 def test_a_lock_failure_is_not_blamed_on_the_base(repo, status):
+    # 1: the real wrapper's exit on a missing lock file (codex on #428), before any build.
     commit(repo, "fix.txt")
     out = build(repo, str(repo.parent / "base"), LOCK_STATUS=status)
     assert out.returncode == int(status)
     assert "BASE BUILD FAILED" not in out.stdout
+    assert "did not start" in out.stdout
+
+
+def test_the_lock_is_waited_for_as_long_as_the_job_allows(repo):
+    commit(repo, "fix.txt")
+    log = repo.parent / "lock-args"
+    lock = repo / "bench" / "lock" / "autan-gpu-lock"
+    lock.write_text(
+        FAKE_LOCK.replace("#!/usr/bin/env bash\n", f'#!/usr/bin/env bash\necho "$*" > {log}\n')
+    )
+    git(repo, "commit", "-qam", "log the lock's arguments")
+    assert build(repo, str(repo.parent / "base"), AUTAN_BENCH_LOCK_TIMEOUT="1500").returncode == 0
+    assert " -w 1500 " in f" {log.read_text()} "
 
 
 def test_a_worktree_left_by_a_cancelled_job_is_replaced(repo):
