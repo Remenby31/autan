@@ -140,11 +140,6 @@ def test_stop_never_signals_a_process_that_is_not_its_watcher(tmp_path, monkeypa
         other.wait()
 
 
-def running_threads() -> int:
-    return sum(1 for t in Path("/proc").glob("[0-9]*/task/[0-9]*/stat")
-               if campaign._state_of(t) == b"R")  # fmt: skip
-
-
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux's")
 def test_every_live_campaign_is_excluded_from_the_outside_load(tmp_path, monkeypatch):
     # Two campaigns, each a cgroup whose thread spins, published by their watchers. A third
@@ -167,10 +162,87 @@ def test_every_live_campaign_is_excluded_from_the_outside_load(tmp_path, monkeyp
         monkeypatch.setattr(campaign, "STATES", states)
         monkeypatch.setattr(campaign, "CGROUPS", root)
         time.sleep(0.2)
-        # Outside load = runnable threads - the 2 live campaigns' threads - this sampler.
-        excluded = {running_threads() - campaign.other_runnable() for _ in range(5)}
-        assert 3 in excluded
+        # What the outside load excludes (other_runnable = runnable threads - these - the
+        # sampler): the spinning threads of the 2 live campaigns, not the stale one nor the
+        # malformed one. Measured on spark-5512 at load 17-25: 20 000 of 20 000 samples gave 2,
+        # so a sample errs with p <= 1.5e-4 (rule of three, 95 %). Majority of 5: false failure
+        # <= C(5,3) p^3 = 3e-11. A defect (stale counted: 3; one or both live ones missed: 1, 0)
+        # gives a wrong value on every sample, so it is caught unless 3 of 5 samples err:
+        # missed with probability <= 3e-11. Differencing two scans of the whole host instead
+        # (the previous form) erred on 91 % of samples there.
+        counts = [campaign.campaigns_running() for _ in range(5)]
+        assert counts.count(2) >= 3, counts
     finally:
         for proc in procs:
             proc.kill()
             proc.wait()
+
+
+def mem_available() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) * 1024
+    pytest.fail("no MemAvailable")
+
+
+def until(predicate, timeout: float = 30.0) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/meminfo and cgroups are Linux's")
+def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(tmp_path, monkeypatch):
+    # Through the CLI, whose detached watcher enforces the floor. docker is faked at the
+    # boundary: it records its calls and reports the container running as this test's own
+    # process, so that the container's cgroup is a real one.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    # A stalled daemon: `docker pause` takes 20 s.
+    fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
+                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; pause) sleep 20 ;; esac\n')  # fmt: skip
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    logs = tmp_path / "autan-campaigns"
+
+    def calls_of(name: str) -> list[str]:
+        return [c for c in calls.read_text().splitlines() if c.endswith(f"autan-campaign-{name}")]
+
+    # Below the floor before it starts: never started, removed.
+    high = f"{(mem_available() >> 20) + 4096}M"
+    assert campaign.main(["start", "c1", "--free", high, "--dir", str(tmp_path), "--", "x"]) == 0
+    assert until(lambda: "not started" in (logs / "c1.log").read_text())
+    assert until(lambda: "rm -f autan-campaign-c1" in calls_of("c1"))
+    assert "start autan-campaign-c1" not in calls_of("c1")
+
+    # Running, then frozen behind a stalled `docker pause` (a measurement took the GPU lock), when
+    # real host memory is taken past a floor 1 GiB below what is available: the container is
+    # killed at once, not once docker answers.
+    low = f"{(mem_available() - (1 << 30)) >> 20}M"
+    assert campaign.main(["start", "c2", "--free", low, "--dir", str(tmp_path), "--", "x"]) == 0
+    assert until(lambda: "start autan-campaign-c2" in calls_of("c2"))
+    measurement = lock.open()
+    fcntl.flock(measurement, fcntl.LOCK_EX)
+    assert until(lambda: "pause autan-campaign-c2" in calls_of("c2"))
+    hog = subprocess.Popen([sys.executable, "-c", (
+        "import time\nchunks = []\nfor _ in range(32):\n"
+        "    chunks.append(b'\\1' * (128 << 20)); time.sleep(0.05)\ntime.sleep(60)\n")])  # fmt: skip
+    try:
+        assert until(lambda: "kill autan-campaign-c2" in calls_of("c2"), timeout=8)
+        fcntl.flock(measurement, fcntl.LOCK_UN)
+        assert until(lambda: "below --free" in (logs / "c2.log").read_text(), timeout=40)
+        assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
+    finally:
+        measurement.close()
+        hog.kill()
+        hog.wait()

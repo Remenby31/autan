@@ -91,6 +91,15 @@ class DeviceArray {
     check(detail::to_device(p_, host.data(), n_ * sizeof(T), stream), "upload");
     check(detail::synchronize(stream), "upload");
   }
+  /// Copies `host` to positions [first, first + host.size()).
+  void upload_part(std::span<const T> host, std::size_t first, stream_t stream = nullptr) {
+    if (first + host.size() > n_) {
+      throw std::invalid_argument("E1101: upload past the end of a device array of " +
+                                  std::to_string(n_));
+    }
+    check(detail::to_device(p_ + first, host.data(), host.size() * sizeof(T), stream), "upload");
+    check(detail::synchronize(stream), "upload");
+  }
   void download(std::span<T> host, stream_t stream = nullptr) const {
     if (host.size() != n_) {
       throw std::invalid_argument("E1101: download of a device array of " + std::to_string(n_) +
@@ -135,12 +144,20 @@ class DeviceMesh {
     /// solvers (kernels/blocks.py: the product reaches 88-93 % of GB10 peak, CSR 31-68 %); CSR
     /// by default, the explicit Euler step being no faster sliced (+0.4 % tet, +1.1 % hex).
     int incidence_slice = 0;
+    /// Values converted and uploaded per step when bind() stages built-in geometry: the host
+    /// holds at most one such chunk in the device type beside the FP64 geometry.
+    std::size_t upload_chunk = std::size_t(1) << 20;
   };
 
-  /// `stencil` may be null (no stencil reductions); it is copied.
-  DeviceMesh(const Mesh& mesh, const PackedGeometry& geometry, const CellStencil* stencil,
-             Options options)
-      : geometry_(geometry), stream_(options.stream) {
+  /// `geometry` is kept until release_host() (move it in to avoid a copy); `stencil` may be
+  /// null (no stencil reductions) and is read during construction only, its weights kept. A
+  /// stencil may come without twins (then Topology::stencil_twin is null: no reduction
+  /// adjoint over it) and without weights (then set_stencil_weights() provides them).
+  DeviceMesh(const Mesh& mesh, PackedGeometry geometry, const CellStencil* stencil, Options options)
+      : geometry_(std::move(geometry)), chunk_(options.upload_chunk), stream_(options.stream) {
+    if (chunk_ == 0) {
+      throw std::invalid_argument("E1101: DeviceMesh upload_chunk must be at least 1");
+    }
     Topology host = kernels::topology(mesh.view());
     GlobalOrder order;
     if (options.global != nullptr) {
@@ -151,36 +168,43 @@ class DeviceMesh {
     }
     auto& twins = order.twin;
     host.incidence_twin = twins.data();
+    // Sliced incidences: host arrays held only until uploaded, below.
+    SlicedIncidences incidences;
     if (options.incidence_slice > 0) {
-      incidences_ = sliced_incidences(host, options.incidence_slice);
-      geometry_.lsq_weight = sliced_values(incidences_, geometry_.lsq_weight, 3);
-      geometry_.incidence_side = sliced_values(incidences_, geometry_.incidence_side, 1);
-      twins = incidences_.twin;
+      incidences = sliced_incidences(host, options.incidence_slice);
+      geometry_.lsq_weight = sliced_values(incidences, geometry_.lsq_weight, 3);
+      geometry_.incidence_side = sliced_values(incidences, geometry_.incidence_side, 1);
+      twins = incidences.twin;
       host.incidence_twin = twins.data();
-      host.n_incidences = static_cast<offset_t>(incidences_.cell_faces.size());
-      host.cell_face_offsets = incidences_.cell_face_offsets.data();
-      host.cell_faces = incidences_.cell_faces.data();
-      host.incidence_stride = incidences_.stride;
-      host.incidence_length = incidences_.length.data();
-      host.incidence_cell = incidences_.cell.data();
+      host.n_incidences = static_cast<offset_t>(incidences.cell_faces.size());
+      host.cell_face_offsets = incidences.cell_face_offsets.data();
+      host.cell_faces = incidences.cell_faces.data();
+      host.incidence_stride = incidences.stride;
+      host.incidence_length = incidences.length.data();
+      host.incidence_cell = incidences.cell.data();
     }
+    // The sliced stencil is built here; a CSR one is read in place.
+    CellStencil sliced_stencil;
+    const CellStencil* st = stencil;
     if (stencil != nullptr) {
       csr_entries_ = stencil->entries.size();
       if (options.stencil_slice > 0) {
         auto s = sliced(*stencil, options.stencil_slice);
-        stencil_ = std::move(s.stencil);
+        sliced_stencil = std::move(s.stencil);
         position_ = std::move(s.position);
         length_ = std::move(s.length);
         host.stencil_stride = s.stride;
         host.stencil_length = length_.data();
+        st = &sliced_stencil;
+        geometry_.stencil_lsq_weight = std::move(sliced_stencil.lsq_weight);
       } else {
-        stencil_ = *stencil;
+        geometry_.stencil_lsq_weight = stencil->lsq_weight;
       }
-      geometry_.stencil_lsq_weight = stencil_.lsq_weight;
-      host.n_stencil = static_cast<offset_t>(stencil_.entries.size());
-      host.stencil_offsets = stencil_.offsets.data();
-      host.stencil = stencil_.entries.data();
-      host.stencil_twin = stencil_.twin.data();
+      stencil_entries_n_ = st->entries.size();
+      host.n_stencil = static_cast<offset_t>(st->entries.size());
+      host.stencil_offsets = st->offsets.data();
+      host.stencil = st->entries.data();
+      host.stencil_twin = st->twin.data();
     }
     const auto nf = static_cast<std::size_t>(host.n_faces);
     owner_ = copy(std::span(host.owner, nf));
@@ -204,18 +228,24 @@ class DeviceMesh {
     }
     topo_.rank_independent = options.global != nullptr;
     if (options.incidence_slice > 0) {
-      incidence_length_ = copy(std::span<const index_t>(incidences_.length));
-      incidence_cell_ = copy(std::span<const index_t>(incidences_.cell));
+      incidence_length_ = copy(std::span<const index_t>(incidences.length));
+      incidence_cell_ = copy(std::span<const index_t>(incidences.cell));
       topo_.incidence_length = incidence_length_.get();
       topo_.incidence_cell = incidence_cell_.get();
     }
     if (stencil != nullptr) {
-      stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
-      stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));
-      stencil_twin_ = copy(std::span<const offset_t>(stencil_.twin));
+      stencil_offsets_ = copy(std::span<const offset_t>(st->offsets));
+      stencil_entries_ = copy(std::span<const index_t>(st->entries));
       topo_.stencil_offsets = stencil_offsets_.get();
       topo_.stencil = stencil_entries_.get();
-      topo_.stencil_twin = stencil_twin_.get();
+      // Twins serve the reductions' deterministic adjoints only; a stencil without them
+      // leaves stencil_twin null.
+      if (!st->twin.empty()) {
+        stencil_twin_ = copy(std::span<const offset_t>(st->twin));
+        topo_.stencil_twin = stencil_twin_.get();
+      } else {
+        topo_.stencil_twin = nullptr;
+      }
       if (!length_.empty()) {
         stencil_length_ = copy(std::span<const index_t>(length_));
         topo_.stencil_length = stencil_length_.get();
@@ -282,7 +312,7 @@ class DeviceMesh {
     if (position_.empty()) {
       geometry_.stencil_lsq_weight.assign(weights.begin(), weights.end());
     } else {
-      const std::size_t n = stencil_.entries.size();
+      const std::size_t n = stencil_entries_n_;
       geometry_.stencil_lsq_weight.assign(3 * n, 0.0);
       for (std::size_t k = 0; k < csr_entries_; ++k) {
         for (std::size_t i = 0; i < 3; ++i) {
@@ -301,6 +331,14 @@ class DeviceMesh {
     }
   }
 
+  /// Frees the host copy of the built-in geometry once the physics has bound its Data structs:
+  /// fields already uploaded stay bound; binding one not uploaded yet then throws E1101.
+  /// set_stencil_weights() still works (it brings its own weights).
+  void release_host() {
+    geometry_ = PackedGeometry{};
+    released_ = true;
+  }
+
  private:
   template <class T>
   DeviceArray<T> copy(std::span<const T> host) {
@@ -312,17 +350,28 @@ class DeviceMesh {
     const auto key = std::make_pair(name, std::type_index(typeid(T)));
     auto it = fields_.find(key);
     if (it == fields_.end()) {
-      const auto values = converted<T>(host);
-      DeviceArray<std::byte> a(values.size() * sizeof(T), stream_);
-      a.upload(std::as_bytes(std::span<const T>(values)), stream_);
+      if (released_ && host.empty()) {
+        throw std::invalid_argument("E1101: " + name +
+                                    " bound after release_host() without being uploaded before");
+      }
+      DeviceArray<std::byte> a(host.size() * sizeof(T), stream_);
+      std::vector<T> part;
+      for (std::size_t first = 0; first < host.size(); first += chunk_) {
+        const std::size_t count = std::min(chunk_, host.size() - first);
+        part.assign(host.begin() + static_cast<std::ptrdiff_t>(first),
+                    host.begin() + static_cast<std::ptrdiff_t>(first + count));
+        a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
+      }
       it = fields_.emplace(key, std::move(a)).first;
     }
     return reinterpret_cast<const T*>(it->second.get());
   }
 
   PackedGeometry geometry_;
-  CellStencil stencil_;
   std::size_t csr_entries_ = 0;
+  std::size_t stencil_entries_n_ = 0;  // entries of the device stencil (sliced: with padding)
+  std::size_t chunk_ = 0;
+  bool released_ = false;
   std::vector<offset_t> position_;  // sliced layout: where each CSR entry went
   std::vector<index_t> length_;
   stream_t stream_;
@@ -331,7 +380,6 @@ class DeviceMesh {
   DeviceArray<std::uint8_t> reversed_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
   DeviceArray<index_t> stencil_entries_, stencil_length_;
-  SlicedIncidences incidences_;
   DeviceArray<index_t> incidence_length_, incidence_cell_;
   HostColouring interior_, boundary_;
   DeviceArray<double> face_scratch_, incidence_scratch_;

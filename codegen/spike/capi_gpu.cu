@@ -316,10 +316,54 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     } d;
     double own = 0.0;
     d.cell_volume = &own;
-    DeviceMesh dm(*m, 128);
+    // Staged in chunks of 7 values, so that every field crosses chunk boundaries.
+    gpu::DeviceMesh dm(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
     dm.bind(d);
     out[0] = d.face_area != nullptr ? 1 : 0;
     out[1] = d.cell_volume == &own ? 1 : 0;
+    std::vector<double> area(m->packed.face_area.size());
+    gpu::check(
+        cudaMemcpy(area.data(), d.face_area, sizeof(double) * area.size(), cudaMemcpyDeviceToHost),
+        "download");
+    out[2] = area == m->packed.face_area ? 1 : 0;
+    // After release_host(): an uploaded field still binds, one never uploaded is refused.
+    dm.release_host();
+    Data again{};
+    again.cell_volume = &own;
+    dm.bind(again);
+    out[3] = again.face_area == d.face_area ? 1 : 0;
+    struct Late {
+      autan::kernels::Topology topo;
+      const double* cell_centroid = nullptr;
+    } late;
+    try {
+      dm.bind(late);
+      out[4] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[4] = std::string_view(e.what()).starts_with("E1101") ? 1 : 0;
+    }
+    // A forward-only stencil (no twins, weights given later), sliced: no twin array.
+    auto stencil =
+        autan::kernels::cell_stencil(m->mesh, m->packed, autan::kernels::StencilKind::face2);
+    const std::vector<double> weights = stencil.lsq_weight;
+    stencil.twin.clear();
+    stencil.lsq_weight.clear();
+    gpu::DeviceMesh lean(m->mesh, m->packed, &stencil,
+                         {.block = 128,
+                          .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                          .stencil_slice = 4});
+    lean.set_stencil_weights(weights);
+    out[5] = lean.topology().stencil_twin == nullptr && lean.topology().stencil != nullptr ? 1 : 0;
+    // A deterministic reduction adjoint over that stencil needs the twins: refused (E1106).
+    autan::kernels::advection_diffusion::Data<autan::kernels::fp64> ad{};
+    lean.bind(ad);
+    try {
+      autan::kernels::advection_diffusion::gpu_loops::lsq_gradient_stencil_adjoint(
+          ad, gpu::Strategy::gather_recompute, lean.schedule());
+      out[6] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[6] = std::string_view(e.what()).starts_with("E1106") ? 1 : 0;
+    }
   });
 }
 
