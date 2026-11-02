@@ -16,6 +16,7 @@
 #include <numeric>
 #include <optional>
 #include <random>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -371,14 +372,16 @@ using RowMap = std::map<std::vector<std::string>, Rows>;
 
 // `text` parsed (discarded if not JSON), every "centroids" and "values" array member streamed into
 // `streamed` under the keys leading to it and left empty in the document: what a state file holds
-// in memory is then its text, 8 bytes per number of its rows, and its other members.
-nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
+// in memory is then its text, 8 bytes per number of its rows, and its other members. `duplicate`
+// receives the first member an object has twice, as its keys joined by '.'; empty: none.
+nlohmann::json parse_rows(const std::string& text, RowMap& streamed, std::string& duplicate) {
   enum class Kind : std::uint8_t { plain, rows, row };
   struct Frame {
     bool array;
     std::string key;
     Kind kind;
     std::size_t count;
+    std::set<std::string> keys;  // an object's members so far
   };
   std::vector<Frame> stack;
   std::string pending;
@@ -389,6 +392,12 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
     switch (event) {
       case Event::key:
         pending = parsed.get<std::string>();
+        if (!stack.empty() && !stack.back().keys.insert(pending).second && duplicate.empty()) {
+          for (const auto& g : stack) {
+            if (!g.key.empty()) duplicate += g.key + ".";
+          }
+          duplicate += pending;
+        }
         return true;
       case Event::object_start:
       case Event::array_start: {
@@ -397,7 +406,8 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
         Frame f{.array = event == Event::array_start,
                 .key = member ? pending : std::string(),
                 .kind = Kind::plain,
-                .count = 0};
+                .count = 0,
+                .keys = {}};
         if (parent == Kind::rows && f.array) {
           f.kind = Kind::row;
         } else if (parent != Kind::plain) {
@@ -407,14 +417,15 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
           f.kind = Kind::rows;  // not inside another rows member, which this one would replace
         }
         pending.clear();
-        stack.push_back(f);
-        if (f.kind == Kind::rows) {
+        const bool rows = f.kind == Kind::rows;
+        stack.push_back(std::move(f));
+        if (rows) {
           std::vector<std::string> path;
           for (const auto& g : stack) {
             if (!g.key.empty()) path.push_back(g.key);
           }
           current = &streamed[path];
-          width = f.key == "centroids" ? 3 : 5;
+          width = stack.back().key == "centroids" ? 3 : 5;
         }
         return true;
       }
@@ -437,7 +448,7 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
       }
       case Event::object_end:
       case Event::array_end: {
-        const Frame f = stack.back();
+        const Frame f = std::move(stack.back());
         stack.pop_back();
         if (f.kind == Kind::row) {
           current->ok = current->ok && f.count == width;
@@ -535,8 +546,10 @@ void load_states(Prepared& p) {
            {{"expected", b.states->sha256}, {"found", found}});
     }
     RowMap rows;
-    nlohmann::json doc = parse_rows(bytes, rows);
+    std::string duplicate;
+    nlohmann::json doc = parse_rows(bytes, rows, duplicate);
     std::string why = doc.is_discarded() ? "not JSON" : "";
+    if (why.empty() && !duplicate.empty()) why = "member '" + duplicate + "' appears twice";
     const auto zones =
         why.empty() ? face_state_zones(doc, rows, why) : std::map<std::string, ZoneStates>{};
     if (!why.empty()) {
@@ -635,12 +648,14 @@ void load_initial(Prepared& p) {
          {{"expected", file.sha256}, {"found", found}});
   }
   RowMap streamed;
-  nlohmann::json doc = parse_rows(bytes, streamed);
+  std::string duplicate;
+  nlohmann::json doc = parse_rows(bytes, streamed, duplicate);
   const auto invalid_document = [&](const std::string& why) {
     fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
          {{"problem", why}});
   };
   if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
+  if (!duplicate.empty()) invalid_document("member '" + duplicate + "' appears twice");
   for (const auto& [key, value] : doc.items()) {
     if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
         key != "cells" && key != "centroids" && key != "values")

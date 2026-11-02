@@ -268,11 +268,30 @@ void inviscid(Json& d) {
 }
 
 // `doc` written to a fresh file; the solver input's initial_state names it.
-Json with_initial_state(Json input_doc, const Json& doc) {
+Json with_initial_state(Json input_doc, const std::string& text) {
   const fs::path file = fresh_dir() / "initial.json";
-  std::ofstream(file) << doc.dump();
+  std::ofstream(file) << text;
   input_doc["initial_state"] = {{"path", file.string()}, {"sha256", file_sha256(file)}};
   return input_doc;
+}
+
+Json with_initial_state(Json input_doc, const Json& doc) {
+  return with_initial_state(std::move(input_doc), doc.dump());
+}
+
+// `text` (compact JSON) with an empty `member` array added after the first full one found from
+// `from` on: a member twice, the last empty, which a reader keeping the last would take.
+std::string emptied_twice(std::string text, const std::string& member, std::size_t from = 0) {
+  const std::string key = "\"" + member + "\":[";
+  std::size_t i = text.find(key, from);
+  REQUIRE(i != std::string::npos);
+  int depth = 0;
+  for (i += key.size() - 1; i < text.size(); ++i) {
+    depth += text[i] == '[' ? 1 : (text[i] == ']' ? -1 : 0);
+    if (depth == 0) break;
+  }
+  text.insert(i + 1, "," + key + "]");
+  return text;
 }
 
 // The `start` the SDK writes for a run that starts from `previous`
@@ -1216,6 +1235,13 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     nested["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
     require_error(run(with_initial_state(input(inviscid), nested)), "E0508");
   }
+  SECTION("E0508: a member twice, the last empty") {
+    for (const char* member : {"centroids", "values"}) {
+      CAPTURE(member);
+      require_error(run(with_initial_state(input(inviscid), emptied_twice(state.dump(), member))),
+                    "E0508");
+    }
+  }
   SECTION("E0705: a turbulence model, whose variables the file lacks") {
     require_error(run(with_initial_state(input(), state)), "E0705");
   }
@@ -1417,15 +1443,16 @@ TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]"
 }
 
 // face-states.md: tests/data/mesh/ringleb, its states written by autan-vv, on the four in-plane
-// sides; `edit` changes the document before it is written beside the input.
-Json ringleb_input(const std::function<void(Json&)>& edit = {}) {
+// sides; `edit` changes the document, then `rewrite` its compact text, before it is written
+// beside the input.
+Json ringleb_input(const std::function<void(Json&)>& edit = {},
+                   const std::function<std::string(std::string)>& rewrite = {}) {
   const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   Json states = Json::parse(read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json"));
   std::string bytes = read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json");
-  if (edit) {
-    edit(states);
-    bytes = states.dump();
-  }
+  if (edit) edit(states);
+  if (edit || rewrite) bytes = states.dump();
+  if (rewrite) bytes = rewrite(bytes);
   const fs::path file = fresh_dir() / "ringleb.states.json";
   std::ofstream(file, std::ios::binary) << bytes;
   std::string sha;
@@ -1498,6 +1525,16 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
                         Json{{"faces", "two"}, {"centroids", {}}, {"values", {}}};
                   })),
                   "E0420");
+  }
+  SECTION("E0420 a zone's member twice, the last empty") {
+    for (const char* member : {"centroids", "values"}) {
+      CAPTURE(member);
+      require_error(run(ringleb_input({},
+                                      [&](std::string text) {
+                                        return emptied_twice(text, member, text.find("\"inflow\""));
+                                      })),
+                    "E0420");
+    }
   }
   SECTION("E0420 a path that is not a regular file") {
     Json doc = ringleb_input();
