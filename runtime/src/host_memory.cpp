@@ -46,7 +46,7 @@ std::optional<Shortfall> memory_shortfall(std::int64_t bytes_host, std::int64_t 
 
 #if defined(__APPLE__)
 
-std::int64_t host_available_bytes(const std::filesystem::path& /*proc*/) {
+HostMemory host_memory(const std::filesystem::path& /*proc*/) {
   vm_statistics64_data_t vm{};
   mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
   if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm),
@@ -55,7 +55,7 @@ std::int64_t host_available_bytes(const std::filesystem::path& /*proc*/) {
   }
   // Purgeable pages are counted among the free and inactive ones already.
   const auto pages = static_cast<std::int64_t>(vm.free_count) + vm.inactive_count;
-  return pages * static_cast<std::int64_t>(vm_page_size);
+  return {.available = pages * static_cast<std::int64_t>(vm_page_size), .unseen_cgroups = {}};
 }
 
 #else
@@ -123,7 +123,8 @@ std::vector<Mount> cgroup_mounts(const fs::path& proc, bool v2) {
 
 // The least limit less usage of `group` and of each of its ancestors, each read in the mount
 // that shows it: a parent's limit binds the group even when another mount shows the group.
-std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::path& group, bool v2) {
+std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::path& group, bool v2,
+                                             std::vector<std::string>& unseen) {
   const auto mounts = cgroup_mounts(proc, v2);
   std::optional<std::int64_t> available;
   for (fs::path cg = group.lexically_normal();; cg = cg.parent_path()) {
@@ -135,6 +136,7 @@ std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::pat
                                    std::distance(shown->root.begin(), shown->root.end())))
         shown = &m;
     }
+    if (shown == nullptr && cg != cg.root_path()) unseen.push_back(cg.string());
     if (shown != nullptr) {
       const fs::path relative = cg.lexically_relative(shown->root);
       const fs::path dir = relative == "." ? shown->point : shown->point / relative;
@@ -154,7 +156,7 @@ std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::pat
 
 }  // namespace
 
-std::int64_t host_available_bytes(const std::filesystem::path& proc) {
+HostMemory host_memory(const std::filesystem::path& proc) {
   std::ifstream meminfo(proc / "meminfo");
   std::optional<std::int64_t> available;
   for (std::string line; std::getline(meminfo, line);) {
@@ -164,6 +166,7 @@ std::int64_t host_available_bytes(const std::filesystem::path& proc) {
     if (fields >> key >> kib && key == "MemAvailable:") available = kib * 1024;
   }
   if (!available) throw std::runtime_error((proc / "meminfo").string() + " gives no MemAvailable");
+  std::vector<std::string> unseen;
   // proc(5), /proc/self/cgroup: "0::path" for cgroup v2, "id:controllers:path" for v1.
   std::ifstream self(proc / "self" / "cgroup");
   for (std::string line; std::getline(self, line);) {
@@ -175,10 +178,10 @@ std::int64_t host_available_bytes(const std::filesystem::path& proc) {
     const bool v2 = line.substr(0, first) == "0" && controllers.empty();
     const bool v1 = ("," + controllers + ",").find(",memory,") != std::string::npos;
     if (!v2 && !v1) continue;
-    if (const auto limited = cgroup_available(proc, group, v2))
+    if (const auto limited = cgroup_available(proc, group, v2, unseen))
       available = std::min(*available, *limited);
   }
-  return *available;
+  return {.available = *available, .unseen_cgroups = std::move(unseen)};
 }
 
 #endif

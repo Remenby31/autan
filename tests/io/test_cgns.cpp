@@ -145,6 +145,11 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   same(stored.fields, solution.fields);
   same(stored.mean_fields, solution.mean_fields);
   same(stored.restart_fields, solution.restart_fields);
+  // A warm start reads FlowSolution alone.
+  const auto fields_only = autan::io::read_solution(file, false);
+  same(fields_only.fields, solution.fields);
+  CHECK(fields_only.mean_fields.empty());
+  CHECK(fields_only.restart_fields.empty());
 }
 
 TEST_CASE("Zone node names follow the results.md rule", "[cgns]") {

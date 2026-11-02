@@ -27,7 +27,7 @@ void ok(int status, const std::string& what) {
 
 }  // namespace
 
-StoredSolution read_solution(const std::filesystem::path& file) {
+StoredSolution read_solution(const std::filesystem::path& file, bool whole_state) {
   reject_outside_data(file);  // E0134, before the library reads anything
   const CgnsFile in(file, CG_MODE_READ);
   const int fn = in.handle();
@@ -64,6 +64,7 @@ StoredSolution read_solution(const std::filesystem::path& file) {
     ok(cg_sol_info(fn, 1, 1, s, name, &location), "read a solution");
     const std::string solution = name;
     std::vector<Field>* target = solution == "FlowSolution"       ? &out.fields
+                                 : !whole_state                   ? nullptr
                                  : solution == "FlowSolutionMean" ? &out.mean_fields
                                  : solution == "RestartState"     ? &out.restart_fields
                                                                   : nullptr;
