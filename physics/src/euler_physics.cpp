@@ -167,9 +167,11 @@ class EulerPhysics final : public runtime::Physics {
     state_.assign(5 * n_, State(0));
     res_.assign(5 * n_, Res(0));
     lambda_.assign(n_, State(0));
-    stage_.assign(5 * n_, 0.0);
-    rhs_.assign(5 * n_, 0.0);
-    du_.assign(5 * n_, 0.0);
+    if (ctx.device < 0) {
+      stage_.assign(5 * n_, 0.0);
+      rhs_.assign(5 * n_, 0.0);
+      du_.assign(5 * n_, 0.0);
+    }
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
     if (in.start && in.start->residual_reference) exempt_.reference(*in.start->residual_reference);
