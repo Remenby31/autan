@@ -156,11 +156,18 @@ def _held(path: Path) -> bool:
         return False
 
 
-def ci_waiting() -> bool:
+# An agent that has waited this long stops yielding to pull requests' CI (it still yields to
+# main): CI holds ci.lock for whole jobs, builds included, and could otherwise starve agents for
+# hours (#360). AUTAN_GPU_LOCK_FAIR_S shortens it in tests.
+FAIR_S = float(os.environ.get("AUTAN_GPU_LOCK_FAIR_S", "600"))
+
+
+def ci_waiting(fair: bool = False) -> bool:
     """Whether a job with priority waits for or holds the GPU: outside CI, any CI job (it holds
-    ci.lock, shared); in a CI job not on main, a job on main (main.lock). Main never yields."""
+    ci.lock, shared), or once `fair`, a job on main only (main.lock); in a CI job not on main, a
+    job on main. Main never yields."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
-        return _held(CI_LOCK)
+        return _held(LOCK.parent / "main.lock" if fair else CI_LOCK)
     if os.environ.get("GITHUB_REF") == "refs/heads/main":
         return False
     return _held(LOCK.parent / "main.lock")
@@ -304,17 +311,20 @@ def main() -> int:
     with LOCK.open() as handle:
         start = time.monotonic()
         log.record("wait", 0)
-        yielded = False
+        yielded = fair = False
         while True:
+            if not fair and time.monotonic() - start >= FAIR_S:
+                fair = True
+                log.record("fair", time.monotonic() - start)
             # CI goes first: never take the lock while a CI job announces it waits for or holds
             # it, and give it back if CI announced itself while it was being taken.
-            if not ci_waiting():
+            if not ci_waiting(fair):
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     pass
                 else:
-                    if not ci_waiting():
+                    if not ci_waiting(fair):
                         if self_locking:
                             # The command takes the lock itself (autan-bench): hand it over.
                             fcntl.flock(handle, fcntl.LOCK_UN)
@@ -360,7 +370,10 @@ def main() -> int:
         helpers: set[int] = set()
         container = Container(helpers)
         try:
-            proc = subprocess.Popen(container.wrap(command), start_new_session=True)
+            # A self-locking command (autan-bench) waits for the lock again: tell it this wait
+            # already earned fairness, so that it does not start yielding to pull requests anew.
+            env = {**os.environ, "AUTAN_GPU_LOCK_FAIR": "1"} if self_locking and fair else None
+            proc = subprocess.Popen(container.wrap(command), start_new_session=True, env=env)
         except OSError as err:
             log.record("failed", time.monotonic() - taken, 127)
             sys.stderr.write(f"autan-gpu-lock: cannot run {command[0]}: {err}\n")

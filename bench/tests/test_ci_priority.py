@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from autan_bench import gpu
+from autan_bench.errors import BenchError
 
 ROOT = Path(__file__).parents[1]
 WRAPPER = ROOT / "lock" / "autan-gpu-lock"
@@ -124,6 +125,67 @@ def test_a_self_locking_command_waits_for_ci_then_takes_the_lock_itself(spark, t
 
 
 GUARD = ROOT / "lock" / "autan-gpu-guard"
+
+
+def test_an_agent_that_waited_long_enough_stops_yielding_to_pull_requests_not_to_main(
+    spark, tmp_path
+):
+    # The fairness delay (600 s on the Sparks) shortened to 2 s. A pull request's job holds
+    # ci.lock for all of its duration: after 2 s the agent takes the free GPU anyway, recorded.
+    order = tmp_path / "order"
+    fair = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "2"}
+    pr_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
+    main_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main"}
+    priority(pr_env, "start", "30")
+    try:
+        start = time.monotonic()
+        waiting = agent(fair, "agent", order)
+        assert waiting.wait(timeout=20) == 0
+        assert 2 <= time.monotonic() - start < 6
+        assert events(spark)[:4] == ["wait", "yield", "fair", "take"]
+    finally:
+        priority(pr_env, "stop")
+    # A job on main holds main.lock too: an agent, however long it has waited, still yields.
+    priority(main_env, "start", "30")
+    try:
+        held_back = agent(fair, "late", order, "-w", "5")
+        assert held_back.wait(timeout=20) == 75
+        assert lines(order) == ["agent"]
+    finally:
+        priority(main_env, "stop")
+
+
+def test_autan_gpu_lock_n_hands_the_fairness_it_earned_to_the_command(spark, tmp_path):
+    # -n runs a command that takes the lock itself (autan-bench): AUTAN_GPU_LOCK_FAIR=1 tells it
+    # the wait already earned fairness; a command that did not wait that long is not told so.
+    order = tmp_path / "order"
+    fair = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "2"}
+    pr_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
+    told = '"told=$AUTAN_GPU_LOCK_FAIR"'
+    assert agent(fair, told, order, "-n").wait(timeout=20) == 0
+    priority(pr_env, "start", "30")
+    try:
+        assert agent(fair, told, order, "-n").wait(timeout=20) == 0
+    finally:
+        priority(pr_env, "stop")
+    assert lines(order) == ["told=", "told=1"]
+
+
+def test_autan_bench_earns_the_same_fairness(spark, monkeypatch):
+    # autan-bench takes the lock itself, after autan-gpu-lock -n waited: AUTAN_GPU_LOCK_FAIR=1
+    # passes on what that wait earned, so a pull request's ci.lock does not hold it back anew.
+    lock = Path(spark["AUTAN_GPU_LOCK"])
+    pr_env = {**spark, "GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    priority(pr_env, "start", "30")
+    try:
+        with pytest.raises(BenchError), gpu.gpu_lock(lock, timeout_s=1):
+            pass
+        monkeypatch.setenv("AUTAN_GPU_LOCK_FAIR", "1")
+        with gpu.gpu_lock(lock, timeout_s=5) as waited:
+            assert waited < 1
+    finally:
+        priority(pr_env, "stop")
 
 
 def test_the_guard_records_every_holder_and_never_announces_ci_for_others(spark):
