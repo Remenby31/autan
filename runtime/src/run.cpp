@@ -1325,6 +1325,39 @@ class Run final : public Log {
     std::vector<double> first;
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
+    // case-schema.md#time: every equation dropped (or exempt) is `converged`; one or more only
+    // at their floor, the others dropped, is `floor`; nullptr while some equation is neither.
+    const auto verdict = [&](const StepReport& report, std::int64_t it) -> const char* {
+      const auto ratios = in.precision == "fp32+acc64" ? floor_ratios(report, it) : std::nullopt;
+      const double drop = std::pow(10.0, -in.time.residual_orders);
+      bool ends = true, at_floor = false;
+      for (std::size_t e = 0; e < equations.size(); ++e) {
+        if (exempt.exempt(e) || report.residuals[e] <= first[e] * drop) continue;
+        if (ratios && (*ratios)[e] <= 1.0) {
+          at_floor = true;
+        } else {
+          ends = false;
+        }
+      }
+      if (!ends) return nullptr;
+      return at_floor ? "floor" : "converged";
+    };
+    // case-schema.md#time: a steady fp32+acc64 run that ends otherwise is judged once more on
+    // its final state, whose floors the physics gives on request.
+    const auto final_state = [&](const char* status) -> const char* {
+      if (!steady || in.precision != "fp32+acc64" || first.empty()) return status;
+      const std::optional<StepReport> state = physics_->final_floors();
+      if (comm_.max(std::int64_t{state ? 1 : 0}) == 0) return status;
+      if (!state) throw std::runtime_error("the physics gave its final floors on some ranks only");
+      if (state->residuals.size() != equations.size()) {
+        throw std::runtime_error("the physics reported " + std::to_string(state->residuals.size()) +
+                                 " final residuals for " + std::to_string(equations.size()) +
+                                 " equations");
+      }
+      check_floors(*state);
+      const char* judged = verdict(*state, done);
+      return judged != nullptr ? judged : status;
+    };
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -1346,7 +1379,7 @@ class Run final : public Log {
       }
       if (comm_.max(stop) != 0) {
         stopped_by_signal_ = true;
-        return "stopped";
+        return final_state("stopped");
       }
       iteration_ = it;
       // The solve: the physics' own work, without the history and log writes.
@@ -1423,23 +1456,10 @@ class Run final : public Log {
                                            {"floor", exempt.floor()}}
                                           .dump()});
         }
-        const auto ratios = in.precision == "fp32+acc64" ? floor_ratios(report, it) : std::nullopt;
-        // case-schema.md#time: every equation dropped (or exempt) is `converged`; one or more
-        // only at their floor, the others dropped, is `floor`.
-        const double drop = std::pow(10.0, -in.time.residual_orders);
-        bool ends = true, at_floor = false;
-        for (std::size_t e = 0; e < equations.size(); ++e) {
-          if (exempt.exempt(e) || report.residuals[e] <= first[e] * drop) continue;
-          if (ratios && (*ratios)[e] <= 1.0) {
-            at_floor = true;
-          } else {
-            ends = false;
-          }
-        }
-        if (ends) return at_floor ? "floor" : "converged";
+        if (const char* judged = verdict(report, it)) return judged;
       }
     }
-    return "completed";
+    return final_state("completed");
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell

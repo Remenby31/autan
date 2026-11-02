@@ -141,6 +141,12 @@ class Physics {
   /// Adds the current state to the time average with weight `weight` (the
   /// step's time step), for unsteady runs with average_from.
   virtual void accumulate_average(double weight) = 0;
+  /// The residual norms and round-off floors (StepReport) of the current
+  /// state, for a steady fp32+acc64 run that ends without having met its
+  /// convergence rule, called once on every rank after its last iteration
+  /// (case-schema.md#time: the final state is judged too). nullopt: the
+  /// physics gives no floors.
+  [[nodiscard]] virtual std::optional<StepReport> final_floors() { return std::nullopt; }
   /// Cell-centred fields with the SIDS names of results.md (field_names()),
   /// current state or time average.
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;

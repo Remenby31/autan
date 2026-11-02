@@ -1545,6 +1545,35 @@ TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged",
   CHECK(late["status"] == "floor");
   CHECK(late["iterations"] == 15);
   convergence(late, 15, 0.25, 1.0);
+  // The final state is judged too (case-schema.md#time): at its floor at k = 13, between two
+  // evaluations, a run that ends there by its budget or by a signal ends `floor`; one cut at
+  // k = 12, before it, stays `completed`.
+  const Json budget = Json::parse(read(run(input([](Json& d) {
+                                             d["precision"] = "fp32+acc64";
+                                             d["time"]["max_iterations"] = 13;
+                                           }),
+                                           sparse)
+                                           .run /
+                                       "run.json"));
+  CHECK(budget["status"] == "floor");
+  CHECK(budget["iterations"] == 13);
+  convergence(budget, 13, 1.0, 1.0);
+  autan_test::RelaxationOptions signalled = sparse;
+  signalled.signal_at = 13;
+  const Outcome stopped = run(input([](Json& d) { d["precision"] = "fp32+acc64"; }), signalled);
+  CHECK(stopped.status == ExitStatus::signalled);
+  const Json stopped_info = Json::parse(read(stopped.run / "run.json"));
+  CHECK(stopped_info["status"] == "floor");
+  CHECK(stopped_info["iterations"] == 13);
+  const Json short_of = Json::parse(read(run(input([](Json& d) {
+                                               d["precision"] = "fp32+acc64";
+                                               d["time"]["max_iterations"] = 12;
+                                             }),
+                                             sparse)
+                                             .run /
+                                         "run.json"));
+  CHECK(short_of["status"] == "completed");
+  convergence(short_of, 12, 2.0, std::floor(cells / 2.0) / cells);
   // The drop before the floor converges; fp64 has no floor.
   autan_test::RelaxationOptions low = floored;
   low.floor = std::ldexp(1.0, -40);
