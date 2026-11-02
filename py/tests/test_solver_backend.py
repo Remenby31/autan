@@ -71,6 +71,7 @@ def test_the_shipped_runtime_reports_missing_physics(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     case, mesh = hybrid
+    case.physics = autan.Compressible(turbulence=autan.SST())  # no runtime ships SST yet
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     [found] = error.value.diagnostics
