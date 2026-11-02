@@ -46,3 +46,19 @@ test("a plane that misses the surface has no section", () => {
   const { surface, values } = band();
   expect(section(surface, values, "y", [0, 5, 0]).segments).toEqual([]);
 });
+
+test("a plane through nodes still gives the whole section", () => {
+  // y = 0 and y = 1 hold the band's nodes and its edges along x: the plane is moved off them.
+  const { surface, values } = band();
+  for (const y of [0, 1]) {
+    const { segments, chord } = section(surface, values, "y", [0, y, 0]);
+    expect(chord).toEqual([2, 4]);
+    expect(segments.reduce((sum, [a, , b]) => sum + Math.abs(b - a), 0)).toBeCloseTo(1, 5);
+    for (const [f, v] of segments.flatMap(([x0, v0, x1, v1]) => [
+      [x0, v0],
+      [x1, v1],
+    ])) {
+      expect(v).toBeCloseTo(7 + 6 * (f as number), 4);
+    }
+  }
+});

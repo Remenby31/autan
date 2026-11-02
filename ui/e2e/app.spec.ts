@@ -525,6 +525,15 @@ test("a slice plots the walls' Cp along the chord of their section", async ({ pa
     for (const end of ["data-least", "data-greatest"]) {
       expect(Number(await chart.getAttribute(end))).toBeCloseTo(0.42, 5);
     }
+    // Each cut segment is drawn, on the height of the 0.42 tick of the −Cp axis.
+    const curve = chart.locator('line[stroke="var(--accent)"]');
+    await expect(curve).toHaveCount(Number(await chart.getAttribute("data-segments")));
+    const tick = Number(await chart.locator("text", { hasText: /^0\.42$/ }).getAttribute("y")) - 3;
+    for (const y of await curve.evaluateAll((lines) =>
+      lines.flatMap((l) => [Number(l.getAttribute("y1")), Number(l.getAttribute("y2"))]),
+    )) {
+      expect(y).toBeCloseTo(tick, 3);
+    }
     await expect(page.getByTestId("wall-section")).toContainText("walls at y =");
   } finally {
     cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));

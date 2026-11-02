@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { runsQuery } from "../api/runs";
 import { fetchSurface, type Surface } from "../api/surface";
 import { SectionChart } from "../components/SectionChart";
@@ -447,12 +447,24 @@ function Viewer() {
   };
 
   const field = surface?.fields.find((f) => f.name === fieldName) ?? surface?.fields[0];
-  // The walls cut by the slice's plane: the shown field along the section's chord.
-  const cutWalls = useMemo(() => {
-    if (!run || !axis || !surface || !field) return null;
-    const { origin } = slicePlane(surface, axis, at);
-    const cut = section(surface, field.values, axis, origin);
-    return cut.segments.length ? { ...cut, at: origin["xyz".indexOf(axis)] ?? 0 } : null;
+  // The walls cut by the slice's plane: the shown field along the section's chord, cut once the
+  // plane has settled (a scan of every wall triangle).
+  const [cutWalls, setCutWalls] = useState<{
+    segments: [number, number, number, number][];
+    chord: [number, number];
+    at: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!run || !axis || !surface || !field) {
+      setCutWalls(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const { origin } = slicePlane(surface, axis, at);
+      const cut = section(surface, field.values, axis, origin);
+      setCutWalls(cut.segments.length ? { ...cut, at: origin["xyz".indexOf(axis)] ?? 0 } : null);
+    }, 150);
+    return () => clearTimeout(timer);
   }, [run, axis, at, surface, field]);
   return (
     <>

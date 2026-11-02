@@ -19,9 +19,17 @@ export function SectionChart({
   const sign = name === "Cp" ? -1 : 1;
   const shownName = sign === -1 ? `−${name}` : name;
   const drawn = segments.map(([x0, v0, x1, v1]) => [x0, sign * v0, x1, sign * v1] as const);
-  const values = drawn.flatMap(([, a, , b]) => [a, b]);
-  let low = Math.min(...values);
-  let high = Math.max(...values);
+  // Extrema by a loop: a section can hold more points than a call has arguments.
+  let least = Number.POSITIVE_INFINITY;
+  let greatest = Number.NEGATIVE_INFINITY;
+  let peakAt = 0;
+  for (const [x0, a, x1, b] of drawn) {
+    least = Math.min(least, a, b);
+    if (a > greatest) [greatest, peakAt] = [a, x0];
+    if (b > greatest) [greatest, peakAt] = [b, x1];
+  }
+  let low = least;
+  let high = greatest;
   if (high - low < 1e-12 * Math.max(1, Math.abs(high))) {
     low -= 0.5;
     high += 0.5;
@@ -40,9 +48,12 @@ export function SectionChart({
       aria-label={`${shownName} along the chord, x/c from 0 to 1`}
       data-testid="section-chart"
       data-segments={segments.length}
-      data-least={Math.min(...values)}
-      data-greatest={Math.max(...values)}
+      data-least={least}
+      data-greatest={greatest}
     >
+      <desc>
+        {`${shownName} from ${label(least)} to ${label(greatest)}, highest ${label(greatest)} at x/c ${label(peakAt)}; ${segments.length} segments.`}
+      </desc>
       {[0, 0.25, 0.5, 0.75, 1].map((f) => (
         <g key={`x${f}`} className="text-fg-3">
           <line x1={sx(f)} x2={sx(f)} y1={PAD.top} y2={H - PAD.bottom} stroke="var(--line)" />

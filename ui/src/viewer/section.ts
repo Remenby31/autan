@@ -1,5 +1,5 @@
 import type { Surface } from "../api/surface";
-import type { Axis } from "./slice";
+import { type Axis, bounds } from "./slice";
 
 /** The cut of a surface by the plane normal to `axis` through `origin` (absolute coordinates):
  * one segment per triangle the plane crosses, each end at its chord fraction x/c and with the
@@ -12,10 +12,32 @@ export function section(
   axis: Axis,
   origin: readonly number[],
 ): { segments: [number, number, number, number][]; chord: [number, number] } {
+  // A plane through nodes is moved off them, by 2e-6 of the extent, to the side where it cuts
+  // something: every crossing is then inside an edge, and no face lies in the plane.
   const k = "xyz".indexOf(axis);
+  const { min, max } = bounds(surface);
+  const shift = 2e-6 * ((max[k] as number) - (min[k] as number) || 1);
+  const level = (origin[k] as number) - (surface.origin[k] as number);
+  const p = surface.positions;
+  let onNode = false;
+  for (let i = k; i < p.length; i += 3)
+    if (Math.abs((p[i] as number) - level) < shift / 2) {
+      onNode = true;
+      break;
+    }
+  if (!onNode) return cut(surface, values, k, level);
+  const above = cut(surface, values, k, level + shift);
+  return above.segments.length ? above : cut(surface, values, k, level - shift);
+}
+
+function cut(
+  surface: Surface,
+  values: Float32Array,
+  k: number,
+  level: number,
+): { segments: [number, number, number, number][]; chord: [number, number] } {
   const along = k === 0 ? 1 : 0;
   const p = surface.positions;
-  const level = (origin[k] as number) - (surface.origin[k] as number);
   const offset = surface.origin[along] as number;
   const ends: [number, number][][] = [];
   const index = surface.indices;
@@ -26,8 +48,7 @@ export function section(
       const b = index[t + ((e + 1) % 3)] as number;
       const da = (p[3 * a + k] as number) - level;
       const db = (p[3 * b + k] as number) - level;
-      // An edge crossed in its interior or at its first node (each node then counts once).
-      if ((da <= 0 && db > 0) || (da > 0 && db <= 0)) {
+      if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
         const s = da / (da - db);
         const x =
           (p[3 * a + along] as number) +
