@@ -1048,11 +1048,8 @@ TEST_CASE("a laminar run's matrix-free phase starts after the switch to second o
   CAPTURE(precision);
   auto doc = [&](int budget) {
     return input("hybrid.solver-input.json", [&](Json& d) {
-      d["precision"] = precision;
+      inviscid_along_x(d, precision);
       d["physics"]["turbulence"]["model"] = "laminar";
-      d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
-      d["freestream"]["nu_tilde"] = nullptr;
-      for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
       ringleb_case(d, 0.0);
       d["time"]["max_iterations"] = budget;
       d["time"]["residual_orders"] = 30.0;
@@ -1095,6 +1092,57 @@ TEST_CASE("a laminar run's matrix-free phase starts after the switch to second o
     REQUIRE(rest.status == ExitStatus::finished);
     CHECK(read(first / "history.jsonl") + read(rest.run / "history.jsonl") == all);
   }
+}
+
+TEST_CASE("a laminar run keeps its span momentum at the round-off floor", "[navier-stokes]") {
+  // matrix-free-step.md, on the one-cell-thick tests/data/mesh/ringleb with the freestream along
+  // x: w is zero by symmetry and the z-momentum's residual is round-off, which the runtime
+  // exempts. Neither the first-order phase with the assembled operator nor the matrix-free
+  // phase after it may wake it (W0710), and through the matrix-free phase it stays within the
+  // round-off of the phase before it.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    d["physics"]["turbulence"]["model"] = "laminar";
+    ringleb_case(d, 0.0);
+    d["time"]["max_iterations"] = 260;
+    d["time"]["residual_orders"] = 30.0;
+  });
+  // Planar by construction: a freestream with a z component would make w physical.
+  REQUIRE(doc["freestream"]["velocity"][2].get<double>() == 0.0);
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  int start = -1;
+  bool exempt = false;
+  std::vector<int> woken;
+  std::istringstream log(read(out.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    const auto e = Json::parse(line);
+    if (e["source"] == "linear" && e["level"] == "info" && e["iteration"].is_number() &&
+        e["message"].get<std::string>().starts_with("matrix-free products")) {
+      start = e["iteration"].get<int>();
+    }
+    if (e["code"] == "W0710") woken.push_back(e["iteration"].get<int>());
+    if (e["message"].get<std::string>().starts_with("equations at the round-off floor")) {
+      for (const auto& name : e["data"]["equations"]) exempt = exempt || name == "momentum-z";
+    }
+  }
+  INFO("first matrix-free step " << start);
+  REQUIRE(exempt);
+  REQUIRE(start > 0);
+  CHECK(std::none_of(woken.begin(), woken.end(), [&](int i) { return i < start; }));
+  CHECK(std::none_of(woken.begin(), woken.end(), [&](int i) { return i >= start; }));
+  double before = 0.0, after = 0.0;
+  for (const auto& line : history(out.run)) {
+    const double z = line["residuals"]["momentum-z"].get<double>();
+    double& m = line["iteration"].get<int>() < start ? before : after;
+    m = std::max(m, z);
+  }
+  INFO("z-momentum residual: " << before << " before the phase, " << after << " in it");
+  REQUIRE(before > 0.0);
+  CHECK(after <= before);
 }
 
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {

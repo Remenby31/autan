@@ -15,7 +15,8 @@ kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000} alpha=${6:-
 turbulence=${TURBULENCE:-"{ model = \"sa\", nu_tilde_ratio = 3.0 }"}
 span=${SPAN:-1.0}
 coupled=""
-if [ "$kind" = flatplate ] && [[ $turbulence == *'"sa"'* ]] && [ "${COUPLED:-1}" = 1 ]; then
+if [ "$kind" = flatplate ] && [[ $turbulence =~ model[[:space:]]*=[[:space:]]*[\"\']sa[\"\'] ]] &&
+  [ "${COUPLED:-1}" = 1 ]; then
   coupled="coupled_turbulence = true"
 fi
 top=$(git rev-parse --show-toplevel)
