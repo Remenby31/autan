@@ -20,11 +20,10 @@ struct PrismOptions {
 
 /// What the merge did: the cells of the result, and why front triangles were left.
 struct PrismReport {
-  std::int64_t prisms = 0;        ///< merged cells whose sides are quadrilaterals
-  std::int64_t split_prisms = 0;  ///< merged cells keeping a side as two triangles
-  std::int64_t tetrahedra = 0;    ///< tetrahedra left
-  std::int64_t other_cells = 0;   ///< cells neither tetrahedra nor merged
-  std::int64_t layers = 0;        ///< most prisms stacked on one wall triangle
+  std::int64_t prisms = 0;       ///< merged cells: 8-face polyhedra, the union of 3 tetrahedra
+  std::int64_t tetrahedra = 0;   ///< tetrahedra left
+  std::int64_t other_cells = 0;  ///< cells neither tetrahedra nor merged
+  std::int64_t layers = 0;       ///< most prisms stacked on one wall triangle
   // Front triangles (a wall triangle or a merged prism's top cap) where a column stopped.
   std::int64_t no_candidate = 0;     ///< no three tetrahedra form a prism on it
   std::int64_t ambiguous = 0;        ///< several sets of three do
@@ -49,9 +48,9 @@ struct PrismMerge {
 /// across abc, whose outer faces are exactly abc, a cap a'b'c' and two triangles covering each
 /// side quadrilateral u v v' u' (aa', bb', cc' the pillars), when exactly one such set exists
 /// and it is a valid layer cell within `options`; its top cap a'b'c' is then a front triangle.
-/// A side quadrilateral both of whose triangles face one merged cell becomes one face; every
-/// other face, the boundary's included, is kept. Nodes, boundary faces and zones are those of
-/// `mesh`. Throws E0133 for a mesh with ghost cells or periodic pairs, and std::logic_error when
+/// The faces inside a prism go and every other face is kept, each side as its two triangles, so
+/// that a merged cell is exactly its tetrahedra's union. Nodes, boundary faces and zones are those
+/// of `mesh`. Throws E0133 for a mesh with ghost cells or periodic pairs, and std::logic_error when
 /// the result breaks an invariant: other nodes or boundary faces, or a merged cell whose volume
 /// differs from its tetrahedra's by more than 1e-12 relative.
 PrismMerge merge_layer_prisms(const Mesh& mesh, const PrismOptions& options = {});

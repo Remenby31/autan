@@ -116,18 +116,6 @@ autan::Mesh assembled(const Layered& g) {
   return autan::assemble(autan::to_face_based(layered(g)));
 }
 
-// Wall triangles with an edge on the square's border: their prisms keep a boundary side split.
-std::int64_t border_triangles(int n) {
-  std::int64_t count = 0;
-  for (int j = 0; j < n; ++j) {
-    for (int i = 0; i < n; ++i) {
-      count += (j == 0 || i == n - 1) ? 1 : 0;  // (i, j) (i+1, j) (i+1, j+1)
-      count += (i == 0 || j == n - 1) ? 1 : 0;  // (i, j) (i+1, j+1) (i, j+1)
-    }
-  }
-  return count;
-}
-
 }  // namespace
 
 TEST_CASE("Boundary-layer tetrahedra merge into prisms, layer by layer from the wall", "[prisms]") {
@@ -139,8 +127,7 @@ TEST_CASE("Boundary-layer tetrahedra merge into prisms, layer by layer from the 
   CAPTURE(r.no_candidate, r.ambiguous, r.not_planar, r.not_layer, r.invalid, r.across_zones,
           r.not_tetrahedron);
   // Every thin layer merges; the top layer, twice as high as wide, is left as tetrahedra.
-  CHECK(r.prisms + r.split_prisms == columns * g.layers);
-  CHECK(r.split_prisms == border_triangles(g.n) * g.layers);
+  CHECK(r.prisms == columns * g.layers);
   CHECK(r.tetrahedra == 3 * columns);
   CHECK(r.other_cells == 0);
   CHECK(r.layers == g.layers);
@@ -149,10 +136,12 @@ TEST_CASE("Boundary-layer tetrahedra merge into prisms, layer by layer from the 
             r.not_tetrahedron ==
         0);
   CHECK(merged.mesh.n_cells() == mesh.n_cells() - 2 * columns * g.layers);
-  // Merged cells are prisms: two caps and three sides, quadrilaterals between two prisms.
-  std::int64_t five = 0;
-  for (index_t c = 0; c < merged.mesh.n_cells(); ++c) five += merged.mesh.cell_faces(c).size() == 5;
-  CHECK(five == r.prisms);
+  // A merged cell is its three tetrahedra's union: two caps and three sides of two triangles.
+  std::int64_t eight = 0;
+  for (index_t c = 0; c < merged.mesh.n_cells(); ++c)
+    eight += merged.mesh.cell_faces(c).size() == 8;
+  CHECK(eight == r.prisms);
+  CHECK(merged.mesh.n_faces() == mesh.n_faces() - 2 * r.prisms);
   // The volume of the box, before and after.
   const auto total = [](const autan::Mesh& m) {
     double t = 0.0;
@@ -171,7 +160,7 @@ TEST_CASE("A column stops at its first prism beyond the planarity tolerance", "[
   // Wall triangles holding (2, 2), with the diagonal (i, j)-(i+1, j+1): both of squares (1, 1)
   // and (2, 2), one of (1, 2) and one of (2, 1).
   const std::int64_t around = 6, columns = 2 * g.n * g.n;
-  CHECK(r.prisms + r.split_prisms == columns * g.layers - around * (g.layers - 2));
+  CHECK(r.prisms == columns * g.layers - around * (g.layers - 2));
   // Every column stops once: the six at layer 2, the others at the top layer. (Which check a
   // column fails is reported for the set that came furthest, informational here.)
   CHECK(r.not_planar + r.not_aligned + r.not_layer + r.invalid == columns);
@@ -187,12 +176,12 @@ TEST_CASE("Tolerances decide which layers merge", "[prisms]") {
   const autan::Mesh mesh = assembled(g);
   const auto wide =
       autan::merge_layer_prisms(mesh, {.planarity_deg = 5.0, .aspect = 4.0, .pillar_deg = 20.0});
-  CHECK(wide.report.prisms + wide.report.split_prisms == 2 * g.n * g.n * (g.layers + 1));
+  CHECK(wide.report.prisms == 2 * g.n * g.n * (g.layers + 1));
   CHECK(wide.report.tetrahedra == 0);
   // A mesh without wall zone merges nothing.
   auto bare = layered(g);
   bare.face_zones[0].kind = autan::BcKind::unspecified;
   const auto none = autan::merge_layer_prisms(autan::assemble(autan::to_face_based(bare)));
-  CHECK(none.report.prisms + none.report.split_prisms == 0);
+  CHECK(none.report.prisms == 0);
   CHECK(none.mesh.n_cells() == mesh.n_cells());
 }

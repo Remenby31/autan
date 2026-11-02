@@ -367,7 +367,8 @@ class Merger {
   }
 
   // The merged mesh: each prism one cell (numbered at its first tetrahedron), the faces inside a
-  // prism gone, a side whose two triangles face one merged cell one quadrilateral.
+  // prism gone, every other face kept: a side stays two triangles, whose union is exactly the
+  // tetrahedra's (one quadrilateral face, the fan around its node mean, would not be).
   MeshInput result(PrismReport& report, std::vector<index_t>& old_to_new) const {
     MeshInput in;
     in.x.assign(m_.x().begin(), m_.x().end());
@@ -392,64 +393,19 @@ class Merger {
       if (p < 0) ++(is_tet(c) ? report.tetrahedra : report.other_cells);
     }
     const auto new_cell = [&](index_t c) { return c == no_cell ? no_cell : old_to_new[at(c)]; };
-    // Sides that become one quadrilateral: both triangles interior and facing the same cell.
-    std::vector<index_t> quad_partner(at(m_.n_faces()), no_cell);
-    for (std::size_t p = 0; p < prisms_.size(); ++p) {
-      bool split = false;
-      for (std::size_t s = 0; s < 3; ++s) {
-        const index_t f1 = prisms_[p].side_low[s].face, f2 = prisms_[p].side_high[s].face;
-        const index_t self = prism_cell[p];
-        const auto other = [&](index_t f) {
-          if (f >= m_.n_interior_faces()) return no_cell;
-          const index_t a = new_cell(m_.owner()[at(f)]), b = new_cell(m_.neighbour()[at(f)]);
-          return a == self ? b : a;
-        };
-        const index_t o1 = other(f1);
-        if (o1 != no_cell && o1 == other(f2) && merged_[at(neighbour_old(f1, prisms_[p]))] >= 0) {
-          quad_partner[at(f1)] = f2;
-          quad_partner[at(f2)] = f1;
-        } else {
-          split = true;
-        }
-      }
-      ++(split ? report.split_prisms : report.prisms);
-    }
+    report.prisms = static_cast<std::int64_t>(prisms_.size());
     for (index_t f = 0; f < m_.n_faces(); ++f) {
       const index_t c0 = new_cell(m_.owner()[at(f)]);
       const index_t c1 = f < m_.n_interior_faces() ? new_cell(m_.neighbour()[at(f)]) : no_cell;
       if (c0 == c1) continue;
       const auto nodes = m_.face_nodes(f);
-      const index_t partner = quad_partner[at(f)];
-      if (partner != no_cell && partner < f) continue;
-      if (partner == no_cell) {
-        in.face_nodes.insert(in.face_nodes.end(), nodes.begin(), nodes.end());
-      } else {
-        // The quadrilateral of triangles f and its partner, in f's orientation: the node d of
-        // the partner goes between the two nodes of the shared diagonal.
-        const auto other = m_.face_nodes(partner);
-        const index_t d = *std::ranges::find_if(
-            other, [&](index_t q) { return std::ranges::find(nodes, q) == nodes.end(); });
-        for (std::size_t i = 0; i < 3; ++i) {
-          const index_t a = nodes[i], b = nodes[(i + 1) % 3];
-          if (std::ranges::find(other, a) != other.end() &&
-              std::ranges::find(other, b) != other.end()) {
-            in.face_nodes.insert(in.face_nodes.end(), {a, d, b, nodes[(i + 2) % 3]});
-            break;
-          }
-        }
-      }
+      in.face_nodes.insert(in.face_nodes.end(), nodes.begin(), nodes.end());
       in.face_node_offsets.push_back(static_cast<offset_t>(in.face_nodes.size()));
       in.face_cell0.push_back(c0);
       in.face_cell1.push_back(c1);
       in.face_zone.push_back(m_.face_zone()[at(f)]);
     }
     return in;
-  }
-
-  // The old cell across face f from prism p.
-  [[nodiscard]] index_t neighbour_old(index_t f, const Prism& p) const {
-    const index_t a = m_.owner()[at(f)];
-    return std::ranges::find(p.cells, a) != p.cells.end() ? m_.neighbour()[at(f)] : a;
   }
 
   [[nodiscard]] const std::vector<Prism>& prisms() const { return prisms_; }

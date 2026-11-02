@@ -22,9 +22,11 @@ constexpr const char* usage =
     "usage: autan-mesh-prisms [--planarity DEG] [--pillar DEG] [--aspect A] MESH OUT\n"
     "\n"
     "Reads MESH, merges in its boundary layer each set of three tetrahedra that\n"
-    "fills a triangular prism into that prism, advancing in layers from its\n"
-    "wall zones, and writes the result to the polyMesh directory OUT, with the\n"
-    "same nodes, boundary faces and zones. A prism's side quadrilateral must be\n"
+    "fills a triangular prism into one cell (its sides kept as their two\n"
+    "triangles, so that the cell is exactly their union), advancing in layers\n"
+    "from its wall zones, and writes the result to the polyMesh directory OUT,\n"
+    "with the"
+    " same nodes, boundary faces and zones. A prism's side quadrilateral must be\n"
     "planar within --planarity degrees (default 5), its pillars within --pillar\n"
     "degrees of its wall-side cap's normal (default 30) and its height at most A\n"
     "times its cap's shortest edge (default 1). Prints a JSON report. Exits 1 with\n"
@@ -81,8 +83,9 @@ int main(int argc, char* const* argv) {
     const auto& r = merged.report;
     const nlohmann::ordered_json report{{"cells_in", mesh.n_cells()},
                                         {"cells_out", merged.mesh.n_cells()},
+                                        {"faces_in", mesh.n_faces()},
+                                        {"faces_out", merged.mesh.n_faces()},
                                         {"prisms", r.prisms},
-                                        {"split_prisms", r.split_prisms},
                                         {"tetrahedra", r.tetrahedra},
                                         {"other_cells", r.other_cells},
                                         {"layers", r.layers},
