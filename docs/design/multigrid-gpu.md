@@ -72,11 +72,16 @@ Within a colour, lines share no edge, so the two launches of a colour are indepe
 
 ## Coarsest level
 
-The host factors the coarsest level densely (LU with partial pivoting) when it has at most 1000 unknowns, and sweeps it `coarsest_sweeps` times otherwise; the device sweeps it the same way in the second case. In the dense case it changes the form. `gpu::CoarsestSolve` takes the coarsest blocks after the Galerkin product (at most 1000 × 1000 FP64, 8 MB, usually 320 × 320). It assembles the host's dense matrix in the host numbering and factors it with the host's `factor_dense`, so the factors are the host's own. It inverts the matrix column by column with `solve_dense` and permutes the inverse into the device numbering. The device then applies x = A⁻¹ b, one warp per row, a fixed butterfly per row.
+The host factors the coarsest level densely (LU with partial pivoting) when it has at most 1000 unknowns, and sweeps it `coarsest_sweeps` times otherwise; the device sweeps it the same way in the second case.
 
-Why not triangular solves on the device: they run m sequential steps in one block, about m synchronisations per solve, and the K-cycle visits the coarsest level up to 2^(L−1) times per cycle. A dense product is one launch of at most 8 MB of reads. Why not Grace: a host solve per visit costs a device-to-host round trip each time and cannot sit inside a captured graph. The cost is one host transfer and an O(m³) factorisation per Jacobian, as on the host today.
+In the dense case, `gpu::CoarsestSolve` takes the coarsest blocks after the Galerkin product (at most 1000 × 1000 FP64, 8 MB, usually 320 × 320). It assembles the host's dense matrix in the host numbering and factors it with the host's `factor_dense`, once per Jacobian. Each solve then runs on the device in `solve_dense`'s operation order, so x is the host's bit for bit:
+- the pivot swaps, in order;
+- forward substitution by columns, all rows at once; row i still subtracts its terms in increasing j, as the host does;
+- back substitution in one thread, row by row, as the host does.
 
-The two forms differ by more than κ∞ says: the host's LU carries its pivot growth ρ, the stored inverse does not, and a matrix with large ρ and small κ separates them. Rule, declared before measuring: the device's x = A_c⁻¹ b must lie within 10⁻¹⁰ ‖x_host‖∞ of the host's LU solve on every test case. `CoarsestSolve` checks it when it is built, on three fixed right-hand sides: it computes the inverse's product on the host in the device's operation order and compares it with `solve_dense`. A matrix that misses the gate, such as one with large pivot growth, is solved instead by the LU factors in one block on the device. The pivot swaps and the forward substitution follow the host's order; the back substitution runs by columns. `explicit_inverse()` reports which form is used. κ∞(A_c) and ρ are measured and reported on the most stretched cases (flat plate 137 × 97, NACA 0012 256²), with the cost of each form.
+An explicit inverse applied as a dense product would run in one launch, but no fixed check of its accuracy holds for every matrix. Pivot growth, near-singular blocks and overflow each break one; any other operation order can drift from the host's solve by more than the declared 10⁻¹⁰. So the device keeps the host's operation order, and its result is the host's exactly.
+
+Its cost, one serial back substitution per visit of the coarsest level, is measured with the cycle on a healthy machine. A faster form must come with an accuracy condition declared before it is measured. κ∞(A_c) and the pivot growth are reported then, on the most stretched cases (flat plate 137 × 97, NACA 0012 256²).
 
 ## Cycle and reductions
 
@@ -103,7 +108,7 @@ Declared before any measurement. u is the unit round-off of the type that comput
 | Point rows, one colour from the same x | componentwise ≤ max(64, 4 (k + 5)) u ‖D_i⁻¹‖∞ (\|b\| + Σ \|A\| \|x\|)_i, k the row's incidences: J5's agreed 64 u on mesh rows, growing with the degree of coarse rows | host `relax_line` on lines of one node |
 | Line factors | each block within 10⁻¹² of the largest entry of the host's | host `Smoother::factor` |
 | Line solves, one colour from the same x and the same factors | each node within 10⁻¹² ℓ max_k ‖D'_k⁻¹‖∞ max_k (\|b\| + Σ \|A\| \|x\|)_k over its line, ℓ the line's length (scaled by the data, not by a solution that may cancel to zero) | host `relax_line` |
-| Coarsest solve | within 10⁻¹⁰ ‖x_host‖∞, κ∞ and pivot growth reported ([rule](#coarsest-level)) | host `solve_dense` |
+| Coarsest solve | bitwise equal; a manufactured solution recovered within 10⁻¹⁰ | host `solve_dense`; b = A x from the blocks |
 | One cycle, V and K | each component within 10⁻¹⁰ (fp64) or 10⁻³ (fp32+acc64) of \|x_host\|∞ | host `cycle` |
 | GCR to a drop of 10⁻⁶, MMS hex and tet 48³, NACA 256² | each iteration's drop within 10⁻⁸ (fp64) or 10⁻² (fp32+acc64) relative of the host's; the same iteration count | host `solve` |
 | Steady Euler to convergence (the run's rule, the fp32+acc64 floor of [case-schema.md](../contracts/case-schema.md) included; MMS hex and tet 16³–96³, NACA 0012 cases of [multigrid.md](multigrid.md#measurements)) | the host's step count | `autan-run`, cpu backend, same policy |

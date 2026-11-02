@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <memory>
 #include <span>
-#include <vector>
 
 #include "autan/solvers/agglomeration.hpp"
 #include "autan/solvers/galerkin_lists.hpp"
@@ -78,13 +77,10 @@ class Galerkin {
 
 /// The coarsest level's direct solve on the GPU (docs/design/multigrid-gpu.md#coarsest-level):
 /// the host multigrid's dense matrix of the level (unknown c of node h at c * n + h, host
-/// numbering), factored by `factor_dense` as the host does. Its inverse, formed column by column
-/// with `solve_dense`, is applied on the device as x = A⁻¹ b, one warp per row in a fixed order,
-/// if on three fixed right-hand sides that product lies within 1e-10 of the host's solve;
-/// otherwise the device solves by the LU factors in one block (`explicit_inverse()` says which).
-/// Vectors are in the level's device numbering (`order`), 5 components in structure of arrays.
-/// Throws std::domain_error on a singular matrix, as factor_dense does, and
-/// std::invalid_argument beyond 4096 unknowns.
+/// numbering), factored by `factor_dense` as the host does, then solved on the device in
+/// `solve_dense`'s operation order, so x is the host's bit for bit. Vectors are in the level's
+/// device numbering (`order`), 5 components in structure of arrays. Throws std::domain_error on a
+/// singular matrix, as factor_dense does, and std::invalid_argument beyond 4096 unknowns.
 class CoarsestSolve {
  public:
   /// `diag`: one block per host node; `upper`, `lower`: A(owner, neighbour) and A(neighbour,
@@ -99,10 +95,6 @@ class CoarsestSolve {
 
   /// Unknowns, 5 per node.
   [[nodiscard]] std::size_t size() const;
-  /// Whether the device applies the explicit inverse (otherwise the LU factors).
-  [[nodiscard]] bool explicit_inverse() const;
-  /// The inverse, row-major in the device numbering, as uploaded.
-  [[nodiscard]] const std::vector<double>& inverse() const;
   void solve(const double* b, double* x, void* stream = nullptr) const;
 
  private:

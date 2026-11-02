@@ -256,6 +256,12 @@ std::vector<double> device_solve(const autan::solvers::gpu::CoarsestSolve& solve
   return to_host_vector(x, order);
 }
 
+bool same_vector_bits(const std::vector<double>& a, const std::vector<double>& b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](double p, double q) {
+           return std::bit_cast<std::uint64_t>(p) == std::bit_cast<std::uint64_t>(q);
+         });
+}
+
 double max_abs(const std::vector<double>& v) {
   double s = 0.0;
   for (const double x : v) s = std::max(s, std::abs(x));
@@ -286,7 +292,8 @@ TEST_CASE("device Galerkin products are bitwise the host multigrid's coarse oper
   }
 }
 
-TEST_CASE("the device coarsest solve matches the host dense LU within 1e-10", "[multigrid][gpu]") {
+TEST_CASE("the device coarsest solve gives the host dense LU's solution bit for bit",
+          "[multigrid][gpu]") {
   const char* file = GENERATE(from_range(meshes));
   INFO(file);
   const auto levels = hierarchy(autan::io::read_mesh(mesh_dir / file));
@@ -297,7 +304,6 @@ TEST_CASE("the device coarsest solve matches the host dense LU within 1e-10", "[
   const Blocks a = coarsest_blocks(l, 23);
   const autan::solvers::gpu::CoarsestSolve solve(l, order, a.diag, a.upper, a.lower);
   REQUIRE(solve.size() == m);
-  CHECK(solve.explicit_inverse());
 
   std::mt19937 rng(31);
   std::uniform_real_distribution<double> u(-1.0, 1.0);
@@ -305,8 +311,7 @@ TEST_CASE("the device coarsest solve matches the host dense LU within 1e-10", "[
   for (double& v : b) v = u(rng);
   const std::vector<double> x_host = host_solve(l, a, b);
   const std::vector<double> x = device_solve(solve, order, b);
-  REQUIRE(max_abs(x_host) > 0.0);
-  CHECK(max_difference(x, x_host) <= 1e-10 * max_abs(x_host));
+  CHECK(same_vector_bits(x, x_host));
 
   // Manufactured: x chosen, b = A x from the blocks. The diagonal of 80 against entries of at most
   // 1 elsewhere keeps the condition number of these small coarsest levels low.
@@ -316,11 +321,11 @@ TEST_CASE("the device coarsest solve matches the host dense LU within 1e-10", "[
   CHECK(max_difference(x_solved, x_true) <= 1e-10 * max_abs(x_true));
 }
 
-TEST_CASE("a coarsest operator with large pivot growth is solved by the LU factors",
+TEST_CASE("a coarsest operator with large pivot growth gives the host solution bit for bit",
           "[multigrid][gpu]") {
   // 8 nodes, every pair an edge: the 40 x 40 matrix A(u, v) = 1 if u = v or v = 39, -1 if u > v,
   // 0 otherwise (unknown c of node h at u = 8 c + h), whose LU with partial pivoting grows by
-  // 2^39: its explicit inverse misses 1e-10 of the LU solve.
+  // 2^39, so that any other operation order than the host's drifts.
   Level l;
   l.n_nodes = 8;
   for (index_t i = 0; i < 8; ++i) {
@@ -350,14 +355,11 @@ TEST_CASE("a coarsest operator with large pivot growth is solved by the LU facto
   }
   const std::vector<index_t> order = {3, 0, 7, 1, 6, 2, 5, 4};
   const autan::solvers::gpu::CoarsestSolve solve(l, order, a.diag, a.upper, a.lower);
-  CHECK_FALSE(solve.explicit_inverse());
 
   std::vector<double> b(40);
   for (std::size_t k = 0; k < 40; ++k) b[k] = 1.0 / static_cast<double>(k + 1);
   const std::vector<double> x_host = host_solve(l, a, b);
-  const std::vector<double> x = device_solve(solve, order, b);
-  REQUIRE(max_abs(x_host) > 0.0);
-  CHECK(max_difference(x, x_host) <= 1e-10 * max_abs(x_host));
+  CHECK(same_vector_bits(device_solve(solve, order, b), x_host));
 }
 
 TEST_CASE("a singular coarsest operator is refused as the host refuses it", "[multigrid][gpu]") {
