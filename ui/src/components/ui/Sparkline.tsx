@@ -1,4 +1,5 @@
-/** A trend without axes, for a row or a tile. `target` draws a dashed line the data aims at. */
+/** A trend without axes, for a row or a tile. `target` draws a dashed line the data aims at;
+ * `domain` fixes the vertical range, which otherwise fits the data. */
 export function Sparkline({
   values,
   width = 96,
@@ -6,6 +7,7 @@ export function Sparkline({
   target,
   color = "var(--fg-2)",
   label,
+  domain,
 }: {
   values: number[];
   width?: number;
@@ -13,10 +15,11 @@ export function Sparkline({
   target?: number;
   color?: string;
   label: string;
+  domain?: [number, number];
 }) {
   if (values.length < 2) return <svg width={width} height={height} aria-hidden />;
-  const lo = Math.min(...values, target ?? Number.POSITIVE_INFINITY);
-  const hi = Math.max(...values, target ?? Number.NEGATIVE_INFINITY);
+  const lo = domain?.[0] ?? Math.min(...values, target ?? Number.POSITIVE_INFINITY);
+  const hi = domain?.[1] ?? Math.max(...values, target ?? Number.NEGATIVE_INFINITY);
   const span = hi - lo || 1;
   const x = (k: number) => (k / (values.length - 1)) * (width - 2) + 1;
   const y = (v: number) => height - 1 - ((v - lo) / span) * (height - 2);
