@@ -189,8 +189,8 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
   // node of smallest (x, y, z) and runs in the face's global orientation (keys->reversed), and
   // the sum is signed for the local one: a face gives the same bits however it is numbered.
   // M is zero on a planar face, where the fan sum leaves only round-off (#412). A face is planar
-  // here when that is exact: a triangle, or nodes sharing one coordinate bitwise. Any other face,
-  // planar or not, keeps its fan sum.
+  // here when that is exact: a triangle, or nodes sharing one coordinate (compared with ==).
+  // Any other face, planar or not, keeps its fan sum.
   const auto x = mesh.x(), y = mesh.y(), z = mesh.z();
   for (index_t f = 0; f < mesh.n_faces(); ++f) {
     const auto nodes = mesh.face_nodes(f);
@@ -200,7 +200,12 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
       const auto n = static_cast<std::size_t>(nodes[i]);
       return Vec{x[n], y[n], z[n]};
     };
+    const bool reversed = keys != nullptr && !keys->reversed.empty() && keys->reversed[fi] != 0;
     if (nn == 3 || exactly_axis_aligned(nn, point)) {
+      // Signed for the local orientation like any moment: +0 in the global one on every rank.
+      for (std::size_t j = 0; j < 9; ++j) {
+        p.face_moment[j * nf + fi] = reversed ? -0.0 : 0.0;
+      }
       continue;
     }
     std::size_t start = 0;
@@ -209,7 +214,6 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
         start = i;
       }
     }
-    const bool reversed = keys != nullptr && !keys->reversed.empty() && keys->reversed[fi] != 0;
     auto at = [&](std::size_t i) {
       return point(reversed ? (start + nn - i % nn) % nn : (start + i) % nn);
     };
