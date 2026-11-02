@@ -142,7 +142,7 @@ struct Prepared {
   // The mesh's geometry and, with the physics' groups, the groups and their
   // colouring: formed on every rank before any collective, so that a rank that
   // cannot form them refuses the run with the others (#334).
-  Geometry geometry = {};
+  std::optional<Geometry> geometry = std::nullopt;  // computed once, by geometry_of
   CellGroups cell_groups = {};
   std::vector<std::int32_t> group_colours = {};
   std::vector<std::int32_t> parts = {};  // each cell's rank on several ranks; empty on one
@@ -227,6 +227,11 @@ bool is_averaging(const Json& a) {
 
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
 // mesh, precision and fields, and reads its state, before any directory exists.
+const Geometry& geometry_of(Prepared& p) {
+  if (!p.geometry) p.geometry = compute_geometry(p.mesh);
+  return *p.geometry;
+}
+
 void load_start(Prepared& p) {
   const Start& start = *p.input.start;
   const fs::path file = fs::path(start.run) / "solution.cgns";
@@ -356,7 +361,6 @@ std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, st
 // document, then against the mesh and the zone, then each face of the zone paired with exactly
 // one row by centroid.
 void load_states(Prepared& p) {
-  std::optional<Geometry> geometry;
   const auto offsets = p.mesh.boundary_zone_offsets();
   for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
     const auto& b = p.input.boundaries[i];
@@ -406,8 +410,7 @@ void load_states(Prepared& p) {
       fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
            {{"zone", b.zone}, {"expected", n}, {"found", z.faces}});
     }
-    if (!geometry) geometry = compute_geometry(p.mesh);
-    const auto& g = *geometry;
+    const Geometry& g = geometry_of(p);
     // Tolerance: 1e-9 times the largest extent of the bounding box of the zone's nodes.
     std::array<double, 3> lo{}, hi{};
     lo.fill(std::numeric_limits<double>::infinity());
@@ -553,7 +556,7 @@ void load_initial(Prepared& p) {
     extent = std::max(extent, *hi - *lo);
   }
   const double tol = 1e-9 * extent;
-  const Geometry g = compute_geometry(mesh);
+  const Geometry& g = geometry_of(p);
   const auto centroid = [&](index_t c) {
     const auto i = at(c);
     return std::array<double, 3>{g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]};
@@ -654,7 +657,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .boundary_states = {},
              .state_files = {},
              .initial = std::nullopt,
-             .geometry = {},
+             .geometry = std::nullopt,
              .cell_groups = {},
              .group_colours = {},
              .parts = {}};
@@ -824,9 +827,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                                             {"device", in.device_kind}}
                                                  .dump()});
   }
-  p.geometry = compute_geometry(p.mesh);
+  const Geometry& geometry = geometry_of(p);
   if (p.groups != nullptr && *p.groups) {
-    p.cell_groups = (*p.groups)(p.input, p.mesh, p.geometry);
+    p.cell_groups = (*p.groups)(p.input, p.mesh, geometry);
     p.group_colours = colour_cells(p.mesh, p.cell_groups.offsets, p.cell_groups.cells);  // E0140
   }
   // Every rank partitions the same mesh with the same seed (E0140 to E0143).
@@ -875,7 +878,7 @@ class Run final : public Log {
       : p_(p),
         comm_(comm),
         launched_(launched),
-        geometry_(std::move(p.geometry)),
+        geometry_(std::move(*p.geometry)),
         groups_(std::move(p.cell_groups)),
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
