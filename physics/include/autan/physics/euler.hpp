@@ -128,6 +128,12 @@ class Euler {
   /// Throws std::logic_error before freeze() and after set_second_order(), which drops what
   /// freeze held.
   void residual_frozen(std::span<const State> s, std::span<Res> res);
+  /// After residual_frozen: how many face sides take another branch of the reconstruction's
+  /// positivity fallback (the cell value where the reconstructed density or pressure would be
+  /// non-positive) than the one held from freeze()'s state. Nonzero: the evaluation is not the
+  /// smooth continuation of the residual at freeze()'s state. Throws std::logic_error before
+  /// freeze().
+  [[nodiscard]] std::size_t frozen_switches() const;
   /// Frees what freeze() allocated.
   void release_frozen();
   /// The loops' data of the frozen workspace: the primitives, boundary states and gradients of

@@ -704,6 +704,7 @@ TEMPLATE_TEST_CASE(
   e.freeze(at);
   e.residual_frozen(at, frozen);
   CHECK(bits(frozen, r));
+  CHECK(e.frozen_switches() == 0);
   // Every boundary kind residual() knows is held alike: at its own state, one kind on every
   // boundary face, the frozen residual is the residual.
   {
@@ -773,11 +774,33 @@ TEMPLATE_TEST_CASE(
   const auto first = smooth(0.0), second = smooth(0.25);
   e.freeze(first);
   e.residual_frozen(second, held);
+  CHECK(e.frozen_switches() == 0);
   e.residual(second, direct);
   if (limiter) {
     CHECK_FALSE(bits(held, direct));
   } else {
     CHECK(bits(held, direct));
+  }
+  // The density of the cell nearest x = 0, on the boundary, down to 1e-3 of its value: the
+  // reconstructions in and around it reach a non-positive density, so face sides leave their
+  // held branch.
+  {
+    const auto low = static_cast<std::size_t>(std::ranges::min_element(c.geometry.cell_centroid_x) -
+                                              c.geometry.cell_centroid_x.begin());
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i];
+      const double s = std::sin(2.0 * std::numbers::pi * x) * std::cos(std::numbers::pi * y);
+      const double thin = i == low ? 1e-3 : 1.0;
+      const auto q = conserved({thin * w.rho * (1.0 + 0.1 * s),
+                                {w.v[0] * (1.0 + 0.1 * s), w.v[1], w.v[2]},
+                                w.p * (1.0 + 0.05 * s)});
+      for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+    }
+    e.residual_frozen(stored(e, u), held);
+    CHECK(e.frozen_switches() > 0);
+    e.residual_frozen(second, held);
+    CHECK(e.frozen_switches() == 0);
   }
   // An order switch drops what freeze held, and so does release_frozen.
   e.set_second_order(false);
@@ -787,6 +810,7 @@ TEMPLATE_TEST_CASE(
   e.release_frozen();
   CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
   CHECK_THROWS_AS(e.frozen_data(), std::logic_error);
+  CHECK_THROWS_AS(static_cast<void>(e.frozen_switches()), std::logic_error);
 }
 
 TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one after another",
