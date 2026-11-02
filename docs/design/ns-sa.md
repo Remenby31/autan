@@ -40,6 +40,8 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 
 ## Verification
 
+**Status: Navier-Stokes order verification incomplete.** `ns-mms-order` fails at its declared levels (hex 32–128 density L2 fit 1.78, finest pair 1.88; poly 16–64 1.80, 1.86): the one-sided face2 gradient of the convective reconstruction near the boundary limits the order at μ = 10. Diagnosis and the remedies under measurement: #137.
+
 | Test | Oracle | Where |
 |---|---|---|
 | Linear velocity and temperature, every cell type, `fp64` and `fp32+acc64`, with and without a no-slip wall (isothermal and adiabatic) | viscous residual = −V (0, 0, 0, 0, τ : ∇u) to round-off | `tests/physics/test_navier_stokes.cpp` |
