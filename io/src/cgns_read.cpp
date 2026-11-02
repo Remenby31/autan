@@ -237,12 +237,21 @@ class Reader {
       ok(cg_goto(fn_, 1, "Zone_t", 1, "Elements_t", s, "end"), "go to section", name);
       char family_name[CG_MAX_GOTO_DEPTH * 33 + 1];
       if (cg_famname_read(family_name) == CG_OK) family = family_name;
+      const auto count = at(end - start + 1);
+      if (is_ignored_type(type)) {
+        // Points and edges the reader never uses: their ids resolve, their nodes are not read.
+        sections_.push_back(
+            Section{.start = start,
+                    .count = count,
+                    .elements = {},
+                    .ignored = Element{.type = type, .connectivity = {}, .family = family}});
+        continue;
+      }
 
       cgsize_t data_size = 0;
       ok(cg_ElementDataSize(fn_, 1, 1, s, &data_size), "size section", name);
       std::vector<cgsize_t> connectivity(at(data_size));
       std::vector<cgsize_t> offsets;
-      const auto count = at(end - start + 1);
       const bool poly =
           type == CGNS_ENUMV(MIXED) || type == CGNS_ENUMV(NGON_n) || type == CGNS_ENUMV(NFACE_n);
       if (poly) {
@@ -260,8 +269,8 @@ class Reader {
         for (std::size_t e = 0; e <= count; ++e) offsets[e] = static_cast<cgsize_t>(e) * nodes;
       }
       check_offsets(offsets, connectivity.size(), name);
-      Section& section =
-          sections_.emplace_back(Section{.start = start, .elements = std::vector<Element>(count)});
+      Section& section = sections_.emplace_back(Section{
+          .start = start, .count = count, .elements = std::vector<Element>(count), .ignored = {}});
       for (std::size_t e = 0; e < count; ++e) {
         Element& element = section.elements[e];
         auto first = connectivity.begin() + offsets[e];
@@ -278,7 +287,7 @@ class Reader {
           }
           element.type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
         }
-        element.connectivity.assign(first, last);
+        if (!is_ignored_type(element.type)) element.connectivity.assign(first, last);
         element.family = family;
         classify(element, name);
       }
@@ -286,7 +295,7 @@ class Reader {
     std::ranges::sort(sections_, {}, &Section::start);
     for (std::size_t i = 1; i < sections_.size(); ++i) {
       const auto& previous = sections_[i - 1];
-      if (sections_[i].start < previous.start + static_cast<cgsize_t>(previous.elements.size())) {
+      if (sections_[i].start < previous.start + static_cast<cgsize_t>(previous.count)) {
         malformed(path_, "two sections share element ids");
       }
     }
@@ -314,7 +323,8 @@ class Reader {
     if (it == sections_.begin()) return nullptr;
     const Section& section = *std::prev(it);
     const cgsize_t index = id - section.start;
-    return std::cmp_less(index, section.elements.size()) ? &section.elements[at(index)] : nullptr;
+    if (!std::cmp_less(index, section.count)) return nullptr;
+    return section.elements.empty() ? &section.ignored : &section.elements[at(index)];
   }
 
   void classify(const Element& element, const char* section) {
@@ -564,7 +574,7 @@ class Reader {
                                "' other than a face-to-face connection of the zone with itself");
       }
       std::size_t elements = 0;
-      for (const auto& section : sections_) elements += section.elements.size();
+      for (const auto& section : sections_) elements += section.count;
       if (points < 1 || std::cmp_greater(points, elements)) {
         malformed(path_, std::string("connectivity '") + name + "' lists " +
                              std::to_string(points) + " faces");
@@ -757,8 +767,9 @@ class Reader {
   std::vector<cgsize_t> element_ids(bool (*keep)(const Element&)) const {
     std::vector<cgsize_t> ids;
     for (const Section& section : sections_) {
-      for (std::size_t e = 0; e < section.elements.size(); ++e) {
-        if (keep(section.elements[e])) ids.push_back(section.start + static_cast<cgsize_t>(e));
+      for (std::size_t e = 0; e < section.count; ++e) {
+        const Element& element = section.elements.empty() ? section.ignored : section.elements[e];
+        if (keep(element)) ids.push_back(section.start + static_cast<cgsize_t>(e));
       }
     }
     return ids;
@@ -889,9 +900,13 @@ class Reader {
   cgsize_t n_cells_ = 0;
   std::vector<double> x_, y_, z_;
   std::map<std::string, Family> families_;
+  // A section's elements, or for a section of ignored points or edges, their count and one
+  // element standing for all of them.
   struct Section {
     cgsize_t start;
+    std::size_t count;
     std::vector<Element> elements;
+    Element ignored;
   };
   std::vector<Section> sections_;
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;

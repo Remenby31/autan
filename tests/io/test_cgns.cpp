@@ -564,6 +564,43 @@ TEST_CASE("Zone names outside the node-name rule survive a write and read", "[cg
                             [](const autan::CellZone& z) { return z.name == "Zone"; }));
 }
 
+TEST_CASE("Point and edge sections are skipped, and the ids after them still resolve", "[cgns]") {
+  // mesh.md, Readers (CGNS): BAR_2 and NODE sections carry nothing the mesh uses. A tet whose
+  // face (1, 2, 3) a BC "wall" names by its element id, without and with a BAR_2 section of three
+  // edges before that face: the same mesh, the face still found by its id.
+  const auto write = [](bool edges) {
+    return cgns_file(edges ? "edges.cgns" : "no-edges.cgns", [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      int section = 0, bc = 0;
+      cgsize_t next = 2;
+      if (edges) {
+        const std::array<cgsize_t, 6> bars{1, 2, 2, 3, 3, 1};
+        REQUIRE(cg_section_write(fn, base, 1, "Edges", CGNS_ENUMV(BAR_2), next, next + 2, 0,
+                                 bars.data(), &section) == CG_OK);
+        next += 3;
+      }
+      const std::array<cgsize_t, 3> tri{1, 3, 2};
+      REQUIRE(cg_section_write(fn, base, 1, "Wall", CGNS_ENUMV(TRI_3), next, next, 0, tri.data(),
+                               &section) == CG_OK);
+      REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 1,
+                            &next, &bc) == CG_OK);
+      REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+    });
+  };
+  const autan::Mesh plain = autan::io::read_mesh(write(false));
+  const autan::Mesh with_edges = autan::io::read_mesh(write(true));
+  for (const autan::Mesh* m : {&plain, &with_edges}) {
+    CHECK(m->n_cells() == 1);
+    CHECK(m->n_faces() == 4);
+    const auto zones = m->face_zones();
+    const auto wall = std::ranges::find(zones, std::string("wall"), &autan::FaceZone::name);
+    REQUIRE(wall != zones.end());
+    const auto z = static_cast<std::size_t>(wall - zones.begin());
+    CHECK(m->boundary_zone_offsets()[z + 1] - m->boundary_zone_offsets()[z] == 1);
+  }
+  CHECK(std::ranges::equal(plain.face_nodes(), with_edges.face_nodes()));
+}
+
 TEST_CASE("CGNS content that contradicts itself is E0132", "[cgns]") {
   using autan::ErrorCode;
   SECTION("a zone declaring more cells than it holds") {
