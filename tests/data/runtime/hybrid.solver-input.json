@@ -181,7 +181,8 @@
     "kind": "steady",
     "max_iterations": 10000,
     "residual_orders": 8.0,
-    "linear_solver": "multigrid"
+    "linear_solver": "multigrid",
+    "coupled_turbulence": false
   },
   "monitors": [
     {
