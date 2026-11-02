@@ -1,5 +1,6 @@
 // The golden path: every page on what autan-run and autan-mesh-info themselves wrote. Expected
 // values are read from those files, never written here: whatever the solver writes, the UI reads.
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -18,6 +19,17 @@ const history = (run: Run) =>
 // The angle of attack a run's stored case writes, in degrees ("6 deg").
 const aoa = (run: Run) =>
   readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8").match(/^aoa = "([\d.]+) deg"$/m)?.[1];
+// The cells' values of a field of a run's solution.cgns, read with h5py: the producer's file,
+// not the UI's reading of it.
+const cellValues = (run: Run, field: string): number[] =>
+  JSON.parse(
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c"],
+      `import sys, json, h5py\nwith h5py.File(sys.argv[1]) as f: print(json.dumps(f["Base"]["Zone"]["FlowSolution"][sys.argv[2]][" data"][()].tolist()))`,
+      join(RUNS, run.run_id, "solution.cgns"),
+      field,
+    ]).toString(),
+  );
 const four = (v: number | undefined) => (v ?? Number.NaN).toFixed(4).replace(/^-(0\.0+)$/, "$1");
 
 test("the runs list and a run page show what the solver wrote", async ({ page }) => {
@@ -70,15 +82,27 @@ test("Analysis reads the wall, a slice, a probe and the wall section", async ({ 
   const box = await page.getByTestId("viewport").boundingBox();
   if (!box) throw new Error("no viewport");
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.45);
+  // On the slice, a probe reads one cell's pressure as the solver wrote it, to FP32 rounding.
   const probe = page.getByTestId("probe");
-  await expect(probe).toBeVisible();
-  expect(Number.isFinite(Number(await probe.getAttribute("data-value")))).toBe(true);
+  await expect(probe).toContainText("slice ·");
+  const read = await probe.getAttribute("data-value");
+  expect(read).not.toBeNull();
+  const value = Number(read);
+  const pressures = cellValues(run, "Pressure");
+  expect(pressures.some((p) => Math.abs(p - value) <= 4 * 2 ** -23 * Math.abs(p))).toBe(true);
 });
 
 test("Compare and the case editor read the same outputs", async ({ page }) => {
   const ids = encodeURIComponent(JSON.stringify(written.map((r) => r.run_id)));
   await page.goto(`/compare?runs=${ids}`);
-  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+  // Each run's drop is drawn with one point per line of its history.jsonl.
+  const drop = page.getByTestId("chart-drop").locator("[data-samples]");
+  for (const run of written) {
+    await expect(drop).toHaveAttribute(
+      "data-samples",
+      new RegExp(`(^| )${run.run_id.slice(-8)}:${history(run).length}( |$)`),
+    );
+  }
   // Runs stopped at their budget are no polar points, and say why.
   for (const run of written.filter((r) => r.status !== "converged")) {
     await expect(page.getByTestId("polar-missing")).toContainText(`${run.status}, not converged`);
