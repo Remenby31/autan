@@ -158,6 +158,18 @@ inline bool ge(std::complex<T> a, std::complex<T> b) {
   return a.real() >= b.real();
 }
 
+// Min and Max reductions: whether term v replaces the accumulator m. A NaN term propagates (#418):
+// the first NaN in list order is taken and kept; ties keep the first term. NaN is the value that
+// is not ordered with itself, which le() compares on the real part under complex-step.
+template <class T>
+AUTAN_HD inline bool min_takes(T v, T m) {
+  return lt(v, m) || (!le(v, v) && le(m, m));
+}
+template <class T>
+AUTAN_HD inline bool max_takes(T v, T m) {
+  return gt(v, m) || (!le(v, v) && le(m, m));
+}
+
 template <class T>
 AUTAN_HD inline T infinity() {
   if constexpr (sizeof(T) == sizeof(float)) {

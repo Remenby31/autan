@@ -123,13 +123,19 @@ def test_calls_are_inlined_and_vectors_scalarised() -> None:
     assert run(fn, (1.0, 2.0, 1.0), (2.0, 3.0, 0.0), (1.0, 2.0, 1.0), -3.0) == [-6.0, 2.0, 5.0, 4.0]
 
 
-def test_min_and_max_select_the_first_argument_on_ties() -> None:
+def test_min_and_max_select_the_first_argument_on_ties_and_propagate_nan() -> None:
+    # A NaN in either argument gives NaN (#418): a limiter must not read a NaN bound as no bound.
     fn, _ = parse(minmax_ties)
     a_min, a_max = fn.instrs[fn.outputs[0]], fn.instrs[fn.outputs[1]]
     assert a_min.op == a_max.op == "select"
     assert fn.instrs[a_min.args[1]].attr == (0, 0)  # first argument when the comparison holds
     assert fn.instrs[a_max.args[1]].attr == (0, 0)
     assert run(fn, 2.0, 2.0) == [2.0, 2.0]
+    for a, b in ((0.0, -0.0), (-0.0, 0.0)):
+        assert [np.signbit(v) for v in run(fn, a, b)] == [np.signbit(a)] * 2
+    for a, b in ((np.nan, 1.0), (1.0, np.nan), (np.nan, np.nan)):
+        assert all(np.isnan(v) for v in run(fn, a, b))
+    assert run(fn, 1.0, np.inf) == [1.0, np.inf]
 
 
 @pointwise

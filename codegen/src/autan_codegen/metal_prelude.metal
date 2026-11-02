@@ -128,6 +128,18 @@ inline bool ge(T a, T b) {
   return a >= b;
 }
 
+// Min and Max reductions: whether term v replaces the accumulator m. A NaN term propagates (#418):
+// the first NaN in list order is taken and kept; ties keep the first term. NaN is the value that
+// is not ordered with itself.
+template <class T>
+inline bool min_takes(T v, T m) {
+  return lt(v, m) || (!le(v, v) && le(m, m));
+}
+template <class T>
+inline bool max_takes(T v, T m) {
+  return gt(v, m) || (!le(v, v) && le(m, m));
+}
+
 template <class T>
 inline T infinity();
 template <>
