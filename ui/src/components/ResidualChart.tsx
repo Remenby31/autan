@@ -52,13 +52,14 @@ const decades = (_: uPlot, __: number, min: number, max: number) => {
  * continues. An equation exempt from the convergence rule (identically zero) is not drawn. */
 export function ResidualChart({
   history,
-  maxRatio,
+  floorCheck,
   reference,
   steady,
 }: {
   history: HistoryColumns;
-  /** Per equation, the largest ratio of a cell's residual to its round-off floor. */
-  maxRatio?: Record<string, number> | undefined;
+  /** Per equation, the largest ratio of a cell's residual to its round-off floor, at the
+   * iteration the floors were last evaluated. */
+  floorCheck?: { iteration: number; max_ratio: Record<string, number> } | null | undefined;
   reference?: Record<string, number> | null | undefined;
   /** The convergence rule, and so its exemptions, applies to steady runs only. */
   steady: boolean;
@@ -203,9 +204,9 @@ export function ResidualChart({
             <span key={name} className="flex items-center gap-1.5">
               <Swatch k={k} />
               {name}
-              {maxRatio?.[name] !== undefined && (maxRatio[name] as number) <= 1 && (
+              {floorCheck && (floorCheck.max_ratio[name] ?? Number.POSITIVE_INFINITY) <= 1 && (
                 <span className="font-sans text-warning" data-testid={`at-floor-${name}`}>
-                  at its floor
+                  at its floor at iteration {floorCheck.iteration}
                 </span>
               )}
               {value(name) !== undefined && (

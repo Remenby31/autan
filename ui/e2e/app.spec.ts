@@ -487,7 +487,7 @@ test("a run that ends at its round-off floor says so, never as converged", async
 
   await page.goto(`/runs/${runId}`);
   await expect(page.getByTestId("status")).toHaveText("At floor");
-  await expect(page.getByTestId(`at-floor-${atFloor}`)).toBeVisible();
+  await expect(page.getByTestId(`at-floor-${atFloor}`)).toHaveText("at its floor at iteration 30");
   await expect(page.getByTestId(`at-floor-${names[1]}`)).toHaveCount(0);
   await expect(page.getByTestId("orders")).not.toHaveText(target.toFixed(2));
   await expect(page.getByTestId("forces")).toContainText("at the round-off floor, not converged");

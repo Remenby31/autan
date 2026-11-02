@@ -123,6 +123,13 @@ test("a residual plateau is a plateau: the drop is the slowest equation's, floor
   ];
   const plain = run({ residual_reference: null, woken: null });
   expectOrders(appendHistory(empty(), rows, plain).orders, [0, 4, 4]);
+  // Whatever a run.json says of floors, even in the per-equation form of an earlier contract
+  // ({floor: {equation: value}}), nothing ends the drop but the residuals themselves.
+  const floors = {
+    ...plain,
+    convergence: { floor: { density: 1e-4, energy: 1e-8 } },
+  } as unknown as Pick<Run, "start">;
+  expectOrders(appendHistory(empty(), rows, floors).orders, [0, 4, 4]);
 });
 
 test("an equation missing from a continued run's reference leaves the drop undefined", () => {
