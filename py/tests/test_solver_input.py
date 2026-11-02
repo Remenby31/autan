@@ -40,12 +40,11 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
         "cuda",
         "--device-count",
         "8",
-        "--deterministic",
     )
     assert status == 0
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["devices"] == {"kind": "cuda", "count": 8}
-    assert document["deterministic"] is True
+    assert document["reproducibility"] == "run"  # the case's default (case-schema.md#physics)
 
     # The case hash is SHA-256 of the RFC 8785 form of the (fully defaulted) case document.
     canonical = rfc8785.dumps(tomllib.loads(document["case"]["toml"]))
@@ -153,6 +152,9 @@ def _set_boundary(document: dict[str, Any], **values: Any) -> None:
         lambda d: d.update(extra=1),
         lambda d: d.pop("schema"),
         lambda d: d["time"].pop("kind"),
+        lambda d: d["mesh"].update(scale=True),
+        lambda d: d["mesh"].update(scale="1.0"),
+        lambda d: d["mesh"].update(scale=0.0),
         lambda d: d["monitors"][0].pop("kind"),
         lambda d: _set_boundary(d, kind="inlet"),
         lambda d: _set_boundary(d, static_pressure=1.0),
@@ -222,6 +224,71 @@ def test_each_published_schema_has_its_identifier(name: str) -> None:
     schema = json_schema(name)
     assert schema["$id"] == autan.version.SCHEMAS[name]
     assert schema["properties"]["schema"]["const"] == autan.version.SCHEMAS[name]
+
+
+# Exact by definition: the international inch (1959) and foot.
+@pytest.mark.parametrize(("unit", "metres"), [("m", 1.0), ("in", 0.0254), ("ft", 0.3048)])
+def test_mesh_unit_scales_the_mesh_alone(
+    unit: str,
+    metres: float,
+    capsys: pytest.CaptureFixture[str],
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+) -> None:
+    body = CRM_HL.replace('mesh="crm-hl.cgns"', f'mesh="crm-hl.cgns", mesh_unit="{unit}"')
+    path = write_case(body)
+    case = autan.load(path)
+    assert case.spec.document()["mesh_unit"] == unit
+    planned = case.plan(crm_mesh).mesh
+    assert planned["unit"] == unit
+    # The fixture's bounds are in its file's units; plan gives them in metres.
+    assert planned["bounds"]["max"] == [80.0 * metres, 50.0 * metres, 30.0 * metres]
+    status, document = prepare(capsys, path, "crm-hl.meshinfo.json")
+    assert status == 0
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["mesh"]["scale"] == metres
+    autan.solver_input.SolverInput.model_validate(document)
+    with pytest.raises(ValidationError):  # a scale that is not the case's unit
+        autan.solver_input.SolverInput.model_validate(
+            document | {"mesh": document["mesh"] | {"scale": 2 * metres}}
+        )
+    # Every other length carries its own unit: the reference length stays 7 m.
+    assert document["monitors"][0]["ref_length"] == pytest.approx(7.0)
+    in_metres = autan.load(write_case(CRM_HL, "metres.py")).spec
+    assert (case.spec.hash() == in_metres.hash()) == (unit == "m")
+
+
+@pytest.mark.parametrize("mode", ["none", "run", "ranks"])
+def test_reproducibility_reaches_the_runtime_and_the_hash(
+    mode: str,
+    write_case: Callable[..., Path],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    body = CRM_HL.replace("autan.SA())", f"autan.SA(), reproducibility={mode!r})")
+    case = write_case(body, name=f"{mode}.py")
+    spec = autan.load(case).spec
+    copy = tmp_path / "copy.toml"
+    copy.write_text(autan.load(case).to_toml())
+    assert autan.load(copy).spec == spec
+    assert (spec.hash() == autan.load(write_case(CRM_HL, name="default.py")).spec.hash()) == (
+        mode == "run"  # the default
+    )
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["reproducibility"] == mode
+
+
+def test_the_runtime_mode_is_the_case_s(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = write_case(CRM_HL)
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    document["reproducibility"] = "none"  # the embedded case says "run"
+    with pytest.raises(ValidationError, match="reproducibility"):
+        autan.solver_input.SolverInput.model_validate(document)
 
 
 def test_the_linear_solver_is_a_steady_choice(

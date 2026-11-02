@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""autan-memprof: where a command's memory goes, stage by stage, without changing its code.
+
+    autan-memprof [--every S] [--stacks S] [--frames REGEX] --out PREFIX -- COMMAND...
+
+Runs COMMAND and, while it lives, samples every --every seconds (default 0.5) the resident
+memory of COMMAND and all its descendants (summed VmRSS, and the largest VmHWM), their device
+memory as nvidia-smi reports it, and the host's MemAvailable, into PREFIX.tsv (GiB; device
+empty when nvidia-smi gives no figure for them). Every --stacks seconds (default 5, 0 for
+none) it takes, with gdb, the main-thread stack of the descendant with the most resident
+memory, keeps the frames matching --frames (default our namespace, `autan::`) into
+PREFIX.stacks, and writes one line to PREFIX.table and stdout: time; resident memory just
+after the stack (gdb stops the process while it reads it); the net change since the previous
+stack and the highest resident memory in between; and the frames, the stage the process was
+in at the end of that interval. A net change says where memory stayed, not every excursion:
+read the peak column and PREFIX.tsv for those. Lines are written as they are sampled, so the
+files keep the stages when COMMAND or the sampler is killed. PREFIX.meta.json records the
+command, its binary's SHA-256, the host, the start time and the checkout's commit. Exits with
+COMMAND's status.
+
+gdb needs ptrace rights over the process: run as root in a container started with
+--cap-add SYS_PTRACE and the same PID namespace as COMMAND (docs/infra/bench.md). On GB10 the
+GPU allocates from host memory and nvidia-smi may not count all of it: compare resident memory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+GIB = 1 << 30
+
+
+def processes() -> dict[int, int]:
+    """Parent of every live process."""
+    parents = {}
+    for stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = stat.read_bytes().rpartition(b")")[2].split()
+            if fields[0] not in (b"Z", b"X"):
+                parents[int(stat.parent.name)] = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            continue
+    return parents
+
+
+def tree(root: int) -> list[int]:
+    parents = processes()
+    members, frontier = {root} & parents.keys(), {root}
+    while frontier:
+        frontier = {pid for pid, ppid in parents.items() if ppid in frontier} - members
+        members |= frontier
+    return sorted(members)
+
+
+def vm_gib(pid: int) -> tuple[float, float] | None:
+    """VmRSS and VmHWM of a live process, in GiB."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    kib = dict(re.findall(r"^(VmRSS|VmHWM):\s+(\d+) kB", text, re.MULTILINE))
+    if len(kib) < 2:
+        return None
+    return int(kib["VmRSS"]) * 1024 / GIB, int(kib["VmHWM"]) * 1024 / GIB
+
+
+def available_gib() -> float:
+    match = re.search(r"^MemAvailable:\s+(\d+) kB", Path("/proc/meminfo").read_text(), re.MULTILINE)
+    return int(match[1]) * 1024 / GIB if match else float("nan")
+
+
+def device_gib(pids: list[int]) -> float | None:
+    """The processes' device memory as nvidia-smi reports it; None when it reports none of
+    them (no nvidia-smi, an error, N/A, or PIDs from another namespace)."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                             timeout=10, check=False)  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    found = [int(f[1]) for f in (line.split(", ") for line in out.stdout.splitlines())
+             if len(f) == 2 and f[0].strip().isdigit() and int(f[0]) in pids
+             and f[1].strip().isdigit()]  # fmt: skip
+    return sum(found) / 1024 if found else None
+
+
+def frames_of(pid: int, pattern: re.Pattern[str]) -> list[str]:
+    """The main thread's frames matching `pattern`, innermost first, arguments dropped."""
+    try:
+        out = subprocess.run(["gdb", "-batch", "-p", str(pid), "-ex", "thread apply 1 bt 40"],
+                             capture_output=True, text=True, timeout=30, check=False).stdout  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return []
+    frames = []
+    for line in out.splitlines():
+        match = re.match(r"#\d+\s+(?:0x[0-9a-f]+ in )?([^(]+)", line)
+        if match and pattern.search(match[1]):
+            frames.append(match[1].strip())
+    return frames
+
+
+def table_line(t: float, rss: float, previous: float, peak: float, frames: list[str]) -> str:
+    stage = " < ".join(f.removeprefix("autan::") for f in frames[:3]) or "-"
+    return (f"{t:7.1f} s  RSS {rss:7.2f} GiB  net {rss - previous:+7.2f}  "
+            f"peak since {peak:7.2f}  {stage}")  # fmt: skip
+
+
+def sample(root: int) -> tuple[list[int], float, float] | None:
+    pids = tree(root)
+    vms = [v for v in (vm_gib(p) for p in pids) if v is not None]
+    if not vms:
+        return None
+    return pids, sum(v[0] for v in vms), max(v[1] for v in vms)
+
+
+def largest(pids: list[int]) -> int:
+    return max(pids, key=lambda p: (vm_gib(p) or (0.0, 0.0))[0])
+
+
+def provenance(command: list[str]) -> dict:
+    binary = shutil.which(command[0]) or command[0]
+    try:
+        digest = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
+    except OSError:
+        digest = None
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                            check=False).stdout.strip() or None  # fmt: skip
+    return {"command": command, "binary": binary, "binary_sha256": digest,
+            "host": os.environ.get("AUTAN_BENCH_HOST") or socket.gethostname(),
+            "container": os.environ.get("AUTAN_CONTAINER"), "commit": commit,
+            "started": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}  # fmt: skip
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    split = argv.index("--") if "--" in argv else len(argv)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--every", type=float, default=0.5)
+    parser.add_argument("--stacks", type=float, default=5.0)
+    parser.add_argument("--frames", default=r"^autan::", help="regex of the frames to keep")
+    parser.add_argument("--out", required=True, help="prefix of the output files")
+    args = parser.parse_args(argv[:split])
+    command = argv[split + 1 :]
+    if not command:
+        parser.error("a command is required after --")
+    if args.stacks and not shutil.which("gdb"):
+        sys.stderr.write("autan-memprof: gdb not found; no stacks\n")
+        args.stacks = 0
+    pattern = re.compile(args.frames)
+    out = args.out
+    Path(f"{out}.meta.json").write_text(json.dumps(provenance(command), indent=1) + "\n")
+    proc = subprocess.Popen(command)
+    start = time.monotonic()
+    previous, peak, next_stack = 0.0, 0.0, 0.0
+    with Path(f"{out}.tsv").open("w") as tsv, Path(f"{out}.stacks").open("w") as stacks, \
+            Path(f"{out}.table").open("w") as table:  # fmt: skip
+        tsv.write("t_s\trss_gib\thwm_gib\tdevice_gib\tavailable_gib\n")
+        while proc.poll() is None:
+            t = time.monotonic() - start
+            got = sample(proc.pid)
+            if got is not None:
+                pids, rss, hwm = got
+                peak = max(peak, rss)
+                device = device_gib(pids)
+                dev = "" if device is None else f"{device:.3f}"
+                tsv.write(f"{t:.2f}\t{rss:.3f}\t{hwm:.3f}\t{dev}\t{available_gib():.3f}\n")
+                tsv.flush()
+                if args.stacks and t >= next_stack:
+                    frames = frames_of(largest(pids), pattern)
+                    # The memory the stage is paired with is read once gdb has let go.
+                    t_after = time.monotonic() - start
+                    after = sample(proc.pid)
+                    rss_after = after[1] if after else rss
+                    peak = max(peak, rss_after)
+                    stacks.write(f"== {t_after:.1f} s\n" + "".join(f + "\n" for f in frames))
+                    stacks.flush()
+                    line = table_line(t_after, rss_after, previous, peak, frames)
+                    table.write(line + "\n")
+                    table.flush()
+                    sys.stdout.write(line + "\n")
+                    sys.stdout.flush()
+                    previous, peak = rss_after, rss_after
+                    next_stack = t_after + args.stacks
+            time.sleep(args.every)
+    return proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

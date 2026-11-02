@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import json
+import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +18,24 @@ HEAT_EXCHANGER = (EXAMPLES / "heat_exchanger.py").read_text()
 
 # Stand-ins for the example meshes: their SHA-256 is the source.sha256 of the fixtures.
 MESH_FILES = {"crm-hl.cgns": b"crm-hl fixture", "heat-exchanger.msh": b"heat-exchanger fixture"}
+
+
+def identity_fields() -> list[str]:
+    page = (ROOT / "docs" / "contracts" / "results.md").read_text()
+    section = page.split("### Identity\n", 1)[1].split("\n## ", 1)[0]
+    return re.findall(r"^\d+\. `([a-z0-9_.]+)`$", section, flags=re.MULTILINE)
+
+
+def identity_of(run: dict[str, Any]) -> str:
+    parts = []
+    for path in identity_fields():
+        if path.startswith("start.") and run["start"] is None:
+            continue
+        value: Any = run
+        for key in path.split("."):
+            value = value[key]
+        parts.append(str(value))
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def mesh_document(name: str) -> dict[str, Any]:
