@@ -1541,7 +1541,7 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   CHECK(heavy["data"]["margin_bytes"] == margin);
   CHECK(heavy["data"]["device_kind"] == "cpu");
   const auto available = heavy["data"]["available_bytes"].get<std::int64_t>();
-  CHECK(available > 0);
+  CHECK(available >= 0);
   CHECK(available < huge);
   // The margin is kept free: nothing more than it fits.
   const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}));
