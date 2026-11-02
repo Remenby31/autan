@@ -706,6 +706,13 @@ ausm_faces_jacobian = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=FACE_
 
 
 @pointwise
+def pressure_only(kind: Geom) -> State:
+    # 1 for the boundary kinds whose flux is the pressure alone (no mass through the face): one
+    # predicate for every boundary body, residual and held alike.
+    return 1.0 if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5 else 0.0
+
+
+@pointwise
 def wall_flux(wf: State.Vec5, n: Geom.Vec3) -> State.Vec5:
     return Vec5(0.0, wf[4] * n[0], wf[4] * n[1], wf[4] * n[2], 0.0)
 
@@ -728,7 +735,7 @@ def roe_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if pressure_only(kind) > 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * roe(wf, wb, n, g, pref)
@@ -753,7 +760,7 @@ def hllc_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if pressure_only(kind) > 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * hllc(wf, wb, n, g, pref)
@@ -779,7 +786,7 @@ def ausm_boundary(
 ) -> Residual.Vec5:
     wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if pressure_only(kind) > 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * ausm_up(wf, wb, n, g, minf, pref)
@@ -986,7 +993,7 @@ def roe_boundary_held(
 ) -> Residual.Vec5:
     wf = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if pressure_only(kind) > 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * roe(wf, wb, n, g, pref)
@@ -1012,7 +1019,7 @@ def hllc_boundary_held(
 ) -> Residual.Vec5:
     wf = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if pressure_only(kind) > 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * hllc(wf, wb, n, g, pref)
@@ -1039,7 +1046,7 @@ def ausm_boundary_held(
 ) -> Residual.Vec5:
     wf = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
     wb = boundary_value(wf, kind, data, n, g, rgas, pref)
-    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+    if pressure_only(kind) > 0.5:
         f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
     else:
         f = area * ausm_up(wf, wb, n, g, minf, pref)
