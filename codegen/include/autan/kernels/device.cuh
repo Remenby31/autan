@@ -277,39 +277,24 @@ class DeviceMesh {
   /// Sets d.topo and points every built-in geometry member of a generated Data struct at a
   /// device copy in that member's own type (P::geom or P::geom_value), uploaded on first use.
   /// Built-in geometry is read-only (`const T*`); a physics' own dataset of the same name is
-  /// writable and left alone.
+  /// writable and left alone. Every member is checked before any is uploaded: a refused member
+  /// (E1101) leaves the mesh as it was.
   template <class Data>
   void bind(Data& d) {
+    bind_fields<true>(d);
     d.topo = topo_;
-#define AUTAN_BIND_GEOMETRY(name)                                                    \
-  if constexpr (requires { d.name; }) {                                              \
-    if constexpr (std::is_const_v<std::remove_pointer_t<decltype(d.name)>>) {        \
-      d.name = field<std::remove_cvref_t<decltype(*d.name)>>(#name, geometry_.name); \
-    }                                                                                \
-  }
-    AUTAN_BIND_GEOMETRY(face_area)
-    AUTAN_BIND_GEOMETRY(face_centroid)
-    AUTAN_BIND_GEOMETRY(face_normal)
-    AUTAN_BIND_GEOMETRY(face_area_magnitude)
-    AUTAN_BIND_GEOMETRY(face_r_left)
-    AUTAN_BIND_GEOMETRY(face_r_right)
-    AUTAN_BIND_GEOMETRY(face_moment)
-    AUTAN_BIND_GEOMETRY(cell_centroid)
-    AUTAN_BIND_GEOMETRY(cell_volume)
-    AUTAN_BIND_GEOMETRY(lsq_weight)
-    AUTAN_BIND_GEOMETRY(incidence_side)
-    AUTAN_BIND_GEOMETRY(stencil_lsq_weight)
-#undef AUTAN_BIND_GEOMETRY
+    bind_fields<false>(d);
   }
 
   /// Replaces what bind() gives Data::stencil_lsq_weight: `weights`, 3 x n numbers in the
   /// entry order of the stencil given at construction (component-major, n its entries),
-  /// whatever the device layout. They are converted to that member's type and uploaded at once,
-  /// `Options::upload_chunk` values at a time (one component at a time for a sliced stencil); no
-  /// host copy is kept, so a Data struct whose stencil_lsq_weight has another type is refused
-  /// (E1101). Data structs bound before keep the previous weights, still allocated, until bound
-  /// again.
-  template <class Data, std::ranges::contiguous_range R>
+  /// whatever the device layout, as a sized contiguous range of numbers. They are converted to that
+  /// member's type and uploaded at once, `Options::upload_chunk` values at a time (one component at
+  /// a time for a sliced stencil); no host copy is kept, so a Data struct whose stencil_lsq_weight
+  /// has another type is refused (E1101). Data structs bound before keep the previous weights,
+  /// still allocated, until bound again.
+  template <class Data, class R>
+    requires std::ranges::contiguous_range<const R> && std::ranges::sized_range<const R>
   void set_stencil_weights(const R& weights) {
     using T = std::remove_cvref_t<decltype(*std::declval<Data&>().stencil_lsq_weight)>;
     const auto w = std::span(std::ranges::data(weights), std::ranges::size(weights));
@@ -357,9 +342,10 @@ class DeviceMesh {
     released_ = true;
   }
 
-  /// bind(d) then release_host(), freeing each host field as soon as it is uploaded: the host
-  /// copy and the device copy of the geometry never coexist whole. For the last Data struct
-  /// bound before the run.
+  /// bind(d) then release_host(), freeing each host field d binds as soon as it is uploaded (or
+  /// found already uploaded): the host copy and the device copy of the geometry never coexist
+  /// whole. For the last Data struct bound before the run. If an upload fails, the fields freed
+  /// so far are refused (E1101) by later binds.
   template <class Data>
   void bind_and_release(Data& d) {
     consume_ = true;
@@ -367,6 +353,7 @@ class DeviceMesh {
       bind(d);
     } catch (...) {
       consume_ = false;
+      released_ = true;
       throw;
     }
     consume_ = false;
@@ -379,19 +366,57 @@ class DeviceMesh {
     return DeviceArray<T>(host, stream_);
   }
 
+  /// With Check, refuses (E1101) each built-in member of d that cannot be bound; otherwise binds
+  /// them.
+  template <bool Check, class Data>
+  void bind_fields(Data& d) {
+#define AUTAN_BIND_GEOMETRY(name)                                             \
+  if constexpr (requires { d.name; }) {                                       \
+    if constexpr (std::is_const_v<std::remove_pointer_t<decltype(d.name)>>) { \
+      using T = std::remove_cvref_t<decltype(*d.name)>;                       \
+      if constexpr (Check) {                                                  \
+        check<T>(#name, geometry_.name);                                      \
+      } else {                                                                \
+        d.name = field<T>(#name, geometry_.name);                             \
+      }                                                                       \
+    }                                                                         \
+  }
+    AUTAN_BIND_GEOMETRY(face_area)
+    AUTAN_BIND_GEOMETRY(face_centroid)
+    AUTAN_BIND_GEOMETRY(face_normal)
+    AUTAN_BIND_GEOMETRY(face_area_magnitude)
+    AUTAN_BIND_GEOMETRY(face_r_left)
+    AUTAN_BIND_GEOMETRY(face_r_right)
+    AUTAN_BIND_GEOMETRY(face_moment)
+    AUTAN_BIND_GEOMETRY(cell_centroid)
+    AUTAN_BIND_GEOMETRY(cell_volume)
+    AUTAN_BIND_GEOMETRY(lsq_weight)
+    AUTAN_BIND_GEOMETRY(incidence_side)
+    AUTAN_BIND_GEOMETRY(stencil_lsq_weight)
+#undef AUTAN_BIND_GEOMETRY
+  }
+
+  template <class T>
+  void check(const std::string& name, const std::vector<double>& host) const {
+    if (fields_.contains(std::make_pair(name, std::type_index(typeid(T))))) {
+      return;
+    }
+    if (released_ && host.empty()) {
+      throw std::invalid_argument("E1101: " + name +
+                                  " bound after release_host() without being uploaded before");
+    }
+    if (device_weights_ && name == "stencil_lsq_weight") {
+      throw std::invalid_argument(
+          "E1101: stencil_lsq_weight bound in a type set_stencil_weights() was not given");
+    }
+  }
+
   template <class T>
   const T* field(const std::string& name, std::vector<double>& host) {
     const auto key = std::make_pair(name, std::type_index(typeid(T)));
     auto it = fields_.find(key);
     if (it == fields_.end()) {
-      if (released_ && host.empty()) {
-        throw std::invalid_argument("E1101: " + name +
-                                    " bound after release_host() without being uploaded before");
-      }
-      if (device_weights_ && name == "stencil_lsq_weight") {
-        throw std::invalid_argument(
-            "E1101: stencil_lsq_weight bound in a type set_stencil_weights() was not given");
-      }
+      check<T>(name, host);
       DeviceArray<std::byte> a(host.size() * sizeof(T), stream_);
       std::vector<T> part;
       for (std::size_t first = 0; first < host.size(); first += chunk_) {
@@ -401,9 +426,9 @@ class DeviceMesh {
         a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
       }
       it = fields_.emplace(key, std::move(a)).first;
-      if (consume_) {
-        std::vector<double>().swap(host);
-      }
+    }
+    if (consume_) {
+      std::vector<double>().swap(host);
     }
     return reinterpret_cast<const T*>(it->second.get());
   }

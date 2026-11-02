@@ -406,27 +406,40 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
                      host(before.stencil_lsq_weight) == want
                  ? 1
                  : 0;
-    // The weights live on the device only, in the type they were set for: another type is
-    // refused until weights are set for it, from float values here.
+    // The weights live on the device only, in the type they were set for: on a mesh not
+    // released, another type is refused until weights are set for it; set for float from the
+    // double values, CSR in chunks of 7 and sliced, they equal the float conversion.
     struct FloatWeights {
       autan::kernels::Topology topo;
       const float* stencil_lsq_weight = nullptr;
-    } narrow;
-    bool refused = false;
-    try {
-      lean.bind(narrow);
-    } catch (const std::invalid_argument& e) {
-      refused = std::string_view(e.what()).starts_with("E1101");
+    };
+    const std::vector<float> csr32(doubled.begin(), doubled.end());
+    const std::vector<float> sliced32(want2.begin(), want2.end());
+    bool typed_ok = true;
+    for (const int slice : {0, 4}) {
+      gpu::DeviceMesh typed(m->mesh, m->packed, &stencil,
+                            {.block = 128,
+                             .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                             .stencil_slice = slice,
+                             .upload_chunk = 7});
+      typed.set_stencil_weights<Weights>(doubled);
+      FloatWeights narrow;
+      bool refused = false;
+      try {
+        typed.bind(narrow);
+      } catch (const std::invalid_argument& e) {
+        refused = std::string_view(e.what()).starts_with("E1101");
+      }
+      typed.set_stencil_weights<FloatWeights>(doubled);
+      typed.bind(narrow);
+      const auto& want32 = slice == 0 ? csr32 : sliced32;
+      std::vector<float> got32(want32.size());
+      gpu::check(cudaMemcpy(got32.data(), narrow.stencil_lsq_weight, sizeof(float) * got32.size(),
+                            cudaMemcpyDeviceToHost),
+                 "download");
+      typed_ok = typed_ok && refused && got32 == want32;
     }
-    const std::vector<float> doubled32(doubled.begin(), doubled.end());
-    lean.set_stencil_weights<FloatWeights>(std::span<const float>(doubled32));
-    lean.bind(narrow);
-    std::vector<float> got32(n);
-    gpu::check(cudaMemcpy(got32.data(), narrow.stencil_lsq_weight, sizeof(float) * n,
-                          cudaMemcpyDeviceToHost),
-               "download");
-    const std::vector<float> want32(want2.begin(), want2.end());
-    out[9] = refused && got32 == want32 ? 1 : 0;
+    out[9] = typed_ok ? 1 : 0;
     // bind_and_release(): the fields bound equal the host's (in chunks of 7 values, each freed
     // once uploaded); a field it did not upload is refused afterwards.
     gpu::DeviceMesh once(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
@@ -444,6 +457,32 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
       late_refused = std::string_view(e.what()).starts_with("E1101");
     }
     out[10] = area2 == m->packed.face_area && last.cell_volume == &own && late_refused ? 1 : 0;
+    // A refused bind_and_release() (one member in a type the weights were not set for) uploads
+    // and frees nothing: a later bind still gets the whole geometry.
+    gpu::DeviceMesh mixed(m->mesh, m->packed, &stencil,
+                          {.block = 128,
+                           .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                           .upload_chunk = 7});
+    mixed.set_stencil_weights<Weights>(weights);
+    struct Mixed {
+      autan::kernels::Topology topo;
+      const double* face_area = nullptr;
+      const float* stencil_lsq_weight = nullptr;
+    } mx;
+    bool mixed_refused = false;
+    try {
+      mixed.bind_and_release(mx);
+    } catch (const std::invalid_argument& e) {
+      mixed_refused = std::string_view(e.what()).starts_with("E1101");
+    }
+    Data whole{};
+    whole.cell_volume = &own;
+    mixed.bind(whole);
+    std::vector<double> area3(m->packed.face_area.size());
+    gpu::check(cudaMemcpy(area3.data(), whole.face_area, sizeof(double) * area3.size(),
+                          cudaMemcpyDeviceToHost),
+               "download");
+    out[11] = mixed_refused && mx.face_area == nullptr && area3 == m->packed.face_area ? 1 : 0;
   });
 }
 
