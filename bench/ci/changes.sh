@@ -46,7 +46,14 @@ harness='^(bench|docker)/'
 # the list when the mesh job generates), as fixed strings on whole lines.
 mesh_files=$(dirname "$0")/measured-mesh-files.txt
 [[ -f $mesh_files ]] || { echo "error: $mesh_files is missing" >&2; exit 2; }
-if grep -q -E "$measured_paths" <<<"$changed" || grep -q -x -F -f <(grep -v -E '^(#|$)' "$mesh_files") <<<"$changed"; then
+mesh_list=$(grep -v -E '^(#|$)' "$mesh_files")
+# An entry with a listed module's name added beside it (a package families/, an extension
+# families.*.so) changes what Python imports without touching a listed file: measured too.
+shadows=$(while read -r f; do stem=${f%.py}; echo "$stem/"; echo "$stem."; done <<<"$mesh_list")
+moved=$(git diff --name-status "$base" HEAD -- | awk '$1 !~ /^M/ {for (i = 2; i <= NF; i++) print $i}')
+# The prefixes through the environment: awk -v cannot carry newlines everywhere (BSD awk).
+shadowed() { SHADOWS=$shadows awk 'BEGIN {n = split(ENVIRON["SHADOWS"], s, "\n")} {for (i = 1; i <= n; i++) if (s[i] != "" && index($0, s[i]) == 1) found = 1} END {exit !found}' <<<"$moved"; }
+if grep -q -E "$measured_paths" <<<"$changed" || grep -q -x -F -f <(echo "$mesh_list") <<<"$changed" || shadowed; then
   say bench true
 else
   say bench false
