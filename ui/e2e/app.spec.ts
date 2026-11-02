@@ -492,6 +492,63 @@ test("hovering a slice reads the value drawn there and where it is", async ({ pa
   }
 });
 
+// The wall pressure of a run's solution.cgns set so that Cp = (p − p∞)/q∞ is -0.42 on every
+// wall face, p∞ and q∞ from the SDK's freestream state of the run's case.
+const UNIFORM_CP = `
+import sys, h5py, autan
+from autan.solver_input import freestream_state
+run = sys.argv[1]
+state = freestream_state(autan.Results.open(run).case)
+q = 0.5 * state.density * state.speed**2
+with h5py.File(run + "/solution.cgns", "r+") as tree:
+    tree["Base"]["Zone"]["WallSolution"]["Pressure"][" data"][...] = state.pressure - 0.42 * q
+`;
+
+test("a slice plots the walls' Cp along the chord of their section", async ({ page }) => {
+  const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
+  const solution = join(RUNS, run.run_id, "solution.cgns");
+  const dir = mkdtempSync(join(RUNS, ".section-"));
+  cpSync(solution, join(dir, "solution.cgns"));
+  try {
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c", UNIFORM_CP],
+      join(RUNS, run.run_id),
+    ]);
+    await page.goto(`/viewer?run=${run.run_id}&field=Cp`);
+    await expect(page.getByTestId("zones")).toBeVisible();
+    await expect(page.getByTestId("wall-section")).toHaveCount(0);
+    await page.getByRole("button", { name: "Slice normal to y" }).click();
+    const chart = page.getByTestId("section-chart");
+    await expect(chart).toHaveAttribute("aria-label", /^−Cp along the chord/);
+    expect(Number(await chart.getAttribute("data-segments"))).toBeGreaterThan(0);
+    // −Cp, suction up: 0.42 wherever the walls are cut, to FP32 rounding.
+    for (const end of ["data-least", "data-greatest"]) {
+      expect(Number(await chart.getAttribute(end))).toBeCloseTo(0.42, 5);
+    }
+    // Each cut segment is drawn at the middle of the −Cp axis, whose ticks span 0.42 ± 0.5 for a
+    // uniform value.
+    const curve = chart.locator('line[stroke="var(--accent)"]');
+    await expect(curve).toHaveCount(Number(await chart.getAttribute("data-segments")));
+    const ticks = await chart
+      .locator('text[text-anchor="end"]')
+      .evaluateAll((texts) =>
+        texts.map((t) => Number(t.getAttribute("y")) - 3).sort((a, b) => a - b),
+      );
+    expect(ticks).toHaveLength(3);
+    const tick = ticks[1] as number;
+    for (const y of await curve.evaluateAll((lines) =>
+      lines.flatMap((l) => [Number(l.getAttribute("y1")), Number(l.getAttribute("y2"))]),
+    )) {
+      expect(y).toBeCloseTo(tick, 3);
+    }
+    await expect(page.getByTestId("wall-section")).toContainText("walls at y =");
+  } finally {
+    cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
+    renameSync(join(dir, "restored.cgns"), solution);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
   // py/examples/crm_hl.py: M 0.2, α 19.57°, Re 5.49e6, SA, on crm-hl.cgns.
   const registry = await (await page.request.get("/api/runs")).json();
