@@ -34,7 +34,6 @@ why, command), written with a single append. Do not nest autan-bench under it: a
 the lock itself. See docs/infra/bench.md.
 """
 
-import calendar
 import contextlib
 import ctypes
 import fcntl
@@ -49,9 +48,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
 from pathlib import Path
-from typing import BinaryIO
 
 sys.dont_write_bytecode = True  # installed in a shared, often read-only directory
 import autan_memfloor as memfloor
@@ -60,6 +57,7 @@ LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
 LOG = LOCK.parent / "holders.log"
 CI_LOCK = LOCK.parent / "ci.lock"
 MAIN_LOCK = LOCK.parent / "main.lock"
+TURN_LOCK = LOCK.parent / "turn.lock"
 MAX_HOLD_S = 600
 POLL_S = 0.05
 CLEANUP_S = 10.0
@@ -163,12 +161,50 @@ def _held(path: Path) -> bool:
 
 # CI holds ci.lock for whole jobs, builds included, and could starve agents for hours (#360): an
 # agent that has waited FAIR_S may take a turn past pull requests' CI (never past main's), for
-# one hold of at most MAX_HOLD_S. One turn at a time and none within TURN_S of the previous one:
-# the MAX_HOLD_S after each turn go to CI, so a CI job waits at most for the hold in progress and
-# one turn. AUTAN_GPU_LOCK_FAIR_S shortens both in tests.
+# one hold of at most MAX_HOLD_S counted from the turn's start. A turn is an exclusive flock on
+# turn.lock, kept after the turn for COOLDOWN_S by a detached sleeper that inherits it: one turn
+# at a time, and the COOLDOWN_S after each go to CI, so a CI job waits at most for the hold in
+# progress and one turn. No clock or history is read: a turn.lock that cannot be locked gives
+# no turn. AUTAN_GPU_LOCK_FAIR_S shortens both delays in tests.
 FAIR_S = float(os.environ.get("AUTAN_GPU_LOCK_FAIR_S", "600"))
-TURN_S = 2 * FAIR_S
-TAIL_BYTES = 1 << 20  # holders.log's last MiB: hours of events, far more than TURN_S
+COOLDOWN_S = FAIR_S
+
+
+class Turn:
+    """This agent's turn past pull requests' CI, if it took one."""
+
+    def __init__(self) -> None:
+        self.fd: int | None = None
+        self.used = False
+
+    def take(self) -> bool:
+        if self.fd is None:
+            try:
+                fd = os.open(TURN_LOCK, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                return False
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                return False
+            self.fd = fd
+        return True
+
+    def end(self) -> None:
+        """A used turn's lock goes to a sleeper for COOLDOWN_S (in a session of its own, so that
+        it outlives this process); an unused one is given back."""
+        if self.fd is None:
+            return
+        if self.used:
+            with contextlib.suppress(OSError):
+                subprocess.Popen(
+                    [sys.executable, "-c", f"import time; time.sleep({COOLDOWN_S})"],
+                    pass_fds=(self.fd,), start_new_session=True, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )  # fmt: skip
+        os.close(self.fd)
+        self.fd = None
 
 
 def ci_waiting(bypass: bool = False) -> bool:
@@ -180,43 +216,6 @@ def ci_waiting(bypass: bool = False) -> bool:
     if os.environ.get("GITHUB_REF") == "refs/heads/main":
         return False
     return _held(LOCK.parent / "main.lock")
-
-
-def since_last_turn(log: BinaryIO) -> float:
-    """Seconds since the last `bypass` in holders.log (infinite if none in its last MiB)."""
-    size = os.fstat(log.fileno()).st_size
-    log.seek(max(0, size - TAIL_BYTES))
-    for line in reversed(log.read().decode(errors="replace").splitlines()):
-        fields = line.split("\t")
-        if len(fields) > 1 and fields[1] == "bypass":
-            try:
-                at = calendar.timegm(time.strptime(fields[0], "%Y-%m-%dT%H:%M:%SZ"))
-            except ValueError:
-                continue
-            return time.time() - at
-    return float("inf")
-
-
-@contextlib.contextmanager
-def turn() -> Iterator[bool]:
-    """Whether this agent may take a turn now; while inside, no other agent decides (an
-    exclusive flock on holders.log, which only turns take). The log's times are whole seconds,
-    rounded down: one more second keeps turns TURN_S apart. An unreadable log gives no turn."""
-    try:
-        log = LOG.open("rb")
-    except OSError:
-        yield False
-        return
-    with log:
-        try:
-            fcntl.flock(log, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield since_last_turn(log) >= TURN_S + 1
-        finally:
-            fcntl.flock(log, fcntl.LOCK_UN)
 
 
 TREE_EVERY_S = 0.5
@@ -288,20 +287,23 @@ class Container:
         self.killed_at = -1.0e9
         self.helpers = tree_helpers
 
-    def wrap(self, command: list[str]) -> list[str]:
+    def wrap(self, command: list[str], env: dict[str, str]) -> list[str]:
+        """The command, a `docker run` given a --cidfile and `env` (which the docker client
+        would not pass into its container)."""
         if Path(command[0]).name != "docker" or command[1:2] != ["run"]:
             return command
         args = command[2:]
+        extra = [f"--env={key}={value}" for key, value in env.items()]
         for k, arg in enumerate(args):
             if arg == "--cidfile" and k + 1 < len(args):
                 self.cidfile = Path(args[k + 1])
-                return command
+                return [command[0], "run", *extra, *args]
             if arg.startswith("--cidfile="):
                 self.cidfile = Path(arg.split("=", 1)[1])
-                return command
+                return [command[0], "run", *extra, *args]
         self.own_dir = Path(tempfile.mkdtemp(prefix="autan-gpu-lock-"))
         self.cidfile = self.own_dir / "cid"
-        return [command[0], "run", "--cidfile", str(self.cidfile), *args]
+        return [command[0], "run", "--cidfile", str(self.cidfile), *extra, *args]
 
     def _cid(self) -> str | None:
         if self.id is None and self.cidfile is not None:
@@ -348,6 +350,14 @@ class Container:
 
 
 def main() -> int:
+    turn = Turn()
+    try:
+        return run(turn)
+    finally:
+        turn.end()
+
+
+def run(turn: Turn) -> int:
     why, wait_s, hold_s, floor, recover_s, self_locking, command = parse(sys.argv[1:])
     log = Log(why, command)
     cancel = []
@@ -358,31 +368,31 @@ def main() -> int:
         start = time.monotonic()
         log.record("wait", 0)
         yielded = fair = bypass = False
+        # Without turn.lock (a Spark not redeployed since), agents yield to CI as before.
+        turns = os.environ.get("GITHUB_ACTIONS") != "true" and TURN_LOCK.is_file()
         while True:
-            outside_ci = os.environ.get("GITHUB_ACTIONS") != "true"
-            if not fair and outside_ci and time.monotonic() - start >= FAIR_S:
+            if turns and not fair and time.monotonic() - start >= FAIR_S:
                 fair = True
                 log.record("fair", time.monotonic() - start)
-            # A turn past pull requests' CI. With -n, taken even if no CI waits right now: the
-            # command takes the lock again for each measurement, and CI may come in between.
-            if fair and (self_locking or ci_waiting()):
-                with turn() as mine:
-                    if mine and not ci_waiting(bypass=True):
-                        try:
-                            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        except BlockingIOError:
-                            pass
-                        else:
-                            if not ci_waiting(bypass=True):
-                                log.record("bypass", time.monotonic() - start)
-                                bypass = True
-                                if self_locking:
-                                    fcntl.flock(handle, fcntl.LOCK_UN)
-                                break
+            # A turn past pull requests' CI. With -n, taken even if no CI waits right now, and
+            # waited for: the command takes the lock again for each measurement, and CI may
+            # come in between.
+            if fair and (self_locking or ci_waiting()) and turn.take() and not ci_waiting(True):
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    if not ci_waiting(bypass=True):
+                        log.record("bypass", time.monotonic() - start)
+                        bypass = turn.used = True
+                        if self_locking:
                             fcntl.flock(handle, fcntl.LOCK_UN)
+                        break
+                    fcntl.flock(handle, fcntl.LOCK_UN)
             # CI goes first: never take the lock while a CI job announces it waits for or holds
             # it, and give it back if CI announced itself while it was being taken.
-            if not ci_waiting():
+            if not (self_locking and fair) and not ci_waiting():
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
@@ -394,7 +404,7 @@ def main() -> int:
                             fcntl.flock(handle, fcntl.LOCK_UN)
                         break
                     fcntl.flock(handle, fcntl.LOCK_UN)
-            elif not yielded:
+            elif not yielded and ci_waiting():
                 log.record("yield", time.monotonic() - start)
                 yielded = True
             waited = time.monotonic() - start
@@ -414,9 +424,10 @@ def main() -> int:
         # Memory a holder the floor just killed takes seconds to come back: wait for it, bounded,
         # before refusing (waiters would otherwise all be refused at once). Holding the lock,
         # the wait counts in the hold and ends before the hold's TERM time; with -n, where the
-        # command takes the lock itself, the hold limit counts from the command's start.
+        # command takes the lock itself, the hold limit counts from the command's start, except
+        # during a turn, which counts from its own start.
         recover_end = time.monotonic() + recover_s
-        if not self_locking:
+        if not self_locking or bypass:
             recover_end = min(recover_end, taken + hold_s - min(10.0, hold_s / 2))
         while memfloor.below(floor) and time.monotonic() < recover_end and not cancel:
             time.sleep(0.5)
@@ -428,7 +439,8 @@ def main() -> int:
             sys.stderr.write(f"autan-gpu-lock: {memfloor.show(memfloor.available())} available, "
                              f"below the -f floor of {memfloor.show(floor)}; not started\n")  # fmt: skip
             return 71
-        if self_locking:
+        # A turn's hold counts from the turn's start, its memory wait included.
+        if self_locking and not bypass:
             taken = time.monotonic()
         become_subreaper()
         helpers: set[int] = set()
@@ -436,8 +448,9 @@ def main() -> int:
         try:
             # A self-locking command (autan-bench) takes the lock again: during a turn, it does
             # not yield to pull requests' CI either, bounded by this wrapper's -t.
-            env = {**os.environ, "AUTAN_GPU_LOCK_BYPASS": "1"} if self_locking and bypass else None
-            proc = subprocess.Popen(container.wrap(command), start_new_session=True, env=env)
+            extra = {"AUTAN_GPU_LOCK_BYPASS": "1"} if self_locking and bypass else {}
+            proc = subprocess.Popen(container.wrap(command, extra), start_new_session=True,
+                                    env={**os.environ, **extra})  # fmt: skip
         except OSError as err:
             log.record("failed", time.monotonic() - taken, 127)
             sys.stderr.write(f"autan-gpu-lock: cannot run {command[0]}: {err}\n")
