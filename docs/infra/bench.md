@@ -78,17 +78,17 @@ The lane protects measurements that take the lock, which every GPU job must (AGE
 
 ## Where a run's memory goes
 
-`bench/memprof/autan-memprof --out PREFIX -- COMMAND` runs a command (an `autan-run`, a mesh tool) and samples it from outside, without changing its code: every 0.5 s its resident memory and peak, its device memory as `nvidia-smi` reports it and the host's `MemAvailable` (`PREFIX.tsv`); every 5 s the main thread's stack with gdb (`PREFIX.stacks`), with one line per stack sample in `PREFIX.table` and on stdout: memory, the step since the previous sample, and the innermost frames of our code, the stage the memory went to. Lines are written as they are sampled, so they survive the command being killed. gdb needs ptrace rights, so run it as root in the image `bench/memprof/Dockerfile` builds (`docker build -t autan-memprof:local bench/memprof`), started with `--cap-add SYS_PTRACE`, and under `autan-gpu-lock`, whose floor stops the command before the host runs out:
+`bench/memprof/autan-memprof --out PREFIX -- COMMAND` runs a command (an `autan-run`, a mesh tool) and samples it from outside, without changing its code: every 0.5 s the resident memory of the command and all its descendants, their device memory as `nvidia-smi` reports it (empty when it reports none of them) and the host's `MemAvailable` (`PREFIX.tsv`); every 5 s the stack of the descendant with the most resident memory (`PREFIX.stacks`), with one line in `PREFIX.table` and on stdout: the resident memory just after the stack, the net change since the previous line, the highest resident memory in between, and the innermost frames of our code, the stage the process was in. A net change shows where memory stayed; the peak column and the 0.5 s samples show the excursions in between. Lines are written as they are sampled, so they survive the command being killed; `PREFIX.meta.json` records the command, its binary's hash, the host and the checkout's commit. gdb needs ptrace rights, so run it as root, in a container named `autan-…` (the GPU guard counts other names as foreign) started with `--cap-add SYS_PTRACE`, in the image `bench/memprof/Dockerfile` builds (`docker build -t autan-memprof:local bench/memprof`), and under `autan-gpu-lock`, whose floor stops the command before the host runs out:
 
 ```text
-docker run --rm --gpus all --cap-add SYS_PTRACE -u 0 -v "$PWD":/w -w /w \
-  -v /home/admin/autan-gpu:/home/admin/autan-gpu:ro \
+docker run --rm --name autan-memprof-AGENT --gpus all --cap-add SYS_PTRACE -u 0 \
+  -v "$PWD":/w -w /w -v /home/admin/autan-gpu:/home/admin/autan-gpu:ro \
   -v /home/admin/autan-gpu/holders.log:/home/admin/autan-gpu/holders.log autan-memprof:local \
   /home/admin/autan-gpu/bin/autan-gpu-lock -m "AGENT: memory profile" -t 600 -- \
   bench/memprof/autan-memprof --out prof -- build/runtime/autan-run --input in.json --runs runs
 ```
 
-Files it writes belong to root: `chown` them inside the container. On GB10, device memory comes from host memory and `nvidia-smi` may not count all of it, so the resident memory is the figure to compare.
+The sampler and the command share the container's PID namespace, which `nvidia-smi`'s PIDs may not be in: an empty device column then means "not reported", not zero. On GB10, device memory comes from host memory and `nvidia-smi` may not count all of it, so resident memory is the figure to compare. Files it writes belong to root: `chown` them inside the container.
 
 ## Results, baselines and the regression gate
 
