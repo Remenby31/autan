@@ -315,22 +315,56 @@ def pair_series(
     lock_timeout_s: float | None = None,
     max_load_per_cpu: float | None = None,
     on_run: Callable[[int, str, dict[str, Any]], None] | None = None,
+    ready_timeout_s: float | None = None,
 ) -> Series:
     """Run the change's and the base's binaries with the same arguments, in the order of
-    ``sides``, all in one hold of the GPU lock (#403): each run is the measurement :func:`run`
-    makes, with its own campaign, idle and load checks, but the lock is never released between
-    runs, so no other job runs between the two sides. ``on_run(index, side, result)`` is called
-    after each run."""
+    ``sides``. Each run is the measurement :func:`run` makes, with its own campaign, idle and
+    load checks. ``on_run(index, side, result)`` is called after each run.
+
+    Ungated, the whole series is one hold of the GPU lock (#403), so no other job runs between
+    the two sides. Gated (``ready_timeout_s``, binaries run with their gate), each pair is one
+    hold: both of its processes set up outside the lock (at most these two alive), then the lock
+    is taken, both runs go, one after the other, and it is released; the statistic is per pair,
+    so other jobs between pairs widen the interval without biasing the ratio (#403)."""
     binaries = {"change": change, "base": base}
-    with gpu.gpu_lock(lock, lock_timeout_s) as waited:
-        start = time.monotonic()
-        docs = []
-        for i, side in enumerate(sides):
-            # Only the first run waited for the lock; the others ran within the same hold.
-            doc = _measure(binaries[side], args, None, None, suite, precision, lock,
-                           waited if i == 0 else 0.0, max_load_per_cpu)  # fmt: skip
-            docs.append(doc)
-            # Kept as soon as measured: a later run that fails loses only itself.
-            if on_run:
-                on_run(i, side, doc)
-        return Series(sides, docs, waited, time.monotonic() - start)
+    if ready_timeout_s is None:
+        with gpu.gpu_lock(lock, lock_timeout_s) as waited:
+            start = time.monotonic()
+            docs = []
+            for i, side in enumerate(sides):
+                # Only the first run waited for the lock; the others ran within the same hold.
+                doc = _measure(binaries[side], args, None, None, suite, precision, lock,
+                               waited if i == 0 else 0.0, max_load_per_cpu)  # fmt: skip
+                docs.append(doc)
+                # Kept as soon as measured: a later run that fails loses only itself.
+                if on_run:
+                    on_run(i, side, doc)
+            return Series(sides, docs, waited, time.monotonic() - start)
+    docs, waited_total, held_total = [], 0.0, 0.0
+    for first in range(0, len(sides), 2):
+        pair = sides[first : first + 2]
+        gated: list[_Gated] = []
+        try:
+            # One at a time: if the second cannot start, the first is killed by the finally.
+            gated.extend(_Gated(binaries[side], args) for side in pair)
+            setups = [g.wait_ready(ready_timeout_s) for g in gated]
+            with gpu.gpu_lock(lock, lock_timeout_s) as waited:
+                start = time.monotonic()
+                try:
+                    for k, side in enumerate(pair):
+                        doc = _measure(binaries[side], args, gated[k], setups[k], suite,
+                                       precision, lock, waited if k == 0 else 0.0,
+                                       max_load_per_cpu)  # fmt: skip
+                        docs.append(doc)
+                        if on_run:
+                            on_run(first + k, side, doc)
+                finally:
+                    # Stopped before the lock is released: a binary never runs without it.
+                    for g in gated:
+                        g.kill()
+                    held_total += time.monotonic() - start
+            waited_total += waited
+        finally:
+            for g in gated:
+                g.kill()
+    return Series(sides, docs, waited_total, held_total)

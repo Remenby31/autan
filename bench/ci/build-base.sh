@@ -2,8 +2,8 @@
 # Build the base's benchmarks for the paired gate (#403), in a worktree of its own.
 # Usage: bench/ci/build-base.sh DIR [REV]
 # Checks REV (default HEAD^1: in a pull request's merge commit, main at merge time) out into
-# DIR and builds there what the paired gate measures: bench/'s STREAM, under the GPU lock as
-# every build on the bench Spark is. (The tracked loops are not paired yet: docs/infra/bench.md.)
+# DIR and builds there what the paired gate measures: bench/'s STREAM and the generated loops'
+# autan_loop_bench, under the GPU lock as every build on the bench Spark is.
 # A failure of the base's own build is not the change's: it ends in "BASE BUILD FAILED", never
 # green and never a verdict on the change. A lock that could not be had is an ordinary error.
 # The lock is waited for at most $AUTAN_BENCH_LOCK_TIMEOUT seconds, as every wait of the job.
@@ -54,7 +54,10 @@ status_file="$dir/.autan-build-status"
 # shellcheck disable=SC2016 # $1 expands in the inner bash, the worktree passed as its argument.
 bench/lock/autan-gpu-lock -m "gpu-bench: build the base's benchmarks" \
   -w "${AUTAN_BENCH_LOCK_TIMEOUT:-3600}" -t 600 -- bash -c '
-  cmake -S "$1/bench" -B "$1/build/bench" && cmake --build "$1/build/bench"
+  cmake -S "$1/bench" -B "$1/build/bench" && cmake --build "$1/build/bench" &&
+  cmake -S "$1" -B "$1/build/autan" -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF \
+    -DCMAKE_CUDA_ARCHITECTURES=121 &&
+  cmake --build "$1/build/autan" --target autan_loop_bench
   status=$?; echo "$status" > "$2"; exit "$status"' build-base "$dir" "$status_file"
 wrapper=$?
 if [[ ! -s $status_file ]]; then

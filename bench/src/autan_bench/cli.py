@@ -144,6 +144,8 @@ def _pair(args: argparse.Namespace) -> int:
         # The stream command's defaults, so that both sides measure what the absolute gate does.
         defaults = parser().parse_args(["stream", "--binary", "-", "--out", "-"])
         binary_args = _stream_args(defaults)
+    # The tracked benchmarks: those of a baseline (its --select), not every one the binary times.
+    tracked = {b["name"] for b in result.load(args.tracked)["benchmarks"]} if args.tracked else None
     args.out.mkdir(parents=True, exist_ok=True)
     # Nothing of an earlier run in this directory may pass for this one's.
     (args.out / "pair.json").unlink(missing_ok=True)
@@ -189,11 +191,12 @@ def _pair(args: argparse.Namespace) -> int:
                 lock_timeout_s=args.lock_timeout,
                 max_load_per_cpu=args.max_load,
                 on_run=keep,
+                ready_timeout_s=args.ready,
             )
             sides = series.sides
             change = [d for s, d in zip(sides, series.docs, strict=True) if s == "change"]
             base = [d for s, d in zip(sides, series.docs, strict=True) if s == "base"]
-            rows = pair.judge_all(change, base, args.threshold)
+            rows = pair.judge_all(change, base, args.threshold, tracked)
             final = pair.outcome(rows)
             summary["series"].append(pair.series_record(sides, series.lock_wait_s,
                                                         series.hold_s, rows, final))  # fmt: skip
@@ -451,6 +454,21 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         metavar="PER_CPU",
         help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
+    )
+    a.add_argument(
+        "--tracked",
+        type=Path,
+        metavar="BASELINE",
+        help="judge only the benchmarks this baseline holds (the tracked set); default: all",
+    )
+    a.add_argument(
+        "--ready",
+        type=float,
+        nargs="?",
+        const=1800.0,
+        metavar="TIMEOUT_S",
+        help="gated binaries: one hold per pair, each pair's two processes set up outside the lock"
+        " (default 1800 s each for 'autan-bench: ready')",
     )
     a.add_argument(
         "binary_args",

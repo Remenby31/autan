@@ -3,6 +3,7 @@ import json
 import os
 import random
 import stat
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -212,7 +213,7 @@ def test_a_benchmark_whose_direction_differs_is_refused():
 # factor per run (read from a file, one line per run), appends its side to a log, and records
 # whether the GPU lock was held by someone else while it ran.
 PAIR_BINARY = """#!{python}
-import fcntl, json, pathlib, time
+import fcntl, json, pathlib, sys, time
 log = pathlib.Path({log!r})
 runs = [line for line in log.read_text().splitlines()] if log.exists() else []
 factors = pathlib.Path({factors!r}).read_text().split()
@@ -220,15 +221,22 @@ factor = factors[sum(1 for r in runs if r.startswith({side!r}))]
 if factor == "crash":
     raise SystemExit(1)
 factor = float(factor)
-with open({lock!r}) as handle:
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        held = False
-        fcntl.flock(handle, fcntl.LOCK_UN)
-    except BlockingIOError:
-        held = True
+def held():
+    with open({lock!r}) as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+        except BlockingIOError:
+            return True
+setup = ""
+if {gated!r}:
+    # A gated binary: its setup (here, nothing) before the go, then ready and the go line.
+    setup = f" setup-held={{held()}}"
+    print("autan-bench: ready", file=sys.stderr, flush=True)
+    sys.stdin.readline()
 with log.open("a") as out:
-    out.write(f"{side} {{held}}\\n")
+    out.write(f"{side} {{held()}}{{setup}}\\n")
 busy = pathlib.Path({busy!r})
 busy.touch()
 time.sleep(0.3)
@@ -257,14 +265,15 @@ def paired(tmp_path, monkeypatch):
     lock = tmp_path / "lock"
     lock.touch()
 
-    def make(change: list[float], base: list[float]) -> list[str]:
+    def make(change: list[float], base: list[float], gated: bool = False) -> list[str]:
         binaries = {}
         for side, factors in (("change", change), ("base", base)):
             (tmp_path / f"{side}.factors").write_text(" ".join(map(str, factors)))
             path = tmp_path / f"{side}-bench"
             path.write_text(PAIR_BINARY.format(
                 python=sys.executable, log=str(tmp_path / "log"), side=side, lock=str(lock),
-                busy=str(busy), raw=str(raw), factors=str(tmp_path / f"{side}.factors")))  # fmt: skip
+                busy=str(busy), raw=str(raw), factors=str(tmp_path / f"{side}.factors"),
+                gated=gated))  # fmt: skip
             path.chmod(path.stat().st_mode | stat.S_IEXEC)
             binaries[side] = str(path)
         return ["pair", "--suite", "codegen", "--precision", "fp32", "--change",
@@ -417,3 +426,50 @@ def test_the_stream_suite_measures_with_the_stream_command_s_arguments(monkeypat
     assert main(argv) == 2
     assert seen == [["--elements", str(1 << 28), "--warmup", "10", "--reps", "100",
                      "--batch", "5", "--block", "256"]]  # fmt: skip
+
+
+def test_gated_binaries_take_one_hold_per_pair_and_set_up_outside_it(paired, tmp_path, monkeypatch):
+    holds = []
+    take = gpu.gpu_lock
+
+    @contextmanager
+    def counted(*args, **kwargs):
+        holds.append(1)
+        with take(*args, **kwargs) as waited:
+            yield waited
+
+    monkeypatch.setattr(gpu, "gpu_lock", counted)
+    assert main([*paired([1.0] * 5, [1.0] * 5, gated=True), "--ready", "30"]) == 0
+    # Five pairs, five holds: other jobs may run between pairs, never inside one.
+    assert len(holds) == 5
+    runs = log(tmp_path)
+    assert [r.split()[0] for r in runs] == pair.order(5)
+    # Every run measured under the lock, every setup done without it.
+    assert all(r.split()[1] == "True" and r.split()[2] == "setup-held=False" for r in runs)
+    summary = json.loads((tmp_path / "out" / "pair.json").read_text())
+    assert summary["outcome"] == pair.OK
+    assert summary["series"][0]["hold_s"] > 0
+
+
+def test_a_gated_pair_whose_second_process_fails_leaves_nothing_running(paired, tmp_path):
+    # The base's first run crashes before its ready line: the change's process is killed too.
+    assert main([*paired(["1.0"] * 5, ["crash"] * 5, gated=True), "--ready", "30"]) == 2
+    left = subprocess.run(["pgrep", "-f", str(tmp_path / "change-bench")], capture_output=True,
+                          text=True, check=False)  # fmt: skip
+    assert left.stdout.strip() == ""
+
+
+def test_only_the_tracked_benchmarks_are_judged(paired, tmp_path, write_json):
+    # The loop benchmark times every strategy; the gate judges the baseline's tracked set.
+    tracked = write_json("tracked.json", make_result([bench("codegen.flux", [1.0, 2.0])]))
+    argv = [*paired([1.0] * 5, [1.0] * 5), "--tracked", str(tracked)]
+    assert main(argv) == 0
+    (series,) = json.loads((tmp_path / "out" / "pair.json").read_text())["series"]
+    assert [r["name"] for r in series["rows"]] == ["codegen.flux"]
+
+
+def test_a_tracked_benchmark_that_was_not_measured_is_an_error():
+    runs = [make_result([bench("stream.triad", [1.0, 2.0])])] * 5
+    with pytest.raises(BenchError) as err:
+        pair.judge_all(runs, runs, names={"stream.triad", "stream.copy"})
+    assert err.value.code == Code.MISSING_BENCHMARK
