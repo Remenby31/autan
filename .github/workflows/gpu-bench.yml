@@ -201,16 +201,12 @@ jobs:
       - name: The measured paths are the benchmarks' build graph
         if: needs.changes.outputs.bench == 'true'
         run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
-      - name: Generated loops, hex n = 128, fp32, RCM order, paired with the base (pull requests)
-        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
-        run: >-
-          uv run --project bench --locked autan-bench pair --suite codegen --precision fp32
-          --change build/autan/codegen/autan_loop_bench
-          --base "$RUNNER_TEMP/base/build/autan/codegen/autan_loop_bench"
-          --out results/pair/codegen-hex-n128-fp32 --confirm --summary "$GITHUB_STEP_SUMMARY"
-          -- meshes/hex-n128.msh --policy fp32 --order rcm
+      # The tracked loops keep the absolute gate on pull requests too, for now: one run holds the
+      # lock about 575 s, nearly all of it host work after the gate point, so 10 paired runs would
+      # hold it for an hour and a half (#403). They are paired once loop_bench does its host work
+      # before `autan-bench: ready`.
       - name: Generated loops, hex n = 128, fp32, RCM order
-        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
@@ -219,7 +215,7 @@ jobs:
       - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
         id: loops-gate
         # Its status: 1 only for a regression confirmed by the rerun, which alone starts a bisection.
-        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
+        if: needs.changes.outputs.bench == 'true'
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen

@@ -2,8 +2,8 @@
 # Build the base's benchmarks for the paired gate (#403), in a worktree of its own.
 # Usage: bench/ci/build-base.sh DIR [REV]
 # Checks REV (default HEAD^1: in a pull request's merge commit, main at merge time) out into
-# DIR and builds there what the bench job builds from the change: bench/'s STREAM and the
-# generated loops' autan_loop_bench, under the GPU lock as every build on the bench Spark is.
+# DIR and builds there what the paired gate measures: bench/'s STREAM, under the GPU lock as
+# every build on the bench Spark is. (The tracked loops are not paired yet: docs/infra/bench.md.)
 # A failure of the base's own build is not the change's: it ends in "BASE BUILD FAILED", never
 # green and never a verdict on the change. A lock that could not be had is an ordinary error.
 # The worktree is left for the measurement; `bench/ci/build-base.sh --remove DIR` removes it.
@@ -33,10 +33,7 @@ git worktree add --detach "$dir" "$rev" || base_failed "checkout"
 
 # shellcheck disable=SC2016 # $1 expands in the inner bash, the worktree passed as its argument.
 bench/lock/autan-gpu-lock -m "gpu-bench: build the base's benchmarks" -t 600 -- bash -c '
-  cmake -S "$1/bench" -B "$1/build/bench" && cmake --build "$1/build/bench" &&
-  cmake -S "$1" -B "$1/build/autan" -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF \
-    -DCMAKE_CUDA_ARCHITECTURES=121 &&
-  cmake --build "$1/build/autan" --target autan_loop_bench' build-base "$dir"
+  cmake -S "$1/bench" -B "$1/build/bench" && cmake --build "$1/build/bench"' build-base "$dir"
 status=$?
 case $status in
   0) exit 0 ;;

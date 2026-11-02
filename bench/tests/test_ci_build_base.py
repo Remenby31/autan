@@ -66,8 +66,10 @@ def test_the_base_is_built_from_its_own_tree(repo):
     assert git(worktree, "rev-parse", "HEAD") == base
     assert (worktree / "bench" / "CMakeLists.txt").read_text() == "base\n"
     calls = (repo.parent / "cmake.log").read_text().splitlines()
-    assert calls[0].startswith(f"-S {worktree}/bench -B {worktree}/build/bench")
-    assert any("--target autan_loop_bench" in c for c in calls)
+    assert calls == [
+        f"-S {worktree}/bench -B {worktree}/build/bench",
+        f"--build {worktree}/build/bench",
+    ]
     # Removed on request, and pruned from git's list.
     assert build(repo, "--remove", str(worktree)).returncode == 0
     assert not worktree.exists()
