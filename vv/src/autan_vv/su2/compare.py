@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 COMPARISON_SCHEMA = "autan.su2-comparison/1"
+TRAILING_EDGE_FRACTION = 0.95
 
 
 @dataclass(frozen=True)
@@ -236,8 +237,9 @@ def _shock(xs: np.ndarray, cp: np.ndarray) -> float | None:
 def compare_cp(autan_run: Path, su2_surface: Path) -> dict[str, Any]:
     """Wall Cp of one Autan run against SU2's on the same level: per face, Autan's face value
     against the mean of SU2's at the face's two nodes (the face centre, linear along the edge);
-    the largest and RMS difference over all faces and over the faces at least two faces away from
-    either code's shock; and the shock's x on each side. V0904 if a face has no SU2 node pair."""
+    the largest and RMS difference over all faces, over the faces at least two faces away from
+    either code's shock, and over those that also lie ahead of the last 5 % of chord (`body`); and
+    the shock's x on each side. V0904 if a face has no SU2 node pair."""
     spec = tomllib.loads((autan_run / "case.toml").read_text())
     mach = float(spec["freestream"]["mach"])
     gamma = float(spec["physics"].get("gas", {}).get("gamma", 1.4))
@@ -267,6 +269,10 @@ def compare_cp(autan_run: Path, su2_surface: Path) -> dict[str, Any]:
             if x is not None:
                 smooth &= ~(mask & (np.abs(xc - x) <= 2.5 * spacing))
     result["outside_shocks"] = _stats(diff[smooth])
+    # The sharp trailing edge is a stagnation point: SU2 has a node on it, Autan a face beside it,
+    # and their values differ by O(1) there at every level. `body` leaves out its last 5 % of chord.
+    body = smooth & (xc <= TRAILING_EDGE_FRACTION * xc.max())
+    result["body"] = {**_stats(diff[body]), "faces": int(body.sum())}
     return result
 
 

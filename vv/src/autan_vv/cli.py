@@ -185,9 +185,9 @@ def _cmd_su2(args: argparse.Namespace) -> None:
             if "cp" in row:
                 cp = row["cp"]
                 _say(
-                    f"    Cp: max |dCp| {cp['all']['max_abs']:.4f} ({cp['outside_shocks']['max_abs']:.4f}"
-                    f" outside shocks), upper shock x Autan {cp['shock_upper']['autan']},"
-                    f" SU2 {cp['shock_upper']['su2']}"
+                    f"    Cp: max |dCp| {cp['all']['max_abs']:.4f}, {cp['body']['max_abs']:.4f} on the"
+                    f" body (rms {cp['body']['rms']:.5f}); upper shock x Autan"
+                    f" {cp['shock_upper']['autan']}, SU2 {cp['shock_upper']['su2']}"
                 )
         for code, estimates in report["continuum"].items():
             for name, est in estimates.items():

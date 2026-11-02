@@ -603,6 +603,7 @@ def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
     # Only the face across the jump differs: its centre is past it, one of its nodes is not.
     assert same["all"]["max_abs"] == pytest.approx(0.25, abs=1e-9)
     assert same["outside_shocks"]["max_abs"] < 1e-9
+    assert 0 < same["body"]["faces"] < nc
     assert same["shock_upper"]["autan"] == same["shock_upper"]["su2"]
     assert same["shock_upper"]["autan"] == pytest.approx(0.6, abs=0.1)
     shifted = compare.compare_cp(run, surface("shifted", 0.01, 0.6))
