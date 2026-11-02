@@ -571,6 +571,12 @@
       "fix": "Watch the machine's memory; a unified-memory device shares it with every process.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0712"
     },
+    "W0713": {
+      "severity": "warning",
+      "title": "Memory limit unverifiable",
+      "fix": "Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check the job's memory limit by other means.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0713"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",

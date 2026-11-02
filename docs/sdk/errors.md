@@ -752,7 +752,7 @@ Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose
 
 **Not enough memory for the run** (error)
 
-The solver input's memory estimate (`memory`, from `autan plan`) exceeds the memory available to the run minus the margin: on a unified-memory device or the CPU, host and device together against the lower of `MemAvailable` and the container's limit; on a discrete device, each against its own pool. `data` gives `required_bytes`, `available_bytes`, `margin_bytes` and `device_kind`. The run starts nothing.
+The solver input's memory estimate (`memory`, from `autan plan`) exceeds the memory available to the run minus the margin: on a unified-memory device or the CPU, host and device together against the lower of `MemAvailable` and the container's limit; on a discrete device, each against its own pool. `data` gives `required_bytes`, `available_bytes`, `margin_bytes`, `device_kind`, `cgroup_limit` (`known`, or `unknown` when a memory cgroup above the process could not be read, `W0713`) and `unseen_cgroups`. The run starts nothing.
 
 Fix: Run on more devices or a machine with more free memory; `--allow-oversubscription` starts it anyway, at the risk of exhausting the machine.
 
@@ -763,6 +763,14 @@ Fix: Run on more devices or a machine with more free memory; `--allow-oversubscr
 The run was started with `--allow-oversubscription` although its memory estimate exceeds the available memory minus the margin (as `E0711`, same `data`).
 
 Fix: Watch the machine's memory; a unified-memory device shares it with every process.
+
+## W0713
+
+**Memory limit unverifiable** (warning)
+
+A memory cgroup above the process (its own excepted when mounted) is shown by no mount of /proc/self/mountinfo, so its limit, if any, could not be read: the memory check rests on `MemAvailable` and the limits it could read. `data` gives `cgroup_limit` (`unknown`) and `unseen_cgroups`, the cgroups rank 0 could not read.
+
+Fix: Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check the job's memory limit by other means.
 
 ## W0801
 
