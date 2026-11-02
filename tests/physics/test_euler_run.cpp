@@ -937,7 +937,7 @@ TEST_CASE("a steady step whose linear solve stops above its tolerance halves the
   // Per iteration: whether a step event (solver or linear warning) was logged, and the CFL
   // number of an under-solved step.
   std::map<int, bool> warned;
-  std::map<int, double> under_solved;
+  std::map<int, double> under_solved, shortened;
   std::istringstream log(read(whole.run / "log.jsonl"));
   for (std::string line; std::getline(log, line);) {
     const auto e = Json::parse(line);
@@ -945,6 +945,7 @@ TEST_CASE("a steady step whose linear solve stops above its tolerance halves the
     const int i = e["iteration"].get<int>();
     warned[i] = true;
     const auto data = e["data"];
+    if (e["source"] == "solver") shortened[i] = data["cfl"].get<double>();
     if (e["source"] == "linear" && data["residual_drop"].is_number() &&
         data["residual_drop"].get<double>() <= 0.9 && data["cfl"].get<double>() > 1.0) {
       under_solved[i] = data["cfl"].get<double>();
@@ -961,6 +962,13 @@ TEST_CASE("a steady step whose linear solve stops above its tolerance halves the
   std::string seen;
   for (const auto& [i, w] : warned)
     seen += std::to_string(i) + (under_solved.contains(i) ? "u " : " ");
+  // A step both under-solved and shortened halves the penalty once: the next CFL number stays
+  // near half its own (a second halving would bring it near a quarter).
+  const auto both = std::ranges::find_if(under_solved, [&](const auto& u) {
+    return shortened.contains(u.first) && shortened.contains(u.first + 1);
+  });
+  REQUIRE(both != under_solved.end());
+  CHECK(shortened[both->first + 1] > 0.4 * both->second);
   INFO("warned steps (u: under-solved) " << seen
                                          << "; the first followed by three plain ones: " << k);
   REQUIRE(k > 0);
