@@ -103,31 +103,33 @@ std::vector<Mount> cgroup_mounts(const fs::path& proc, bool v2) {
   return mounts;
 }
 
-// The least limit less usage of `group` and its ancestors in the mount that shows it.
+// The least limit less usage of `group` and of each of its ancestors, each read in the mount
+// that shows it: a parent's limit binds the group even when another mount shows the group.
 std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::path& group, bool v2) {
-  const Mount* best = nullptr;
   const auto mounts = cgroup_mounts(proc, v2);
-  for (const auto& m : mounts) {
-    const bool contains = std::ranges::mismatch(m.root, group).in1 == m.root.end();
-    if (contains && (best == nullptr || std::distance(m.root.begin(), m.root.end()) >
-                                            std::distance(best->root.begin(), best->root.end())))
-      best = &m;
-  }
-  if (best == nullptr) return std::nullopt;
-  const fs::path relative = group.lexically_relative(best->root);
-  const fs::path point = best->point.lexically_normal();
   std::optional<std::int64_t> available;
-  for (fs::path dir = relative == "." ? point : (point / relative).lexically_normal();;
-       dir = dir.parent_path()) {
-    const auto limit = number_in(dir / (v2 ? "memory.max" : "memory.limit_in_bytes"));
-    // cgroup v1 writes an unlimited group's limit as the largest page-aligned count.
-    if (limit && (v2 || *limit < (std::int64_t{1} << 62))) {
-      const auto used = number_in(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
-      if (!used) throw std::runtime_error("no memory usage beside the limit in " + dir.string());
-      const std::int64_t left = std::max<std::int64_t>(0, *limit - *used);
-      available = std::min(available.value_or(left), left);
+  for (fs::path cg = group.lexically_normal();; cg = cg.parent_path()) {
+    const Mount* shown = nullptr;
+    for (const auto& m : mounts) {
+      const bool contains = std::ranges::mismatch(m.root, cg).in1 == m.root.end();
+      if (contains &&
+          (shown == nullptr || std::distance(m.root.begin(), m.root.end()) >
+                                   std::distance(shown->root.begin(), shown->root.end())))
+        shown = &m;
     }
-    if (dir == point || dir == dir.parent_path()) break;
+    if (shown != nullptr) {
+      const fs::path relative = cg.lexically_relative(shown->root);
+      const fs::path dir = relative == "." ? shown->point : shown->point / relative;
+      const auto limit = number_in(dir / (v2 ? "memory.max" : "memory.limit_in_bytes"));
+      // cgroup v1 writes an unlimited group's limit as the largest page-aligned count.
+      if (limit && (v2 || *limit < (std::int64_t{1} << 62))) {
+        const auto used = number_in(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
+        if (!used) throw std::runtime_error("no memory usage beside the limit in " + dir.string());
+        const std::int64_t left = std::max<std::int64_t>(0, *limit - *used);
+        available = std::min(available.value_or(left), left);
+      }
+    }
+    if (cg == cg.parent_path() || cg.empty()) break;
   }
   return available;
 }

@@ -1862,12 +1862,10 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   if (const auto status =
           refused([&] { memory_warning = check_memory(input_file, *comm, memory); }))
     return *status;
-  std::optional<Prepared> prepared;
-  if (const auto status =
-          refused([&] { prepared.emplace(prepare(input_file, registry, comm->size())); }))
-    return *status;
   // W0712 when any rank starts beyond its memory, on every rank: the largest need and the least
-  // memory available of those ranks.
+  // memory available of those ranks, written before any rank reads the mesh, which can be what
+  // exhausts the host.
+  std::optional<Diagnostic> beyond;
   {
     const auto& warning = memory_warning;
     const Json data = warning ? Json::parse(warning->data_json) : Json::object();
@@ -1876,10 +1874,20 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     const std::int64_t least = comm->max(warning ? -data["available_bytes"].get<std::int64_t>()
                                                  : std::numeric_limits<std::int64_t>::min());
     if (required >= 0) {
-      prepared->memory_warning =
-          memory_diagnostic("W0712", prepared->input, required, -least, memory.margin_bytes);
+      beyond = memory_diagnostic("W0712", parse_solver_input(read_text(input_file)), required,
+                                 -least, memory.margin_bytes);
+      if (comm->rank() == 0) {
+        const std::string line = beyond->json() + "\n";
+        std::fwrite(line.data(), 1, line.size(), err);
+        std::fflush(err);
+      }
     }
   }
+  std::optional<Prepared> prepared;
+  if (const auto status =
+          refused([&] { prepared.emplace(prepare(input_file, registry, comm->size())); }))
+    return *status;
+  prepared->memory_warning = beyond;
   stop_requested = 0;
   const SignalGuard signals;
   try {

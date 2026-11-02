@@ -1632,6 +1632,21 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
                         event["data"] == info["diagnostics"][0]["data"]);
   }
   CHECK(logged);
+  // W0712 reaches stderr before the mesh is read, so before what may exhaust the host: here the
+  // mesh does not exist, and its refusal follows the warning.
+  const Outcome early = run(input([&](Json& d) {
+                              d["memory"]["bytes_host"] = huge;
+                              d["mesh"]["path"] = "/nonexistent/polyMesh";
+                            }),
+                            registry, {}, {.allow_oversubscription = true});
+  CHECK(early.status == ExitStatus::invalid_input);
+  std::vector<std::string> codes;
+  std::istringstream err_lines(early.err);
+  for (std::string line; std::getline(err_lines, line);)
+    if (line.starts_with("{")) codes.push_back(Json::parse(line)["code"]);
+  REQUIRE(codes.size() == 2);
+  CHECK(codes[0] == "W0712");
+  CHECK(codes[1] != "W0712");
   // The estimate is required.
   const Json missing = refusal(run(input([](Json& d) { d.erase("memory"); }), registry));
   CHECK(missing["code"] == "E0705");

@@ -62,6 +62,21 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "tenant" / "job" / "memory.max", "a lot\n");
     CHECK_THROWS_AS(autan::runtime::host_available_bytes(proc), std::runtime_error);
   }
+  SECTION("cgroup v2 whose parent limits it through another mount") {
+    // The root hierarchy at cg and the group /tenant/job also at job: the job has no limit, but
+    // /tenant, seen only through cg, has 4 GiB with 1 GiB used.
+    const fs::path cg = dir / "sys" / "cgroup";
+    const fs::path job = dir / "job";
+    write(proc / "self" / "cgroup", "0::/tenant/job\n");
+    write(proc / "self" / "mountinfo", "24 1 0:22 / " + cg.string() + " rw - cgroup2 cgroup2 rw\n" +
+                                           "31 24 0:22 /tenant/job " + job.string() +
+                                           " rw - cgroup2 cgroup2 rw\n");
+    write(job / "memory.max", "max\n");
+    write(job / "memory.current", std::to_string(gib) + "\n");
+    write(cg / "tenant" / "memory.max", std::to_string(4 * gib) + "\n");
+    write(cg / "tenant" / "memory.current", std::to_string(gib) + "\n");
+    CHECK(autan::runtime::host_available_bytes(proc) == 3 * gib);
+  }
   SECTION("cgroup v2 mounted from inside the hierarchy") {
     // /tenant is mounted at cg: the group /tenant/job is cg/job, and /tenant is cg itself.
     const fs::path cg = dir / "mnt";
