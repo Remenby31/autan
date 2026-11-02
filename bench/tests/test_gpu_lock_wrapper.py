@@ -256,7 +256,7 @@ def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(loc
     # Below the floor already: the command never starts.
     done.unlink()
     above = f"{(mem_available() >> 20) + 4096}M"
-    refused = wrapper(lock, "-m", "test", "-f", above, "--", "touch", str(done))
+    refused = wrapper(lock, "-m", "test", "-f", above, "-r", "1", "--", "touch", str(done))
     assert refused.wait(timeout=30) == 71
     assert not done.exists()
     assert [r[1] for r in events(lock)][-2:] == ["take", "memory"]
@@ -322,3 +322,28 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path):
     finally:
         for cid in containers(label):
             subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
+
+
+def test_a_command_waits_for_memory_a_killed_holder_is_returning(lock, tmp_path):
+    # A process holds real memory below the floor and frees it 2 s later, as one the floor
+    # killed does while the kernel reclaims it: the next command waits, then runs.
+    ready, done = tmp_path / "ready", tmp_path / "done"
+    hog = subprocess.Popen([sys.executable, "-c", (
+        "import sys, time\nchunks = [b'\\1' * (128 << 20) for _ in range(24)]\n"
+        f"open({str(ready)!r}, 'w').write('x')\ntime.sleep(2)\n")])  # fmt: skip
+    try:
+        for _ in range(200):
+            if ready.exists():
+                break
+            time.sleep(0.05)
+        # 1 GiB above what is left while it holds its 3 GiB: below the floor until it exits.
+        floor = f"{(mem_available() + (1 << 30)) >> 20}M"
+        start = time.monotonic()
+        waiting = wrapper(lock, "-m", "test", "-f", floor, "-r", "30", "--", "touch", str(done))
+        assert waiting.wait(timeout=60) == 0
+        assert time.monotonic() - start >= 0.5
+        assert done.exists()
+        assert [r[1] for r in events(lock)][-1] == "release"
+    finally:
+        hog.kill()
+        hog.wait()
