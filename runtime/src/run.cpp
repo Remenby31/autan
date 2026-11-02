@@ -369,9 +369,9 @@ struct Rows {
 using RowMap = std::map<std::vector<std::string>, Rows>;
 
 // `text` parsed (discarded if not JSON), every "centroids" and "values" array member streamed into
-// `rows` under the keys leading to it and left empty in the document: what a state file holds in
-// memory is then its text, 8 bytes per number of its rows, and its other members.
-nlohmann::json parse_rows(const std::string& text, RowMap& rows) {
+// `streamed` under the keys leading to it and left empty in the document: what a state file holds
+// in memory is then its text, 8 bytes per number of its rows, and its other members.
+nlohmann::json parse_rows(const std::string& text, RowMap& streamed) {
   enum class Kind : std::uint8_t { plain, rows, row };
   struct Frame {
     bool array;
@@ -411,7 +411,7 @@ nlohmann::json parse_rows(const std::string& text, RowMap& rows) {
           for (const auto& g : stack) {
             if (!g.key.empty()) path.push_back(g.key);
           }
-          current = &rows[path];
+          current = &streamed[path];
           width = f.key == "centroids" ? 3 : 5;
         }
         return true;
