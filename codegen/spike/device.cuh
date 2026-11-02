@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-#include "autan/kernels/colouring.hpp"
+#include "autan/kernels/device.cuh"
 #include "autan/kernels/gpu.hpp"
 #include "spike.hpp"
 
@@ -17,6 +17,18 @@ using autan::kernels::index_t;
 using autan::kernels::offset_t;
 using autan::spike::GeomArray;
 namespace gpu = autan::kernels::gpu;
+
+/// Cells per slice of the stencil layout of every DeviceMesh built afterwards (0: CSR).
+inline int& stencil_slice() {
+  static int slice = 0;
+  return slice;
+}
+
+/// Cells per slice of the incidence layout of every DeviceMesh built afterwards (0: CSR).
+inline int& incidence_slice() {
+  static int slice = 0;
+  return slice;
+}
 
 template <class T>
 class DeviceArray {
@@ -45,95 +57,26 @@ class DeviceArray {
   std::size_t n_;
 };
 
-/// Topology, colourings and scratch of a spike mesh on the device.
+/// A spike mesh on the device through the library's DeviceMesh; `topo` and `schedule` are
+/// copies for the call sites that set them directly.
 struct DeviceMesh {
   static constexpr int kScratchWidth = 10;          // widest spike face loop: the Roe adjoint
   static constexpr int kIncidenceScratchWidth = 1;  // spike reductions gather one scalar
-  DeviceArray<index_t> owner, neighbour, cell_faces;
-  DeviceArray<offset_t> offsets;
-  autan::kernels::HostColouring int_colours, bnd_colours;
-  DeviceArray<index_t> int_faces, bnd_faces;
-  DeviceArray<double> scratch;
-  DeviceArray<offset_t> twin;
-  DeviceArray<offset_t> stencil_offsets;
-  DeviceArray<index_t> stencil;
-  DeviceArray<offset_t> stencil_twin;
-  DeviceArray<double> incidence_scratch;
+  gpu::DeviceMesh mesh;
   autan::kernels::Topology topo;
   gpu::Schedule schedule;
 
-  DeviceMesh(const SpikeMesh& m, int block)
-      : owner(m.topo.owner, static_cast<std::size_t>(m.topo.n_faces)),
-        neighbour(m.topo.neighbour, static_cast<std::size_t>(m.topo.n_interior_faces)),
-        cell_faces(m.topo.cell_faces, static_cast<std::size_t>(m.topo.n_incidences)),
-        offsets(m.topo.cell_face_offsets, static_cast<std::size_t>(m.topo.n_cells) + 1),
-        int_colours(autan::kernels::colour_faces(m.topo, 0, m.topo.n_owned_interior_faces)),
-        bnd_colours(
-            autan::kernels::colour_faces(m.topo, m.topo.n_interior_faces, m.topo.n_owned_faces)),
-        int_faces(int_colours.faces),
-        bnd_faces(bnd_colours.faces),
-        scratch(kScratchWidth * static_cast<std::size_t>(m.topo.n_faces)),
-        twin(m.topo.incidence_twin, static_cast<std::size_t>(m.topo.n_incidences)),
-        stencil_offsets(m.topo.stencil_offsets, m.topo.stencil_offsets != nullptr
-                                                    ? static_cast<std::size_t>(m.topo.n_cells) + 1
-                                                    : 0),
-        stencil(m.topo.stencil, static_cast<std::size_t>(m.topo.n_stencil)),
-        stencil_twin(m.topo.stencil_twin, static_cast<std::size_t>(m.topo.n_stencil)),
-        incidence_scratch(kIncidenceScratchWidth * static_cast<std::size_t>(std::max(
-                                                       m.topo.n_incidences, m.topo.n_stencil))),
-        topo(m.topo) {
-    topo.owner = owner.get();
-    topo.neighbour = neighbour.get();
-    topo.cell_faces = cell_faces.get();
-    topo.cell_face_offsets = offsets.get();
-    schedule.block = block;
-    schedule.interior = {int_faces.get(), int_colours.offsets};
-    schedule.boundary = {bnd_faces.get(), bnd_colours.offsets};
-    schedule.face_scratch = scratch.get();
-    schedule.face_scratch_width = kScratchWidth;
-    schedule.incidence_scratch = incidence_scratch.get();
-    schedule.incidence_scratch_width = kIncidenceScratchWidth;
-    topo.incidence_twin = twin.get();
-    if (m.topo.stencil != nullptr) {
-      topo.stencil_offsets = stencil_offsets.get();
-      topo.stencil = stencil.get();
-      topo.stencil_twin = stencil_twin.get();
-    }
+  DeviceMesh(const SpikeMesh& m, int block) : DeviceMesh(m, block, m.keys()) {}
+  DeviceMesh(const SpikeMesh& m, int block, const autan::kernels::GlobalKeys& keys)
+      : mesh(m.mesh, m.packed, m.topo.stencil != nullptr ? &m.stencil : nullptr,
+             {block, kScratchWidth, kIncidenceScratchWidth, nullptr, stencil_slice(),
+              m.global ? &keys : nullptr, incidence_slice()}),
+        topo(mesh.topology()),
+        schedule(mesh.schedule()) {}
+  template <class D>
+  void bind(D& d) {
+    mesh.bind(d);
   }
-};
-
-/// Device copy of a GeomArray, in both stored types.
-template <class P>
-struct DeviceGeomArray {
-  DeviceArray<typename P::geom> geom;
-  DeviceArray<typename P::geom_value> value;  // empty when GeomArray<P>::same
-  explicit DeviceGeomArray(const GeomArray<P>& a) : geom(a.geom), value(a.value) {}
-  template <class T>
-  [[nodiscard]] const T* as() const {
-    if constexpr (std::is_same_v<T, typename P::geom>) {
-      return geom.get();
-    } else {
-      return value.get();
-    }
-  }
-};
-
-template <class P>
-struct DeviceGeom {
-  DeviceGeomArray<P> face_area, face_centroid, face_moment, face_normal, face_area_magnitude,
-      face_r_left, face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
-  explicit DeviceGeom(const GeomCopy<P>& g)
-      : face_area(g.face_area),
-        face_centroid(g.face_centroid),
-        face_moment(g.face_moment),
-        face_normal(g.face_normal),
-        face_area_magnitude(g.face_area_magnitude),
-        face_r_left(g.face_r_left),
-        face_r_right(g.face_r_right),
-        cell_centroid(g.cell_centroid),
-        cell_volume(g.cell_volume),
-        lsq_weight(g.lsq_weight),
-        stencil_lsq_weight(g.stencil_lsq_weight) {}
 };
 
 using autan::kernels::strategy_of;

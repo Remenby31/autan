@@ -3,17 +3,12 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "../api/contracts";
-import {
-  type ForceColumns,
-  type HistoryColumns,
-  type LiveRun,
-  runQuery,
-  runsQuery,
-  soleForces,
-  useRunsHistory,
-} from "../api/runs";
-import { degrees } from "../api/units";
+import { devicesLabel } from "../api/devices";
+import { flatten, polars } from "../api/polars";
+import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
+import { coefficient } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
+import { DASHES, PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -38,23 +33,6 @@ const resolvedColor = (k: number) =>
     .getPropertyValue(`--series-${(k % 8) + 1}`)
     .trim();
 
-/** Every leaf of a case document under its dotted path; arrays of tables by index. */
-export function flatten(value: unknown, prefix = ""): Map<string, string> {
-  const out = new Map<string, string>();
-  if (value !== null && typeof value === "object") {
-    for (const [key, child] of Object.entries(value)) {
-      const path = prefix ? (Array.isArray(value) ? `${prefix}[${key}]` : `${prefix}.${key}`) : key;
-      for (const [k, v] of flatten(child, path)) out.set(k, v);
-    }
-  } else {
-    out.set(
-      prefix,
-      value === undefined ? "—" : typeof value === "string" ? value : JSON.stringify(value),
-    );
-  }
-  return out;
-}
-
 function Compare() {
   const { runs: ids } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
@@ -72,7 +50,6 @@ function Compare() {
   const version = ids.map((id) => live.get(id)?.history.version ?? 0).join(",");
 
   // Histories grow in place: `version` is what changes when they do.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const charts = useMemo(() => {
     const drop: OverlaySeries[] = [];
     const cl: OverlaySeries[] = [];
@@ -82,27 +59,50 @@ function Compare() {
       if (!history) return;
       const label = id.slice(-8);
       const color = resolvedColor(k);
-      drop.push({ label, color, x: history.iteration, y: history.orders });
+      const target = registry.data?.summaries[id]?.target_orders ?? undefined;
+      const y = history.orders.map((o) => shownOrders(o, target));
+      drop.push({ label, color, x: history.iteration, y });
       const forces = soleForces(history);
       if (forces) {
         cl.push({ label, color, x: forces.iteration, y: forces.cl });
         cd.push({ label, color, x: forces.iteration, y: forces.cd });
       }
     });
-    return { drop, cl, cd };
-  }, [ids, live, version]);
+    const targets = ids.map((id) => registry.data?.summaries[id]?.target_orders ?? "").join(",");
+    return { drop, cl, cd, dropVersion: `${version}|${targets}` };
+  }, [ids, live, version, registry.data]);
 
-  const cases = details.map((d) => d.data?.case);
-  const loaded = details.map((d) => d.dataUpdatedAt).join(",");
-  // Histories grow in place (`version`); `cases` is a new array each render (`loaded`).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const polar = useMemo(
-    () => polars(ids, runs, live, registry.data?.summaries ?? {}, cases),
-    [ids, runs, live, registry.data, version, loaded],
+    () =>
+      polars(
+        ids.map((id, k) => ({
+          id,
+          role: String.fromCharCode(65 + k),
+          run: runs[k],
+          case: details[k]?.data?.case,
+          pending: details[k]?.isPending || !registry.data,
+        })),
+      ),
+    [ids, runs, details, registry.data],
   );
+  const plotted = polar.series.flatMap((s) => s.points.map((p) => ({ ...p, series: s.label })));
+  const runColor = (p: { role: string }) => seriesColor(p.role.charCodeAt(0) - 65);
 
   const diff = useMemo(() => {
-    const flat = details.map((d) => (d.data ? flatten(d.data.case) : null));
+    const flat = details.map((d) =>
+      d.data
+        ? new Map([
+            ...flatten(d.data.case),
+            ...flatten({
+              run: {
+                devices: devicesLabel(d.data.run.devices),
+                backend: d.data.run.solver.backend,
+                solver: d.data.run.solver.commit,
+              },
+            }),
+          ])
+        : null,
+    );
     const keys = [...new Set(flat.flatMap((f) => (f ? [...f.keys()] : [])))].sort();
     // A setting absent from a case differs from every value, "—" included.
     return keys.map((key) => {
@@ -182,7 +182,7 @@ function Compare() {
                     series={charts.drop}
                     xLabel="iteration"
                     sync="compare"
-                    version={version}
+                    version={charts.dropVersion}
                   />
                 </ChartCard>
                 <ChartCard title="CL" unit="iteration">
@@ -203,25 +203,107 @@ function Compare() {
                 </ChartCard>
               </div>
 
-              {polar && (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="polar">
-                  <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
-                    <OverlayChart
-                      series={[polar.lift]}
-                      xLabel="α (deg)"
-                      points
-                      version={polar.version}
-                    />
-                  </ChartCard>
-                  <ChartCard title="Drag polar" unit="CD against CL">
-                    <OverlayChart
-                      series={[polar.drag]}
-                      xLabel="CL"
-                      points
-                      version={polar.version}
-                    />
-                  </ChartCard>
+              {plotted.length > 0 && (
+                <div className="flex flex-col gap-3" data-testid="polar">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+                    {polar.fixed && (
+                      <span className="text-fg-3" data-testid="polar-fixed">
+                        {polar.fixed}
+                      </span>
+                    )}
+                    {polar.series.length > 1 &&
+                      polar.series.map((s, k) => (
+                        <span
+                          key={s.key}
+                          className="inline-flex items-center gap-2"
+                          data-testid="polar-series"
+                        >
+                          <svg width="20" height="6" aria-hidden className="flex-none">
+                            <line
+                              x1="0"
+                              x2="20"
+                              y1="3"
+                              y2="3"
+                              stroke="var(--fg-3)"
+                              strokeWidth="1.5"
+                              strokeDasharray={DASHES[k % DASHES.length]}
+                            />
+                          </svg>
+                          {s.label}
+                          <span className="font-mono text-fg-3">
+                            {s.points.map((p) => p.role).join(" ")}
+                          </span>
+                        </span>
+                      ))}
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
+                      <PolarChart
+                        series={polar.series}
+                        x={(p) => p.alpha}
+                        y={(p) => p.cl}
+                        xLabel="α (deg)"
+                        yLabel="CL"
+                        color={runColor}
+                        testId="lift-polar"
+                      />
+                    </ChartCard>
+                    <ChartCard title="Drag polar" unit="CD against CL">
+                      <PolarChart
+                        series={polar.series}
+                        x={(p) => p.cl}
+                        y={(p) => p.cd}
+                        xLabel="CL"
+                        yLabel="CD"
+                        color={runColor}
+                        testId="drag-polar"
+                      />
+                    </ChartCard>
+                  </div>
+                  <table className="w-full border-collapse text-sm" data-testid="polar-table">
+                    <thead>
+                      <tr className="text-left text-fg-3">
+                        <th className="h-8 px-2 font-normal">Run</th>
+                        <th className="px-2 text-right font-normal">α (deg)</th>
+                        <th className="px-2 text-right font-normal">CL</th>
+                        <th className="px-2 text-right font-normal">CD</th>
+                        {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {plotted.map((p) => (
+                        <tr key={p.id} className="border-line border-t font-mono">
+                          <td className="h-8 px-2">
+                            <span className="inline-flex items-center gap-2">
+                              <i
+                                className="inline-block size-2 rounded-full"
+                                style={{ background: runColor(p) }}
+                              />
+                              {p.role}
+                            </span>
+                          </td>
+                          <td className="px-2 text-right">{p.alpha}</td>
+                          <td className="px-2 text-right">{coefficient(p.cl)}</td>
+                          <td className="px-2 text-right">{coefficient(p.cd)}</td>
+                          {polar.series.length > 1 && (
+                            <td className="px-2 font-sans text-fg-2">{p.series}</td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
+              )}
+              {polar.unplotted.length > 0 && (
+                <p className="m-0 text-fg-2 text-sm" data-testid="polar-missing">
+                  Not on the polars:{" "}
+                  {polar.unplotted.map((u, k) => (
+                    <span key={u.id}>
+                      {k > 0 && " · "}
+                      <span className="font-mono">{u.role}</span> {u.reason}
+                    </span>
+                  ))}
+                </p>
               )}
 
               <section className="overflow-hidden rounded-lg border border-line bg-bg-0">
@@ -299,74 +381,6 @@ function Compare() {
       </div>
     </>
   );
-}
-
-/** The coefficients a converged run ends with: its last forces sample, taken less than
- * `every` iterations before its final one (monitors are recorded at iterations divisible by
- * their `every`, results.md), the history having caught up with run.json. Null otherwise, and
- * without `every` unless the sample is at the final iteration. */
-function convergedForces(
-  run: Pick<Run, "status" | "iterations">,
-  history: Pick<HistoryColumns, "iteration">,
-  forces: ForceColumns | null,
-  every: number | undefined,
-): { cl: number; cd: number } | null {
-  if (run.status !== "converged" || history.iteration.at(-1) !== run.iterations) return null;
-  const at = forces?.iteration.at(-1);
-  const cl = forces?.cl.at(-1);
-  const cd = forces?.cd.at(-1);
-  if (at === undefined || cl === undefined || cd === undefined) return null;
-  return run.iterations - at < (every ?? 1) ? { cl, cd } : null;
-}
-
-/** The `every` of the monitor `name` of a case document. */
-function monitorEvery(caseDocument: Record<string, unknown> | undefined, name: string) {
-  const monitors = Array.isArray(caseDocument?.monitors) ? caseDocument.monitors : [];
-  const monitor = monitors.find(
-    (m): m is { every: number } =>
-      typeof m === "object" && m !== null && m.name === name && typeof m.every === "number",
-  );
-  return monitor?.every;
-}
-
-/** Lift and drag polars from the compared runs that converged (convergedForces); at a
- * repeated α the newest run wins. Null when fewer than two angles remain. */
-function polars(
-  ids: string[],
-  runs: (Run | undefined)[],
-  live: Map<string, LiveRun>,
-  summaries: Record<string, { settings?: { aoa: string | null } }>,
-  cases: (Record<string, unknown> | undefined)[],
-): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
-  const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
-  ids.forEach((id, k) => {
-    const run = runs[k];
-    const history = live.get(id)?.history;
-    if (!run || !history) return;
-    const alpha = degrees(summaries[id]?.settings?.aoa);
-    const [name] = history.forces.size === 1 ? history.forces.keys() : [];
-    const every = name === undefined ? undefined : monitorEvery(cases[k], name);
-    const ended = convergedForces(run, history, soleForces(history), every);
-    if (alpha === null || ended === null) return;
-    const seen = byAlpha.get(alpha);
-    if (!seen || seen.started < run.started)
-      byAlpha.set(alpha, { alpha, ...ended, started: run.started });
-  });
-  const points = [...byAlpha.values()];
-  if (points.length < 2) return null;
-  const sortedAlpha = [...points].sort((a, b) => a.alpha - b.alpha);
-  const sortedCl = [...points].sort((a, b) => a.cl - b.cl);
-  const color = getComputedStyle(document.documentElement).getPropertyValue("--fg").trim();
-  return {
-    lift: {
-      label: "CL",
-      color,
-      x: sortedAlpha.map((p) => p.alpha),
-      y: sortedAlpha.map((p) => p.cl),
-    },
-    drag: { label: "CD", color, x: sortedCl.map((p) => p.cl), y: sortedCl.map((p) => p.cd) },
-    version: JSON.stringify(sortedAlpha),
-  };
 }
 
 function ChartCard({

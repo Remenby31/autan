@@ -1,10 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Box } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { runsQuery } from "../api/runs";
 import { fetchSurface, type Surface } from "../api/surface";
 import { TopBar } from "../components/shell/TopBar";
 import { useResolvedTheme } from "../components/shell/theme";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Note } from "../components/ui/Note";
+import { RelativeTime } from "../components/ui/RelativeTime";
+import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
 import { COOL_WARM, colormapFor, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
@@ -24,12 +30,74 @@ export const Route = createFileRoute("/viewer")({
     if (typeof raw.field === "string" && raw.field) search.field = raw.field;
     const triangles = Number(raw.triangles);
     if (Number.isFinite(triangles) && triangles > 0) search.triangles = triangles;
-    if (raw.webgl === true || raw.webgl === "1") search.webgl = true;
-    if (raw.bench === true || raw.bench === "1") search.bench = true;
+    if (raw.webgl === true || raw.webgl === 1 || raw.webgl === "1") search.webgl = true;
+    if (raw.bench === true || raw.bench === 1 || raw.bench === "1") search.bench = true;
     return search;
   },
-  component: Viewer,
+  component: Analysis,
 });
+
+// A run's solution, or the synthetic benchmark surface when asked for by `bench` or
+// `triangles`; otherwise, the runs there is a solution to show.
+function Analysis() {
+  const { run, triangles, bench } = Route.useSearch();
+  return run || bench || triangles ? <Viewer /> : <RunPicker />;
+}
+
+function RunPicker() {
+  const registry = useQuery(runsQuery);
+  const solutions = new Set(registry.data?.solutions);
+  const solved = (registry.data?.runs ?? [])
+    .filter((r) => solutions.has(r.run_id))
+    .sort((a, b) => b.started.localeCompare(a.started));
+  return (
+    <>
+      <TopBar crumbs={[{ label: "Analysis" }]} />
+      <div className="flex min-h-0 flex-1 flex-col items-center overflow-auto px-8 py-10">
+        {registry.isError && !registry.data ? (
+          <Note tone="error" title="The runs could not be listed">
+            {registry.error.message}{" "}
+            <Button size="sm" onClick={() => void registry.refetch()}>
+              Retry
+            </Button>
+          </Note>
+        ) : registry.isSuccess && solved.length === 0 ? (
+          <EmptyState
+            icon={<Box className="size-5" />}
+            title="No solution to analyse yet"
+            description="Analysis shows the solution a run writes when it ends."
+          >
+            <Link to="/" className="text-accent">
+              Go to Runs
+            </Link>
+          </EmptyState>
+        ) : (
+          <section className="flex w-full max-w-2xl flex-col gap-3" data-testid="run-picker">
+            <h1 className="m-0 font-medium text-md">Choose a run to analyse</h1>
+            <ul className="m-0 flex list-none flex-col p-0">
+              {solved.map((r) => (
+                <li key={r.run_id}>
+                  <Link
+                    to="/viewer"
+                    search={{ run: r.run_id }}
+                    className="flex items-center gap-4 rounded-md px-3 py-2 hover:bg-bg-2"
+                  >
+                    <Status status={r.status} />
+                    <span className="min-w-0 flex-1 truncate">{r.case.name}</span>
+                    <span className="font-mono text-fg-3 text-sm">{r.run_id.slice(-8)}</span>
+                    <span className="w-28 text-right text-fg-3 text-sm">
+                      <RelativeTime iso={r.started} card={false} />
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+    </>
+  );
+}
 
 export interface BenchReport {
   backend: Backend;
@@ -153,7 +221,7 @@ function Viewer() {
                 { label: <span className="font-mono">{run.slice(-8)}</span>, to: `/runs/${run}` },
                 { label: "Analysis" },
               ]
-            : [{ label: "Analysis" }]
+            : [{ label: "Analysis", to: "/viewer" }, { label: "Synthetic surface" }]
         }
         actions={
           surface && surface.fields.length > 1 ? (
@@ -169,7 +237,7 @@ function Viewer() {
               <TabList tabs={surface.fields.map((f) => ({ value: f.name, label: f.name }))} />
             </TabsRoot>
           ) : !run ? (
-            <span className="text-fg-3 text-sm">Synthetic surface</span>
+            <span className="text-fg-3 text-sm">Synthetic surface · viewer benchmark</span>
           ) : null
         }
       />

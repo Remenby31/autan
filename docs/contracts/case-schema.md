@@ -4,15 +4,15 @@ A case is a typed document that says what to compute on which mesh. Python code 
 
 ## Example
 
-The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
+The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The Python is in the canonical form `case.to_python()` writes, which `autan.load` reads back into the same case: only values that differ from their default, quantities in the unit the case carries, library materials by name, numbers in their shortest round-trip form. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
 
 ```python
 import autan
 from autan.units import deg, m
 
 case = autan.Case("crm-hl", mesh="crm-hl.cgns")
-case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp32+acc64")
-case.freestream(mach=0.20, aoa=19.57 * deg, re=5.49e6, ref_length=7.0 * m)
+case.physics = autan.Compressible(turbulence=autan.SA())
+case.freestream(mach=0.2, aoa=19.57 * deg, re=5490000.0, ref_length=7.0 * m)
 case.boundary("wing.*").wall()
 case.boundary("symmetry").symmetry()
 case.monitor(autan.forces("wing.*", ref_area=191.84 * m**2), every=10)
@@ -26,6 +26,7 @@ mesh = "crm-hl.cgns"
 [physics]
 kind = "compressible"
 precision = "fp32+acc64"
+reproducibility = "run"
 turbulence = { model = "sa", nu_tilde_ratio = 3.0 }
 gas = { kind = "ideal-gas", name = "air", molar_mass = "0.0289647 kg / mol", gamma = 1.4, prandtl = 0.72, viscosity = { law = "sutherland", mu_ref = "1.716e-05 Pa * s", t_ref = "273.15 K", s = "110.4 K" } }
 
@@ -41,6 +42,7 @@ temperature = "288.15 K"
 kind = "steady"
 max_iterations = 10000
 residual_orders = 8.0
+linear_solver = "multigrid"
 
 [[boundaries]]
 zones = "wing.*"
@@ -62,7 +64,7 @@ ref_area = "191.84 m ** 2"
 
 A dimensional value is written as a string `"<number> <unit>"`, for example `"7.0 m"`, `"101325.0 Pa"`, `"1.716e-05 Pa * s"`. Units are parsed by [Pint](https://pint.readthedocs.io) with its default registry. Each field declares a dimension; a value of another dimension is rejected (`E0301`), a bare number in a dimensional field is rejected (`E0302`), an unknown unit is rejected (`E0303`). Angles need an angle unit (`deg`, `rad`): a bare `19.57` is ambiguous and rejected. Dimensionless fields (`mach`, `re`, `gamma`, `prandtl`) are plain numbers.
 
-Values keep the unit they were written in; consumers convert to SI. Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
+Values keep the unit they were written in; consumers convert to SI. The Python builders take a Pint quantity or its text. A quantity built in Python is held as its text reads back: a 64-bit float in Pint's short unit, so the case, its document and its hash agree. A unit whose text does not read back with the field's dimension (exponents are written with six significant digits) is rejected (`E0301`). Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
 
 ## Tree
 
@@ -82,6 +84,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `cell_zones` | list of [CellZoneRule](#cell-zones) | `[]` |
 | `monitors` | list of [Monitor](#monitors) | `[]` |
 | `verification` | [Verification](#verification) | absent |
+| `initial_state` | [Initial state file](#initial-state-file) | absent |
 
 ### Physics
 
@@ -91,6 +94,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `gas` | [IdealGas](#materials) | air |
 
 `kind = "incompressible"`: pressure-based solver.
@@ -99,9 +103,12 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `fluid` | [ConstantDensityFluid](#materials) | required |
 
 `precision = "fp32+acc64"` computes in FP32 and accumulates solution updates, norms and geometry in FP64 (see `docs/PLAN.md`). `"fp64"` computes everything in FP64.
+
+`reproducibility` sets which bits a run repeats ([results.md](results.md#runjson)). `"run"` repeats them from run to run on the same number of ranks. `"ranks"` also repeats them on any number of ranks, one included, and in any cell order, at the cost of gathering sums in a fixed order; a physics that cannot honour it refuses the case before any directory exists (`E1109`). `"none"` repeats nothing and allows floating-point atomics.
 
 `gas` and `fluid` are the default medium of every fluid cell zone.
 
@@ -141,14 +148,18 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0 |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"`, default `"multigrid"` |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
 
 A steady run uses local time stepping and has converged when every residual of [results.md](results.md#history) has dropped `residual_orders` orders of magnitude below its value at iteration 1 (of the original run, for a continued one); it stops after `max_iterations` otherwise.
 
+`linear_solver` chooses how an implicit physics solves each step's linear system: `"multigrid"`, agglomeration multigrid, or `"gauss-seidel"`, symmetric block Gauss-Seidel over a colouring of the whole mesh, the same algorithm on any number of ranks. A physics states which it runs where (the Euler physics: `"multigrid"` on one rank only; `E0706` otherwise); an explicit physics ignores it.
+
+In `fp32+acc64`, round-off stops the residuals before they can drop 8 orders. So an equation also counts as converged once its residual reaches its floor C·ε₃₂·Φ_k, whichever comes first. The constants are C = 0.5 and ε₃₂ = 2⁻²³. Φ_k = f_k·√(Σ_i A_i²/N) is the flux scale of equation k: A_i is the surface of cell i (all its faces), the sum and N are those of the history residual, and f_k is the face flux magnitude of the freestream. With q∞ = |v∞| + c∞ and c∞ = √(γ p∞/ρ∞), f_k is ρ∞ q∞ for density, ρ∞ q∞² for each momentum, and ρ∞ H∞ q∞ for energy, with H∞ = c∞²/(γ−1) + |v∞|²/2. C puts the floor at least 4.3 times above the round-off plateaus measured on a NACA 0012 slice (M 0.5), manufactured solutions and Ni's transonic bump (M 0.675). A physics that gives no flux scale has no floor. The floors of a run are in its `run.json` ([results.md](results.md#runjson)). An equation whose residual at iteration 1 is below the floor, 1e-12 times the largest residual of any equation at iteration 1, is identically zero (the transverse momentum of a one-cell 2D slice, for example) and is exempt as long as its residual stays at or below the floor. The first time it rises above the floor, the runtime reports `W0710` and the equation must meet the rule like the others for the rest of the run, continuations included.
+
 With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
 
-Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
+Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 
@@ -159,11 +170,13 @@ A rule applies a condition to every boundary zone whose name matches `zones`, a 
 | `"wall"` | `temperature` (temperature > 0), optional: isothermal if set, adiabatic otherwise | viscous; with `inviscid` turbulence use `slip` (`E0414`) |
 | `"slip"` | — | all |
 | `"symmetry"` | — | all |
-| `"farfield"` | — (uses the freestream) | all |
+| `"farfield"` | — (uses the freestream); optional `point_vortex = {surfaces, center}` (pattern over boundary zones; three lengths) | all |
 | `"inlet"` | `total_pressure` (pressure > 0), `total_temperature` (temperature > 0) | compressible (`E0414` otherwise) |
 | `"velocity-inlet"` | `velocity` (speed > 0) | incompressible (`E0414` otherwise) |
 | `"outlet"` | `static_pressure` (pressure > 0) | all |
 | `"oracle-state"` | `path` (relative to the case file) and `sha256` of an `autan.face-states/1` file exported for this mesh ([face-states.md](face-states.md)): every face of the zone takes its state | compressible, inviscid or laminar (`E0414` otherwise) |
+
+A farfield's `point_vortex` corrects the far-field state of a 2D lifting body: the farfield takes the velocity of a point vortex at `center`, whose circulation is that of the lift on the boundary zones matched by `surfaces` (wall and slip zones only; wildcards skip periodic zones, `E0425` otherwise). The physics states which flows it accepts (the Euler physics: steady case, no sideslip, subsonic freestream; `E0706` otherwise).
 
 `inlet`, `velocity-inlet` and `outlet` are subsonic conditions. Inlet flow is normal to the boundary face. Where the outflow is supersonic, the outlet extrapolates every variable and ignores `static_pressure`. The solver reports inlet faces with supersonic or reversed flow and outlet faces with reversed flow (codes defined with the M2 boundary conditions).
 
@@ -197,6 +210,10 @@ Coefficients are reported only when `ref_area` is set; moment coefficients also 
 ### Verification
 
 `verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`, not an `autan.mms/1` document `E0208` ([mms.md](../validation/mms.md)); and checks it against the case (`E0209`): the solution's declared `parameters` (`gamma`, `gas_constant`, `viscosity`, `prandtl`) must equal the case gas (constant viscosity), its declared `model` must be compressible flow with the case's turbulence model (`inviscid`, `laminar` or `sa`; `sa-noft2` has no case counterpart), and the case has no cell zone rules (one fluid medium). Manufactured solutions are steady, so a verification case is steady (`E0417`). In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
+
+### Initial state file
+
+`initial_state = { path, sha256 }` starts every fluid cell from an `autan.initial-state/1` file written for the case's mesh ([initial-state.md](initial-state.md)): `path` is relative to the case file, like `mesh`, and `sha256` is the SHA-256 of its bytes. `autan plan` checks the file (`E0508` to `E0510`). The file carries no turbulence variable, so the case is compressible, inviscid or laminar. It replaces the fluid zones' `initial`, which the case leaves out, and a run of the case starts from it, not from a previous run (`E0512` otherwise). In Python: `case.initial_state = autan.StateFile(path="vortex.json", sha256="…")`.
 
 ## Boundary resolution
 

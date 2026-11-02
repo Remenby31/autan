@@ -257,7 +257,7 @@ InitialState parse_initial(const Json& value, const std::string& path, const Sol
 BoundaryInput parse_boundary(const Json& value, const std::string& path) {
   const Object o(value, path,
                  {"zone", "kind", "temperature", "total_pressure", "total_temperature", "velocity",
-                  "static_pressure", "states"});
+                  "static_pressure", "states", "point_vortex"});
   BoundaryInput b;
   b.zone = o.string("zone");
   b.kind = o.tag("kind", {"wall", "slip", "symmetry", "farfield", "inlet", "velocity-inlet",
@@ -276,6 +276,20 @@ BoundaryInput parse_boundary(const Json& value, const std::string& path) {
     b.states = std::move(states);
   } else if (!o.is_null("states")) {
     invalid(path + ".states", "only an oracle-state boundary takes states");
+  }
+  if (!o.is_null("point_vortex")) {
+    if (b.kind != "farfield")
+      invalid(path + ".point_vortex", "only a farfield takes a point vortex");
+    const Object v(o.get("point_vortex"), path + ".point_vortex", {"zones", "center"});
+    const Json& names = v.get("zones");
+    if (!names.is_array() || names.empty()) invalid(v.at("zones"), "expected zone names");
+    PointVortex vortex;
+    for (std::size_t j = 0; j < names.size(); ++j) {
+      if (!names[j].is_string()) invalid(indexed(v.at("zones"), j), "expected a zone name");
+      vortex.zones.push_back(names[j].get<std::string>());
+    }
+    vortex.center = v.vector3("center");
+    b.point_vortex = std::move(vortex);
   }
   b.temperature = b.kind == "wall" ? (o.is_null("temperature")
                                           ? std::nullopt
@@ -327,7 +341,7 @@ bool is_run_id(std::string_view id) {
 Start parse_start(const Json& value, const SolverInput& in) {
   const Object o(value, "start",
                  {"run", "run_id", "identity", "mode", "iterations", "time", "solution_sha256",
-                  "residual_reference"});
+                  "residual_reference", "woken"});
   Start start;
   start.run = o.string("run");
   if (!std::filesystem::path(start.run).is_absolute())
@@ -348,6 +362,7 @@ Start parse_start(const Json& value, const SolverInput& in) {
   }
   if (o.is_null("residual_reference")) {
     if (continued && steady) invalid(o.at("residual_reference"), "must not be null here");
+    if (!o.is_null("woken")) invalid(o.at("woken"), "must be null here");
     return start;
   }
   if (!(continued && steady)) invalid(o.at("residual_reference"), "must be null here");
@@ -360,6 +375,18 @@ Start parse_start(const Json& value, const SolverInput& in) {
     reference.push_back(v);
   }
   start.residual_reference = std::move(reference);
+  if (o.is_null("woken")) invalid(o.at("woken"), "must not be null here");
+  const Json& woken = *array_at(o, "woken");
+  std::vector<std::string> names;
+  for (std::size_t i = 0; i < woken.size(); ++i) {
+    const std::string path = indexed(o.at("woken"), i);
+    if (!woken[i].is_string()) invalid(path, "expected an equation name");
+    names.push_back(woken[i].get<std::string>());
+    if (std::ranges::find(equations, names.back()) == equations.end())
+      invalid(path, "no equation '" + names.back() + "'");
+    if (i > 0 && !(names[i - 1] < names[i])) invalid(path, "names must be sorted and distinct");
+  }
+  start.woken = std::move(names);
   return start;
 }
 
@@ -372,10 +399,10 @@ SolverInput parse_solver_input(const std::string& text) {
   } catch (const Json::exception& e) {
     invalid("", std::string("not JSON: ") + e.what());
   }
-  const Object root(
-      doc, "",
-      {"schema", "case", "mesh", "verification", "start", "periodic", "precision", "deterministic",
-       "devices", "physics", "freestream", "boundaries", "cell_zones", "time", "monitors"});
+  const Object root(doc, "",
+                    {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
+                     "precision", "reproducibility", "devices", "physics", "freestream",
+                     "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -401,7 +428,7 @@ SolverInput parse_solver_input(const std::string& text) {
     in.verification = std::move(verification);
   }
   in.precision = root.tag("precision", {"fp32+acc64", "fp64"});
-  in.deterministic = root.boolean("deterministic");
+  in.reproducibility = root.tag("reproducibility", {"none", "run", "ranks"});
   {
     const Object d(root.get("devices"), "devices", {"kind", "count"});
     in.device_kind = d.tag("kind", {"cpu", "cuda", "hip"});
@@ -455,10 +482,11 @@ SolverInput parse_solver_input(const std::string& text) {
     const Json& t = root.get("time");
     const Json kind = t.is_object() && t.contains("kind") ? t.at("kind") : Json();
     if (kind == "steady") {
-      const Object o(t, "time", {"kind", "max_iterations", "residual_orders"});
+      const Object o(t, "time", {"kind", "max_iterations", "residual_orders", "linear_solver"});
       in.time.kind = "steady";
       in.time.max_iterations = o.integer("max_iterations", 1);
       in.time.residual_orders = o.positive("residual_orders");
+      in.time.linear_solver = o.tag("linear_solver", {"multigrid", "gauss-seidel"});
     } else if (kind == "unsteady") {
       const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from"});
       in.time.kind = "unsteady";
@@ -498,6 +526,26 @@ SolverInput parse_solver_input(const std::string& text) {
     invalid("time.kind", in.turbulence.model + " needs an unsteady time");
   }
   if (!root.is_null("start")) in.start = parse_start(root.get("start"), in);
+  if (!root.is_null("initial_state")) {
+    if (in.start)
+      invalid("initial_state", "a run starts from start or from initial_state, not both");
+    // The file carries no turbulence variables (initial-state.md).
+    if (in.physics_kind != "compressible" ||
+        (in.turbulence.model != "inviscid" && in.turbulence.model != "laminar")) {
+      invalid("initial_state", "needs compressible inviscid or laminar flow");
+    }
+    const Object s(root.get("initial_state"), "initial_state", {"path", "sha256"});
+    InitialStateFile file;
+    file.path = s.string("path");
+    if (file.path.find('\0') != std::string::npos) {
+      invalid("initial_state.path", "contains a NUL character");
+    }
+    if (!std::filesystem::path(file.path).is_absolute()) {
+      invalid("initial_state.path", "must be an absolute path");
+    }
+    file.sha256 = sha256(s, "sha256");
+    in.initial_state = std::move(file);
+  }
   const Json& periodic = *array_at(root, "periodic");
   for (std::size_t i = 0; i < periodic.size(); ++i) {
     const Object o(periodic[i], indexed("periodic", i), {"zones", "transform"});

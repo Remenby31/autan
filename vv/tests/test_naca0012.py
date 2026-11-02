@@ -277,3 +277,17 @@ def test_study_reads_a_family_of_runs(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         cases.study([*runs[1:], odd])
     assert err.value.code == "V0802"
+
+
+def test_lifting_cases_carry_the_point_vortex_of_the_flo82_references() -> None:
+    for condition, c in cases.CONDITIONS.items():
+        rule = next(
+            b for b in cases.case(condition, "m.msh").spec.boundaries if b.zones == "farfield"
+        )
+        vortex = rule.condition.point_vortex  # type: ignore[union-attr]
+        if c.alpha_deg == 0.0:
+            assert vortex is None
+        else:
+            assert vortex is not None
+            assert vortex.surfaces == "airfoil"
+            assert [float(v.to("m").magnitude) for v in vortex.center] == [0.25, 0.0, 0.0]

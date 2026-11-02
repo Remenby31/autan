@@ -87,8 +87,38 @@ if(AUTAN_ENABLE_CGNS)
   target_link_libraries(
     autan_physics_runtime
     PUBLIC autan::runtime
-    PRIVATE autan::physics autan_compile_options nlohmann_json::nlohmann_json
+    PRIVATE autan::physics autan::solvers autan_compile_options nlohmann_json::nlohmann_json
   )
+  if(AUTAN_ENABLE_CUDA)
+    # The device step and the generated GPU loops it launches, compiled by nvcc without the host
+    # warning flags.
+    find_package(CUDAToolkit REQUIRED)
+    add_library(
+      autan_physics_device
+      OBJECT
+      src/euler_device.cu
+      ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
+    )
+    target_include_directories(autan_physics_device PRIVATE ${AUTAN_PHYSICS_GENERATED})
+    target_link_libraries(autan_physics_device PRIVATE autan::physics autan::runtime CUDA::cudart)
+    set_target_properties(
+      autan_physics_device
+      PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
+    )
+    target_compile_options(
+      autan_physics_device
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    )
+    target_sources(autan_physics_runtime PRIVATE $<TARGET_OBJECTS:autan_physics_device>)
+    target_link_libraries(autan_physics_runtime PUBLIC CUDA::cudart)
+    target_compile_definitions(autan_physics_runtime PUBLIC AUTAN_PHYSICS_CUDA)
+    # The device RK3 step against the host residual, per cell (docs/infra/bench.md).
+    add_executable(autan_euler_step_bench bench/euler_step_bench.cpp)
+    target_link_libraries(
+      autan_euler_step_bench
+      PRIVATE autan::physics_runtime autan::physics autan::io autan_compile_options
+    )
+  endif()
 endif()
 
 # The full residual on the GPU, timed by autan-bench (docs/infra/bench.md).

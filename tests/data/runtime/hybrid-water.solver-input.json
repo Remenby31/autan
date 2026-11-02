@@ -2,15 +2,15 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "hybrid-water",
-    "sha256": "8e436aa1fd91f17c736a1a168148c127bcf053ac148b9adb65d1c948d6d7c7ea",
-    "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\n"
+    "sha256": "f471fce753409899aab119547b2c26666007dd888091ae395fc619312e208b51",
+    "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\n"
   },
   "mesh": {
     "path": "@MESH@",
     "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6"
   },
   "precision": "fp32+acc64",
-  "deterministic": false,
+  "reproducibility": "run",
   "devices": {
     "kind": "cpu",
     "count": 1
@@ -55,7 +55,8 @@
       "total_temperature": null,
       "velocity": 2.0,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "xmax",
@@ -65,7 +66,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": 100000.0,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "ymin",
@@ -75,7 +77,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "ymax",
@@ -85,7 +88,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "zmin",
@@ -95,7 +99,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "zmax",
@@ -105,7 +110,8 @@
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     }
   ],
   "cell_zones": [
@@ -159,10 +165,12 @@
   "time": {
     "kind": "steady",
     "max_iterations": 10000,
-    "residual_orders": 8.0
+    "residual_orders": 8.0,
+    "linear_solver": "multigrid"
   },
   "monitors": [],
   "verification": null,
   "start": null,
+  "initial_state": null,
   "periodic": []
 }

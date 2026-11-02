@@ -42,6 +42,10 @@ def problems(
         return diagnostic(code, message, run=run.run_id)
 
     found = []
+    if spec.initial_state is not None:
+        found.append(
+            problem("E0512", "a case with an initial-state file cannot start from a previous run")
+        )
     if run.status not in RESUMABLE or not (previous.path / "solution.cgns").is_file():
         found.append(
             problem(
@@ -95,6 +99,7 @@ def start_info(previous: Results, mode: Mode) -> StartInfo:
     """The provenance the new run records, with the hash of the solution it reads."""
     run = previous.run
     digest = hashlib.sha256((previous.path / "solution.cgns").read_bytes()).hexdigest()
+    reference = _reference(previous) if mode == "continue" else None
     return StartInfo(
         run_id=run.run_id,
         identity=run.identity,
@@ -102,7 +107,8 @@ def start_info(previous: Results, mode: Mode) -> StartInfo:
         iterations=run.iterations,
         time=run.time,
         solution_sha256=digest,
-        residual_reference=_reference(previous) if mode == "continue" else None,
+        residual_reference=reference,
+        woken=None if reference is None else woken(previous, reference),
     )
 
 
@@ -116,6 +122,24 @@ def _reference(previous: Results) -> dict[str, float] | None:
         return start.residual_reference
     history = previous.history
     return {name: float(history.residual(name)[0]) for name in history.equations}
+
+
+# An equation whose first residual is below FLOOR times the largest is identically zero
+# (case-schema.md#time).
+FLOOR = 1e-12
+
+
+def woken(previous: Results, reference: dict[str, float]) -> list[str]:
+    """The identically zero equations that rose above their floor during ``previous`` or the
+    runs it continues: they no longer have the exemption (case-schema.md#time)."""
+    floor = FLOOR * max(reference.values(), default=0.0)
+    start = previous.run.start
+    found = set(start.woken or []) if start is not None and start.mode == "continue" else set()
+    history = previous.history
+    for name, first in reference.items():
+        if first < floor and bool((history.residual(name) > floor).any()):
+            found.add(name)
+    return sorted(found)
 
 
 @dataclass(frozen=True)

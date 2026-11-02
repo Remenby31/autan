@@ -1,13 +1,39 @@
 import { expect, test } from "vitest";
-import type { HistoryRecord } from "./contracts";
+import type { HistoryRecord, Run, RunStart } from "./contracts";
 import { appendHistory, emptyColumns as empty, soleForces } from "./runs";
 
 const record = (iteration: number, monitors?: HistoryRecord["monitors"]): HistoryRecord => ({
   iteration,
   time: null,
-  residuals: { density: 10 ** -iteration },
+  // Parsed, as the literal 1e-k is: 10 ** -k is not correctly rounded on every platform.
+  residuals: { density: Number(`1e-${iteration}`) },
   ...(monitors ? { monitors } : {}),
 });
+
+const run = (
+  start: Pick<RunStart, "residual_reference" | "woken">,
+  floor?: Record<string, number>,
+): Pick<Run, "start" | "convergence"> => ({
+  start: {
+    run_id: "",
+    identity: "",
+    mode: "continue",
+    iterations: 0,
+    time: null,
+    solution_sha256: "",
+    ...start,
+  },
+  convergence: floor ? { floor } : null,
+});
+
+// Drops in orders of magnitude, to round-off of log10 on the platform.
+const expectOrders = (actual: number[], expected: number[]) => {
+  expect(actual).toHaveLength(expected.length);
+  for (const [k, value] of expected.entries()) {
+    if (Number.isFinite(value)) expect(actual[k]).toBeCloseTo(value, 12);
+    else expect(actual[k]).toBe(value);
+  }
+};
 
 const forces = (cl: number, cd: number) => ({ fx: 0, fy: 0, fz: 0, mx: 0, my: 0, mz: 0, cl, cd });
 
@@ -63,7 +89,49 @@ test("a continued run's drop is measured from the reference it carries", () => {
   const history = appendHistory(
     empty(),
     [{ iteration: 31, time: null, residuals: { density: 1e-3, energy: 1e-4 } }],
-    reference,
+    run({ residual_reference: reference, woken: [] }),
   );
   expect(history.orders.at(-1)).toBeCloseTo(3);
+});
+
+test("an identically zero equation is exempt at its floor and woken above it, for good", () => {
+  // Floor: 1e-12 times the largest first residual (case-schema.md#time).
+  const rows = (...my: number[]) =>
+    my.map((v, k) => ({
+      iteration: k + 1,
+      time: null,
+      residuals: { density: Number(`1e-${4 * k}`), my: v },
+    }));
+  const drops = (my: number[], woken: string[] = []) =>
+    appendHistory(empty(), rows(...my), run({ residual_reference: null, woken })).orders;
+  expectOrders(drops([0, 1e-12, 1e-33]), [0, 4, 8]);
+  const exempt = (my: number[]) =>
+    appendHistory(empty(), rows(...my), run({ residual_reference: null, woken: [] })).exempt;
+  expect([...exempt([0, 1e-33])]).toEqual(["my"]);
+  expect([...exempt([0, 1e-11])]).toEqual([]);
+  expect(drops([1e-30, 1e-33])[1]).toBeCloseTo(4);
+  const woken = drops([0, 1e-11, 1e-33]);
+  expect(woken[1]).toBeNaN();
+  expect(woken[2]).toBeNaN();
+  expect(drops([0, 1e-33], ["my"])[1]).toBeNaN();
+  expect(drops([1e-30, 1e-33], ["my"])[1]).toBeCloseTo(3);
+});
+
+test("an equation at its round-off floor has converged; all of them, and the drop is infinite", () => {
+  const rows = [
+    { iteration: 1, time: null, residuals: { density: 1, energy: 1 } },
+    { iteration: 2, time: null, residuals: { density: 1e-4, energy: 1e-6 } },
+    { iteration: 3, time: null, residuals: { density: 1e-4, energy: 1e-8 } },
+  ];
+  const floors = run({ residual_reference: null, woken: null }, { density: 1e-4, energy: 1e-8 });
+  expectOrders(appendHistory(empty(), rows, floors).orders, [0, 6, Number.POSITIVE_INFINITY]);
+});
+
+test("an equation missing from a continued run's reference leaves the drop undefined", () => {
+  const history = appendHistory(
+    empty(),
+    [{ iteration: 31, time: null, residuals: { density: 1e-8, energy: 1e4 } }],
+    run({ residual_reference: { density: 1 }, woken: [] }),
+  );
+  expect(history.orders.at(-1)).toBeNaN();
 });

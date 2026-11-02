@@ -66,6 +66,7 @@ def _run(args: argparse.Namespace) -> int:
         lock=args.lock,
         lock_timeout_s=args.lock_timeout,
         max_load_per_cpu=args.max_load,
+        ready_timeout_s=args.ready,
     )
     return _report(doc, args.out)
 
@@ -128,9 +129,15 @@ def _baseline(args: argparse.Namespace) -> int:
         raise BenchError(
             Code.DIRTY_TREE, "a baseline must come from a binary built from a clean checkout"
         )
-    if not doc["provenance"]["image"]:
+    # The environment a baseline was measured in: the container image on Linux; on macOS, where
+    # Metal runs without a container, the OS version.
+    provenance = doc["provenance"]
+    if provenance["backend"] == "metal":
+        if not provenance.get("os_version"):
+            raise BenchError(Code.ENVIRONMENT_UNKNOWN, "a Metal baseline must record os_version")
+    elif not provenance["image"]:
         raise BenchError(
-            Code.IMAGE_UNKNOWN, "a baseline must record its image digest (AUTAN_IMAGE)"
+            Code.ENVIRONMENT_UNKNOWN, "a baseline must record its image digest (AUTAN_IMAGE)"
         )
     if doc["suite"] == "stream":
         array_bytes = doc["config"]["elements"] * doc["config"]["element_bytes"]
@@ -196,7 +203,7 @@ def parser() -> argparse.ArgumentParser:
         "--max-load",
         type=float,
         metavar="PER_CPU",
-        help="refuse to run when the host's 1-minute load per CPU exceeds this (HOST_BUSY)",
+        help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
     )
     s.set_defaults(func=_stream)
 
@@ -224,7 +231,16 @@ def parser() -> argparse.ArgumentParser:
         "--max-load",
         type=float,
         metavar="PER_CPU",
-        help="refuse to run when the host's 1-minute load per CPU exceeds this (HOST_BUSY)",
+        help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
+    )
+    r.add_argument(
+        "--ready",
+        type=float,
+        nargs="?",
+        const=1800.0,
+        metavar="TIMEOUT_S",
+        help="gated binary: start it without the lock, wait (default 1800 s) for its"
+        " 'autan-bench: ready' line on stderr, then take the lock and send 'go' on its stdin",
     )
     r.add_argument("binary_args", nargs=argparse.REMAINDER, help="-- then the binary's arguments")
     r.set_defaults(func=_run)

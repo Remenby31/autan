@@ -45,13 +45,26 @@ struct BoundaryStates {
   std::string sha256;  ///< its expected SHA-256
 };
 
+/// The point vortex a farfield condition adds to the freestream (case-schema.md, Boundaries).
+struct PointVortex {
+  std::vector<std::string> zones;  ///< the wall or slip zones whose lift gives the circulation
+  std::array<double, 3> center{};  ///< the vortex position (m)
+};
+
+/// The initial-state file of a case (docs/contracts/initial-state.md).
+struct InitialStateFile {
+  std::string path;    ///< absolute path of the autan.initial-state/1 file
+  std::string sha256;  ///< its expected SHA-256
+};
+
 struct BoundaryInput {
   std::string zone;
   std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
                      ///< manufactured, oracle-state
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<double> velocity;        ///< velocity-inlet: speed normal to the face (m/s)
-  std::optional<BoundaryStates> states;  ///< oracle-state only
+  std::optional<double> velocity;           ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<BoundaryStates> states;     ///< oracle-state only
+  std::optional<PointVortex> point_vortex;  ///< farfield only
 };
 
 struct Turbulence {
@@ -74,6 +87,7 @@ struct TimeInput {
   std::string kind;  ///< "steady" or "unsteady"
   std::int64_t max_iterations = 0;
   double residual_orders = 0.0;
+  std::string linear_solver;  ///< steady: "multigrid" or "gauss-seidel" (global colours)
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
@@ -105,6 +119,9 @@ struct Start {
   /// Residuals at iteration 1 of the original run, in residual_names order;
   /// set exactly for a steady `continue`.
   std::optional<std::vector<double>> residual_reference;
+  /// Equations exempt at iteration 1 that left their floor earlier in the
+  /// chain (case-schema.md#time), sorted; set exactly with residual_reference.
+  std::optional<std::vector<std::string>> woken;
 };
 
 /// A periodic pair of the mesh, as MeshInfo lists it (solver-input.md,
@@ -118,7 +135,8 @@ struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
   std::string precision;  ///< "fp32+acc64" or "fp64"
-  bool deterministic = false;
+  /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
+  std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip
   std::int64_t device_count = 1;
   std::string physics_kind;  ///< compressible, incompressible
@@ -131,6 +149,7 @@ struct SolverInput {
   /// Present for verification cases: every boundary is then "manufactured".
   std::optional<Verification> verification;
   std::optional<Start> start;
+  std::optional<InitialStateFile> initial_state;  ///< never with start
   std::vector<PeriodicInput> periodic;
 };
 

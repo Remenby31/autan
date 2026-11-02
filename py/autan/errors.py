@@ -256,6 +256,12 @@ _CODES = [
         "Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.",
     ),
     Code(
+        "E0146",
+        "Several ranks without MPI",
+        "A launcher started several ranks of a build without MPI.",
+        "Run this build on one rank, or use a build with MPI, such as the dev image.",
+    ),
+    Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "
@@ -456,6 +462,15 @@ _CODES = [
         "Remove the rule, or change the mesh if the zone is not meant to be periodic.",
     ),
     Code(
+        "E0425",
+        "Point-vortex surfaces match no wall",
+        "The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of "
+        "a periodic pair, or match zones that are not wall or slip zones: the vortex's "
+        "circulation comes from the lift on the body. Patterns with wildcards skip periodic "
+        "zones.",
+        'Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.',
+    ),
+    Code(
         "E0501",
         "Cell zone rule matches no zone",
         "The pattern of `case.cell_zone(...)` matches no cell zone of the mesh.",
@@ -502,6 +517,45 @@ _CODES = [
         "temperature.",
         "Give the state the physics needs: `autan.State(pressure=..., temperature=..., "
         "velocity=(u, v, w))`.",
+    ),
+    Code(
+        "E0508",
+        "Initial-state file missing or invalid",
+        "The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs "
+        "from the case's, or it is not a valid `autan.initial-state/1` document: its "
+        "variables, a row of 3 finite coordinates and 5 finite values per cell, density and "
+        "pressure > 0 (docs/contracts/initial-state.md).",
+        "Write the initial state with `autan.initial_state.write` for this mesh, and give "
+        "its path and the SHA-256 it returns.",
+    ),
+    Code(
+        "E0509",
+        "Initial state written for another mesh",
+        "The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.",
+        "Write the initial state for the mesh the case uses.",
+    ),
+    Code(
+        "E0510",
+        "Initial state does not cover the fluid cells",
+        "The file gives another number of rows than the mesh has fluid cells.",
+        "Write one row per fluid cell of the mesh, at its centroid.",
+    ),
+    Code(
+        "E0511",
+        "Initial states do not match the cells",
+        "The solver could not pair every fluid cell with exactly one row of the file by "
+        "centroid, within 1e-9 times the largest extent of the mesh's bounding box, or two "
+        "cells lie within that tolerance of each other; `data` names the cells.",
+        "Write the initial state from the cell centroids of the mesh the case uses.",
+    ),
+    Code(
+        "E0512",
+        "Initial-state file not available for this case",
+        "An initial-state file needs compressible inviscid or laminar physics (it carries no "
+        "turbulence variable), replaces the fluid zones' `initial` states, and cannot be "
+        "combined with a start from a previous run, which gives the initial state itself.",
+        "Remove the zones' `initial`, the start, or the file; or use a compressible inviscid "
+        "or laminar case.",
     ),
     Code(
         "E0601",
@@ -593,6 +647,16 @@ _CODES = [
         "Prepare the input again from the run as it is now.",
     ),
     Code(
+        "W0710",
+        "Exempt equation left its floor",
+        "An equation that was identically zero at iteration 1 (below 1e-12 times the largest "
+        "initial residual) rose above that floor, so it must now drop `residual_orders` like "
+        "the others (case-schema.md#time). `data` gives the equation, iteration, residual and "
+        "floor.",
+        "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry "
+        "breaks during the run usually means a boundary condition breaks it.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
@@ -675,7 +739,7 @@ _CODES = [
     Code(
         "E1013",
         "Policy not available on the backend",
-        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).",
         "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
     ),
     Code(
@@ -733,6 +797,12 @@ _CODES = [
         "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
+        "E1109",
+        "Strategy not rank-independent",
+        "A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).",
+        "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",
@@ -771,6 +841,22 @@ _CODES = [
         "The file given to `-o`/`--output` cannot be written: missing directory, a directory "
         "in its place, or no permission.",
         "Give a writable file path.",
+    ),
+    Code(
+        "E0807",
+        "No GPU device",
+        "The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA, but "
+        "the process sees no CUDA device (`data.visible`, `data.needed`).",
+        "Run on a host with a GPU visible to the process (`docker --gpus`), or use "
+        "`devices.kind = cpu`.",
+    ),
+    Code(
+        "E0808",
+        "No MPI launcher",
+        "A run on several devices starts one rank per device through an MPI launcher, found "
+        "through `$AUTAN_MPIEXEC`, or `mpiexec` then `mpirun` on the PATH.",
+        "Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set "
+        "`$AUTAN_MPIEXEC`, or run on one device.",
     ),
 ]
 

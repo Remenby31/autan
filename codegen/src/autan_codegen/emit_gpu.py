@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
 from autan_codegen.derive import ReduceAdjoint
-from autan_codegen.emit_cpp import Emitter, at, call_args
+from autan_codegen.emit_cpp import Emitter, at, call_args, incidence_loop
 from autan_codegen.emit_cpu import (
     boundary_write_body,
     cell_stores,
+    face_ends,
+    global_left,
     jacobian_lines,
     n_out,
     offsets,
@@ -39,10 +41,11 @@ def _range(lm: LoopModel) -> tuple[str, str]:
 def _face_eval(lm: LoopModel, indent: str, jac: str | None = "true") -> list[str]:
     """Loads l (and r), evaluates the body of face f into `out`, and writes the face's Jacobian
     outputs when `jac` (a C++ condition; None: never) holds."""
-    lines = [f"{indent}const index_t l = d.topo.owner[f];"]
-    if lm.kind == "face":
-        lines.append(f"{indent}const index_t r = d.topo.neighbour[f];")
-    args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"})
+    lines = face_ends(lm.kind, indent)
+    args = call_args(
+        lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"},
+        reversible=lm.kind == "face",
+    )  # fmt: skip
     lines.append(f"{indent}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
     if lm.jac_fns and jac is not None:
         if jac == "true":
@@ -190,9 +193,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
         e.w("    return;")
         e.w("  }")
         e.w(f"  A acc[{n}] = {{}};")
-        e.w(
-            "  for (offset_t k = d.topo.cell_face_offsets[c]; k < d.topo.cell_face_offsets[c + 1]; ++k) {"
-        )
+        e.w(incidence_loop("  "))
         e.w("    const index_t f = d.topo.cell_faces[k];")
         # Faces outside the loop's range (halo faces, other kind) were not evaluated.
         cond = (
@@ -212,7 +213,7 @@ def emit_face_kernels(e: Emitter, lm: LoopModel) -> None:
                     else "    out[0] = scratch[f];"
                 )
             if lm.kind == "face":
-                e.w("    const bool left = d.topo.owner[f] == c;")
+                e.w(f"    const bool left = {global_left()} == c;")
         else:
             e.w(f"    typename P::compute out[{n}];")
             for s in _face_eval(lm, "    ", "l == c"):
@@ -244,6 +245,13 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
     e.w(
         f"void {lm.name}(const Data<P>& d, const gpu::Strategy strategy, const gpu::Schedule& s) {{"
     )
+    e.w("  if (d.topo.rank_independent && strategy != ::autan::kernels::Strategy::store_gather &&")
+    e.w("      strategy != ::autan::kernels::Strategy::gather_recompute) {")
+    e.w(
+        '    throw std::invalid_argument("E1109: a rank-independent topology needs a gather '
+        'strategy (store-gather or gather-recompute)");'
+    )
+    e.w("  }")
     e.w(f"  const index_t lo = {lo};")
     e.w(f"  const index_t hi = {hi};")
     e.w(
@@ -320,7 +328,7 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     e.w("    return;")
     e.w("  }")
     if lm.kind == "cell":
-        e.w(f"  typename P::compute out[{n_out(lm)}];")
+        e.w(f"  typename P::{lm.fn.compute} out[{n_out(lm)}];")
         args = call_args(lm.sig, lm.loop.bindings, {"direct": "c"})
         e.w(f"  {lm.fn.name}<P>({', '.join([*args, 'out'])});")
         for s in jacobian_lines(lm, args, "c", "  "):

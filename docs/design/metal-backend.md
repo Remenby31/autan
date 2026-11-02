@@ -50,26 +50,24 @@ Residual norms on the device are fixed-order sums of squares in double-float, sc
 
 ## Measurements
 
-Apple M4 Pro (20 GPU cores, 48 GB unified memory), macOS 26.7.1, through `autan-bench run` (GPU idle before the run, lock held), clean trees. Meshes: V&V families renumbered by `autan::rcm_order`; tet n=96 (3.93 M cells, the mesh of the GB10 spike: same SHA-256) and hex n=128 (2.10 M cells); loop footprints 0.32–0.81 GB. Medians of 30 samples of 5 launches (STREAM: 100), GPU time of each command buffer. Two sessions: A, solver commit `39528f2`, a quiet machine; B, commit `df59dd4` (same kernels; mesh and case hashes recorded), with other jobs keeping the host's load average near 190. On unified memory the CPU competes for the same DRAM, and the GPU idle check cannot see it: every peak and loop of session B is about 20 % slower, and percentages are taken within a session. Results: `codegen/spike/results/metal/bench/` (B) and `…/bench/39528f2/` (A); table: `python codegen/bench/metal_summarize.py stream.json RESULTS...`.
+A dev-machine measurement, not a CI reference: Apple M4 Pro (20 GPU cores, 48 GB unified memory), macOS 26.7.1, solver commit `ce679f3` (clean tree), through `autan-bench run --max-load 1` (host load 3–9 on 14 CPUs; GPU idle before each run). On unified memory the CPU competes for the same DRAM and the GPU idle check cannot see it, hence the load limit: an earlier session under a load average near 190 ran every peak and loop about 20 % slower. Meshes: V&V families renumbered by `autan::rcm_order`; tet n=96 (3.93 M cells, the mesh of the GB10 spike: same SHA-256) and hex n=128 (2.10 M cells). Medians of 30 samples of 5 launches, GPU time of each command buffer. Results: `codegen/spike/results/metal/bench/ce679f3/`; table: `python codegen/bench/metal_summarize.py stream-pooled.json RESULTS...`. Earlier sessions, before geometry was stored in the compute type: `…/bench/` and `…/bench/39528f2/`.
 
-**Peak.** `autan_metal_stream`, FP32 arrays of 1 GiB, float4 accesses, before the loops. Session A: copy 202.9 GB/s (IQR 200.5–205.1, CV 1.7 %), read 238.5 GB/s (IQR 234.9–243.0, CV 2.3 %), triad 207.9. Session B: copy 169.5 (CV 1.2 %), read 186.8 (CV 3.5 %), triad 171.2. A second STREAM after the loops: copy 190.3 / read 239.9 (A), 173.4 / 191.2 (B). Apple's nominal figure is 273 GB/s.
+**Peak.** `autan_metal_stream`, FP32 arrays of 1 GiB, float4 accesses; five runs spread over the session (three before the loops, two after), pooled (500 samples): copy 199.6 GB/s (IQR 196.5–202.7, CV 2.2 %), read 240.3 GB/s (IQR 236.6–243.4, CV 2.4 %), triad 207.0. Run medians: copy 195.5–204.5, read 238.0–245.5. Apple's nominal figure is 273 GB/s.
 
-**Reference of the gate.** Apple GPUs read faster than they copy, and the loops mostly read: atomic advection reaches 115 % of the copy peak. Each loop is therefore measured against its own mix: a read byte costs 1/B_r, a written byte 1/B_w = 2/B_c − 1/B_r (copy moves one of each), and a loop reading R and writing W bytes has the reference (R + W) / (R/B_r + W/B_w), set mostly by the read peak. Bytes are the analytic minimum of [kernel-generator-spike.md](kernel-generator-spike.md#bandwidth); W is the residual (advection) or the gradient and bounds (LSQ).
+**Reference of the gate.** Apple GPUs read faster than they copy, and the loops mostly read: atomic advection reaches 119 % of the copy peak. Each loop is therefore measured against its own mix: a read byte costs 1/B_r, a written byte 1/B_w = 2/B_c − 1/B_r (copy moves one of each), and a loop reading R and writing W bytes has the reference (R + W) / (R/B_r + W/B_w), set mostly by the read peak. Bytes are the analytic minimum of [kernel-generator-spike.md](kernel-generator-spike.md#bandwidth), with each dataset at its stored size; W is the residual (advection) or the gradient and bounds (LSQ).
 
-| Loop | Mesh | Policy | Best strategy | % reference A | % reference B | ns/cell A | ns/cell B |
+| Loop | Mesh | Policy | Best strategy | GB/s | % reference | % copy | ns/cell |
 |---|---|---|---|---|---|---|---|
-| advection | tet | fp32 | atomic | 99 % | 103 % | 0.51 | 0.62 |
-| advection | tet | fp32+acc64 | store-gather | 79 % | 79 % | 1.11 | 1.41 |
-| advection | hex | fp32 | atomic / warp-aggregated | 99 % | 107 % | 0.71 | 0.84 |
-| advection | hex | fp32+acc64 | store-gather | 79 % | 85 % | 1.57 | 1.87 |
-| LSQ + bounds | tet | fp32 | — | 95 % | 99 % | 0.52 | 0.63 |
-| LSQ + bounds | tet | fp32+acc64 | — | 87 % | 91 % | 0.81 | 0.97 |
-| LSQ + bounds | hex | fp32 | — | 79 % | 89 % | 0.85 | 0.94 |
-| LSQ + bounds | hex | fp32+acc64 | — | **55 %** | **67 %** | 1.78 | 1.83 |
+| advection | tet | fp32 | warp-aggregated | 238.2 | 100 % | 119 % | 0.50 |
+| advection | tet | fp32+acc64 | store-gather | 162.7 | 69 % | 81 % | 0.78 |
+| advection | hex | fp32 | warp-aggregated | 236.5 | 99 % | 119 % | 0.71 |
+| advection | hex | fp32+acc64 | gather-recompute | 165.9 | 70 % | 83 % | 1.05 |
+| LSQ + bounds | tet | fp32 | — | 209.2 | 93 % | 105 % | 0.54 |
+| LSQ + bounds | tet | fp32+acc64 | — | 218.1 | 97 % | 109 % | 0.51 |
+| LSQ + bounds | hex | fp32 | — | 182.2 | 80 % | 91 % | 0.83 |
+| LSQ + bounds | hex | fp32+acc64 | — | 212.4 | 93 % | 106 % | 0.72 |
 
-Deterministic strategies in `fp32`: store-gather 70–75 %, gather-recompute 62–80 %; global colouring 18–20 %, as on GB10. In `fp32+acc64`, store-gather is the fastest strategy: its scratch holds the faces' FP32 values (exact: they are body outputs) and the gather sums them in double-float; gather-recompute (52–71 %) pays the double-float sums of every face twice.
-
-LSQ on hex in `fp32+acc64` misses the gate in both sessions, and its time barely moves when the peak drops by 20 %: it is bound by latency, not bandwidth. Two manual experiments on the generated kernel (edits of the generated header, not kept in the repository) point at the 8-byte read of `lsq_weight` per incidence (six per cell), not at the double-float arithmetic: with its sums replaced by float sums, the time did not change; with the weights read as float, it fell from 1.80 to 0.76 ns/cell. The same loop is at 72 % on GB10. The fix belongs to the generator: geometry that bodies only convert to the compute type is stored in it, with values identical to the CPU `fp32+acc64` loops ([Open items](#open-items)).
+Geometry that bodies only convert to FP32 is stored in FP32 (kernel-generator.md, Precision). That made LSQ on hex in `fp32+acc64` 2.5 times faster (1.78 → 0.72 ns/cell): its 8-byte weight per incidence, read six times per cell, had kept it latency-bound at 55–67 % of the reference. Advection in `fp32+acc64` became 30 % faster too (tet 1.11 → 0.78, hex 1.57 → 1.05 ns/cell), but its percentage fell from 79 % to 69–70 %: its analytic bytes fell more than its time. Without 64-bit atomics on Metal, its fastest strategies are the deterministic ones, which move bytes the minimum does not count: store-gather writes and reads a scratch value per face, and both gathers read `owner[f]` per incidence to sign the flux. In `fp32` the same deterministic strategies are at 68–71 %; global colouring is at 17–19 %, as on GB10.
 
 **MMS.** `spike/mms_study.py` with the residual evaluated by the Metal loops (gather-recompute), V&V families at levels 8, 12, 16, 24, unperturbed: fitted L2 order / finest pair, identical in `fp32` and `fp32+acc64` and to the CPU orders of the spike. Per-level errors with mesh hash, case hash, commit (`df59dd4`) and precision: `codegen/spike/results/metal/mms/`.
 
@@ -88,8 +86,8 @@ CI: `.github/workflows/metal.yml` on GitHub's `macos-26` arm64 runner builds the
 
 ## Open items
 
-- **LSQ on hex in `fp32+acc64` at 55–67 % of the reference.** Geometry read only through conversion to the compute type will be stored in it (CFD - Générateur kernels); re-measure then.
-- **autan-bench on macOS.** The results above ran with the busy-sample fix of PR #107 (Apple's IO-registry utilisation stays at 3–18 % under a saturating load). Host load is not recorded yet, though it shares the DRAM (session B); proposed to CFD - HPC Spark.
+- **Advection in `fp32+acc64` at 69–70 % of the reference** (81–83 % of copy), recorded as measured, with no 64-bit atomics on Metal. The M1b gate (≥ 70 % of the reference) is not met: tet store-gather reaches 69 %, so #21 stays open until #178 closes the gap. The gathers read `owner[f]` per incidence to sign each face's value, 8 bytes per face the minimum does not count; encoding the side otherwise would change the topology contract (see the follow-up issue).
+- **autan-bench on macOS.** Runs record the host load and `--max-load` refuses a busy host (#121); `autan-bench baseline` refuses Metal runs for lack of a container image digest, so the pooled peak above is computed with autan-bench's statistics directly.
 - **Shader compilation.** Libraries compile from source at first use (4 s for the spike modules, then the system cache); a precompiled `.metallib` (Metal Toolchain) is an option for packaged wheels.
 - **Hierarchical colouring and SIMD-group transposition** are not emitted, as on CUDA.
 - **Euler physics on Metal.** Only the test runs the Euler loops on Metal. A Metal physics path must take its gradient weights from `Euler<P>::gradient_weights()` and refresh them after every `set_boundary()`: they depend on the boundary kinds.

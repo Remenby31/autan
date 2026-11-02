@@ -1,0 +1,72 @@
+{
+  "schema": "autan.mesh-info/1",
+  "source": {
+    "path": "tests/data/mesh/hybrid/hybrid.fluent.msh",
+    "format": "fluent",
+    "sha256": "9d5bc24ece8f3553b311b0c9ff372fe768194906dd836ed6938bd8aecaa06300"
+  },
+  "counts": {
+    "cells": 216,
+    "faces": 564,
+    "nodes": 133,
+    "cells_by_type": {
+      "tetra": 96,
+      "pyramid": 48,
+      "prism": 64,
+      "hexa": 8,
+      "polyhedron": 0
+    }
+  },
+  "boundary_zones": [
+    {
+      "name": "xmin",
+      "type": "outlet",
+      "native_type": "pressure-outlet",
+      "faces": 24
+    },
+    {
+      "name": "xmax",
+      "type": "outlet",
+      "native_type": "pressure-outlet",
+      "faces": 24
+    },
+    {
+      "name": "ymin",
+      "type": "wall",
+      "native_type": "wall",
+      "faces": 20
+    },
+    {
+      "name": "ymax",
+      "type": "outlet",
+      "native_type": "pressure-outlet",
+      "faces": 20
+    },
+    {
+      "name": "zmin",
+      "type": "outlet",
+      "native_type": "pressure-outlet",
+      "faces": 24
+    },
+    {
+      "name": "zmax",
+      "type": "symmetry",
+      "native_type": "symmetry",
+      "faces": 24
+    }
+  ],
+  "cell_zones": [
+    {
+      "name": "fluid-1",
+      "type": "fluid",
+      "native_type": "fluid",
+      "cells": 216
+    }
+  ],
+  "interfaces": [],
+  "periodic": [],
+  "quality": {
+    "max_non_orthogonality_deg": 36.6992252004899,
+    "max_faces_per_cell": 6
+  }
+}

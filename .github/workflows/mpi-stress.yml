@@ -1,0 +1,99 @@
+name: MPI stress
+
+# Reproduces an intermittent multi-rank hang (#304) where it was seen: on a hosted runner, built
+# and configured as ci.yml's "MPI ranks" job. Each run of the selected tests is watched by
+# bench/ci/ctest-watchdog.sh: past 120 s, every rank's stacks are dumped and the run is killed.
+# Manual only; never on pull requests.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs of the selected tests (1 to 500)
+        type: number
+        default: 50
+      tests:
+        description: CTest name regex, among the tests labelled mpi
+        type: string
+        default: "^Several ranks give the bits of one$"
+
+permissions: {}
+
+jobs:
+  stress:
+    name: MPI stress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    # As in ci.yml's "MPI ranks" job: the failure's own environment.
+    env:
+      OMPI_MCA_pml: ob1
+      OMPI_MCA_btl: self,sm
+      OMPI_MCA_osc: ^ucx
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          micromamba-version: 2.3.3-0
+          environment-name: mpi
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2 openmpi=5.0.11 metis=5.2.1
+          init-shell: none
+          cache-downloads: false
+          cache-environment: false
+      - name: Put the environment's tools on the PATH
+        run: echo "${MAMBA_ROOT_PREFIX}/envs/mpi/bin" >> "${GITHUB_PATH}"
+      - name: Configure with MPI and METIS
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/mpi"
+          -DCMAKE_BUILD_TYPE=Release -DAUTAN_WARNINGS_AS_ERRORS=ON
+          -DAUTAN_ENABLE_MPI=ON -DAUTAN_ENABLE_METIS=ON -DMPIEXEC_PREFLAGS=--oversubscribe
+      - name: Build
+        run: cmake --build build
+      - name: Install gdb for the hang watchdog
+        timeout-minutes: 5
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends gdb
+      - name: Run the selected tests again and again
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+          RUNS: ${{ inputs.runs }}
+          TESTS: ${{ inputs.tests }}
+        run: |
+          set +e
+          if ! [[ $RUNS =~ ^[1-9][0-9]*$ ]] || ((RUNS > 500)); then
+            echo "::error::runs must be an integer from 1 to 500, not $RUNS"; exit 1
+          fi
+          out=$RUNNER_TEMP/mpi-stress
+          mkdir -p "$out"
+          n=$(ctest --test-dir build -N -L mpi -R "$TESTS" | sed -n 's/^Total Tests: //p')
+          [ "${n:-0}" -ge 1 ] || { echo "::error::no test labelled mpi matches $TESTS"; exit 1; }
+          # No new run past 240 min: a last run that hangs (120 s, then its dump) and the upload
+          # still fit in the job's 300 min, so the totals below are always written.
+          hangs=0 failures=0 done=0
+          for i in $(seq 1 "$RUNS"); do
+            if ((SECONDS > 240 * 60)); then
+              echo "::warning::stopped after $done of $RUNS runs: 240 min reached"; break
+            fi
+            bench/ci/ctest-watchdog.sh 120 "$out/stacks-$i" -- \
+              ctest --test-dir build -L mpi -R "$TESTS" --output-on-failure >"$out/run-$i.log" 2>&1
+            status=$?
+            if [ -n "$(ls -A "$out/stacks-$i")" ]; then
+              hangs=$((hangs + 1)); echo "::error::run $i of $RUNS hung"; cat "$out/run-$i.log"
+            elif [ "$status" -ne 0 ]; then
+              failures=$((failures + 1)); echo "::error::run $i of $RUNS failed ($status)"; cat "$out/run-$i.log"
+            else
+              rm -rf "$out/stacks-$i"
+              echo "run $i of $RUNS passed"
+            fi
+            done=$i
+          done
+          echo "### MPI stress: $hangs hung, $failures failed, of $done runs ($RUNS requested) of \`$TESTS\` ($n tests)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$hangs" -eq 0 ] && [ "$failures" -eq 0 ] && [ "$done" -eq "$RUNS" ]
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mpi-stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mpi-stress/
+          if-no-files-found: ignore

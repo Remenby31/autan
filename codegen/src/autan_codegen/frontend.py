@@ -49,6 +49,8 @@ INTRINSIC_ARITY = {
     "abs": 1,
     "norm": 1,
     "transpose": 1,
+    "inverse": 1,
+    "identity": 1,
     "dot": 2,
     "cross": 2,
     "outer": 2,
@@ -66,6 +68,8 @@ INTRINSICS = UNARY_MATH | {
     "Vec3",
     "Vec5",
     "transpose",
+    "inverse",
+    "identity",
     "outer",
     "abs",
     "min",
@@ -326,6 +330,11 @@ class _Builder:
     def call(self, fname: str, args: list[Val]) -> Val:
         g = self.globals.get(fname, getattr(builtins, fname, None))
         if isinstance(g, dsl.Body):
+            if g.compute != self.fn.compute:
+                raise self.err(
+                    Code.TYPE_MISMATCH,
+                    f"{fname} computes in {g.compute!r}, its caller in {self.fn.compute!r}",
+                )
             return inline(g, args, self)
         if fname not in INTRINSICS or not (
             g is dsl._intrinsic or g is getattr(builtins, fname, None)
@@ -346,10 +355,7 @@ class _Builder:
             return Real(self.emit(fname, self.real(x)))
         if fname == "abs":
             (x,) = args
-            # abs(x) = x if x >= 0 else -x: slope +1 at 0 (selected-branch convention).
-            xv = self.real(x)
-            zero = self.emit("const", attr=0.0)
-            return Real(self.emit("select", self.emit("ge", xv, zero), xv, self.emit("neg", xv)))
+            return self._abs(self.real(x))
         if fname in ("min", "max"):
             if len(args) != 2:
                 raise self.err(Code.TYPE_MISMATCH, f"{fname} takes two arguments")
@@ -407,10 +413,69 @@ class _Builder:
                 raise self.err(Code.TYPE_MISMATCH, "transpose takes a matrix")
             n, m = a.shape
             return Arr(tuple(a.ids[i * m + j] for j in range(m) for i in range(n)), (m, n))
+        if fname == "identity":
+            (n,) = args
+            if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+                raise self.err(Code.TYPE_MISMATCH, "identity takes a constant size")
+            one, zero = self.real(1.0), self.real(0.0)
+            return Arr(tuple(one if i == j else zero for i in range(n) for j in range(n)), (n, n))
+        if fname == "inverse":
+            (a,) = args
+            if not (isinstance(a, Arr) and len(a.shape) == 2 and a.shape[0] == a.shape[1]):
+                raise self.err(Code.TYPE_MISMATCH, "inverse takes a square matrix")
+            return self.inverse(a)
         if fname == "rel":
             a, b = args
             return self.rel(a, b)
         raise self.err(Code.UNSUPPORTED_CONSTRUCT, f"{fname} is not usable here")
+
+    def _abs(self, x: int) -> Real:
+        # abs(x) = x if x >= 0 else -x: slope +1 at 0 (selected-branch convention).
+        zero = self.emit("const", attr=0.0)
+        return Real(self.emit("select", self.emit("ge", x, zero), x, self.emit("neg", x)))
+
+    def inverse(self, a: Arr) -> Arr:
+        # Gauss-Jordan on [A | I] with partial pivoting, in the operation order of invert5
+        # (physics/src/block_matrix.cpp); row swaps become selects. A zero or non-finite pivot
+        # makes the scale factor NaN, so every entry of the result is NaN.
+        n = a.shape[0]
+        m: list[list[Val]] = [
+            [Real(a.ids[i * n + j]) for j in range(n)] + [1.0 if i == j else 0.0 for j in range(n)]
+            for i in range(n)
+        ]
+        zero = self.emit("const", attr=0.0)
+        nan = self.emit("div", zero, zero)
+        for k in range(n):
+            mag = [self._abs(self.real(m[i][k])) for i in range(n)]
+            best, picks = mag[k], []
+            for i in range(k + 1, n):
+                c = self.emit("gt", self.real(mag[i]), self.real(best))
+                best = self.select(c, mag[i], best)
+                picks.append((i, c))
+            # Row i is the pivot row if it beat every earlier candidate and no later one beat it.
+            is_pivot: dict[int, int] = {}
+            later: int | None = None
+            for i, c in reversed(picks):
+                is_pivot[i] = c if later is None else self.emit("and", c, self.emit("not", later))
+                later = c if later is None else self.emit("or", c, later)
+            row_k = m[k]
+            for i, _ in picks:
+                m[k] = [self.select(is_pivot[i], x, y) for x, y in zip(m[i], m[k], strict=True)]
+                m[i] = [self.select(is_pivot[i], x, y) for x, y in zip(row_k, m[i], strict=True)]
+            pivot = self.real(m[k][k])
+            size = self.real(best)
+            finite = self.emit("ge", self.emit("sub", size, size), zero)
+            regular = self.emit("and", self.emit("gt", size, zero), finite)
+            d = Real(self.emit("select", regular, self.emit("div", self.real(1.0), pivot), nan))
+            m[k] = [self.binop("mul", x, d) for x in m[k]]
+            for i in range(n):
+                if i != k:
+                    f = m[i][k]
+                    m[i] = [
+                        self.binop("sub", x, self.binop("mul", f, y))
+                        for x, y in zip(m[i], m[k], strict=True)
+                    ]
+        return Arr(tuple(self.real(m[i][n + j]) for i in range(n) for j in range(n)), (n, n))
 
     def _minmax(self, fname: str, a: int, b: int) -> int:
         # min(a, b) = a if a <= b else b; ties select the first argument.
@@ -572,7 +637,13 @@ def parse(body: dsl.Body) -> tuple[Function, Signature]:
     """Parse `body` into an optimised IR function; inputs follow the argument order."""
     sig = signature(body)
     fdef, line0 = _parse_def(body)
-    fn = Function(body.name, sig.names, [t.size for t in sig.types], source=body.source_file)
+    fn = Function(
+        body.name,
+        sig.names,
+        [t.size for t in sig.types],
+        source=body.source_file,
+        compute=body.compute,
+    )
     b = _Builder(fn, body, line0)
     env: dict[str, Val] = {}
     for k, (name, t) in enumerate(zip(sig.names, sig.types, strict=True)):

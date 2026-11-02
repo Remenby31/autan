@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +17,8 @@ from autan_codegen.dsl import (
     State,
     cells,
     dot,
+    identity,
+    inverse,
     outer,
     pointwise,
     rel,
@@ -23,8 +26,11 @@ from autan_codegen.dsl import (
 )
 from autan_codegen.errors import CodegenError
 from autan_codegen.frontend import parse
+from autan_codegen.generate import generate
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from autan_codegen.ir import Function
 from autan_codegen.model import build_loop
 
@@ -150,6 +156,26 @@ def calls_python(x: State) -> State:
     return round(x)
 
 
+@pointwise(compute="accum")
+def accum_helper(x: State) -> State:
+    return x
+
+
+@pointwise
+def calls_accum_helper(x: State) -> State:
+    return accum_helper(x)
+
+
+@pointwise
+def identity_of_a_value(x: State) -> Grad.Mat3:
+    return identity(x)
+
+
+@pointwise
+def inverse_of_a_rectangle(m: Grad.Mat53) -> Grad.Mat53:
+    return inverse(m)
+
+
 @pointwise
 def guarded_sqrt(x: State) -> State:
     return sqrt(x) if x > 0.0 else x
@@ -173,6 +199,9 @@ def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
         (one_sided, "E1005"),
         (rel_after_arithmetic, "E1007"),
         (calls_python, "E1001"),
+        (inverse_of_a_rectangle, "E1006"),
+        (identity_of_a_value, "E1006"),
+        (calls_accum_helper, "E1006"),
     ],
 )
 def test_unsupported_constructs_are_rejected_with_a_code_and_line(
@@ -199,6 +228,16 @@ def in_place(x: Residual) -> Residual:
     return 2.0 * x
 
 
+@pointwise
+def block_value(b: dsl.Jac) -> Residual:
+    return b
+
+
+@pointwise(compute="accum")
+def scaled_in_accum(x: Geom) -> Residual:
+    return 2.0 * x
+
+
 def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.face_loop(flux, ql=q.left, out=dsl.Inc(r, left=1, right=-1)))
@@ -214,6 +253,21 @@ def test_loop_declarations_are_checked() -> None:
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.cell_loop(in_place, x=r, out=dsl.Write(r)))
     assert info.value.code == "E1003"
+    # A body computing in the accumulation type reads blocks and parameters only: no
+    # derivatives, no geometry rounded to the compute type.
+    for x in (q, cells.field("volume", Geom)):
+        with pytest.raises(CodegenError) as info:
+            build_loop("bad", dsl.cell_loop(scaled_in_accum, x=x, out=dsl.Write(r)))
+        assert info.value.code == "E1003"
+    # near and far take a half of a (2, ...) face dataset, in incidence reductions only.
+    single, pair = dsl.faces.field("single", dsl.Jac), dsl.faces.field("pair", dsl.Jac.shape(2))
+    for loop in (
+        lambda: dsl.cell_reduce(block_value, b=single.near, acc=dsl.Sum(r)),
+        lambda: dsl.face_loop(block_value, b=pair.far, out=dsl.Inc(r, left=1, right=-1)),
+    ):
+        with pytest.raises(CodegenError) as info:
+            build_loop("bad", loop())
+        assert info.value.code == "E1003"
 
 
 @pointwise
@@ -275,6 +329,11 @@ u5 = cells.field("u5", State.Vec5)
 r5 = cells.field("r5", Residual.Vec5)
 
 
+@pointwise
+def apply_block(a: dsl.JacAccum.Mat5, v: State.Vec5) -> Residual.Vec5:
+    return a @ v
+
+
 def test_jacobian_outputs_are_checked_against_the_body() -> None:
     good = dsl.faces.field("good", dsl.Jac.shape(2, 5, 5))
     out = [dsl.Inc(r5, left=1, right=-1), dsl.Jacobian(good, wrt=("ql", "qr"))]
@@ -298,6 +357,17 @@ def test_jacobian_outputs_are_checked_against_the_body() -> None:
                 ),
             )
         assert info.value.code == code, dataset.name
+    # Blocks are passive: no Jacobian with respect to a block dataset.
+    blocks = dsl.cells.field("blocks", dsl.JacAccum.Mat5)
+    sink = dsl.cells.field("sink", dsl.Jac.shape(5, 25))
+    with pytest.raises(CodegenError) as info:
+        build_loop(
+            "passive",
+            dsl.cell_loop(
+                apply_block, a=blocks, v=u5, out=[dsl.Write(r5), dsl.Jacobian(sink, wrt="a")]
+            ),
+        )
+    assert info.value.code == "E1003"
     out = [
         dsl.Inc(r5, left=1, right=-1),
         dsl.Jacobian(good, wrt="ql"),
@@ -325,3 +395,67 @@ def test_jacobian_columns_are_the_partial_derivatives() -> None:
     a, b = np.array(ql), np.array(qr)
     np.testing.assert_allclose(got[0], 2.0 * np.outer(b, a) + 2.0 * np.eye(5), rtol=1e-15)
     np.testing.assert_allclose(got[1], (a @ a) * np.eye(5), rtol=1e-15)
+
+
+SHADOWED_ABS = """
+from autan_codegen.dsl import JacAccum, inverse, pointwise
+
+
+@pointwise
+def abs(x: JacAccum) -> JacAccum:
+    return x
+
+
+@pointwise
+def invert(a: JacAccum.Mat5) -> JacAccum.Mat5:
+    return inverse(a)
+"""
+
+
+def test_inverse_pivots_on_magnitudes_whatever_the_module_calls_abs(tmp_path: Path) -> None:
+    src = tmp_path / "shadowed.py"
+    src.write_text(SHADOWED_ABS)
+    spec = importlib.util.spec_from_file_location("shadowed", src)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    fn, _ = parse(module.invert)
+    a = -np.eye(5)
+    a[4, 0] = 3.0  # pivoting on column 0 swaps rows 0 and 4
+    with np.errstate(invalid="ignore"):  # the NaN constant of the singular branch
+        got = run(fn, tuple(a.ravel()))
+    np.testing.assert_allclose(got, np.linalg.inv(a).ravel())
+
+
+ENTRIES_OF_ACTIVE_DATA = """
+from autan_codegen.dsl import Jac, Residual, State, Sum, Write, cell_reduce, cells, incidences
+from autan_codegen.dsl import pointwise
+
+q = cells.field("q", State)
+r = cells.field("r", Residual)
+e = incidences.field("e", Jac)
+
+
+@pointwise
+def term(qo: State) -> tuple[Residual, Jac]:
+    return qo, 2.0 * qo
+
+
+bad = cell_reduce(term, qo=q.other(None), acc=Sum(r), entries=Write(e))
+"""
+
+
+def test_per_entry_outputs_go_to_the_entries_and_take_no_active_input(tmp_path: Path) -> None:
+    # One value per entry, written once by its cell: a dataset of the iterated set, and no
+    # derivatives to transpose (the adjoint of a per-entry write is not generated).
+    with pytest.raises(CodegenError) as info:
+        dsl.cell_reduce(
+            block_value, b=dsl.faces.field("f", dsl.Jac), acc=dsl.Sum(r), entries=dsl.Write(r)
+        )
+    assert info.value.code == "E1004"
+    src = tmp_path / "entries.py"
+    src.write_text(ENTRIES_OF_ACTIVE_DATA)
+    with pytest.raises(CodegenError) as info:
+        generate(src, tmp_path / "gen", ["cpu"])
+    assert info.value.code == "E1012"

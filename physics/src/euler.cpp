@@ -40,6 +40,44 @@ struct Euler<P>::Impl {
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
+  GhostFill* ghosts = nullptr;
+
+  // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
+  // The exchange takes at most 16 components a call.
+  template <class T>
+  void fill_ghosts(std::vector<T>& v, std::size_t n) const {
+    if (ghosts == nullptr) return;
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    for (std::size_t first = 0; first < n; first += 16) {
+      const std::size_t count = std::min<std::size_t>(16, n - first);
+      std::array<T*, 16> components{};
+      for (std::size_t k = 0; k < count; ++k) components[k] = v.data() + (first + k) * nc;
+      ghosts->forward(std::span<T* const>(components.data(), count));
+    }
+  }
+
+  // The loops before the faces: primitives (and their Jacobian dW/dU, which the coupling blocks
+  // of faces to ghost cells take), boundary states, gradients and limiter of the owned cells,
+  // each filled into the ghosts before a later loop or the assembly reads it there.
+  void cell_loops(bool jacobian) {
+    if (jacobian) {
+      ek::cpu::primitives_jacobian(d);
+      fill_ghosts(dwdu, 25);
+    } else {
+      ek::cpu::primitives(d);
+    }
+    fill_ghosts(prim, 5);
+    ek::cpu::boundary_states(d);
+    if (scheme.second_order) {
+      ek::cpu::gradients(d);
+      fill_ghosts(grad, 15);
+      if (scheme.limiter) {
+        ek::cpu::limiter(d);
+        fill_ghosts(phi, 5);
+      }
+    }
+    ek::cpu::sources(d);
+  }
 
   template <class T, class Source>
   static void fill(std::vector<T>& to, const Source& from) {
@@ -278,6 +316,20 @@ void Euler<P>::set_boundary(std::span<const BoundaryKind> kind, std::span<const 
 }
 
 template <class P>
+void Euler<P>::set_boundary_data(std::span<const double> data) {
+  auto& m = *impl_;
+  const auto nb = static_cast<std::size_t>(n_boundary_faces());
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  if (data.size() != 5 * nb) {
+    throw std::invalid_argument("boundary data does not match the boundary faces");
+  }
+  for (std::size_t b = 0; b < nb; ++b) {
+    for (std::size_t c = 0; c < 5; ++c) m.bc[c * nf + ni + b] = State(data[c * nb + b]);
+  }
+}
+
+template <class P>
 std::vector<double> Euler<P>::gradient_weights() const {
   const auto& w = impl_->stencil_lsq_weight;
   return {w.begin(), w.end()};
@@ -320,15 +372,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   auto& m = *impl_;
   m.d.u = const_cast<State*>(u.data());
   m.d.res = res.data();
-  ek::cpu::primitives(m.d);
-  ek::cpu::boundary_states(m.d);
-  if (m.scheme.second_order) {
-    ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
-      ek::cpu::limiter(m.d);
-    }
-  }
-  ek::cpu::sources(m.d);
+  m.cell_loops(false);
   m.faces();
 }
 
@@ -348,15 +392,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
   }
   m.d.u = const_cast<State*>(s.data());
   m.d.res = res.data();
-  ek::cpu::primitives_jacobian(m.d);
-  ek::cpu::boundary_states(m.d);
-  if (m.scheme.second_order) {
-    ek::cpu::gradients(m.d);
-    if (m.scheme.limiter) {
-      ek::cpu::limiter(m.d);
-    }
-  }
-  ek::cpu::sources(m.d);
+  m.cell_loops(true);
   m.faces_jacobian();
 }
 
@@ -386,26 +422,28 @@ void Euler<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
     }
   };
   a.zero();
+  // Each diagonal block gathers its cell's faces in Topology::cell_faces order, as the device
+  // gather does, so that both sum in the same order (R_o += F, R_n -= F).
   for (std::size_t c = 0; c < nc; ++c) {
     double* dg = a.diagonal(c);
     for (std::size_t i = 0; i < 5; ++i) dg[6 * i] += shift[c];
+    const auto dc = block(m.dwdu, nc, c, 0);
+    for (auto k = m.topo.cell_face_offsets[c]; k < m.topo.cell_face_offsets[c + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(m.topo.cell_faces[k]);
+      if (f >= ni) {
+        add_product(dg, block(m.bnd_jac, nf, f, 0), dc, 1.0);
+      } else if (static_cast<std::size_t>(m.topo.owner[f]) == c) {
+        add_product(dg, block(m.face_jac, nf, f, 0), dc, 1.0);
+      } else {
+        add_product(dg, block(m.face_jac, nf, f, 1), dc, -1.0);
+      }
+    }
   }
   for (std::size_t f = 0; f < ni; ++f) {
     const auto o = static_cast<std::size_t>(m.topo.owner[f]);
     const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
-    const auto jl = block(m.face_jac, nf, f, 0);
-    const auto jr = block(m.face_jac, nf, f, 1);
-    const auto dl = block(m.dwdu, nc, o, 0);
-    const auto dr = block(m.dwdu, nc, n, 0);
-    // R_o += F, R_n -= F.
-    add_product(a.diagonal(o), jl, dl, 1.0);
-    add_product(a.upper(f), jr, dr, 1.0);
-    add_product(a.lower(f), jl, dl, -1.0);
-    add_product(a.diagonal(n), jr, dr, -1.0);
-  }
-  for (std::size_t f = ni; f < nf; ++f) {
-    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
-    add_product(a.diagonal(o), block(m.bnd_jac, nf, f, 0), block(m.dwdu, nc, o, 0), 1.0);
+    add_product(a.upper(f), block(m.face_jac, nf, f, 1), block(m.dwdu, nc, n, 0), 1.0);
+    add_product(a.lower(f), block(m.face_jac, nf, f, 0), block(m.dwdu, nc, o, 0), -1.0);
   }
 }
 
@@ -431,6 +469,26 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
   m.d = d;
   m.faces_tangent();
   m.d = saved;
+}
+
+template <class P>
+const kernels::euler::Data<P>& Euler<P>::data() const {
+  return impl_->d;
+}
+
+template <class P>
+const kernels::CellStencil& Euler<P>::stencil() const {
+  return impl_->stencil;
+}
+
+template <class P>
+const Scheme& Euler<P>::scheme() const {
+  return impl_->scheme;
+}
+
+template <class P>
+void Euler<P>::set_ghosts(GhostFill* ghosts) noexcept {
+  impl_->ghosts = ghosts;
 }
 
 template <class P>

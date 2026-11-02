@@ -12,7 +12,7 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
   history.jsonl    one line per recorded iteration, appended during the run
   log.jsonl        one line per event, appended during the run (see Log)
   manufactured.json  verification runs only: the manufactured solution, byte for byte
-  states/          one <sha256>.json per face-state file of an oracle-state condition, byte for byte
+  states/          one <sha256>.json per face-state file of an oracle-state condition and for the initial-state file, byte for byte
   solution.cgns    solution (CGNS/HDF5), written when the run ends
 ```
 
@@ -32,13 +32,16 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
   "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
   "precision": "fp32+acc64",
-  "deterministic": true,
   "devices": {"kind": "cpu", "count": 1},
   "started": "2026-10-31T21:40:12Z",
   "finished": "2026-10-31T21:54:40Z",
   "iterations": 3000,
   "time": null,
   "averaging": null,
+  "start": null,
+  "convergence": null,
+  "monitors": {"forces": {"iteration": 3000, "fx": 1.2e4, "fy": 0.0, "fz": 9.8e4, "mx": 0.0, "my": -3.1e4, "mz": 0.0, "cl": 2.04, "cd": 0.31, "cs": 0.0, "cmx": 0.0, "cmy": -0.4, "cmz": 0.0}},
+  "timing": {"wall_seconds": 868.2, "solve_seconds": 851.7, "iterations": 3000, "ns_per_cell_iteration": 5.9},
   "diagnostics": []
 }
 ```
@@ -46,23 +49,42 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | Field | Meaning |
 |---|---|
 | `run_id` | Unique name of this execution and of its directory: `run-`, `started` as `YYYYMMDDThhmmssZ`, `-`, 8 random lowercase hex characters. |
-| `identity` | What the run computes: SHA-256 of `case.sha256`, `mesh.sha256`, `solver.commit`, `precision`, `solver.backend`, `devices.kind`, `devices.count` and, for a run with a `start`, `start.identity`, `start.mode`, `start.iterations`, `start.solution_sha256`, joined by `\n`, UTF-8. |
-| `status` | `running` · `converged` (convergence criterion met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
+| `identity` | What the run computes: the SHA-256 of the fields of [Identity](#identity). |
+| `status` | `running` · `converged` (convergence criterion of [case-schema.md](case-schema.md#time) met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
 | `precision` | Precision as run, from the case. |
-| `deterministic` | Whether the run used the bitwise-deterministic mode. |
-| `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`. |
+| `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`, the number of ranks ([solver-input.md](solver-input.md)). |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
 | `time` | Physical time reached in seconds (unsteady), `null` (steady). |
 | `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}`: the interval actually averaged by an unsteady run with `average_from`, once at least one step past `average_from` is done; a continued run averages from the original `average_from`. |
-| `start` | `null`, or where the run started from: `{run_id, identity, mode, iterations, time, solution_sha256, residual_reference}` of the previous run ([solver-input.md](solver-input.md)); `residual_reference` is the residuals at iteration 1 of the original run of a steady `continue` chain, keyed by the equation names of [History](#history) with the values of that history line, `null` otherwise. The key is always present. A `continue` run carries on the previous count: its first history line is `start.iterations + 1` and `iterations` is the total; a `warm` run counts from 1. |
+| `start` | `null`, or where the run started from: `{run_id, identity, mode, iterations, time, solution_sha256, residual_reference, woken}` of the previous run ([solver-input.md](solver-input.md)); `residual_reference` is the residuals at iteration 1 of the original run of a steady `continue` chain, keyed by the equation names of [History](#history) with the values of that history line, `null` otherwise; `woken`, given exactly with `residual_reference`, lists in sorted order the identically zero equations of that reference that rose above their floor anywhere in the chain ([case-schema.md](case-schema.md#time)), so that a continuation judges convergence as the uninterrupted run would. The key is always present. A `continue` run carries on the previous count: its first history line is `start.iterations + 1` and `iterations` is the total; a `warm` run counts from 1. |
+| `convergence` | `{"floor": {<equation>: value}}`, the round-off floor of every equation of [History](#history) (≥ 0, in its units; 0 when the physics gives that equation no scale) of a steady `fp32+acc64` run whose physics gives flux scales ([case-schema.md](case-schema.md#time)); `null` otherwise, and while a `running` run has not yet built its physics. The key is always present. |
+| `monitors` | The record of every monitor of the case on the run's final state, `{<name>: {iteration, <the quantities of [History](#history)>}}`, `iteration` being `iterations`, whether or not the last iteration was a multiple of the monitor's `every`; equal to the last history line when that line carries the monitor. Given for `converged`, `completed` and `stopped` runs (a run stopped before its first iteration: the initial state, iteration 0); `null` while `running` and for `diverged` and `failed` runs. The key is always present. |
+| `timing` | `{wall_seconds, solve_seconds, iterations, ns_per_cell_iteration}`: the time from the start of the runtime to the end of the run, the time of the physics' steps and averaging alone (no reading or partitioning, no history, log or solution writes; the slowest rank's), the iterations of this run (for a `continue`, those after `start.iterations`) and `solve_seconds` × 10⁹ / (cells of the mesh × `iterations`). `null` while `running`, for a run with no iteration, for a run that failed on several ranks, and for the `fake` backend. Information about one run, outside `identity` and the bitwise guarantee; performance is measured with `bench/` ([infra/bench.md](../infra/bench.md)). The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Two runs with the same `identity` and `deterministic: true` that stop at the same iteration produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times).
+Two runs of the solver (not the `fake` backend) with the same `identity` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver build, precision, backend, devices and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
+
+
+### Identity
+
+`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition.
+
+1. `case.sha256`
+2. `mesh.sha256`
+3. `solver.commit`
+4. `precision`
+5. `solver.backend`
+6. `devices.kind`
+7. `devices.count`
+8. `start.identity`
+9. `start.mode`
+10. `start.iterations`
+11. `start.solution_sha256`
 
 ## History
 
@@ -112,7 +134,7 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
 /Base                    CGNSBase_t      CellDimension 3, PhysicalDimension 3
   DataClass                              Dimensional
   DimensionalUnits                       Kilogram Meter Second Kelvin Radian
-  RunMetadata            Descriptor_t    run.json without status, finished, iterations, diagnostics (JSON)
+  RunMetadata            Descriptor_t    run.json without status, finished, iterations, monitors, timing, diagnostics (JSON)
   ZoneNames              Descriptor_t    {"boundary": {<node name>: <zone name>}, "cell": {…}} (JSON)
   <family>               Family_t        one per boundary zone and per cell zone
     FamilyBC             FamilyBC_t      boundary zones with a condition: BCType of that condition

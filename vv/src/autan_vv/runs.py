@@ -29,6 +29,7 @@ from autan.results import (
     identity,
     iso,
     residual_names,
+    run_metadata,
     utc_now,
 )
 from autan.version import COMMIT, __version__
@@ -152,11 +153,7 @@ def _write_solution(
             "DimensionalUnits_t",
             np.frombuffer(units.encode(), dtype=np.int8).reshape(5, 32).T,
         )
-        metadata = {
-            k: v
-            for k, v in info.document().items()
-            if k not in ("status", "finished", "iterations", "diagnostics")
-        }
+        metadata = run_metadata(info)
         cgns.node(base, "RunMetadata", "Descriptor_t", json.dumps(metadata, sort_keys=True))
         cgns.node(
             base,
@@ -231,7 +228,7 @@ def write_run(
 
     `fields` must hold exactly the fields results.md requires for the case's physics, one value per
     cell in mesh order. The history holds one line with unit residuals. Cases with monitors or time
-    averaging are refused (V0731); runs are marked non-deterministic, since their fields are given.
+    averaging are refused (V0731).
     """
     spec = case.spec
     if spec.monitors or getattr(spec.time, "average_from", None) is not None:
@@ -260,8 +257,6 @@ def write_run(
         mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
         solver=solver,
         precision=spec.physics.precision,
-        # The fields come from the caller, not from the identified configuration.
-        deterministic=False,
         devices=devices,
         started=iso(started),
         finished=None,
@@ -270,7 +265,13 @@ def write_run(
         averaging=None,
         diagnostics=(),
     )
-    writer = RunWriter(runs, run, spec, info)
+    # oracle-state conditions: the face-state files, archived as results.md#run-directory says.
+    states = {
+        rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()
+        for rule in spec.boundaries
+        if rule.condition.kind == "oracle-state"
+    }
+    writer = RunWriter(runs, run, spec, info, states=states)
     writer.append(
         {
             "iteration": 1,
