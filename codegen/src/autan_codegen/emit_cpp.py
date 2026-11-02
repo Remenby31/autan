@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
-from autan_codegen.model import ROLE_TYPE, Module
+from autan_codegen.model import ROLE_TYPE, Module, parts
 
 if TYPE_CHECKING:
     from autan_codegen.frontend import Signature
@@ -172,7 +172,7 @@ def at_dynamic(d: dsl.Dataset, index: str, comp: str, layout: str = "soa") -> st
 def rel_datasets(m: Module) -> set[int]:
     """Ids of the datasets some body reads through rel(), in any loop of the module."""
     out: set[int] = set()
-    for lm in m.loops:
+    for lm in [p for top in m.loops for p in parts(top)]:
         pairs = [(lm.fn, lm.loop.bindings)]
         if lm.fin_fn is not None:
             pairs.append((lm.fin_fn, lm.loop.finalise_bindings))
@@ -236,10 +236,12 @@ def call_args(
     skip: int = 0,
     layout: str = "soa",
     reversible: bool = False,
+    regs: dict[int, str] | None = None,
 ) -> list[str]:
     """Loads of each scalar argument; `index_of[via]` is the index expression of that binding.
     With `reversible`, face geometry is read in the face's global orientation when the C++
-    boolean `rev` holds (Topology::face_reversed)."""
+    boolean `rev` holds (Topology::face_reversed). `regs` maps a dataset (by id) read through
+    `.self_` to the local array holding the cell's value (a chain's registers)."""
     out = []
     for name, t in zip(sig.names[skip:], sig.types[skip:], strict=True):
         b = bindings[name]
@@ -275,6 +277,9 @@ def call_args(
                     and "face" in index_of
                 ):
                     via = "face"
+                if regs is not None and via == "self" and id(b.dataset) in regs:
+                    out.append(f"{regs[id(b.dataset)]}[{c}]")
+                    continue
                 load = at(b.dataset, index_of[via], c, layout)
                 ds = b.dataset
                 if reversible and isinstance(ds, dsl.Dataset) and ds.geometry:

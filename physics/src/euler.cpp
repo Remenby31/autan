@@ -74,13 +74,14 @@ struct Euler<P>::Impl {
     }
     fill_ghosts(prim, 5);
     ek::cpu::boundary_states(d);
-    if (scheme.second_order) {
+    if (scheme.second_order && scheme.limiter) {
+      // The limiter reads only its own cell's gradient: the ghosts can be filled after.
+      ek::cpu::gradients_limiter(d);
+      fill_ghosts(grad, 15);
+      fill_ghosts(phi, 5);
+    } else if (scheme.second_order) {
       ek::cpu::gradients(d);
       fill_ghosts(grad, 15);
-      if (scheme.limiter) {
-        ek::cpu::limiter(d);
-        fill_ghosts(phi, 5);
-      }
     }
     ek::cpu::sources(d);
   }

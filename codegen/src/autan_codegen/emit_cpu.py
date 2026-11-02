@@ -123,8 +123,17 @@ def entry_loop(over: str, indent: str) -> list[str]:
     ]
 
 
-def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
-    """Statements of one cell's reduction, given `c`; shared by the CPU and GPU cell kernels."""
+def reduce_body(
+    lm: LoopModel,
+    indent: str,
+    layout: str = "soa",
+    capture: dict[int, tuple[str, bool]] | None = None,
+    regs: dict[int, str] | None = None,
+) -> list[str]:
+    """Statements of one cell's reduction, given `c`; shared by the CPU and GPU cell kernels.
+    `capture` sends an output (dataset id) to a local array, converted to its storage type as the
+    store would, and to memory only if its flag is set; `regs` reads datasets from such arrays
+    (call_args)."""
     loop = lm.loop
     accs = loop.outputs
     offs = offsets(accs)
@@ -134,7 +143,7 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     i2 = indent + "  "
     lines.append(f"{i2}typename P::{lm.fn.compute} out[{n}];")
     args = call_args(
-        lm.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"}, layout=layout
+        lm.sig, loop.bindings, {"self": "c", "direct": "k", "face": "f"}, layout=layout, regs=regs
     )
     lines.append(f"{i2}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
     lines.extend(_updates(accs, offs, "out", i2))  # type: ignore[arg-type]
@@ -164,21 +173,64 @@ def reduce_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
                 assert isinstance(ref, str)
                 b = loop.finalise_bindings[ref]
                 t = lm.fin_sig.types[lm.fin_sig.names.index(ref)]
-                fargs += [at(b.dataset, "c", c, layout) for c in range(t.size)]
+                if regs is not None and b.via == "self" and id(b.dataset) in regs:
+                    fargs += [f"{regs[id(b.dataset)]}[{c}]" for c in range(t.size)]
+                else:
+                    fargs += [at(b.dataset, "c", c, layout) for c in range(t.size)]
         lines.append(f"{indent}{lm.fin_fn.name}<P>({', '.join([*fargs, 'fin'])});")
         k = 0
         for o, _ in written:
             for c in range(o.dataset.type.size):
-                lines.append(
-                    f"{indent}{at(o.dataset, 'c', c, layout)} = static_cast<{ctype(o.dataset.type.role)}>(fin[{k}]);"
-                )
+                lines += _store(o.dataset, c, f"fin[{k}]", indent, layout, capture)
                 k += 1
     else:
-        lines.extend(
-            f"{indent}{at(o.dataset, 'c', c, layout)} = static_cast<{ctype(o.dataset.type.role)}>({acc_ref(o, off + c)});"  # type: ignore[arg-type]
-            for o, off in written
-            for c in range(o.dataset.type.size)
-        )
+        for o, off in written:
+            for c in range(o.dataset.type.size):
+                lines += _store(o.dataset, c, acc_ref(o, off + c), indent, layout, capture)  # type: ignore[arg-type]
+    return lines
+
+
+def _store(
+    d: dsl.Dataset,
+    c: int,
+    value: str,
+    indent: str,
+    layout: str,
+    capture: dict[int, tuple[str, bool]] | None,
+) -> list[str]:
+    """Component c of a reduction's output, converted to its storage type: to memory, or to a
+    chain's register (and to memory if the chain keeps it)."""
+    stored = f"static_cast<{ctype(d.type.role)}>({value})"
+    if capture is None or id(d) not in capture:
+        return [f"{indent}{at(d, 'c', c, layout)} = {stored};"]
+    reg, keep = capture[id(d)]
+    lines = [f"{indent}{reg}[{c}] = {stored};"]
+    if keep:
+        lines.append(f"{indent}{at(d, 'c', c, layout)} = {reg}[{c}];")
+    return lines
+
+
+def chain_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
+    """Statements of one cell's chain (dsl.chain), given `c`: the first reduction with its
+    outputs in registers, then the second reading them; shared by every backend."""
+    assert lm.chain is not None
+    first, second = lm.chain
+    kept = {id(d) for d in lm.loop.keep}
+    capture: dict[int, tuple[str, bool]] = {}
+    lines = []
+    for o in first.loop.outputs:
+        if getattr(o, "write", False):
+            reg = f"chain_{o.dataset.name}"
+            capture[id(o.dataset)] = (reg, id(o.dataset) in kept)
+            role, size = o.dataset.type.role, o.dataset.type.size
+            lines.append(f"{indent}[[maybe_unused]] {ctype(role)} {reg}[{size}];")
+    regs = {k: v[0] for k, v in capture.items()}
+    lines.append(f"{indent}{{")
+    lines += reduce_body(first, indent + "  ", layout, capture=capture)
+    lines.append(f"{indent}}}")
+    lines.append(f"{indent}{{")
+    lines += reduce_body(second, indent + "  ", layout, regs=regs)
+    lines.append(f"{indent}}}")
     return lines
 
 
@@ -452,8 +504,9 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
             e.w(s)
         e.w("  }")
     else:
+        body = chain_body if lm.kind == "chain" else reduce_body
         e.w("  for (index_t c = 0; c < d.topo.n_owned_cells; ++c) {")
-        for s in reduce_body(lm, "    "):
+        for s in body(lm, "    "):
             e.w(s)
         e.w("  }")
     e.w("}")

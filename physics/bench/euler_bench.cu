@@ -6,6 +6,7 @@
 //
 //   euler_bench MESH [--policy fp64|fp32+acc64] [--flux roe|hllc|ausm-up] [--block N]
 //                    [--stencil-slice N]   (cells per slice of the sliced stencil layout, 0: CSR)
+//                    [--fuse 0|1]   (1, default: the gradients and the limiter in one pass)
 //                    [--warmup N] [--reps N] [--batch N] [--gate 1]
 //   --gate 1: after the host setup, print `autan-bench: ready` on stderr and wait for a line on
 //   stdin before any CUDA call (autan-bench run --ready takes the GPU lock only then).
@@ -47,6 +48,7 @@ struct Options {
   std::string flux = "roe";
   int block = 256;
   int stencil_slice = 0;
+  bool fuse = true;  // the gradients and the limiter as one cell pass (kernels/euler.py chain)
   bool gate = false;
   int warmup = 5;
   int reps = 30;
@@ -90,6 +92,8 @@ Options parse(int argc, char** argv) {
       o.gate = std::stoi(v) != 0;
     else if (f == "--stencil-slice")
       o.stencil_slice = std::stoi(v);
+    else if (f == "--fuse")
+      o.fuse = std::stoi(v) != 0;
     else if (f == "--warmup")
       o.warmup = std::stoi(v);
     else if (f == "--reps")
@@ -375,8 +379,20 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
          }
        }},
   };
+  // The residual as the stepper runs it: with --fuse 1 the gradients and the limiter in one pass,
+  // whose bounds are never written and which does not read back its cell's state, gradient and
+  // bounds.
+  std::vector<Loop> residual_loops = loops;
+  if (o.fuse) {
+    residual_loops.erase(residual_loops.begin() + 2, residual_loops.begin() + 4);
+    residual_loops.insert(
+        residual_loops.begin() + 2,
+        {"gradients_limiter",
+         loops[2].bytes - cs * 10 * sS + loops[3].bytes - cs * (5 * sS + 15 * sGr + 10 * sS),
+         [&](gpu::Strategy) { ek::gpu_loops::gradients_limiter(d, sched); }});
+  }
   double bytes = 0.0;
-  for (const auto& l : loops) bytes += l.bytes;
+  for (const auto& l : residual_loops) bytes += l.bytes;
   // The implicit solver's loops: the same work plus their Jacobian blocks, written once.
   const double sJ = sizeof(J);
   const std::vector<Loop> jacobian_loops = {
@@ -404,7 +420,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
        }},
   };
   auto residual = [&](gpu::Strategy s) {
-    for (const auto& l : loops) l.launch(s);
+    for (const auto& l : residual_loops) l.launch(s);
   };
 
   Run out;
@@ -440,7 +456,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
       out.timed.push_back({std::string(l.name) + (by_strategy ? "_" + o.flux + "_" + tag : ""),
                            gpu::name(s), l.bytes, time_it(o, [&] { l.launch(s); })});
     }
-    for (const auto& l : loops) {
+    for (const auto& l : residual_loops) {
       const bool by_strategy =
           std::string_view(l.name) == "faces" || std::string_view(l.name) == "boundaries";
       if (!by_strategy && s != gpu::Strategy::atomic) continue;
@@ -508,9 +524,9 @@ int main(int argc, char** argv) {
     const auto& t = r.timed[k];
     std::printf(
         "%s{\"name\":\"%s\",\"bytes_per_rep\":%.0f,\"cells\":%d,\"params\":{\"strategy\":\"%s\","
-        "\"policy\":\"%s\",\"flux\":\"%s\"},\"seconds\":[",
+        "\"policy\":\"%s\",\"flux\":\"%s\",\"fuse\":%d},\"seconds\":[",
         k ? "," : "", t.name.c_str(), t.bytes, mesh.n_cells(), t.strategy.c_str(), o.policy.c_str(),
-        o.flux.c_str());
+        o.flux.c_str(), o.fuse ? 1 : 0);
     for (std::size_t i = 0; i < t.seconds.size(); ++i)
       std::printf("%s%.9e", i ? "," : "", t.seconds[i]);
     std::printf("]}");

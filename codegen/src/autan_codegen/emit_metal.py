@@ -31,6 +31,7 @@ from autan_codegen.emit_cpp import (
 from autan_codegen.emit_cpu import (
     boundary_write_body,
     cell_stores,
+    chain_body,
     global_left,
     n_out,
     offsets,
@@ -41,6 +42,7 @@ from autan_codegen.emit_cpu import (
 )
 from autan_codegen.emit_gpu import _face_eval, _incs, _signed, jacobian_lines
 from autan_codegen.errors import Code, CodegenError
+from autan_codegen.model import parts
 
 if TYPE_CHECKING:
     from autan_codegen.ir import Function
@@ -282,7 +284,7 @@ def _cell_kernel(k: _Kernels, lm: LoopModel) -> None:
     elif lm.kind == "reduce_adjoint":
         lines = reduce_adjoint_body(lm, "  ", "atomic")
     else:
-        lines = reduce_body(lm, "  ")
+        lines = (chain_body if lm.kind == "chain" else reduce_body)(lm, "  ")
     for s in lines:
         e.w(s)
     e.w("}")
@@ -316,7 +318,8 @@ def emit_msl(m: Module, policies: list[str], line_directives: bool = True) -> st
     """The Metal Shading Language source of a module, instantiated for `policies`."""
     accum = [
         lm.name
-        for lm in m.loops
+        for top in m.loops
+        for lm in parts(top)
         if "accum" in (lm.fn.compute, lm.fin_fn.compute if lm.fin_fn else None)
     ]
     if accum:

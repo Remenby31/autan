@@ -35,6 +35,7 @@ from autan_codegen.dsl import (
     cell_loop,
     cell_reduce,
     cells,
+    chain,
     dot,
     exp,
     face_loop,
@@ -526,6 +527,10 @@ limiter = cell_reduce(
     acc=Min(phi),
     finalise=at_most_one,
 )
+
+# The gradients and the limiter in one cell pass: the bounds stay in registers, converted to their
+# storage type as `gradients` stores them; the gradient is still stored for the face loops.
+gradients_limiter = chain(gradients, limiter, keep=[grad])
 
 
 @pointwise

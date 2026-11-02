@@ -336,13 +336,14 @@ class CudaStepper final : public DeviceStepper<P> {
     ek::gpu_loops::primitives(d_, sched);
     fill_ghosts(prim_.get(), 5);
     ek::gpu_loops::boundary_states(d_, sched);
-    if (second_order_) {
+    if (second_order_ && scheme_.limiter) {
+      // The limiter reads only its own cell's gradient: the ghosts can be filled after.
+      ek::gpu_loops::gradients_limiter(d_, sched);
+      fill_ghosts(grad_.get(), 15);
+      fill_ghosts(phi_.get(), 5);
+    } else if (second_order_) {
       ek::gpu_loops::gradients(d_, sched);
       fill_ghosts(grad_.get(), 15);
-      if (scheme_.limiter) {
-        ek::gpu_loops::limiter(d_, sched);
-        fill_ghosts(phi_.get(), 5);
-      }
     }
     ek::gpu_loops::sources(d_, sched);
     constexpr auto deterministic = gpu::Strategy::store_gather;

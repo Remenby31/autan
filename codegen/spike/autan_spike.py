@@ -586,6 +586,31 @@ def stencil_arrays(m: Mesh, size: int) -> tuple[npt.NDArray[np.int64], npt.NDArr
     return offsets, entries
 
 
+def chained(
+    m: Mesh, policy: str, q: F64, q_b: F64, fused: bool, device: bool = False
+) -> dict[str, F64]:
+    """Test kernel codegen/tests/kernels/chained.py on the host or the device: grad (n_cells x 3),
+    lo, hi and phi from the two loops, or from their chain (`fused`: lo and hi come back as
+    given, NaN)."""
+    err = ctypes.create_string_buffer(512)
+    out = {"grad": np.zeros(3 * m.n_cells), "lo": np.full(m.n_cells, np.nan),
+           "hi": np.full(m.n_cells, np.nan), "phi": np.zeros(m.n_cells)}  # fmt: skip
+    q, q_b = (np.ascontiguousarray(x, dtype=np.float64) for x in (q, q_b))
+    tail = (*(_p(out[k]) for k in ("grad", "lo", "hi", "phi")), err, ctypes.c_size_t(len(err)))
+    if device:
+        rc = lib().autan_spike_gpu_chained(
+            m.handle, policy.encode(), ctypes.c_int(int(fused)), ctypes.c_int(128), _p(q), _p(q_b),
+            *tail,
+        )  # fmt: skip
+    else:
+        rc = lib().autan_spike_chained(
+            m.handle, policy.encode(), ctypes.c_int(int(fused)), _p(q), _p(q_b), *tail
+        )
+    _check(rc, err)
+    out["grad"] = out["grad"].reshape(3, -1).T
+    return out
+
+
 def face_weighted(
     m: Mesh, policy: str, mode: str, q: F64, q_b: F64, seed: F64 | None = None
 ) -> F64:

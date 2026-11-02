@@ -459,3 +459,27 @@ def test_per_entry_outputs_go_to_the_entries_and_take_no_active_input(tmp_path: 
     with pytest.raises(CodegenError) as info:
         generate(src, tmp_path / "gen", ["cpu"])
     assert info.value.code == "E1012"
+
+
+@pointwise
+def pass_on(x: Residual) -> Residual:
+    return x
+
+
+def test_a_chain_takes_two_reductions_and_reads_the_first_from_its_own_cell() -> None:
+    # The first reduction's outputs are in registers for the cell only: another cell's value,
+    # a dataset it does not write, or a loop that is not a cell reduction is refused.
+    total = dsl.cells.field("total", Residual)
+    first = dsl.cell_reduce(block_value, b=dsl.faces.field("fb", dsl.Jac), acc=dsl.Sum(total))
+    across = dsl.cell_reduce(pass_on, x=total.other(None), acc=dsl.Sum(r))
+    own = dsl.cell_reduce(pass_on, x=total.self_, acc=dsl.Sum(r))
+    with pytest.raises(CodegenError) as info:
+        dsl.chain(first, dsl.cell_loop(copy_state, x=q, out=dsl.Write(r)))
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        dsl.chain(first, own, keep=[r])
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.chain(first, across))
+    assert info.value.code == "E1003"
+    assert build_loop("ok", dsl.chain(first, own, keep=[total])).kind == "chain"

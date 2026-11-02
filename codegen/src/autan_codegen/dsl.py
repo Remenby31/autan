@@ -307,7 +307,7 @@ Accumulator = Sum | Min | Max | Follow
 
 @dataclass(eq=False)
 class Loop:
-    kind: str  # face | boundary | cell | reduce
+    kind: str  # face | boundary | cell | reduce | chain
     body: Body
     bindings: dict[str, Binding]
     outputs: list[Inc | Write | Accumulator]
@@ -318,6 +318,8 @@ class Loop:
     jacobians: list[Jacobian] = field(default_factory=list)
     frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
     entries: list[Write] = field(default_factory=list)  # reductions: one value per entry
+    chained: tuple[Loop, Loop] | None = None  # chain: the two reductions, in order
+    keep: list[Dataset] = field(default_factory=list)  # chain: first's outputs still stored
 
 
 def _bindings(raw: dict[str, object]) -> dict[str, Binding]:
@@ -444,6 +446,28 @@ def cell_reduce(
         over=over,
         entries=per_entry,
     )
+
+
+def chain(first: Loop, second: Loop, *, keep: object = ()) -> Loop:
+    """One cell pass running the cell reduction `first`, then the cell reduction `second`, for
+    each owned cell. `first`'s outputs are converted to their datasets' storage types where its
+    own loop stores them, then kept in registers, where `second` reads them through `.self_`
+    bindings; only those listed in `keep` are also written to memory. Forward only: the chain has
+    no tangent or adjoint, which stay those of `first` and `second`."""
+    for loop in (first, second):
+        if not isinstance(loop, Loop) or loop.kind != "reduce" or loop.entries:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT, "chain takes two cell reductions without entries"
+            )
+    kept = _outs(keep) if keep != () else []
+    written = [o.dataset for o in first.outputs if getattr(o, "write", False)]
+    for d in kept:
+        if not any(d is w for w in written):
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT,
+                f"chain keeps {getattr(d, 'name', d)!r}, which the first reduction does not write",
+            )
+    return Loop("chain", first.body, {}, [], chained=(first, second), keep=kept)
 
 
 # ---------------------------------------------------------------------------- functions

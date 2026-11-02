@@ -23,6 +23,7 @@
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/partition/partition.hpp"
+#include "chained_cpu.hpp"
 #include "face_weighted_cpu.hpp"
 #include "gradients_cpu.hpp"
 #include "roe_cpu.hpp"
@@ -388,6 +389,45 @@ void face_weighted(const SpikeMesh& m, int mode, const double* q, const double* 
     fw::cpu::face_weighted_adjoint(d);
     copy_out(q_adj, out);
   }
+}
+
+/// Test kernel codegen/tests/kernels/chained.py: grad (3 x n_cells), lo, hi and phi from
+/// `gradients` then `limiter`, or from their chain `fused` (lo and hi then left as given).
+template <class P>
+void chained(const SpikeMesh& m, int fused, const double* q, const double* q_b, double* grad,
+             double* lo, double* hi, double* phi) {
+  namespace ch = autan::kernels::chained;
+  using S = typename P::state;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<S>(q, nc);
+  auto qbs = copy_in<S>(q_b, nf);
+  auto los = copy_in<S>(lo, nc);
+  auto his = copy_in<S>(hi, nc);
+  std::vector<typename P::grad> gs(3 * nc);
+  std::vector<S> ps(nc);
+  ch::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.q_b = qbs.data();
+  d.grad = gs.data();
+  d.lo = los.data();
+  d.hi = his.data();
+  d.phi = ps.data();
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  if (fused != 0) {
+    ch::cpu::fused(d);
+  } else {
+    ch::cpu::gradients(d);
+    ch::cpu::limiter(d);
+  }
+  copy_out(gs, grad);
+  copy_out(los, lo);
+  copy_out(his, hi);
+  copy_out(ps, phi);
 }
 
 template <class P>
@@ -788,6 +828,15 @@ int autan_spike_face_weighted(const void* mesh, const char* policy, int mode, co
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len, [&](auto p) {
     autan::spike::face_weighted<decltype(p)>(*m, mode, q, q_b, seed, out);
+  });
+}
+
+int autan_spike_chained(const void* mesh, const char* policy, int fused, const double* q,
+                        const double* q_b, double* grad, double* lo, double* hi, double* phi,
+                        char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::chained<decltype(p)>(*m, fused, q, q_b, grad, lo, hi, phi);
   });
 }
 
