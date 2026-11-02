@@ -424,7 +424,7 @@ SolverInput parse_solver_input(const std::string& text) {
     // The SDK has validated it; the runtime ties it to the mesh it reads.
     const Json& info = root.get("mesh_info");
     // The member at `path` of `info`, a string, or E0705 naming it.
-    const auto text = [&](std::initializer_list<const char*> path) {
+    const auto member = [&](std::initializer_list<const char*> path) {
       const Json* v = &info;
       std::string where = "mesh_info";
       for (const char* key : path) {
@@ -436,9 +436,9 @@ SolverInput parse_solver_input(const std::string& text) {
       return v->get<std::string>();
     };
     if (!info.is_object()) invalid("mesh_info", "expected an object");
-    if (text({"schema"}) != "autan.mesh-info/1")
+    if (member({"schema"}) != "autan.mesh-info/1")
       invalid("mesh_info.schema", "expected autan.mesh-info/1");
-    const std::string sha = text({"source", "sha256"});
+    const std::string sha = member({"source", "sha256"});
     if (sha != in.mesh_sha256) {
       throw InputError(
           Diagnostic{.code = "E0203",
@@ -446,7 +446,7 @@ SolverInput parse_solver_input(const std::string& text) {
                      .path = "mesh_info.source.sha256",
                      .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
     }
-    in.mesh_info_order = text({"quality", "lines", "order"});
+    in.mesh_info_order = member({"quality", "lines", "order"});
     if (in.mesh_info_order != "rcm" && in.mesh_info_order != "input")
       invalid("mesh_info.quality.lines.order", "expected rcm or input");
     in.mesh_info = info.dump(2);
