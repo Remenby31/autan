@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 
 namespace autan::io {
@@ -11,5 +12,10 @@ namespace autan::io {
 /// opens it, so that nothing is read from elsewhere; HDF5 plugins are not
 /// loaded. A structure it cannot read in full is E0130.
 void reject_outside_data(const std::filesystem::path& file);
+
+/// The largest twice-logical plus stored size of a filtered (compressed) dataset of `file`, 0 when
+/// it has none: what HDF5 holds beside the destination while it reads one (mesh.md, "Memory of a
+/// CGNS read"). Reads the structure only, plugins unloaded; E0130 when it cannot.
+std::int64_t largest_filtered_bytes(const std::filesystem::path& file);
 
 }  // namespace autan::io

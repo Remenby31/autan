@@ -48,6 +48,7 @@ class Source(_Strict):
     logical_bytes: Count
     descriptor_bytes: Count
     zone_names_bytes: Count
+    filtered_bytes: Count
 
 
 class CellsByType(_Strict):

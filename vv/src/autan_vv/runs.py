@@ -86,6 +86,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "logical_bytes": path.stat().st_size,
             "descriptor_bytes": 0,
             "zone_names_bytes": 0,
+            "filtered_bytes": 0,
         },
         "bounds": {
             "min": [float(x) for x in mesh.points.min(axis=0)],

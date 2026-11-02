@@ -122,6 +122,16 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 
 The test meshes and how they are generated: [tests/data/mesh/README.md](../../tests/data/mesh/README.md).
 
+### Memory of a CGNS read
+
+Opening a CGNS file costs, beside the arrays the reader keeps, at most `source.descriptor_bytes` + `source.filtered_bytes` + 12 MiB 64 KiB ([mesh-info.md](mesh-info.md#document)), from the sources of CGNS 4.5.2 and HDF5 2.1.1:
+
+- `cg_open` reads every `Descriptor_t` of the file (`cgi_read_DDD_from_list`, `cgi_read_string`, `cgns_internals.c:5483`) into a buffer of its size plus one (`cgi_read_node`, `cgns_internals.c:6758`), filled by one `H5Dread` (`adfh/ADFH.c:3665`) and held in `cgns_descr.text` (`cgns_header.h:166`) until `cg_close`: `descriptor_bytes`.
+- A filtered dataset of L logical and C stored bytes, descriptor or array, is read into a buffer of C (`H5Dchunk.c:4832`). Deflate inflates it into a buffer that starts at C (`H5Zdeflate.c:85`) and doubles by `realloc` (`H5Zdeflate.c:133`), which may copy the at most L bytes inflated so far, then frees its input (`H5Zdeflate.c:152`); shuffle, szip and scale-offset allocate their output and free their input likewise (`H5Zshuffle.c:141`, `:288`). The chunk is then copied to its destination, which the estimate counts on its own. One dataset is read at a time, so the transient is at most C + 2L of the largest: `filtered_bytes`. Only its touched pages count, as the resident memory does.
+- HDF5's caches, which the CGNS library leaves at their defaults (`ADFH_CONFIG_DEFAULT`, `adfh/ADFH.c:64`): metadata at most 4 MiB (`H5C__DEFAULT_MAX_CACHE_SIZE`, `H5Cprivate.h:85`), raw-data chunks 8 MiB (`H5Pfapl.c:94`), sieve buffer 64 KiB (`H5Pfapl.c:121`).
+
+`tests/io/test_cgns.cpp` measures the resident peak against this bound for an 8 MiB and a 128 MiB descriptor, compressible, incompressible and half of each, and for a deflated coordinate array.
+
 ## Boundary surface
 
 `autan::io::surface_bytes(mesh, hash)`, which `autan-mesh-info --surface OUT MESH` writes to `OUT`, gives the mesh's boundary faces as an `autan.surface/1` file, for a viewer to draw them and pick zones. It checks the geometry first (`E0120`, `E0121`), since an inverted cell would turn normals inward. A boundary whose node count, total of face nodes (`face_offsets[F]`) or padded header length exceeds 2³² − 1 is `E0113`.

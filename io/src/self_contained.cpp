@@ -1,5 +1,7 @@
 #include "self_contained.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -136,6 +138,50 @@ void scan_cgns_links(const std::filesystem::path& file) {
 void reject_outside_data(const std::filesystem::path& file) {
   scan_hdf5(file);
   scan_cgns_links(file);
+}
+
+std::int64_t largest_filtered_bytes(const std::filesystem::path& file) {
+  struct Largest {
+    std::int64_t bytes = 0;
+    bool failed = false;
+  } largest;
+  const auto visit = [](hid_t object, const char* name, const H5O_info2_t* info, void* data) {
+    auto& out = *static_cast<Largest*>(data);
+    if (info->type != H5O_TYPE_DATASET) return 0;
+    const hid_t dataset = H5Dopen2(object, name, H5P_DEFAULT);
+    if (dataset < 0) {
+      out.failed = true;
+      return -1;
+    }
+    const hid_t properties = H5Dget_create_plist(dataset);
+    if (properties >= 0 && H5Pget_nfilters(properties) > 0) {
+      const hid_t space = H5Dget_space(dataset);
+      const hid_t type = H5Dget_type(dataset);
+      const auto logical = static_cast<std::int64_t>(H5Sget_simple_extent_npoints(space)) *
+                           static_cast<std::int64_t>(H5Tget_size(type));
+      const auto stored = static_cast<std::int64_t>(H5Dget_storage_size(dataset));
+      out.bytes = std::max(out.bytes, 2 * logical + stored);
+      H5Tclose(type);
+      H5Sclose(space);
+    }
+    if (properties >= 0) H5Pclose(properties);
+    H5Dclose(dataset);
+    return 0;
+  };
+  unsigned int plugins = 0;
+  H5PLget_loading_state(&plugins);
+  H5PLset_loading_state(0);
+  herr_t status = 0;
+  H5E_BEGIN_TRY {
+    const hid_t f = H5Fopen(file.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    status =
+        f < 0 ? -1 : H5Ovisit3(f, H5_INDEX_NAME, H5_ITER_NATIVE, visit, &largest, H5O_INFO_BASIC);
+    if (f >= 0) H5Fclose(f);
+  }
+  H5E_END_TRY
+  H5PLset_loading_state(plugins);
+  if (status < 0 || largest.failed) unreadable(file);
+  return largest.bytes;
 }
 
 }  // namespace autan::io

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <random>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -800,6 +801,48 @@ TEST_CASE("The CGNS reader caps the texts it keeps and counts every descriptor",
   }
 }
 
+TEST_CASE("A start solution holds only what the writer writes for its mesh", "[cgns]") {
+  // results.md, Sizes a reader accepts: a solution written for a mesh passes; with one of its
+  // arrays compressed, which the writer never does, it is refused before the library opens it.
+  fs::create_directories(temp_dir());
+  const autan::Mesh mesh = autan::io::read_mesh(data_dir / "hybrid" / "polyMesh");
+  const fs::path file = temp_dir() / "start.cgns";
+  autan::io::write_solution(file, mesh, solution_for(mesh));
+  const auto zones = autan::io::meshinfo_zones(mesh);
+  const autan::io::StartLimits limits{
+      .zones = static_cast<std::int64_t>(zones.boundary.size() + zones.cell.size()),
+      .periodic_pairs = static_cast<std::int64_t>(mesh.periodic_pairs().size())};
+  autan::io::check_start_solution(file, limits);
+  const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  REQUIRE(h5 >= 0);
+  const char* path = "/Base/Zone/GridCoordinates/CoordinateX/ data";
+  const hid_t old = H5Dopen2(h5, path, H5P_DEFAULT);
+  REQUIRE(old >= 0);
+  const hid_t space = H5Dget_space(old);
+  std::vector<double> values(static_cast<std::size_t>(H5Sget_simple_extent_npoints(space)));
+  REQUIRE(H5Dread(old, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+  H5Dclose(old);
+  REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
+  const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
+  const hsize_t chunk = values.size();
+  H5Pset_chunk(properties, 1, &chunk);
+  H5Pset_deflate(properties, 1);
+  const hid_t dataset =
+      H5Dcreate2(h5, path, H5T_IEEE_F64LE, space, H5P_DEFAULT, properties, H5P_DEFAULT);
+  REQUIRE(dataset >= 0);
+  REQUIRE(H5Dwrite(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+  H5Dclose(dataset);
+  H5Pclose(properties);
+  H5Sclose(space);
+  H5Fclose(h5);
+  try {
+    autan::io::check_start_solution(file, limits);
+    FAIL("expected E0132");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::io_malformed);
+  }
+}
+
 TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns]") {
   // mesh-info.md, source.logical_bytes: each dataset at its element count times its element
   // size. The coordinates of a 12^3 box rewritten as deflated chunks: a smaller file, the same
@@ -812,6 +855,7 @@ TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns
   fs::copy_file(plain, packed, fs::copy_options::overwrite_existing);
   const hid_t file = H5Fopen(packed.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
   REQUIRE(file >= 0);
+  std::int64_t largest = 0;  // logical + stored of the largest deflated coordinate array
   for (const char* axis : {"CoordinateX", "CoordinateY", "CoordinateZ"}) {
     const std::string path = std::string("/Base/Zone/GridCoordinates/") + axis + "/ data";
     const hid_t old = H5Dopen2(file, path.c_str(), H5P_DEFAULT);
@@ -831,12 +875,16 @@ TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns
     REQUIRE(dataset >= 0);
     REQUIRE(H5Dwrite(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >=
             0);
+    largest =
+        std::max(largest, static_cast<std::int64_t>(2 * 8 * n + H5Dget_storage_size(dataset)));
     H5Dclose(dataset);
     H5Pclose(properties);
     H5Sclose(space);
   }
   H5Fclose(file);
   CHECK(autan::io::cgns_logical_bytes(packed).total == autan::io::cgns_logical_bytes(plain).total);
+  CHECK(autan::io::cgns_logical_bytes(plain).filtered == 0);
+  CHECK(autan::io::cgns_logical_bytes(packed).filtered == largest);
   CHECK(autan::io::mesh_logical_bytes(packed).total == autan::io::cgns_logical_bytes(plain).total);
   CHECK(autan::io::read_mesh(packed).n_points() == mesh.n_points());
   // The coordinates alone are 3 x 13^3 doubles.
@@ -855,68 +903,118 @@ std::int64_t status_bytes(const std::string& key) {
   return -1;
 }
 
-// The peak resident memory cg_open of `file` adds, until cg_close.
-std::int64_t open_peak(const fs::path& file) {
+// The peak resident memory `run` adds while it runs.
+template <class Run>
+std::int64_t peak_of(const Run& run) {
   const std::int64_t before = status_bytes("VmRSS");
   std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
-  int fn = 0;
-  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
-  const std::int64_t peak = status_bytes("VmHWM") - before;
-  REQUIRE(cg_close(fn) == CG_OK);
-  return peak;
+  run();
+  return status_bytes("VmHWM") - before;
+}
+
+// The peak resident memory cg_open of `file` adds, until cg_close.
+std::int64_t open_peak(const fs::path& file) {
+  return peak_of([&] {
+    int fn = 0;
+    REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+    REQUIRE(cg_close(fn) == CG_OK);
+  });
+}
+
+enum class Random { none, all, half };
+
+// `file`'s dataset at `path` rewritten as one deflated chunk, its bytes, all or the first half,
+// replaced by random ones, which deflate cannot shrink. Returns its stored size.
+std::int64_t deflate(const fs::path& file, const char* path, Random random) {
+  const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  REQUIRE(h5 >= 0);
+  const hid_t old = H5Dopen2(h5, path, H5P_DEFAULT);
+  REQUIRE(old >= 0);
+  const hid_t type = H5Dget_type(old);
+  const hid_t space = H5Dget_space(old);
+  const auto n = static_cast<std::size_t>(H5Sget_simple_extent_npoints(space));
+  std::vector<unsigned char> bytes(n * H5Tget_size(type));
+  REQUIRE(H5Dread(old, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, bytes.data()) >= 0);
+  H5Dclose(old);
+  if (random != Random::none) {
+    std::mt19937_64 engine(411);
+    const std::size_t end = random == Random::all ? bytes.size() : bytes.size() / 2;
+    for (std::size_t i = 0; i < end; ++i) bytes[i] = static_cast<unsigned char>(engine() & 0xffU);
+  }
+  REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
+  const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
+  const hsize_t chunk = n;
+  H5Pset_chunk(properties, 1, &chunk);
+  H5Pset_deflate(properties, 9);
+  const hid_t dataset = H5Dcreate2(h5, path, type, space, H5P_DEFAULT, properties, H5P_DEFAULT);
+  REQUIRE(dataset >= 0);
+  REQUIRE(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, bytes.data()) >= 0);
+  const auto stored = static_cast<std::int64_t>(H5Dget_storage_size(dataset));
+  H5Dclose(dataset);
+  H5Pclose(properties);
+  H5Sclose(space);
+  H5Tclose(type);
+  H5Fclose(h5);
+  return stored;
 }
 
 }  // namespace
 
-TEST_CASE("cg_open holds at most twice a file's descriptors", "[cgns]") {
-  // mesh-info.md, source.descriptor_bytes: the CGNS library loads every descriptor at cg_open,
-  // through a buffer of its size, and a compressed one also through a chunk buffer while it is
-  // read (CGNS 4.5 cgi_read_node, HDF5 filter pipeline): at most 2 bytes per descriptor byte. A
-  // tet with an "About" descriptor of 8 and of 32 MiB stored as one deflated chunk, against the
-  // same tet without it.
+TEST_CASE(
+    "Reading a CGNS file costs its descriptors, one filtered read and the HDF5 caches at most",
+    "[cgns]") {
+  // mesh.md, "Memory of a CGNS read": descriptor_bytes + filtered_bytes + the HDF5 caches.
   fs::create_directories(temp_dir());
-  const auto write = [](const std::string& name, std::size_t bytes) {
-    const fs::path file = cgns_file(name, [&](int fn, int base) {
+  constexpr std::int64_t caches = (std::int64_t{4} << 20) + (std::int64_t{8} << 20) + (64 << 10);
+  const auto tet = [](const std::string& name, std::size_t about) {
+    return cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
-      if (bytes > 0) {
+      if (about > 0) {
         REQUIRE(cg_goto(fn, base, "end") == CG_OK);
-        REQUIRE(cg_descriptor_write("About", std::string(bytes, 'a').c_str()) == CG_OK);
+        REQUIRE(cg_descriptor_write("About", std::string(about, 'a').c_str()) == CG_OK);
       }
     });
-    if (bytes == 0) return file;
-    const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
-    REQUIRE(h5 >= 0);
-    const char* path = "/Base/About/ data";
-    const hid_t old = H5Dopen2(h5, path, H5P_DEFAULT);
-    REQUIRE(old >= 0);
-    const hid_t type = H5Dget_type(old);
-    const hid_t space = H5Dget_space(old);
-    std::vector<char> text(bytes);
-    REQUIRE(H5Dread(old, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, text.data()) >= 0);
-    H5Dclose(old);
-    REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
-    const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
-    const hsize_t chunk = bytes;
-    H5Pset_chunk(properties, 1, &chunk);
-    H5Pset_deflate(properties, 9);
-    const hid_t dataset = H5Dcreate2(h5, path, type, space, H5P_DEFAULT, properties, H5P_DEFAULT);
-    REQUIRE(dataset >= 0);
-    REQUIRE(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, text.data()) >= 0);
-    H5Dclose(dataset);
-    H5Pclose(properties);
-    H5Sclose(space);
-    H5Tclose(type);
-    H5Fclose(h5);
-    return file;
   };
-  const std::int64_t baseline = open_peak(write("about-0.cgns", 0));
-  for (const std::size_t bytes : {std::size_t{8} << 20, std::size_t{32} << 20}) {
-    CAPTURE(bytes);
-    const fs::path file = write("about-" + std::to_string(bytes) + ".cgns", bytes);
-    CHECK(autan::io::cgns_logical_bytes(file).descriptors == static_cast<std::int64_t>(bytes));
+  SECTION("a descriptor of 8 or 128 MiB, in one deflated chunk") {
+    const std::int64_t baseline = open_peak(tet("about-none.cgns", 0));
+    // Deflate's output starts at the stored size and doubles (H5Zdeflate.c:85, :133): 'a' grows
+    // it many times from almost nothing, random bytes not at all, half random once from L/2.
+    const auto random = GENERATE(Random::none, Random::all, Random::half);
+    const std::size_t size = GENERATE(std::size_t{8} << 20, std::size_t{128} << 20);
+    CAPTURE(random, size);
+    const auto bytes = static_cast<std::int64_t>(size);
+    const fs::path file = tet(
+        "about-" + std::to_string(static_cast<int>(random)) + "-" + std::to_string(size) + ".cgns",
+        size);
+    const std::int64_t stored = deflate(file, "/Base/About/ data", random);
+    const auto logical = autan::io::cgns_logical_bytes(file);
+    CHECK(logical.descriptors == bytes);
+    CHECK(logical.filtered == 2 * bytes + stored);
     const std::int64_t added = open_peak(file) - baseline;
-    CHECK(added >= static_cast<std::int64_t>(bytes));  // loaded, as the bound assumes
-    CHECK(added <= 2 * static_cast<std::int64_t>(bytes));
+    CAPTURE(added, stored);
+    CHECK(added >= bytes);  // loaded, as the bound assumes
+    CHECK(added <= logical.descriptors + logical.filtered + caches);
+    // Without the filtered read, the bound would not hold for an incompressible descriptor.
+    if (random == Random::all && size == (std::size_t{128} << 20)) {
+      CHECK(added > logical.descriptors + caches);
+    }
+  }
+  SECTION("a deflated coordinate array, read with the mesh") {
+    const autan::Mesh mesh = autan::assemble(
+        autan::to_face_based(autan::test::box(80, autan::test::BoxFill::hexa, 0.2)));
+    const fs::path plain = temp_dir() / "coordinates-plain.cgns",
+                   packed = temp_dir() / "coordinates-packed.cgns";
+    autan::io::write_solution(plain, mesh, solution_for(mesh));
+    fs::copy_file(plain, packed, fs::copy_options::overwrite_existing);
+    // Perturbed coordinates, which deflate barely shrinks.
+    const std::int64_t stored =
+        deflate(packed, "/Base/Zone/GridCoordinates/CoordinateX/ data", Random::none);
+    const auto logical = autan::io::cgns_logical_bytes(packed);
+    CHECK(logical.filtered == static_cast<std::int64_t>(2 * 8 * mesh.n_points()) + stored);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    const std::int64_t after = peak_of([&] { (void)autan::io::read_mesh(packed); });
+    CAPTURE(before, after, stored);
+    CHECK(after - before <= logical.filtered + caches);
   }
 }
 #endif

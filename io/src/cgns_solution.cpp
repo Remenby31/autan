@@ -72,6 +72,7 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
     }
   };
   walk(walk, tree.root(), "");
+  if (largest_filtered_bytes(file) > 0) refuse("a filtered (compressed) dataset");
 }
 
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state) {

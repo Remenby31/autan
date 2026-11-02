@@ -7,7 +7,8 @@
     "bytes": 412000000,
     "logical_bytes": 412000000,
     "descriptor_bytes": 0,
-    "zone_names_bytes": 0
+    "zone_names_bytes": 0,
+    "filtered_bytes": 0
   },
   "counts": {
     "cells": 1200000,

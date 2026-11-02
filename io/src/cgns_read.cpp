@@ -1011,6 +1011,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
     }
   }
   out.total = arrays + out.descriptors;
+  out.filtered = largest_filtered_bytes(file);
   return out;
 }
 
