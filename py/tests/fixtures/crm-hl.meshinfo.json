@@ -3,7 +3,8 @@
   "source": {
     "path": "crm-hl.cgns",
     "format": "cgns",
-    "sha256": "9933a79571244040a48c983d0c14c9818acf8d1281e213ab0ec6bdd9099a47fa"
+    "sha256": "9933a79571244040a48c983d0c14c9818acf8d1281e213ab0ec6bdd9099a47fa",
+    "bytes": 28400000000
   },
   "counts": {
     "cells": 48200000,

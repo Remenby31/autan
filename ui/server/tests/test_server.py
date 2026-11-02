@@ -635,6 +635,9 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
             values=[row] * 4,
         )
         case += f"case.initial_state = autan.StateFile(path={str(source)!r}, sha256={digest!r})\n"
+    # mesh-info.md: the finest level's edges are the interior faces, all faces less the boundary's.
+    boundary = sum(zone["faces"] for zone in mesh["boundary_zones"])
+    mesh["counts"]["faces"] = boundary + mesh["quality"]["multigrid"]["edges_by_level"][0]
     (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
     (tmp_path / "case.py").write_text(case)
     mesh_info = autan.MeshInfo.load(tmp_path / "mesh.meshinfo.json")

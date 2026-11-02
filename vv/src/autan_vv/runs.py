@@ -82,6 +82,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "path": str(path),
             "format": mesh_format,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size,
         },
         "bounds": {
             "min": [float(x) for x in mesh.points.min(axis=0)],

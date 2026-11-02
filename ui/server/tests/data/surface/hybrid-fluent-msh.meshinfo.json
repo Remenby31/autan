@@ -3,7 +3,8 @@
   "source": {
     "path": "/src/tests/data/mesh/hybrid/hybrid.fluent.msh",
     "format": "fluent",
-    "sha256": "9d5bc24ece8f3553b311b0c9ff372fe768194906dd836ed6938bd8aecaa06300"
+    "sha256": "9d5bc24ece8f3553b311b0c9ff372fe768194906dd836ed6938bd8aecaa06300",
+    "bytes": 20436
   },
   "counts": {
     "cells": 216,
