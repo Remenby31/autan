@@ -304,8 +304,11 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # RCM order keeps the renumbered mesh (the mesh terms without geometry) and its maps.
     renumbered = 720 + 640 + 640 + 240 + 80 + 200 + 4 * 10 + 5 * 40 + 4 * 30
     assert by_name["renumbered mesh"].bytes_host == renumbered
-    # Reading a CGNS file: 3 times the mesh's arrays (2 520 B) beyond them, plus its 4 096 B.
-    assert by_name["mesh reading"].bytes_host == 3 * 2520 + 4096
+    # Reading a CGNS file (plan.md, the readers' inventory), 10 hexahedra, 20 boundary faces:
+    # elements 144 B a hexahedron, 112 B a boundary face, labels 64 B per boundary face and per
+    # cell, then 24N + 4C + 52F + 16P, and the HDF5 chunk cache.
+    standard = 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 24 * 30 + 4 * 10 + 52 * 40 + 16 * 160
+    assert by_name["mesh reading"].bytes_host == standard + 2**20
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
     two_levels = tiny_mesh(20).document()

@@ -29,7 +29,10 @@ class StateFileLoad:
 _CUDA_CONTEXT = 512 * 2**20
 # The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
-_READING = {"gmsh": 3.0, "fluent": 3.0, "cgns": 3.0, "polymesh": 1.25}
+# CGNS element sections: 64 B per element plus its connectivity block, by shape (glibc).
+_CGNS_BLOCK = {"tetra": 48, "pyramid": 48, "prism": 64, "hexa": 80}
+_CGNS_FACE_BLOCK = 48  # quad, the larger boundary element
+_HDF5_CACHE = 2**20
 # DeviceMesh stages each upload through at most this many values (device.cuh, upload_chunk).
 _UPLOAD_CHUNK = 2**20
 
@@ -160,11 +163,7 @@ def _rank(
     geometry = 56 * faces + 32 * cells
     add("mesh", mesh_bytes + geometry + 12 * cells)
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
-    # Reading the file: beyond the mesh it returns, at most 3 times the mesh's arrays for the
-    # element readers (Gmsh, Fluent, CGNS; 2.94 at most measured) and 1.25 times for polyMesh
-    # (1.19), plus the file's bytes for sections a reader skips.
-    reading = _READING[mesh.source.format] * mesh_bytes + mesh.source.bytes
-    add("mesh reading", reading, transient=True)
+    add("mesh reading", _reading(mesh, interior, boundary), transient=True)
     # In RCM order (the runtime's default, quality.lines.order) the run keeps the renumbered
     # mesh beside the one it read, with the cell order and the face and point maps.
     if mesh.quality.lines.order == "rcm":
@@ -304,3 +303,38 @@ def _linear_solver(
     unknowns = 5 * hierarchy.cells_by_level[-1]
     dense = 8 * unknowns * unknowns + 8 * unknowns if unknowns <= _DENSE_UNKNOWNS else 0
     return "multigrid", scale * (finest + levels + dense), graph
+
+
+def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
+    """What a mesh reader holds beyond the mesh it returns, at its peak (docs/sdk/plan.md,
+    the readers' inventory: io/src/gmsh.cpp, fluent.cpp, cgns_read.cpp, polymesh.cpp and
+    core/src/cellwise.cpp, mesh.cpp)."""
+    counts = mesh.counts
+    n, c, f, p, s = counts.nodes, counts.cells, counts.faces, counts.face_nodes, mesh.source.bytes
+    k = 2 * interior + boundary
+    if mesh.source.format == "gmsh":
+        # to_face_based, with the text, tags and points alive; out.face_nodes may double.
+        reading = s + 36 * n - 8 * c + 52 * f + 16 * p + 4 * p
+    elif mesh.source.format == "fluent":
+        # The end of assemble, with the reader's members alive; face_nodes_ may double.
+        reading = s + 53 * n + 20 * c + 12 * p + 45 * f + 4 * p
+    elif mesh.source.format == "cgns":
+        by_type = counts.cells_by_type.model_dump()
+        elements = sum((64 + _CGNS_BLOCK[t]) * m for t, m in by_type.items() if t in _CGNS_BLOCK)
+        # Labelled cells (64 B each) when the sections carry a family: bounded by every cell.
+        labels = 64 * boundary + 64 * c
+        standard = elements + (64 + _CGNS_FACE_BLOCK) * boundary + labels
+        standard += 24 * n + 4 * c + 52 * f + 16 * p
+        # NGON_n/NFACE_n: a block per face and per cell, at most 32 B plus 4 B an entry.
+        blocks = 24 * n + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
+        ngon = blocks + 76 * f - 4 * interior - 4 * k - 8 * c
+        reading = max(standard, ngon) + _HDF5_CACHE
+    else:
+        # polyMesh: the end of assemble, with the owner, neighbour and boundary texts (at most
+        # the files' bytes) and the 64-bit owner and neighbour arrays alive.
+        reading = s + 28 * n + 33 * f + 8 * interior + 4 * p + 8 * c
+    if mesh.periodic and mesh.source.format in ("gmsh", "cgns"):
+        # Periodic matching at the end of assemble, every node bounding the boundary ones.
+        paired = sum(pair.faces for pair in mesh.periodic) * 2
+        reading += 21 * n + 128 * n + 113 * paired
+    return reading
