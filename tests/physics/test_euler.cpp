@@ -96,7 +96,7 @@ double relative_residual(Euler<P>& e, const Case& c, std::span<const typename P:
                          const Prim& w) {
   const auto n = static_cast<std::size_t>(e.n_cells());
   std::vector<typename P::residual> r(5 * n);
-  e.residual(std::span<const typename P::state>(u), r);
+  e.residual(u, r);
   const double speed = std::hypot(w.v[0], w.v[1], w.v[2]) + sound(w);
   const auto uc = conserved(w);
   const std::array<double, 5> flux = {w.rho * speed, w.rho * speed * speed + w.p,
@@ -476,7 +476,7 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
   const auto u = stored(e, uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1));
   std::vector<typename P::residual> r(5);
-  e.residual(std::span<const typename P::state>(u), r);
+  e.residual(u, r);
   const double v = c.geometry.cell_volume[0];
   CHECK(std::abs(static_cast<double>(r[0]) - a * v) <= 64 * eps<P>() * a * c.cell_surface()[0]);
 }
