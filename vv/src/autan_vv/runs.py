@@ -26,9 +26,9 @@ from autan.results import (
     RunWriter,
     Solver,
     field_names,
-    identity,
     iso,
     residual_names,
+    run_identity,
     run_metadata,
     utc_now,
 )
@@ -78,6 +78,10 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "path": str(path),
             "format": mesh_format,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        },
+        "bounds": {
+            "min": [float(x) for x in mesh.points.min(axis=0)],
+            "max": [float(x) for x in mesh.points.max(axis=0)],
         },
         "counts": {
             "cells": mesh.n_cells,
@@ -252,7 +256,7 @@ def write_run(
     devices = Devices(kind="cpu", count=1)
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),
-        identity=identity(spec.hash(), info.source.sha256, solver, spec.physics.precision, devices),
+        identity="0" * 64,
         status="running",
         case=CaseIdentity(name=spec.name, sha256=spec.hash()),
         mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
@@ -266,6 +270,7 @@ def write_run(
         averaging=None,
         diagnostics=(),
     )
+    run = run.model_copy(update={"identity": run_identity(run)})
     # oracle-state conditions: the face-state files, archived as results.md#run-directory says.
     states = {
         rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()

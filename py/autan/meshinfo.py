@@ -52,6 +52,18 @@ class Counts(_Strict):
     cells_by_type: CellsByType
 
 
+Point = tuple[
+    Annotated[float, Field(strict=True, allow_inf_nan=False)],
+    Annotated[float, Field(strict=True, allow_inf_nan=False)],
+    Annotated[float, Field(strict=True, allow_inf_nan=False)],
+]
+
+
+class Bounds(_Strict):
+    min: Point
+    max: Point
+
+
 class BoundaryZone(_Strict):
     name: Name
     type: BoundaryType | None
@@ -126,6 +138,7 @@ class MeshInfo(_Strict):
     schema_: Literal["autan.mesh-info/1"] = Field(alias="schema")
     source: Source
     counts: Counts
+    bounds: Bounds
     boundary_zones: tuple[BoundaryZone, ...]
     cell_zones: Annotated[tuple[CellZone, ...], Field(min_length=1)]
     interfaces: tuple[Interface, ...]
@@ -137,6 +150,8 @@ class MeshInfo(_Strict):
         problems = []
         if self.counts.face_nodes < 3 * self.counts.faces:
             problems.append("counts.face_nodes is below 3 nodes per face")
+        if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):
+            problems.append("bounds.min exceeds bounds.max")
         if sum(self.counts.cells_by_type.model_dump().values()) != self.counts.cells:
             problems.append("counts.cells_by_type does not sum to counts.cells")
         if sum(zone.cells for zone in self.cell_zones) != self.counts.cells:
