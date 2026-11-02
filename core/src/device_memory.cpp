@@ -24,4 +24,6 @@ std::int64_t current() noexcept { return held.load(); }
 
 std::int64_t peak() noexcept { return most.load(); }
 
+void reset_peak() noexcept { most.store(held.load()); }
+
 }  // namespace autan::device_memory

@@ -14,8 +14,11 @@ namespace autan::device_memory {
 void allocated(std::size_t bytes) noexcept;
 void released(std::size_t bytes) noexcept;
 
-/// The bytes allocated and not released, and the most there ever were in this process.
+/// The bytes allocated and not released, and the most there were at once since the process
+/// started or the last reset_peak().
 [[nodiscard]] std::int64_t current() noexcept;
 [[nodiscard]] std::int64_t peak() noexcept;
+/// Starts a new peak from the bytes held now.
+void reset_peak() noexcept;
 
 }  // namespace autan::device_memory

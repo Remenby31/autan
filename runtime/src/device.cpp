@@ -37,6 +37,7 @@ Gpu::Gpu(int local_rank) : index_(local_rank % visible_gpus()) {
   cudaStream_t stream = nullptr;
   check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
   stream_ = stream;
+  device_memory::reset_peak();
 }
 
 Gpu::~Gpu() {
