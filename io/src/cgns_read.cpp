@@ -270,18 +270,25 @@ class Reader {
       }
       const auto node = section_nodes.find(name);
       if (node == section_nodes.end()) malformed(path_, std::string("section '") + name + "'");
-      const auto connectivity = tree.child(node->second, "DataArray_t", "ElementConnectivity");
-      const auto offsets = poly ? tree.child(node->second, "DataArray_t", "ElementStartOffset")
-                                : std::optional<double>{};
-      if (!connectivity || (poly && !offsets)) {
-        // ElementStartOffset came with CGNS 4.0; earlier MIXED and NGON sections lack it.
-        unsupported(path_, std::string("section '") + name + "' without ElementStartOffset");
+      const auto connectivity_node = tree.child(node->second, "DataArray_t", "ElementConnectivity");
+      if (!connectivity_node) {
+        malformed(path_, std::string("section '") + name + "' without ElementConnectivity");
       }
-      const std::int64_t entries = tree.values(*connectivity);
+      const double connectivity = *connectivity_node;
+      double offsets = 0.0;  // read only for poly sections
+      if (poly) {
+        const auto offsets_node = tree.child(node->second, "DataArray_t", "ElementStartOffset");
+        // ElementStartOffset came with CGNS 4.0; earlier MIXED and NGON sections lack it.
+        if (!offsets_node) {
+          unsupported(path_, std::string("section '") + name + "' without ElementStartOffset");
+        }
+        offsets = *offsets_node;
+      }
+      const std::int64_t entries = tree.values(connectivity);
       if (!poly && entries != std::int64_t{fixed_nodes} * static_cast<std::int64_t>(count)) {
         malformed(path_, std::string("section '") + name + "' connectivity size");
       }
-      if (poly && tree.values(*offsets) != static_cast<std::int64_t>(count) + 1) {
+      if (poly && tree.values(offsets) != static_cast<std::int64_t>(count) + 1) {
         inconsistent_offsets(name);
       }
       Section& section = sections_.emplace_back(Section{
@@ -300,7 +307,7 @@ class Reader {
         const std::size_t size = std::min(chunk_elements, count - first);
         const std::span<cgsize_t> b(bounds.data(), size + 1);
         if (poly) {
-          tree.read_integers(*offsets, static_cast<std::int64_t>(first), b);
+          tree.read_integers(offsets, static_cast<std::int64_t>(first), b);
         } else {
           for (std::size_t e = 0; e <= size; ++e)
             b[e] = static_cast<std::int64_t>(first + e) * fixed_nodes;
@@ -318,13 +325,13 @@ class Reader {
           while (hi < size && b[hi + 1] - b[lo] <= chunk_entries) ++hi;
           if (b[hi] - b[lo] > chunk_entries) {
             std::vector<cgsize_t> own(static_cast<std::size_t>(b[hi] - b[lo]));
-            tree.read_integers(*connectivity, b[lo], own);
+            tree.read_integers(connectivity, b[lo], own);
             read_element(section, type, first + lo, own, &own, family, name);
             lo = hi;
             continue;
           }
           data.resize(static_cast<std::size_t>(b[hi] - b[lo]));
-          tree.read_integers(*connectivity, b[lo], data);
+          tree.read_integers(connectivity, b[lo], data);
           for (std::size_t e = lo; e < hi; ++e) {
             read_element(
                 section, type, first + e,
