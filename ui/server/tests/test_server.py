@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY
+from urllib.parse import quote
 
 import autan
 import autan.initial_state
@@ -121,6 +122,18 @@ def test_the_registry_lists_the_runs_whose_solution_is_a_result(runs: Path) -> N
         json.dumps(run | {"status": "running", "finished": None, "monitors": None})
     )
     assert Registry(runs).scan().solutions == [early.name]
+
+
+def test_a_run_without_history_has_a_summary_with_its_settings(runs: Path) -> None:
+    # py/examples/crm_hl.py: M 0.2, 19.57 deg; no iteration recorded yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+
+    summary = Registry(runs).scan().summaries[early.name]
+
+    assert (summary["iteration"], summary["trend"]) == (None, [])
+    assert (summary["settings"]["mach"], summary["settings"]["aoa"]) == (0.2, "19.57 deg")
 
 
 def test_registry_rechecks_a_run_when_any_contract_file_changes(runs: Path) -> None:
@@ -244,6 +257,53 @@ def test_a_replaced_run_json_is_checked_again_whatever_its_time_and_size(runs: P
     assert (path.stat().st_mtime_ns, path.stat().st_size) == (before.st_mtime_ns, before.st_size)
 
     assert directory.name in registry.scan().rejected
+
+
+def test_a_run_file_downloads_as_it_is_on_disk(runs: Path, server: str, tmp_path: Path) -> None:
+    directory = next(runs.iterdir())
+    (tmp_path / "secret.txt").write_text("SECRET")
+    (directory / "linked.txt").symlink_to(tmp_path / "secret.txt")
+    (directory / "states").mkdir(exist_ok=True)
+
+    for name in ("run.json", "case.toml", "history.jsonl", "solution.cgns"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}")
+        assert response.status_code == 200, name
+        assert response.content == (directory / name).read_bytes()
+        assert f'filename="{name}"' in response.headers["content-disposition"]
+
+    # Only the directory's own regular files: no link, no directory, no path, no other name.
+    for name in ("linked.txt", "states", "..%2Frun.json", "%2E%2E", "missing.json"):
+        status = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}").status_code
+        assert status == 404, name
+
+    # Any file name reaches the client whole (RFC 6266), and a growing file is sent as opened.
+    odd = 'résultat "final".txt'
+    (directory / odd).write_text("x" * 10)
+    response = httpx.get(f"{server}/api/runs/{directory.name}/files/{quote(odd)}")
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith(
+        f"filename*=UTF-8''{quote(odd, safe='')}"
+    )
+    assert response.headers["content-disposition"].count("filename=") == 1
+
+    # results.md: a running run's solution.cgns is a checkpoint, not a result.
+    run = json.loads((directory / "run.json").read_text())
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    status = httpx.get(f"{server}/api/runs/{directory.name}/files/solution.cgns").status_code
+    assert status == 409
+
+
+def test_a_download_cut_short_leaves_no_file_open(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    url = f"{server}/api/runs/{directory.name}/files/solution.cgns"
+    before = len(list(Path("/dev/fd").iterdir()))
+    for _ in range(5):
+        with httpx.stream("GET", url) as response:
+            assert response.status_code == 200
+    time.sleep(0.5)
+    assert len(list(Path("/dev/fd").iterdir())) <= before
 
 
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:
@@ -786,3 +846,31 @@ def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Pa
     expected = min(math.log10(reference[k] / last[k]) for k in reference)
     assert summary["orders"] == pytest.approx(expected, abs=1e-3)
     assert summary["trend"][0] > 0  # the first line of the continuation is already below
+
+
+@pytest.mark.parametrize("outside", ["external storage", "external link"])
+def test_a_solution_is_read_only_from_its_own_file(runs: Path, server: str, outside: str) -> None:
+    # results.md#solutioncgns: one HDF5 file in the run directory. Data stored in or linked to
+    # another file would be read past the run directory's confinement.
+    import h5py  # noqa: PLC0415 -- only these tests edit a CGNS file
+
+    directory = next(runs.iterdir())
+    secret = runs.parent / "secret.cgns"
+    with h5py.File(directory / "solution.cgns", "r+") as tree:
+        pressure = tree["Base"]["Zone"]["WallSolution"]["Pressure"]
+        values = pressure[" data"][()]
+        if outside == "external storage":
+            del pressure[" data"]
+            secret.write_bytes(values.astype("<f8").tobytes())
+            pressure.create_dataset(
+                " data", shape=values.shape, dtype="<f8", external=[(str(secret), 0, values.nbytes)]
+            )
+        else:
+            # Beside the data the viewer reads, unused by it: the file still reaches outside.
+            with h5py.File(secret, "w") as other:
+                other.create_dataset("values", data=values)
+            tree["Base"]["Zone"]["Elsewhere"] = h5py.ExternalLink(str(secret), "/values")
+
+    response = httpx.get(f"{server}/api/runs/{directory.name}/surface")
+
+    assert response.status_code == 422
