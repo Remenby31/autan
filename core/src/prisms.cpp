@@ -235,7 +235,7 @@ class Merger {
   }
 
   // The prism on front face f, its wall-side cell c0, or why there is none.
-  std::pair<std::optional<Prism>, Fail> prism_on(index_t f, index_t c0) const {
+  [[nodiscard]] std::pair<std::optional<Prism>, Fail> prism_on(index_t f, index_t c0) const {
     if (c0 == no_cell || !is_tet(c0) || merged_[at(c0)] >= 0)
       return {std::nullopt, Fail::not_tetrahedron};
     Tri cap{};
@@ -259,7 +259,7 @@ class Merger {
       for (const index_t n : tet_neighbours(c1)) second.push_back(n);
       for (const index_t c2 : second) {
         if (c2 == c0 || c2 == c1) continue;
-        std::array<index_t, 3> key{c0, std::min(c1, c2), std::max(c1, c2)};
+        const std::array<index_t, 3> key{c0, std::min(c1, c2), std::max(c1, c2)};
         if (!seen.insert(key).second) continue;
         if (auto p = pattern({c0, c1, c2}, cap)) found.push_back(*p);
       }

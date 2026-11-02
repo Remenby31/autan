@@ -68,8 +68,9 @@ TEST_CASE("Zone names a polyMesh cannot hold are written as words, and reported"
   const autan::Mesh back = autan::io::read_polymesh(dir);
   CHECK(back.face_zones()[0].name == "Patch_1");
   CHECK(back.cell_zones()[0].name == "fluid_core_");
-  // A leading digit (a number to OpenFOAM's tokenizer), `$`, and the reader's own `interior`.
-  auto odd = autan::test::box(2, autan::test::BoxFill::hexa);
+  // A leading digit (a number to OpenFOAM's tokenizer), `$`, and the reader's own `interior`
+  // (a patch of a single cell, whose mesh has no internal face to take that name).
+  auto odd = autan::test::box(1, autan::test::BoxFill::hexa);
   odd.face_zones[0].name = "1";
   odd.face_zones[1].name = "a$b";
   odd.face_zones[2].name = "interior";

@@ -51,14 +51,16 @@ int main(int argc, char* const* argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     const std::string_view next = i + 1 < argc ? argv[i + 1] : "";
-    if (arg == "--planarity" && positive(next) && *positive(next) < 90.0) {
-      options.planarity_deg = *positive(next);
+    const std::optional<double> value = positive(next);
+    const bool angle = value.has_value() && value.value_or(90.0) < 90.0;
+    if (arg == "--planarity" && angle) {
+      options.planarity_deg = value.value_or(0.0);
       ++i;
-    } else if (arg == "--pillar" && positive(next) && *positive(next) < 90.0) {
-      options.pillar_deg = *positive(next);
+    } else if (arg == "--pillar" && angle) {
+      options.pillar_deg = value.value_or(0.0);
       ++i;
-    } else if (arg == "--aspect" && positive(next)) {
-      options.aspect = *positive(next);
+    } else if (arg == "--aspect" && value.has_value()) {
+      options.aspect = value.value_or(0.0);
       ++i;
     } else if (arg == "-h" || arg == "--help") {
       std::fputs(usage, stdout);
