@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
@@ -47,10 +47,21 @@ class InitialState(BaseModel):
         return self
 
 
+def unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object whose members all have distinct names: the runtime's streaming reader
+    refuses a repeated one, so the SDK does too."""
+    names = [name for name, _ in pairs]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        message = f"member {repeated[0]!r} appears twice"
+        raise ValueError(message)
+    return dict(pairs)
+
+
 def parse(data: bytes) -> InitialState | str:
     """The document in ``data``, or why it is not a valid one."""
     try:
-        document = json.loads(data)
+        document = json.loads(data, object_pairs_hook=unique_members)
     except ValueError as error:
         return str(error)
     try:
