@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -98,6 +99,12 @@ bool is_face_type(CGNS_ENUMT(ElementType_t) type) {
   return type == CGNS_ENUMV(TRI_3) || type == CGNS_ENUMV(QUAD_4);
 }
 
+// An element section is read in chunks of at most chunk_elements offsets (32 KiB) and
+// chunk_entries connectivity entries (1 MiB), whatever the section's size: what reading a section
+// costs beside the elements kept is a constant, and nothing for the points and edges skipped.
+constexpr std::size_t chunk_elements = 4096;
+constexpr std::int64_t chunk_entries = std::int64_t{1} << 17;
+
 bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {
   return type == CGNS_ENUMV(NODE) || type == CGNS_ENUMV(BAR_2);
 }
@@ -149,6 +156,7 @@ class Reader {
   }
 
  private:
+  struct Section;
   void read_families() {
     int n = 0;
     ok(cg_nfamilies(fn_, 1, &n), "count families");
@@ -219,6 +227,15 @@ class Reader {
   void read_sections() {
     int n = 0;
     ok(cg_nsections(fn_, 1, 1, &n), "count sections");
+    const CgioTree tree(fn_);
+    std::map<std::string, double> section_nodes;
+    if (const auto base = tree.child(tree.root(), "CGNSBase_t")) {
+      if (const auto zone = tree.child(*base, "Zone_t")) {
+        for (const double id : tree.children(*zone)) {
+          if (tree.label(id) == "Elements_t") section_nodes.emplace(tree.name(id), id);
+        }
+      }
+    }
     for (int s = 1; s <= n; ++s) {
       char name[33];
       CGNS_ENUMT(ElementType_t) type{};
@@ -243,27 +260,30 @@ class Reader {
         continue;
       }
 
-      cgsize_t data_size = 0;
-      ok(cg_ElementDataSize(fn_, 1, 1, s, &data_size), "size section", name);
-      std::vector<cgsize_t> connectivity(at(data_size));
-      std::vector<cgsize_t> offsets;
+      int fixed_nodes = 0;
       const bool poly =
           type == CGNS_ENUMV(MIXED) || type == CGNS_ENUMV(NGON_n) || type == CGNS_ENUMV(NFACE_n);
-      if (poly) {
-        offsets.resize(count + 1);
-        ok(cg_poly_elements_read(fn_, 1, 1, s, connectivity.data(), offsets.data(), nullptr),
-           "read section", name);
-      } else {
-        ok(cg_elements_read(fn_, 1, 1, s, connectivity.data(), nullptr), "read section", name);
-        int nodes = 0;
-        ok(cg_npe(type, &nodes), "size element", name);
-        if (nodes <= 0 || at(nodes) * count != connectivity.size()) {
+      if (!poly) {
+        ok(cg_npe(type, &fixed_nodes), "size element", name);
+        if (fixed_nodes <= 0)
           unsupported(path_, std::string("element type ") + ElementTypeName[type]);
-        }
-        offsets.resize(count + 1);
-        for (std::size_t e = 0; e <= count; ++e) offsets[e] = static_cast<cgsize_t>(e) * nodes;
       }
-      check_offsets(offsets, connectivity.size(), name);
+      const auto node = section_nodes.find(name);
+      if (node == section_nodes.end()) malformed(path_, std::string("section '") + name + "'");
+      const auto connectivity = tree.child(node->second, "DataArray_t", "ElementConnectivity");
+      const auto offsets = poly ? tree.child(node->second, "DataArray_t", "ElementStartOffset")
+                                : std::optional<double>{};
+      if (!connectivity || (poly && !offsets)) {
+        // ElementStartOffset came with CGNS 4.0; earlier MIXED and NGON sections lack it.
+        unsupported(path_, std::string("section '") + name + "' without ElementStartOffset");
+      }
+      const std::int64_t entries = tree.values(*connectivity);
+      if (!poly && entries != std::int64_t{fixed_nodes} * static_cast<std::int64_t>(count)) {
+        malformed(path_, std::string("section '") + name + "' connectivity size");
+      }
+      if (poly && tree.values(*offsets) != static_cast<std::int64_t>(count) + 1) {
+        inconsistent_offsets(name);
+      }
       Section& section = sections_.emplace_back(Section{
           .start = start,
           .count = count,
@@ -271,33 +291,49 @@ class Reader {
           .skipped = {},
           .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}, .family = family}});
       if (type != CGNS_ENUMV(MIXED)) section.elements.resize(count);
-      for (std::size_t e = 0; e < count; ++e) {
-        auto first = connectivity.begin() + offsets[e];
-        const auto last = connectivity.begin() + offsets[e + 1];
-        CGNS_ENUMT(ElementType_t) element_type = type;
-        if (type == CGNS_ENUMV(MIXED)) {
-          const cgsize_t code = *first;
-          ++first;
-          int nodes = 0;
-          if (code <= CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
-              cg_npe(static_cast<CGNS_ENUMT(ElementType_t)>(code), &nodes) != CG_OK || nodes <= 0 ||
-              last - first != nodes) {
-            malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
-          }
-          element_type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
-          // Points and edges of a MIXED section: their index alone, as in a section of them.
-          if (is_ignored_type(element_type)) {
-            section.skipped.push_back(e);
+      // The section in chunks of at most chunk_elements elements and chunk_entries connectivity
+      // entries, so that reading costs a constant beside what is kept; a larger element is read
+      // into its own storage.
+      std::vector<cgsize_t> bounds(chunk_elements + 1), data;
+      std::int64_t previous = 0;  // the offset that ends the elements read so far
+      for (std::size_t first = 0; first < count; first += chunk_elements) {
+        const std::size_t size = std::min(chunk_elements, count - first);
+        const std::span<cgsize_t> b(bounds.data(), size + 1);
+        if (poly) {
+          tree.read_integers(*offsets, static_cast<std::int64_t>(first), b);
+        } else {
+          for (std::size_t e = 0; e <= size; ++e)
+            b[e] = static_cast<std::int64_t>(first + e) * fixed_nodes;
+        }
+        // ElementStartOffset starts at 0, gives every element at least one entry and ends at
+        // the connectivity size, checked before anything is allocated from it.
+        if (b[0] != previous || (first + size == count && b[size] != entries))
+          inconsistent_offsets(name);
+        for (std::size_t e = 0; e < size; ++e) {
+          if (b[e + 1] <= b[e] || b[e + 1] > entries) inconsistent_offsets(name);
+        }
+        previous = b[size];
+        for (std::size_t lo = 0; lo < size;) {
+          std::size_t hi = lo + 1;
+          while (hi < size && b[hi + 1] - b[lo] <= chunk_entries) ++hi;
+          if (b[hi] - b[lo] > chunk_entries) {
+            std::vector<cgsize_t> own(static_cast<std::size_t>(b[hi] - b[lo]));
+            tree.read_integers(*connectivity, b[lo], own);
+            read_element(section, type, first + lo, own, &own, family, name);
+            lo = hi;
             continue;
           }
-          section.elements.emplace_back();
+          data.resize(static_cast<std::size_t>(b[hi] - b[lo]));
+          tree.read_integers(*connectivity, b[lo], data);
+          for (std::size_t e = lo; e < hi; ++e) {
+            read_element(
+                section, type, first + e,
+                std::span<const cgsize_t>(data).subspan(static_cast<std::size_t>(b[e] - b[lo]),
+                                                        static_cast<std::size_t>(b[e + 1] - b[e])),
+                nullptr, family, name);
+          }
+          lo = hi;
         }
-        Element& element =
-            type == CGNS_ENUMV(MIXED) ? section.elements.back() : section.elements[e];
-        element.type = element_type;
-        element.connectivity.assign(first, last);
-        element.family = family;
-        classify(element, name);
       }
     }
     std::ranges::sort(sections_, {}, &Section::start);
@@ -313,16 +349,46 @@ class Reader {
     }
   }
 
-  // ElementStartOffset of a section: starts at 0, never decreases, ends at
-  // the connectivity size, and gives every element at least one entry.
-  void check_offsets(const std::vector<cgsize_t>& offsets, std::size_t size,
-                     const char* section) const {
-    bool valid = !offsets.empty() && offsets.front() == 0 && at(offsets.back()) == size;
-    for (std::size_t e = 0; valid && e + 1 < offsets.size(); ++e)
-      valid = offsets[e + 1] > offsets[e];
-    if (!valid)
-      malformed(path_,
-                std::string("ElementStartOffset of section '") + section + "' is inconsistent");
+  [[noreturn]] void inconsistent_offsets(const char* section) const {
+    malformed(path_,
+              std::string("ElementStartOffset of section '") + section + "' is inconsistent");
+  }
+
+  // Element `e` of `section`, its entries `entries`: kept, or a point or an edge of a MIXED
+  // section, skipped. With `owner`, the vector `entries` views, whose storage the element takes.
+  void read_element(Section& section, CGNS_ENUMT(ElementType_t) type, std::size_t e,
+                    std::span<const cgsize_t> entries, std::vector<cgsize_t>* owner,
+                    const std::string& family, const char* name) {
+    CGNS_ENUMT(ElementType_t) element_type = type;
+    auto first = entries.begin();
+    const auto last = entries.end();
+    if (type == CGNS_ENUMV(MIXED)) {
+      const cgsize_t code = *first;
+      ++first;
+      int nodes = 0;
+      if (code <= CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
+          cg_npe(static_cast<CGNS_ENUMT(ElementType_t)>(code), &nodes) != CG_OK || nodes <= 0 ||
+          last - first != nodes) {
+        malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
+      }
+      element_type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
+      // Points and edges of a MIXED section: their index alone, as in a section of them.
+      if (is_ignored_type(element_type)) {
+        section.skip(e);
+        return;
+      }
+      section.elements.emplace_back();
+    }
+    Element& element = type == CGNS_ENUMV(MIXED) ? section.elements.back() : section.elements[e];
+    element.type = element_type;
+    if (owner != nullptr) {
+      owner->erase(owner->begin(), owner->begin() + (first - entries.begin()));
+      element.connectivity = std::move(*owner);
+    } else {
+      element.connectivity.assign(first, last);
+    }
+    element.family = family;
+    classify(element, name);
   }
 
   // The element of id `id`, or null when no section holds it.
@@ -918,20 +984,37 @@ class Reader {
   std::vector<double> x_, y_, z_;
   std::map<std::string, Family> families_;
   // A section's elements but its points and edges: none in a section of them, those of a
-  // MIXED section listed by index in `skipped`, one element standing for them all.
+  // MIXED section listed as runs of consecutive indices in `skipped`, one element standing for
+  // them all. A run follows a kept element, so there are at most as many runs as kept elements,
+  // plus one.
+  struct Run {
+    std::size_t first;   // index of its first element
+    std::size_t count;   // elements in it
+    std::size_t before;  // elements skipped before it
+  };
   struct Section {
     cgsize_t start;
     std::size_t count;
     std::vector<Element> elements;
-    std::vector<std::size_t> skipped;  // ascending
+    std::vector<Run> skipped;  // ascending
     Element ignored;
 
+    void skip(std::size_t index) {
+      if (!skipped.empty() && skipped.back().first + skipped.back().count == index) {
+        ++skipped.back().count;
+      } else {
+        const std::size_t before =
+            skipped.empty() ? 0 : skipped.back().before + skipped.back().count;
+        skipped.push_back(Run{.first = index, .count = 1, .before = before});
+      }
+    }
     [[nodiscard]] const Element* at(std::size_t index) const {
       if (elements.empty()) return &ignored;
-      if (skipped.empty()) return &elements[index];
-      const auto it = std::ranges::lower_bound(skipped, index);
-      if (it != skipped.end() && *it == index) return &ignored;
-      return &elements[index - static_cast<std::size_t>(it - skipped.begin())];
+      const auto it = std::ranges::upper_bound(skipped, index, {}, &Run::first);
+      if (it == skipped.begin()) return &elements[index];
+      const Run& run = *std::prev(it);
+      if (index < run.first + run.count) return &ignored;
+      return &elements[index - run.before - run.count];
     }
   };
   std::vector<Section> sections_;

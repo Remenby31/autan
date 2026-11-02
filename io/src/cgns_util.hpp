@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -127,6 +128,31 @@ class CgioTree {
     std::vector<std::int64_t> all(static_cast<std::size_t>(logical_bytes(node) / 4) + N);
     check(cgio_read_all_data_type(cgio_, node, "I8", all.data()), "read an integer node");
     for (std::size_t i = 0; i < N; ++i) out[i] = all[i];
+  }
+  /// The number of values of `node`'s data, from the metadata only.
+  [[nodiscard]] std::int64_t values(double node) const {
+    int dims = 0;
+    std::array<cgsize_t, CGIO_MAX_DIMENSIONS> extent{};
+    check(cgio_get_dimensions(cgio_, node, &dims, extent.data()), "read dimensions");
+    std::int64_t count = dims > 0 ? 1 : 0;
+    for (int d = 0; d < dims; ++d)
+      count *= static_cast<std::int64_t>(extent[static_cast<std::size_t>(d)]);
+    return count;
+  }
+  /// Values [first, first + out.size()) of a one-dimensional integer node, as 64-bit integers,
+  /// read alone; E0132 for a node of another rank.
+  void read_integers(double node, std::int64_t first, std::span<cgsize_t> out) const {
+    static_assert(sizeof(cgsize_t) == 8);
+    if (out.empty()) return;
+    int dims = 0;
+    std::array<cgsize_t, CGIO_MAX_DIMENSIONS> extent{};
+    check(cgio_get_dimensions(cgio_, node, &dims, extent.data()), "read dimensions");
+    if (dims != 1) throw Error(ErrorCode::io_malformed, "CGNS: '" + name(node) + "' is not 1-D");
+    const cgsize_t start = first + 1, end = first + static_cast<cgsize_t>(out.size()), stride = 1;
+    const cgsize_t size = static_cast<cgsize_t>(out.size()), one = 1;
+    check(cgio_read_data_type(cgio_, node, &start, &end, &stride, "I8", 1, &size, &one, &size,
+                              &stride, out.data()),
+          "read an integer node");
   }
   /// The data of a C1 node as text.
   [[nodiscard]] std::string text(double node) const {

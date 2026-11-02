@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <random>
 #include <string>
@@ -618,8 +619,59 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
   CHECK(std::ranges::equal(plain.face_nodes(), mixed.face_nodes()));
 }
 
+namespace {
+
+// `file`'s 64-bit integer dataset at `path` replaced by `values` of extent `dims`.
+void replace_dataset(const fs::path& file, const char* path, const std::vector<hsize_t>& dims,
+                     const std::vector<std::int64_t>& values) {
+  const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  REQUIRE(h5 >= 0);
+  REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
+  const hid_t space = H5Screate_simple(static_cast<int>(dims.size()), dims.data(), nullptr);
+  const hid_t dataset =
+      H5Dcreate2(h5, path, H5T_STD_I64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  REQUIRE(dataset >= 0);
+  REQUIRE(H5Dwrite(dataset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+  H5Dclose(dataset);
+  H5Sclose(space);
+  H5Fclose(h5);
+}
+
+}  // namespace
+
 TEST_CASE("CGNS content that contradicts itself is E0132", "[cgns]") {
   using autan::ErrorCode;
+  fs::create_directories(temp_dir());
+  SECTION("a MIXED section whose offsets run past its connectivity") {
+    // Past the first chunk of offsets the reader reads, before it sizes anything from them.
+    constexpr std::int64_t edges = 4097;
+    const fs::path file = cgns_file("offsets.cgns", [](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      std::vector<cgsize_t> connectivity, offsets{0};
+      for (std::int64_t e = 0; e < edges; ++e) {
+        connectivity.insert(connectivity.end(), {CGNS_ENUMV(BAR_2), 1, 2});
+        offsets.push_back(offsets.back() + 3);
+      }
+      int section = 0;
+      REQUIRE(cg_poly_section_write(fn, base, 1, "Edges", CGNS_ENUMV(MIXED), 2, edges + 1, 0,
+                                    connectivity.data(), offsets.data(), &section) == CG_OK);
+    });
+    std::vector<std::int64_t> offsets;
+    for (std::int64_t e = 0; e <= edges; ++e) offsets.push_back(3 * e);
+    offsets[4096] = std::numeric_limits<std::int64_t>::max();
+    replace_dataset(file, "/Base/Zone/Edges/ElementStartOffset/ data",
+                    {static_cast<hsize_t>(edges + 1)}, offsets);
+    require_error(ErrorCode::io_malformed, file);
+  }
+  SECTION("a connectivity that is not one-dimensional, or not of its element type's size") {
+    const auto [dims, values] =
+        GENERATE(std::pair{std::vector<hsize_t>{1, 4}, std::vector<std::int64_t>{1, 2, 3, 4}},
+                 std::pair{std::vector<hsize_t>{3}, std::vector<std::int64_t>{1, 2, 3}});
+    const fs::path file = cgns_file("connectivity.cgns",
+                                    [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
+    replace_dataset(file, "/Base/Zone/Cells/ElementConnectivity/ data", dims, values);
+    require_error(ErrorCode::io_malformed, file);
+  }
   SECTION("a zone declaring more cells than it holds") {
     require_error(ErrorCode::io_malformed, cgns_file("count.cgns", [](int fn, int base) {
                     unstructured_tet(fn, base, "Zone", 2);
@@ -892,6 +944,8 @@ TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns
 }
 
 #if defined(__linux__)
+#include <malloc.h>
+
 namespace {
 
 // A /proc/self/status field, in bytes.
@@ -906,6 +960,7 @@ std::int64_t status_bytes(const std::string& key) {
 // The peak resident memory `run` adds while it runs.
 template <class Run>
 std::int64_t peak_of(const Run& run) {
+  malloc_trim(0);  // freed memory the allocator kept would otherwise hide what `run` allocates
   const std::int64_t before = status_bytes("VmRSS");
   std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
   run();
@@ -1016,5 +1071,32 @@ TEST_CASE(
     CAPTURE(before, after, stored);
     CHECK(after - before <= logical.filtered + caches);
   }
+}
+TEST_CASE("Reading a MIXED section costs the elements it keeps, not its points and edges",
+          "[cgns]") {
+  // mesh.md, Readers: a section is read in chunks of at most 4096 offsets and 2^17 entries, so a
+  // million edges cost those buffers and HDF5's caches at most, not their 32 MB.
+  fs::create_directories(temp_dir());
+  constexpr cgsize_t edges = 1'000'000;
+  const fs::path plain =
+      cgns_file("mixed-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
+  const fs::path padded = cgns_file("mixed-edges.cgns", [](int fn, int base) {
+    unstructured_tet(fn, base, "Zone");
+    std::vector<cgsize_t> connectivity, offsets{0};
+    for (cgsize_t e = 0; e < edges; ++e) {
+      connectivity.insert(connectivity.end(), {CGNS_ENUMV(BAR_2), 1, 2});
+      offsets.push_back(offsets.back() + 3);
+    }
+    int section = 0;
+    REQUIRE(cg_poly_section_write(fn, base, 1, "Edges", CGNS_ENUMV(MIXED), 2, edges + 1, 0,
+                                  connectivity.data(), offsets.data(), &section) == CG_OK);
+  });
+  constexpr std::int64_t buffers = (4096 + 1) * 8 + (std::int64_t{1} << 17) * 8;
+  constexpr std::int64_t caches = (std::int64_t{4} << 20) + (std::int64_t{8} << 20) + (64 << 10);
+  (void)autan::io::read_mesh(plain);  // the libraries' first-use setup, outside both peaks
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(padded).n_cells() == 1); });
+  CAPTURE(before, after);
+  CHECK(after - before <= buffers + caches);
 }
 #endif
