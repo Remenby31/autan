@@ -53,6 +53,23 @@ class SpalartAllmaras {
   /// Writes the eddy viscosity of s to the flow, per cell and per boundary face.
   void eddy_viscosity(std::span<const State> s);
 
+  /// For the coupled implicit step's matrix-free product (docs/design/coupled-sa.md), after the
+  /// flow's residual and freeze() at the flow state to hold: holds the branches of R at s (the
+  /// source's S_tilde limit, S_tilde > 0 with r below its cap and sign of nt; each face's upwind
+  /// side and sign of nt), in a workspace of its own. Leaves what residual() last evaluated
+  /// untouched.
+  void freeze(std::span<const State> s);
+  /// After the flow's residual_frozen: R(s) at the flow state of that evaluation with the
+  /// branches of freeze(), equal to residual(s) bit for bit at the states of freeze(). Throws
+  /// std::logic_error before freeze().
+  void residual_frozen(std::span<const State> s, std::span<Res> res);
+  /// As the flow's residual_frozen `eddy` step: writes the eddy viscosity of s at the primitives
+  /// of that evaluation to its frozen_arrays(). mu_t is smooth through nt = 0 (f_v1 ~ chi^3), so
+  /// no branch is held. Throws std::logic_error before freeze().
+  void eddy_viscosity_frozen(std::span<const State> s);
+  /// Frees what freeze() allocated.
+  void release_frozen();
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

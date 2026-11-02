@@ -5,8 +5,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -21,6 +23,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/spalart_allmaras.hpp"
 
 namespace {
 
@@ -32,6 +35,7 @@ using autan::physics::Euler;
 using autan::physics::Gas;
 using autan::physics::NavierStokes;
 using autan::physics::Scheme;
+using autan::physics::SpalartAllmaras;
 using autan::physics::Transport;
 
 const fs::path mesh_dir{AUTAN_TEST_MESH_DIR};
@@ -384,4 +388,142 @@ TEMPLATE_TEST_CASE("the frozen residual is the residual at its state and keeps t
   CHECK(traction == after);
   ns.release_frozen();
   CHECK_THROWS_AS(ns.residual_frozen(s1, rf), std::logic_error);
+}
+
+TEMPLATE_TEST_CASE(
+    "the coupled frozen residual is the residual at its state and smooth across branches",
+    "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  Scheme scheme;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, 1e5 / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  SpalartAllmaras<P> sa(mesh, g, ns, t);
+  // nt from -2.5 nu to 3.5 nu: chi through 0 (sign of nt, f_n), fv2 < 0 at chi of a few with
+  // the wall distance y (the S_tilde limit, S_tilde <= 0, r at its cap). Along s(tau), nt grows
+  // by tau nu, and every fifth cell with y > 0.3 starts at nt = 0.5 e nu or -1.5 e nu, so that
+  // the path changes its sign there between the points of the second differences below.
+  constexpr double nu = mu / rho;
+  double e = 1e-3;
+  auto nt = [](double x, double y, double z, double tau) {
+    return nu * (0.5 + 3.0 * std::sin(4.0 * x + 5.0 * y - 3.0 * z) + tau);
+  };
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  std::vector<double> data(5 * nb), nt_b(nb), wall(n);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const double x = g.face_centroid_x[f], y = g.face_centroid_y[f], z = g.face_centroid_z[f];
+    const auto w = primitive(x, y, z);
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    if (zone == "ymin") {
+      kind[b] = BoundaryKind::wall;
+    } else {
+      for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = w[k];
+    }
+    nt_b[b] = nt(x, y, z, 0.0);
+  }
+  ns.set_boundary(kind, data);
+  sa.set_boundary(nt_b);
+  for (std::size_t c = 0; c < n; ++c) wall[c] = g.cell_centroid_y[c];
+  sa.set_wall_distance(wall);
+  // The states along s(tau): the velocity and pressure perturbations of the flow test above, nt's.
+  auto flow = [&](double tau) {
+    std::vector<double> u(5 * n);
+    for (std::size_t c = 0; c < n; ++c) {
+      const double x = g.cell_centroid_x[c], y = g.cell_centroid_y[c], z = g.cell_centroid_z[c];
+      auto w = primitive(x, y, z);
+      w[1] += (1.0 + tau) * std::sin(7.0 * x + 3.0 * z);
+      w[4] += (1.0 + tau) * 300.0 * std::cos(5.0 * y);
+      u[c] = w[0];
+      for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = w[0] * w[1 + k];
+      u[4 * n + c] =
+          w[4] / (air.gamma - 1.0) + 0.5 * w[0] * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]);
+    }
+    std::vector<S> s(5 * n);
+    ns.state(u, s);
+    return s;
+  };
+  auto seeded = [&](std::size_t c) { return c % 5 == 0 && g.cell_centroid_y[c] > 0.3; };
+  auto turbulence = [&](double tau) {
+    std::vector<S> s(n);
+    for (std::size_t c = 0; c < n; ++c) {
+      const double x = g.cell_centroid_x[c], y = g.cell_centroid_y[c], z = g.cell_centroid_z[c];
+      const double v = seeded(c) ? nu * ((c % 10 == 0 ? 0.5 : -1.5) * e + tau) : nt(x, y, z, tau);
+      s[c] = S(rho * v);
+    }
+    return s;
+  };
+  auto held = [&](double tau) {
+    const auto s = flow(tau), v = turbulence(tau);
+    std::vector<R> r(6 * n);
+    ns.residual_frozen(s, std::span(r).first(5 * n), [&] { sa.eddy_viscosity_frozen(v); });
+    sa.residual_frozen(v, std::span(r).last(n));
+    return r;
+  };
+  auto unheld = [&](double tau) {
+    const auto s = flow(tau), v = turbulence(tau);
+    std::vector<R> r(6 * n);
+    ns.residual(s, std::span(r).first(5 * n));
+    sa.eddy_viscosity(v);
+    ns.residual(s, std::span(r).first(5 * n));
+    sa.residual(v, std::span(r).last(n));
+    return r;
+  };
+  const auto r0 = unheld(0.0);
+  ns.freeze(flow(0.0));
+  sa.freeze(turbulence(0.0));
+  CHECK(held(0.0) == r0);
+
+  std::vector<R> cached(5 * n);
+  ns.residual(flow(0.0), cached);
+  CHECK(std::equal(cached.begin(), cached.end(), r0.begin()));
+
+  // Second differences of nt's residual, D(e) = R(e) - 2 R(0) + R(-e): q(e) = |D(2e) - 4 D(e)|
+  // falls as e^4 where R is smooth along s(tau), as e^2 where a branch changes sign of nt (a jump
+  // of the second derivative). In FP32 these second differences are round-off. The flow's held
+  // residual is Euler<P>'s and its own test's.
+  if constexpr (std::is_same_v<P, autan::kernels::fp64>) {
+    // Over every cell, or over those where nt changes sign.
+    auto q = [&](auto&& r, bool crossing) {
+      std::array<std::vector<R>, 5> at{r(-2 * e), r(-e), r(0.0), r(e), r(2 * e)};
+      double out = 0.0;
+      for (std::size_t c = 0; c < n; ++c) {
+        if (crossing && !seeded(c)) continue;
+        auto d = [&](std::size_t lo, std::size_t hi) {
+          return at[hi][5 * n + c] - 2.0 * at[2][5 * n + c] + at[lo][5 * n + c];
+        };
+        out = std::max(out, std::abs(d(0, 4) - 4.0 * d(1, 3)));
+      }
+      return out;
+    };
+    std::array<double, 2> qh{}, qu{};
+    for (std::size_t i = 0; i < 2; ++i) {
+      e = i == 0 ? 1e-3 : 5e-4;
+      ns.residual(flow(0.0), cached);
+      ns.freeze(flow(0.0));
+      sa.freeze(turbulence(0.0));
+      qh[i] = q(held, false);
+      qu[i] = q(unheld, true);
+    }
+    const double held_order = std::log2(qh[0] / qh[1]);
+    const double unheld_order = std::log2(qu[0] / qu[1]);
+    CAPTURE(held_order, unheld_order);
+    CHECK(held_order > 3.5);
+    CHECK(unheld_order < 3.0);
+  }
+  sa.release_frozen();
+  std::vector<R> rn(n);
+  CHECK_THROWS_AS(sa.residual_frozen(turbulence(0.0), rn), std::logic_error);
 }

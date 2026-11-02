@@ -22,6 +22,7 @@ from pathlib import Path
 
 from autan_codegen.dsl import (
     STENCIL,
+    Flag,
     Geom,
     Grad,
     Inc,
@@ -31,6 +32,7 @@ from autan_codegen.dsl import (
     Residual,
     State,
     Sum,
+    Vec2,
     Vec3,
     Write,
     boundary_loop,
@@ -117,10 +119,16 @@ def fv1(chi: State) -> State:
 
 
 @pointwise
-def fn(chi: State) -> State:
-    # Allmaras et al. (2012), eq. 21: the diffusion coefficient's factor for nt < 0.
+def fn_held(chi: State, pos: State) -> State:
+    # Allmaras et al. (2012), eq. 21: the diffusion coefficient's factor for nt < 0; `pos` (1 for
+    # nt >= 0) selects the branch.
     c3 = chi * chi * chi
-    return (CN1 + c3) / (CN1 - c3) if chi < 0.0 else 1.0
+    return 1.0 if pos > 0.5 else (CN1 + c3) / (CN1 - c3)
+
+
+@pointwise
+def fn(chi: State) -> State:
+    return fn_held(chi, 1.0 if chi >= 0.0 else 0.0)
 
 
 @pointwise
@@ -132,10 +140,9 @@ def vorticity(gw: Grad.Mat53) -> State:
 
 
 @pointwise
-def sa_source(nt: State, nu: State, omega: State, d: Geom, ft2s: Param) -> State:
-    # rho-free source P - D of SA-neg (TMR SA page): standard SA with the S_tilde of Allmaras
-    # et al. (2012), Note 1(c), for nt >= 0; P = cb1 (1 - ct3) Omega nt, D = -cw1 (nt / d)^2 for
-    # nt < 0.
+def sa_branches(nt: State, nu: State, omega: State, d: Geom) -> State.Vec3:
+    # The source's branches at (nt, omega), 1 or 0: S_bar >= -c2 Omega, S_tilde > 0 with r below its
+    # cap, nt >= 0; sa_source_held holds them for a matrix-free product.
     chi = nt / nu
     kd2 = KAPPA * KAPPA * d * d
     f1 = fv1(chi)
@@ -145,7 +152,27 @@ def sa_source(nt: State, nu: State, omega: State, d: Geom, ft2s: Param) -> State
         st = omega + sbar
     else:
         st = omega + omega * (C2 * C2 * omega + C3 * sbar) / ((C3 - 2.0 * C2) * omega - sbar)
-    r = min(nt / (st * kd2), R_MAX) if st > 0.0 else R_MAX
+    unclipped = 1.0 if st > 0.0 and nt / (st * kd2) < R_MAX else 0.0
+    return Vec3(1.0 if sbar >= -C2 * omega else 0.0, unclipped, 1.0 if nt >= 0.0 else 0.0)
+
+
+@pointwise
+def sa_source_held(
+    nt: State, nu: State, omega: State, d: Geom, ft2s: Param, k: State.Vec3
+) -> State:
+    # rho-free source P - D of SA-neg (TMR SA page): standard SA with the S_tilde of Allmaras
+    # et al. (2012), Note 1(c), for nt >= 0; P = cb1 (1 - ct3) Omega nt, D = -cw1 (nt / d)^2 for
+    # nt < 0; the branches as sa_branches gives them.
+    chi = nt / nu
+    kd2 = KAPPA * KAPPA * d * d
+    f1 = fv1(chi)
+    fv2 = 1.0 - chi / (1.0 + chi * f1)
+    sbar = nt * fv2 / kd2
+    if k[0] > 0.5:
+        st = omega + sbar
+    else:
+        st = omega + omega * (C2 * C2 * omega + C3 * sbar) / ((C3 - 2.0 * C2) * omega - sbar)
+    r = nt / (st * kd2) if k[1] > 0.5 else R_MAX
     g = r + CW2 * (r**6 - r)
     c6 = CW3**6
     fw = g * exp(log((1.0 + c6) / (g**6 + c6)) / 6.0)
@@ -154,7 +181,12 @@ def sa_source(nt: State, nu: State, omega: State, d: Geom, ft2s: Param) -> State
         nt / d
     )
     neg = CB1 * (1.0 - CT3) * omega * nt + CW1 * (nt / d) * (nt / d)
-    return pos if nt >= 0.0 else neg
+    return pos if k[2] > 0.5 else neg
+
+
+@pointwise
+def sa_source(nt: State, nu: State, omega: State, d: Geom, ft2s: Param) -> State:
+    return sa_source_held(nt, nu, omega, d, ft2s, sa_branches(nt, nu, omega, d))
 
 
 @pointwise
@@ -255,6 +287,94 @@ nt_gradients = cell_reduce(
 
 
 @pointwise
+def nt_face_parts(
+    rl: State,
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    tl: Grad.Vec3,
+    xl: Geom.Vec3,
+    rr: State,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    tr: Grad.Vec3,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    pref: Param,
+) -> tuple[State, State, State, State.Vec5]:
+    # The face's mass flux, nt reconstructed from either side, and its flow state.
+    sl = rel(xf, xl)
+    sr = rel(xf, xr)
+    wf = 0.5 * (face_value(wl, gl, sl, pref) + face_value(wr, gr, sr, pref))
+    mdot = wf[0] * dot(velocity(wf), n) * area
+    return mdot, rl / wl[0] + dot(tl, sl), rr / wr[0] + dot(tr, sr), wf
+
+
+@pointwise
+def nt_face_held(
+    rl: State,
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    tl: Grad.Vec3,
+    xl: Geom.Vec3,
+    rr: State,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    tr: Grad.Vec3,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
+    k: Flag.Vec2,
+) -> Residual:
+    # k: (the upwind side is the left one, nt >= 0 at the face), from nt_face_flags. The flow face
+    # values' positivity fallback (face_value) is not held: it does not act on admissible states.
+    mdot, ntf_l, ntf_r, wf = nt_face_parts(
+        rl, wl, gl, tl, xl, rr, wr, gr, tr, xr, xf, n, area, pref
+    )
+    d = rel(xr, xl)
+    dist = sqrt(dot(d, d))
+    inv_d = 1.0 / dist
+    e = inv_d * d
+    conv = mdot * ntf_l if k[0] > 0.5 else mdot * ntf_r
+    ntf = 0.5 * (ntf_l + ntf_r)
+    nu = lam_nu(wf, rgas, pref, mref, tref, s, law)
+    gn = corrected(0.5 * (tl + tr), rr / wr[0] - rl / wl[0], e, inv_d)
+    diff = wf[0] * (nu + ntf * fn_held(ntf / nu, k[1])) / SIGMA * dot(gn, n) * area
+    return conv - diff
+
+
+@pointwise
+def nt_face_flags(
+    rl: State,
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    tl: Grad.Vec3,
+    xl: Geom.Vec3,
+    rr: State,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    tr: Grad.Vec3,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    pref: Param,
+) -> Flag.Vec2:
+    mdot, ntf_l, ntf_r, _wf = nt_face_parts(
+        rl, wl, gl, tl, xl, rr, wr, gr, tr, xr, xf, n, area, pref
+    )
+    return Vec2(1.0 if mdot > 0.0 else 0.0, 1.0 if 0.5 * (ntf_l + ntf_r) >= 0.0 else 0.0)
+
+
+@pointwise
 def nt_face(
     rl: State,
     wl: State.Vec5,
@@ -276,24 +396,81 @@ def nt_face(
     s: Param,
     law: Param,
 ) -> Residual:
-    ntl = rl / wl[0]
-    ntr = rr / wr[0]
-    d = rel(xr, xl)
-    dist = sqrt(dot(d, d))
+    k = nt_face_flags(rl, wl, gl, tl, xl, rr, wr, gr, tr, xr, xf, n, area, pref)
+    return nt_face_held(
+        rl, wl, gl, tl, xl, rr, wr, gr, tr, xr, xf, n, area, rgas, pref, mref, tref, s, law, k
+    )
+
+
+@pointwise
+def nt_boundary_parts(
+    rl: State,
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    tl: Grad.Vec3,
+    xl: Geom.Vec3,
+    wb: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    pref: Param,
+) -> tuple[State, State, State.Vec5]:
+    r = rel(xf, xl)
+    wf = 0.5 * (face_value(wl, gl, r, pref) + wb)
+    return wf[0] * dot(velocity(wf), n) * area, rl / wl[0] + dot(tl, r), wf
+
+
+@pointwise
+def nt_boundary_held(
+    rl: State,
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    tl: Grad.Vec3,
+    xl: Geom.Vec3,
+    ntb: State,
+    wb: State.Vec5,
+    kind: Geom,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
+    k: Flag.Vec2,
+) -> Residual:
+    # k: (outflow through the face, the boundary nt >= 0), from nt_boundary_flags.
+    mdot, ntf_l, _wf = nt_boundary_parts(rl, wl, gl, tl, xl, wb, xf, n, area, pref)
+    r = rel(xf, xl)
+    dist = sqrt(dot(r, r))
     inv_d = 1.0 / dist
-    e = inv_d * d
-    sl = rel(xf, xl)
-    sr = rel(xf, xr)
-    wf = 0.5 * (face_value(wl, gl, sl, pref) + face_value(wr, gr, sr, pref))
-    mdot = wf[0] * dot(velocity(wf), n) * area
-    ntf_l = ntl + dot(tl, sl)
-    ntf_r = ntr + dot(tr, sr)
-    conv = mdot * ntf_l if mdot > 0.0 else mdot * ntf_r
-    ntf = 0.5 * (ntf_l + ntf_r)
-    nu = lam_nu(wf, rgas, pref, mref, tref, s, law)
-    gn = corrected(0.5 * (tl + tr), ntr - ntl, e, inv_d)
-    diff = wf[0] * (nu + ntf * fn(ntf / nu)) / SIGMA * dot(gn, n) * area
-    return conv - diff
+    e = inv_d * r
+    conv = mdot * ntf_l if k[0] > 0.5 else mdot * ntb
+    nu = lam_nu(wb, rgas, pref, mref, tref, s, law)
+    gn = corrected_boundary(tl, ntb - rl / wl[0], e, inv_d)
+    diff = wb[0] * (nu + ntb * fn_held(ntb / nu, k[1])) / SIGMA * dot(gn, n) * area
+    wall = kind > BC_WALL - 0.5
+    return 0.0 * conv - diff if wall else conv - diff
+
+
+@pointwise
+def nt_boundary_flags(
+    rl: State,
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    tl: Grad.Vec3,
+    xl: Geom.Vec3,
+    ntb: State,
+    wb: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    pref: Param,
+) -> Flag.Vec2:
+    mdot, _ntf, _wf = nt_boundary_parts(rl, wl, gl, tl, xl, wb, xf, n, area, pref)
+    return Vec2(1.0 if mdot > 0.0 else 0.0, 1.0 if ntb >= 0.0 else 0.0)
 
 
 @pointwise
@@ -316,20 +493,57 @@ def nt_boundary(
     s: Param,
     law: Param,
 ) -> Residual:
-    ntl = rl / wl[0]
-    r = rel(xf, xl)
-    dist = sqrt(dot(r, r))
-    inv_d = 1.0 / dist
-    e = inv_d * r
-    wf = 0.5 * (face_value(wl, gl, r, pref) + wb)
-    mdot = wf[0] * dot(velocity(wf), n) * area
-    ntf_l = ntl + dot(tl, r)
-    conv = mdot * ntf_l if mdot > 0.0 else mdot * ntb
-    nu = lam_nu(wb, rgas, pref, mref, tref, s, law)
-    gn = corrected_boundary(tl, ntb - ntl, e, inv_d)
-    diff = wb[0] * (nu + ntb * fn(ntb / nu)) / SIGMA * dot(gn, n) * area
-    wall = kind > BC_WALL - 0.5
-    return 0.0 * conv - diff if wall else conv - diff
+    k = nt_boundary_flags(rl, wl, gl, tl, xl, ntb, wb, xf, n, area, pref)
+    return nt_boundary_held(
+        rl, wl, gl, tl, xl, ntb, wb, kind, xf, n, area, rgas, pref, mref, tref, s, law, k
+    )
+
+
+@pointwise
+def nt_cell_source_held(
+    rc: State,
+    w: State.Vec5,
+    gw: Grad.Mat53,
+    tg: Grad.Vec3,
+    d: Geom,
+    vol: Geom,
+    ext: State,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
+    ft2s: Param,
+    k: State.Vec3,
+) -> Residual:
+    # -V (rho (P - D) + [rho cb2 |grad nt|^2 - (nu + nt f_n) grad rho . grad nt] / sigma + ext),
+    # the branches as nt_cell_flags gives them.
+    nt = rc / w[0]
+    nu = lam_nu(w, rgas, pref, mref, tref, s, law)
+    grho = Vec3(gw[0, 0], gw[0, 1], gw[0, 2])
+    q = (
+        w[0] * sa_source_held(nt, nu, vorticity(gw), d, ft2s, k)
+        + (w[0] * CB2 * dot(tg, tg) - (nu + nt * fn_held(nt / nu, k[2])) * dot(grho, tg)) / SIGMA
+    )
+    return -vol * (q + ext)
+
+
+@pointwise
+def nt_cell_flags(
+    rc: State,
+    w: State.Vec5,
+    gw: Grad.Mat53,
+    d: Geom,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
+) -> State.Vec3:
+    nt = rc / w[0]
+    return sa_branches(nt, lam_nu(w, rgas, pref, mref, tref, s, law), vorticity(gw), d)
 
 
 @pointwise
@@ -349,15 +563,8 @@ def nt_cell_source(
     law: Param,
     ft2s: Param,
 ) -> Residual:
-    # -V (rho (P - D) + [rho cb2 |grad nt|^2 - (nu + nt f_n) grad rho . grad nt] / sigma + ext).
-    nt = rc / w[0]
-    nu = lam_nu(w, rgas, pref, mref, tref, s, law)
-    grho = Vec3(gw[0, 0], gw[0, 1], gw[0, 2])
-    q = (
-        w[0] * sa_source(nt, nu, vorticity(gw), d, ft2s)
-        + (w[0] * CB2 * dot(tg, tg) - (nu + nt * fn(nt / nu)) * dot(grho, tg)) / SIGMA
-    )
-    return -vol * (q + ext)
+    k = nt_cell_flags(rc, w, gw, d, rgas, pref, mref, tref, s, law)
+    return nt_cell_source_held(rc, w, gw, tg, d, vol, ext, rgas, pref, mref, tref, s, law, ft2s, k)
 
 
 TRANSPORT = {**VISCOSITY}
@@ -376,7 +583,7 @@ nt_sources = cell_loop(
     out=Write(nt_res),
 )
 
-FACE = {
+FACE_FLOW = {
     "rl": rnu.left,
     "wl": prim.left,
     "gl": grad.left,
@@ -390,9 +597,9 @@ FACE = {
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
-    **TRANSPORT,
 }
-BOUNDARY = {
+FACE = {**FACE_FLOW, **TRANSPORT}
+BOUNDARY_FLOW = {
     "rl": rnu.left,
     "wl": prim.left,
     "gl": grad.left,
@@ -400,12 +607,11 @@ BOUNDARY = {
     "xl": geometry.cell_centroid.left,
     "ntb": nt_b,
     "wb": prim_b,
-    "kind": bc_kind,
     "xf": geometry.face_centroid,
     "n": geometry.face_normal,
     "area": geometry.face_area_magnitude,
-    **TRANSPORT,
 }
+BOUNDARY = {**BOUNDARY_FLOW, "kind": bc_kind, **TRANSPORT}
 
 nt_faces = face_loop(nt_face, **FACE, out=Inc(nt_res, left=+1, right=-1))
 nt_boundaries = boundary_loop(nt_boundary, **BOUNDARY, out=Inc(nt_res, left=+1))
@@ -434,4 +640,50 @@ nt_faces_jacobian = face_loop(
 )
 nt_boundaries_jacobian = boundary_loop(
     nt_boundary, **BOUNDARY, out=[Inc(nt_res, left=+1), Jacobian(nt_bnd_jac, wrt="rl")]
+)
+
+# For the implicit step's matrix-free product (docs/design/coupled-sa.md): the branches of nt's
+# residual at a state, then that residual with them held.
+nt_cell_keep = cells.field("nt_cell_keep", State.Vec3)
+nt_face_keep = faces.field("nt_face_keep", Flag.Vec2)
+nt_cell_branches = cell_loop(
+    nt_cell_flags,
+    rc=rnu,
+    w=prim,
+    gw=grad,
+    d=wall_distance,
+    **VISCOSITY,
+    out=Write(nt_cell_keep),
+)
+nt_face_branches = face_loop(
+    nt_face_flags,
+    **FACE_FLOW,
+    pref=p_ref,
+    out=Write(nt_face_keep),
+    frozen=True,
+)
+nt_boundary_branches = boundary_loop(
+    nt_boundary_flags,
+    **BOUNDARY_FLOW,
+    pref=p_ref,
+    out=Write(nt_face_keep),
+    frozen=True,
+)
+nt_sources_held = cell_loop(
+    nt_cell_source_held,
+    rc=rnu,
+    w=prim,
+    gw=grad,
+    tg=nt_grad,
+    d=wall_distance,
+    vol=geometry.cell_volume,
+    ext=nt_source,
+    **TRANSPORT,
+    ft2s=ft2_on,
+    k=nt_cell_keep,
+    out=Write(nt_res),
+)
+nt_faces_held = face_loop(nt_face_held, **FACE, k=nt_face_keep, out=Inc(nt_res, left=+1, right=-1))
+nt_boundaries_held = boundary_loop(
+    nt_boundary_held, **BOUNDARY, k=nt_face_keep, out=Inc(nt_res, left=+1)
 )

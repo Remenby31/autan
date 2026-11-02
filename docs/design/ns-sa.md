@@ -38,6 +38,8 @@ The convective flux of a `wall` face is the pressure flux of a slip face (v · n
 
 The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the same pass as the residual, the cell gradients held fixed: the difference quotients of the face gradients give the compact part of the viscous Jacobian. `NavierStokes<P>::assemble` adds them, times dW/dU, to the Euler blocks. The local time step adds four times the viscous spectral radius Σ_f max(4/3, γ) (μ/Pr + μ_t/Pr_t) A² / (ρ V) to the convective one (Blazek 2015, eqs. 6.20 and 6.22).
 
+A matrix-free product differences the residual with its branches held at the state where the product is taken (`freeze`, then `residual_frozen`), so that the difference quotient sees one smooth formula. `NavierStokes<P>` holds the Euler branches and nothing more: the viscous terms are smooth in the state. `SpalartAllmaras<P>` holds those of ν̃'s residual: in each cell the S̃ limit, S̃ > 0 with r below its cap and the sign of ν̃ (which also selects f_n); at each face the upwind side and the sign of ν̃. μ_t needs no hold, f_v1 making it vanish as ν̃⁴ at ν̃ = 0. For the coupled flow–turbulence product, `NavierStokes<P>::residual_frozen` takes the turbulence model's eddy viscosity step, which it runs once the perturbed state's primitives exist and before the viscous terms read μ_t.
+
 ## Verification
 
 **Status: Navier-Stokes order verification incomplete.** `ns-mms-order` fails at its declared levels (hex 32–128 density L2 fit 1.78, finest pair 1.88; poly 16–64 1.80, 1.86): the one-sided face2 gradient of the convective reconstruction near the boundary limits the order at μ = 10. Diagnosis and the remedies under measurement: #137.

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -38,7 +39,7 @@ struct NavierStokes<P>::Impl {
   std::vector<State> mu_t, mu_t_b, lam_v, traction, ut, ut_b;
   // freeze(): the viscous terms' workspace for residual_frozen, apart from the cache above.
   struct Frozen {
-    std::vector<State> ut, ut_b;
+    std::vector<State> ut, ut_b, mu_t, mu_t_b;
     std::array<std::vector<typename P::grad>, 7> fits;
   };
   std::optional<Frozen> frozen;
@@ -712,6 +713,8 @@ void NavierStokes<P>::freeze(std::span<const State> s) {
     m.frozen.emplace();
     m.frozen->ut.assign(m.ut.size(), State(0));
     m.frozen->ut_b.assign(m.ut_b.size(), State(0));
+    m.frozen->mu_t.assign(m.mu_t.size(), State(0));
+    m.frozen->mu_t_b.assign(m.mu_t_b.size(), State(0));
     for (std::size_t k = 0; k < 7; ++k)
       m.frozen->fits[k].assign(m.fits[k].size(), typename P::grad(0));
   }
@@ -720,14 +723,27 @@ void NavierStokes<P>::freeze(std::span<const State> s) {
 template <class P>
 void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
+  residual_frozen(s, res, [&m] {
+    std::copy(m.mu_t.begin(), m.mu_t.end(), m.frozen->mu_t.begin());
+    std::copy(m.mu_t_b.begin(), m.mu_t_b.end(), m.frozen->mu_t_b.begin());
+  });
+}
+
+template <class P>
+void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> res,
+                                      const std::function<void()>& eddy) {
+  auto& m = *impl_;
   if (!m.frozen) throw std::logic_error("NavierStokes::residual_frozen before freeze");
   m.euler.residual_frozen(s, res);
+  eddy();
   const auto a = m.euler.frozen_data();
   auto& f = *m.frozen;
   auto d = m.d;
   d.prim = a.prim;
   d.grad = a.grad;
   d.prim_b = a.prim_b;
+  d.mu_t = f.mu_t.data();
+  d.mu_t_b = f.mu_t_b.data();
   d.ut = f.ut.data();
   d.ut_b = f.ut_b.data();
   d.fit0 = f.fits[0].data();
@@ -743,6 +759,20 @@ void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> r
   nk::cpu::cubic_fits(d);
   nk::cpu::viscous_faces(d);
   nk::cpu::viscous_boundaries(d);
+}
+
+template <class P>
+typename NavierStokes<P>::Arrays NavierStokes<P>::frozen_arrays() {
+  auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("NavierStokes::frozen_arrays before freeze");
+  auto a = arrays();
+  const auto e = m.euler.frozen_data();
+  a.flow.prim = e.prim;
+  a.flow.grad = e.grad;
+  a.flow.prim_b = e.prim_b;
+  a.mu_t = m.frozen->mu_t.data();
+  a.mu_t_b = m.frozen->mu_t_b.data();
+  return a;
 }
 
 template <class P>

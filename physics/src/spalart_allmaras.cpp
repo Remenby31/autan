@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -35,6 +36,14 @@ struct SpalartAllmaras<P>::Impl {
   std::vector<index_t> owner, neighbour;
   std::vector<offset_t> cell_offsets;  // cell -> interior faces CSR
   std::vector<index_t> cell_faces;
+  // freeze(): the held branches and the workspace of residual_frozen, apart from the cache above.
+  struct Frozen {
+    std::vector<State> nt, nt_b;
+    std::vector<typename P::grad> nt_grad;
+    stored<decltype(D::nt_cell_keep)> cell_keep;
+    stored<decltype(D::nt_face_keep)> face_keep;
+  };
+  std::optional<Frozen> frozen;
   sk::Data<P> d{};
 
   Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t, bool ft2)
@@ -115,6 +124,28 @@ struct SpalartAllmaras<P>::Impl {
     d.mu_t_b = a.mu_t_b;
     d.p_ref[0] = typename P::param(a.p_ref);
     d.gas_constant[0] = typename P::param(a.gas_constant);
+  }
+
+  // d over the frozen workspace, the flow arrays `a` and the state s.
+  sk::Data<P> frozen_data(const typename NavierStokes<P>::Arrays& a, std::span<const State> s) {
+    if (!frozen) throw std::logic_error("SpalartAllmaras: freeze before a frozen evaluation");
+    share();
+    auto f = d;
+    f.prim = a.flow.prim;
+    f.grad = a.flow.grad;
+    f.prim_b = a.flow.prim_b;
+    f.mu_t = a.mu_t;
+    f.mu_t_b = a.mu_t_b;
+    f.rnu = const_cast<State*>(s.data());
+    f.nt = frozen->nt.data();
+    f.nt_b = frozen->nt_b.data();
+    f.nt_grad = frozen->nt_grad.data();
+    f.nt_cell_keep = frozen->cell_keep.data();
+    f.nt_face_keep = frozen->face_keep.data();
+    sk::cpu::nt_values(f);
+    sk::cpu::boundary_values(f);
+    sk::cpu::nt_gradients(f);
+    return f;
   }
 
   void prepare(std::span<const State> s, std::span<Res> res) {
@@ -230,6 +261,48 @@ void SpalartAllmaras<P>::eddy_viscosity(std::span<const State> s) {
   sk::cpu::boundary_values(m.d);
   sk::cpu::eddy_viscosities(m.d);
   sk::cpu::boundary_eddy_viscosities(m.d);
+}
+
+template <class P>
+void SpalartAllmaras<P>::freeze(std::span<const State> s) {
+  auto& m = *impl_;
+  if (!m.frozen) {
+    m.frozen.emplace();
+    m.frozen->nt.assign(m.nc, State(0));
+    m.frozen->nt_b.assign(m.nf, State(0));
+    m.frozen->nt_grad.assign(3 * m.nc, typename P::grad(0));
+    m.frozen->cell_keep.assign(3 * m.nc, {});
+    m.frozen->face_keep.assign(2 * m.nf, {});
+  }
+  const auto f = m.frozen_data(m.flow.arrays(), s);
+  sk::cpu::nt_cell_branches(f);
+  sk::cpu::nt_face_branches(f);
+  sk::cpu::nt_boundary_branches(f);
+}
+
+template <class P>
+void SpalartAllmaras<P>::residual_frozen(std::span<const State> s, std::span<Res> res) {
+  auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("SpalartAllmaras::residual_frozen before freeze");
+  auto f = m.frozen_data(m.flow.frozen_arrays(), s);
+  f.nt_res = res.data();
+  sk::cpu::nt_sources_held(f);
+  sk::cpu::nt_faces_held(f);
+  sk::cpu::nt_boundaries_held(f);
+}
+
+template <class P>
+void SpalartAllmaras<P>::eddy_viscosity_frozen(std::span<const State> s) {
+  auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("SpalartAllmaras::eddy_viscosity_frozen before freeze");
+  const auto f = m.frozen_data(m.flow.frozen_arrays(), s);
+  sk::cpu::eddy_viscosities(f);
+  sk::cpu::boundary_eddy_viscosities(f);
+}
+
+template <class P>
+void SpalartAllmaras<P>::release_frozen() {
+  impl_->frozen.reset();
 }
 
 template class SpalartAllmaras<kernels::fp64>;

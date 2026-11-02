@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <span>
 #include <utility>
@@ -60,6 +61,16 @@ class NavierStokes {
   /// R(s) and the approximate Jacobian: Euler<P>'s, plus dF_v/dW of every face with the cell
   /// gradients held fixed.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// The arrays of the last evaluation and the eddy viscosity per cell and per face, which a
+  /// turbulence model reads and writes (docs/design/ns-sa.md).
+  struct Arrays {
+    typename Euler<P>::Arrays flow;
+    State* mu_t;
+    State* mu_t_b;
+    double p_ref;  ///< Pa: the primitive pressure is p - p_ref
+    double gas_constant;
+  };
+  [[nodiscard]] Arrays arrays() noexcept;
   /// For the implicit step's matrix-free product: Euler<P>::freeze at s (its limiter and
   /// reconstruction branches held), and a workspace of the viscous terms' own; the viscous
   /// gradients are not held. Leaves what residual() last evaluated untouched.
@@ -68,6 +79,13 @@ class NavierStokes {
   /// bit at that state; the eddy viscosity is the one last set. Throws std::logic_error before
   /// freeze().
   void residual_frozen(std::span<const State> s, std::span<Res> res);
+  /// The same, with the eddy viscosity a turbulence model writes at s: `eddy` runs once the
+  /// primitives of s are in frozen_arrays(), and writes its mu_t and mu_t_b there before the
+  /// viscous terms read them.
+  void residual_frozen(std::span<const State> s, std::span<Res> res,
+                       const std::function<void()>& eddy);
+  /// During and after residual_frozen: arrays() of its state, in freeze()'s workspace.
+  [[nodiscard]] Arrays frozen_arrays();
   /// Frees what freeze() allocated.
   void release_frozen();
   /// A = diag(shift) + J~ into `a`: Euler<P>'s blocks, the viscous face Jacobians and, through
@@ -84,17 +102,6 @@ class NavierStokes {
   /// After residual(s): force per unit area the fluid exerts on every boundary face through the
   /// viscous stress, -tau n (3 x n_boundary_faces, Pa, n out of the fluid); zero on slip faces.
   void viscous_traction(std::span<double> t) const;
-
-  /// The arrays of the last evaluation and the eddy viscosity per cell and per face, which a
-  /// turbulence model reads and writes (docs/design/ns-sa.md).
-  struct Arrays {
-    typename Euler<P>::Arrays flow;
-    State* mu_t;
-    State* mu_t_b;
-    double p_ref;  ///< Pa: the primitive pressure is p - p_ref
-    double gas_constant;
-  };
-  [[nodiscard]] Arrays arrays() noexcept;
 
  private:
   struct Impl;
