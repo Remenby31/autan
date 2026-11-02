@@ -621,6 +621,8 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
         mesh["counts"]["cells"] = 4
         mesh["counts"]["cells_by_type"] = dict.fromkeys(mesh["counts"]["cells_by_type"], 0)
         mesh["counts"]["cells_by_type"]["hexa"] = 4
+        # Lines of cells within the 4 cells, as mesh.md bounds them.
+        mesh["quality"]["lines"] |= {"cells": 0, "long_cells": 0}
         mesh["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": 4}]
         mesh["interfaces"] = []
         digest = autan.initial_state.write(
