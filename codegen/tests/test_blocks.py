@@ -752,3 +752,161 @@ def test_reduction_bodies_compute_in_the_accumulation_type(tmp_path: Path) -> No
         w.ctypes.data_as(ctypes.c_void_p), total.ctypes.data_as(ctypes.c_void_p)
     )
     np.testing.assert_array_equal(total, [2 * w[0], 2 * w[1] + 2 * w[2], 2 * w[3]])
+
+
+# A coarse level as the multigrid builds it: a graph (edges lo < hi) renumbered by colour with
+# colour_order, its Topology from graph_topology (CSR or sliced), each incidence's block placed
+# from the edge's upper (lo row) or lower (hi row) block, then kernels/blocks.py `multiply` and
+# one forward `relax` sweep over the colours, each a contiguous range of rows (FP64).
+GRAPH_DRIVER = r"""
+#include <algorithm>
+#include <cstdint>
+#include <exception>
+#include <numeric>
+#include <string_view>
+#include <vector>
+#include "autan/kernels/topology.hpp"
+#include "blocks_cpu.hpp"
+using namespace autan::kernels;
+extern "C" int run(int nn, int ne, const index_t* lo, const index_t* hi, int slice,
+                   const std::int32_t* colours, int n_colours, const double* diag,
+                   const double* upper, const double* lower, const double* x, const double* rhs,
+                   double* y, double* swept) try {
+  const auto co = colour_order(std::span(colours, nn), n_colours, nn);
+  std::vector<index_t> position(nn);
+  for (int p = 0; p < nn; ++p) position[co.new_to_old[p]] = p;
+  std::vector<index_t> nlo(ne), nhi(ne);
+  std::vector<bool> flipped(ne);
+  for (int e = 0; e < ne; ++e) {
+    const index_t a = position[lo[e]], b = position[hi[e]];
+    nlo[e] = std::min(a, b);
+    nhi[e] = std::max(a, b);
+    flipped[e] = a > b;
+  }
+  const auto g = graph_topology(nn, nlo, nhi, slice);
+  const Topology t = g.topology();
+  const auto nk = static_cast<std::size_t>(t.n_incidences);
+  std::vector<double> off(25 * nk, 0.0), dg(25 * nn), di(25 * nn), xv(5 * nn), bv(5 * nn),
+      yv(5 * nn, 0.0), unused(5 * nn, 0.0);
+  for (int p = 0; p < nn; ++p) {
+    const index_t i = co.new_to_old[p];
+    for (int q = 0; q < 25; ++q) dg[q * nn + p] = diag[q * nn + i];
+    for (int q = 0; q < 5; ++q) {
+      xv[q * nn + p] = x[q * nn + i];
+      bv[q * nn + p] = rhs[q * nn + i];
+    }
+    const index_t len = t.incidence_stride == 1
+                            ? index_t(t.cell_face_offsets[p + 1] - t.cell_face_offsets[p])
+                            : t.incidence_length[p];
+    for (index_t j = 0; j < len; ++j) {
+      const offset_t k = t.cell_face_offsets[p] + j * t.incidence_stride;
+      const index_t e = t.cell_faces[k];
+      // Row lo' takes A(lo', hi'): the edge's upper block, or its lower one if renumbering
+      // swapped the ends.
+      const bool lo_row = p == nlo[e];
+      const double* block = lo_row != flipped[e] ? upper : lower;
+      for (int q = 0; q < 25; ++q) off[q * nk + k] = block[q * ne + e];
+    }
+  }
+  blocks::Data<fp64> d{};
+  d.topo = t;
+  d.diag = dg.data();
+  d.diag_inv = di.data();
+  d.off = off.data();
+  d.x = xv.data();
+  d.rhs = bv.data();
+  d.y = yv.data();
+  d.r = unused.data();
+  blocks::cpu::invert_diagonal(d);
+  blocks::cpu::multiply(d);
+  std::vector<index_t> rows(nn);
+  std::iota(rows.begin(), rows.end(), 0);
+  for (int k = 0; k < n_colours; ++k) {
+    blocks::cpu::relax(d, rows.data() + co.offsets[k], co.offsets[k + 1] - co.offsets[k]);
+  }
+  for (int p = 0; p < nn; ++p) {
+    const index_t i = co.new_to_old[p];
+    for (int q = 0; q < 5; ++q) {
+      y[q * nn + i] = yv[q * nn + p];
+      swept[q * nn + i] = xv[q * nn + p];
+    }
+  }
+  return 0;
+} catch (const std::exception& error) {
+  return std::string_view(error.what()).starts_with("E1101") ? 1 : 2;
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
+def test_graph_levels_renumbered_by_colour_multiply_and_relax(tmp_path: Path) -> None:
+    out = tmp_path / "gen"
+    generate(ROOT / "kernels" / "blocks.py", out, ["cpu"], policies=["fp64"])
+    (tmp_path / "graph.cpp").write_text(GRAPH_DRIVER)
+    lib_path = tmp_path / "libgraph.so"
+    subprocess.run(
+        ["c++", "-std=c++20", "-O2", "-ffp-contract=off", "-shared", "-fPIC",
+         f"-I{ROOT / 'codegen' / 'include'}", f"-I{ROOT / 'core' / 'include'}", f"-I{out}",
+         str(tmp_path / "graph.cpp"), str(ROOT / "codegen" / "cpp" / "topology.cpp"),
+         "-o", str(lib_path)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    lib = ctypes.CDLL(str(lib_path))
+    rng = np.random.default_rng(13)
+    nn = 60
+    pairs = {tuple(sorted(rng.choice(nn, 2, replace=False))) for _ in range(150)}
+    lo, hi = (np.array(v, np.int32) for v in zip(*sorted(pairs), strict=True))
+    ne = len(lo)
+    upper, lower = rng.standard_normal((ne, 5, 5)), rng.standard_normal((ne, 5, 5))
+    diag = rng.standard_normal((nn, 5, 5)) + 20.0 * np.eye(5)
+    x, rhs = rng.standard_normal((nn, 5)), rng.standard_normal((nn, 5))
+    colour = np.full(nn, -1, np.int32)
+    neighbours = [set() for _ in range(nn)]
+    for a, b in zip(lo, hi, strict=True):
+        neighbours[a].add(b)
+        neighbours[b].add(a)
+    for i in range(nn):
+        taken = {colour[j] for j in neighbours[i]}
+        colour[i] = min(set(range(len(taken) + 1)) - taken)
+    a = np.zeros((nn, 5, nn, 5))
+    for i in range(nn):
+        a[i, :, i, :] = diag[i]
+    for e in range(ne):
+        a[lo[e], :, hi[e], :] = upper[e]
+        a[hi[e], :, lo[e], :] = lower[e]
+    # One forward block Gauss-Seidel sweep, colour after colour (BlockMatrix::relax).
+    swept = x.copy()
+    for k in range(colour.max() + 1):
+        for i in np.flatnonzero(colour == k):
+            coupled = sum(a[i, :, j, :] @ swept[j] for j in neighbours[i])
+            swept[i] = np.linalg.solve(diag[i], rhs[i] - coupled)
+
+    def p(v: np.ndarray) -> ctypes.c_void_p:
+        return np.ascontiguousarray(v).ctypes.data_as(ctypes.c_void_p)
+
+    soa = lambda v: np.ascontiguousarray(v.reshape(len(v), -1).T)
+    for slice_ in (0, 4):
+        y, got = np.zeros(5 * nn), np.zeros(5 * nn)
+        rc = lib.run(
+            ctypes.c_int(nn), ctypes.c_int(ne), p(lo), p(hi), ctypes.c_int(slice_), p(colour),
+            ctypes.c_int(int(colour.max()) + 1), p(soa(diag)), p(soa(upper)), p(soa(lower)),
+            p(soa(x)), p(soa(rhs)), y.ctypes.data_as(ctypes.c_void_p),
+            got.ctypes.data_as(ctypes.c_void_p),
+        )  # fmt: skip
+        assert rc == 0
+        tol = 1e3 * np.finfo(np.float64).eps
+        np.testing.assert_allclose(
+            y.reshape(5, nn).T,
+            (a.reshape(5 * nn, -1) @ x.ravel()).reshape(nn, 5),
+            rtol=tol,
+            atol=tol * 20,
+        )
+        np.testing.assert_allclose(got.reshape(5, nn).T, swept, rtol=tol, atol=tol)
+    # An edge that is not a pair lo < hi < n_nodes is refused (E1101).
+    bad = hi.copy()
+    bad[0] = lo[0]
+    assert lib.run(
+        ctypes.c_int(nn), ctypes.c_int(ne), p(lo), p(bad), ctypes.c_int(0), p(colour),
+        ctypes.c_int(int(colour.max()) + 1), p(soa(diag)), p(soa(upper)), p(soa(lower)),
+        p(soa(x)), p(soa(rhs)), p(np.zeros(5 * nn)), p(np.zeros(5 * nn)),
+    ) == 1  # fmt: skip
