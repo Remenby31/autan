@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <vector>
 
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 
 namespace autan::physics {
 
@@ -27,6 +29,12 @@ class BlockMatrix {
   [[nodiscard]] std::span<const double> diagonals() const noexcept { return diag_; }
   [[nodiscard]] std::span<const double> uppers() const noexcept { return upper_; }
   [[nodiscard]] std::span<const double> lowers() const noexcept { return lower_; }
+
+  /// Sums each row's off-diagonal blocks in increasing global face id, then (a face and its
+  /// periodic image in one row) local orientation and the other cell's translation, so that a
+  /// relaxation does not depend on the face numbering: with the colours of the runtime and keys
+  /// of the global mesh, the sweeps give the same bits on any number of ranks (runtime.md, Ranks).
+  void order_rows(const kernels::GlobalKeys& keys);
 
   /// y = A x.
   void multiply(std::span<const double> x, std::span<double> y) const;
