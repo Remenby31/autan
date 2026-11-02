@@ -16,6 +16,7 @@ FetchContent_MakeAvailable(nlohmann_json picosha2)
 add_library(
   autan_io
   src/read_mesh.cpp
+  src/polymesh_write.cpp
   src/gmsh.cpp
   src/fluent.cpp
   src/polymesh.cpp
@@ -86,3 +87,9 @@ target_link_libraries(
 
 add_executable(autan-mesh-info tools/autan_mesh_info.cpp)
 target_link_libraries(autan-mesh-info PRIVATE autan::io autan_compile_options)
+
+add_executable(autan-mesh-prisms tools/autan_mesh_prisms.cpp)
+target_link_libraries(
+  autan-mesh-prisms
+  PRIVATE autan::io nlohmann_json::nlohmann_json autan_compile_options
+)

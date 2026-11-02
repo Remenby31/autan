@@ -834,6 +834,27 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
   }
 });
 
+test("Runs, a run and Compare fill the window's width", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = all.slice(0, 2).map((r) => r.run_id);
+  // The content spans the window less the sidebar and its margins, not a centred column.
+  const spans = async (selector: string) => {
+    const box = await page.locator(selector).first().boundingBox();
+    return (box?.width ?? 0) > 1600;
+  };
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  expect(await spans("a[data-row]")).toBe(true);
+  await page.goto(`/runs/${run.run_id}`);
+  await expect(page.getByTestId("conditions")).toBeVisible();
+  expect(await spans("header:has([data-testid=conditions])")).toBe(true);
+  await page.goto(`/compare?runs=${encodeURIComponent(JSON.stringify(pair))}`);
+  await expect(page.getByTestId("compared")).toBeVisible();
+  expect(await spans("[data-testid=settings-diff]")).toBe(true);
+});
+
 test("views of results carry no renderer figures, and codes explain themselves", async ({
   page,
 }) => {
@@ -919,4 +940,66 @@ test("an unknown run or address says so, and outputs download as they are", asyn
   expect(readFileSync(await file.path(), "utf8")).toBe(
     readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8"),
   );
+});
+
+test("at 390 px every page fits the width, and navigation sits behind a menu", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = encodeURIComponent(JSON.stringify(all.slice(0, 2).map((r) => r.run_id)));
+  // The page, and every box of it that scrolls sideways, but data tables, fit their width.
+  const fits = () =>
+    page.evaluate(() =>
+      [document.documentElement, ...document.querySelectorAll("main *")]
+        .filter((e) => !e.closest("table") && !e.querySelector("table"))
+        .every(
+          (e) =>
+            e.scrollWidth <= e.clientWidth + 1 ||
+            !["auto", "scroll"].includes(getComputedStyle(e).overflowX),
+        ),
+    );
+  for (const url of ["/", `/runs/${run.run_id}`, `/compare?runs=${pair}`, "/cases/new"]) {
+    await page.goto(url);
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+    expect(await fits(), url).toBe(true);
+  }
+
+  // The drawer opens from the menu and closes on a choice, and on Escape.
+  const nav = page.locator("#nav-drawer");
+  const menu = page.getByRole("button", { name: "Open navigation" });
+  await page.goto("/");
+  await expect(nav).toBeHidden();
+  await menu.click();
+  await expect(nav).toBeVisible();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  // The page behind takes no focus while the drawer is open.
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
+  await nav.getByRole("link", { name: "Compare" }).click();
+  await expect(page).toHaveURL(/\/compare/);
+  await expect(nav).toBeHidden();
+  await menu.click();
+  await page.keyboard.press("Escape");
+  await expect(nav).toBeHidden();
+  await expect(menu).toBeFocused();
+  // ⌘K over the drawer: the drawer closes, and Escape closes the palette.
+  await menu.click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(nav).toBeHidden();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // Widened past 768 px, an open drawer gives the page back.
+  await menu.click();
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(page.locator("main")).not.toHaveAttribute("inert");
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  // A run's actions fold behind one button; a row shows its run, state and drop.
+  await page.goto(`/runs/${run.run_id}`);
+  await page.getByRole("button", { name: "Actions" }).click();
+  await expect(page.getByRole("button", { name: "Open in Analysis" })).toBeVisible();
+  await page.goto("/");
+  const row = page.locator(`a[data-run="${run.run_id}"]`);
+  await expect(row.getByTestId("mach")).toBeHidden();
+  await expect(row).toContainText(run.run_id.slice(-8));
 });

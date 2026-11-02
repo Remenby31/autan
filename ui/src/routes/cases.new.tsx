@@ -263,9 +263,10 @@ function CaseEditor() {
   return (
     <>
       <TopBar crumbs={[{ label: "New case" }]} />
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)] overflow-hidden">
+      {/* Below 768 px the form and the stage stack, and the page scrolls. */}
+      <div className="min-h-0 flex-1 overflow-y-auto md:grid md:grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)] md:overflow-hidden">
         <form
-          className="flex flex-col gap-8 overflow-auto border-line border-r px-6 py-6"
+          className="flex flex-col gap-8 px-4 py-6 md:overflow-auto md:border-line md:border-r md:px-6"
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
@@ -670,7 +671,7 @@ function CaseEditor() {
           </fieldset>
         </form>
 
-        <div className="relative flex min-h-0 min-w-0">
+        <div className="relative flex min-h-0 min-w-0 max-md:h-[80vh]">
           {/* The mesh fills the stage; what concerns it lies over it. */}
           <section
             ref={stage}

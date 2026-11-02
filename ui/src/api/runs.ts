@@ -13,7 +13,7 @@ export class HttpError extends Error {
   }
 }
 
-async function getJson<T>(url: string): Promise<T> {
+export async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) {
     const body = await response.json().catch(() => null);

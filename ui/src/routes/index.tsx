@@ -74,8 +74,9 @@ function matches(run: Run, search: Search): boolean {
   );
 }
 
+// Below 768 px a row keeps its run, state and drop; the other cells are `max-md:hidden`.
 const COLUMNS =
-  "grid grid-cols-[minmax(140px,1.4fr)_minmax(140px,1fr)_40px_56px_64px_64px_minmax(100px,1fr)_64px_88px_40px] items-center gap-4";
+  "grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(5rem,1fr)] md:grid-cols-[minmax(140px,1.4fr)_minmax(140px,1fr)_40px_56px_64px_64px_minmax(100px,1fr)_64px_88px_40px] items-center gap-3 md:gap-4";
 
 function Runs() {
   const search = Route.useSearch();
@@ -161,7 +162,7 @@ function Runs() {
     <SelectionContext.Provider value={{ selected, toggle, peek }}>
       <TopBar crumbs={[{ label: "Runs" }]} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto flex max-w-[1200px] flex-col gap-5 px-6 py-8">
+        <div className="flex flex-col gap-5 px-8 py-6">
           <h1 className="m-0 font-semibold text-2xl tracking-tight">Runs</h1>
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput
@@ -257,14 +258,14 @@ function Runs() {
                   >
                     <span>{grouped && !filtered ? "Run" : "Case"}</span>
                     <span>State</span>
-                    <span className="text-right">M</span>
-                    <span className="text-right">α</span>
-                    <span className="text-right">CL</span>
-                    <span className="text-right">CD</span>
+                    <span className="text-right max-md:hidden">M</span>
+                    <span className="text-right max-md:hidden">α</span>
+                    <span className="text-right max-md:hidden">CL</span>
+                    <span className="text-right max-md:hidden">CD</span>
                     <span>Drop (orders)</span>
-                    <span className="text-right">Iteration</span>
-                    <span className="text-right">Started</span>
-                    <span />
+                    <span className="text-right max-md:hidden">Iteration</span>
+                    <span className="text-right max-md:hidden">Started</span>
+                    <span className="max-md:hidden" />
                   </div>
                 }
               >
@@ -289,7 +290,7 @@ function Runs() {
           )}
 
           {data?.rejected.length ? (
-            <div className="rounded-lg border border-line bg-bg-0" data-testid="rejected">
+            <div className="border-line border-y" data-testid="rejected">
               <Collapse
                 title={
                   <span className="flex items-center gap-2">
@@ -336,8 +337,8 @@ function Runs() {
 
 function TableFrame({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-bg-0">
-      <div className="min-w-[980px]">
+    <div className="overflow-x-auto border-line border-y">
+      <div className="md:min-w-[980px]">
         {header}
         <ul aria-label="Runs" data-testid="runs" className="m-0 list-none p-0">
           {children}
@@ -475,7 +476,7 @@ function RunRow({
         className={cn(
           COLUMNS,
           isSelected && "bg-accent-soft hover:bg-accent-soft",
-          "h-12 pr-4 pl-10 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-1 focus-visible:bg-bg-1 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
+          "h-12 pr-4 pl-10 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-2 focus-visible:bg-bg-2 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
         )}
       >
         <span className="flex min-w-0 items-baseline gap-2">
@@ -505,7 +506,7 @@ function RunRow({
             </>
           )}
         </span>
-        <span className="text-right font-mono text-sm tabular-nums">
+        <span className="text-right font-mono text-sm tabular-nums max-md:hidden">
           <span className="sr-only">Mach </span>
           <span data-testid="mach">
             {summary?.settings?.mach == null
@@ -513,16 +514,16 @@ function RunRow({
               : String(Number(summary.settings.mach.toPrecision(3)))}
           </span>
         </span>
-        <span className="text-right font-mono text-sm tabular-nums">
+        <span className="text-right font-mono text-sm tabular-nums max-md:hidden">
           <span className="sr-only">angle of attack </span>
           <span data-testid="alpha">{alpha === null ? "—" : `${shownAlpha}°`}</span>
         </span>
         {typeof coefficients === "string" ? (
           <>
-            <span className="text-right text-fg-3">
+            <span className="text-right text-fg-3 max-md:hidden">
               —<span className="sr-only"> CL: {coefficients}</span>
             </span>
-            <span className="text-right text-fg-3">
+            <span className="text-right text-fg-3 max-md:hidden">
               —<span className="sr-only"> CD: {coefficients}</span>
             </span>
           </>
@@ -530,7 +531,7 @@ function RunRow({
           <>
             <span
               className={cn(
-                "text-right font-mono text-sm tabular-nums",
+                "text-right font-mono text-sm tabular-nums max-md:hidden",
                 run.status !== "converged" && "text-fg-3",
               )}
             >
@@ -540,7 +541,7 @@ function RunRow({
             </span>
             <span
               className={cn(
-                "text-right font-mono text-sm tabular-nums",
+                "text-right font-mono text-sm tabular-nums max-md:hidden",
                 run.status !== "converged" && "text-fg-3",
               )}
             >
@@ -570,13 +571,13 @@ function RunRow({
             </span>
           )}
         </span>
-        <span className="text-right font-mono tabular-nums" data-testid="iterations">
+        <span className="text-right font-mono tabular-nums max-md:hidden" data-testid="iterations">
           {iteration.toLocaleString("en")}
         </span>
-        <span className="text-right text-fg-2 text-sm">
+        <span className="text-right text-fg-2 text-sm max-md:hidden">
           <RelativeTime iso={run.started} card={false} />
         </span>
-        <span />
+        <span className="max-md:hidden" />
       </Link>
       <div
         className={cn(

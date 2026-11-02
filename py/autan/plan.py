@@ -38,6 +38,7 @@ from autan.schema import (
     Slip,
     SolidZone,
     StateFile,
+    Steady,
     Symmetry,
     VelocityInlet,
     Wall,
@@ -206,6 +207,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         _check_initial_state(case, spec.initial_state, mesh, count, found)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
+    _check_coupled(case, spec, gpus, found)
 
     scale = metres_per(spec.mesh_unit)
     return Plan(
@@ -226,6 +228,29 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         cell_zones=tuple(cell_zones),
         memory=memory(spec, mesh, gpus),
         diagnostics=tuple(found),
+    )
+
+
+def _check_coupled(case: Case, spec: CaseSpec, gpus: int, found: list[Diagnostic]) -> None:
+    """The coupled turbulence step: the host multigrid on one rank, validated on the TMR flat
+    plate only (case-schema.md#time). The runtime refuses it on a device (E0427)."""
+    if not (isinstance(spec.time, Steady) and spec.time.coupled_turbulence):
+        return
+    where = case.locate("time.coupled_turbulence")
+    if spec.time.linear_solver != "multigrid" or gpus > 1:
+        found.append(
+            diagnostic(
+                "E0427",
+                "the coupled turbulence step needs linear_solver='multigrid' on one rank",
+                location=where,
+            )
+        )
+    found.append(
+        diagnostic(
+            "W0426",
+            "the coupled turbulence step is validated on the TMR flat plate only (#429)",
+            location=where,
+        )
     )
 
 

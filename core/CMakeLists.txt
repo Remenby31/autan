@@ -9,6 +9,7 @@ add_library(
   src/renumber.cpp
   src/wall_distance.cpp
   src/periodic.cpp
+  src/prisms.cpp
 )
 add_library(autan::core ALIAS autan_core)
 
