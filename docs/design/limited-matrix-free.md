@@ -29,6 +29,24 @@ Design for #395 (the flow's model; the coupled SA solve is note 2), written befo
 - The flux functions' own switches (|λ| and Harten's entropy fix in Roe, the wave-speed selections of HLLC, AUSM+-up's split functions, the characteristic boundary states' sub- or supersonic and in- or outflow branches) are not in the criterion. They are the first-order scheme's: J̃ linearises across them the same way, so they do not separate the two operators. The finite-difference quotient (scale h ‖v‖, h ≈ √ε relative, Knoll and Keyes 2004) crosses one only where its argument is within that distance of the switch, such as |v·n| at a stagnation point or a stationary contact; there the quotient is a secant across the kink, as #397's was.
 - Cost: one flag and one hash per cell per base state, one ghost exchange of them, one comparison per step; no extra residual evaluation. The flag reads φ, which the residual stores. The s5 branches are not stored: the record is one more pass over the faces that re-evaluates them from the primitives, gradients and φ the residual left (as `Euler::boundary_pressure` re-evaluates the face state).
 
+## Coverage check, declared before measuring
+
+Before any code, on states the current solver already produces, the criterion is applied to the laminar TMR flat plate 69×49 (#395's case and protocol, `physics/ns-sa`, no solver change). The count goes into the run's diagnostic output only.
+
+**States.** The base-state pairs (999, 1000), (1999, 2000) and (2999, 3000) of the run that wanders at −3 to −4 (#395).
+
+**What is counted.** A row is matrix-free when its cell and every face neighbour have φ = 1 in all five components at both base states of the pair, and unchanged fallback branches (the criterion above). Two shares of rows are counted: over the wall ring (the cells with a face on the plate, #395's ring) and over the domain.
+
+**Threshold, set now.** The note can only address #395's symptom if the wall ring's matrix-free rows can halve the ring's gap: note 1's threshold, ‖(J − J̃) v‖ ≤ 0.5 × its value on the ring's continuity rows.
+- Rows switched to the true Jacobian lose their gap. On rows whose gap is spread evenly, the norm over the ring falls to √(1 − f) of its value, f being the share of matrix-free rows.
+- √(1 − f) ≤ 0.5 needs f ≥ 0.75.
+
+**Reading.**
+- If the ring's share is at least 75 % at all three pairs, the note proceeds to its PR.
+- If it is below 75 % at any pair, the matrix-free rows do not reach enough of the cells where J̃ misses 38–70 %. The note then does not address #395's symptom: that is recorded in #395 and nothing is coded.
+- The domain's share is reported, not gated.
+- The even-spread assumption is declared. The per-row gap on the ring's continuity rows is reported alongside the share, so the reading can be checked against it, but the threshold is not changed after the fact.
+
 ## Change
 
 From the step after the switch to second order, on the host's steady step with `"multigrid"` or `"lines"` (the first-order phase, `"gauss-seidel"`, unsteady runs and the device unchanged), the linear solve's operator is mixed, row by row, with the mask the criterion section defines (fixed for the whole solve, so the Krylov operator is one linear operator):
