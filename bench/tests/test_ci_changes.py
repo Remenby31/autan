@@ -161,6 +161,11 @@ def test_without_a_readable_base_everything_runs(repo):
         ("bench/ci/changes.sh", "true", "true"),
         ("bench/ci/check-measured.py", "true", "true"),
         ("vv/src/autan_vv/cli.py", "true", "false"),
+        # The generators of other meshes: not loaded by the measured mesh's (measured-mesh-files.txt).
+        ("vv/src/autan_vv/meshes/naca0012.py", "false", "false"),
+        ("vv/src/autan_vv/meshes/onera_m6.py", "false", "false"),
+        ("bench/ci/measured-mesh-files.txt", "true", "true"),
+        ("bench/ci/mesh-modules.py", "true", "true"),
         ("vv/uv.lock", "true", "false"),
         ("vv/src/autan_vv/report.py", "false", "false"),
         ("bench/lock/autan-gpu-lock", "false", "true"),
@@ -179,15 +184,48 @@ def test_each_path_is_measured_tested_or_neither(repo, path, bench, harness):
     assert decide(repo, "pull_request") == {"bench": bench, "harness": harness}
 
 
-def test_every_input_of_the_measured_mesh_is_a_measured_path():
-    # The mesh job's cache key names what `autan-vv meshes` runs: a change to any of it changes
-    # the measured mesh, so it must start the bench.
-    workflow = (SCRIPT.parents[2] / ".github" / "workflows" / "gpu-bench.yml").read_text()
-    key = re.search(r"key: mesh-hex-n128-\$\{\{ hashFiles\((.*)\) \}\}", workflow)
-    assert key is not None
-    globs = re.findall(r"'([^']+)'", key.group(1))
-    pattern = subprocess.run(["bash", str(SCRIPT), "--measured"], capture_output=True,
-                             text=True, check=True).stdout.splitlines()[1]  # fmt: skip
-    for glob in globs:
-        sample = glob.replace("/**", "/x.py")
-        assert re.search(pattern, sample), glob
+ROOT = SCRIPT.parents[2]
+MESH_LIST = [line for line in (ROOT / "bench/ci/measured-mesh-files.txt").read_text().splitlines()
+             if line and not line.startswith("#")]  # fmt: skip
+# What bench/ci/mesh-key.sh hashes besides the listed modules.
+MESH_OTHERS = re.findall(
+    r"(vv/[\w./-]+|bench/ci/[\w.-]+\.(?:py|txt))", (ROOT / "bench/ci/mesh-key.sh").read_text()
+)
+
+
+def test_both_workflows_key_the_mesh_by_mesh_key_sh():
+    for workflow in ("gpu-bench.yml", "mesh-cache.yml"):
+        text = (ROOT / ".github" / "workflows" / workflow).read_text()
+        assert "key: ${{ steps.mesh-key.outputs.key }}" in text, workflow
+        assert "run: bench/ci/mesh-key.sh" in text, workflow
+    assert {
+        "vv/pyproject.toml",
+        "vv/uv.lock",
+        "vv/.python-version",
+        "bench/ci/mesh-modules.py",
+    } <= set(MESH_OTHERS)
+
+
+@pytest.mark.parametrize("path", sorted({*MESH_LIST, *MESH_OTHERS}))
+def test_every_input_of_the_measured_mesh_starts_the_bench(repo, path):
+    # Each file the mesh's key hashes, changed alone in a pull request, through changes.sh.
+    git(repo, "checkout", "-q", "-b", "change")
+    commit(repo, path)
+    pull_request_merge(repo, "change")
+    assert decide(repo, "pull_request")["bench"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("path", "bench"),
+    [
+        ("vv/src/autan_vv/meshes/families/__init__.py", "true"),  # a package shadowing families.py
+        ("vv/src/autan_vv/oracles/riemann.cpython-312-x86_64-linux-gnu.so", "true"),
+        ("vv/src/autan_vv/meshes/onera_m6.py", "false"),  # another mesh's generator, beside them
+        ("vv/src/autan_vv/meshes/families_old.py", "false"),  # a name that only starts the same
+    ],
+)
+def test_an_entry_with_a_listed_module_s_name_starts_the_bench(repo, path, bench):
+    git(repo, "checkout", "-q", "-b", "change")
+    commit(repo, path)
+    pull_request_merge(repo, "change")
+    assert decide(repo, "pull_request")["bench"] == bench

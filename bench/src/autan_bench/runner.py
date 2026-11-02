@@ -235,8 +235,12 @@ def _measure(
             before["runnable"],
             before["cpus"],
         )
+    # The host's activity brackets the run itself: read right before it starts and right after it
+    # returns, before the summaries and the after-load sampling (#400).
+    activity_before = gpu.host_activity()
     with gpu.Sampler() as sampler:
         raw = gated.go() if gated else _run_binary(binary, args)
+        activity_after = gpu.host_activity()
     during = sampler.summary()
     after = gpu.host_load()
     if (during["compute_apps_max"] or 0) > 1:
@@ -273,6 +277,11 @@ def _measure(
                 "after_1m": after["load_1m"],
             },
             "during_run": during,
+            **(
+                {"host_activity": {"before": activity_before, "after": activity_after}}
+                if activity_before is not None and activity_after is not None
+                else {}
+            ),
             **({"setup_seconds": raw["setup_seconds"]} if "setup_seconds" in raw else {}),
         },
         "config": raw["config"],
