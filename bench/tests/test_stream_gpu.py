@@ -31,7 +31,11 @@ def stream_binary() -> Path:
 def test_stream_run_produces_a_valid_physical_result(stream_binary, tmp_path):
     out = tmp_path / "stream.json"
     argv = ["stream", "--binary", str(stream_binary), "--out", str(out)]
-    assert main([*argv, "--elements", str(1 << 25), "--warmup", "3", "--reps", "20"]) == 0
+    # Long enough for the telemetry to see the GPU busy: utilization.gpu is a trailing average,
+    # sampled every 0.2 s by a call that itself takes a fraction of that, and 20 repetitions
+    # (about 1.4 s on GB10) once ended without a single busy sample (NO_SAMPLES, main at
+    # 00d74041, 2026-11-02). 100 repetitions keep the GPU busy about 7 s.
+    assert main([*argv, "--elements", str(1 << 25), "--warmup", "3", "--reps", "100"]) == 0
     doc = json.loads(out.read_text())
     assert [b["name"] for b in doc["benchmarks"]] == [
         "stream.copy",
@@ -40,7 +44,7 @@ def test_stream_run_produces_a_valid_physical_result(stream_binary, tmp_path):
         "stream.triad",
     ]
     for b in doc["benchmarks"]:
-        assert b["stats"]["n"] == 20
+        assert b["stats"]["n"] == 100
         assert b["stats"]["median"] > 0
         if doc["provenance"]["gpu"]["name"] == "NVIDIA GB10":
             assert b["stats"]["max"] <= GB10_THEORETICAL_GBPS
