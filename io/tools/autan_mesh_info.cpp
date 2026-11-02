@@ -34,7 +34,7 @@ constexpr const char* usage =
     "prints the MeshInfo document (schema autan.mesh-info/1) instead: what a\n"
     "run computes on it with S metres per mesh unit (default 1), its smoother\n"
     "lines in the cell order of --cell-order (default rcm, the run's),\n"
-    "and with --ranks N the partition of a run on N ranks, keeping the\n"
+    "and with --ranks N (N >= 2) the partition of a run on N ranks, keeping\n"
     "smoother's lines whole with --groups lines. With --surface OUT, writes its\n"
     "boundary faces by zone to OUT (schema autan.surface/1) and prints nothing.\n"
     "Exits 1 with a coded error (E01xx) if the mesh cannot be read or cannot\n"
@@ -90,7 +90,7 @@ std::optional<double> positive(std::string_view text) {
 std::optional<std::int32_t> rank_count(std::string_view text) {
   std::int32_t n = 0;
   const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), n);
-  if (error != std::errc{} || end != text.data() + text.size() || n < 1) return std::nullopt;
+  if (error != std::errc{} || end != text.data() + text.size() || n < 2) return std::nullopt;
   return n;
 }
 
