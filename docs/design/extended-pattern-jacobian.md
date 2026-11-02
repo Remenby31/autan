@@ -153,7 +153,7 @@ Total about 4–5 weeks, then Euler's chain (1 week, it needs (1)), then the dev
 - SA 69×49 did not converge in 6000 steps: the loosely coupled SA update is note 2's subject.
 - The limited Euler cases lost: Ni's bump 384 did not converge, and NACA 0012 256² took +19 %, +21 % and +193 % steps.
 
-**Why the limited cases lose.** The product is the derivative of the residual with φ and the fallback held at U. The step then leaves that residual, through the limiter's switches and through φ's own variation (note (iii): d(φd) = φ δd + d δφ). With the SER's CFL numbers, nothing in the step reacts to the model's error. The ring-3 J̃ would have the same defect, since it too holds φ. The limited cases do not separate the two options; they separate globalisations.
+**Why the limited cases lose.** The product is the derivative of the residual with φ and the fallback held at U. The step then leaves that residual, through the limiter's switches and through φ's own variation (note (iii): d(φd) = φ δd + d δφ). That is the hypothesis #397 closed on. It is not confirmed: the residual rarely grows by more than 2 over a step on those runs (below), so the loss is slow convergence rather than steps the residual rejects. The ring-3 J̃ holds φ as well, so whatever the cause is, the limited cases do not separate the two options.
 
 **What could make it hold on the limited cases, and at what cost:**
 1. **A residual test on the step** (`design/pseudo-transient`, Fidkowski and Ceze 2016, §IV.C, read in full): backtrack while ‖R(U + ωΔU)‖ > 2 ‖R(U)‖, reject below ω = 0.24, and grow the CFL number only after a full update.
@@ -180,5 +180,5 @@ Total about 4–5 weeks, then Euler's chain (1 week, it needs (1)), then the dev
 - Ring 3 is exact but does not fit DPW4 on one GB10 (hierarchy 89–113 GB before the physics). Ring 2 fits on the host (44–54 GB) and on the device only with FP32 off-diagonal blocks, and is not argued to be enough.
 - The wider pattern costs about 11–14 weeks across four agents: host linear solver 4–5, Euler's chain 1, generator 3.5–4.5, device multigrid 2–3. Its steps cost 3–7 × today's, and the multigrid's convergence on the wider matrix is unknown before measuring.
 - The matrix-free path reaches the true J at any scale for about 14 GB.
-- Its known failure, the limited cases, is a globalisation failure, which ring 3 would share.
+- Its known failure is on the limited cases. Ring 3 holds φ the same way, so it would not be expected to do better there. The cause is not identified: the residual rarely grows by more than 2 over a step on those runs.
 - The check of (1) on #397's limited histories is done (above): the published residual test barely fires there, so it is not the remedy for the limited cases; (2) has no source and (3) is blocked. The matrix-free path's failure on the limited cases is therefore not answered by any designed rule today.
