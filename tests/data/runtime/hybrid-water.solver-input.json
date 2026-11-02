@@ -15,6 +15,10 @@
     "kind": "cpu",
     "count": 1
   },
+  "memory": {
+    "bytes_host": 1637987,
+    "bytes_device": 0
+  },
   "physics": {
     "kind": "incompressible",
     "turbulence": {
