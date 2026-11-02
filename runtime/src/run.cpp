@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <span>
@@ -156,6 +157,7 @@ struct Prepared {
   SolverInput input;
   Mesh mesh;
   std::string mesh_hash;
+  std::string mesh_info;                     // MeshInfo of the mesh as read, before mesh.scale
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
@@ -167,6 +169,12 @@ struct Prepared {
   std::map<std::string, std::string> state_files;
   // initial_state: Density, VelocityX/Y/Z and Pressure of every cell, NaN in solid cells.
   std::optional<std::vector<io::Field>> initial;
+  // Formed on every rank before the ranks agree to start, so that a rank that
+  // cannot form them refuses with the others.
+  std::optional<Geometry> geometry = std::nullopt;
+  CellGroups cell_groups = {};
+  std::vector<std::int32_t> group_colours = {};
+  std::vector<std::int32_t> parts = {};  // each cell's rank on several ranks; empty on one
 };
 
 [[noreturn]] void start_mismatch(const std::string& code, const std::string& message,
@@ -244,6 +252,11 @@ bool is_averaging(const Json& a) {
          a["from_step"].is_number_integer() && a.contains("to_step") &&
          a["to_step"].is_number_integer() && a.contains("from_time") &&
          a["from_time"].is_number() && a.contains("to_time") && a["to_time"].is_number();
+}
+
+const Geometry& geometry_of(Prepared& p) {
+  if (!p.geometry) p.geometry = compute_geometry(p.mesh);
+  return *p.geometry;
 }
 
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
@@ -377,7 +390,6 @@ std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, st
 // document, then against the mesh and the zone, then each face of the zone paired with exactly
 // one row by centroid.
 void load_states(Prepared& p) {
-  std::optional<Geometry> geometry;
   const auto offsets = p.mesh.boundary_zone_offsets();
   for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
     const auto& b = p.input.boundaries[i];
@@ -427,8 +439,7 @@ void load_states(Prepared& p) {
       fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
            {{"zone", b.zone}, {"expected", n}, {"found", z.faces}});
     }
-    if (!geometry) geometry = compute_geometry(p.mesh);
-    const auto& g = *geometry;
+    const Geometry& g = geometry_of(p);
     // Tolerance: 1e-9 times the largest extent of the bounding box of the zone's nodes.
     std::array<double, 3> lo{}, hi{};
     lo.fill(std::numeric_limits<double>::infinity());
@@ -574,7 +585,7 @@ void load_initial(Prepared& p) {
     extent = std::max(extent, *hi - *lo);
   }
   const double tol = 1e-9 * extent;
-  const Geometry g = compute_geometry(mesh);
+  const Geometry& g = geometry_of(p);
   const auto centroid = [&](index_t c) {
     const auto i = at(c);
     return std::array<double, 3>{g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]};
@@ -667,6 +678,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
              .mesh_hash = {},
+             .mesh_info = {},
              .face_zone = {},
              .monitor_zones = {},
              .factory = nullptr,
@@ -674,7 +686,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .start_averaging = {},
              .boundary_states = {},
              .state_files = {},
-             .initial = std::nullopt};
+             .initial = std::nullopt,
+             .geometry = std::nullopt,
+             .cell_groups = {},
+             .group_colours = {},
+             .parts = {}};
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
@@ -698,6 +714,10 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
                                  std::to_string(ranks) + " ranks run the case");
   }
+  // solver-input.md, mesh.scale: the coordinates and periodic translations in
+  // metres once checked against the file, before any geometry or pairing.
+  p.mesh_info = io::mesh_info_json(p.mesh, p.mesh_hash);
+  if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
@@ -813,7 +833,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
       data["path"] = refusal->path;
-      throw InputError(Diagnostic{.code = "E0706",
+      throw InputError(Diagnostic{.code = refusal->code,
                                   .message = std::move(refusal->message),
                                   .path = std::move(refusal->path),
                                   .data_json = data.dump()});
@@ -840,6 +860,18 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                                             {"precision", in.precision},
                                                             {"device", in.device_kind}}
                                                  .dump()});
+  }
+  const Geometry& geometry = geometry_of(p);
+  if (p.groups != nullptr && *p.groups) {
+    p.cell_groups = (*p.groups)(p.input, p.mesh, geometry);
+    p.group_colours = colour_cells(p.mesh, p.cell_groups.offsets, p.cell_groups.cells);  // E0140
+  }
+  // Every rank partitions the same mesh with the same seed (E0140 to E0143).
+  if (ranks > 1) {
+    p.parts = partition_cells(p.mesh, ranks,
+                              {.cell_weights = cell_cost_weights(p.mesh),
+                               .group_offsets = p.cell_groups.offsets,
+                               .group_cells = p.cell_groups.cells});
   }
   return p;
 }
@@ -880,9 +912,8 @@ class Run final : public Log {
       : p_(p),
         comm_(comm),
         launched_(launched),
-        geometry_(compute_geometry(p.mesh)),
-        groups_(p.groups != nullptr && *p.groups ? (*p.groups)(p.input, p.mesh, geometry_)
-                                                 : CellGroups{}),
+        geometry_(std::move(*p.geometry)),
+        groups_(std::move(p.cell_groups)),
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") {
       gpu_.emplace(comm_.local_rank());
@@ -894,6 +925,14 @@ class Run final : public Log {
       if (p_.initial) local_initial_ = owned_fields(*p_.initial);
     } else {
       ghosts_ = std::make_unique<NoGhosts>();
+    }
+    if (local_) {
+      face_global_id_ = local_->face_global_id;
+      face_reversed_ = local_->face_reversed;
+    } else {
+      face_global_id_.resize(at(p_.mesh.n_faces()));
+      std::iota(face_global_id_.begin(), face_global_id_.end(), std::int64_t{0});
+      face_reversed_.assign(face_global_id_.size(), 0);
     }
     colour_cells_of_physics();
     // Rank 0 names the run: its clock and its random suffix.
@@ -942,7 +981,6 @@ class Run final : public Log {
           {"sha256", p_.mesh_hash}}},
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
-        {"deterministic", in.deterministic},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
         {"started", started_at},
         {"finished", nullptr},
@@ -968,7 +1006,7 @@ class Run final : public Log {
       try {
         dir_ = std::make_unique<RunDirectory>(
             runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
-            io::mesh_info_json(p_.mesh, p_.mesh_hash),
+            p_.mesh_info,
             log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
                      Json{{"cells", p_.mesh.n_cells()},
                           {"faces", p_.mesh.n_faces()},
@@ -987,6 +1025,12 @@ class Run final : public Log {
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
     if (comm_.size() > 1) log_partition();
+    if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
+      note("info", "solver",
+           "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
+               ", not ranks",
+           "", Json{{"mode", p_.input.reproducibility}, {"ranks", comm_.size()}}.dump());
+    }
     if (gpu_) {
       note(
           "info", "cuda",
@@ -1015,6 +1059,8 @@ class Run final : public Log {
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
+                                 .face_global_id = face_global_id_,
+                                 .face_reversed = face_reversed_,
                                  .cell_colours = colours_,
                                  .n_colours = n_colours_,
                                  .group_offsets = group_offsets_,
@@ -1063,24 +1109,22 @@ class Run final : public Log {
     if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
   }
 
-  // On several ranks, each runs its part of the mesh, partitioned by METIS
-  // with the face-count cost of each cell and the physics' groups kept
-  // whole; every rank partitions the same
-  // mesh with the same seed, so all agree on the parts (partitioning.md).
+  // On several ranks, each runs its part of the mesh, as prepare() cut it
+  // (p_.parts: METIS, the face-count cost of each cell, the physics' groups
+  // kept whole; every rank cuts the same mesh with the same seed, so all
+  // agree on the parts, partitioning.md).
   // On one rank, a mesh with periodic pairs runs on its one-part partition,
   // whose image ghosts make each periodic face an interior face; its owned
   // cells are the mesh's cells, in order. Otherwise, the mesh itself.
   std::optional<LocalPartition> make_part() {
     const Mesh& mesh = p_.mesh;
     const std::int32_t n = comm_.size();
-    if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
-    std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
-    if (n > 1) {
-      parts = partition_cells(mesh, n,
-                              {.cell_weights = cell_cost_weights(mesh),
-                               .group_offsets = groups_.offsets,
-                               .group_cells = groups_.cells});
-    }
+    // Reproducibility "ranks" computes on a partition, one part on one rank,
+    // so that a physics finds the same global keys on any number of ranks.
+    if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
+      return std::nullopt;
+    const std::vector<std::int32_t> parts =
+        n > 1 ? std::move(p_.parts) : std::vector<std::int32_t>(at(mesh.n_cells()), 0);
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1150,8 +1194,8 @@ class Run final : public Log {
     };
     of_physics(colour_cells(mesh), colours_, n_colours_);
     if (p_.groups == nullptr || !*p_.groups) return;
-    of_physics(colour_cells(mesh, groups_.offsets, groups_.cells), group_colours_,
-               n_group_colours_);
+    of_physics(p_.group_colours, group_colours_, n_group_colours_);
+    p_.group_colours = {};
     std::vector<index_t> owned_at(at(mesh.n_cells()), -1);  // by global id
     for (index_t c = 0; c < physics_mesh().n_owned_cells(); ++c) owned_at[z(ids[at(c)])] = c;
     std::vector<std::pair<std::int64_t, std::size_t>> order;  // (least global id, group)
@@ -1663,6 +1707,10 @@ class Run final : public Log {
   Geometry geometry_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   std::optional<LocalPartition> local_;
+  // PhysicsContext's global keys of the physics' faces: the partition's, or
+  // the mesh's own (identity, none reversed).
+  std::vector<std::int64_t> face_global_id_;
+  std::vector<std::uint8_t> face_reversed_;
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
   std::int32_t n_colours_ = 0;
   // The groups this rank owns, over the physics mesh's owned cells, and their colouring.
@@ -1729,20 +1777,32 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   // or any other failure (E0704, exit 1).
   std::optional<Prepared> prepared;
   std::optional<Diagnostic> refusal;
+  bool failed = false;  // a failure (exit 1) rather than a refused input (exit 2)
   try {
     prepared.emplace(prepare(input_file, registry, comm->size()));
   } catch (const InputError& e) {
     refusal = e.diagnostic();
+  } catch (const Error& e) {
+    // A coded error that is not the input's (invalid groups of the physics: E0140).
+    failed = true;
+    refusal = Diagnostic{.code = error_code_string(e.code()),
+                         .message = e.what(),
+                         .path = "",
+                         .data_json = Json{{"rank", comm->rank()}}.dump()};
   } catch (const std::exception& e) {
+    failed = true;
     refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
   }
   // The key of the first refusing rank: -(2 rank + 1 if it failed).
   constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
-  const std::int64_t key =
-      refusal ? -(2 * std::int64_t{comm->rank()} + (refusal->code == "E0704" ? 1 : 0)) : none;
+  const std::int64_t key = refusal ? -(2 * std::int64_t{comm->rank()} + (failed ? 1 : 0)) : none;
   const std::int64_t first = comm->max(key);
   if (first != none) {
-    if (first == key) std::fprintf(err, "%s\n", refusal->json().c_str());
+    if (first == key) {
+      const std::string line = refusal->json() + "\n";
+      std::fwrite(line.data(), 1, line.size(), err);
+      std::fflush(err);
+    }
     return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
   }
   stop_requested = 0;
@@ -1757,10 +1817,10 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     }
     return run.execute();
   } catch (const std::exception& e) {
-    // The run could not be set up (a coded error keeps its code, invalid
-    // partition groups E0140), its directory created or its run.json written:
-    // nothing records the failure but this diagnostic. On several ranks, the
-    // others may wait in a collective call: every rank ends.
+    // The run could not be set up after the ranks agreed it could (a CUDA
+    // device, the ghost exchange), its directory created or its run.json
+    // written: nothing records the failure but this diagnostic, flushed
+    // before the others, which may wait in a collective call, are ended.
     // Every rank may fail here at once: each line goes out in one write, so
     // that the launcher's merged stderr keeps lines whole.
     const auto* coded = dynamic_cast<const Error*>(&e);

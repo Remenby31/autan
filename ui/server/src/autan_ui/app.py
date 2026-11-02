@@ -7,10 +7,11 @@ import re
 import tempfile
 import tomllib
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, BinaryIO
+from urllib.parse import quote
 
 import autan
 import uvicorn
@@ -18,9 +19,10 @@ from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 from watchfiles import Change, awatch
 
 from autan_ui.cases import Meshes, materials, render
@@ -121,6 +123,21 @@ class Follower:
 
 
 STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
+
+
+class _FileResponse(StreamingResponse):
+    """A stream over an open file, which closes it once the response has run, sent in full or
+    not: neither a background task nor the generator's own cleanup runs when sending fails."""
+
+    def __init__(self, file: BinaryIO, content: Iterator[bytes], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._file = file
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._file.close()
 
 
 def _log_line(record: object) -> dict[str, Any]:
@@ -331,6 +348,55 @@ def create_app(
             return registry.details(find_run(run_id))
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
+
+    @app.get("/api/runs/{run_id}/files/{name}")
+    def run_file(run_id: Annotated[str, Depends(existing_run)], name: str) -> Response:
+        """A regular file of the run directory, as a download; 404 for any name the directory
+        does not list as one, 409 for the solution of a run still running (results.md)."""
+        directory = find_run(run_id)
+        listed = {
+            entry.name: entry.name
+            for entry in directory.iterdir()
+            if not entry.name.startswith(".")
+        }.get(name)
+        if listed is None:
+            raise HTTPException(404, f"run {run_id} has no file {name}")
+        with Folder(directory) as folder:
+            if listed == "solution.cgns" and read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            try:
+                descriptor = folder.open(listed)
+            except OSError as error:
+                raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        file = os.fdopen(descriptor, "rb")
+        # The length as opened: a file still being appended to is sent up to it.
+        size = os.fstat(descriptor).st_size
+
+        def chunks() -> Iterator[bytes]:
+            left = size
+            while left > 0 and (chunk := file.read(min(left, 1 << 20))):
+                left -= len(chunk)
+                yield chunk
+
+        # Closed when the response has run, whatever happened while sending, and here if the
+        # response cannot be built.
+        try:
+            # RFC 6266: an ASCII fallback, and the exact name in UTF-8.
+            fallback = re.sub(r"[^A-Za-z0-9._-]", "_", listed)
+            return _FileResponse(
+                file,
+                chunks(),
+                media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(listed, safe='')}"
+                    ),
+                    "Content-Length": str(size),
+                },
+            )
+        except BaseException:
+            file.close()
+            raise
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
