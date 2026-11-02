@@ -8,6 +8,7 @@ stored with their dimensions reversed (Fortran order).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,7 @@ import h5py
 import numpy as np
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -127,8 +129,46 @@ class Node:
         return [c for c in self.children.values() if c.label == label]
 
 
+class OutsideFileError(ValueError):
+    """A CGNS file whose data lives in other files (``nodes`` names them)."""
+
+    def __init__(self, path: Path, nodes: list[str]) -> None:
+        self.nodes = nodes
+        super().__init__(f"{path}: data outside the file at {', '.join(nodes)}")
+
+
+def outside(handle: h5py.File) -> list[str]:
+    """The nodes of an open file whose data lives elsewhere: external links, datasets with
+    external raw storage, and virtual datasets. Found from the links alone, before any data
+    is read and without following a link to another file."""
+    found: list[str] = []
+
+    def visit(name: str, link: h5py.HardLink | h5py.SoftLink | h5py.ExternalLink) -> None:
+        if isinstance(link, h5py.ExternalLink):
+            found.append(name)
+        elif isinstance(link, h5py.HardLink):
+            node = handle[name]
+            if isinstance(node, h5py.Dataset) and (node.external or node.is_virtual):
+                found.append(name)
+
+    handle.visititems_links(visit)
+    return found
+
+
+@contextmanager
+def open_file(path: Path) -> Iterator[h5py.File]:
+    """Open a CGNS/HDF5 file for reading, refusing (``OutsideFileError``) one whose data lives
+    in other files, so that reading it never reads anything else."""
+    with h5py.File(path, "r") as handle:
+        nodes = outside(handle)
+        if nodes:
+            raise OutsideFileError(path, nodes)
+        yield handle
+
+
 def read(path: Path) -> Node:
-    """Read a whole CGNS/HDF5 tree into memory."""
+    """Read a whole CGNS/HDF5 tree into memory; ``OutsideFileError`` if any of its data lives
+    in another file."""
 
     def load(group: h5py.Group, name: str) -> Node:
         raw = group.get(" data")
@@ -143,5 +183,5 @@ def read(path: Path) -> Node:
                 result.children[key] = load(child, key)
         return result
 
-    with h5py.File(path, "r") as handle:
+    with open_file(path) as handle:
         return load(handle, "/")

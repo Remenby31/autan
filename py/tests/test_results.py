@@ -872,3 +872,46 @@ def test_check_run_json_refuses_what_results_open_refuses(
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(crm_run.path)
     assert error.value.codes == ["E0701"]
+
+
+def _outside_storage(tree: h5py.File, outside: Path) -> None:
+    density = tree["Base/Zone/FlowSolution/Density"]
+    values = density[" data"][()]
+    outside.write_bytes(values.tobytes())
+    del density[" data"]
+    density.create_dataset(
+        " data", shape=values.shape, dtype=values.dtype, external=[(str(outside), 0, values.nbytes)]
+    )
+
+
+def _outside_link(tree: h5py.File, outside: Path) -> None:
+    with h5py.File(outside, "w") as other:
+        other["x"] = np.zeros(3)
+    tree["Base/Zone/FlowSolution/Elsewhere"] = h5py.ExternalLink(str(outside), "/x")
+
+
+def _outside_virtual(tree: h5py.File, outside: Path) -> None:
+    density = tree["Base/Zone/FlowSolution/Density"]
+    values = density[" data"][()]
+    with h5py.File(outside, "w") as other:
+        other["x"] = values
+    layout = h5py.VirtualLayout(shape=values.shape, dtype=values.dtype)
+    layout[:] = h5py.VirtualSource(str(outside), "x", shape=values.shape)
+    del density[" data"]
+    density.create_virtual_dataset(" data", layout)
+
+
+@pytest.mark.parametrize("alter", [_outside_storage, _outside_link, _outside_virtual])
+def test_a_solution_with_data_in_another_file_is_refused_before_any_read(
+    alter: Callable[[h5py.File, Path], None], crm_run: autan.Results, tmp_path: Path
+) -> None:
+    # mesh.md, E0134: files must be self-contained. The outside file is gone before the
+    # read, so a reader that followed it would fail otherwise than with E0134.
+    outside = tmp_path / "outside.bin"
+    with h5py.File(crm_run.path / "solution.cgns", "r+") as tree:
+        alter(tree, outside)
+    outside.unlink()
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path).field("Density")
+    assert error.value.codes == ["E0134"]
+    assert error.value.diagnostics[0].data["node"].startswith("Base/Zone/FlowSolution/")

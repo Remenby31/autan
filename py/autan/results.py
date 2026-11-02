@@ -540,6 +540,9 @@ class Results:
             raise CaseError([diagnostic("E0703", message, location=where)])
         try:
             tree = cgns.read(path)
+        except cgns.OutsideFileError as error:
+            diagnosed = diagnostic("E0134", str(error), location=where, node=error.nodes[0])
+            raise CaseError([diagnosed]) from None
         except (OSError, ValueError, KeyError) as error:
             message = f"cannot read solution.cgns: {error}"
             raise CaseError([diagnostic("E0701", message, location=where)]) from None

@@ -238,11 +238,11 @@ Fix: Export the mesh without the feature named in the message.
 
 ## E0134
 
-**Mesh refers to another file** (error)
+**File refers to another file** (error)
 
-The mesh refers to another file (CGNS link); meshes must be self-contained.
+A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.
 
-Fix: Export a self-contained mesh (no CGNS links to other files).
+Fix: Export a self-contained file: no links to other files, no external storage or virtual datasets.
 
 ## E0135
 
