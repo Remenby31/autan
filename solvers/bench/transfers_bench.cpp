@@ -3,7 +3,8 @@
 // bytes_per_rep counts every array a kernel touches read or written once; each result is checked
 // bitwise against its definition in the host multigrid's order before timing.
 //
-//   autan_mg_transfers_bench MESH [--warmup N] [--reps N] [--batch N] [--gate 1]
+//   autan_mg_transfers_bench MESH [--order input|rcm] [--warmup N] [--reps N] [--batch N] [--gate
+//   1]
 //   --gate 1: after the host setup, print `autan-bench: ready` on stderr and wait for a line on
 //   stdin before any CUDA call (autan-bench run --ready takes the GPU lock only then).
 #include <bit>
@@ -34,6 +35,7 @@ namespace {
 struct Options {
   std::string mesh;
   bool gate = false;
+  bool rcm = true;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -62,6 +64,12 @@ Options parse(int argc, char** argv) {
   o.mesh = argv[1];
   for (int i = 2; i + 1 < argc; i += 2) {
     const std::string_view f(argv[i]);
+    if (f == "--order") {
+      const std::string_view v(argv[i + 1]);
+      if (v != "input" && v != "rcm") fail("--order is input or rcm");
+      o.rcm = v == "rcm";
+      continue;
+    }
     const int v = std::stoi(argv[i + 1]);
     if (f == "--gate")
       o.gate = v != 0;
@@ -142,7 +150,7 @@ int main(int argc, char** argv) {
   const Options o = parse(argc, argv);
   const auto t0 = std::chrono::steady_clock::now();
   autan::Mesh mesh = autan::io::read_mesh(o.mesh);
-  mesh = autan::renumber_cells(mesh, autan::rcm_order(mesh));
+  if (o.rcm) mesh = autan::renumber_cells(mesh, autan::rcm_order(mesh));
   const auto geometry = autan::compute_geometry(mesh);
   const auto t1 = std::chrono::steady_clock::now();
   const auto levels = autan::solvers::agglomerate(mesh, geometry);
@@ -226,10 +234,11 @@ int main(int argc, char** argv) {
   std::printf("\"backend\":\"cuda\",\"runtime_version\":%d,\"driver_version\":%d,", runtime,
               driver);
   std::printf(
-      "\"config\":{\"mesh_file\":\"%s\",\"mesh_sha256\":\"%s\",\"order\":\"rcm\",\"n_cells\":%zu,"
+      "\"config\":{\"mesh_file\":\"%s\",\"mesh_sha256\":\"%s\",\"order\":\"%s\",\"n_cells\":%zu,"
       "\"n_coarse\":%zu,\"levels\":%zu,\"warmup\":%d,\"reps\":%d,\"batch\":%d},",
       std::filesystem::path(o.mesh).filename().string().c_str(),
-      autan::io::mesh_hash(o.mesh).c_str(), n, nc, levels.size(), o.warmup, o.reps, o.batch);
+      autan::io::mesh_hash(o.mesh).c_str(), o.rcm ? "rcm" : "input", n, nc, levels.size(), o.warmup,
+      o.reps, o.batch);
   std::printf("\"setup_seconds\":{\"mesh\":%.3f,\"agglomerate\":%.3f},",
               std::chrono::duration<double>(t1 - t0).count(),
               std::chrono::duration<double>(t2 - t1).count());
