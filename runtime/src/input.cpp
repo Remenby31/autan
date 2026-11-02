@@ -401,8 +401,8 @@ SolverInput parse_solver_input(const std::string& text) {
   }
   const Object root(doc, "",
                     {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
-                     "precision", "deterministic", "devices", "physics", "freestream", "boundaries",
-                     "cell_zones", "time", "monitors"});
+                     "precision", "reproducibility", "devices", "physics", "freestream",
+                     "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -411,11 +411,12 @@ SolverInput parse_solver_input(const std::string& text) {
     in.case_name = c.string("name");
     in.case_sha256 = sha256(c, "sha256");
     in.case_toml = c.string("toml");
-    const Object m(root.get("mesh"), "mesh", {"path", "sha256"});
+    const Object m(root.get("mesh"), "mesh", {"path", "sha256", "scale"});
     in.mesh_path = m.string("path");
     if (!std::filesystem::path(in.mesh_path).is_absolute())
       invalid("mesh.path", "must be an absolute path");
     in.mesh_sha256 = sha256(m, "sha256");
+    in.mesh_scale = m.positive("scale");
   }
   if (!root.is_null("verification")) {
     const Object v(root.get("verification"), "verification", {"path", "sha256"});
@@ -428,7 +429,7 @@ SolverInput parse_solver_input(const std::string& text) {
     in.verification = std::move(verification);
   }
   in.precision = root.tag("precision", {"fp32+acc64", "fp64"});
-  in.deterministic = root.boolean("deterministic");
+  in.reproducibility = root.tag("reproducibility", {"none", "run", "ranks"});
   {
     const Object d(root.get("devices"), "devices", {"kind", "count"});
     in.device_kind = d.tag("kind", {"cpu", "cuda", "hip"});

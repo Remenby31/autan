@@ -97,7 +97,8 @@ class EulerPhysics final : public runtime::Physics {
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
         owned_(static_cast<std::size_t>(ctx.mesh.n_owned_cells())),
         ghost_fill_(ctx.ghosts),
-        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input)),
+        keys_(global_keys(ctx)),
+        euler_(ctx.mesh, ctx.geometry, gas_, scheme(ctx.input), keys_ ? &*keys_ : nullptr),
         reference_(scheme(ctx.input).reference) {
     // On every rank: the exchange is collective, even for a part without ghosts.
     euler_.set_ghosts(&ghost_fill_);
@@ -106,7 +107,11 @@ class EulerPhysics final : public runtime::Physics {
     std::optional<Manufactured> mms;
     if (in.verification) mms.emplace(in.verification->text);
     set_boundaries(mms ? &*mms : nullptr);
-    if (in.time.kind == "steady") {
+    // A steady case on a device steps explicitly there (device_step): no host Jacobian, no linear
+    // solver.
+    if (in.time.kind == "steady" && ctx.device >= 0) {
+      euler_.set_second_order(false);
+    } else if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
@@ -139,6 +144,7 @@ class EulerPhysics final : public runtime::Physics {
       const auto& init = zones.at(mesh.cell_zones()[zi].name)->initial;
       set_cell(c, *init.density, *init.velocity, *init.pressure);
     }
+    if (ctx.initial != nullptr) start_from_initial(*ctx.initial);
     state_.assign(5 * n_, State(0));
     res_.assign(5 * n_, Res(0));
     lambda_.assign(n_, State(0));
@@ -244,10 +250,21 @@ class EulerPhysics final : public runtime::Physics {
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
     std::vector<double> surface(n_, 0.0);
-    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
-      surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
-      if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
-        surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+    if (keys_) {
+      // Each cell's faces in global order: the same bits on any number of ranks.
+      const auto faces = kernels::global_order(mesh, *keys_).cell_faces;
+      const auto off = mesh.cell_face_offsets();
+      for (std::size_t c = 0; c < owned_; ++c) {
+        for (auto k = off[c]; k < off[c + 1]; ++k) {
+          surface[c] += g.face_area[static_cast<std::size_t>(faces[static_cast<std::size_t>(k)])];
+        }
+      }
+    } else {
+      for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+        surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
+        if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+          surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+        }
       }
     }
     // Over the owned cells of every rank, as the history's norms.
@@ -430,6 +447,25 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+  }
+
+  // initial-state.md: the owned cells' state from the case's initial-state file; a NaN row (a
+  // solid cell) keeps its zone's state.
+  void start_from_initial(const std::vector<io::Field>& fields) {
+    auto find = [&](const char* name) -> const std::vector<double>& {
+      for (const auto& f : fields) {
+        if (f.name == name) return f.values;
+      }
+      throw std::invalid_argument(std::string("initial state has no field ") + name);
+    };
+    const auto& rho = find("Density");
+    const std::array<const std::vector<double>*, 3> v{&find("VelocityX"), &find("VelocityY"),
+                                                      &find("VelocityZ")};
+    const auto& p = find("Pressure");
+    for (std::size_t c = 0; c < owned_; ++c) {
+      if (std::isnan(rho[c])) continue;
+      set_cell(c, rho[c], {(*v[0])[c], (*v[1])[c], (*v[2])[c]}, p[c]);
+    }
   }
 
   void set_cell(std::size_t c, double rho, const std::array<double, 3>& v, double p) {
@@ -987,6 +1023,16 @@ class EulerPhysics final : public runtime::Physics {
     runtime::GhostExchange& ghosts_;
   };
 
+  // Under reproducibility "ranks", the keys that order every sum: the same bits on any number
+  // of ranks and in any cell order (solver-input.md).
+  static std::optional<kernels::GlobalKeys> global_keys(const PhysicsContext& ctx) {
+    if (ctx.input.reproducibility != "ranks") return std::nullopt;
+    return kernels::GlobalKeys{.cell = ctx.mesh.cell_global_id(),
+                               .face = ctx.face_global_id,
+                               .reversed = ctx.face_reversed,
+                               .shift = ctx.mesh.ghost_translation()};
+  }
+
   // Component k of `v` (laid out k * n_ + c) over the owned cells.
   [[nodiscard]] std::vector<double> owned(const std::vector<double>& v, std::size_t k) const {
     const auto begin = v.begin() + static_cast<std::ptrdiff_t>(k * n_);
@@ -1020,6 +1066,7 @@ class EulerPhysics final : public runtime::Physics {
   std::size_t n_;      // cells of the mesh: owned, then ghosts
   std::size_t owned_;  // owned cells: what this rank updates and reports
   HostGhosts ghost_fill_;
+  std::optional<kernels::GlobalKeys> keys_;  // reproducibility "ranks" only
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
@@ -1055,8 +1102,19 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 }
 
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
-// conditions that apply to inviscid flow, and steady runs on one rank without periodic pairs.
+// conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
+  // The steady linear solvers sum in local cell order: the multigrid's agglomeration and
+  // smoothing, Gauss-Seidel's row sums.
+  if (in.reproducibility == "ranks" && in.time.kind == "steady") {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the steady Euler solver does not give the same bits on any number of ranks "
+            "yet",
+        .path = "reproducibility",
+        .data_json = "{}",
+        .code = "E1109"};
+  }
   // The multigrid agglomerates one mesh's cells: on a partition, or with periodic image ghosts,
   // it would be another algorithm. Gauss-Seidel sweeps colours by global id, the same anywhere.
   if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" &&
@@ -1143,6 +1201,17 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
+  // The device loops sum in local order: the host's global-order gathers have no device
+  // counterpart in the Euler physics yet.
+  if (in.reproducibility == "ranks") {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Euler physics on a device does not give the same bits on any number of "
+            "ranks yet",
+        .path = "reproducibility",
+        .data_json = "{}",
+        .code = "E1109"};
+  }
   if (ranks > 1) {
     return runtime::PhysicsRefusal{
         .message = "the Euler physics runs on one device only, not " + std::to_string(ranks),

@@ -7,9 +7,12 @@ import time
 from pathlib import Path
 
 import pytest
+from autan_bench import gpu
 
 ROOT = Path(__file__).parents[1]
 WRAPPER = ROOT / "lock" / "autan-gpu-lock"
+# The default memory floor (24 GiB) is a Spark's; a test host may have less memory in all.
+NO_FLOOR = ["-f", "0G"]
 PRIORITY = ROOT / "ci" / "priority.sh"
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="flock(1) and /proc are Linux's")
 
@@ -25,7 +28,17 @@ def spark(tmp_path: Path) -> dict[str, str]:
 
 
 def agent(env: dict[str, str], line: str, order: Path, *args: str) -> subprocess.Popen:
-    cmd = [str(WRAPPER), "-m", "agent", *args, "--", "sh", "-c", f"echo {line} >> {order}"]
+    cmd = [
+        str(WRAPPER),
+        *NO_FLOOR,
+        "-m",
+        "agent",
+        *args,
+        "--",
+        "sh",
+        "-c",
+        f"echo {line} >> {order}",
+    ]
     return subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)
 
 
@@ -52,7 +65,7 @@ def test_an_agent_waiting_with_ci_goes_after_ci(spark, tmp_path):
     order = tmp_path / "order"
     # Someone holds the GPU; CI announces itself and queues; an agent queues after it.
     hold = ["--", "sh", "-c", f"echo first >> {order}; sleep 1"]
-    first = subprocess.Popen([str(WRAPPER), "-m", "first", *hold], env=spark)
+    first = subprocess.Popen([str(WRAPPER), *NO_FLOOR, "-m", "first", *hold], env=spark)
     time.sleep(0.3)
     priority(spark, "start", "5")
     ci = ci_step(spark, order)
@@ -98,7 +111,8 @@ def test_a_self_locking_command_waits_for_ci_then_takes_the_lock_itself(spark, t
     lock = spark["AUTAN_GPU_LOCK"]
     priority(spark, "start", "5")
     take = f"flock -n {lock} sh -c 'echo agent >> {order}'"
-    proc = subprocess.Popen([str(WRAPPER), "-n", "-m", "agent", "--", "sh", "-c", take], env=spark)
+    proc = subprocess.Popen([str(WRAPPER), *NO_FLOOR, "-n", "-m", "agent", "--", "sh", "-c", take],
+                            env=spark)  # fmt: skip
     time.sleep(1)
     assert proc.poll() is None
     ci = ci_step(spark, order)
@@ -200,6 +214,10 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
                               text=True, check=True).stdout.splitlines()  # fmt: skip
 
     guard.publish(foreign)
+    # The harness reads the same list to skip, not fail, tests that need the GPU to itself.
+    tenants = gpu.foreign_tenants(tmp_path / "gpu.lock")
+    assert "VLLM::EngineCore (mcpbench-vllm, 22484 MiB)" in tenants
+    assert len(tenants) == 3
     out = report()
     (error,) = [line for line in out if line.startswith("::error::")]
     assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in error
@@ -208,7 +226,9 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
     assert not any("#" in line or "[" in line for line in out[1:])
     guard.publish({})
     assert not [line for line in report() if line.startswith("::")]
+    assert gpu.foreign_tenants(tmp_path / "gpu.lock") == []
     guard.publish(None)
+    assert gpu.foreign_tenants(tmp_path / "gpu.lock") is None
     assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]
     (tmp_path / "foreign-gpu").unlink()
     assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]
