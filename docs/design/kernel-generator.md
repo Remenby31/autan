@@ -134,9 +134,9 @@ A coloured block Gauss-Seidel sweep (`kernels/blocks.py` `relax`, one launch per
 
 Let R_k be the set of distinct rows whose x the rows of colour k read across faces, S_k = 5 s_R |R_k| bytes (s_R the size of a stored x value), and L the on-chip capacity that can keep data between two colours. Then, per sweep,
 
-Q ≥ B₀ + S₀ + Σ_{k ≥ 1} max(0, S_k − L),
+Q ≥ B₀ + S₀ + Σ_{k ≥ 1} max(0, S_k − L) − L,
 
-where B₀ counts, once each, the inverse blocks, the right-hand side read, x written, the off-diagonal blocks and their column indices, and the row offsets and lengths. Hypotheses: a cold start; data kept between two colours only on chip; uncompressed storage; the final write-back counted. It is a lower bound, not a reachable figure. The benchmark computes R_k from the colouring it sweeps.
+where B₀ counts, once each, the inverse blocks, the right-hand side read, x written, the off-diagonal blocks and their column indices, and the row offsets and lengths. Hypotheses: sweeps repeated back to back, as the benchmark times them, so up to L bytes of one sweep may still be on chip when the next starts (the last − L; a single cold sweep would not subtract it); data kept between two colours only on chip; uncompressed storage; the final write-back counted. It is a lower bound, not a reachable figure. The benchmark computes R_k from the colouring it sweeps.
 
 On GB10, L = 40 MiB: the GPU's 24 MiB L2 ([NVIDIA GB10 Superchip White Paper](https://www.nvidia.com/content/dam/en-zz/Solutions/dgx-spark/nvidia-gb10-superchip-whitepaper.pdf), table 4) plus the 16 MB system-level cache of its CPU tile (figure 3 there, size from NVIDIA's GB10 presentation as reported by [Wccftech](https://wccftech.com/nvidia-gb10-superchip-soc-3nm-20-arm-v9-2-cpu-cores-nvfp4-blackwell-gpu-lpddr5x-9400-memory-140w-tdp/)). Measurements suggest the system-level cache is not additive to the L2 ([Chips and Cheese](https://chipsandcheese.com/p/analyzing-nvidia-gb10s-gpu)). Counting it anyway is the generous choice: it lowers the bound and makes the gate harder.
 

@@ -596,7 +596,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     const double base = cells * (25.0 * sizeof(A) + 10.0 * sizeof(R) + row) +
                         2.0 * ni * 25.0 * sizeof(J) + inc * sizeof(index_t);
     const double product = base + cells * 5.0 * sizeof(R);
-    // Bound: B0 (base) + S_0 + sum over k >= 1 of max(0, S_k - L), S_k the x values colour k
+    // Bound: B0 (base) + S_0 + sum over k >= 1 of max(0, S_k - L) - L, S_k the x values colour k
     // reads across, L = 40 MiB on GB10 (L2 24 MiB + system-level cache 16 MB).
     constexpr double on_chip = 40.0 * 1024 * 1024;
     std::vector<std::int32_t> last(nc, -1);
@@ -618,6 +618,8 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
       const double s = 5.0 * sizeof(R) * static_cast<double>(distinct);
       bound += k == 0 ? s : std::max(0.0, s - on_chip);
     }
+    // Sweeps timed back to back: up to L bytes of the previous one may still be on chip.
+    bound -= on_chip;
     const auto seconds = time_it(o, sweep);
     out.push_back({"relax_sweep", product, "coloured", seconds});
     out.push_back({"relax_sweep_bound", bound, "coloured", seconds});
