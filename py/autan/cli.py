@@ -180,6 +180,7 @@ def command_ui(args: argparse.Namespace) -> int:
         args.port,
         open_browser=not args.no_open,
         meshes=Path(args.meshes) if args.meshes is not None else None,
+        perf=Path(args.perf) if args.perf is not None else None,
     )
     return 0
 
@@ -408,6 +409,10 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--port", type=int, default=8765, help="local port (default 8765)")
     sub.add_argument("--no-open", action="store_true", help="do not open a browser")
     sub.add_argument("--meshes", help="directory of the *.meshinfo.json the case editor plans on")
+    sub.add_argument(
+        "--perf",
+        help="a downloaded perf-history artifact of gpu-bench (gh run download -n perf-history)",
+    )
     sub.set_defaults(func=command_ui)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")
