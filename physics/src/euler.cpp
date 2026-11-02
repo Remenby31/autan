@@ -74,13 +74,14 @@ struct Euler<P>::Impl {
     }
     fill_ghosts(prim, 5);
     ek::cpu::boundary_states(d);
-    if (scheme.second_order) {
+    if (scheme.second_order && scheme.limiter) {
+      // The limiter reads only its own cell's gradient: the ghosts can be filled after.
+      ek::cpu::gradients_limiter(d);
+      fill_ghosts(grad, 15);
+      fill_ghosts(phi, 5);
+    } else if (scheme.second_order) {
       ek::cpu::gradients(d);
       fill_ghosts(grad, 15);
-      if (scheme.limiter) {
-        ek::cpu::limiter(d);
-        fill_ghosts(phi, 5);
-      }
     }
     ek::cpu::sources(d);
   }
@@ -131,8 +132,11 @@ struct Euler<P>::Impl {
     bc.assign(5 * nf, State(0));
     prim_b.assign(5 * nf, State(0));
     prim.assign(5 * nc, State(0));
-    wmin.assign(5 * nc, State(0));
-    wmax.assign(5 * nc, State(0));
+    // NaN: with the limiter, gradients_limiter keeps the bounds in registers and never writes
+    // them, so a later read of these arrays would turn the residual into NaN instead of using
+    // stale bounds.
+    wmin.assign(5 * nc, State(std::numeric_limits<double>::quiet_NaN()));
+    wmax.assign(5 * nc, State(std::numeric_limits<double>::quiet_NaN()));
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));

@@ -15,6 +15,7 @@ from autan_codegen.emit_cpp import Emitter, at, call_args, incidence_loop
 from autan_codegen.emit_cpu import (
     boundary_write_body,
     cell_stores,
+    chain_body,
     face_ends,
     global_left,
     jacobian_lines,
@@ -339,7 +340,7 @@ def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
         for s in reduce_adjoint_body(lm, "  ", "atomic"):
             e.w(s)
     else:
-        for s in reduce_body(lm, "  "):
+        for s in (chain_body if lm.kind == "chain" else reduce_body)(lm, "  "):
             e.w(s)
     e.w("}")
     e.w()

@@ -12,6 +12,7 @@
 #include "autan/kernels/colouring.hpp"
 #include "autan/kernels/gpu.hpp"
 #include "autan/kernels/norms.cuh"
+#include "chained_gpu.cuh"
 #include "device.cuh"
 #include "gradients_gpu.cuh"
 #include "roe_gpu.cuh"
@@ -84,6 +85,44 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   copy_out(rs.download(), res);
   copy_out(gs.download(), grad);
   *norm = std::sqrt(sum.download()[0]);
+}
+
+/// Test kernel codegen/tests/kernels/chained.py: grad (3 x n_cells), lo, hi and phi from
+/// `gradients` then `limiter`, or from their chain `fused` (lo and hi then left as given).
+template <class P>
+void chained(const SpikeMesh& m, int fused, int block, const double* q, const double* q_b,
+             double* grad, double* lo, double* hi, double* phi) {
+  namespace ch = autan::kernels::chained;
+  using S = typename P::state;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  DeviceMesh dm(m, block);
+  DeviceArray<S> qs(converted_in<S>(q, nc));
+  DeviceArray<S> qbs(converted_in<S>(q_b, nf));
+  DeviceArray<S> los(converted_in<S>(lo, nc));
+  DeviceArray<S> his(converted_in<S>(hi, nc));
+  DeviceArray<typename P::grad> gs(3 * nc);
+  DeviceArray<S> ps(nc);
+  ch::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.q_b = qbs.get();
+  d.grad = gs.get();
+  d.lo = los.get();
+  d.hi = his.get();
+  d.phi = ps.get();
+  dm.bind(d);
+  if (fused != 0) {
+    ch::gpu_loops::fused(d, dm.schedule);
+  } else {
+    ch::gpu_loops::gradients(d, dm.schedule);
+    ch::gpu_loops::limiter(d, dm.schedule);
+  }
+  synchronise();
+  copy_out(gs.download(), grad);
+  copy_out(los.download(), lo);
+  copy_out(his.download(), hi);
+  copy_out(ps.download(), phi);
 }
 
 template <class P>
@@ -475,6 +514,16 @@ int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const
     autan::spike::with_policy(policy, [&](auto p) {
       advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
+  });
+}
+
+int autan_spike_gpu_chained(const void* mesh, const char* policy, int fused, int block,
+                            const double* q, const double* q_b, double* grad, double* lo,
+                            double* hi, double* phi, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    autan::spike::with_policy(
+        policy, [&](auto p) { chained<decltype(p)>(*m, fused, block, q, q_b, grad, lo, hi, phi); });
   });
 }
 

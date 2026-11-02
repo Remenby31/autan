@@ -42,12 +42,16 @@ class LoopModel:
     radj: object = None
     # Jacobian outputs: each with its forward-derivative function (ad.jacobian).
     jac_fns: list[tuple[dsl.Jacobian, Function]] = field(default_factory=list)
+    # Kind "chain": the models of its two reductions, in order.
+    chain: tuple[LoopModel, LoopModel] | None = None
 
     @property
     def kind(self) -> str:
         return self.loop.kind
 
     def reads(self) -> list[dsl.Dataset | dsl.Parameter]:
+        if self.chain is not None:
+            return [*self.chain[0].reads(), *self.chain[1].reads()]
         out: list[dsl.Dataset | dsl.Parameter] = []
         for b in [*self.loop.bindings.values(), *self.loop.finalise_bindings.values()]:
             out.append(b.dataset)
@@ -56,6 +60,8 @@ class LoopModel:
         return out
 
     def writes(self) -> list[dsl.Dataset]:
+        if self.chain is not None:
+            return [*self.loop.keep, *self.chain[1].writes()]
         return (
             [o.dataset for o in self.loop.outputs]
             + [j.dataset for j in self.loop.jacobians]
@@ -257,7 +263,73 @@ def _jacobian_fn(where: str, lm: LoopModel, j: dsl.Jacobian) -> Function:
     return jfn
 
 
+def parts(lm: LoopModel) -> list[LoopModel]:
+    """The loop models whose bodies a loop runs: a chain's two reductions, or the loop itself."""
+    return list(lm.chain) if lm.chain is not None else [lm]
+
+
+def build_chain(name: str, loop: dsl.Loop) -> LoopModel:
+    """A chain of two cell reductions (dsl.chain): the second reads the first's outputs only for
+    its own cell (`.self_` in the body, the cell's value in the finalise), from registers, and
+    writes nothing the first reads (a later cell's first pass would read it already updated)."""
+    assert loop.chained is not None
+    first, second = (build_loop(f"{name}_{k}", sub) for k, sub in enumerate(loop.chained))
+    where = f"{loop.body.source_file}: loop {name}"
+    written = {id(o.dataset) for o in first.loop.outputs if getattr(o, "write", False)}
+    own = [(b, "self") for b in second.loop.bindings.values()]
+    own += [(b, "direct") for b in second.loop.finalise_bindings.values()]
+    for b, via in own:
+        if id(b.dataset) in written and b.via != via:
+            raise CodegenError(
+                Code.INVALID_BINDING,
+                f"the second reduction of a chain reads {b.dataset.name} through .{b.via}: only "
+                "its own cell's value is in registers",
+                where,
+            )
+    read = {id(d) for d in first.reads()}
+    for d in second.writes():
+        if id(d) in read:
+            raise CodegenError(
+                Code.INVALID_BINDING,
+                f"the second reduction of a chain writes {d.name}, which the first reads: in one "
+                "pass a cell would read it already updated by another",
+                where,
+            )
+    lm = LoopModel(name, loop, first.fn, first.sig, first.fin_fn, first.fin_sig)
+    lm.chain = (first, second)
+    return lm
+
+
+def check_chains(m: Module) -> None:
+    """Refuses a loop declared after a chain that reads a dataset the chain's first reduction
+    computes but does not store (`keep` omits it), with no loop in between writing it: it would
+    read a value the chain left stale. Declared order, derived loops after the module's: the run
+    order is the caller's, which the module does not know."""
+    for i, lm in enumerate(m.loops):
+        if lm.chain is None:
+            continue
+        kept = {id(d) for d in lm.loop.keep}
+        omitted = {
+            id(o.dataset): o.dataset.name
+            for o in lm.chain[0].loop.outputs
+            if getattr(o, "write", False) and id(o.dataset) not in kept
+        }
+        for later in m.loops[i + 1 :]:
+            for d in later.reads():
+                if id(d) in omitted:
+                    raise CodegenError(
+                        Code.INVALID_BINDING,
+                        f"loop {later.name} reads {omitted[id(d)]}, which chain {lm.name} does "
+                        "not store and no loop declared between them writes",
+                        str(m.path),
+                    )
+            for d in later.writes():
+                omitted.pop(id(d), None)
+
+
 def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
+    if loop.kind == "chain":
+        return build_chain(name, loop)
     where = f"{loop.body.source_file}: loop {name}"
     fn, sig = parse(loop.body)
     fin_fn = fin_sig = None
@@ -352,7 +424,7 @@ def load(path: Path) -> Module:
         if partner is not None and all(partner is not x for x in datasets):
             datasets.append(partner)
     bodies: list[tuple[Function, Signature]] = []
-    for lm in loops:
+    for lm in [p for top in loops for p in parts(top)]:
         bodies.append((lm.fn, lm.sig))
         bodies += [(jfn, lm.sig) for _, jfn in lm.jac_fns]
         if lm.fin_fn is not None and lm.fin_sig is not None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -27,6 +29,7 @@ from autan_codegen.dsl import (
 from autan_codegen.errors import CodegenError
 from autan_codegen.frontend import parse
 from autan_codegen.generate import generate
+from conftest import ROOT
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -459,3 +462,118 @@ def test_per_entry_outputs_go_to_the_entries_and_take_no_active_input(tmp_path: 
     with pytest.raises(CodegenError) as info:
         generate(src, tmp_path / "gen", ["cpu"])
     assert info.value.code == "E1012"
+
+
+@pointwise
+def pass_on(x: Residual) -> Residual:
+    return x
+
+
+def test_a_chain_takes_two_reductions_and_reads_the_first_from_its_own_cell() -> None:
+    # The first reduction's outputs are in registers for the cell only: another cell's value,
+    # a dataset it does not write, or a loop that is not a cell reduction is refused.
+    total = dsl.cells.field("total", Residual)
+    first = dsl.cell_reduce(block_value, b=dsl.faces.field("fb", dsl.Jac), acc=dsl.Sum(total))
+    across = dsl.cell_reduce(pass_on, x=total.other(None), acc=dsl.Sum(r))
+    own = dsl.cell_reduce(pass_on, x=total.self_, acc=dsl.Sum(r))
+    with pytest.raises(CodegenError) as info:
+        dsl.chain(first, dsl.cell_loop(copy_state, x=q, out=dsl.Write(r)))
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        dsl.chain(first, own, keep=[r])
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.chain(first, across))
+    assert info.value.code == "E1003"
+    assert build_loop("ok", dsl.chain(first, own, keep=[total])).kind == "chain"
+
+
+CHAIN_NAMES = """
+from autan_codegen.dsl import Residual, Sum, Max, cell_reduce, cells, chain, pointwise
+
+g = cells.field("g", Residual)
+h = cells.field("h", Residual)
+x = cells.field("x", Residual)
+
+
+@pointwise
+def chain_g(v: Residual) -> tuple[Residual, Residual]:
+    return v, 2.0 * v
+
+
+@pointwise
+def pass_on(v: Residual) -> Residual:
+    return v
+
+
+first = cell_reduce(chain_g, v=x.other(None), acc=[Sum(g), Max(g)])
+second = cell_reduce(pass_on, v=g.self_, acc=Sum(h))
+fused = chain(first, second, keep=[g])
+"""
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
+def test_a_chain_compiles_whatever_its_names_and_refuses_writing_what_it_reads(
+    tmp_path: Path,
+) -> None:
+    # A body named as a register would be, two accumulators on one dataset: the chain compiles.
+    src = tmp_path / "chain_names.py"
+    src.write_text(CHAIN_NAMES)
+    generate(src, tmp_path / "gen", ["cpu"])
+    unit = tmp_path / "unit.cpp"
+    unit.write_text(
+        '#include "chain_names_cpu.hpp"\n'
+        "template void autan::kernels::chain_names::cpu::fused<autan::kernels::fp32_acc64>("
+        "const autan::kernels::chain_names::Data<autan::kernels::fp32_acc64>&);\n"
+    )
+    subprocess.run(
+        ["c++", "-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror",
+         f"-I{ROOT / 'codegen' / 'include'}", f"-I{tmp_path / 'gen'}", str(unit)],
+        check=True,
+    )  # fmt: skip
+    # The second writing what the first reads across cells: refused.
+    q = dsl.cells.field("qq", Residual)
+    g = dsl.cells.field("gg", Residual)
+    first = dsl.cell_reduce(pass_on, x=q.other(None), acc=dsl.Sum(g))
+    second = dsl.cell_reduce(pass_on, x=g.self_, acc=dsl.Sum(q))
+    with pytest.raises(CodegenError) as info:
+        build_loop("bad", dsl.chain(first, second, keep=[g]))
+    assert info.value.code == "E1003"
+
+
+CHAIN_STALE = """
+from autan_codegen.dsl import Residual, Sum, cell_reduce, cell_loop, cells, chain, pointwise, Write
+
+g = cells.field("g", Residual)
+h = cells.field("h", Residual)
+x = cells.field("x", Residual)
+y = cells.field("y", Residual)
+
+
+@pointwise
+def pass_on(v: Residual) -> Residual:
+    return v
+
+
+first = cell_reduce(pass_on, v=x.other(None), acc=Sum(g))
+second = cell_reduce(pass_on, v=g.self_, acc=Sum(h))
+fused = chain(first, second)
+REWRITE
+reader = cell_loop(pass_on, v=g, out=Write(y))
+"""
+
+
+def test_a_loop_after_a_chain_does_not_read_what_the_chain_left_unstored(tmp_path: Path) -> None:
+    # g is computed in registers only; a loop declared after the chain reading g, with nothing
+    # writing g in between, would read a stale g. Writing g in between, or keeping it, is fine;
+    # Euler's module, whose unfused limiter is declared before its chain, generates.
+    for rewrite, code in (("", "E1003"), ("again = cell_loop(pass_on, v=x, out=Write(g))", None)):
+        src = tmp_path / f"stale_{code}.py"
+        src.write_text(CHAIN_STALE.replace("REWRITE", rewrite))
+        if code is None:
+            generate(src, tmp_path / "ok", ["cpu"])
+        else:
+            with pytest.raises(CodegenError) as info:
+                generate(src, tmp_path / "bad", ["cpu"])
+            assert info.value.code == code
+    generate(ROOT / "kernels" / "euler.py", tmp_path / "euler", ["cpu"])

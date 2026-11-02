@@ -12,6 +12,7 @@
 #include "advection_metal.hpp"
 #include "autan/kernels/metal.hpp"
 #include "autan/kernels/strategy.hpp"
+#include "chained_metal.hpp"
 #include "gradients_metal.hpp"
 #include "metal_device.hpp"
 #include "roe_metal.hpp"
@@ -174,6 +175,49 @@ void gradients(const SpikeMesh& m, std::string_view method, Strategy strategy, i
   copy_out(gs.download(), grad);
   copy_out(mins.download(), qmin);
   copy_out(maxs.download(), qmax);
+}
+
+/// Test kernel codegen/tests/kernels/chained.py: grad (3 x n_cells), lo, hi and phi from
+/// `gradients` then `limiter`, or from their chain `fused` (lo and hi then left as given).
+template <class P>
+void chained(const SpikeMesh& m, int fused, int block, const double* q, const double* q_b,
+             double* grad, double* lo, double* hi, double* phi) {
+  namespace ch = autan::kernels::chained;
+  using S = typename P::state;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  auto& ctx = context();
+  DeviceMesh<P> dm(ctx, m, block);
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(ctx, hg);
+  DeviceArray<S> qs(ctx, converted_in<S>(q, nc));
+  DeviceArray<S> qbs(ctx, converted_in<S>(q_b, nf));
+  DeviceArray<S> los(ctx, converted_in<S>(lo, nc));
+  DeviceArray<S> his(ctx, converted_in<S>(hi, nc));
+  DeviceArray<typename P::grad> gs(ctx, 3 * nc);
+  DeviceArray<S> ps(ctx, nc);
+  ch::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.q_b = qbs.get();
+  d.grad = gs.get();
+  d.lo = los.get();
+  d.hi = his.get();
+  d.phi = ps.get();
+  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  autan::spike::bind(d.face_centroid, g.face_centroid);
+  autan::spike::bind(d.cell_centroid, g.cell_centroid);
+  if (fused != 0) {
+    ch::metal_loops::fused(ctx, d, dm.schedule);
+  } else {
+    ch::metal_loops::gradients(ctx, d, dm.schedule);
+    ch::metal_loops::limiter(ctx, d, dm.schedule);
+  }
+  synchronise();
+  copy_out(gs.download(), grad);
+  copy_out(los.download(), lo);
+  copy_out(his.download(), hi);
+  copy_out(ps.download(), phi);
 }
 
 template <class P>
@@ -442,6 +486,16 @@ int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const
     autan::spike::metal::with_policy(policy, [&](auto p) {
       advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
+  });
+}
+
+int autan_spike_gpu_chained(const void* mesh, const char* policy, int fused, int block,
+                            const double* q, const double* q_b, double* grad, double* lo,
+                            double* hi, double* phi, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return metal_guarded(err, err_len, [&] {
+    autan::spike::metal::with_policy(
+        policy, [&](auto p) { chained<decltype(p)>(*m, fused, block, q, q_b, grad, lo, hi, phi); });
   });
 }
 
