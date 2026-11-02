@@ -395,8 +395,21 @@ TEMPLATE_TEST_CASE("the frozen residual is the residual at its state and keeps t
   CHECK(traction == after);
   // One cell's density down to 1e-3 of its value: its neighbours' reconstructions towards it
   // reach a non-positive density, so face sides switch to the cell value.
+  // The convective reconstruction's switches alone, from Euler<P> at the same states (slip faces
+  // and walls alike out of its gradients): the viscous one switches too.
+  Euler<P> euler(mesh, g, air, scheme);
+  auto slip = kind;
+  for (auto& k : slip) {
+    if (k == BoundaryKind::wall) k = BoundaryKind::slip;
+  }
+  euler.set_boundary(slip, data);
+  euler.freeze(s1);
+  std::vector<typename P::residual> convective(5 * n);
+  euler.residual_frozen(conserved(1.0, n / 2), convective);
   ns.residual_frozen(conserved(1.0, n / 2), other);
-  CHECK(ns.frozen_switches() > 0);
+  CAPTURE(euler.frozen_switches(), ns.frozen_switches());
+  CHECK(euler.frozen_switches() > 0);
+  CHECK(ns.frozen_switches() > euler.frozen_switches());
   ns.residual_frozen(s1, rf);
   CHECK(ns.frozen_switches() == 0);
   ns.release_frozen();

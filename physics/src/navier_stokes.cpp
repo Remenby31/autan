@@ -14,12 +14,11 @@
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
-#include "euler_cpu.hpp"
+#include "euler.hpp"
 #include "navier_stokes_cpu.hpp"
 
 namespace autan::physics {
 
-namespace ek = autan::kernels::euler;
 namespace nk = autan::kernels::navier_stokes;
 
 template <class P>
@@ -39,13 +38,12 @@ struct NavierStokes<P>::Impl {
   stored<decltype(D::cell_volume)> cell_volume;
   std::vector<State> mu_t, mu_t_b, lam_v, traction, ut, ut_b;
   // freeze(): the viscous terms' workspace for residual_frozen, apart from the cache above.
-  // The positivity fallbacks of both reconstructions at freeze()'s state (Euler<P>'s held keep,
-  // viscous_keep_base) and at the last residual_frozen's (keep, viscous_keep), and how many face
-  // sides differ.
+  // The viscous reconstruction's positivity fallbacks at freeze()'s state and at the last
+  // residual_frozen's, and how many face sides differ.
   struct Frozen {
     std::vector<State> ut, ut_b, mu_t, mu_t_b;
     std::array<std::vector<typename P::grad>, 7> fits;
-    std::vector<typename P::flag> keep, viscous_keep_base, viscous_keep;
+    std::vector<typename P::flag> viscous_keep_base, viscous_keep;
     std::size_t switches = 0;
   };
   std::optional<Frozen> frozen;
@@ -733,7 +731,6 @@ void NavierStokes<P>::freeze(std::span<const State> s) {
     m.frozen->mu_t.assign(m.mu_t.size(), State(0));
     m.frozen->mu_t_b.assign(m.mu_t_b.size(), State(0));
     const auto nf = static_cast<std::size_t>(m.topo.n_faces);
-    m.frozen->keep.assign(2 * nf, typename P::flag(0));
     m.frozen->viscous_keep_base.assign(2 * nf, typename P::flag(0));
     m.frozen->viscous_keep.assign(2 * nf, typename P::flag(0));
     for (std::size_t k = 0; k < 7; ++k)
@@ -759,16 +756,10 @@ void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> r
   if (!m.frozen) throw std::logic_error("NavierStokes::residual_frozen before freeze");
   m.euler.residual_frozen(s, res);
   auto& f = *m.frozen;
-  auto e = m.euler.frozen_data();
-  const auto* held = e.keep;
-  e.keep = f.keep.data();
-  ek::cpu::fallbacks_faces(e);
-  ek::cpu::fallbacks_boundaries(e);
   m.viscous_fallbacks(f.viscous_keep);
   f.switches = 0;
-  for (std::size_t i = 0; i < f.keep.size(); ++i) {
-    f.switches += static_cast<std::size_t>(f.keep[i] != held[i]) +
-                  static_cast<std::size_t>(f.viscous_keep[i] != f.viscous_keep_base[i]);
+  for (std::size_t i = 0; i < f.viscous_keep.size(); ++i) {
+    f.switches += static_cast<std::size_t>(f.viscous_keep[i] != f.viscous_keep_base[i]);
   }
   eddy();
   const auto a = m.euler.frozen_data();
@@ -799,7 +790,7 @@ template <class P>
 std::size_t NavierStokes<P>::frozen_switches() const {
   const auto& m = *impl_;
   if (!m.frozen) throw std::logic_error("NavierStokes::frozen_switches before freeze");
-  return m.frozen->switches;
+  return m.euler.frozen_switches() + m.frozen->switches;
 }
 
 template <class P>
