@@ -433,6 +433,7 @@ class EulerPhysics final : public runtime::Physics {
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
+    v.emplace_back("SolverUnderSolved", under_solved_ ? 1.0 : 0.0);
     return v;
   }
 
@@ -447,6 +448,7 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+    under_solved_ = v[10].second != 0.0;
   }
 
   // initial-state.md: the owned cells' state from the case's initial-state file; a NaN row (a
@@ -702,8 +704,9 @@ class EulerPhysics final : public runtime::Physics {
     const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
-    // after each step the admissibility check shortened and recovering by half otherwise.
-    penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+    // after each step the admissibility check shortened or the linear solve under-solved
+    // (docs/design/linear-forcing.md), once when both, and recovering by half otherwise.
+    penalty_ = shortened_ || under_solved_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
     if (drop > 0.0) {
       cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
     }
@@ -739,7 +742,7 @@ class EulerPhysics final : public runtime::Physics {
     }
     const bool failed = !(linear.residual_drop <= linear_failure);
     if (!(linear.residual_drop <= linear_tolerance)) {
-      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
+      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}, {"cfl", cfl_}};
       if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
       ctx_.log.write("warning", "linear",
                      failed ? "the implicit step's linear solve failed: step rejected"
@@ -752,16 +755,22 @@ class EulerPhysics final : public runtime::Physics {
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
       cfl_cap_ = 0.5 * cfl_;
       shortened_ = true;
+      under_solved_ = false;
       if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
       return;
     }
     const double alpha = admissible_step();
     shortened_ = alpha < 1.0;
+    // At the smallest CFL number an under-solved step changes nothing: the penalty would only
+    // fall, and delay the recovery without bound.
+    under_solved_ = !(linear.residual_drop <= linear_tolerance) && cfl_ > cfl_min;
     // The next step halves the penalty; starting from the CFL number actually used, so that the
     // CFL number halves also when it was clamped.
-    if (shortened_) {
+    if (shortened_ || under_solved_) {
       if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
       cfl_cap_ = 0.5 * cfl_;
+    }
+    if (shortened_) {
       ctx_.log.write("warning", "solver",
                      alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
                      nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
@@ -962,6 +971,8 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
       first_norms_.clear();
+      ctx_.log.write("info", "solver", "second order from this step", {},
+                     nlohmann::json{{"first_order_steps", first_order_steps_}}.dump());
     }
   }
 
@@ -1079,6 +1090,7 @@ class EulerPhysics final : public runtime::Physics {
   bool second_order_ = false;
   int first_order_steps_ = 0;
   bool shortened_ = false;
+  bool under_solved_ = false;  // the last step's linear solve stopped above its tolerance
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
   std::vector<Res> res_;

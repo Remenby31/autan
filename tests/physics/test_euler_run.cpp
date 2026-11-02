@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <random>
 #include <sstream>
 #include <string>
@@ -912,6 +913,81 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
   }
 }
 #endif
+
+TEST_CASE("a steady step whose linear solve stops above its tolerance halves the next CFL number",
+          "[euler]") {
+  // linear-forcing.md: a step whose linear solve leaves more than 0.1 of its residual, and at
+  // most 0.9, is taken; the next CFL number is capped at half its own and the penalty halves,
+  // then recovers by 1.5 per step. That state crosses a restart. Two zones at very different
+  // states make the multigrid miss its tolerance in the first steps.
+  auto doc = [&](int budget) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 3.0 * init["density"].get<double>();
+      init["pressure"] = 5.0 * init["pressure"].get<double>();
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  constexpr int budget = 60;
+  const auto whole = run(doc(budget));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  // Per iteration: whether a step event (solver or linear warning) was logged, and the CFL
+  // number of an under-solved step.
+  std::map<int, bool> warned;
+  std::map<int, double> under_solved;
+  std::istringstream log(read(whole.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    const auto e = Json::parse(line);
+    if (e["level"] != "warning" || !e["iteration"].is_number()) continue;
+    const int i = e["iteration"].get<int>();
+    warned[i] = true;
+    const auto data = e["data"];
+    if (e["source"] == "linear" && data["residual_drop"].is_number() &&
+        data["residual_drop"].get<double>() <= 0.9 && data["cfl"].get<double>() > 1.0) {
+      under_solved[i] = data["cfl"].get<double>();
+    }
+  }
+  int k = 0;
+  for (const auto& [i, cfl] : under_solved) {
+    if (i + 3 < budget && !warned.contains(i + 1) && !warned.contains(i + 2) &&
+        !warned.contains(i + 3)) {
+      k = i;
+      break;
+    }
+  }
+  INFO(under_solved.size() << " under-solved steps; the first followed by three plain ones: " << k);
+  REQUIRE(k > 0);
+  // Stopped after step k, then continued one step at a time.
+  auto restart = [&](const fs::path& run, const char* name) {
+    return field(run, name, "RestartState").front();
+  };
+  const auto first = run(doc(k));
+  REQUIRE(first.status == ExitStatus::finished);
+  auto runs = std::vector<fs::path>{first.run};
+  for (int j = 1; j <= 3; ++j) {
+    auto next = doc(k + j);
+    next["start"] = continue_from(runs.back());
+    const auto r = run(next);
+    INFO(r.err);
+    REQUIRE(r.status == ExitStatus::finished);
+    runs.push_back(r.run);
+  }
+  CHECK(restart(runs[0], "SolverUnderSolved") == 1.0);
+  CHECK(restart(runs[0], "SolverCflCap") == 0.5 * under_solved[k]);
+  std::vector<double> penalty;
+  for (const auto& r : runs) penalty.push_back(restart(r, "SolverPenalty"));
+  CHECK(penalty[1] == 0.5 * penalty[0]);
+  CHECK(penalty[2] == std::min(1.0, 1.5 * penalty[1]));
+  CHECK(penalty[3] == std::min(1.0, 1.5 * penalty[2]));
+  std::string chain;
+  for (const auto& r : runs) chain += read(r / "history.jsonl");
+  const auto all = read(whole.run / "history.jsonl");
+  CHECK(chain == all.substr(0, chain.size()));
+  CHECK(all[chain.size() - 1] == '\n');
+}
 
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
   // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its

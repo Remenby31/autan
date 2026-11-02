@@ -21,7 +21,7 @@ An Eisenstat–Walker forcing term (1996, SIAM J. Sci. Comput. 17(1):16–32, Ch
 
 ## Scope, state and determinism
 
-Only the host implicit step with `linear_solver = "multigrid"` (and `"lines"` once #282 adds it) measures its linear residual; `"gauss-seidel"` runs a fixed number of sweeps and the device steady step is explicit, so neither changes. The state the rule uses is the cap and the penalty, already in the restart state (`SolverCflCap`, `SolverPenalty`), and `under_solved_`, a new restart field `SolverUnderSolved`: a continued run repeats the uninterrupted one bit for bit, as today. The steady Euler physics does not yet run under `reproducibility = "ranks"` (E1109); the rule adds no sum.
+Only the host implicit step with `linear_solver = "multigrid"` (and `"lines"` once #282 adds it) measures its linear residual; `"gauss-seidel"` runs a fixed number of sweeps and the device steady step is explicit, so neither changes. The state the rule uses is the cap and the penalty, already in the restart state (`SolverCflCap`, `SolverPenalty`), and `under_solved_`, a new restart field `SolverUnderSolved`: a continued run repeats the uninterrupted one bit for bit, as today. The steady multigrid does not run under `reproducibility = "ranks"` (E1109); the rule adds no sum.
 
 A `solver` info event marks the first step solved at second order (the step after the switch), so that the gate below finds the phase from the log.
 
