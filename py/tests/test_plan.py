@@ -1,5 +1,6 @@
 """Case resolution against MeshInfo: provenance, coded diagnostics, memory model."""
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -301,6 +302,12 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
     assert by_name["runtime"].bytes_host == 26 * 2**20  # measured, plan.md
+    # The solver input at most: the case's TOML escaped (6 B a character), the MeshInfo, and
+    # 64 KiB; kept once, read and parsed once more (41 times).
+    tiny_case = autan.load(write_case(TINY))
+    bound = 6 * len(tiny_case.to_toml().encode()) + len(json.dumps(tiny_mesh(20).document()))
+    assert by_name["solver input"].bytes_host == bound + 2**16
+    assert by_name["solver input setup"].bytes_host == 41 * (bound + 2**16)
     # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).
     assert by_name["solution output"].bytes_host == 2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160
     # RCM order keeps the renumbered mesh (the mesh terms without geometry) and its maps.
@@ -310,7 +317,10 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # elements 144 B a hexahedron, 112 B a boundary face, labels 64 B per boundary face and per
     # cell, then 24N + 4C + 52F + 16P, and the HDF5 chunk cache.
     standard = 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 24 * 30 + 4 * 10 + 52 * 40 + 16 * 160
-    assert by_name["mesh reading"].bytes_host == standard + 2**20
+    # A descriptor of the file's 4 096 B, twice (the library's copy), beside the reader's
+    # points, elements and labels, is larger here.
+    descriptor = 24 * 30 + 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 2 * 4096
+    assert by_name["mesh reading"].bytes_host == max(standard, descriptor) + 2**20
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
     two_levels = tiny_mesh(20).document()

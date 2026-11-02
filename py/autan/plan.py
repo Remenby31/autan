@@ -215,9 +215,17 @@ def plan(
             vortices=_vortex_conditions(spec, boundaries),
             start=start,
             files=tuple(files),
+            input_bytes=_input_bytes(case, mesh),
         ),
         diagnostics=tuple(found),
     )
+
+
+def _input_bytes(case: Case, mesh: MeshInfo) -> int:
+    """A bound on the solver input's size (solver-input.md): the case's TOML, escaped in JSON
+    (at most 6 bytes a character), the MeshInfo, and 64 KiB for the rest of the document."""
+    toml = len(case.to_toml().encode())
+    return 6 * toml + len(json.dumps(mesh.document())) + 64 * 2**10
 
 
 def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> int:

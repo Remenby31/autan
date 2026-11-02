@@ -80,6 +80,7 @@ def estimate(
     vortices: int = 0,
     start: StartMode | None = None,
     files: tuple[StateFileLoad, ...] = (),
+    input_bytes: int = 0,
 ) -> Memory:
     return max(
         (
@@ -93,6 +94,7 @@ def estimate(
                 vortices=vortices,
                 start=start,
                 files=files,
+                input_bytes=input_bytes,
             )
             for share in _shares(mesh, ranks)
         ),
@@ -144,6 +146,7 @@ def _rank(
     vortices: int,
     start: StartMode | None,
     files: tuple[StateFileLoad, ...],
+    input_bytes: int,
 ) -> Memory:
     counts = mesh.counts
     n = equations
@@ -171,6 +174,10 @@ def _rank(
     mesh_bytes += 20 * cells
     geometry = 56 * faces + 32 * cells
     add("runtime", _RUNTIME)
+    # The solver input (at most input_bytes): the runtime keeps the case's name and text, and
+    # reads and parses the document once.
+    add("solver input", input_bytes)
+    add("solver input setup", (1 + _JSON_DOCUMENT) * input_bytes, transient=True)
     add("mesh", mesh_bytes + geometry + 12 * cells)
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
     add("mesh reading", _reading(mesh, interior, boundary), transient=True)
@@ -204,7 +211,9 @@ def _rank(
         if x.kind == "initial":
             loads += 2 * x.size + 1024 + 266 * x.rows + 160 * cells
         elif x.kind == "faces":
-            loads += 2 * x.size + 1024 + 128 * x.rows + 1200 * x.zones + 40 * x.faces
+            # Zone names: the document's key, two row-map keys and the zone map's, at most the
+            # text each beside the text itself.
+            loads += 6 * x.size + 1024 + 128 * x.rows + 1200 * x.zones + 40 * x.faces
         else:
             loads += _JSON_DOCUMENT * x.size
     if loads:
@@ -348,8 +357,9 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # NGON_n/NFACE_n: a block per face and per cell, at most 32 B plus 4 B an entry.
         blocks = 24 * ns + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
         ngon = blocks + 76 * f - 4 * interior - 4 * k - 8 * c
-        # Descriptors are read one at a time before those stages, each at most the file.
-        reading = max(standard, ngon, alive + s) + _HDF5_CACHE
+        # Descriptors are read one at a time before those stages, each at most the file, and
+        # the CGNS library keeps its own copy beside the one it returns.
+        reading = max(standard, ngon, alive + 2 * s) + _HDF5_CACHE
     else:
         # polyMesh: the end of assemble, with the owner, neighbour and boundary texts (at most
         # the files' bytes) and the 64-bit owner and neighbour arrays alive.

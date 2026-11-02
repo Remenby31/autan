@@ -61,11 +61,11 @@ def peak(run: autan.Results) -> int:
     return value
 
 
-def case_file(directory: Path, mesh: Path, boundaries: str) -> Path:
+def case_file(directory: Path, mesh: Path, boundaries: str, name: str = "padded") -> Path:
     case = directory / "case.py"
     case.write_text(
         "import autan\nfrom autan.units import K, Pa\n"
-        f"case = autan.Case('padded', mesh={str(mesh)!r})\n"
+        f"case = autan.Case({name!r}, mesh={str(mesh)!r})\n"
         "case.physics = autan.Compressible(turbulence=autan.Inviscid())\n"
         "case.freestream(mach=0.2, pressure=101325 * Pa, temperature=300 * K)\n"
         "case.time = autan.Steady(max_iterations=3, linear_solver='gauss-seidel')\n" + boundaries
@@ -129,19 +129,60 @@ def padded_face_states(tmp_path: Path) -> tuple[Path, str]:
     )
 
 
+LONG = 16 * 2**20
+
+
+def long_zone_name(tmp_path: Path) -> tuple[Path, str]:
+    info = mesh_info(HEX, tmp_path)
+    centroids = [[0.0, (j + 0.5) / 3, (k + 0.5) / 3] for k in range(3) for j in range(3)]
+    zones = {
+        "xmin": {"faces": 9, "centroids": centroids, "values": [FREESTREAM] * 9},
+        "z" * LONG: {"faces": 0, "centroids": [], "values": []},
+    }
+    document = {
+        "schema": "autan.face-states/1",
+        "oracle": "uniform",
+        "mesh_sha256": info.source.sha256,
+        "variables": VARIABLES,
+        "zones": zones,
+    }
+    (tmp_path / "states.json").write_text(json.dumps(document))
+    digest = hashlib.sha256((tmp_path / "states.json").read_bytes()).hexdigest()
+    return HEX, (
+        "for zone in ('xmax', 'ymin', 'ymax', 'zmin', 'zmax'):\n"
+        "    case.boundary(zone).farfield()\n"
+        f"case.boundary('xmin').oracle_state(path='states.json', sha256={digest!r})\n"
+    )
+
+
+def long_case_name(tmp_path: Path) -> tuple[Path, str]:
+    del tmp_path
+    return HEX, FARFIELD
+
+
 @pytest.mark.parametrize(
     "make",
-    [padded_gmsh, padded_polymesh, padded_cgns, padded_initial_state, padded_face_states],
+    [
+        padded_gmsh,
+        padded_polymesh,
+        padded_cgns,
+        padded_initial_state,
+        padded_face_states,
+        long_zone_name,
+        long_case_name,
+    ],
 )
 def test_the_estimate_bounds_a_run_on_padded_files(
     make: Callable[[Path], tuple[Path, str]], tmp_path: Path
 ) -> None:
     # plan.md: each file of the case counts at its size, whatever it carries beyond the mesh
     # and the states (skipped sections, unreferenced nodes, descriptors, whitespace, empty
-    # zones): the measured peak (VmHWM, CPU) never exceeds the estimate.
+    # zones and their names, the case's own name): the measured peak (VmHWM, CPU) never
+    # exceeds the estimate.
     mesh, boundaries = make(tmp_path)
     info = mesh_info(mesh, tmp_path)
-    case = autan.load(case_file(tmp_path, mesh, boundaries))
+    name = "c" * LONG if make is long_case_name else "padded"
+    case = autan.load(case_file(tmp_path, mesh, boundaries, name))
     estimate = case.plan(info, device_kind="cpu").memory.bytes_per_gpu
     run = case.run(info, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     assert run.run.status in ("converged", "completed")
