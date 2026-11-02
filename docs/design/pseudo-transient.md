@@ -1,6 +1,6 @@
-# The steady CFL number from the step's actual and predicted reductions
+# The steady CFL number from a line search on the residual
 
-Design for #395, written before any code, by CFD - Multigrille and CFD - Euler. The steady implicit step solves (V/Δt + J̃) ΔU = −R(U) with the assembled approximate Jacobian J̃ ([euler.md](euler.md#time-stepping)); its CFL number follows the switched evolution relaxation (SER, #277). This note adds to that law a factor from the ratio of the reduction the step achieved to the reduction the linear model predicted, the trust-region form of pseudo-transient continuation, on the assembled J̃ (no matrix-free product).
+Design for #395, written before any code, by CFD - Multigrille and CFD - Euler. The steady implicit step solves (V/Δt + J̃) ΔU = −R(U) with the assembled approximate Jacobian J̃ ([euler.md](euler.md#time-stepping)); its CFL number follows the switched evolution relaxation (SER, #277). This note adds to that law a line search on the true residual, with step rejection and growth only after a full update (pseudo-transient continuation as Fidkowski and Ceze apply it to RANS), on the assembled J̃ (no matrix-free product).
 
 ## Problem, measured
 
@@ -19,15 +19,13 @@ Pseudo-transient continuation with a test on the residual after the step respond
 
 ## Change
 
-*(CFD - Multigrille.)* After each accepted step, from the second order on:
+From the second order on, the steady step tests its trial update on the residual, as Fidkowski and Ceze's algorithm does (the Parameters section states it and its values): the update is cut back while the residual after it is more than twice the residual before, rejected (the CFL number cut tenfold and the linear system solved again) when that takes it below a quarter of the step, and the CFL number grows by 1.2 only after a full update. The test uses the true residual R(U + ω ΔU), so it responds to whatever makes the model leave it: J̃'s missing gradients, the limiter's switches, the reconstruction's fallback. The operator stays the assembled J̃ and its multigrid (or the line sweeps): nothing of #397's matrix-free product.
 
-- predicted reduction: pred = ‖R(U)‖ − ‖R(U) + J̃ ΔU‖, the linear model of the residual without the pseudo-time term;
-- actual reduction: act = ‖R(U)‖ − ‖R(U + α ΔU)‖, the next step's residual (already evaluated: no extra residual);
-- ρ = act / pred; the norm is the SER's, over the equations it does not exempt, each scaled by its value at the start of the order (the same scaling as the SER ratio, so that no equation dominates by its units).
+The SER stays the law the CFL number may grow by: the line search's factor only limits it, and a rejected step overrides it. One rule, with #356's if it is merged first (see Parameters): CFL_{n+1} = min(SER_{n+1}, c_n CFL_n, the shortened or under-solved cap).
 
-The next CFL number is the SER's value, capped by a factor of the current one: CFL_{n+1} = min(SER_{n+1}, c(ρ_n) CFL_n, the shortened-step cap), c(ρ) as the parameters section sets it. A step is never rejected for its ratio (the state moves as now): the ratio only governs how far the CFL number may go next. One product J̃ ΔU per step (the assembled matrix, no residual) and three norms; the state the rule needs (the last ρ, or the factor it set) is restart state.
+Per accepted step at ω = 1 the test costs nothing: R(U + ΔU) is the next step's residual, evaluated anyway. Each backtrack costs one residual; a rejection costs a new assembly and linear solve. The rejected and backtracked steps are logged (`solver` events with ω and the CFL number), and the state the rule carries (the factor c_n) is restart state, so that a continued run repeats the uninterrupted one bit for bit. The first-order phase is unchanged.
 
-Relation to the SER and to #356: the SER stays the law the CFL number grows by; c(ρ) only limits it. #356's under-solved rule, if merged first, stays as its own trigger (a solve above 0.1 lowers the next CFL number as a shortened step): the two caps combine by their minimum, declared together.
+Not done: a ratio of actual to predicted reduction (a trust-region control). Neither source uses one, and none read in full prescribes its thresholds for this setting.
 
 ## Parameters
 
@@ -70,7 +68,7 @@ All runs fp64 unless stated, against `main` at the merge base (the reference), t
 
 **Accuracy** (AGENTS.md): the discretisation does not change; the Euler MMS observed orders on hex, tet, poly and hybrid in fp64 (`euler-mms-order` PASS) and fp32+acc64 agreeing with fp64 level by level (`autan-vv agree`), unchanged from `main`'s.
 
-**Cost**: CPU time per step and to convergence on the plate and the Euler cases, measured alone under the GPU lock, reported against `main` (one product J̃ ΔU and three norms per step: expected below 2 % per step).
+**Cost**: CPU time per step and to convergence on the plate and the Euler cases, measured alone under the GPU lock, reported against `main` with the number of backtracks and rejections (an accepted full step costs nothing extra; each backtrack one residual; each rejection one assembly and linear solve).
 
 **Euler, no regression** (fp64, the runtime's convergence: ten orders; the cases of #356 and #397, case and mesh hashes recorded):
 
