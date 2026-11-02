@@ -93,6 +93,27 @@ def cgns_skipped_elements(tmp_path: Path) -> tuple[Path, str]:
     ), FARFIELD
 
 
+def cgns_skipped_mixed(tmp_path: Path) -> tuple[Path, str]:
+    # A MIXED section of a million edges, which the reader skips like a BAR_2 one.
+    out = tmp_path / "mixed.cgns"
+    return pad("cgns", HYBRID / "hybrid.cgns", out, "--skipped-mixed", "1000000", size=1), FARFIELD
+
+
+def cgns_filtered_descriptor(tmp_path: Path) -> tuple[Path, str]:
+    # mesh.md#memory-of-a-cgns-read: a descriptor of 32 MiB of random text stored gzip in one
+    # chunk, the worst case of a filtered read (2L + C), counted by source.filtered_bytes.
+    import h5py  # noqa: PLC0415 -- only this case writes a filtered dataset
+    import numpy as np  # noqa: PLC0415
+
+    out = pad("cgns", HYBRID / "hybrid.cgns", tmp_path / "filtered.cgns", size=1)
+    text = np.random.default_rng(0).integers(32, 127, 32 * 2**20, dtype=np.int8)
+    with h5py.File(out, "r+") as f:
+        [base] = [f[k] for k in f if f[k].attrs.get("label") == b"CGNSBase_t"]
+        del base["Padding"][" data"]
+        base["Padding"].create_dataset(" data", data=text, chunks=text.shape, compression="gzip")
+    return out, FARFIELD
+
+
 def padded_initial_state(tmp_path: Path) -> tuple[Path, str]:
     info = mesh_info(HEX, tmp_path)
     centroids = [
@@ -195,6 +216,8 @@ def manufactured_at_bounds(tmp_path: Path) -> tuple[Path, str]:
         padded_polymesh,
         padded_cgns,
         cgns_skipped_elements,
+        cgns_skipped_mixed,
+        cgns_filtered_descriptor,
         padded_initial_state,
         padded_face_states,
         long_zone_name,
