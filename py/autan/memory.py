@@ -38,7 +38,9 @@ _DENSE_UNKNOWNS = 1000
 # CGNS element sections: 64 B per element plus its connectivity block, by shape (glibc).
 _CGNS_BLOCK = {"tetra": 48, "pyramid": 48, "prism": 64, "hexa": 80}
 _CGNS_FACE_BLOCK = 48  # quad, the larger boundary element
-_HDF5_CACHE = 2**20
+# HDF5's defaults, which the CGNS library keeps (adfh/ADFH.c:64): a 4 MiB metadata cache
+# (H5Cprivate.h:85), an 8 MiB chunk cache (H5Pfapl.c:94) and a 64 KiB sieve (H5Pfapl.c:121).
+_HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
 # A parsed JSON document (nlohmann) per byte of its text, at most: 16 B a value and 24 B an
 # array for at least 2 characters, 112 B an object member for at least 6, doubled for a
 # vector's growth.
@@ -198,15 +200,15 @@ def _rank(
     add("solution output", 2 * 8 * cells * fields + writer, transient=True)
     # A start reads the previous solution on every rank, every field for a continuation, the
     # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest;
-    # with them the descriptors its writer wrote, which cg_open holds at twice their bounds
-    # (E0707 above them, io/src/cgns_solution.cpp): run metadata of at most 64 KiB, also copied
-    # and parsed; zone names of at most 25 600 B a zone and one more; a translation of at most
-    # 4 096 B per periodic zone.
+    # with them the descriptors its writer wrote, unfiltered, which cg_open holds until close
+    # (E0707 beyond them, io/src/cgns_solution.cpp): run metadata of at most 64 KiB, also
+    # copied and parsed; zone names of at most 25 600 B a zone and one more; a translation of
+    # at most 4 096 B per periodic zone; and HDF5's caches.
     if start is not None:
         read = fields if start == "continue" else n + 1
         zones = len(mesh.boundary_zones) + len(mesh.cell_zones)
-        metadata = (2 + 1 + _JSON_DOCUMENT) * 64 * 2**10
-        descriptors = 2 * (25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic))
+        metadata = (1 + 1 + _JSON_DOCUMENT) * 64 * 2**10
+        descriptors = 25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic) + _HDF5_CACHE
         add("start", 8 * (cells + c) * read + metadata + descriptors, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
@@ -369,13 +371,14 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # NGON_n/NFACE_n: a block per face and per cell, at most 32 B plus 4 B an entry.
         blocks = 24 * ns + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
         ngon = blocks + 76 * f - 4 * interior - 4 * k - 8 * c
-        # cg_open loads every descriptor and keeps it until close, holding twice one while it
-        # is read (cgns_internals.c cgi_read_string, adfh/ADFH.c H5Dread; a filtered dataset
-        # through its chunk buffer); the reader then copies the ones it uses beside them and
-        # parses ZoneNames, at most 40 B of document a byte.
+        # cg_open loads every descriptor and keeps it until close; one filtered dataset at a
+        # time is inflated beside its destination (filtered_bytes, 2L + C, docs/contracts/
+        # mesh.md#memory-of-a-cgns-read); the reader parses ZoneNames, at most 40 B a byte.
         source = mesh.source
-        texts = 2 * source.descriptor_bytes + _JSON_DOCUMENT * source.zone_names_bytes
-        reading = max(standard, ngon) + texts + _HDF5_CACHE
+        texts = source.descriptor_bytes + source.filtered_bytes
+        reading = (
+            max(standard, ngon) + texts + _JSON_DOCUMENT * source.zone_names_bytes + _HDF5_CACHE
+        )
     else:
         # polyMesh: the end of assemble, with the owner, neighbour and boundary texts (at most
         # the files' bytes) and the 64-bit owner and neighbour arrays alive.

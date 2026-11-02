@@ -3,7 +3,7 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import autan
 import pytest
@@ -344,15 +344,22 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert by_name["renumbered mesh"].bytes_host == renumbered
     # Reading a CGNS file (plan.md, the readers' inventory), 10 hexahedra, 20 boundary faces:
     # elements 144 B a hexahedron, 112 B a boundary face, labels 64 B per boundary face and per
-    # cell, then 24N + 4C + 52F + 16P; the file's 2 048 B of descriptors twice (the library
-    # holds them from cg_open, two of one while it reads it), its 512 B of ZoneNames parsed
-    # (40 B a byte), and the HDF5 chunk cache.
+    # cell, then 24N + 4C + 52F + 16P; the file's 2 048 B of descriptors (the library holds
+    # them from cg_open), its 512 B of ZoneNames parsed (40 B a byte), and HDF5's default
+    # caches: 4 MiB of metadata, 8 MiB of chunks and a 64 KiB sieve.
     standard = 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 24 * 30 + 4 * 10 + 52 * 40 + 16 * 160
-    texts = 2 * 2048 + 40 * 512
-    assert by_name["mesh reading"].bytes_host == standard + texts + 2**20
+    caches = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
+    assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches
+    filtered: dict[str, Any] = tiny_mesh(20).document()
+    filtered["source"]["filtered_bytes"] = 3 * 2**20  # a dataset inflated beside its input
+    compressed = autan.load(write_case(TINY)).plan(
+        autan.MeshInfo.from_document(filtered, autan.Location()), device_kind="cpu"
+    )
+    reading = {c.name: c for c in compressed.memory.components}["mesh reading"].bytes_host
+    assert reading == by_name["mesh reading"].bytes_host + 3 * 2**20
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
-    two_levels = tiny_mesh(20).document()
+    two_levels: dict[str, Any] = tiny_mesh(20).document()
     two_levels["quality"]["multigrid"] = {"cells_by_level": [10, 2], "edges_by_level": [20, 1]}
     deeper = autan.load(write_case(TINY)).plan(
         autan.MeshInfo.from_document(two_levels, autan.Location()), device_kind="cpu"
@@ -362,13 +369,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
-    # and its descriptors at their bounds, twice from cg_open: run metadata of 64 KiB, also
+    # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also
     # copied and parsed (40 B a byte), and zone names of 25 600 B for each of the 2 zones and
-    # the document.
-    for mode, fields in (("continue", 34), ("warm", 6)):
+    # the document; and HDF5's default caches.
+    modes: tuple[tuple[Literal["continue", "warm"], int], ...] = (("continue", 34), ("warm", 6))
+    for mode, fields in modes:
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
         assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
-            8 * (10 + 10) * fields + 43 * 64 * 2**10 + 2 * 25_600 * 3
+            8 * (10 + 10) * fields + 42 * 64 * 2**10 + 25_600 * 3 + caches
         )
 
 
