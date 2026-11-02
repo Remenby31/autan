@@ -47,6 +47,11 @@ Before any code, on states the current solver already produces, the criterion is
 - If the threshold is met, the note proceeds to its PR.
 - If any value is above 0.5, the matrix-free rows do not reach enough of the gap where J̃ misses 38–70 %. The note then does not address #395's symptom: that is recorded in #395 and nothing is coded.
 
+**Which verdict applies.** The first version of this section (1d245146, 16:25:00Z) gated on the share of matrix-free rows, ≥ 75 % on the ring, with an even-spread assumption. Codex's second review showed that the share does not bound the gap: gaps (1, 1, 1, 10) keep 98.5 % of the norm with 75 % of the rows switched. The verdict was changed to the measured remaining gap above in 67d2fb14, committed at 16:28:49Z.
+- The diagnostic run started at 16:27:22Z, and its output file was first written at 16:28:48Z.
+- Nobody had read that file before 67d2fb14.
+- So the remaining-gap verdict applies. The share of matrix-free rows is reported next to it.
+
 **Declared limit of this check.** The diagnostic reads the stored φ, so it counts a tie, min_f ψ_f = 1, as eligible. In FP64 an exact tie is not expected on these states. Its effect could only raise the share of matrix-free rows, which the reading does not gate.
 
 ## Change
