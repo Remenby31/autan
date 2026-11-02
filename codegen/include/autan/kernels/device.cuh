@@ -139,6 +139,11 @@ class DeviceMesh {
     /// in their global orientation), for results that do not depend on the partition; the
     /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
     const GlobalKeys* global = nullptr;
+    /// Cells per slice of the sliced incidence layout (Topology::incidence_stride, with the
+    /// column index incidence_cell), 0 for CSR. Same results bit for bit. 32 for the block
+    /// solvers (kernels/blocks.py: the product reaches 88-93 % of GB10 peak, CSR 31-68 %); CSR
+    /// by default, the explicit Euler step being no faster sliced (+0.4 % tet, +1.1 % hex).
+    int incidence_slice = 0;
     /// Values converted and uploaded per step when bind() stages built-in geometry: the host
     /// holds at most one such chunk in the device type beside the FP64 geometry.
     std::size_t upload_chunk = std::size_t(1) << 20;
@@ -161,8 +166,23 @@ class DeviceMesh {
     } else {
       order.twin = incidence_twins(mesh);
     }
-    const auto& twins = order.twin;
+    auto& twins = order.twin;
     host.incidence_twin = twins.data();
+    // Sliced incidences: host arrays held only until uploaded, below.
+    SlicedIncidences incidences;
+    if (options.incidence_slice > 0) {
+      incidences = sliced_incidences(host, options.incidence_slice);
+      geometry_.lsq_weight = sliced_values(incidences, geometry_.lsq_weight, 3);
+      geometry_.incidence_side = sliced_values(incidences, geometry_.incidence_side, 1);
+      twins = incidences.twin;
+      host.incidence_twin = twins.data();
+      host.n_incidences = static_cast<offset_t>(incidences.cell_faces.size());
+      host.cell_face_offsets = incidences.cell_face_offsets.data();
+      host.cell_faces = incidences.cell_faces.data();
+      host.incidence_stride = incidences.stride;
+      host.incidence_length = incidences.length.data();
+      host.incidence_cell = incidences.cell.data();
+    }
     // The sliced stencil is built here; a CSR one is read in place.
     CellStencil sliced_stencil;
     const CellStencil* st = stencil;
@@ -207,6 +227,12 @@ class DeviceMesh {
       topo_.face_reversed = reversed_.get();
     }
     topo_.rank_independent = options.global != nullptr;
+    if (options.incidence_slice > 0) {
+      incidence_length_ = copy(std::span<const index_t>(incidences.length));
+      incidence_cell_ = copy(std::span<const index_t>(incidences.cell));
+      topo_.incidence_length = incidence_length_.get();
+      topo_.incidence_cell = incidence_cell_.get();
+    }
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(st->offsets));
       stencil_entries_ = copy(std::span<const index_t>(st->entries));
@@ -354,6 +380,7 @@ class DeviceMesh {
   DeviceArray<std::uint8_t> reversed_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
   DeviceArray<index_t> stencil_entries_, stencil_length_;
+  DeviceArray<index_t> incidence_length_, incidence_cell_;
   HostColouring interior_, boundary_;
   DeviceArray<double> face_scratch_, incidence_scratch_;
   std::map<std::pair<std::string, std::type_index>, DeviceArray<std::byte>> fields_;

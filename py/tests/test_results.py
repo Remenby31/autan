@@ -24,8 +24,9 @@ import numpy as np
 import pytest
 from autan import cgns
 from autan.cli import json_schema, main
+from pydantic import ValidationError
 
-from tests.conftest import CRM_HL, EXAMPLES, FIXTURES, identity_of
+from tests.conftest import CRM_HL, EXAMPLES, FIXTURES, identity_fields, identity_of
 
 R_UNIVERSAL = 8.314462618
 CGNSCHECK = shutil.which("cgnscheck")
@@ -65,6 +66,13 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
     assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())
     assert run["identity"] == identity_of(run)
+    assert tuple(identity_fields()) == autan.results.IDENTITY
+    assert autan.results.run_identity(run) == run["identity"]
+    # A count the schema allows as 1.0 is the integer 1; a list is no count.
+    as_float = run | {"devices": run["devices"] | {"count": 1.0}}
+    assert autan.results.run_identity(as_float) == run["identity"]
+    with pytest.raises(ValidationError):
+        autan.results.run_identity(run | {"devices": run["devices"] | {"count": [1]}})
     assert run["iterations"] == 100
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run["finished"])
 
@@ -872,3 +880,36 @@ def test_check_run_json_refuses_what_results_open_refuses(
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(crm_run.path)
     assert error.value.codes == ["E0701"]
+
+
+def test_runs_of_one_study_differ_only_in_their_freestream(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    # results.md#studies: a study is one problem at several freestream states.
+    def parts(body: str, name: str, mesh: str | None = None) -> autan.results.IdentityParts:
+        case = autan.load(write_case(body, name))
+        result = case.run(
+            crm_mesh, backend=autan.FakeBackend(iterations=2), runs=tmp_path / "runs" / name
+        )
+        document = result.run.document()
+        if mesh is not None:
+            document["mesh"]["sha256"] = mesh
+        return autan.results.run_identity_parts(document, result.case)
+
+    base = parts(CRM_HL, "base.py")
+    # A sweep names each case after its state: the name is no part of the problem.
+    alpha = parts(
+        CRM_HL.replace("19.57 * deg", "21.47 * deg").replace('"crm-hl",', '"crm-hl-a2147",'),
+        "alpha.py",
+    )
+    other = parts(CRM_HL.replace("autan.SA()", "autan.SST()"), "other.py")
+    assert alpha.case_without_freestream == base.case_without_freestream
+    assert alpha.fields["case.sha256"] != base.fields["case.sha256"]
+    assert {k: v for k, v in alpha.fields.items() if k != "case.sha256"} == {
+        k: v for k, v in base.fields.items() if k != "case.sha256"
+    }
+    assert (base.freestream["aoa"], alpha.freestream["aoa"]) == ("19.57 deg", "21.47 deg")
+    assert other.case_without_freestream != base.case_without_freestream
+    moved = parts(CRM_HL, "moved.py", mesh="1" * 64)
+    assert moved.fields["mesh.sha256"] != base.fields["mesh.sha256"]
+    assert list(base.fields) == identity_fields()[:7]  # no start: the start fields are absent

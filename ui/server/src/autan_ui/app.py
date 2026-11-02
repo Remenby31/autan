@@ -7,20 +7,25 @@ import re
 import tempfile
 import tomllib
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, BinaryIO
+from urllib.parse import quote
 
 import autan
+import numpy as np
+import numpy.typing as npt
 import uvicorn
 from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 from watchfiles import Change, awatch
 
 from autan_ui.cases import Meshes, materials, render
@@ -32,6 +37,7 @@ from autan_ui.registry import (
     RunRejectedError,
     read_run,
 )
+from autan_ui.slice import slice_surface
 from autan_ui.surface import synthetic_wing
 from autan_ui.wall import wall_surface
 
@@ -121,6 +127,21 @@ class Follower:
 
 
 STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
+
+
+class _FileResponse(StreamingResponse):
+    """A stream over an open file, which closes it once the response has run, sent in full or
+    not: neither a background task nor the generator's own cleanup runs when sending fails."""
+
+    def __init__(self, file: BinaryIO, content: Iterator[bytes], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._file = file
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._file.close()
 
 
 def _log_line(record: object) -> dict[str, Any]:
@@ -332,6 +353,55 @@ def create_app(
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
+    @app.get("/api/runs/{run_id}/files/{name}")
+    def run_file(run_id: Annotated[str, Depends(existing_run)], name: str) -> Response:
+        """A regular file of the run directory, as a download; 404 for any name the directory
+        does not list as one, 409 for the solution of a run still running (results.md)."""
+        directory = find_run(run_id)
+        listed = {
+            entry.name: entry.name
+            for entry in directory.iterdir()
+            if not entry.name.startswith(".")
+        }.get(name)
+        if listed is None:
+            raise HTTPException(404, f"run {run_id} has no file {name}")
+        with Folder(directory) as folder:
+            if listed == "solution.cgns" and read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            try:
+                descriptor = folder.open(listed)
+            except OSError as error:
+                raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        file = os.fdopen(descriptor, "rb")
+        # The length as opened: a file still being appended to is sent up to it.
+        size = os.fstat(descriptor).st_size
+
+        def chunks() -> Iterator[bytes]:
+            left = size
+            while left > 0 and (chunk := file.read(min(left, 1 << 20))):
+                left -= len(chunk)
+                yield chunk
+
+        # Closed when the response has run, whatever happened while sending, and here if the
+        # response cannot be built.
+        try:
+            # RFC 6266: an ASCII fallback, and the exact name in UTF-8.
+            fallback = re.sub(r"[^A-Za-z0-9._-]", "_", listed)
+            return _FileResponse(
+                file,
+                chunks(),
+                media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(listed, safe='')}"
+                    ),
+                    "Content-Length": str(size),
+                },
+            )
+        except BaseException:
+            file.close()
+            raise
+
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         """`autan plan --json` of the run's stored case against its stored MeshInfo."""
@@ -449,6 +519,53 @@ def create_app(
                     raise HTTPException(422, f"solution.cgns: {error}") from error
                 surfaces.clear()
                 surfaces[key] = message
+        return Response(message, media_type="application/octet-stream")
+
+    # One slice cut at a time, each needing memory of the order of its mesh; a slice asked again
+    # for the same run (a moved plane) supersedes the ones still waiting. Waiting holds no worker
+    # thread: only the cut runs in one.
+    slicing = asyncio.Lock()
+    asked: dict[str, int] = {}
+    app.state.slices_asked = asked
+
+    def cut_slice(
+        run_id: str, point: npt.NDArray[np.float64], direction: npt.NDArray[np.float64]
+    ) -> bytes:
+        with Folder(find_run(run_id)) as folder:
+            if read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            if folder.stat("solution.cgns") is None:
+                raise HTTPException(404, f"run {run_id} has no solution.cgns")
+            try:
+                return slice_surface(folder, point, direction)
+            except (OSError, ValueError, KeyError) as error:
+                raise HTTPException(422, f"slice: {error}") from error
+
+    @app.get("/api/runs/{run_id}/slice")
+    async def run_slice(
+        run_id: Annotated[str, Depends(existing_run)], origin: str, normal: str
+    ) -> Response:
+        """The cut of the run's solution by a plane, `origin` and `normal` as three comma-separated
+        numbers, as an `autan-ui.surface/1` message (`slice_surface`). 409 while the run is
+        running (results.md) or when a newer slice of the run was asked for before this one
+        started, 422 for a plane that is not one or meets no cell."""
+        try:
+            point, direction = (
+                np.array([float(x) for x in text.split(",")], dtype=np.float64)
+                for text in (origin, normal)
+            )
+        except ValueError as error:
+            raise HTTPException(
+                422, f"origin and normal are three numbers each: {error}"
+            ) from error
+        if point.shape != (3,) or direction.shape != (3,):
+            raise HTTPException(422, "origin and normal are three numbers each")
+        ticket = asked.get(run_id, 0) + 1
+        asked[run_id] = ticket
+        async with slicing:
+            if asked[run_id] != ticket:
+                raise HTTPException(409, f"a newer slice of run {run_id} was asked for")
+            message = await run_in_threadpool(cut_slice, run_id, point, direction)
         return Response(message, media_type="application/octet-stream")
 
     @app.get("/api/meshes")
