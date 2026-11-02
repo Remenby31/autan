@@ -15,42 +15,50 @@ namespace kg = autan::kernels::gpu;
 
 constexpr int components = 5;
 constexpr int block = 256;
-// Children of an isotropic agglomerate (at most 8 for 2 x 2 x 2 hexahedra) restricted in one burst.
-constexpr int unrolled = 8;
+// Restriction: coarse nodes per block, and list entries a block stages in shared memory (12 KB;
+// about 8 children per agglomerate leaves twice the room).
+constexpr int staged_nodes = 64;
+constexpr int staged_entries = 1024;
 
-// One thread per node, its 5 components in turn, so each index list is read once. Plain sums in
-// list order: __dadd_rn keeps the compiler from reassociating or contracting them.
-__global__ void restrict_kernel(std::int64_t n_fine, std::int64_t n_coarse, const offset_t* offsets,
-                                const index_t* children, const double* r, double* b_coarse) {
-  const std::int64_t node = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (node >= n_coarse) return;
-  const offset_t first = offsets[node];
-  const auto m = static_cast<int>(offsets[node + 1] - first);
-  if (m <= unrolled) {
-    // Every load issued before the first addition, so a thread keeps its children in flight.
-    std::int64_t child[unrolled];
-#pragma unroll
-    for (int k = 0; k < unrolled; ++k) child[k] = k < m ? children[first + k] : 0;
-#pragma unroll
-    for (int c = 0; c < components; ++c) {
-      double v[unrolled];
-#pragma unroll
-      for (int k = 0; k < unrolled; ++k) v[k] = k < m ? r[c * n_fine + child[k]] : 0.0;
+// A block restricts `staged_nodes` consecutive coarse nodes: its threads gather their children's
+// values, one list entry each, into shared memory, then one thread per coarse node sums its
+// entries there in list order. The gather keeps every thread's loads independent whatever the
+// agglomerate sizes; the sum is the host's, from +0.0 and without reassociation (__dadd_rn).
+// Lists longer than the shared buffer are summed from global memory in the same order.
+__global__ void __launch_bounds__(block) restrict_kernel(std::int64_t n_fine, std::int64_t n_coarse,
+                                                         const offset_t* offsets,
+                                                         const index_t* children, const double* r,
+                                                         double* b_coarse) {
+  __shared__ index_t child[staged_entries];
+  __shared__ double value[staged_entries];
+  const std::int64_t first = static_cast<std::int64_t>(blockIdx.x) * staged_nodes;
+  const std::int64_t last = first + staged_nodes < n_coarse ? first + staged_nodes : n_coarse;
+  const offset_t base = offsets[first];
+  const offset_t length = offsets[last] - base;
+  const bool staged = length <= staged_entries;
+  if (staged) {
+    for (offset_t k = threadIdx.x; k < length; k += blockDim.x) child[k] = children[base + k];
+  }
+  __syncthreads();
+  const std::int64_t node = first + threadIdx.x;
+  const bool owner = threadIdx.x < last - first;
+  const offset_t begin = owner ? offsets[node] - base : 0;
+  const offset_t end = owner ? offsets[node + 1] - base : 0;
+  for (int c = 0; c < components; ++c) {
+    const double* rc = r + c * n_fine;
+    if (staged) {
+      for (offset_t k = threadIdx.x; k < length; k += blockDim.x) value[k] = rc[child[k]];
+    }
+    __syncthreads();
+    if (owner) {
       double s = 0.0;
-#pragma unroll
-      for (int k = 0; k < unrolled; ++k) {
-        if (k < m) s = __dadd_rn(s, v[k]);
+      for (offset_t k = begin; k < end; ++k) {
+        s = __dadd_rn(s, staged ? value[k] : rc[children[base + k]]);
       }
       b_coarse[c * n_coarse + node] = s;
     }
-    return;
+    __syncthreads();
   }
-  double s[components] = {0.0, 0.0, 0.0, 0.0, 0.0};
-  for (offset_t k = first; k < first + m; ++k) {
-    const std::int64_t child = children[k];
-    for (int c = 0; c < components; ++c) s[c] = __dadd_rn(s[c], r[c * n_fine + child]);
-  }
-  for (int c = 0; c < components; ++c) b_coarse[c * n_coarse + node] = s[c];
 }
 
 __global__ void prolong_kernel(std::int64_t n_fine, std::int64_t n_coarse,
@@ -166,8 +174,9 @@ Transfers& Transfers::operator=(Transfers&&) noexcept = default;
 void Transfers::restrict_residual(std::size_t l, const double* r, double* b_coarse,
                                   void* stream) const {
   const Impl::Pair& p = impl_->at(l);
-  restrict_kernel<<<grid(p.n_coarse), block, 0, as_stream(stream)>>>(
-      p.n_fine, p.n_coarse, p.offsets.get(), p.children.get(), r, b_coarse);
+  restrict_kernel<<<static_cast<unsigned int>((p.n_coarse + staged_nodes - 1) / staged_nodes),
+                    block, 0, as_stream(stream)>>>(p.n_fine, p.n_coarse, p.offsets.get(),
+                                                   p.children.get(), r, b_coarse);
   kg::check(kg::last_error(), "multigrid restriction");
 }
 
