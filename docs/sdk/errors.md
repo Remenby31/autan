@@ -184,9 +184,9 @@ Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exa
 
 **Periodic faces do not match** (error)
 
-The faces of a periodic pair do not match one to one under its translation.
+The faces of a periodic pair do not match one to one under its translation, the pairs place a node in two ways, or moving the matched nodes onto translates makes a face or cell degenerate.
 
-Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
+Fix: Regenerate the mesh with conforming periodic faces, and check the translations.
 
 ## E0120
 
@@ -307,6 +307,14 @@ Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
 A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
+
+## W0150
+
+**Periodic nodes moved** (warning)
+
+The nodes of a periodic pair matched within the tolerance but not exactly, so assembly moved them onto translates, and the run computes on the moved coordinates (mesh.md, Periodic pairs). `data` gives the nodes moved by more than round-off, the largest move, the largest pair mismatch relative to its tolerance (at most 1) and the largest relative change of a cell's volume.
+
+Fix: Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.
 
 ## E0201
 
@@ -539,6 +547,30 @@ Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic
 The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of a periodic pair, or match zones that are not wall or slip zones: the vortex's circulation comes from the lift on the body. Patterns with wildcards skip periodic zones.
 
 Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.
+
+## E0426
+
+**Coupled turbulence not applicable** (error)
+
+`time.coupled_turbulence` is set on a case whose physics has no coupled turbulence step: only compressible physics with the SA model has one.
+
+Fix: Remove `coupled_turbulence=True`, or use compressible SA physics.
+
+## W0426
+
+**Coupled turbulence outside its validated domain** (warning)
+
+`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate only (#429). `autan plan` reports it, and the run logs it at its first coupled step.
+
+Fix: Compare with a run without the option before relying on the result.
+
+## E0427
+
+**Coupled turbulence needs the host multigrid** (error)
+
+The coupled turbulence step runs in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs.
+
+Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
 
 ## E0501
 
