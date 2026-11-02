@@ -291,7 +291,7 @@ class SteadyInput(_Strict):
     max_iterations: Annotated[int, Field(ge=1)]
     residual_orders: Positive
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"]
-    coupled_turbulence: bool
+    coupled_turbulence: Annotated[bool, Field(strict=True)]
 
 
 class UnsteadyInput(_Strict):
@@ -687,7 +687,7 @@ def build(
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
-    plan = case.plan(mesh_info)
+    plan = case.plan(mesh_info, gpus=devices.count)
     if not plan.ok:
         raise CaseError(d for d in plan.diagnostics if d.severity == "error")
     spec = case.spec
