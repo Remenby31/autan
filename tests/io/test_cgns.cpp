@@ -214,9 +214,7 @@ TEST_CASE("A CGNS file whose data lives in another file is refused before any re
   autan::io::write_solution(file, mesh, solution_for(mesh));
   std::string control;
   const std::string node = move_outside(file, form, dir / "donor", 7.25, control);
-  if (!control.empty()) {
-    for (const double v : read_doubles(file, control)) CHECK(v == 7.25);
-  }
+  for (const double v : read_doubles(file, control)) CHECK(v == 7.25);
   fs::remove(dir / "donor");
   const auto refused = [&](auto read) {
     try {

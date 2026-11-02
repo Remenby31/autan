@@ -1239,6 +1239,8 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     std::string control;
     const std::string node = autan_test::move_outside(previous / "solution.cgns", form,
                                                       previous / "donor", 1.5, control);
+    for (const double v : autan_test::read_doubles(previous / "solution.cgns", control))
+      CHECK(v == 1.5);
     fs::remove(previous / "donor");
     const Outcome o = from([&](Json& d) {
       d["start"]["run"] = previous.string();

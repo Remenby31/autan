@@ -69,8 +69,7 @@ inline std::vector<double> read_doubles(const std::filesystem::path& file,
 
 // Moves data of `file` (a solution.cgns, HDF5) into `donor`, filled with
 // `value`, in the given form; returns the node the readers must name, and in
-// `control` the dataset through which HDF5 reads the donor ("" for a CGNS
-// link, which CGNS resolves).
+// `control` the dataset through which HDF5 reads the donor's values.
 inline std::string move_outside(const std::filesystem::path& file, Outside form,
                                 const std::filesystem::path& donor, double value,
                                 std::string& control) {
@@ -85,15 +84,23 @@ inline std::string move_outside(const std::filesystem::path& file, Outside form,
   const std::vector<double> values(n, value);
   if (form == Outside::cgns_link) {
     H5Sclose(space);
-    // The donor is a copy of the file; the link replaces nothing the readers need.
+    // The donor is a copy of the file holding `value`; the link replaces nothing the readers
+    // need. HDF5 reaches the donor through the link's " link" child (CGNS ADFH).
     std::filesystem::copy_file(file, donor);
+    {
+      const hid_t d = H5Fopen(donor.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+      const hid_t xd = H5Dopen2(d, x.c_str(), H5P_DEFAULT);
+      REQUIRE(H5Dwrite(xd, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+      H5Dclose(xd);
+      H5Fclose(d);
+    }
     int fn = 0;
     REQUIRE(cg_open(file.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
     REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
     REQUIRE(cg_link_write("Elsewhere", donor.string().c_str(),
                           (zone + "/GridCoordinates").c_str()) == CG_OK);
     REQUIRE(cg_close(fn) == CG_OK);
-    control.clear();
+    control = zone + "/Elsewhere/ link/CoordinateX/ data";
     return zone + "/Elsewhere";
   }
   if (form == Outside::external_storage) {

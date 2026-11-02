@@ -41,10 +41,15 @@ if(AUTAN_ENABLE_CGNS)
   # The self-containment scan reads the HDF5 structure directly (mesh.md, E0134): the HDF5 that
   # CGNS is built on, its imported target when the static branch found its package, or found
   # beside CGNS (or under HDF5_ROOT / HDF5_DIR) otherwise.
-  if(TARGET hdf5::hdf5-static)
-    target_link_libraries(autan_cgns INTERFACE hdf5::hdf5-static)
-  elseif(TARGET hdf5::hdf5-shared)
-    target_link_libraries(autan_cgns INTERFACE hdf5::hdf5-shared)
+  # HDF5's package names its targets hdf5::hdf5-* or, in other versions, hdf5-*.
+  set(_autan_hdf5_target "")
+  foreach(_target hdf5::hdf5-static hdf5-static hdf5::hdf5-shared hdf5-shared)
+    if(NOT _autan_hdf5_target AND TARGET ${_target})
+      set(_autan_hdf5_target ${_target})
+    endif()
+  endforeach()
+  if(_autan_hdf5_target)
+    target_link_libraries(autan_cgns INTERFACE ${_autan_hdf5_target})
   else()
     find_path(
       AUTAN_HDF5_INCLUDE_DIR
