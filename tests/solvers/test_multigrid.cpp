@@ -6,8 +6,11 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <memory>
+#include <numeric>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -20,7 +23,10 @@
 #include "autan/core/mesh.hpp"
 #include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/dense.hpp"
+#include "autan/solvers/line_smoother.hpp"
 #include "autan/solvers/multigrid.hpp"
 
 namespace {
@@ -331,6 +337,28 @@ void check_hierarchy(const Mesh& mesh, const std::vector<Level>& levels) {
   for (std::size_t l = 0; l < levels.size(); ++l) {
     const Level& lv = levels[l];
     INFO("level " << l);
+    // The smoother's colouring: every line in one colour, no two lines of a colour adjacent.
+    std::vector<int> colour_of(lv.n_lines(), -1);
+    const auto colours = autan::solvers::line_colours(lv);
+    for (std::size_t c = 0; c < colours.size(); ++c) {
+      for (const std::size_t li : colours[c]) {
+        REQUIRE(li < lv.n_lines());
+        CHECK(colour_of[li] == -1);
+        colour_of[li] = static_cast<int>(c);
+      }
+    }
+    CHECK(std::ranges::find(colour_of, -1) == colour_of.end());
+    std::vector<std::size_t> line_of(lv.n_nodes);
+    for (std::size_t li = 0; li < lv.n_lines(); ++li) {
+      for (auto k = lv.line_offsets[li]; k < lv.line_offsets[li + 1]; ++k) {
+        line_of[static_cast<std::size_t>(lv.line_nodes[static_cast<std::size_t>(k)])] = li;
+      }
+    }
+    for (std::size_t e = 0; e < lv.owner.size(); ++e) {
+      const auto a = line_of[static_cast<std::size_t>(lv.owner[e])];
+      const auto b = line_of[static_cast<std::size_t>(lv.neighbour[e])];
+      if (a != b) CHECK(colour_of[a] != colour_of[b]);
+    }
     // Lines partition the nodes, consecutive nodes adjacent.
     std::set<std::pair<index_t, index_t>> edges;
     for (std::size_t e = 0; e < lv.owner.size(); ++e) {
@@ -444,6 +472,16 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   }
   CHECK(first_layer == wall_cells);
   CHECK(lines >= wall_cells);
+  // The lines a partition keeps whole: the same, without the single cells.
+  const auto groups = autan::solvers::smoother_lines(mesh, g);
+  CHECK(groups.offsets.size() == lines + 1);
+  std::size_t from_wall = 0;
+  for (std::size_t li = 0; li + 1 < groups.offsets.size(); ++li) {
+    const auto b = static_cast<std::size_t>(groups.offsets[li]);
+    CHECK(groups.offsets[li + 1] - groups.offsets[li] >= 2);
+    if (g.cell_centroid_z[static_cast<std::size_t>(groups.cells[b])] < 1e-4) ++from_wall;
+  }
+  CHECK(from_wall == wall_cells);
   // The coarse levels agglomerate in the wall plane while neighbouring lines remain (8 x 8 wall
   // cells, groups of 4: two levels), keeping the line length; then lines coarsen along
   // themselves down to a direct solve.
@@ -607,15 +645,214 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
   for (std::size_t k = 0; k < x_exact.size(); ++k)
     x_exact[k] = std::sin(0.37 * static_cast<double>(k));
   const auto b = apply(mesh, s, x_exact);
-  std::vector<double> x(5 * n, 0.0);
-  mg.smooth(b, x, 1);
-  CHECK(std::all_of(x.begin(), x.end(), [](double v) { return std::isfinite(v); }));
-  double err = 0.0, scale = 0.0;
-  for (std::size_t k = 0; k < x.size(); ++k) {
-    err = std::max(err, std::abs(x[k] - x_exact[k]));
-    scale = std::max(scale, std::abs(x_exact[k]));
+  // The multigrid's smoother and the distributed line smoother on one part.
+  const auto lines = autan::solvers::smoother_lines(mesh, g);
+  REQUIRE(lines.offsets.size() == 2);
+  const std::vector<std::int32_t> colours(n, 0);
+  autan::solvers::LineSmoother ls(mesh, lines.offsets, lines.cells, colours, 1);
+  ls.set_operator(s.diag, s.upper, s.lower);
+  // Its product is A x: b, to round-off.
+  std::vector<double> ax(5 * n, 0.0);
+  ls.multiply(x_exact, ax);
+  for (std::size_t k = 0; k < ax.size(); ++k) {
+    CHECK(std::abs(ax[k] - b[k]) <=
+          1e3 * std::numeric_limits<double>::epsilon() * std::abs(b[k]) + 1e-300);
   }
-  CHECK(err <= 1e3 * std::numeric_limits<double>::epsilon() * scale);
+  for (const bool distributed : {false, true}) {
+    std::vector<double> x(5 * n, 0.0);
+    if (distributed) {
+      ls.relax(0, b, x);
+    } else {
+      mg.smooth(b, x, 1);
+    }
+    CHECK(std::all_of(x.begin(), x.end(), [](double v) { return std::isfinite(v); }));
+    double err = 0.0, scale = 0.0;
+    for (std::size_t k = 0; k < x.size(); ++k) {
+      err = std::max(err, std::abs(x[k] - x_exact[k]));
+      scale = std::max(scale, std::abs(x_exact[k]));
+    }
+    CHECK(err <= 1e3 * std::numeric_limits<double>::epsilon() * scale);
+  }
+}
+
+TEST_CASE("the line smoother repeats its bits on 1, 2 and 4 parts", "[multigrid]") {
+  const Fill fill = GENERATE(Fill::hexa, Fill::prism);
+  const auto mesh = layered_box(6, 1e-4, fill);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto s = diffusion(mesh, g, 1e-3, 0.3, true);
+  const auto lines = autan::solvers::smoother_lines(mesh, g);
+  REQUIRE(lines.offsets.size() > 2);
+  // Colours of the graph whose nodes are the lines and the cells outside them.
+  std::vector<std::size_t> node(n);
+  std::vector<std::int64_t> node_id;
+  std::vector<std::uint8_t> in_line(n, 0);
+  for (std::size_t l = 0; l + 1 < lines.offsets.size(); ++l) {
+    std::int64_t least = std::numeric_limits<std::int64_t>::max();
+    for (auto k = lines.offsets[l]; k < lines.offsets[l + 1]; ++k) {
+      const auto c = static_cast<std::size_t>(lines.cells[static_cast<std::size_t>(k)]);
+      node[c] = node_id.size();
+      in_line[c] = 1;
+      least = std::min(least, static_cast<std::int64_t>(c));
+    }
+    node_id.push_back(least);
+  }
+  for (std::size_t c = 0; c < n; ++c) {
+    if (in_line[c] != 0) continue;
+    node[c] = node_id.size();
+    node_id.push_back(static_cast<std::int64_t>(c));
+  }
+  std::vector<std::set<index_t>> adjacency(node_id.size());
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_interior_faces()); ++f) {
+    const auto a = node[static_cast<std::size_t>(mesh.owner()[f])];
+    const auto c = node[static_cast<std::size_t>(mesh.neighbour()[f])];
+    if (a == c) continue;
+    adjacency[a].insert(static_cast<index_t>(c));
+    adjacency[c].insert(static_cast<index_t>(a));
+  }
+  std::vector<autan::offset_t> offsets{0};
+  std::vector<index_t> neighbours;
+  for (const auto& adj : adjacency) {
+    neighbours.insert(neighbours.end(), adj.begin(), adj.end());
+    offsets.push_back(static_cast<autan::offset_t>(neighbours.size()));
+  }
+  // Greedy distance-1 colouring in increasing node id (partition's colour_greedy).
+  std::vector<std::size_t> visit(node_id.size());
+  std::iota(visit.begin(), visit.end(), std::size_t{0});
+  std::sort(visit.begin(), visit.end(),
+            [&](std::size_t x, std::size_t y) { return node_id[x] < node_id[y]; });
+  std::vector<std::int32_t> node_colour(node_id.size(), -1);
+  for (const std::size_t v : visit) {
+    std::set<std::int32_t> taken;
+    for (auto k = offsets[v]; k < offsets[v + 1]; ++k) {
+      taken.insert(node_colour[static_cast<std::size_t>(neighbours[static_cast<std::size_t>(k)])]);
+    }
+    std::int32_t c = 0;
+    while (taken.count(c) != 0) ++c;
+    node_colour[v] = c;
+  }
+  const std::int32_t n_colours = 1 + *std::max_element(node_colour.begin(), node_colour.end());
+  std::vector<double> b(5 * n);
+  for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::sin(0.37 * static_cast<double>(k));
+
+  // Each part's share: the global blocks, lines and colours in local indices; lockstep sweeps,
+  // each ghost then copied from its owner.
+  auto solve = [&](std::int32_t n_parts) {
+    // Slices in x, each line on the part of its first cell: any partition that keeps the lines
+    // whole must give the same result.
+    std::vector<std::int32_t> parts(n);
+    for (std::size_t c = 0; c < n; ++c) {
+      parts[c] = std::min(n_parts - 1, static_cast<std::int32_t>(g.cell_centroid_x[c] * n_parts));
+    }
+    for (std::size_t q = 0; q + 1 < lines.offsets.size(); ++q) {
+      const auto first =
+          static_cast<std::size_t>(lines.cells[static_cast<std::size_t>(lines.offsets[q])]);
+      for (auto k = lines.offsets[q]; k < lines.offsets[q + 1]; ++k) {
+        parts[static_cast<std::size_t>(lines.cells[static_cast<std::size_t>(k)])] = parts[first];
+      }
+    }
+    std::vector<autan::LocalPartition> local;
+    std::vector<System> sys;
+    std::vector<std::vector<double>> bl, xl;
+    std::vector<std::vector<std::int32_t>> colours;
+    std::vector<std::vector<std::size_t>> local_of(static_cast<std::size_t>(n_parts),
+                                                   std::vector<std::size_t>(n, n));
+    std::vector<std::unique_ptr<autan::solvers::LineSmoother>> smoothers;
+    for (std::int32_t p = 0; p < n_parts; ++p) {
+      local.push_back(autan::extract_partition(mesh, g, parts, n_parts, p, 1));
+      const auto& m = local.back().mesh;
+      const auto nl = static_cast<std::size_t>(m.n_cells());
+      const auto gid = m.cell_global_id();
+      for (std::size_t c = 0; c < nl; ++c) {
+        local_of[static_cast<std::size_t>(p)][static_cast<std::size_t>(gid[c])] = c;
+      }
+      System l;
+      l.diag.resize(25 * nl);
+      for (std::size_t c = 0; c < nl; ++c) {
+        std::copy_n(&s.diag[25 * static_cast<std::size_t>(gid[c])], 25, &l.diag[25 * c]);
+      }
+      const auto ni = static_cast<std::size_t>(m.n_interior_faces());
+      l.upper.resize(25 * ni);
+      l.lower.resize(25 * ni);
+      for (std::size_t f = 0; f < ni; ++f) {
+        const auto gf = static_cast<std::size_t>(local.back().face_global_id[f]);
+        const bool rev = local.back().face_reversed[f] != 0;
+        std::copy_n(&(rev ? s.lower : s.upper)[25 * gf], 25, &l.upper[25 * f]);
+        std::copy_n(&(rev ? s.upper : s.lower)[25 * gf], 25, &l.lower[25 * f]);
+      }
+      sys.push_back(std::move(l));
+      std::vector<autan::offset_t> lo{0};
+      std::vector<index_t> lc;
+      for (std::size_t q = 0; q + 1 < lines.offsets.size(); ++q) {
+        const auto first =
+            static_cast<std::size_t>(lines.cells[static_cast<std::size_t>(lines.offsets[q])]);
+        if (parts[first] != p) continue;
+        for (auto k = lines.offsets[q]; k < lines.offsets[q + 1]; ++k) {
+          const auto c = static_cast<std::size_t>(lines.cells[static_cast<std::size_t>(k)]);
+          REQUIRE(parts[c] == p);
+          lc.push_back(static_cast<index_t>(local_of[static_cast<std::size_t>(p)][c]));
+        }
+        lo.push_back(static_cast<autan::offset_t>(lc.size()));
+      }
+      std::vector<std::int32_t> col(nl);
+      std::vector<double> bp(5 * nl);
+      for (std::size_t c = 0; c < nl; ++c) {
+        const auto gc = static_cast<std::size_t>(gid[c]);
+        col[c] = node_colour[node[gc]];
+        for (std::size_t q = 0; q < 5; ++q) bp[q * nl + c] = b[q * n + gc];
+      }
+      colours.push_back(col);
+      bl.push_back(std::move(bp));
+      xl.emplace_back(5 * nl, 0.0);
+      smoothers.push_back(std::make_unique<autan::solvers::LineSmoother>(
+          m, lo, lc, colours.back(), n_colours, local.back().face_global_id));
+      smoothers.back()->set_operator(sys.back().diag, sys.back().upper, sys.back().lower);
+    }
+    auto exchange = [&] {
+      for (std::int32_t p = 0; p < n_parts; ++p) {
+        const auto& m = local[static_cast<std::size_t>(p)].mesh;
+        const auto nl = static_cast<std::size_t>(m.n_cells());
+        for (auto c = static_cast<std::size_t>(m.n_owned_cells()); c < nl; ++c) {
+          const auto gc = static_cast<std::size_t>(m.cell_global_id()[c]);
+          const auto q = static_cast<std::size_t>(parts[gc]);
+          const auto& mq = local[q].mesh;
+          const auto nq = static_cast<std::size_t>(mq.n_cells());
+          for (std::size_t k = 0; k < 5; ++k) {
+            xl[static_cast<std::size_t>(p)][k * nl + c] = xl[q][k * nq + local_of[q][gc]];
+          }
+        }
+      }
+    };
+    for (int sweep = 0; sweep < 2; ++sweep) {
+      for (std::int32_t c = 0; c < 2 * n_colours; ++c) {
+        const std::int32_t colour = c < n_colours ? c : 2 * n_colours - 1 - c;
+        for (std::int32_t p = 0; p < n_parts; ++p) {
+          smoothers[static_cast<std::size_t>(p)]->relax(colour, bl[static_cast<std::size_t>(p)],
+                                                        xl[static_cast<std::size_t>(p)]);
+        }
+        exchange();
+      }
+    }
+    std::vector<double> x(5 * n);
+    for (std::size_t gc = 0; gc < n; ++gc) {
+      const auto p = static_cast<std::size_t>(parts[gc]);
+      const auto nl = static_cast<std::size_t>(local[p].mesh.n_cells());
+      for (std::size_t k = 0; k < 5; ++k) x[k * n + gc] = xl[p][k * nl + local_of[p][gc]];
+    }
+    return x;
+  };
+  const auto one = solve(1);
+  // Sweeping reduces the residual: the smoother solves the system it was given.
+  const auto r0 = apply(mesh, s, one);
+  double res = 0.0, rhs = 0.0;
+  for (std::size_t k = 0; k < b.size(); ++k) {
+    res += (b[k] - r0[k]) * (b[k] - r0[k]);
+    rhs += b[k] * b[k];
+  }
+  CHECK(res < 0.25 * rhs);
+  for (const std::int32_t n_parts : {2, 4}) {
+    CHECK(solve(n_parts) == one);
+  }
 }
 
 TEST_CASE("a two-level cycle applies the Galerkin coarse correction P (P^T A P)^-1 P^T",
@@ -743,4 +980,85 @@ TEST_CASE("line smoothing keeps the iterations bounded on wall layers of aspect 
     CHECK(with_lines <= 9);
     CHECK(without >= 2 * with_lines);
   }
+}
+
+TEST_CASE("GCR reports a preconditioned direction that is not finite as a failed solve",
+          "[multigrid]") {
+  // A = I, r = (1, 1): the first direction (1, 0) halves |r|^2, the second is (NaN, 0).
+  autan::solvers::Gcr gcr;
+  std::vector<double> r{1.0, 1.0}, x{0.0, 0.0};
+  int calls = 0;
+  const auto report =
+      gcr.solve([](std::span<const double> v,
+                   std::span<double> y) { std::copy(v.begin(), v.end(), y.begin()); },
+                [&](std::span<const double>, std::span<double> z) {
+                  z[0] = calls++ == 0 ? 1.0 : std::numeric_limits<double>::quiet_NaN();
+                  z[1] = 0.0;
+                },
+                r, x, 5, 1e-12);
+  CHECK(std::isnan(report.residual_drop));
+}
+
+TEST_CASE("the dense LU of the coarsest level solves its system", "[multigrid]") {
+  // A random diagonally dominant 40 x 40 system with a known solution, then a singular one.
+  const std::size_t m = 40;
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  std::vector<double> a(m * m), x_exact(m), b(m, 0.0);
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) a[i * m + j] = u(rng) + (i == j ? 2.0 * m : 0.0);
+    x_exact[i] = u(rng);
+  }
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) b[i] += a[i * m + j] * x_exact[j];
+  }
+  std::vector<std::size_t> pivot(m);
+  autan::solvers::factor_dense(a, m, pivot);
+  std::vector<double> x = b;
+  autan::solvers::solve_dense(a, pivot, x);
+  for (std::size_t i = 0; i < m; ++i) {
+    CHECK(std::abs(x[i] - x_exact[i]) <= 1e3 * std::numeric_limits<double>::epsilon());
+  }
+  std::vector<double> singular(m * m, 1.0);
+  CHECK_THROWS_AS(autan::solvers::factor_dense(singular, m, pivot), std::domain_error);
+  // Partial pivoting by hand: [[1, 2, 3], [4, 5, 6], [7, 8, 10]] takes row 2 at step 0, then the
+  // former row 0 (now row 2) at step 1, where |2 - 8/7| > |5 - 32/7|; x = (1, 1, 1).
+  std::vector<double> p3{1, 2, 3, 4, 5, 6, 7, 8, 10};
+  std::vector<std::size_t> pv(3);
+  autan::solvers::factor_dense(p3, 3, pv);
+  CHECK(pv == std::vector<std::size_t>{2, 2, 2});
+  std::vector<double> x3{6, 15, 25};
+  autan::solvers::solve_dense(p3, pv, x3);
+  for (const double v : x3) CHECK(std::abs(v - 1.0) <= 16 * std::numeric_limits<double>::epsilon());
+  // A tie keeps the first row; a pivot that is not finite is refused.
+  std::vector<double> tie{2, 1, -2, 3};
+  std::vector<std::size_t> pv2(2);
+  autan::solvers::factor_dense(tie, 2, pv2);
+  CHECK(pv2[0] == 0);
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    std::vector<double> nf{bad, 1, 1, 1};
+    CHECK_THROWS_AS(autan::solvers::factor_dense(nf, 2, pv2), std::domain_error);
+  }
+}
+
+TEST_CASE("lines take the least colour no earlier neighbouring line has", "[multigrid]") {
+  // Five one-node lines: 0-1, 0-2, 1-2 (a triangle), 0-3, 3-4. Greedy in line order: 0 -> 0,
+  // 1 -> 1, 2 -> 2, 3 -> 1, 4 -> 0.
+  Level l;
+  l.n_nodes = 5;
+  l.owner = {0, 0, 1, 0, 3};
+  l.neighbour = {1, 2, 2, 3, 4};
+  l.line_offsets = {0, 1, 2, 3, 4, 5};
+  l.line_nodes = {0, 1, 2, 3, 4};
+  using C = std::vector<std::vector<std::size_t>>;
+  CHECK(autan::solvers::line_colours(l) == C{{0, 4}, {1, 3}, {2}});
+  // One two-node line {0, 1} and three single nodes: 2 and 3 touch the line, 4 touches 2 and 3.
+  Level m;
+  m.n_nodes = 5;
+  m.owner = {0, 1, 2, 3, 0};
+  m.neighbour = {1, 2, 4, 4, 3};
+  m.line_offsets = {0, 2, 3, 4, 5};
+  m.line_nodes = {0, 1, 2, 3, 4};
+  CHECK(autan::solvers::line_colours(m) == C{{0, 3}, {1, 2}});
 }

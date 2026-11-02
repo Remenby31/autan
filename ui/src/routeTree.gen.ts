@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CompareRouteImport } from './routes/compare'
+import { Route as PerfRouteImport } from './routes/perf'
 import { Route as ViewerRouteImport } from './routes/viewer'
 import { Route as CasesNewRouteImport } from './routes/cases.new'
 import { Route as RunsRunIdRouteImport } from './routes/runs.$runId'
@@ -23,6 +24,11 @@ const IndexRoute = IndexRouteImport.update({
 const CompareRoute = CompareRouteImport.update({
   id: '/compare',
   path: '/compare',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PerfRoute = PerfRouteImport.update({
+  id: '/perf',
+  path: '/perf',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ViewerRoute = ViewerRouteImport.update({
@@ -44,6 +50,7 @@ const RunsRunIdRoute = RunsRunIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/compare': typeof CompareRoute
+  '/perf': typeof PerfRoute
   '/viewer': typeof ViewerRoute
   '/cases/new': typeof CasesNewRoute
   '/runs/$runId': typeof RunsRunIdRoute
@@ -51,6 +58,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/compare': typeof CompareRoute
+  '/perf': typeof PerfRoute
   '/viewer': typeof ViewerRoute
   '/cases/new': typeof CasesNewRoute
   '/runs/$runId': typeof RunsRunIdRoute
@@ -59,21 +67,31 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/compare': typeof CompareRoute
+  '/perf': typeof PerfRoute
   '/viewer': typeof ViewerRoute
   '/cases/new': typeof CasesNewRoute
   '/runs/$runId': typeof RunsRunIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/compare' | '/viewer' | '/cases/new' | '/runs/$runId'
+  fullPaths:
+    '/' | '/compare' | '/perf' | '/viewer' | '/cases/new' | '/runs/$runId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/compare' | '/viewer' | '/cases/new' | '/runs/$runId'
-  id: '__root__' | '/' | '/compare' | '/viewer' | '/cases/new' | '/runs/$runId'
+  to: '/' | '/compare' | '/perf' | '/viewer' | '/cases/new' | '/runs/$runId'
+  id:
+    | '__root__'
+    | '/'
+    | '/compare'
+    | '/perf'
+    | '/viewer'
+    | '/cases/new'
+    | '/runs/$runId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CompareRoute: typeof CompareRoute
+  PerfRoute: typeof PerfRoute
   ViewerRoute: typeof ViewerRoute
   CasesNewRoute: typeof CasesNewRoute
   RunsRunIdRoute: typeof RunsRunIdRoute
@@ -93,6 +111,13 @@ declare module '@tanstack/react-router' {
       path: '/compare'
       fullPath: '/compare'
       preLoaderRoute: typeof CompareRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/perf': {
+      id: '/perf'
+      path: '/perf'
+      fullPath: '/perf'
+      preLoaderRoute: typeof PerfRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/viewer': {
@@ -122,6 +147,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CompareRoute: CompareRoute,
+  PerfRoute: PerfRoute,
   ViewerRoute: ViewerRoute,
   CasesNewRoute: CasesNewRoute,
   RunsRunIdRoute: RunsRunIdRoute,

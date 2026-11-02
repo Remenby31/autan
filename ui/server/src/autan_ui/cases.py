@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,10 @@ SURFACE = ".surface"
 class Meshes:
     def __init__(self, root: Path | None) -> None:
         self.root = root
+        # The last messages built, by mesh and the identity of both its files: a CRM-HL surface
+        # takes seconds to check and encode, and the editor asks for it again on every visit.
+        self._messages: dict[tuple[object, ...], bytes] = {}
+        self._lock = threading.Lock()  # Requests run on a thread pool.
 
     def names(self) -> list[str]:
         if self.root is None or not self.root.is_dir():
@@ -54,6 +59,19 @@ class Meshes:
         # a viewer message; LookupError when there is none, ValueError when it breaks a contract.
         root, name = self._listed(name)
         try:
+            with Folder(root) as folder:
+                stats = [folder.stat(name + suffix) for suffix in (MESH_INFO, SURFACE)]
+        except OSError as error:
+            msg = f"the meshes directory cannot be read: {error}"
+            raise ValueError(msg) from error
+        # Kept only when both files were there: one appearing meanwhile is read, not remembered.
+        key = (name, *((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) for s in stats if s))
+        keep = None not in stats
+        with self._lock:
+            cached = self._messages.get(key) if keep else None
+        if cached is not None:
+            return cached
+        try:
             mesh_info = self.read(name).document()  # Checked as the SDK checks a MeshInfo.
         except (OSError, ValueError, CaseError) as error:
             msg = f"{name}{MESH_INFO} is not a valid MeshInfo: {error}"
@@ -67,7 +85,14 @@ class Meshes:
             except OSError as error:
                 msg = f"{name}{SURFACE} is not a regular file: {error}"
                 raise ValueError(msg) from error
-        return mesh_surface(data, mesh_info)
+        message = mesh_surface(data, mesh_info)
+        if not keep:
+            return message
+        with self._lock:
+            self._messages[key] = message
+            while len(self._messages) > 4:
+                self._messages.pop(next(iter(self._messages)))
+        return message
 
     def summaries(self) -> list[dict[str, Any]]:
         out = []

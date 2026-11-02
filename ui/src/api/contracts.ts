@@ -97,7 +97,8 @@ export interface RunRegistry {
 }
 
 export interface RunSummary {
-  iteration: number;
+  /** Null until the history records an iteration; run.json's count holds then. */
+  iteration: number | null;
   /** Orders of magnitude the slowest residual has dropped since iteration 1. */
   orders: number | null;
   /** `orders` along the run, at most 48 points. */
@@ -107,6 +108,9 @@ export interface RunSummary {
   max_iterations: number | null;
   /** The settings studies usually sweep, as the case writes them ("19.57 deg"). */
   settings?: RunSettings;
+  /** The run's study (results.md#studies): equal for runs that differ only by their case's
+   * name and freestream. */
+  study?: string;
 }
 
 export interface RunSettings {
