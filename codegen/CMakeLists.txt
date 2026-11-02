@@ -81,7 +81,7 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
 endforeach()
 add_custom_target(autan_generated_kernels DEPENDS ${AUTAN_GENERATED_FILES})
 
-add_library(autan_kernels cpp/geometry.cpp cpp/colouring.cpp)
+add_library(autan_kernels cpp/geometry.cpp cpp/colouring.cpp cpp/topology.cpp)
 add_library(autan::kernels ALIAS autan_kernels)
 add_dependencies(autan_kernels autan_generated_kernels)
 target_include_directories(
