@@ -219,3 +219,19 @@ def test_a_mesh_without_its_surface_is_404(tmp_path: Path) -> None:
 
     assert client.get("/api/meshes/polyMesh/surface").status_code == 404
     assert client.get("/api/meshes/missing/surface").status_code == 404
+
+
+def test_a_surface_served_again_follows_its_file(tmp_path: Path) -> None:
+    client = _client(tmp_path, "polyMesh")
+    url = "/api/meshes/polyMesh/surface"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert client.get(url).content == first.content
+
+    # The file replaced, even keeping its size: the new content is read, here refused.
+    path = tmp_path / "meshes" / "polyMesh.surface"
+    broken = _mutated("reversed face")
+    path.with_suffix(".new").write_bytes(broken)
+    path.with_suffix(".new").replace(path)
+
+    assert client.get(url).status_code == 422

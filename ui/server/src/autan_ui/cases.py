@@ -25,6 +25,9 @@ SURFACE = ".surface"
 class Meshes:
     def __init__(self, root: Path | None) -> None:
         self.root = root
+        # The last messages built, by mesh and the identity of both its files: a CRM-HL surface
+        # takes seconds to check and encode, and the editor asks for it again on every visit.
+        self._messages: dict[tuple[object, ...], bytes] = {}
 
     def names(self) -> list[str]:
         if self.root is None or not self.root.is_dir():
@@ -53,6 +56,15 @@ class Meshes:
         # The `autan.surface/1` file `autan-mesh-info --surface` wrote next to the MeshInfo, as
         # a viewer message; LookupError when there is none, ValueError when it breaks a contract.
         root, name = self._listed(name)
+        with Folder(root) as folder:
+            stats = [folder.stat(name + suffix) for suffix in (MESH_INFO, SURFACE)]
+        key = (
+            name,
+            *((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats),
+        )
+        cached = self._messages.get(key)
+        if cached is not None:
+            return cached
         try:
             mesh_info = self.read(name).document()  # Checked as the SDK checks a MeshInfo.
         except (OSError, ValueError, CaseError) as error:
@@ -67,7 +79,11 @@ class Meshes:
             except OSError as error:
                 msg = f"{name}{SURFACE} is not a regular file: {error}"
                 raise ValueError(msg) from error
-        return mesh_surface(data, mesh_info)
+        message = mesh_surface(data, mesh_info)
+        if len(self._messages) >= 4:
+            self._messages.pop(next(iter(self._messages)))
+        self._messages[key] = message
+        return message
 
     def summaries(self) -> list[dict[str, Any]]:
         out = []
