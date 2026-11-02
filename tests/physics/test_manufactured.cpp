@@ -1,5 +1,6 @@
 // Manufactured solutions read from autan.mms/1 documents (autan-vv's export of `euler`).
 #include <array>
+#include <cfenv>
 #include <cmath>
 #include <exception>
 #include <filesystem>
@@ -160,5 +161,46 @@ TEST_CASE("expressions as deep as the contract allows read and evaluate on a sma
       value = mms.evaluate("fields", rho, at)[0][0];
     });
     CHECK(value == expected);
+  }
+}
+
+TEST_CASE("an expression evaluates to its IEEE operations in the grammar's order",
+          "[manufactured]") {
+  // The value is the one C++ computes for the same operations in the same order: the reader
+  // changes no rounding. Each operation alone, so that no later rounding hides a changed bit, and
+  // in a combination. An output that is not asked for is not evaluated (its invalid operation
+  // would raise FE_INVALID).
+  const std::string doc = R"json({"schema": "autan.mms/1",
+      "model": {"physics": "compressible", "turbulence": null}, "parameters": {},
+      "fields": {"subexpressions": [["s", "sin(x) * exp(y) / 3"]],
+                 "outputs": {"sin": "sin(x)", "cos": "cos(x * y)", "exp": "exp(y)",
+                             "log": "log(1 + z)", "sqrt": "sqrt(z)", "pow": "pow(x, 0.7)",
+                             "div": "x / y", "neg": "-x * y + z",
+                             "all": "s - pow(x, 0.7) + sqrt(z) * cos(x * y) - log(1 + z) / -x",
+                             "nan": "sqrt(-1)"}}})json";
+  const autan::physics::Manufactured mms(doc);
+  const std::array<std::string, 9> names = {"sin", "cos", "exp", "log", "sqrt",
+                                            "pow", "div", "neg", "all"};
+  const std::vector<std::array<double, 3>> points = {{0.3, 0.6, 0.9}, {1.7, -0.2, 2.5}};
+  std::feclearexcept(FE_ALL_EXCEPT);
+  const auto value = mms.evaluate("fields", names, points);
+  CHECK(std::fetestexcept(FE_INVALID) == 0);
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    const auto [x, y, z] = points[i];
+    const double s = std::sin(x) * std::exp(y) / 3.0;
+    const std::array<double, 9> expected = {
+        std::sin(x),
+        std::cos(x * y),
+        std::exp(y),
+        std::log(1 + z),
+        std::sqrt(z),
+        std::pow(x, 0.7),
+        x / y,
+        -x * y + z,
+        s - std::pow(x, 0.7) + std::sqrt(z) * std::cos(x * y) - std::log(1.0 + z) / -x};
+    for (std::size_t k = 0; k < names.size(); ++k) {
+      INFO(names[k] << " at point " << i);
+      CHECK(value[k][i] == expected[k]);
+    }
   }
 }

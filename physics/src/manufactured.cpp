@@ -262,6 +262,17 @@ std::vector<std::vector<double>> Manufactured::evaluate(
   std::vector<std::vector<double>> out(names.size(), std::vector<double>(points.size()));
   std::vector<double> slots(3 + grp.subexpressions.size());
   std::vector<double> value(grp.nodes.size());
+  // The nodes the subexpressions and the requested outputs read, as the recursive evaluation
+  // visited them: operands precede their node, so one pass downwards marks them.
+  std::vector<char> needed(grp.nodes.size(), 0);
+  for (const int r : grp.subexpressions) needed[static_cast<std::size_t>(r)] = 1;
+  for (const int r : roots) needed[static_cast<std::size_t>(r)] = 1;
+  for (std::size_t j = grp.nodes.size(); j-- > 0;) {
+    if (needed[j] == 0) continue;
+    const Node& n = grp.nodes[j];
+    if (n.a >= 0) needed[static_cast<std::size_t>(n.a)] = 1;
+    if (n.b >= 0) needed[static_cast<std::size_t>(n.b)] = 1;
+  }
   for (std::size_t i = 0; i < points.size(); ++i) {
     slots[0] = points[i][0];
     slots[1] = points[i][1];
@@ -270,7 +281,7 @@ std::vector<std::vector<double>> Manufactured::evaluate(
     // later expression reads it.
     std::size_t next = 0;
     for (std::size_t j = 0; j < grp.nodes.size(); ++j) {
-      value[j] = apply(grp.nodes[j], value, slots);
+      if (needed[j] != 0) value[j] = apply(grp.nodes[j], value, slots);
       if (next < grp.subexpressions.size() &&
           static_cast<std::size_t>(grp.subexpressions[next]) == j) {
         slots[3 + next] = value[j];

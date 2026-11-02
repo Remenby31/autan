@@ -63,7 +63,10 @@ constexpr int manufactured_max_depth = 1024;
 // builds for `e`: a number or a name is 1, a unary minus, a parenthesis or a one-argument
 // function adds 1, a binary operator (left-associative, * and / before + and -) or pow is 1 more
 // than its deeper operand. Evaluated with explicit stacks, never recursively, and stopped as soon
-// as it exceeds `limit`. A malformed expression is left to the parser, which reports it.
+// as it exceeds `limit`. Every operator still pending encloses what follows it, so the depth is at
+// least one more than their count: an expression is refused on that count too, finished or not,
+// before the parser's recursion could reach it. Otherwise a malformed expression is left to the
+// parser, which reports it.
 int expression_depth(std::string_view e, int limit) {
   enum Kind : std::uint8_t { open, call, negate, add, multiply };
   std::vector<Kind> ops;
@@ -93,6 +96,7 @@ int expression_depth(std::string_view e, int limit) {
     return keep(1 + std::max(a, b));
   };
   auto binds = [](Kind k) { return k == add ? 1 : k == multiply ? 2 : 3; };
+  auto pending = [&] { return static_cast<int>(ops.size()) + 1 > limit; };
   bool operand_expected = true;
   std::size_t i = 0;
   while (i < e.size()) {
@@ -103,28 +107,37 @@ int expression_depth(std::string_view e, int limit) {
     }
     if (operand_expected && c == '-') {
       ops.push_back(negate);
+      if (pending()) return limit + 1;
       ++i;
       continue;
     }
     if (operand_expected && c == '(') {
       ops.push_back(open);
       marks.push_back(depth.size());
+      if (pending()) return limit + 1;
       ++i;
       continue;
     }
     if (operand_expected) {
+      // A number or a name, as the parser reads them.
       std::size_t j = i;
-      while (j < e.size() &&
-             (std::isalnum(static_cast<unsigned char>(e[j])) != 0 || e[j] == '_' || e[j] == '.' ||
-              ((e[j] == '+' || e[j] == '-') && j > i && (e[j - 1] == 'e' || e[j - 1] == 'E') &&
-               std::isdigit(static_cast<unsigned char>(e[i])) != 0)))
-        ++j;
+      if (std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '.') {
+        while (j < e.size() &&
+               (std::isdigit(static_cast<unsigned char>(e[j])) != 0 || e[j] == '.' || e[j] == 'e' ||
+                e[j] == 'E' ||
+                ((e[j] == '+' || e[j] == '-') && j > i && (e[j - 1] == 'e' || e[j - 1] == 'E'))))
+          ++j;
+      } else {
+        while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) != 0 || e[j] == '_'))
+          ++j;
+      }
       if (j == i) return deepest;
       std::size_t k = j;
       while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])) != 0) ++k;
       if (k < e.size() && e[k] == '(' && std::isalpha(static_cast<unsigned char>(e[i])) != 0) {
         ops.push_back(call);
         marks.push_back(depth.size());
+        if (pending()) return limit + 1;
         i = k + 1;
         continue;
       }
@@ -163,6 +176,7 @@ int expression_depth(std::string_view e, int limit) {
       if (!reduce()) return deepest;
     }
     ops.push_back(k);
+    if (pending()) return limit + 1;
     operand_expected = true;
     ++i;
   }
@@ -890,26 +904,31 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
-    const std::ifstream in(v.path, std::ios::binary);
+    std::ifstream in(v.path, std::ios::binary);
     if (!in) {
       throw InputError(Diagnostic{.code = "E0207",
                                   .message = "cannot read '" + v.path + "'",
                                   .path = "verification.path",
                                   .data_json = "{}"});
     }
+    auto too_large = [&](const std::string& bytes) {
+      throw InputError(
+          Diagnostic{.code = "E0208",
+                     .message = "the manufactured solution has " + bytes + " bytes, more than " +
+                                std::to_string(manufactured_max_bytes),
+                     .path = "verification.path",
+                     .data_json = nlohmann::json{{"limit", manufactured_max_bytes}}.dump()});
+    };
+    // A regular file's size is known before reading; anything else (a pipe) is read up to one
+    // byte past the limit.
     std::error_code size_error;
-    const auto bytes = fs::file_size(v.path, size_error);
-    if (!size_error && bytes > manufactured_max_bytes) {
-      throw InputError(Diagnostic{
-          .code = "E0208",
-          .message = "the manufactured solution has " + std::to_string(bytes) +
-                     " bytes, more than " + std::to_string(manufactured_max_bytes),
-          .path = "verification.path",
-          .data_json = nlohmann::json{{"bytes", bytes}, {"limit", manufactured_max_bytes}}.dump()});
-    }
-    std::ostringstream text;
-    text << in.rdbuf();
-    v.text = text.str();
+    const auto size = fs::file_size(v.path, size_error);
+    if (!size_error && size > manufactured_max_bytes) too_large(std::to_string(size));
+    v.text.assign(manufactured_max_bytes + 1, '\0');
+    in.read(v.text.data(), static_cast<std::streamsize>(v.text.size()));
+    v.text.resize(static_cast<std::size_t>(in.gcount()));
+    if (v.text.size() > manufactured_max_bytes)
+      too_large("at least " + std::to_string(v.text.size()));
     if (sha256_hex(v.text) != v.sha256) {
       throw InputError(Diagnostic{
           .code = "E0206",
