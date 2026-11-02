@@ -599,3 +599,24 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     );
   }
 });
+
+test("views of results carry no renderer figures, and codes explain themselves", async ({
+  page,
+}) => {
+  const all = await runs(page);
+  const converged = all.find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toBeVisible();
+  await expect(page.getByTestId("viewer-status")).toHaveText("");
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByTestId("viewer-status")).toContainText("triangles");
+
+  const diverged = all.find((r) => r.status === "diverged") as Run;
+  const diagnostic = diverged.diagnostics[0];
+  await page.goto("/");
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diagnostic?.code ?? "", { exact: true });
+  await code.hover();
+  await expect(page.getByText(diagnostic?.message ?? "", { exact: true })).toBeVisible();
+});

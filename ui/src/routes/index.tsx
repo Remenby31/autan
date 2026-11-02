@@ -502,7 +502,9 @@ function RunRow({
         <span className="flex min-w-0 items-center gap-2">
           <Status status={run.status} duration={duration(run)} />
           {run.diagnostics[0] && (
-            <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
+            <Tooltip content={run.diagnostics[0].message}>
+              <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
+            </Tooltip>
           )}
         </span>
         <span className="flex items-center gap-2">

@@ -52,7 +52,7 @@ const TURBULENCE = [
   { value: "sst", label: "k-ω SST" },
 ] as const;
 const PRECISION = [
-  { value: "fp32+acc64", label: "fp32 + fp64 accumulation" },
+  { value: "fp32+acc64", label: "fp32+acc64" },
   { value: "fp64", label: "fp64" },
 ] as const;
 const KINDS = Object.keys(CONDITIONS).map((kind) => ({
@@ -282,12 +282,12 @@ function CaseEditor() {
                   placeholder="Choose…"
                 />
               </Field>
-              <Field label="Precision">
+              <Field label="Precision" hint="acc64: sums in fp64">
                 <SelectInput
                   value={form.physics.precision as (typeof PRECISION)[number]["value"] | ""}
                   onChange={(v) => setIn("physics", "precision", v)}
                   options={PRECISION}
-                  placeholder="Default (fp32 + fp64 accumulation)"
+                  placeholder="Default (fp32+acc64)"
                 />
               </Field>
               <Field label="Gas">

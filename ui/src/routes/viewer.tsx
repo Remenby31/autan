@@ -295,8 +295,13 @@ function Viewer() {
           data-testid="viewer-status"
           data-backend={backend ?? ""}
         >
-          {backend ?? "…"} · {surface ? (surface.indices.length / 3).toLocaleString("en") : "–"}{" "}
-          triangles
+          {/* What renders and how much: the benchmark's business, not a run's. */}
+          {!run && (
+            <>
+              {backend ?? "…"} · {surface ? (surface.indices.length / 3).toLocaleString("en") : "–"}{" "}
+              triangles
+            </>
+          )}
         </div>
       </div>
     </>
