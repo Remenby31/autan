@@ -918,14 +918,14 @@ TEST_CASE("a steady step whose linear solve stops above its tolerance halves the
           "[euler]") {
   // linear-forcing.md: a step whose linear solve leaves more than 0.1 of its residual, and at
   // most 0.9, is taken; the next CFL number is capped at half its own and the penalty halves,
-  // then recovers by 1.5 per step. That state crosses a restart. Two zones at very different
-  // states make the multigrid miss its tolerance in the first steps.
+  // then recovers by 1.5 per step. That state crosses a restart. Two zones at different states:
+  // the multigrid misses its tolerance at step 23 (CFL 6257), and the next steps are plain.
   auto doc = [&](int budget) {
     return input("hybrid.solver-input.json", [&](Json& d) {
       inviscid_along_x(d, "fp64");
       auto& init = d["cell_zones"].back()["initial"];
-      init["density"] = 3.0 * init["density"].get<double>();
-      init["pressure"] = 5.0 * init["pressure"].get<double>();
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 2.0 * init["pressure"].get<double>();
       d["time"]["max_iterations"] = budget;
       d["time"]["residual_orders"] = 30.0;
     });
@@ -958,7 +958,11 @@ TEST_CASE("a steady step whose linear solve stops above its tolerance halves the
       break;
     }
   }
-  INFO(under_solved.size() << " under-solved steps; the first followed by three plain ones: " << k);
+  std::string seen;
+  for (const auto& [i, w] : warned)
+    seen += std::to_string(i) + (under_solved.contains(i) ? "u " : " ");
+  INFO("warned steps (u: under-solved) " << seen
+                                         << "; the first followed by three plain ones: " << k);
   REQUIRE(k > 0);
   // Stopped after step k, then continued one step at a time.
   auto restart = [&](const fs::path& run, const char* name) {
