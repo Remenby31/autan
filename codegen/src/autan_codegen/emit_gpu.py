@@ -13,9 +13,10 @@ from autan_codegen import dsl
 from autan_codegen.derive import ReduceAdjoint
 from autan_codegen.emit_cpp import Emitter, at, call_args, incidence_loop
 from autan_codegen.emit_cpu import (
-    boundary_write_body,
     cell_stores,
     face_ends,
+    face_write_body,
+    face_write_range,
     global_left,
     jacobian_lines,
     n_out,
@@ -303,18 +304,19 @@ def emit_face_launcher(e: Emitter, lm: LoopModel) -> None:
 def emit_cell_kernel(e: Emitter, lm: LoopModel) -> None:
     tid = "static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x)"
     _kernel_head(e, f"{lm.name}_kernel")
-    if lm.kind == "boundary_write":
-        e.w(f"  const index_t f = d.topo.n_interior_faces + {tid};")
-        e.w("  if (f >= d.topo.n_faces) {")
+    if lm.kind in ("face_write", "boundary_write"):
+        lo, hi = face_write_range(lm.kind)
+        e.w(f"  const index_t f = {lo} + {tid};")
+        e.w(f"  if (f >= {hi}) {{")
         e.w("    return;")
         e.w("  }")
-        for s in boundary_write_body(lm, "  "):
+        for s in face_write_body(lm, "  "):
             e.w(s)
         e.w("}")
         e.w()
         e.w("template <class P>")
         e.w(f"void {lm.name}(const Data<P>& d, const gpu::Schedule& s) {{")
-        e.w("  const index_t n = d.topo.n_faces - d.topo.n_interior_faces;")
+        e.w(f"  const index_t n = {hi} - {lo};")
         e.w("  if (n > 0) {")
         e.w("    const auto grid = static_cast<unsigned>((n + s.block - 1) / s.block);")
         e.w(f"    {lm.name}_kernel<P><<<grid, static_cast<unsigned>(s.block), 0, s.stream>>>(d);")

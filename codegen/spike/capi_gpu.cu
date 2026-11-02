@@ -13,6 +13,7 @@
 #include "autan/kernels/gpu.hpp"
 #include "autan/kernels/norms.cuh"
 #include "device.cuh"
+#include "face_flags_gpu.cuh"
 #include "gradients_gpu.cuh"
 #include "roe_gpu.cuh"
 #include "spike.hpp"
@@ -84,6 +85,40 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   copy_out(rs.download(), res);
   copy_out(gs.download(), grad);
   *norm = std::sqrt(sum.download()[0]);
+}
+
+/// Test kernel codegen/tests/kernels/face_flags.py on the device: as autan_spike_face_flags,
+/// the face loop reading keep in `strategy`.
+template <class P>
+void face_flags(const SpikeMesh& m, gpu::Strategy strategy, int block, const double* q,
+                std::uint8_t* keep, double* jump, double* res) {
+  namespace ff = autan::kernels::face_flags;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  DeviceMesh dm(m, block);
+  DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
+  DeviceArray<std::uint8_t> ks(std::vector<std::uint8_t>(2 * nf, 255));
+  DeviceArray<typename P::state> js(nf);
+  DeviceArray<typename P::residual> rs(nc);
+  ff::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.keep = ks.get();
+  d.jump = js.get();
+  d.res = rs.get();
+  dm.bind(d);
+  ff::gpu_loops::interior_flags(d, dm.schedule);
+  ff::gpu_loops::boundary_flags_loop(d, dm.schedule);
+  if (res != nullptr) {
+    ff::gpu_loops::picked(d, strategy, dm.schedule);
+  }
+  synchronise();
+  const auto k = ks.download();
+  std::copy(k.begin(), k.end(), keep);
+  copy_out(js.download(), jump);
+  if (res != nullptr) {
+    copy_out(rs.download(), res);
+  }
 }
 
 template <class P>
@@ -475,6 +510,17 @@ int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const
     autan::spike::with_policy(policy, [&](auto p) {
       advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
+  });
+}
+
+int autan_spike_gpu_face_flags(const void* mesh, const char* policy, const char* strategy,
+                               int block, const double* q, std::uint8_t* keep, double* jump,
+                               double* res, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::with_policy(
+        policy, [&](auto p) { face_flags<decltype(p)>(*m, s, block, q, keep, jump, res); });
   });
 }
 

@@ -30,6 +30,9 @@ class Role(enum.Enum):
     # Blocks kept in the accumulation precision (diagonal blocks and their inverses, FP64 in
     # fp32+acc64), off-diagonal blocks staying in `jac` (mixed-precision preconditioners).
     JAC_ACCUM = "jac_accum"
+    # Face flags: 0 or 1, one byte in every policy; read as 0 or 1 in the compute type, stored
+    # as 1 where the written value is > 0. Face data are passive.
+    FLAG = "flag"
 
 
 # Matrix blocks are data of a linear solve, never differentiated.
@@ -57,6 +60,7 @@ class RoleAnnotation:
     def __init__(self, role: Role) -> None:
         self.role = role
         self.scalar = Type(role)
+        self.Vec2 = Type(role, (2,))
         self.Vec3 = Type(role, (3,))
         self.Vec5 = Type(role, (5,))
         self.Mat3 = Type(role, (3, 3))
@@ -69,6 +73,7 @@ Grad = RoleAnnotation(Role.GRAD)
 Residual = RoleAnnotation(Role.RESIDUAL)
 Geom = RoleAnnotation(Role.GEOM)
 Param = RoleAnnotation(Role.PARAM)
+Flag = RoleAnnotation(Role.FLAG)
 
 
 class _JacAnnotation(RoleAnnotation):
@@ -107,6 +112,10 @@ class Dataset:
     set: MeshSet
     type: Type
     geometry: bool = False
+
+    def __post_init__(self) -> None:
+        if self.type.role is Role.FLAG and (self.set is not MeshSet.FACES or self.geometry):
+            raise CodegenError(Code.TYPE_MISMATCH, f"{self.name}: Flag datasets are face datasets")
 
     @property
     def left(self) -> Binding:
@@ -316,7 +325,7 @@ class Loop:
     name: str = ""
     over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
     jacobians: list[Jacobian] = field(default_factory=list)
-    frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
+    frozen: bool = False  # face data written from active data: derivatives through it dropped
     entries: list[Write] = field(default_factory=list)  # reductions: one value per entry
 
 
@@ -345,14 +354,28 @@ def _split(out: object) -> tuple[list[Any], list[Jacobian]]:
     ]
 
 
-def face_loop(body: Body, *, out: object, **args: object) -> Loop:
+def face_loop(body: Body, *, out: object, frozen: bool = False, **args: object) -> Loop:
     """Loop over interior faces; `out` increments owner and neighbour cells, and may add
-    Jacobian blocks per face."""
+    Jacobian blocks per face, or writes face datasets (`Write` only, for example flags), each
+    face once, its `left` and `right` cells in the face's global orientation. Face datasets are
+    passive: a writing loop that reads active cell data declares `frozen=True` (see
+    `boundary_loop`)."""
     outs, jacs = _split(out)
+    if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
+        if jacs:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT, "a face loop writing face data has no Jacobian outputs"
+            )
+        return Loop("face_write", body, _bindings(args), outs, frozen=frozen)
+    if frozen:
+        raise CodegenError(
+            Code.INVALID_LOOP_OUTPUT, "frozen=True applies to loops writing face data only"
+        )
     for o in outs:
         if not isinstance(o, Inc) or o.right is None:
             raise CodegenError(
-                Code.INVALID_LOOP_OUTPUT, "interior face loop outputs are Inc with both signs"
+                Code.INVALID_LOOP_OUTPUT,
+                "interior face loop outputs are Inc with both signs, or Write of face datasets only",
             )
     return Loop("face", body, _bindings(args), outs, jacobians=jacs)
 
@@ -454,4 +477,4 @@ def _intrinsic(*_: object) -> object:
 
 
 dot = cross = norm = sqrt = exp = log = sin = cos = rel = _intrinsic
-transpose = inverse = identity = outer = Vec3 = Vec5 = _intrinsic
+transpose = inverse = identity = outer = Vec2 = Vec3 = Vec5 = _intrinsic
