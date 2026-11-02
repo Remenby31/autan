@@ -332,6 +332,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     gpu::DeviceMesh sm(m.mesh, m.packed, &st, {o.block, 0, 0, nullptr, 32});
     gr::Data<P> dsl = dst;
     sm.bind(dsl);
+    sm.release_host();
     gpu::check(cudaMemset(dgrad.get(), 0, 3 * nc * sizeof(Gr)), "clear gradient");
     gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule());
     gpu::check(cudaDeviceSynchronize(), "lsq stencil sliced");
@@ -480,6 +481,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     dq.bnd_jac = dbnd.get();
     dq.shift = dshift.get();
     dq.diag = ddiag3.get();
+    dl.mesh.release_host();
     dgo::gpu_loops::assemble(dq, dl.schedule);
     if (max_rel_diff(as_double(ddiag3.download()), as_double(hdiag2)) > tolerance) verified = false;
     out.push_back({"block_diagonal" + layout, asm_bytes - inc * 25.0 * sizeof(J), "gather",
@@ -514,6 +516,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     SpikeMesh mc{autan::renumber_cells(m.mesh, order.new_to_old), {}, {}, {}, {}, {}};
     mc.geometry = autan::compute_geometry(mc.mesh);
     mc.packed = autan::kernels::pack_geometry(mc.mesh, mc.geometry);
+    mc.geometry = autan::Geometry{};
     mc.topo = autan::kernels::topology(mc.mesh.view());
     mc.twins = autan::kernels::incidence_twins(mc.mesh);
     mc.topo.incidence_twin = mc.twins.data();
@@ -557,6 +560,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     autan::spike::incidence_slice() = 0;
     bk::Data<P> dd{};
     dl.bind(dd);
+    dl.mesh.release_host();
     DeviceArray<J> dcjac(cjac), dcbnd(cbnd),
         dcoff(25 * static_cast<std::size_t>(dl.topo.n_incidences));
     DeviceArray<A> dcshift(cshift), dcdiag(25 * nc), dcinv(25 * nc);
@@ -583,6 +587,9 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     };
     sweep();
     if (max_rel_diff(as_double(dcx.download()), as_double(hx_c)) > tolerance) verified = false;
+    for (auto* v : {&cjac, &cbnd, &hoff_c}) std::vector<J>().swap(*v);
+    for (auto* v : {&cshift, &cdiag, &cinv}) std::vector<A>().swap(*v);
+    for (auto* v : {&cx, &crhs, &hx_c, &unused}) std::vector<R>().swap(*v);
     // Product model: per cell its inverse block, rhs read, x read across once and written,
     // row offset and length; per interior incidence its block; per incidence its column.
     const double row = sizeof(offset_t) + sizeof(index_t);
@@ -638,6 +645,7 @@ int main(int argc, char** argv) {
   SpikeMesh m{std::move(mesh), {}, {}, {}, {}, {}};
   m.geometry = autan::compute_geometry(m.mesh);
   m.packed = autan::kernels::pack_geometry(m.mesh, m.geometry);
+  m.geometry = autan::Geometry{};
   m.topo = autan::kernels::topology(m.mesh.view());
   m.twins = autan::kernels::incidence_twins(m.mesh);
   m.topo.incidence_twin = m.twins.data();
