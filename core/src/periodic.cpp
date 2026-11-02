@@ -256,51 +256,117 @@ PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPai
   return out;
 }
 
-PeriodicSnap snap_periodic_nodes(std::span<double> x, std::span<double> y, std::span<double> z,
-                                 std::span<const PeriodicPair> pairs, const PeriodicMatch& match) {
-  // Each matched pair of nodes is an edge x_b = x_a + t (and back, - t), in the order of the
-  // pairs and of zone a's nodes, so the walk below is the same on every rank and run.
-  struct Edge {
-    index_t to;
-    std::size_t pair;
-    double sign;
-  };
-  std::vector<std::vector<Edge>> edges(x.size());
+PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const double> y,
+                                   std::span<const double> z, std::span<const PeriodicPair> pairs,
+                                   const PeriodicMatch& match) {
+  const std::size_t n = x.size();
+  std::vector<char> zone_b(n, 0), periodic(n, 0);
+  std::vector<std::vector<std::pair<index_t, std::size_t>>> forward(n);
   for (std::size_t p = 0; p < pairs.size(); ++p) {
     for (const auto& [a, b] : match.nodes[p]) {
-      edges[at(a)].push_back({b, p, 1.0});
-      edges[at(b)].push_back({a, p, -1.0});
+      forward[at(a)].emplace_back(b, p);
+      zone_b[at(b)] = 1;
+      periodic[at(a)] = periodic[at(b)] = 1;
     }
   }
-  PeriodicSnap snap{.nodes = 0, .max_distance = 0.0, .max_relative = match.max_relative};
-  std::vector<char> placed(x.size(), 0);
-  std::vector<index_t> queue;
-  for (std::size_t root = 0; root < x.size(); ++root) {
-    if (placed[root] != 0 || edges[root].empty()) continue;
-    placed[root] = 1;
-    queue.assign(1, static_cast<index_t>(root));
+  // Classes: the nodes joined by matched pairs, either way.
+  std::vector<std::vector<index_t>> joined(n);
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    for (const auto& [a, b] : match.nodes[p]) {
+      joined[at(a)].push_back(b);
+      joined[at(b)].push_back(a);
+    }
+  }
+  std::vector<std::array<double, 3>> position(n);
+  std::vector<char> placed(n, 0), classed(n, 0);
+  std::vector<index_t> members, queue;
+  std::vector<char> reached(n, 0);
+  // The nodes forward steps from `root` reach, placed at root + the translations on the way.
+  const auto walk = [&](index_t root) {
+    queue.assign(1, root);
+    reached[at(root)] = 1;
+    position[at(root)] = {x[at(root)], y[at(root)], z[at(root)]};
     for (std::size_t next = 0; next < queue.size(); ++next) {
       const auto from = at(queue[next]);
-      for (const Edge& e : edges[from]) {
-        const auto to = at(e.to);
-        if (placed[to] != 0) continue;
-        placed[to] = 1;
-        queue.push_back(e.to);
-        const auto& t = pairs[e.pair].translation;
-        const std::array<double, 3> moved{x[from] + e.sign * t[0], y[from] + e.sign * t[1],
-                                          z[from] + e.sign * t[2]};
-        if (moved[0] != x[to] || moved[1] != y[to] || moved[2] != z[to]) {
-          ++snap.nodes;
-          snap.max_distance = std::max(
-              snap.max_distance, std::hypot(moved[0] - x[to], moved[1] - y[to], moved[2] - z[to]));
-          x[to] = moved[0];
-          y[to] = moved[1];
-          z[to] = moved[2];
+      for (const auto& [to, p] : forward[from]) {
+        if (reached[at(to)] != 0) continue;
+        reached[at(to)] = 1;
+        const auto& t = pairs[p].translation;
+        position[at(to)] = {position[from][0] + t[0], position[from][1] + t[1],
+                            position[from][2] + t[2]};
+        queue.push_back(to);
+      }
+    }
+    for (const index_t q : queue) reached[at(q)] = 0;
+    return queue.size();
+  };
+  for (std::size_t first = 0; first < n; ++first) {
+    if (periodic[first] == 0 || classed[first] != 0) continue;
+    members.assign(1, static_cast<index_t>(first));
+    classed[first] = 1;
+    for (std::size_t next = 0; next < members.size(); ++next) {
+      for (const index_t q : joined[at(members[next])]) {
+        if (classed[at(q)] != 0) continue;
+        classed[at(q)] = 1;
+        members.push_back(q);
+      }
+    }
+    std::ranges::sort(members);
+    // The root: the smallest node that is zone b of no pair, else the smallest node, from which
+    // forward steps reach the whole class.
+    index_t root = -1;
+    for (const bool zone_a_only : {true, false}) {
+      for (const index_t q : members) {
+        if (root >= 0 || (zone_a_only && zone_b[at(q)] != 0)) continue;
+        if (walk(q) == members.size()) root = q;
+      }
+    }
+    if (root < 0) {
+      unmatched(concat("periodic node ", std::to_string(first),
+                       ": no node of its class reaches the others by the pairs' translations"));
+    }
+    (void)walk(root);
+    for (const index_t q : members) placed[at(q)] = 1;
+  }
+  const auto ulp = [](double v) {
+    const double a = std::abs(v);
+    return std::nextafter(a, std::numeric_limits<double>::infinity()) - a;
+  };
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    const auto& t = pairs[p].translation;
+    for (const auto& [a, b] : match.nodes[p]) {
+      for (std::size_t d = 0; d < 3; ++d) {
+        const double expected = position[at(a)][d] + t[d];
+        if (std::abs(position[at(b)][d] - expected) >
+            4.0 * ulp(std::max(std::abs(position[at(a)][d]), std::abs(t[d])))) {
+          unmatched(concat("periodic pair ", std::to_string(p), ": node ", std::to_string(b),
+                           " cannot be node ", std::to_string(a),
+                           " translated, as the other pairs that join them place it"));
         }
       }
     }
   }
-  return snap;
+  PeriodicMoves out;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (placed[i] == 0) continue;
+    const std::array<double, 3> from{x[i], y[i], z[i]};
+    if (position[i] == from) continue;
+    out.nodes.push_back(static_cast<index_t>(i));
+    out.to.push_back(position[i]);
+    bool significant = false;
+    for (std::size_t d = 0; d < 3; ++d) {
+      significant =
+          significant || std::abs(position[i][d] - from[d]) >
+                             4.0 * ulp(std::max(std::abs(from[d]), std::abs(position[i][d])));
+    }
+    if (significant) {
+      ++out.significant;
+      out.max_distance = std::max(
+          out.max_distance,
+          std::hypot(position[i][0] - from[0], position[i][1] - from[1], position[i][2] - from[2]));
+    }
+  }
+  return out;
 }
 
 }  // namespace autan

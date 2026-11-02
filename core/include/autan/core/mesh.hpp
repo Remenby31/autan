@@ -71,13 +71,15 @@ struct PeriodicPair {
   std::array<double, 3> translation{};
 };
 
-/// What assembly moved to make each periodic pair an exact translation (#426): the nodes it
-/// moved, the largest move, and the largest distance between a matched pair of nodes relative
-/// to the matching tolerance (at most 1).
+/// What assembly moved to make each periodic pair a translation (mesh.md, Periodic pairs): the
+/// nodes moved by more than round-off, the largest move, the largest mismatch of a matched pair
+/// of nodes relative to its tolerance (at most 1), and the largest relative change of an owned
+/// cell's volume.
 struct PeriodicSnap {
   std::int64_t nodes = 0;
   double max_distance = 0.0;
   double max_relative = 0.0;
+  double max_volume_change = 0.0;
 };
 
 /// Face-based mesh as a reader or partitioner produces it: faces in any order,
@@ -254,11 +256,21 @@ struct PeriodicMatch {
 /// that do not match one to one. Called by assemble().
 PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPair> pairs);
 
-/// Moves the nodes of each periodic node class to its smallest-index node plus the
-/// translations along the matched pairs (each step x_b = x_a + translation, one addition), so
-/// that every pair is an exact translation. Returns what moved. Called by assemble().
-PeriodicSnap snap_periodic_nodes(std::span<double> x, std::span<double> y, std::span<double> z,
-                                 std::span<const PeriodicPair> pairs, const PeriodicMatch& match);
+/// Where the periodic nodes go: each class of nodes joined by matched pairs is placed from its
+/// root by forward steps x_b = x_a + translation, the root being the smallest node that is zone b
+/// of no pair, else the smallest node, from which such steps reach the whole class; then every
+/// pair is checked to 4 ulps. Lists the nodes whose position changes,
+/// with their new position, and counts those that move by more than round-off. Throws E0119 for
+/// a class without a root or a pair the placement contradicts. Called by assemble().
+struct PeriodicMoves {
+  std::vector<index_t> nodes;
+  std::vector<std::array<double, 3>> to;
+  std::int64_t significant = 0;
+  double max_distance = 0.0;
+};
+PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const double> y,
+                                   std::span<const double> z, std::span<const PeriodicPair> pairs,
+                                   const PeriodicMatch& match);
 
 /// Validates `input` and returns it in canonical order: owner < neighbour on
 /// interior faces, interior faces first sorted by (owner, neighbour), then

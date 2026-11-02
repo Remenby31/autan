@@ -1,6 +1,7 @@
 #include <array>
 #include <cstddef>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -158,6 +159,61 @@ TEST_CASE("Periodic nodes matched within the tolerance become exact translates",
     }
   }
   check_partners(moved);
+  CHECK(snap.max_volume_change > 0.0);
+  CHECK(exact.periodic_snap().max_volume_change == 0.0);
+}
+
+TEST_CASE("Moving periodic nodes that would make a valid cell degenerate is a coded error",
+          "[periodic]") {
+  // n = 2, x-periodic: the tolerance on the sides is 1e-4 / 2. The interior plane moves to
+  // x = 1 + 1.25e-5 and xmax to x = 1 + 2.5e-5, half the tolerance from xmin translated: every
+  // cell is valid, and moving xmax back onto x = 1 would pass the interior plane.
+  using autan::test::BoxFill;
+  const auto input = periodic_box(2, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
+    for (double& x : m.x) {
+      if (x == 1.0) {
+        x = 1.0 + 2.5e-5;
+      } else if (x != 0.0) {
+        x = 1.0 + 1.25e-5;
+      }
+    }
+  });
+  try {
+    (void)autan::assemble(input);
+    FAIL("expected E0119");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::mesh_periodic_unmatched);
+    CHECK(e.data_json().find("\"volume_after\"") != std::string::npos);
+  }
+}
+
+TEST_CASE("Periodic pairs that place a node in two ways are a coded error", "[periodic]") {
+  // n = 2: the upper halves of xmin and xmax become a second pair, translated by (1, 0, 2e-5),
+  // within the tolerance (5e-5). Their seam nodes are matched by both pairs, which place them
+  // 2e-5 apart.
+  using autan::test::BoxFill;
+  require_code(autan::ErrorCode::mesh_periodic_unmatched,
+               periodic_box(2, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
+                 const auto first = static_cast<index_t>(m.face_zones.size());
+                 for (const index_t side : {0, 1}) {
+                   autan::FaceZone upper = m.face_zones[at(side)];
+                   upper.name += "-upper";
+                   m.face_zones.push_back(upper);
+                 }
+                 for (std::size_t f = 0; f < m.labelled_face_zone.size(); ++f) {
+                   const index_t zone = m.labelled_face_zone[f];
+                   if (zone != 0 && zone != 1) continue;
+                   double z = 0.0;
+                   const auto begin = m.labelled_face_node_offsets[f];
+                   const auto end = m.labelled_face_node_offsets[f + 1];
+                   for (auto k = begin; k < end; ++k)
+                     z += m.z[at(m.labelled_face_nodes[static_cast<std::size_t>(k)])];
+                   if (z / static_cast<double>(end - begin) > 0.5)
+                     m.labelled_face_zone[f] = first + zone;
+                 }
+                 m.periodic.push_back(
+                     {.zone_a = first, .zone_b = first + 1, .translation = {1.0, 0.0, 2e-5}});
+               }));
 }
 
 TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "[periodic]") {

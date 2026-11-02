@@ -136,7 +136,7 @@
     "E0119": {
       "severity": "error",
       "title": "Periodic faces do not match",
-      "fix": "Regenerate the mesh with conforming periodic faces, and check the translation.",
+      "fix": "Regenerate the mesh with conforming periodic faces, and check the translations.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0119"
     },
     "E0120": {

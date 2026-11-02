@@ -1038,7 +1038,8 @@ class Run final : public Log {
                      .path = "mesh.path",
                      .data_json = Json{{"nodes", snap.nodes},
                                        {"max_distance", snap.max_distance},
-                                       {"max_relative", snap.max_relative}}
+                                       {"max_relative", snap.max_relative},
+                                       {"max_volume_change", snap.max_volume_change}}
                                       .dump()});
     }
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
