@@ -1,0 +1,85 @@
+{
+  "schema": "autan.e2e-reference/1",
+  "name": "fun3d-dpw4-crm",
+  "source": "G. Nastac et al., A Multi-Architecture Approach for Implicit CFD on Unstructured Grids, AIAA 2023-1226, section IV.A, Tables 3 and 4. https://ntrs.nasa.gov/api/citations/20220016937/downloads/2023_AIAA_SciTech_FLUDA_Paper.pdf",
+  "grid": {
+    "url": "https://dpw.larc.nasa.gov/DPW4/unstructured_Larc/NodeBase/dpw_wbt0_crs-3.6Mn_5.tgz",
+    "description": "the workshop tetrahedral grid after FUN3D's vgrid_merge_into_prisms",
+    "vertices": 3675916,
+    "elements": 9794089,
+    "discretisation": "node-centred"
+  },
+  "case": "DPW4 case 1: M 0.85, Re_c 5e6, C_L 0.5 (alpha 2.41 deg), T 560 degR, SA-QCR2000, local time stepping, CFL 200 / 30",
+  "iterations": 3000,
+  "converged_iterations": 2500,
+  "convergence": "machine zero (Fig. 2); 3000 iterations run",
+  "runs": [
+    {
+      "device": "NVIDIA 40 GB SXM A100",
+      "kind": "gpu",
+      "seconds": 430,
+      "peak_GBps": 1555
+    },
+    {
+      "device": "NVIDIA 16 GB SXM V100",
+      "kind": "gpu",
+      "seconds": 720,
+      "peak_GBps": 900
+    },
+    {
+      "device": "AMD MI210",
+      "kind": "gpu",
+      "seconds": 620,
+      "peak_GBps": 1638.4
+    },
+    {
+      "device": "2x AMD EPYC 7742 (128 cores)",
+      "kind": "cpu",
+      "seconds": 1639,
+      "peak_GBps": 409.6
+    },
+    {
+      "device": "2x Intel Skylake 6148 (40 cores)",
+      "kind": "cpu",
+      "seconds": 2818,
+      "peak_GBps": 256
+    }
+  ],
+  "pyfr": {
+    "source": "F. Witherden, P. Vincent et al., PyFR v2.0.3, Computer Physics Communications 311 (2025) 109567, Tables 2-3",
+    "device": "NVIDIA GH200",
+    "gdof_per_s": 6.004,
+    "peak_GBps": 4000,
+    "case": "Taylor-Green vortex, 13.9M tetrahedra, p = 7, Navier-Stokes, explicit, fp64"
+  },
+  "declared": {
+    "statement": "Declared before the first run (2026-11-02): C_D is judged for a converged SA run on the CellBase coarse grid, at the case's residual_orders, with alpha set so that C_L = 0.500 +/- 0.005 (otherwise not comparable), against the DPW4 core statistics for coarse grids (Morrison, AIAA 2010-4673, Tables 2-3): median 279 counts, sigma 8.8; within 2 sigma passes. The median covers the participants' own coarse grids (3.2 M to 11.5 M points), so the scatter includes the grid effect: a pass is 'within the workshop scatter', not agreement on the same grid. No DPW4 participant ran a cell-centred solver on CellBase (Vassberg et al., AIAA 2010-4547, Tables I and III). FUN3D is compared for time only.",
+    "residual_orders": 8.0,
+    "cd_model": "sa",
+    "cd_reference": {
+      "source": "J. H. Morrison, Statistical Analysis of CFD Solutions from the Fourth AIAA Drag Prediction Workshop, AIAA 2010-4673, Tables 2 and 3 (case 1a: M 0.85, C_L 0.500, Re 5e6, iH 0 deg; 21 core solutions). https://ntrs.nasa.gov/api/citations/20100025032/downloads/20100025032.pdf",
+      "median_counts": 279.0,
+      "sigma_counts": 8.8,
+      "cd_pressure_counts": 158.0,
+      "cd_friction_counts": 124.0,
+      "scope": "participants' own coarse grids (3.2 M to 11.5 M points): within the workshop scatter, not same-grid agreement"
+    },
+    "cd_tolerance_counts": 17.6,
+    "cl_target": 0.5,
+    "cl_band": 0.005
+  },
+  "autan_grid": {
+    "url": "https://dpw.larc.nasa.gov/DPW4/unstructured_Larc/CellBase/dpw-wbt0_crs-3.5Mc_5.tgz",
+    "description": "the workshop's coarse wing-body-tail grid for cell-centred solvers (LaRC VGRID, tetrahedra)",
+    "tgz_sha256": "85cd339bf6ec4b3712ba214cb6293e3bdd8fb77d5be3a76db84924e467f23b0d",
+    "conversion": "cgnsconvert -h of dpw-wbt0_crs-3.5Mc_5.cgns (ADF, SHA-256 af1d0c5ac667edd0fd950729ebd8871da68595bf8941d00ac8270bce4eeb8934); cgnsdiff -d -r prints nothing",
+    "sha256": "b2267ca3b0953100d37119fbcc3a08a8c01411d7e8323a49214a9cd8e5ec9995",
+    "cells": 3935055,
+    "nodes": 672235,
+    "provenance": "NASA LaRC, no licence stated: fetched by URL and hash, never redistributed"
+  },
+  "fun3d_cd": {
+    "value": 0.01435840192,
+    "note": "Nastac et al. Table 3, at alpha fixed at 2.41 deg (not lift-controlled), no reference area, C_L or drag split published; 143.6 counts is about half the workshop's ~280 counts, most likely a full-span reference area (an inference, not stated in the paper). Not an agreement target until its normalisation is established and cited."
+  }
+}
