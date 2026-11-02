@@ -177,7 +177,7 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0131 | `io_unknown_format` | The content matches no supported format. |
 | E0132 | `io_malformed` | The file violates its format specification (syntax, truncation, inconsistent counts). |
 | E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
-| E0134 | `io_external_reference` | The mesh refers to another file (CGNS link); meshes must be self-contained. |
+| E0134 | `io_external_reference` | A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained. |
 | E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |
 | E0140 | `partition_invalid_request` | A part count, rank, part index or cell weight is out of range, or an array has the wrong size. |
 | E0141 | `partition_input_has_ghosts` | The mesh to partition already has ghost cells. |
