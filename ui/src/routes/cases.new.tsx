@@ -226,7 +226,7 @@ function CaseEditor() {
 
   return (
     <>
-      <TopBar crumbs={[{ label: "Cases" }, { label: "New case" }]} />
+      <TopBar crumbs={[{ label: "New case" }]} />
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] overflow-hidden">
         <form
           className="flex flex-col gap-8 overflow-auto px-8 py-6"
