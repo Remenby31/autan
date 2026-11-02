@@ -903,7 +903,7 @@ class EulerPhysics final : public runtime::Physics {
   // its residual and the residual at U, all evaluated with the limiter and the reconstruction
   // branches frozen at U, apart from state_ and res_.
   struct Probe {
-    std::vector<double> u, base, shift;
+    std::vector<double> u, base, shift, assembled;
     std::vector<State> state;
     std::vector<Res> res;
     std::array<double, 5> scale{};  // freestream scale of each equation
@@ -1023,10 +1023,25 @@ class EulerPhysics final : public runtime::Physics {
       eps *= 0.5;
     }
     euler_.residual_frozen(q.state, q.res);
+    // An equation at the round-off floor (the runtime's exemption: the span momentum of a
+    // one-cell-thick mesh) has no derivative a difference can resolve, only its round-off over
+    // eps: its rows take the assembled operator, so that the solve leaves it at the floor.
+    bool exempt = false;
+    for (std::size_t k = 0; k < 5; ++k) exempt = exempt || exempt_.exempt(k);
+    if (exempt) {
+      q.assembled.resize(5 * n_);
+      if (lines_) {
+        lines_->multiply(v, q.assembled);
+      } else {
+        matrix_->multiply(v, q.assembled);
+      }
+    }
     for (std::size_t k = 0; k < 5; ++k) {
       for (std::size_t c = 0; c < owned_; ++c) {
         const std::size_t i = k * n_ + c;
-        y[i] = q.shift[c] * v[i] + (static_cast<double>(q.res[i]) - q.base[i]) / eps;
+        y[i] = exempt_.exempt(k)
+                   ? q.assembled[i]
+                   : q.shift[c] * v[i] + (static_cast<double>(q.res[i]) - q.base[i]) / eps;
       }
     }
   }
