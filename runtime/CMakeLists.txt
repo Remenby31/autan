@@ -5,6 +5,7 @@ add_library(
   src/comm.cpp
   src/device.cpp
   src/exact_sum.cpp
+  src/host_memory.cpp
   src/input.cpp
   src/run_directory.cpp
   src/run.cpp

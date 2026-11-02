@@ -740,6 +740,22 @@ An equation that was identically zero at iteration 1 (below 1e-12 times the larg
 
 Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
 
+## E0711
+
+**Not enough memory for the run** (error)
+
+The solver input's memory estimate (`memory`, from `autan plan`) exceeds the memory available to the run minus the margin: on a unified-memory device or the CPU, host and device together against the lower of `MemAvailable` and the container's limit; on a discrete device, each against its own pool. `data` gives `required_bytes`, `available_bytes`, `margin_bytes` and `device_kind`. The run starts nothing.
+
+Fix: Run on more devices or a machine with more free memory; `--allow-oversubscription` starts it anyway, at the risk of exhausting the machine.
+
+## W0712
+
+**Run started beyond its memory** (warning)
+
+The run was started with `--allow-oversubscription` although its memory estimate exceeds the available memory minus the margin (as `E0711`, same `data`).
+
+Fix: Watch the machine's memory; a unified-memory device shares it with every process.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

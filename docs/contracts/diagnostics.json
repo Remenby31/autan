@@ -553,6 +553,18 @@
       "fix": "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0710"
     },
+    "E0711": {
+      "severity": "error",
+      "title": "Not enough memory for the run",
+      "fix": "Run on more devices or a machine with more free memory; `--allow-oversubscription` starts it anyway, at the risk of exhausting the machine.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0711"
+    },
+    "W0712": {
+      "severity": "warning",
+      "title": "Run started beyond its memory",
+      "fix": "Watch the machine's memory; a unified-memory device shares it with every process.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0712"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",

@@ -3,8 +3,9 @@ FetchContent_GetProperties(picosha2)
 add_executable(autan-run-relaxation relaxation_main.cpp)
 target_link_libraries(autan-run-relaxation PRIVATE autan::runtime autan_compile_options)
 
-add_executable(autan_runtime_tests test_runtime.cpp)
+add_executable(autan_runtime_tests test_runtime.cpp test_host_memory.cpp)
 target_include_directories(autan_runtime_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+target_include_directories(autan_runtime_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
 target_link_libraries(
   autan_runtime_tests
   PRIVATE

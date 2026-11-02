@@ -44,6 +44,13 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     assert status == 0
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["devices"] == {"kind": "cuda", "count": 8}
+    planned = autan.load(example("crm_hl.py")).plan(
+        autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json"), gpus=8, device_kind="cuda"
+    )
+    assert document["memory"] == {
+        "bytes_host": planned.memory.bytes_host,
+        "bytes_device": planned.memory.bytes_device,
+    }
     assert document["reproducibility"] == "run"  # the case's default (case-schema.md#physics)
 
     # The case hash is SHA-256 of the RFC 8785 form of the (fully defaulted) case document.

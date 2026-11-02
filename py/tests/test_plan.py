@@ -190,6 +190,17 @@ def test_incompressible_physics_rejects_solids_and_gases(
     assert diagnostic_codes(plan_of(body, mesh, write_case)) == ["E0504", "E0506"]
 
 
+TINY = (
+    "import autan\n"
+    "from autan.units import K, Pa\n"
+    "case = autan.Case('tiny', mesh='m.cgns')\n"
+    "case.physics = autan.Compressible(turbulence=autan.Inviscid())\n"
+    "case.freestream(mach=0.5, pressure=101325 * Pa, temperature=288.15 * K)\n"
+    "case.boundary('farfield').farfield()\n"
+    "case.time = autan.Steady(linear_solver='multigrid')\n"
+)
+
+
 def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
     return autan.MeshInfo.from_document(
         {
@@ -199,6 +210,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "cells": 10,
                 "faces": 40,
                 "nodes": 30,
+                "face_nodes": 160,
                 "cells_by_type": {
                     "tetra": 0,
                     "pyramid": 0,
@@ -219,38 +231,61 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
             "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": 10}],
             "interfaces": [],
             "periodic": [],
-            "quality": {"max_non_orthogonality_deg": 0.0, "max_faces_per_cell": 6},
+            "quality": {
+                "max_non_orthogonality_deg": 0.0,
+                "max_faces_per_cell": 6,
+                "lines": {"order": "rcm", "cells": 0, "long_cells": 0},
+            },
         },
         autan.Location(),
     )
 
 
-@pytest.mark.parametrize(
-    ("precision", "expected_bytes"),
-    [
-        # docs/sdk/plan.md, compressible SA (n = 6), 10 cells, 40 faces, 20 interior:
-        # cell 2*6*8 + 5*6*4 + 32 + 4 + 36*2 = 324; face 56; interior face 2*(36*2 + 4) = 152.
-        ("fp32+acc64", 10 * 324 + 40 * 56 + 20 * 152),
-        # cell 2*6*8 + 5*6*8 + 32 + 8 + 36*8 = 664; interior face 2*(36*8 + 4) = 584.
-        ("fp64", 10 * 664 + 40 * 56 + 20 * 584),
-    ],
-)
-def test_memory_estimate_follows_the_documented_model(
-    precision: str, expected_bytes: int, write_case: Callable[[str], Path]
+def test_the_memory_estimate_counts_what_each_run_allocates(
+    write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
 ) -> None:
-    body = CRM_HL.replace('"crm-hl.cgns"', '"m.cgns"').replace(
-        "autan.SA())", f'autan.SA(), precision="{precision}")'
+    # docs/sdk/plan.md, autan.memory/2: per rank, by component; the values are validated
+    # against measured peaks, this checks which run allocates what and where.
+    def memory(body: str = CRM_HL, **options: Any) -> autan.Memory:
+        return autan.load(write_case(body)).plan(crm_mesh, **options).memory
+
+    def names(estimate: autan.Memory) -> set[str]:
+        return {c.name for c in estimate.components}
+
+    cpu = memory(device_kind="cpu")
+    assert names(cpu) >= {"mesh", "physics", "jacobian", "multigrid", "solution output"}
+    assert cpu.bytes_device == 0
+    # The peak: every persistent component and the largest transient one.
+    persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
+    assert cpu.bytes_host == persistent + max(c.bytes_host for c in cpu.components if c.transient)
+    # A device run solves explicitly: no Jacobian or linear solver, the state on the device.
+    cuda = memory(device_kind="cuda")
+    assert not names(cuda) & {"jacobian", "multigrid"}
+    assert cuda.bytes_device > 0
+    assert cuda.bytes_per_gpu == cuda.bytes_host + cuda.bytes_device
+    gs = memory(
+        CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n", device_kind="cpu"
     )
-    body = body.replace(
-        'case.boundary("wing.*").wall()\ncase.boundary("symmetry").symmetry()\n', ""
-    ).replace('autan.forces("wing.*"', 'autan.forces("farfield"')
-    result = plan_of(body, tiny_mesh(20), write_case)
-    assert result.ok, [d.render() for d in result.diagnostics]
-    assert result.memory.equations == 6
-    assert result.memory.bytes_total == expected_bytes
-    assert autan.load(write_case(body)).plan(tiny_mesh(20), gpus=3).memory.bytes_per_gpu == -(
-        -expected_bytes // 3
+    assert gs.bytes_host < cpu.bytes_host
+    unsteady = memory(CRM_HL + "case.time = autan.Unsteady(steps=10, cfl=1.0)\n", device_kind="cpu")
+    assert not names(unsteady) & {"jacobian", "multigrid"}
+    # Every rank keeps the global mesh; its share of the rest shrinks with the ranks.
+    four = memory(gpus=4, device_kind="cuda")
+    by_name = {c.name: c for c in four.components}
+    assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
+    assert four.bytes_device < cuda.bytes_device / 3
+    assert four.bytes_total == 4 * four.bytes_per_gpu
+    fp64 = memory(
+        CRM_HL.replace("autan.SA())", 'autan.SA(), precision="fp64")'), device_kind="cuda"
     )
+    assert fp64.bytes_device > cuda.bytes_device
+    # The components plan.md gives in closed form, on 10 hexahedra, 40 faces (20 boundary),
+    # 30 nodes and 160 face nodes, 5 equations: the mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C,
+    # its geometry 56F + 32C and colourings 12C; the output 2(2n + 2) fields of 8C bytes.
+    tiny = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu").memory
+    by_name = {c.name: c for c in tiny.components}
+    assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
+    assert by_name["solution output"].bytes_host == 2 * 12 * 80
 
 
 @pytest.mark.parametrize(
