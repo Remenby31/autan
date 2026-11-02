@@ -623,6 +623,23 @@ fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
   return run;
 }
 
+// Two runs of reproducibility "ranks" on different rank counts: the same history text and the
+// same bit patterns in every field (a signed zero or a NaN cannot pass for an equal value).
+void check_bit_for_bit(const fs::path& one, const fs::path& many) {
+  CHECK(read(many / "history.jsonl") == read(one / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    INFO(name);
+    const auto a = field(one, name), b = field(many, name);
+    REQUIRE(std::ranges::all_of(a, [](double x) { return std::isfinite(x); }));
+    std::vector<std::uint64_t> bits_one(a.size()), bits_many(b.size());
+    std::ranges::transform(a, bits_one.begin(),
+                           [](double x) { return std::bit_cast<std::uint64_t>(x); });
+    std::ranges::transform(b, bits_many.begin(),
+                           [](double x) { return std::bit_cast<std::uint64_t>(x); });
+    CHECK(bits_one == bits_many);
+  }
+}
+
 }  // namespace
 
 TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]") {
@@ -701,19 +718,7 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   // (fp64, 4 ranks).
   INFO("norms " << worst_norm << " eps, fields " << worst_field << " eps");
   if (std::string(reproducibility) == "ranks") {
-    CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
-    // Bit patterns, so that a signed zero or a NaN cannot pass for an equal value.
-    for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
-      INFO(name);
-      const auto a = field(one.run, name), b = field(many, name);
-      REQUIRE(std::ranges::all_of(a, [](double x) { return std::isfinite(x); }));
-      std::vector<std::uint64_t> bits_one(a.size()), bits_many(b.size());
-      std::ranges::transform(a, bits_one.begin(),
-                             [](double x) { return std::bit_cast<std::uint64_t>(x); });
-      std::ranges::transform(b, bits_many.begin(),
-                             [](double x) { return std::bit_cast<std::uint64_t>(x); });
-      CHECK(bits_one == bits_many);
-    }
+    check_bit_for_bit(one.run, many);
   } else {
     CHECK(worst_norm <= 256.0);
     CHECK(worst_field <= 256.0);
@@ -775,13 +780,16 @@ TEST_CASE("a steady run whose state is not physical on some ranks stops every ra
 TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank solution",
           "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
-  // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. The face sums
-  // still follow local order (#199), so the bits differ: converged 10 orders, the fields agree
-  // within 1e-9 of their magnitude (the largest speed for velocity components), and a fixed rank
-  // count repeats bit for bit. Two zones at different states on the hybrid mesh, farfield around.
+  // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. Under
+  // reproducibility "run" the face sums follow local order, so the bits differ: converged 10
+  // orders, the fields agree within 1e-9 of their magnitude (the largest speed for velocity
+  // components), and a fixed rank count repeats bit for bit. Under "ranks" every sum follows the
+  // global order: bit for bit. Two zones at different states on the hybrid mesh, farfield around.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
+  const char* reproducibility = GENERATE("run", "ranks");
+  CAPTURE(ranks, reproducibility);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = reproducibility;
     inviscid_along_x(d, "fp64");
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
     auto& init = d["cell_zones"].back()["initial"];
@@ -816,6 +824,7 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
     INFO(name << " differs by " << diff / scale << " of its magnitude");
     CHECK(diff <= 1e-9 * scale);
   }
+  if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
   const fs::path again = run_on_ranks(doc, ranks);
   CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
 }
@@ -823,11 +832,13 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
 TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank steps",
           "[euler][mpi]") {
   // The periodic box: image ghosts take du after each colour. Not converged: 40 steps, the
-  // fields agree within 1e-9 of their magnitude.
+  // fields agree within 1e-9 of their magnitude, and bit for bit under reproducibility "ranks".
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
+  const char* reproducibility = GENERATE("run", "ranks");
+  CAPTURE(ranks, reproducibility);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     periodic_box(d, "fp64");
+    d["reproducibility"] = reproducibility;
     const double speed = d["freestream"]["speed"].get<double>();
     d["cell_zones"][0]["initial"]["velocity"] = {0.6 * speed, 0.7 * speed, -0.3 * speed};
     d["time"]["linear_solver"] = "gauss-seidel";
@@ -857,6 +868,7 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
     INFO(name << " differs by " << diff / scale << " of its magnitude");
     CHECK(diff <= 1e-9 * scale);
   }
+  if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
 }
 #endif
 

@@ -90,6 +90,18 @@ BlockMatrix::BlockMatrix(const Mesh& mesh)
   lower_.assign(25 * ni, 0.0);
 }
 
+void BlockMatrix::order_rows(std::span<const std::int64_t> face_key) {
+  for (std::size_t c = 0; c < n_cells_; ++c) {
+    const auto first = cell_faces_.begin() + cell_offsets_[c];
+    const auto last = cell_faces_.begin() + cell_offsets_[c + 1];
+    std::sort(first, last, [&](index_t a, index_t b) {
+      const auto ka = face_key[static_cast<std::size_t>(a)];
+      const auto kb = face_key[static_cast<std::size_t>(b)];
+      return ka != kb ? ka < kb : a < b;
+    });
+  }
+}
+
 void BlockMatrix::zero() {
   std::fill(diag_.begin(), diag_.end(), 0.0);
   std::fill(upper_.begin(), upper_.end(), 0.0);

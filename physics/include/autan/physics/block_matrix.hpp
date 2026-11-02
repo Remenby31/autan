@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <vector>
@@ -27,6 +28,12 @@ class BlockMatrix {
   [[nodiscard]] std::span<const double> diagonals() const noexcept { return diag_; }
   [[nodiscard]] std::span<const double> uppers() const noexcept { return upper_; }
   [[nodiscard]] std::span<const double> lowers() const noexcept { return lower_; }
+
+  /// Sums each row's off-diagonal blocks in increasing `face_key` (one per mesh face, e.g. its
+  /// global face id), so that a relaxation does not depend on the face numbering: with the
+  /// colours of the runtime and keys of the global mesh, the sweeps give the same bits on any
+  /// number of ranks (runtime.md, Ranks).
+  void order_rows(std::span<const std::int64_t> face_key);
 
   /// y = A x.
   void multiply(std::span<const double> x, std::span<double> y) const;

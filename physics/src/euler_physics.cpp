@@ -109,6 +109,8 @@ class EulerPhysics final : public runtime::Physics {
     set_boundaries(mms ? &*mms : nullptr);
     if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
+      // Under reproducibility "ranks", each row sums its neighbours in global face order.
+      if (keys_) matrix_->order_rows(keys_->face);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
         nlohmann::json nodes = nlohmann::json::array();
@@ -1080,13 +1082,14 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // The steady linear solvers sum in local cell order: the multigrid's agglomeration and
-  // smoothing, Gauss-Seidel's row sums.
-  if (in.reproducibility == "ranks" && in.time.kind == "steady") {
+  // Under reproducibility "ranks" Gauss-Seidel sums each row in global face order; the
+  // multigrid still agglomerates, smooths and sums in local cell order.
+  if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
+      in.time.linear_solver != "gauss-seidel") {
     return runtime::PhysicsRefusal{
         .message =
-            "the steady Euler solver does not give the same bits on any number of ranks "
-            "yet",
+            "the steady multigrid does not give the same bits on any number of ranks yet; "
+            "linear_solver = \"gauss-seidel\" does",
         .path = "reproducibility",
         .data_json = "{}",
         .code = "E1109"};
