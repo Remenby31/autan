@@ -156,6 +156,7 @@ def test_without_a_readable_base_everything_runs(repo):
         (".github/workflows/gpu-bench.yml", "true", "false"),
         ("bench/tests/test_run.py", "false", "true"),
         ("bench/ci/gate.sh", "true", "true"),
+        ("bench/ci/build-base.sh", "true", "true"),
         ("bench/pyproject.toml", "true", "true"),
         ("bench/uv.lock", "true", "true"),
         ("bench/ci/changes.sh", "true", "true"),
