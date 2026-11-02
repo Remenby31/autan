@@ -704,6 +704,12 @@ TEMPLATE_TEST_CASE(
   e.freeze(at);
   e.residual_frozen(at, frozen);
   CHECK(bits(frozen, r));
+  // Its workspace holds what residual() computed at that state, for a physics adding terms.
+  const auto held_data = e.frozen_data();
+  CHECK(std::memcmp(held_data.prim, cache.prim, 5 * nc * sizeof(State)) == 0);
+  CHECK(std::memcmp(held_data.grad, cache.grad, 15 * nc * sizeof(typename P::grad)) == 0);
+  const auto nf = static_cast<std::size_t>(c.mesh.n_faces());
+  CHECK(std::memcmp(held_data.prim_b, cache.prim_b, 5 * nf * sizeof(State)) == 0);
   // Another state: held at `at`, the limiter and the branches are not `other`'s own.
   std::vector<Res> held(5 * nc), own(5 * nc), direct(5 * nc);
   e.residual_frozen(other, held);
@@ -753,4 +759,5 @@ TEMPLATE_TEST_CASE(
   e.freeze(at);
   e.release_frozen();
   CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
+  CHECK_THROWS_AS(e.frozen_data(), std::logic_error);
 }
