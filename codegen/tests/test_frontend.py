@@ -310,14 +310,28 @@ def copy_state(x: State) -> State:
     return x
 
 
-def test_boundary_states_from_active_data_must_be_declared_frozen() -> None:
+@pytest.mark.parametrize(
+    ("loop", "kind"), [(dsl.boundary_loop, "boundary_write"), (dsl.face_loop, "face_write")]
+)
+def test_face_data_from_active_data_must_be_declared_frozen(loop: object, kind: str) -> None:
     with pytest.raises(CodegenError) as info:
-        build_loop("bad", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face)))
+        build_loop("bad", loop(copy_state, x=q.left, out=dsl.Write(q_face)))  # type: ignore[operator]
     assert info.value.code == "E1012"
-    lm = build_loop(
-        "ok", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face), frozen=True)
-    )
-    assert lm.kind == "boundary_write"
+    lm = build_loop("ok", loop(copy_state, x=q.left, out=dsl.Write(q_face), frozen=True))  # type: ignore[operator]
+    assert lm.kind == kind
+
+
+def test_face_writes_take_face_data_only_and_flags_live_on_faces() -> None:
+    # Write and Inc in one face loop, frozen on a loop that writes no face data, a Flag on cells.
+    with pytest.raises(CodegenError) as info:
+        dsl.face_loop(copy_state, x=q.left, out=[dsl.Write(q_face), dsl.Inc(r, left=1, right=-1)])
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        dsl.face_loop(copy_state, x=q.left, out=dsl.Inc(r, left=1, right=-1), frozen=True)
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        cells.field("flags", dsl.Flag.Vec2)
+    assert info.value.code == "E1006"
 
 
 @pointwise

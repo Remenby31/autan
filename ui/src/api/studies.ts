@@ -34,22 +34,27 @@ export function study(settings: (RunSettings | undefined)[]): string | null {
   return parts.length ? parts.join(", ") : null;
 }
 
+/** "naca-m080 +2": the first of a study's case names and how many others it has. */
+export function shortName(names: string[]): string {
+  return names.length > 1 ? `${names[0]} +${names.length - 1}` : (names[0] ?? "");
+}
+
 /** The runs of a registry in their studies (results.md#studies), in registry order; a run
- * without a summary yet stands alone. `name` lists the case names its runs carry. */
+ * without a summary yet stands alone. `names` are the case names its runs carry, in run order
+ * (the registry's newest first); `name` joins them. */
 export function groupByStudy(
   runs: Run[],
   summaries: Record<string, RunSummary> | undefined,
-): { key: string; name: string; runs: Run[] }[] {
+): { key: string; name: string; names: string[]; runs: Run[] }[] {
   const groups = new Map<string, Run[]>();
   for (const run of runs) {
     const key = summaries?.[run.run_id]?.study ?? run.run_id;
     groups.set(key, [...(groups.get(key) ?? []), run]);
   }
-  return [...groups].map(([key, members]) => ({
-    key,
-    name: [...new Set(members.map((r) => r.case.name))].join(" · "),
-    runs: members,
-  }));
+  return [...groups].map(([key, members]) => {
+    const names = [...new Set(members.map((r) => r.case.name))];
+    return { key, name: names.join(" · "), names, runs: members };
+  });
 }
 
 /** The studies of a registry that sweep a setting, newest run first, with their label
@@ -57,13 +62,15 @@ export function groupByStudy(
 export function studies(
   registry: RunRegistry | undefined,
   limit = 8,
-): { key: string; name: string; label: string; ids: string[] }[] {
-  return groupByStudy(registry?.runs ?? [], registry?.summaries).flatMap(({ key, name, runs }) => {
-    const label = study(runs.map((r) => registry?.summaries[r.run_id]?.settings));
-    const ids = [...runs]
-      .sort((a, b) => b.started.localeCompare(a.started))
-      .slice(0, limit)
-      .map((r) => r.run_id);
-    return label && runs.length > 1 ? [{ key, name, label, ids }] : [];
-  });
+): { key: string; name: string; names: string[]; label: string; ids: string[] }[] {
+  return groupByStudy(registry?.runs ?? [], registry?.summaries).flatMap(
+    ({ key, name, names, runs }) => {
+      const label = study(runs.map((r) => registry?.summaries[r.run_id]?.settings));
+      const ids = [...runs]
+        .sort((a, b) => b.started.localeCompare(a.started))
+        .slice(0, limit)
+        .map((r) => r.run_id);
+      return label && runs.length > 1 ? [{ key, name, names, label, ids }] : [];
+    },
+  );
 }

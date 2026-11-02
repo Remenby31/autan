@@ -29,7 +29,7 @@ prepare() {
   install -d -m 0755 "$lock_dir"
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
   local file
-  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock" "$lock_dir/main.lock"; do
+  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock" "$lock_dir/main.lock" "$lock_dir/turn.lock"; do
     [[ -f $file ]] || { (set -C; : >"$file") 2>/dev/null && chmod 0666 "$file"; }
     [[ -f $file ]] || { echo "error: $file is not a regular file" >&2; exit 1; }
   done

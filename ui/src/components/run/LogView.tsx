@@ -133,7 +133,7 @@ export function LogView({
     });
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-line bg-bg-0">
+    <div className="flex flex-col overflow-hidden border-line border-y">
       <div className="flex flex-wrap items-center gap-2 border-line border-b px-4 py-3">
         <div className="w-72">
           <SearchInput
@@ -226,7 +226,7 @@ export function LogView({
                 <div
                   key={item.key}
                   className={cn(
-                    "absolute inset-x-0 grid grid-cols-[112px_80px_88px_96px_1fr_72px] items-center gap-4 px-4 hover:bg-bg-1",
+                    "absolute inset-x-0 grid grid-cols-[112px_80px_88px_96px_1fr_72px] items-center gap-4 px-4 hover:bg-bg-2",
                     line.level === "error" && "bg-danger-soft",
                     line.level === "warning" && "bg-warning-soft",
                   )}

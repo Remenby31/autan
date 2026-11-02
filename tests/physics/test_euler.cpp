@@ -3,12 +3,14 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <numbers>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -20,9 +22,11 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/point_vortex.hpp"
+#include "euler_cpu.hpp"
 
 namespace {
 
@@ -313,6 +317,35 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
   }
   // Central differences: truncation O(h^2) and round-off O(eps / h) relative.
   CHECK(diff <= 1e-6 * norm);
+  // The tangent's arrays are allocated by its first call; residuals between calls leave them as
+  // they were: a second call gives the first one's bits.
+  std::vector<double> again(5 * nc);
+  e.first_order_tangent(u, du, again);
+  CHECK(std::memcmp(again.data(), jv.data(), jv.size() * sizeof(double)) == 0);
+}
+
+TEST_CASE("the stencil twins built on demand are those of the cell stencil", "[euler]") {
+  // Euler keeps no twins and no copy of the weights (no forward loop reads the twins, and the
+  // weights live in the loops' data): their memory is released, not only emptied. The adjoint
+  // asks for the twins: they must be kernels::cell_stencil's, bit for bit, and the topology the
+  // generated reverse reductions read must point at them, after every call.
+  using P = autan::kernels::fp32_acc64;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.5));
+  CHECK(e.stencil().twin.capacity() == 0);
+  CHECK(e.stencil().lsq_weight.capacity() == 0);
+  CHECK(e.data().topo.stencil_twin == nullptr);
+  const auto reference =
+      autan::kernels::cell_stencil(c.mesh, autan::kernels::pack_geometry(c.mesh, c.geometry),
+                                   autan::kernels::StencilKind::face2);
+  for (int call = 0; call < 2; ++call) {
+    const auto twin = e.stencil_twin();
+    REQUIRE(twin.size() == reference.twin.size());
+    CHECK(std::equal(twin.begin(), twin.end(), reference.twin.begin()));
+    CHECK(e.data().topo.stencil_twin == twin.data());
+  }
 }
 
 TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass divergence", "[euler]",
@@ -607,4 +640,117 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
     CHECK(std::abs(b[4] / std::pow(b[0], gamma) - p / std::pow(rho, gamma)) <=
           64 * eps * p / std::pow(rho, gamma));
   }
+}
+
+TEMPLATE_TEST_CASE(
+    "the frozen residual holds the limiter and the reconstruction branches of its state", "[euler]",
+    autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // docs/design/matrix-free-step.md: residual_frozen(s) is R(s) with the limiter and, per face
+  // side, the reconstruction's positivity fallback held at freeze()'s state, evaluated in its own
+  // workspace. At `at`, the pressure rises linearly in x from zero just below the smallest cell
+  // centroid: every cell's pressure is positive, the faces beyond reconstruct a negative one and
+  // fall back to the cell value, and the limiter is active along the ramp. `other` is a smooth
+  // flow without either.
+  using P = TestType;
+  using State = typename P::state;
+  using Res = typename P::residual;
+  const char* file = GENERATE(from_range(meshes));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const bool limiter = GENERATE(true, false);
+  INFO(file << " flux " << static_cast<int>(flux) << " limiter " << limiter);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const double a = std::sqrt(1.4 * 1e5 / 1.2);
+  const Prim w{1.2, {0.5 * a * 0.8, 0.5 * a * 0.36, 0.5 * a * 0.48}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  const double x0 = *std::ranges::min_element(c.geometry.cell_centroid_x) - 1e-3;
+  auto flow = [&](bool ramp) {
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i];
+      const double s = std::sin(2.0 * std::numbers::pi * x) * std::cos(std::numbers::pi * y);
+      const double p = ramp ? w.p * (x - x0) : w.p * (1.0 + 0.05 * s);
+      const auto q =
+          conserved({w.rho * (1.0 + 0.1 * s), {w.v[0], w.v[1] * (1.0 - 0.1 * s), w.v[2]}, p});
+      for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+    }
+    return u;
+  };
+  auto scheme = second_order(flux, 0.5);
+  scheme.limiter = limiter;
+  scheme.reference = conserved(w);
+  Euler<P> e(c.mesh, c.geometry, air, scheme);
+  e.set_boundary(kind, data);
+  const auto at = stored(e, flow(true)), other = stored(e, flow(false));
+  auto bits = [](const std::vector<Res>& x, const std::vector<Res>& y) {
+    return std::memcmp(x.data(), y.data(), x.size() * sizeof(Res)) == 0;
+  };
+  // At its own state, the frozen residual is the residual, bit for bit.
+  std::vector<Res> r(5 * nc), frozen(5 * nc);
+  e.residual(at, r);
+  std::vector<double> pressure(nb), force(3 * nb);
+  e.boundary_pressure(pressure, force);
+  std::vector<State> lambda(nc);
+  e.spectral_radius(lambda);
+  const auto& cache = e.data();
+  const std::vector<State> wmin(cache.wmin, cache.wmin + 5 * nc),
+      wmax(cache.wmax, cache.wmax + 5 * nc);
+  e.freeze(at);
+  e.residual_frozen(at, frozen);
+  CHECK(bits(frozen, r));
+  // Another state: held at `at`, the limiter and the branches are not `other`'s own.
+  std::vector<Res> held(5 * nc), own(5 * nc), direct(5 * nc);
+  e.residual_frozen(other, held);
+  // What residual() evaluated last is untouched: the boundary pressure and the spectral radius
+  // read it.
+  std::vector<double> pressure_after(nb), force_after(3 * nb);
+  e.boundary_pressure(pressure_after, force_after);
+  CHECK(pressure_after == pressure);
+  CHECK(force_after == force);
+  std::vector<State> lambda_after(nc);
+  e.spectral_radius(lambda_after);
+  CHECK(std::memcmp(lambda_after.data(), lambda.data(), nc * sizeof(State)) == 0);
+  CHECK(std::memcmp(cache.wmin, wmin.data(), 5 * nc * sizeof(State)) == 0);
+  CHECK(std::memcmp(cache.wmax, wmax.data(), 5 * nc * sizeof(State)) == 0);
+  e.freeze(other);
+  e.residual_frozen(other, own);
+  e.residual(other, direct);
+  CHECK(bits(own, direct));
+  CHECK_FALSE(bits(held, own));
+  // Between two smooth states without a fallback, only the limiter is held: without a limiter the
+  // frozen residual is the residual, gradients and all; with one, it is not.
+  auto smooth = [&](double t) {
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i];
+      const double s = std::sin(2.0 * std::numbers::pi * (x + t)) * std::cos(std::numbers::pi * y);
+      const auto q = conserved({w.rho * (1.0 + 0.1 * s),
+                                {w.v[0] * (1.0 + 0.1 * s), w.v[1], w.v[2]},
+                                w.p * (1.0 + 0.05 * s)});
+      for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+    }
+    return stored(e, u);
+  };
+  const auto first = smooth(0.0), second = smooth(0.25);
+  e.freeze(first);
+  e.residual_frozen(second, held);
+  e.residual(second, direct);
+  if (limiter) {
+    CHECK_FALSE(bits(held, direct));
+  } else {
+    CHECK(bits(held, direct));
+  }
+  // An order switch drops what freeze held, and so does release_frozen.
+  e.set_second_order(false);
+  CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
+  e.set_second_order(true);
+  e.freeze(at);
+  e.release_frozen();
+  CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
 }

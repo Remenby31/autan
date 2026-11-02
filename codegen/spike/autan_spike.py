@@ -508,12 +508,17 @@ def set_incidence_slice(slice_: int) -> None:
     lib().autan_spike_set_incidence_slice(ctypes.c_int(slice_))
 
 
-def gpu_bind_check(m: Mesh) -> tuple[bool, bool]:
-    """(built-in face_area bound, a physics' own writable cell_volume left alone) by DeviceMesh."""
+def gpu_bind_check(m: Mesh) -> tuple[bool, ...]:
+    """DeviceMesh: (built-in face_area bound, a physics' own writable cell_volume left alone,
+    face_area uploaded in chunks equal to the host's, still bound after release_host(), a field
+    first bound after release_host() refused with E1101, a sliced stencil without twins or
+    weights accepted with a null stencil_twin, a deterministic adjoint over it refused with
+    E1106, an upload range that wraps around refused with E1101, weights given after
+    release_host() bound in the sliced layout while a pointer bound before keeps the old ones)."""
     err = ctypes.create_string_buffer(512)
-    out = np.zeros(2, dtype=np.int32)
+    out = np.zeros(9, dtype=np.int32)
     _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
-    return bool(out[0]), bool(out[1])
+    return tuple(bool(v) for v in out)
 
 
 def gpu_reductions(x: F64, flags: npt.NDArray[np.bool_]) -> tuple[float, float, int, int]:
@@ -579,6 +584,32 @@ def stencil_arrays(m: Mesh, size: int) -> tuple[npt.NDArray[np.int64], npt.NDArr
     entries = np.zeros(size, np.int32)
     lib().autan_spike_stencil_arrays(m.handle, _p(offsets), _p(entries))
     return offsets, entries
+
+
+def face_flags(
+    m: Mesh, policy: str, q: F64, strategy: str | None = None, read_back: bool = False
+) -> tuple[npt.NDArray[np.uint8], F64, F64 | None]:
+    """Test kernel codegen/tests/kernels/face_flags.py, on the host (`strategy` None) or the
+    device in `strategy`: keep (n_faces x 2, 255 where no loop writes), jump, and res from the
+    face loop reading keep when `read_back`."""
+    err = ctypes.create_string_buffer(512)
+    keep = np.zeros(2 * m.n_faces, dtype=np.uint8)
+    jump = np.zeros(m.n_faces)
+    res = np.zeros(m.n_cells) if read_back else None
+    q = np.ascontiguousarray(q, dtype=np.float64)
+    res_p = _p(res) if res is not None else None
+    if strategy is None:
+        rc = lib().autan_spike_face_flags(
+            m.handle, policy.encode(), _p(q), _p(keep), _p(jump), res_p, err,
+            ctypes.c_size_t(len(err)),
+        )  # fmt: skip
+    else:
+        rc = lib().autan_spike_gpu_face_flags(
+            m.handle, policy.encode(), strategy.encode(), ctypes.c_int(128), _p(q), _p(keep),
+            _p(jump), res_p, err, ctypes.c_size_t(len(err)),
+        )  # fmt: skip
+    _check(rc, err)
+    return keep.reshape(2, -1).T, jump, res
 
 
 def face_weighted(
