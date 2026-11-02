@@ -115,14 +115,17 @@ def _check_polygons(
     count = np.diff(offsets)
     face = np.repeat(np.arange(len(count)), count)
     width = int(nodes.max()) + 1 if len(nodes) else 1
-    if len(np.unique(face * width + nodes)) != len(nodes):
+    # A node twice in one face: two equal (face, node) keys, neighbours once sorted.
+    keys = np.sort(face * width + nodes)
+    if np.any(keys[1:] == keys[:-1]):
         msg = "a face repeats a node"
         raise _broken(msg)
     position = np.arange(len(nodes)) - np.repeat(offsets[:-1], count)
     following = nodes[offsets[:-1][face] + (position + 1) % count[face]]
-    edges, there = np.unique(nodes * width + following, return_counts=True)
-    back = dict(zip(*np.unique(following * width + nodes, return_counts=True), strict=True))
-    if any(back.get(edge, 0) != n for edge, n in zip(edges, there, strict=True)):
+    # Every directed edge as often as its reverse: the edges and the reversed edges are the same
+    # multiset, which two sorts compare.
+    forward = np.sort(nodes * width + following)
+    if not np.array_equal(forward, np.sort(following * width + nodes)):
         msg = "the boundary is not closed with a consistent orientation"
         raise _broken(msg)
     points = positions.astype(np.float64)
