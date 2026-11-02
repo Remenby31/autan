@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/lines.hpp"
 #include "autan/core/mesh.hpp"
 
 namespace autan::solvers {
@@ -41,7 +42,7 @@ struct AgglomerationOptions {
   std::size_t max_lines = 4;
   /// Lines of fewer nodes are smoothed as lines but agglomerated as isotropic nodes (pairs of
   /// cells across a large face are not wall layers).
-  std::size_t min_line = 4;
+  std::size_t min_line = long_line;
   /// Coarsening stops once a level has at most this many nodes, or when a level would keep more
   /// than `min_coarsening` of the finer level's nodes.
   std::size_t coarsest_nodes = 64;

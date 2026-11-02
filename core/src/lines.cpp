@@ -141,4 +141,13 @@ Lines smoother_lines(const Mesh& mesh, const Geometry& geometry, double ratio) {
   return lines;
 }
 
+std::size_t cells_in_lines(const Lines& lines, std::size_t min_length) {
+  std::size_t count = 0;
+  for (std::size_t l = 0; l + 1 < lines.offsets.size(); ++l) {
+    const auto length = static_cast<std::size_t>(lines.offsets[l + 1] - lines.offsets[l]);
+    if (length >= min_length) count += length;
+  }
+  return count;
+}
+
 }  // namespace autan

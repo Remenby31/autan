@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -21,5 +22,13 @@ struct Lines {
 /// coupling of both cells, in the same cell zone. Depends on the mesh, its geometry and its cell
 /// order (ties go to the smaller index). Throws std::invalid_argument on a mesh with ghost cells.
 Lines smoother_lines(const Mesh& mesh, const Geometry& geometry, double ratio = 4.0);
+
+/// Lines of at least this many cells are coarsened along themselves by the agglomeration
+/// multigrid; shorter lines are smoothed as lines but agglomerated like the other cells.
+inline constexpr std::size_t long_line = 4;
+
+/// The number of cells in lines of at least `min_length` cells: every cell of `lines` with the
+/// default, the cells the multigrid coarsens along lines with `long_line`.
+std::size_t cells_in_lines(const Lines& lines, std::size_t min_length = 2);
 
 }  // namespace autan

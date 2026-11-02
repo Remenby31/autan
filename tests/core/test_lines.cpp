@@ -54,6 +54,9 @@ TEST_CASE("lines follow the strong coupling of stretched cells", "[lines]") {
   const auto g = autan::compute_geometry(mesh);
   const auto lines = autan::smoother_lines(mesh, g);
   REQUIRE(lines.offsets.size() == 17);
+  CHECK(autan::cells_in_lines(lines) == 64);
+  CHECK(autan::cells_in_lines(lines, autan::long_line) == 64);
+  CHECK(autan::cells_in_lines(lines, 5) == 0);
   for (std::size_t l = 0; l + 1 < lines.offsets.size(); ++l) {
     REQUIRE(lines.offsets[l + 1] - lines.offsets[l] == 4);
     double previous_z = -1.0;
