@@ -1,5 +1,6 @@
 // Device transfers of the agglomeration multigrid, against their definition in the host
 // multigrid's order (docs/design/multigrid-gpu.md#transfers).
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -120,6 +121,26 @@ TEST_CASE("device transfers are bitwise the host multigrid's restriction and pro
     const auto fine = transfers.order(l), coarse = transfers.order(l + 1);
     REQUIRE(fine.size() == n);
     REQUIRE(coarse.size() == nc);
+    // Device numbering, from its definition: level 0 is the mesh's; coarse nodes are a
+    // permutation ranked by their least child in the finer level's device numbering.
+    if (l == 0) {
+      for (std::size_t j = 0; j < n; ++j) CHECK(fine[j] == static_cast<autan::index_t>(j));
+    }
+    std::vector<std::size_t> fine_rank(n);
+    for (std::size_t j = 0; j < n; ++j) fine_rank[static_cast<std::size_t>(fine[j])] = j;
+    std::vector<std::size_t> least(nc, n);
+    for (std::size_t h = 0; h < n; ++h) {
+      std::size_t& m = least[static_cast<std::size_t>(f.coarse_node[h])];
+      m = std::min(m, fine_rank[h]);
+    }
+    std::vector<bool> seen(nc, false);
+    for (std::size_t j = 0; j < nc; ++j) {
+      const auto H = static_cast<std::size_t>(coarse[j]);
+      REQUIRE(H < nc);
+      CHECK_FALSE(seen[H]);
+      seen[H] = true;
+      if (j > 0) CHECK(least[static_cast<std::size_t>(coarse[j - 1])] < least[H]);
+    }
 
     // Restriction: each coarse value from +0.0, children added in increasing host fine index.
     const auto r = spread(5 * n, static_cast<std::uint32_t>(17 + l));
@@ -190,6 +211,11 @@ TEST_CASE("large agglomerates restrict in increasing host index", "[multigrid][g
   levels[0].coarse_node[2] = levels[0].coarse_node[n - 3] = 0;
   levels[1].n_nodes = 2;
   const autan::solvers::gpu::Transfers transfers(levels);
+  // Coarse node 1 holds fine node 0, coarse node 0 holds fine node 2 first: device order 1, 0.
+  const auto order = transfers.order(1);
+  REQUIRE(order.size() == 2);
+  CHECK(order[0] == 1);
+  CHECK(order[1] == 0);
   const auto r = spread(5 * n, 7);
   std::vector<double> bc(10, 0.0);
   for (std::size_t c = 0; c < 5; ++c) {
