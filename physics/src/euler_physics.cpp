@@ -1187,7 +1187,7 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // docs/design/coupled-sa.md: the coupled turbulence step is SA's, in the host's steady
+  // case-schema.md#time: the coupled turbulence step is SA's, in the host's steady
   // multigrid on one rank.
   if (in.time.kind == "steady" && in.time.coupled_turbulence) {
     if (in.turbulence.model != "sa") {
