@@ -207,7 +207,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         _check_initial_state(case, spec.initial_state, mesh, count, found)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
-    _check_coupled(case, spec, gpus, found)
+    _check_opt_in(case, spec, gpus, found)
 
     scale = metres_per(spec.mesh_unit)
     return Plan(
@@ -231,27 +231,24 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
     )
 
 
-def _check_coupled(case: Case, spec: CaseSpec, gpus: int, found: list[Diagnostic]) -> None:
-    """The coupled turbulence step: the host multigrid on one rank, validated on the TMR flat
-    plate only (case-schema.md#time). The runtime refuses it on a device (E0427)."""
-    if not (isinstance(spec.time, Steady) and spec.time.coupled_turbulence):
+def _check_opt_in(case: Case, spec: CaseSpec, gpus: int, found: list[Diagnostic]) -> None:
+    """The opt-in steady steps run in the host multigrid on one rank and are validated on one
+    TMR flat plate each (case-schema.md#time). The runtime refuses them on a device (E0427)."""
+    if not isinstance(spec.time, Steady):
         return
-    where = case.locate("time.coupled_turbulence")
-    if spec.time.linear_solver != "multigrid" or gpus > 1:
-        found.append(
-            diagnostic(
-                "E0427",
-                "the coupled turbulence step needs linear_solver='multigrid' on one rank",
-                location=where,
-            )
-        )
-    found.append(
-        diagnostic(
-            "W0426",
-            "the coupled turbulence step is validated on the TMR flat plate only (#429)",
-            location=where,
-        )
-    )
+    steps = [
+        ("coupled_turbulence", "the coupled turbulence step", "W0426", "TMR flat plate"),
+        ("matrix_free", "the matrix-free step", "W0429", "TMR laminar flat plate"),
+    ]
+    for key, step, warning, validated in steps:
+        if not getattr(spec.time, key):
+            continue
+        where = case.locate(f"time.{key}")
+        if spec.time.linear_solver != "multigrid" or gpus > 1:
+            message = f"{step} needs linear_solver='multigrid' on one rank"
+            found.append(diagnostic("E0427", message, location=where))
+        message = f"{step} is validated on the {validated} only (#429)"
+        found.append(diagnostic(warning, message, location=where))
 
 
 def _matches(pattern: str, names: list[str]) -> list[str]:
