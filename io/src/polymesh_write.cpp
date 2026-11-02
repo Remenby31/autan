@@ -1,6 +1,9 @@
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -43,9 +46,23 @@ void labels(std::ofstream& out, std::span<const std::int32_t> v) {
   out << ")\n";
 }
 
+// `name` as an OpenFOAM word: each run of characters a word cannot hold becomes one '_'.
+std::string word(const std::string& name) {
+  std::string out;
+  bool run = false;
+  for (const char c : name) {
+    const bool bad = std::isspace(static_cast<unsigned char>(c)) != 0 || c == '"' || c == '\'' ||
+                     c == '/' || c == ';' || c == '{' || c == '}' || c == '(' || c == ')';
+    if (bad && !run) out.push_back('_');
+    if (!bad) out.push_back(c);
+    run = bad;
+  }
+  return out.empty() ? "_" : out;
+}
+
 }  // namespace
 
-void write_polymesh(const fs::path& directory, const Mesh& mesh) {
+std::map<std::string, std::string> write_polymesh(const fs::path& directory, const Mesh& mesh) {
   if (mesh.n_owned_cells() != mesh.n_cells() || !mesh.periodic_pairs().empty()) {
     throw Error(ErrorCode::io_unsupported,
                 "a polyMesh is written for an unpartitioned mesh without periodic pairs");
@@ -86,6 +103,27 @@ void write_polymesh(const fs::path& directory, const Mesh& mesh) {
     for (const index_t c : mesh.neighbour()) neighbour.push_back(label(c));
     labels(out, neighbour);
   });
+  // The names written, and those that changed.
+  std::map<std::string, std::string> renamed;
+  const auto names = [&](const auto& zones, const auto& keep) {
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const auto& zone : zones) {
+      if (!keep(zone)) {
+        out.emplace_back();
+        continue;
+      }
+      out.push_back(word(zone.name));
+      if (out.back() != zone.name) renamed[zone.name] = out.back();
+      if (!seen.insert(out.back()).second) {
+        throw Error(ErrorCode::mesh_duplicate_zone_name,
+                    "two zones are written as '" + out.back() + "' in a polyMesh");
+      }
+    }
+    return out;
+  };
+  const auto patch_names = names(mesh.face_zones(), [](const FaceZone& z) { return z.boundary; });
+  const auto zone_names = names(mesh.cell_zones(), [](const CellZone&) { return true; });
   const auto offsets = mesh.boundary_zone_offsets();
   std::size_t patches = 0;
   for (const auto& zone : mesh.face_zones()) patches += zone.boundary ? 1 : 0;
@@ -97,7 +135,7 @@ void write_polymesh(const fs::path& directory, const Mesh& mesh) {
       const char* type = zone.kind == BcKind::wall || zone.kind == BcKind::thermal_wall ? "wall"
                          : zone.kind == BcKind::symmetry ? "symmetryPlane"
                                                          : "patch";
-      out << "    " << zone.name << "\n    {\n        type            " << type
+      out << "    " << patch_names[z] << "\n    {\n        type            " << type
           << ";\n        nFaces          " << offsets[z + 1] - offsets[z]
           << ";\n        startFace       " << offsets[z] << ";\n    }\n";
     }
@@ -110,12 +148,13 @@ void write_polymesh(const fs::path& directory, const Mesh& mesh) {
       for (index_t c = 0; c < mesh.n_cells(); ++c) {
         if (at(mesh.cell_zone()[at(c)]) == z) cells.push_back(label(c));
       }
-      out << mesh.cell_zones()[z].name << "\n{\n    type cellZone;\n    cellLabels List<label> ";
+      out << zone_names[z] << "\n{\n    type cellZone;\n    cellLabels List<label> ";
       labels(out, cells);
       out << ";\n}\n";
     }
     out << ")\n";
   });
+  return renamed;
 }
 
 }  // namespace autan::io

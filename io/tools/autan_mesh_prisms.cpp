@@ -79,7 +79,7 @@ int main(int argc, char* const* argv) {
   try {
     const autan::Mesh mesh = autan::io::read_mesh(in);
     const auto merged = autan::merge_layer_prisms(mesh, options);
-    autan::io::write_polymesh(out, merged.mesh);
+    const auto renamed = autan::io::write_polymesh(out, merged.mesh);
     const auto& r = merged.report;
     const nlohmann::ordered_json report{{"cells_in", mesh.n_cells()},
                                         {"cells_out", merged.mesh.n_cells()},
@@ -89,6 +89,7 @@ int main(int argc, char* const* argv) {
                                         {"tetrahedra", r.tetrahedra},
                                         {"other_cells", r.other_cells},
                                         {"layers", r.layers},
+                                        {"renamed_zones", renamed},
                                         {"options",
                                          {{"planarity_deg", options.planarity_deg},
                                           {"pillar_deg", options.pillar_deg},

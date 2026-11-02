@@ -1,14 +1,17 @@
 #include <filesystem>
+#include <map>
 #include <random>
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include "autan/core/cellwise.hpp"
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/io/write_polymesh.hpp"
+#include "fixtures.hpp"
 
 namespace fs = std::filesystem;
 
@@ -20,7 +23,7 @@ TEST_CASE("A written polyMesh reads back as the mesh it was written from", "[pol
   std::random_device random;
   const fs::path dir =
       fs::temp_directory_path() / ("autan_polymesh_write-" + std::to_string(random())) / "polyMesh";
-  autan::io::write_polymesh(dir, mesh);
+  CHECK(autan::io::write_polymesh(dir, mesh).empty());
   const autan::Mesh back = autan::io::read_polymesh(dir);
   CHECK(std::ranges::equal(back.x(), mesh.x()));
   CHECK(std::ranges::equal(back.y(), mesh.y()));
@@ -48,4 +51,32 @@ TEST_CASE("A written polyMesh reads back as the mesh it was written from", "[pol
   };
   CHECK(zones(back) == zones(mesh));
   CHECK(autan::compute_geometry(back).cell_volume == autan::compute_geometry(mesh).cell_volume);
+}
+
+TEST_CASE("Zone names a polyMesh cannot hold are written as words, and reported", "[polymesh]") {
+  // OpenFOAM patch and zone names are words: VGRID's "Patch   1" is written "Patch_1".
+  auto cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  cells.face_zones[0].name = "Patch   1";
+  cells.cell_zones[0].name = "fluid (core)";
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  std::random_device random;
+  const fs::path dir =
+      fs::temp_directory_path() / ("autan_polymesh_write-" + std::to_string(random())) / "polyMesh";
+  const auto renamed = autan::io::write_polymesh(dir, mesh);
+  CHECK(renamed == std::map<std::string, std::string>{{"Patch   1", "Patch_1"},
+                                                      {"fluid (core)", "fluid_core_"}});
+  const autan::Mesh back = autan::io::read_polymesh(dir);
+  CHECK(back.face_zones()[0].name == "Patch_1");
+  CHECK(back.cell_zones()[0].name == "fluid_core_");
+  // Two names that become one word are refused.
+  auto clash = autan::test::box(2, autan::test::BoxFill::hexa);
+  clash.face_zones[0].name = "a b";
+  clash.face_zones[1].name = "a_b";
+  try {
+    (void)autan::io::write_polymesh(dir.parent_path() / "clash",
+                                    autan::assemble(autan::to_face_based(std::move(clash))));
+    FAIL("wrote two zones under one name");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::mesh_duplicate_zone_name);
+  }
 }
