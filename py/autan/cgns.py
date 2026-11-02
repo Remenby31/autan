@@ -139,10 +139,7 @@ class OutsideFileError(ValueError):
         super().__init__(f"{name}: data outside the file at {', '.join(nodes)}")
 
 
-def outside(handle: h5py.File) -> list[str]:
-    """The nodes of an open file whose data lives elsewhere: external links, datasets with
-    external raw storage, and virtual datasets. Found from the links alone, before any data
-    is read and without following a link to another file."""
+def _outside(handle: h5py.File) -> list[str]:
     found: list[str] = []
 
     def visit(name: str, link: h5py.HardLink | h5py.SoftLink | h5py.ExternalLink) -> None:
@@ -163,7 +160,7 @@ def open_file(source: Path | BinaryIO) -> Iterator[h5py.File]:
     caller that opened it safely keeps that guarantee), refusing (``OutsideFileError``) one
     whose data lives in other files, so that reading it never reads anything else."""
     with h5py.File(source, "r") as handle:
-        nodes = outside(handle)
+        nodes = _outside(handle)
         if nodes:
             raise OutsideFileError(source, nodes)
         yield handle

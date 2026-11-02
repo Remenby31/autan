@@ -946,8 +946,7 @@ def _outside_virtual(tree: h5py.File, outside: Path) -> None:
 def test_a_solution_with_data_in_another_file_is_refused_before_any_read(
     alter: Callable[[h5py.File, Path], None], crm_run: autan.Results, tmp_path: Path
 ) -> None:
-    # mesh.md, E0134: files must be self-contained. The outside file is gone before the
-    # read, so a reader that followed it would fail otherwise than with E0134.
+    # mesh.md, E0134: files must be self-contained, start solutions included.
     outside = tmp_path / "outside.bin"
     with h5py.File(crm_run.path / "solution.cgns", "r+") as tree:
         alter(tree, outside)
@@ -956,7 +955,10 @@ def test_a_solution_with_data_in_another_file_is_refused_before_any_read(
         autan.Results.open(crm_run.path).field("Density")
     assert error.value.codes == ["E0134"]
     assert error.value.diagnostics[0].data["node"].startswith("Base/Zone/FlowSolution/")
-    # The same through a file the caller opened itself (the UI opens under its run folder).
+    case = autan.load(EXAMPLES / "crm_hl.py")
+    with pytest.raises(autan.CaseError) as error:
+        case.run(crm_run.mesh_info, backend=autan.FakeBackend(), runs=tmp_path, start=crm_run)
+    assert error.value.codes == ["E0134"]
     with (
         (crm_run.path / "solution.cgns").open("rb") as file,
         pytest.raises(cgns.OutsideFileError),
