@@ -191,9 +191,10 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   StepReport step(std::int64_t iteration) override {
-    // case-schema.md#time: the floors every floor_every iterations and at the last one
-    // (docs/design/euler.md#precision).
-    floors_now_ = iteration % floor_every == 0 || iteration == ctx_.input.time.max_iterations;
+    // case-schema.md#time: the floors every floor_every iterations
+    // (docs/design/euler.md#precision); the runtime asks for the final state's through
+    // final_floors.
+    floors_now_ = iteration % floor_every == 0;
     if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
@@ -214,6 +215,24 @@ class EulerPhysics final : public runtime::Physics {
     apply_vortices();
     if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
     return report;
+  }
+
+  // case-schema.md#time: the floors of the state the run ends with, a steady fp32+acc64 run on
+  // the host only (the device path evaluates none, and says so at setup).
+  [[nodiscard]] std::optional<StepReport> final_floors() override {
+    if constexpr (std::is_same_v<P, kernels::fp32_acc64>) {
+      if (device_ || ctx_.input.time.kind != "steady") return std::nullopt;
+      StepReport report;
+      euler_.state(u_, state_);
+      euler_.set_second_order(true);
+      euler_.residual(state_, res_);
+      record_norms(report);
+      record_floors(report);
+      euler_.set_second_order(second_order_);
+      return report;
+    } else {
+      return std::nullopt;
+    }
   }
 
   void accumulate_average(double weight) override {
@@ -1070,8 +1089,8 @@ class EulerPhysics final : public runtime::Physics {
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   std::vector<Res> floor_;  // fp32+acc64 steady: floor_terms of the last iteration
-  // An evaluation costs about a fifth of an iteration; one in four delays a stop by at most three
-  // iterations (docs/design/euler.md#precision).
+  // One evaluation in four delays a stop by at most three iterations, at a quarter of the cost of
+  // evaluating every iteration (docs/design/euler.md#precision).
   static constexpr std::int64_t floor_every = 4;
   bool floors_now_ = false;
   std::optional<BlockMatrix> matrix_;              // steady runs only

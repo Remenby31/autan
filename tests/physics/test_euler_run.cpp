@@ -275,9 +275,9 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
     CHECK(ratio.get<double>() <= 1.0);
     CHECK(c["cells_at_floor"][name].get<double>() == 1.0);
   }
-  // The floors are evaluated every 4 iterations (and at the last one): the run stops at the first
-  // multiple of 4 where every cell is at its floor, never before. Stopped 4 iterations earlier, it
-  // is not at its floor there.
+  // The floors are evaluated every 4 iterations: the run stops at the first multiple of 4 where
+  // every cell is at its floor, never before. Stopped 4 iterations earlier, it is not at its floor
+  // there.
   const int stop = info["iterations"].get<int>();
   CHECK(stop % 4 == 0);
   const auto earlier = run(with("fp32+acc64", stop - 4));
@@ -291,6 +291,16 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
     largest = std::max(largest, ratio.get<double>());
   }
   CHECK(largest > 1.0);
+  // The runtime also judges the final state of a run that reaches max_iterations
+  // (Physics::final_floors): one iteration short of that stop, the state the run ends with is
+  // already at its floor, between two evaluations, and the run ends `floor` there.
+  const auto shorter = run(with("fp32+acc64", stop - 1));
+  INFO(shorter.err);
+  REQUIRE(shorter.status == ExitStatus::finished);
+  const Json last = Json::parse(read(shorter.run / "run.json"));
+  CHECK(last["status"] == "floor");
+  CHECK(last["iterations"] == stop - 1);
+  CHECK(last["convergence"]["iteration"] == stop - 1);
   // The floors certify the solution the run saved: continued, its first iteration is at its
   // floor too.
   auto more = with("fp32+acc64", info["iterations"].get<int>() + 1);
@@ -321,15 +331,15 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
 TEST_CASE("a residual left at a slip wall keeps a steady fp32+acc64 run from its floor",
           "[euler]") {
   // case-schema.md#time: the floor is judged cell by cell. The freestream meets the slip wall
-  // ymin at 1e-5 rad: from the uniform start only the wall cells have a residual, 5.5 times their
-  // floor in density and energy, while the residual's norm over all cells is 0.61 times the
-  // floors' (measured through Euler::floor_terms). One iteration, the last, so its floors are
-  // evaluated: a rule on norms would end it `floor`, with the flow still through the wall.
+  // ymin at 1e-4 rad: from the uniform start only the wall cells have a residual. One iteration,
+  // and the runtime judges the state it ends with: its wall cells are still 2.8 times their floor
+  // in density, while the residual's norm over all cells is 0.56 times the floors' (measured):
+  // a rule on norms would end it `floor`, with the flow still through the wall.
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp32+acc64");
     auto& f = d["freestream"];
     const double speed = f["speed"].get<double>();
-    f["velocity"] = {speed, -1e-5 * speed, 0.0};
+    f["velocity"] = {speed, -1e-4 * speed, 0.0};
     for (auto& z : d["cell_zones"]) z["initial"]["velocity"] = f["velocity"];
     d["time"]["max_iterations"] = 1;
     d["time"]["residual_orders"] = 10.0;
