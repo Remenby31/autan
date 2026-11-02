@@ -95,7 +95,13 @@ def test_the_state_reaches_the_solver_input_and_the_run(
 ) -> None:
     case = with_state(write_case)
     loaded = autan.load(case)
-    assert loaded.plan(autan.MeshInfo.load(mesh)).ok
+    planned = loaded.plan(autan.MeshInfo.load(mesh))
+    assert planned.ok
+    # docs/sdk/plan.md: the runtime holds the file's text, at most 528 B per row while parsing
+    # it, then 40 B per cell of the mesh paired with its rows.
+    size = (case.parent / "state.json").stat().st_size
+    files = {c.name: c for c in planned.memory.components}["state files"]
+    assert files.bytes_host == size + 528 * CELLS + 40 * CELLS
     assert main(["prepare", str(case), "--mesh-info", str(mesh)]) == 0
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)

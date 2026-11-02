@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from autan import face_states, initial_state
 from autan.errors import Diagnostic, diagnostic
-from autan.memory import DeviceKind, Memory, estimate
+from autan.memory import DeviceKind, Memory, StartMode, StateFileLoad, estimate
 from autan.meshinfo import mesh_sha256
 from autan.schema import (
     DDES,
@@ -130,9 +130,17 @@ def equations(spec: CaseSpec) -> int:
     return flow + {SA: 1, SST: 2}.get(type(model), 0)
 
 
-def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind = "cuda") -> Plan:
+def plan(
+    case: Case,
+    mesh: MeshInfo,
+    *,
+    gpus: int = 1,
+    device_kind: DeviceKind = "cuda",
+    start: StartMode | None = None,
+) -> Plan:
     spec = case.spec
     found: list[Diagnostic] = []
+    files: list[StateFileLoad] = []
 
     mesh_file = case.mesh_path
     if not mesh_file.exists():
@@ -168,7 +176,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind =
         _check_manufactured(case, spec, found)
         boundaries = _manufactured_boundaries(mesh)
     else:
-        boundaries = _resolve_boundaries(case, spec, mesh, found)
+        boundaries = _resolve_boundaries(case, spec, mesh, found, files)
         _check_point_vortices(case, spec, mesh, boundaries, found)
     cell_zones = _resolve_cell_zones(case, spec, mesh, found)
     if spec.initial_state is not None:
@@ -176,7 +184,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind =
         fluid = sum(z.cells for z, k in zip(cell_zones, kinds, strict=True) if k != "solid")
         # A zone left without a medium (E0503) leaves the fluid cells unknown.
         count = fluid if None not in kinds else None
-        _check_initial_state(case, spec.initial_state, mesh, count, found)
+        _check_initial_state(case, spec.initial_state, mesh, count, found, files)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
     _check_prepared(case, spec, mesh, gpus, device_kind, found)
@@ -205,6 +213,8 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind =
             ranks=gpus,
             device_kind=device_kind,
             vortices=_vortex_conditions(spec, boundaries),
+            start=start,
+            files=tuple(files),
         ),
         diagnostics=tuple(found),
     )
@@ -382,7 +392,11 @@ def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
 
 
 def _resolve_boundaries(
-    case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]
+    case: Case,
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    found: list[Diagnostic],
+    files: list[StateFileLoad],
 ) -> list[BoundaryResolution]:
     partners = _partners(mesh)
     names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
@@ -426,7 +440,7 @@ def _resolve_boundaries(
         _check_condition(case, spec, index, found)
         if isinstance(rule.condition, OracleState):
             zones = {z.name: z.faces for z in mesh.boundary_zones if z.name in matched}
-            _check_oracle(case, rule.condition, mesh, zones, index, found)
+            _check_oracle(case, rule.condition, mesh, zones, index, found, files)
 
     inviscid = isinstance(spec.physics.turbulence, Inviscid)
     resolved = []
@@ -510,6 +524,7 @@ def _check_initial_state(
     mesh: MeshInfo,
     fluid_cells: int | None,
     found: list[Diagnostic],
+    files: list[StateFileLoad],
 ) -> None:
     """The initial-state file of the case (docs/contracts/initial-state.md), hashed and parsed
     from the same bytes."""
@@ -533,6 +548,7 @@ def _check_initial_state(
             "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
         )
         return
+    files.append(StateFileLoad(size=len(data), rows=document.cells, faces=0))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
     if fluid_cells is not None and document.cells != fluid_cells:
@@ -549,6 +565,7 @@ def _check_oracle(
     zones: dict[str, int],
     index: int,
     found: list[Diagnostic],
+    files: list[StateFileLoad],
 ) -> None:
     """The face-state file of an oracle_state rule (docs/contracts/face-states.md), hashed
     and parsed from the same bytes."""
@@ -572,6 +589,8 @@ def _check_oracle(
             "E0420", f"{str(source)!r} is not a valid {face_states.SCHEMA} document: {document}"
         )
         return
+    rows = sum(z.faces for z in document.zones.values())
+    files.append(StateFileLoad(size=len(data), rows=rows, faces=sum(zones.values())))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0422", "the face states were exported for another mesh")
     for zone, faces in zones.items():

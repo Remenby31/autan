@@ -696,7 +696,12 @@ def build(
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
-    plan = case.plan(mesh_info, gpus=devices.count, device_kind=devices.kind)
+    plan = case.plan(
+        mesh_info,
+        gpus=devices.count,
+        device_kind=devices.kind,
+        start=start.info.mode if start is not None else None,
+    )
     if not plan.ok:
         raise CaseError(d for d in plan.diagnostics if d.severity == "error")
     spec = case.spec

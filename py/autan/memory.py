@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -11,6 +12,19 @@ if TYPE_CHECKING:
     from autan.schema import CaseSpec
 
 DeviceKind = Literal["cpu", "cuda", "hip"]
+StartMode = Literal["continue", "warm"]
+
+
+@dataclass(frozen=True)
+class StateFileLoad:
+    """A state file the runtime reads before the physics: its bytes, its rows, and the faces
+    of the case's oracle zones it gives states for (0 for an initial state)."""
+
+    size: int
+    rows: int
+    faces: int
+
+
 _CUDA_CONTEXT = 512 * 2**20
 # The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
@@ -50,6 +64,8 @@ def estimate(
     ranks: int,
     device_kind: DeviceKind,
     vortices: int = 0,
+    start: StartMode | None = None,
+    files: tuple[StateFileLoad, ...] = (),
 ) -> Memory:
     return max(
         (
@@ -61,6 +77,8 @@ def estimate(
                 ranks=ranks,
                 device_kind=device_kind,
                 vortices=vortices,
+                start=start,
+                files=files,
             )
             for share in _shares(mesh, ranks)
         ),
@@ -110,6 +128,8 @@ def _rank(
     ranks: int,
     device_kind: DeviceKind,
     vortices: int,
+    start: StartMode | None,
+    files: tuple[StateFileLoad, ...],
 ) -> Memory:
     counts = mesh.counts
     n = equations
@@ -145,6 +165,19 @@ def _rank(
     # steady solver's n + 5 values, one circulation per point-vortex condition.
     fields = 2 * (n + 1) + n + (n + 2) + (n + 5) + vortices
     add("solution output", 2 * 8 * cells * fields, transient=True)
+    # A start reads the previous solution on every rank, every field for a continuation, the
+    # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest.
+    if start is not None:
+        read = fields if start == "continue" else n + 1
+        add("start", 8 * (cells + c) * read, transient=True)
+    # State files: the text, the parsed document (at most 400 B a row), the rows extracted
+    # (64 B) and, for face states, the zone map (64 B a row); then the paired values, 40 B per
+    # cell or face of the mesh. A face-state rank keeps 40 B per face of its oracle zones.
+    if files:
+        loads = sum(x.size + 528 * x.rows for x in files)
+        paired = sum(40 * (x.faces or cells) for x in files)
+        add("state files", loads + paired, transient=True)
+        add("face states", sum(40 * x.faces for x in files))
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.

@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from autan.fake import FakeBackend
-    from autan.memory import DeviceKind
+    from autan.memory import DeviceKind, StartMode
 
     # A quantity, or its text "<number> <unit>" as the case document writes it.
     type QuantityLike = pint.Quantity | str
@@ -359,9 +359,17 @@ class Case:
         checked = resolve_start(self.spec, mesh_info, start, mode)
         return backend.run(self, mesh_info, Path(runs), checked)
 
-    def plan(self, mesh_info: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind = "cuda") -> Plan:
-        """Resolve boundaries and cell zones against the mesh and estimate memory."""
-        return plan(self, mesh_info, gpus=gpus, device_kind=device_kind)
+    def plan(
+        self,
+        mesh_info: MeshInfo,
+        *,
+        gpus: int = 1,
+        device_kind: DeviceKind = "cuda",
+        start: StartMode | None = None,
+    ) -> Plan:
+        """Resolve boundaries and cell zones against the mesh and estimate memory, for a run
+        that starts from a previous one in mode ``start`` (``continue`` or ``warm``) if given."""
+        return plan(self, mesh_info, gpus=gpus, device_kind=device_kind, start=start)
 
 
 class BoundarySelector:
