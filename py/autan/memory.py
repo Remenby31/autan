@@ -197,10 +197,14 @@ def _rank(
     writer = 24 * nodes + 8 * (max(faces, cells) + 1) + 8 * max(counts.face_nodes, k_global)
     add("solution output", 2 * 8 * cells * fields + writer, transient=True)
     # A start reads the previous solution on every rank, every field for a continuation, the
-    # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest.
+    # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest;
+    # with them its run metadata (at most 64 KiB) and zone names (at most 25 600 B a zone and
+    # one more for the document), each held by the library and parsed once (io/cgns_solution).
     if start is not None:
         read = fields if start == "continue" else n + 1
-        add("start", 8 * (cells + c) * read, transient=True)
+        zones = len(mesh.boundary_zones) + len(mesh.cell_zones)
+        metadata = 64 * 2**10 + 25_600 * (zones + 1)
+        add("start", 8 * (cells + c) * read + (1 + _JSON_DOCUMENT) * metadata, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per

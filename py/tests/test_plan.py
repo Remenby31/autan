@@ -352,11 +352,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     dense = 8 * 50 * 50 + 8 * 50, 8 * 10 * 10 + 8 * 10
     assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
-    # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one.
+    # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
+    # and its run metadata and zone names at their bounds, 64 KiB and 25 600 B for each of the
+    # 2 zones and the document, held and parsed (41 times).
     for mode, fields in (("continue", 34), ("warm", 6)):
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
         assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
-            8 * (10 + 10) * fields
+            8 * (10 + 10) * fields + 41 * (64 * 2**10 + 25_600 * 3)
         )
 
 
