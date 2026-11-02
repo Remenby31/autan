@@ -492,9 +492,10 @@ def gpu_bind_check(m: Mesh) -> tuple[bool, ...]:
     """DeviceMesh: (built-in face_area bound, a physics' own writable cell_volume left alone,
     face_area uploaded in chunks equal to the host's, still bound after release_host(), a field
     first bound after release_host() refused with E1101, a sliced stencil without twins or
-    weights accepted with a null stencil_twin)."""
+    weights accepted with a null stencil_twin, a deterministic adjoint over it refused with
+    E1106)."""
     err = ctypes.create_string_buffer(512)
-    out = np.zeros(6, dtype=np.int32)
+    out = np.zeros(7, dtype=np.int32)
     _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
     return tuple(bool(v) for v in out)
 

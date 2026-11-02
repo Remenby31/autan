@@ -346,9 +346,21 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     stencil.twin.clear();
     stencil.lsq_weight.clear();
     autan::kernels::DeviceMesh lean(m->mesh, m->packed, &stencil,
-                                    {.block = 128, .stencil_slice = 4});
+                                    {.block = 128,
+                                     .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                                     .stencil_slice = 4});
     lean.set_stencil_weights(weights);
     out[5] = lean.topology().stencil_twin == nullptr && lean.topology().stencil != nullptr ? 1 : 0;
+    // A deterministic reduction adjoint over that stencil needs the twins: refused (E1106).
+    autan::kernels::advection_diffusion::Data<autan::kernels::fp64> ad{};
+    lean.bind(ad);
+    try {
+      autan::kernels::advection_diffusion::gpu_loops::lsq_gradient_stencil_adjoint(
+          ad, gpu::Strategy::gather_recompute, lean.schedule());
+      out[6] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[6] = std::string_view(e.what()).starts_with("E1106") ? 1 : 0;
+    }
   });
 }
 
