@@ -629,7 +629,29 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }
   SECTION("E0203 mesh hash") {
-    require_error(run(input([](Json& d) { d["mesh"]["sha256"] = std::string(64, '0'); })), "E0203");
+    // The file read is not the one the input and its MeshInfo name.
+    Json other = input();
+    other["mesh"]["sha256"] = std::string(64, '0');
+    other["mesh_info"]["source"]["sha256"] = std::string(64, '0');
+    require_error(run(other), "E0203");
+  }
+  SECTION("mesh_info: planned for this mesh, in the run's cell order") {
+    // solver-input.md, mesh_info: written as the run's mesh-info.json, so it must describe the
+    // mesh read (E0203) and give the lines of the order the run computes in (E0705).
+    Json other = input();
+    other["mesh_info"]["source"]["sha256"] = std::string(64, '0');
+    require_error(run(other), "E0203");
+    require_error(run(autan_test::planned(input(), mesh_path, "input")), "E0705");
+    for (const Json& broken :
+         {Json(nullptr), Json::object(), Json{{"schema", "autan.mesh-info/2"}}}) {
+      CAPTURE(broken.dump());
+      Json d = input();
+      d["mesh_info"] = broken;
+      require_error(run(d), "E0705");
+    }
+    Json no_lines = input();
+    no_lines["mesh_info"]["quality"].erase("lines");
+    require_error(run(no_lines), "E0705");
   }
   SECTION("E0706 no physics in the build") {
     require_error(run(input(), autan::runtime::PhysicsRegistry{}), "E0706");
