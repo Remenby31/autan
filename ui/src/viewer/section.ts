@@ -12,20 +12,27 @@ export function section(
   axis: Axis,
   origin: readonly number[],
 ): { segments: [number, number, number, number][]; chord: [number, number] } {
-  // A plane through nodes is moved off them, by 2e-6 of the extent, to the side where it cuts
-  // something: every crossing is then inside an edge, and no face lies in the plane.
+  // A plane through nodes is moved off them, to the side where it cuts something, by less than
+  // half the distance to the nearest other node: every crossing is then inside an edge, no
+  // face lies in the plane, and no thin element is stepped over.
   const k = "xyz".indexOf(axis);
-  const { min, max } = bounds(surface);
-  const shift = 2e-6 * ((max[k] as number) - (min[k] as number) || 1);
+  // On the plane: within the FP32 rounding of the positions (offsets from the surface's origin).
+  const { min, max, offset } = bounds(surface);
+  const tolerance = Math.max(
+    4 * 2 ** -24 * (offset[k] as number),
+    1e-12 * ((max[k] as number) - (min[k] as number)),
+  );
   const level = (origin[k] as number) - (surface.origin[k] as number);
   const p = surface.positions;
   let onNode = false;
-  for (let i = k; i < p.length; i += 3)
-    if (Math.abs((p[i] as number) - level) < shift / 2) {
-      onNode = true;
-      break;
-    }
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let i = k; i < p.length; i += 3) {
+    const d = Math.abs((p[i] as number) - level);
+    if (d < tolerance) onNode = true;
+    else nearest = Math.min(nearest, d);
+  }
   if (!onNode) return cut(surface, values, k, level);
+  const shift = Math.min(2 * tolerance, nearest / 2);
   const above = cut(surface, values, k, level + shift);
   return above.segments.length ? above : cut(surface, values, k, level - shift);
 }

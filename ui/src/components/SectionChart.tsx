@@ -2,10 +2,12 @@ const W = 360;
 const H = 200;
 const PAD = { left: 44, right: 10, top: 22, bottom: 30 };
 
-const label = (v: number) =>
-  Math.abs(v) >= 100 || (v !== 0 && Math.abs(v) < 0.01)
-    ? v.toExponential(1)
-    : String(Number(v.toPrecision(3)));
+// A tick value with the digits its step needs, so that neighbouring ticks never read the same.
+export function tickLabel(v: number, step: number): string {
+  if (v === 0) return "0";
+  const digits = Math.max(1, Math.ceil(Math.log10(Math.abs(v) / step)) + 1);
+  return String(Number(v.toPrecision(Math.min(15, digits))));
+}
 
 /** A field along a section's chord: each cut segment drawn against x/c. Cp is drawn as −Cp,
  * suction up, as aerodynamicists read it. */
@@ -40,6 +42,7 @@ export function SectionChart({
     return H - PAD.bottom - t * (H - PAD.top - PAD.bottom);
   };
   const ticks = [low, (low + high) / 2, high];
+  const step = (high - low) / 2;
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
@@ -52,7 +55,7 @@ export function SectionChart({
       data-greatest={greatest}
     >
       <desc>
-        {`${shownName} from ${label(least)} to ${label(greatest)}, highest ${label(greatest)} at x/c ${label(peakAt)}; ${segments.length} segments.`}
+        {`${shownName} from ${tickLabel(least, step / 100)} to ${tickLabel(greatest, step / 100)}, highest at x/c ${tickLabel(peakAt, 0.001)}; ${segments.length} segments.`}
       </desc>
       {[0, 0.25, 0.5, 0.75, 1].map((f) => (
         <g key={`x${f}`} className="text-fg-3">
@@ -66,7 +69,7 @@ export function SectionChart({
         <g key={`y${v}`} className="text-fg-3">
           <line x1={PAD.left} x2={W - PAD.right} y1={sy(v)} y2={sy(v)} stroke="var(--line)" />
           <text x={PAD.left - 4} y={sy(v) + 3} textAnchor="end" fill="currentColor">
-            {label(v)}
+            {tickLabel(v, step)}
           </text>
         </g>
       ))}

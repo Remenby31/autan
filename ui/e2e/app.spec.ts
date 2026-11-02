@@ -525,10 +525,17 @@ test("a slice plots the walls' Cp along the chord of their section", async ({ pa
     for (const end of ["data-least", "data-greatest"]) {
       expect(Number(await chart.getAttribute(end))).toBeCloseTo(0.42, 5);
     }
-    // Each cut segment is drawn, on the height of the 0.42 tick of the −Cp axis.
+    // Each cut segment is drawn at the middle of the −Cp axis, whose ticks span 0.42 ± 0.5 for a
+    // uniform value.
     const curve = chart.locator('line[stroke="var(--accent)"]');
     await expect(curve).toHaveCount(Number(await chart.getAttribute("data-segments")));
-    const tick = Number(await chart.locator("text", { hasText: /^0\.42$/ }).getAttribute("y")) - 3;
+    const ticks = await chart
+      .locator('text[text-anchor="end"]')
+      .evaluateAll((texts) =>
+        texts.map((t) => Number(t.getAttribute("y")) - 3).sort((a, b) => a - b),
+      );
+    expect(ticks).toHaveLength(3);
+    const tick = ticks[1] as number;
     for (const y of await curve.evaluateAll((lines) =>
       lines.flatMap((l) => [Number(l.getAttribute("y1")), Number(l.getAttribute("y2"))]),
     )) {

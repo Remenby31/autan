@@ -62,3 +62,34 @@ test("a plane through nodes still gives the whole section", () => {
     }
   }
 });
+
+test("a plane moved off nodes keeps a thin element beside it", () => {
+  // Two flat strips cut by y = 0: a thin one (y within ±5e-7) from x = 0 to 1 and a wide one
+  // from x = 2 to 3 whose edge nodes lie on the plane.
+  const nodes = [
+    [0, -5e-7],
+    [1, -5e-7],
+    [0, 5e-7],
+    [1, 5e-7],
+    [2, -1],
+    [3, -1],
+    [2, 0],
+    [3, 0],
+    [2, 1],
+    [3, 1],
+  ].map(([x, y]) => [x as number, y as number, 0]);
+  const indices = [0, 1, 2, 1, 3, 2, 4, 5, 6, 5, 7, 6, 6, 7, 8, 7, 9, 8];
+  const origin: [number, number, number] = [0, 0, 0];
+  const surface = {
+    origin,
+    positions: new Float32Array(nodes.flat()),
+    indices: new Uint32Array(indices),
+    zones: [],
+    fields: [],
+  } as Surface;
+  const values = new Float32Array(nodes.map(([x]) => x as number));
+
+  const { chord } = section(surface, values, "y", [0, 0, 0]);
+
+  expect(chord).toEqual([0, 3]);
+});
