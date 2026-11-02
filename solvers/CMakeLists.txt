@@ -33,3 +33,17 @@ if(AUTAN_ENABLE_CUDA)
     PRIVATE autan::solvers autan::io CUDA::cudart autan_compile_options
   )
 endif()
+
+# #342 study: the transfers on several cell orders, interleaved in one hold.
+if(AUTAN_ENABLE_CUDA)
+  add_executable(autan_mg_transfers_orders_bench bench/transfers_orders_bench.cpp)
+  add_dependencies(autan_mg_transfers_orders_bench autan_codegen_revision)
+  target_include_directories(
+    autan_mg_transfers_orders_bench
+    PRIVATE ${PROJECT_BINARY_DIR}/codegen/revision
+  )
+  target_link_libraries(
+    autan_mg_transfers_orders_bench
+    PRIVATE autan::solvers autan::io CUDA::cudart autan_compile_options
+  )
+endif()
