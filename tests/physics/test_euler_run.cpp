@@ -1011,6 +1011,92 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
 }
 #endif
 
+// tests/data/mesh/ringleb (one cell thick in z) from the hybrid case: farfield sides, symmetry
+// on the two faces of the layer, uniform flow along x with w = w_ratio times the speed.
+void ringleb_case(Json& d, double w_ratio) {
+  const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
+  d["mesh"]["path"] = fs::absolute(mesh).string();
+  d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+  const double speed = d["freestream"]["speed"].get<double>();
+  Json zone = d["cell_zones"][0];
+  zone["zone"] = "fluid";
+  zone["initial"]["pressure"] = 1.3 * zone["initial"]["pressure"].get<double>();
+  zone["initial"]["velocity"] = {speed, 0.0, w_ratio * speed};
+  d["cell_zones"] = Json::array({zone});
+  Json boundaries = Json::array();
+  for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+    Json b = d["boundaries"][0];
+    for (auto& [key, value] : b.items()) {
+      if (key != "zone" && key != "kind") value = nullptr;
+    }
+    b["zone"] = name;
+    const bool side = std::string(name) != "back" && std::string(name) != "front";
+    b["kind"] = side ? "farfield" : "symmetry";
+    boundaries.push_back(b);
+  }
+  d["boundaries"] = boundaries;
+  d["monitors"] = Json::array();
+}
+
+TEST_CASE("a laminar run's matrix-free phase starts after the switch to second order",
+          "[navier-stokes]") {
+  // matrix-free-step.md, on tests/data/mesh/ringleb: the first matrix-free step is logged once,
+  // the step after the switch to second order (SolverSecondOrder 0 two steps before, 1 one step
+  // before); runs continued just before the phase and inside it repeat the uninterrupted one
+  // bit for bit, so no product leaks into the reported state or residual.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  auto doc = [&](int budget) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      d["physics"]["turbulence"]["model"] = "laminar";
+      d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+      d["freestream"]["nu_tilde"] = nullptr;
+      for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+      ringleb_case(d, 0.0);
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  constexpr int budget = 260;
+  const auto whole = run(doc(budget));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  const auto status = Json::parse(read(whole.run / "run.json"))["status"];
+  REQUIRE((status == "completed" || status == "converged"));
+  std::vector<int> starts;
+  std::istringstream log(read(whole.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    const auto e = Json::parse(line);
+    if (e["source"] == "linear" && e["level"] == "info" && e["iteration"].is_number() &&
+        e["message"].get<std::string>().starts_with("matrix-free products")) {
+      starts.push_back(e["iteration"].get<int>());
+    }
+  }
+  REQUIRE(starts.size() == 1);
+  const int s = starts.front();
+  INFO("first matrix-free step " << s);
+  REQUIRE(s >= 3);
+  REQUIRE(static_cast<int>(history(whole.run).size()) >= s + 2);
+  auto finished = [&](int steps) {
+    const auto r = run(doc(steps));
+    REQUIRE(r.status == ExitStatus::finished);
+    return r.run;
+  };
+  const auto run_before = finished(s - 2), run_at = finished(s - 1);
+  CHECK(field(run_before, "SolverSecondOrder", "RestartState").front() == 0.0);
+  CHECK(field(run_at, "SolverSecondOrder", "RestartState").front() == 1.0);
+  const auto all = read(whole.run / "history.jsonl");
+  for (const auto& first : {run_at, finished(s + 1)}) {
+    auto next = doc(budget);
+    next["start"] = continue_from(first);
+    const auto rest = run(next);
+    INFO(rest.err);
+    REQUIRE(rest.status == ExitStatus::finished);
+    CHECK(read(first / "history.jsonl") + read(rest.run / "history.jsonl") == all);
+  }
+}
+
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
   // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
   // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
@@ -1018,31 +1104,10 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   // ignore it (case-schema.md#time, the runtime's exemption), so over 40 steps the other
   // equations' histories agree within 1e-6 (measured 8.5e-9; driven by the round-off, they
   // differ by 3.4).
-  const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   auto doc = [&](double w) {
     return input("hybrid.solver-input.json", [&](Json& d) {
       inviscid_along_x(d, "fp64");
-      d["mesh"]["path"] = fs::absolute(mesh).string();
-      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
-      const double speed = d["freestream"]["speed"].get<double>();
-      Json zone = d["cell_zones"][0];
-      zone["zone"] = "fluid";
-      zone["initial"]["pressure"] = 1.3 * zone["initial"]["pressure"].get<double>();
-      zone["initial"]["velocity"] = {speed, 0.0, w * speed};
-      d["cell_zones"] = Json::array({zone});
-      Json boundaries = Json::array();
-      for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
-        Json b = d["boundaries"][0];
-        for (auto& [key, value] : b.items()) {
-          if (key != "zone" && key != "kind") value = nullptr;
-        }
-        b["zone"] = name;
-        const bool side = std::string(name) != "back" && std::string(name) != "front";
-        b["kind"] = side ? "farfield" : "symmetry";
-        boundaries.push_back(b);
-      }
-      d["boundaries"] = boundaries;
-      d["monitors"] = Json::array();
+      ringleb_case(d, w);
       d["time"]["max_iterations"] = 40;
       d["time"]["residual_orders"] = 30.0;
     });
