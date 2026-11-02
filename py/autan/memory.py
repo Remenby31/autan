@@ -29,6 +29,7 @@ class StateFileLoad:
 _CUDA_CONTEXT = 512 * 2**20
 # The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
+_READING = {"gmsh": 3.0, "fluent": 3.0, "cgns": 3.0, "polymesh": 1.25}
 # DeviceMesh stages each upload through at most this many values (device.cuh, upload_chunk).
 _UPLOAD_CHUNK = 2**20
 
@@ -159,6 +160,11 @@ def _rank(
     geometry = 56 * faces + 32 * cells
     add("mesh", mesh_bytes + geometry + 12 * cells)
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
+    # Reading the file: beyond the mesh it returns, at most 3 times the mesh's arrays for the
+    # element readers (Gmsh, Fluent, CGNS; 2.94 at most measured) and 1.25 times for polyMesh
+    # (1.19), plus the file's bytes for sections a reader skips.
+    reading = _READING[mesh.source.format] * mesh_bytes + mesh.source.bytes
+    add("mesh reading", reading, transient=True)
     # In RCM order (the runtime's default, quality.lines.order) the run keeps the renumbered
     # mesh beside the one it read, with the cell order and the face and point maps.
     if mesh.quality.lines.order == "rcm":
@@ -178,15 +184,16 @@ def _rank(
     if start is not None:
         read = fields if start == "continue" else n + 1
         add("start", 8 * (cells + c) * read, transient=True)
-    # State files, read by streaming (runtime.md): the text, kept until the run directory
-    # exists; the rows straight into vectors, 64 B a row; the rest of the document, at most
-    # 1 KiB, 300 B a zone and its strings (at most the text again); then the pairing, 138 B a
-    # row and, for an initial state, 120 B per cell and its fields 40 B per cell, for face
-    # states the zone map 64 B a row and 40 B per face of the oracle zones. A face-state rank
-    # keeps 40 B per face of its oracle zones.
+    # State files: an initial state's text twice at most, 1 KiB of document, 202 B a row read
+    # and paired, then 160 B per cell; a face-state file, as measured through the runtime's
+    # reader, at most 2 S + 140 B a row + 1 200 B a zone, then 40 B per face of its oracle
+    # zones, which a rank keeps.
     if files:
-        loads = sum(2 * x.size + 1024 + 300 * x.zones + 202 * x.rows for x in files)
-        paired = sum(64 * x.rows + 40 * x.faces if x.zones else 160 * cells for x in files)
+        loads = sum(
+            2 * x.size + (140 * x.rows + 1200 * x.zones if x.zones else 1024 + 202 * x.rows)
+            for x in files
+        )
+        paired = sum(40 * x.faces if x.zones else 160 * cells for x in files)
         add("state files", loads + paired, transient=True)
         add("face states", sum(40 * x.faces for x in files))
 
