@@ -130,7 +130,10 @@ class Log:
             sys.stderr.write(f"autan-gpu-lock: {LOG} is not writable here; the guard records "
                              "this hold, and this wrapper's events follow, tagged [for the guard]\n")  # fmt: skip
             self.warned = True
-        sys.stderr.write(f"autan-gpu-lock [for the guard]: {line}\n")
+        # The job's log parses "##[" anywhere in a line as a workflow command: the -m text and the
+        # command are the job's own, so their markers are broken, never obeyed.
+        safe = line.replace("##[", "#\u200b#[")
+        sys.stderr.write(f"autan-gpu-lock [for the guard]: {safe}\n")
 
     def record(self, event: str, secs: float, status: object = "-") -> None:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

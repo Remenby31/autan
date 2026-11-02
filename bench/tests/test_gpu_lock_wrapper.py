@@ -200,6 +200,18 @@ def test_an_unwritable_log_sends_each_event_to_the_job_s_log(lock):
     assert err.decode().count("is not writable here") == 1
 
 
+def test_the_job_s_text_in_the_tagged_events_is_never_a_workflow_command(lock):
+    # The runner parses "##[" anywhere in a line; "::" only at its start, which the tag holds.
+    (lock.parent / "holders.log").unlink()
+    (lock.parent / "holders.log").mkdir()
+    proc = wrapper(lock, "-m", "##[error]forged", "--", "sh", "-c", "true # ##[group]x")
+    _, err = proc.communicate(timeout=10)
+    assert proc.returncode == 0
+    assert tagged(err)
+    assert "##[" not in err.decode()
+    assert not [line for line in err.decode().splitlines() if line.startswith("::")]
+
+
 def test_a_memory_kill_reaches_the_job_s_log_when_holders_log_is_read_only(lock, tmp_path, meminfo):
     (lock.parent / "holders.log").unlink()
     (lock.parent / "holders.log").mkdir()

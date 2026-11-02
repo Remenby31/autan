@@ -409,6 +409,37 @@ def test_the_guard_records_memory_below_the_floor_during_a_hold(spark, meminfo, 
         assert not lows
 
 
+def test_the_guard_charges_a_holder_only_with_the_memory_of_its_own_hold(spark, meminfo):
+    """Codex on #436: pressure after a release is not the released holder's; a dip inside the
+    hold is, even once memory is back."""
+    env = {**spark, "AUTAN_MEMINFO": os.environ["AUTAN_MEMINFO"]}
+    lock = spark["AUTAN_GPU_LOCK"]
+    guard = subprocess.Popen([sys.executable, str(GUARD)], env=env, stderr=subprocess.PIPE)
+    try:
+        time.sleep(1)
+        meminfo(100)
+        subprocess.run(["flock", lock, "sleep", "1"], check=True)  # comfortable, then...
+        meminfo(10)  # ...pressure after its release
+        time.sleep(1.5)
+        meminfo(100)
+        dip = subprocess.Popen(["flock", lock, "sleep", "3"])
+        time.sleep(1)
+        meminfo(10)  # a dip inside the second hold...
+        time.sleep(1)
+        meminfo(100)  # ...that recovers before its release
+        dip.wait(timeout=10)
+        time.sleep(1.5)
+    finally:
+        guard.terminate()
+        guard.wait(timeout=10)
+    log = Path(lock).parent / "holders.log"
+    records = [line.split("\t") for line in log.read_text().splitlines()]
+    kinds = [r[1] for r in records if not r[1].startswith("foreign")]
+    assert kinds == ["held", "released", "held", "released", "low-memory"]
+    (low,) = [r for r in records if r[1] == "low-memory"]
+    assert low[5] == "MemAvailable down to 10.0 GiB"
+
+
 def test_the_guard_reads_holders_and_waiters_from_proc_locks():
     loader = importlib.machinery.SourceFileLoader("guard", str(GUARD))
     spec = importlib.util.spec_from_loader("guard", loader)

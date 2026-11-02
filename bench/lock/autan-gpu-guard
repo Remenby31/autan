@@ -224,12 +224,13 @@ def main() -> int:
         for pid in holders - seen.keys():
             who, cmd = describe(pid)
             seen[pid] = {"since": now, "noted": now, "who": who, "cmd": cmd,
-                         "where": containers.name(container_of(pid)), "lowest": None}  # fmt: skip
+                         "where": containers.name(container_of(pid)), "lowest": free}  # fmt: skip
             record("held", who, seen[pid]["where"], 0, cmd)
         for pid in list(seen):
             h = seen[pid]
             held = now - h["since"]
-            if free is not None and (h["lowest"] is None or free < h["lowest"]):
+            # Only a holder still holding sees this reading: one that left keeps its own lowest.
+            if pid in holders and free is not None and (h["lowest"] is None or free < h["lowest"]):
                 h["lowest"] = free
             if pid not in holders:
                 record("released", h["who"], h["where"], held, h["cmd"])
