@@ -184,9 +184,9 @@ Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exa
 
 **Periodic faces do not match** (error)
 
-The faces of a periodic pair do not match one to one under its translation.
+The faces of a periodic pair do not match one to one under its translation, the pairs place a node in two ways, or moving the matched nodes onto translates makes a face or cell degenerate.
 
-Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
+Fix: Regenerate the mesh with conforming periodic faces, and check the translations.
 
 ## E0120
 
@@ -307,6 +307,14 @@ Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
 A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
+
+## W0150
+
+**Periodic nodes moved** (warning)
+
+The nodes of a periodic pair matched within the tolerance but not exactly, so assembly moved them onto translates, and the run computes on the moved coordinates (mesh.md, Periodic pairs). `data` gives the nodes moved by more than round-off, the largest move, the largest pair mismatch relative to its tolerance (at most 1) and the largest relative change of a cell's volume.
+
+Fix: Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.
 
 ## E0201
 
