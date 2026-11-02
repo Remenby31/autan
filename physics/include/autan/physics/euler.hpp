@@ -67,6 +67,10 @@ class GhostFill {
   virtual void forward(std::span<double* const> components) = 0;
 };
 
+/// c of the round-off floor c u sum_f T_f (case-schema.md#time) for every flux: Euler::floor_terms
+/// holds each scheme's own terms. Measured 4.35 at most (docs/design/euler.md#precision).
+inline constexpr double round_off_bound = 8.0;
+
 /// Euler residual R(U) = sum_f F . S - s V of a mesh, in precision policy P
 /// (autan::kernels::fp64 or fp32_acc64), on the host. Arrays are structure of arrays: component
 /// c of cell i at c * n_cells + i; boundary arrays are indexed by boundary face b, mesh face
@@ -110,6 +114,14 @@ class Euler {
   /// R(s) into res, and the approximate Jacobian's blocks: dF/dW of every face with the
   /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// The magnitudes of the terms each cell's residual sums (case-schema.md#time, round-off
+  /// floor), from the same face states as the residual of `s`: per equation, over the cell's
+  /// faces, the area times T = 1/2 (|F_L| + |F_R| + |F_L + F_R - 2F| + J_L + J_R), J = s rho
+  /// (1, q + c, q + c, q + c, H) with s = |v . n| + c, plus for AUSM+-up K_p (p_L + p_R) /
+  /// (f_a a) (1, 0, 0, 0, H) in absolute pressures; then the warp correction's and the source's
+  /// magnitudes (docs/design/euler.md#precision). Layout of the residual; ghost cells hold the
+  /// partial sums of their owned faces.
+  void floor_terms(std::span<const State> s, std::span<Res> terms);
   /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.

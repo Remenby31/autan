@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from autan.schema import CaseSpec
 
 Mode = Literal["continue", "warm"]
-RESUMABLE = frozenset({"converged", "completed", "stopped"})
+RESUMABLE = frozenset({"converged", "floor", "completed", "stopped"})
 
 
 def _budget(spec: CaseSpec) -> int:

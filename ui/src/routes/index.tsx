@@ -579,7 +579,9 @@ function RunRow({
                 ? "var(--danger)"
                 : run.status === "converged"
                   ? "var(--success)"
-                  : "var(--accent)"
+                  : run.status === "floor"
+                    ? "var(--warning)"
+                    : "var(--accent)"
             }
           />
           {summary?.orders != null && (

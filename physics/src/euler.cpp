@@ -38,6 +38,7 @@ struct Euler<P>::Impl {
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
+  std::vector<Res> floor;  // floor_terms()
   std::vector<Gr> grad, zero_grad;
   ek::Data<P> d{};
   GhostFill* ghosts = nullptr;
@@ -59,7 +60,7 @@ struct Euler<P>::Impl {
   // The loops before the faces: primitives (and their Jacobian dW/dU, which the coupling blocks
   // of faces to ghost cells take), boundary states, gradients and limiter of the owned cells,
   // each filled into the ghosts before a later loop or the assembly reads it there.
-  void cell_loops(bool jacobian) {
+  void cell_loops(bool jacobian, bool with_sources = true) {
     if (jacobian) {
       ek::cpu::primitives_jacobian(d);
       fill_ghosts(dwdu, 25);
@@ -76,7 +77,7 @@ struct Euler<P>::Impl {
         fill_ghosts(phi, 5);
       }
     }
-    ek::cpu::sources(d);
+    if (with_sources) ek::cpu::sources(d);
   }
 
   template <class T, class Source>
@@ -374,6 +375,31 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   m.d.res = res.data();
   m.cell_loops(false);
   m.faces();
+}
+
+template <class P>
+void Euler<P>::floor_terms(std::span<const State> s, std::span<Res> terms) {
+  auto& m = *impl_;
+  m.floor.assign(5 * static_cast<std::size_t>(m.topo.n_cells), Res(0));
+  m.d.u = const_cast<State*>(s.data());
+  m.d.floor_terms = m.floor.data();
+  m.cell_loops(false, false);
+  ek::cpu::floor_sources(m.d);
+  switch (m.scheme.flux) {
+    case Flux::roe:
+      ek::cpu::roe_faces_floor(m.d);
+      ek::cpu::roe_boundaries_floor(m.d);
+      break;
+    case Flux::hllc:
+      ek::cpu::hllc_faces_floor(m.d);
+      ek::cpu::hllc_boundaries_floor(m.d);
+      break;
+    case Flux::ausm_up:
+      ek::cpu::ausm_faces_floor(m.d);
+      ek::cpu::ausm_boundaries_floor(m.d);
+      break;
+  }
+  std::copy(m.floor.begin(), m.floor.end(), terms.begin());
 }
 
 template <class P>

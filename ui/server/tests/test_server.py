@@ -463,88 +463,62 @@ INF = math.inf
 
 
 @pytest.mark.parametrize(
-    ("first", "now", "woken", "floors", "expected", "now_woken"),
+    ("first", "now", "woken", "expected", "now_woken"),
     [
-        ({"rho": 1e-300, "e": 1.0}, {"rho": 1e-310, "e": 1e-8}, set(), {}, 8.0, set()),
-        ({"rho": 1.0, "e": 0.0}, {"rho": 1e-8, "e": 0.0}, set(), {}, 8.0, set()),
-        ({"rho": 1.0, "e": 1.0}, {"rho": 0.0, "e": 1e-8}, set(), {}, 8.0, set()),
-        ({"rho": 1.0, "e": 1.0}, {"rho": 0.0, "e": 0.0}, set(), {}, INF, set()),
+        ({"rho": 1e-300, "e": 1.0}, {"rho": 1e-310, "e": 1e-8}, set(), 8.0, set()),
+        ({"rho": 1.0, "e": 0.0}, {"rho": 1e-8, "e": 0.0}, set(), 8.0, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 0.0, "e": 1e-8}, set(), 8.0, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 0.0, "e": 0.0}, set(), INF, set()),
         # Identically zero at iteration 1 (below 1e-12 of the largest): exempt at the floor...
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-12}, set(), {}, 8.0, set()),
-        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, set(), {}, 8.0, set()),
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-12}, set(), 8.0, set()),
+        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, set(), 8.0, set()),
         # ...woken above it, for good: it must drop like the others, which it cannot from zero.
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), {}, None, {"my"}),
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, None, {"my"}),
-        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, 3.0, {"my"}),
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), None, {"my"}),
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, None, {"my"}),
+        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, {"my"}, 3.0, {"my"}),
         # Every equation of a line wakes, even after one that cannot be compared.
         (
             {"rho": 1.0, "a": 0.0, "b": 1e-30},
             {"rho": 1e-8, "a": 1.0, "b": 1.0},
             set(),
-            {},
             None,
             {"a", "b"},
         ),
-        # At or below its round-off floor (run.json convergence.floor), an equation has converged.
-        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), {"rho": 1e-4}, 6.0, set()),
-        (
-            {"rho": 1.0, "e": 1.0},
-            {"rho": 1e-4, "e": 1e-6},
-            set(),
-            {"rho": 1e-4, "e": 1e-6},
-            INF,
-            set(),
-        ),
-        (
-            {"rho": 1.0, "e": 1.0},
-            {"rho": 2e-4, "e": 1e-6},
-            set(),
-            {"rho": 1e-4, "e": 1e-6},
-            4 - math.log10(2),
-            set(),
-        ),
+        # A plateau is a plateau: a round-off floor is not read from these residuals.
+        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), 4.0, set()),
     ],
 )
 def test_residual_drop_is_the_slowest_equation_not_converged(
     first: dict[str, float],
     now: dict[str, float],
     woken: set[str],
-    floors: dict[str, float],
     expected: float | None,
     now_woken: set[str],
 ) -> None:
-    orders = residual_orders(first, now, woken, floors)
+    orders = residual_orders(first, now, woken)
     assert orders == (None if expected is None else pytest.approx(expected))
     assert woken == now_woken
 
 
-def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
-    source = next(runs.iterdir())
-    lines = (source / "history.jsonl").read_text().splitlines()
-    last = json.loads(lines[-1])["residuals"]
-    run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
-
-    summary = Registry(runs).scan().summaries[source.name]
-
-    case = tomllib.loads((source / "case.toml").read_text())
-    assert summary["orders"] == case["time"]["residual_orders"]
-    assert summary["trend"][-1] == case["time"]["residual_orders"]
-
-
-def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path) -> None:
+def test_a_run_at_its_round_off_floor_reports_the_drop_it_made(runs: Path) -> None:
+    # case-schema.md#time: reaching the floor is not convergence; the drop stays the measured one.
     source = next(runs.iterdir())
     registry = Registry(runs)
     before = registry.scan().summaries[source.name]["orders"]
-    last = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
+    names = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+    convergence = {
+        "iteration": run["iterations"],
+        "max_ratio": dict.fromkeys(names, 0.5),
+        "cells_at_floor": dict.fromkeys(names, 1.0),
+    }
+    (source / "run.json").write_text(json.dumps(run | {"convergence": convergence}))
 
     after = registry.scan().summaries[source.name]["orders"]
 
     case = tomllib.loads((source / "case.toml").read_text())
     assert before < case["time"]["residual_orders"]
-    assert after == case["time"]["residual_orders"]
+    assert after == before
 
 
 def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Path]:

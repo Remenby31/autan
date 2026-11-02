@@ -29,6 +29,14 @@ struct StepReport {
   /// First cell whose state or residual is non-finite or non-physical; set
   /// when the solution diverged.
   std::optional<index_t> diverged_cell;
+  /// The round-off floors of docs/contracts/case-schema.md#time over this
+  /// rank's owned fluid cells, when the physics evaluated them at this step
+  /// (on every rank), empty otherwise. Per equation of Physics::equations():
+  /// the largest |R_ik| / floor_ik (0 where both are 0), and the number of
+  /// cells with |R_ik| <= floor_ik, out of `floor_evaluated` cells.
+  std::vector<double> floor_ratio;
+  std::vector<std::int64_t> floor_cells;
+  std::int64_t floor_evaluated = 0;
 };
 
 /// Force and moment the fluid exerts on a monitor's surfaces (results.md,
@@ -119,10 +127,6 @@ struct PhysicsContext {
   std::int32_t n_group_colours = 0;
 };
 
-// case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
-// measured on a NACA 0012 slice, manufactured solutions and Ni's transonic bump.
-inline constexpr double round_off_floor = 0.5 * 0x1p-23;
-
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
 /// arrays (host or device), its kernels and their schedule. Constructed from
@@ -140,11 +144,6 @@ class Physics {
   /// Cell-centred fields with the SIDS names of results.md (field_names()),
   /// current state or time average.
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
-  /// A constant flux scale per equation of residual_names(input), in that
-  /// order, finite and >= 0; empty for none. Called once, after
-  /// construction: in fp32+acc64, an equation converges at a residual of
-  /// round_off_floor times its scale at the latest (docs/contracts/runtime.md).
-  [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;

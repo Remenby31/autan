@@ -26,15 +26,14 @@ def residual_orders(
     first: dict[str, float],
     residuals: dict[str, float],
     woken: set[str],
-    floors: dict[str, float] | None = None,
 ) -> float | None:
     """Orders of magnitude the slowest equation not yet converged has dropped since iteration 1,
     by the steady convergence rule of case-schema.md#time: `math.inf` once every equation is.
 
     An equation below the floor at iteration 1 (FLOOR times the largest first residual) is
     exempt while it stays at or below it; once above, it joins `woken`, which this call
-    updates, and is never exempt again. An equation at or below its round-off floor (`floors`,
-    run.json `convergence.floor`) has converged, and so has one at exactly zero. None when an
+    updates, and is never exempt again. One at exactly zero has converged; a round-off floor,
+    judged cell by cell, cannot be read from these residuals (run.json `convergence`). None when an
     equation cannot be compared: a residual that is not a positive finite number, or that grew
     from an exact zero; None for an empty line."""
     floor = FLOOR * max((v for v in first.values() if _positive(v)), default=0.0)
@@ -46,9 +45,6 @@ def residual_orders(
             if _number(value) and 0 <= value <= floor:
                 continue
             woken.add(name)
-        limit = (floors or {}).get(name)
-        if _number(value) and limit is not None and 0 <= value <= limit:
-            continue  # At its round-off floor.
         if value == 0 and (start == 0 or _positive(start)):
             continue  # Reached exactly zero.
         if _positive(start) and _positive(value):
@@ -89,16 +85,14 @@ class Summaries:
         live: bool,
         reference: dict[str, float] | None = None,
         woken: list[str] | None = None,
-        floors: dict[str, float] | None = None,
         target: float | None = None,
     ) -> dict[str, Any] | None:
         """`reference` and `woken`: `start.residual_reference` and `start.woken` of a steady
         `continue` run (results.md), the residuals the drop is measured from and the identically
-        zero equations no longer exempt; `floors`: run.json `convergence.floor`; `target`: the
-        case's `residual_orders`, which a run with every equation converged reports."""
-        # Floors arrive once the runtime has built its physics (results.md): a change in the
-        # rule's inputs recomputes the whole history.
-        rule = json.dumps([reference, woken, floors, target], sort_keys=True)
+        zero equations no longer exempt; `target`: the case's `residual_orders`, which a run with
+        every equation converged reports."""
+        # A change in the rule's inputs recomputes the whole history.
+        rule = json.dumps([reference, woken, target], sort_keys=True)
         trend = self._trends.setdefault(name, _Trend(rule=rule))
         stat = folder.stat("history.jsonl")
         if (stat.st_size if stat else 0) < trend.offset or trend.rule != rule:
@@ -118,7 +112,7 @@ class Summaries:
                 trend.first = reference or residuals
                 trend.woken = set(woken or ())
             trend.iteration = iteration
-            orders = residual_orders(trend.first, residuals, trend.woken, floors)
+            orders = residual_orders(trend.first, residuals, trend.woken)
             if orders == math.inf:
                 orders = target
             trend.current = orders

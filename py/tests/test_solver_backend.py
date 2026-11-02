@@ -369,7 +369,7 @@ def test_the_runtime_records_the_final_monitors(
     assert result.history.monitor("forces")["iteration"].tolist() == [10, 20]
 
 
-def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
+def test_an_fp32_euler_mms_stops_at_its_round_off_floor(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     _, mesh = hybrid
@@ -389,7 +389,15 @@ def test_an_fp32_euler_mms_converges_at_its_round_off_floor(
     assert isinstance(case.spec.time, autan.Steady)
     assert case.spec.time.residual_orders == 8.0  # above the fp32+acc64 plateau
     result = case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
-    assert result.run.status == "converged"
+    # case-schema.md#time: round-off stops the drop; every cell at its floor is `floor`, which
+    # is not convergence, before the iteration budget.
+    run = result.run
+    assert run.status == "floor"
+    assert run.iterations < case.spec.time.max_iterations
+    assert run.convergence is not None
+    assert run.convergence.iteration == run.iterations
+    assert max(run.convergence.max_ratio.values()) <= 1
+    assert set(run.convergence.cells_at_floor.values()) == {1.0}
 
 
 MPI_RELAXATION = _binary(
@@ -523,3 +531,21 @@ def test_a_file_written_by_the_sdk_starts_the_real_runtime(tmp_path: Path) -> No
         expected = state(*centre)
         assert density[cell] == pytest.approx(expected[0], rel=1e-12)
         assert pressure[cell] == pytest.approx(expected[4], rel=1e-12)
+
+
+def test_a_run_at_its_round_off_floor_reads_back_as_floor(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The runtime's own floor decision (the test physics gives cell c of equation e the floor
+    # 2⁻¹² (e + 1)(1 + 2g/N), g its global id), read back through the results contract.
+    case, mesh = hybrid
+    monkeypatch.setenv("AUTAN_TEST_FLOOR", str(2.0**-12))
+    result = case.run(
+        mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / "runs"
+    )
+    run = autan.Results.open(result.path).run
+    assert run.status == "floor"
+    assert run.convergence is not None
+    assert run.convergence.iteration == run.iterations
+    assert max(run.convergence.max_ratio.values()) <= 1
+    assert set(run.convergence.cells_at_floor.values()) == {1.0}

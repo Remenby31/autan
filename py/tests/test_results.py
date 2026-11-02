@@ -800,18 +800,33 @@ def _set_convergence(path: Path, value: object) -> None:
     (path / "run.json").write_text(json.dumps(document))
 
 
-def test_convergence_floors_belong_to_a_steady_fp32_run(
+def _floor_test(names: list[str], iteration: int, ratio: float = 0.5) -> dict[str, Any]:
+    return {
+        "iteration": iteration,
+        "max_ratio": dict.fromkeys(names, ratio),
+        "cells_at_floor": dict.fromkeys(names, 1.0 if ratio <= 1 else 0.5),
+    }
+
+
+def test_the_floor_test_belongs_to_a_steady_fp32_run(
     crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
 ) -> None:
+    # case-schema.md#time, results.md#runjson: per equation, the largest ratio of a cell's
+    # residual to its round-off floor and the fraction of cells at it.
     names = autan.results.residual_names(crm_run.case)
-    floors = {"floor": dict.fromkeys(names, 1e-6) | {names[0]: 0.0}}  # a zero scale: no floor
-    _set_convergence(crm_run.path, floors)
+    iterations = crm_run.run.iterations
+    _set_convergence(crm_run.path, _floor_test(names, iterations, ratio=3.0))
     assert autan.Results.open(crm_run.path).run.convergence is not None
     run_json = json.loads((crm_run.path / "run.json").read_text())
     del run_json["convergence"]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(json_schema("results")).validate(run_json)
-    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
+    for value in (
+        "absent",
+        _floor_test(names[:-1], iterations),
+        _floor_test(names, iterations + 1),
+        _floor_test(names, iterations) | {"cells_at_floor": dict.fromkeys(names, 1.5)},
+    ):
         _set_convergence(crm_run.path, value)
         with pytest.raises(autan.CaseError) as error:
             autan.Results.open(crm_run.path)
@@ -822,10 +837,34 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     )
     result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
     assert result.run.convergence is None
-    _set_convergence(result.path, floors)
+    _set_convergence(result.path, _floor_test(names, 2))
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(result.path)
     assert error.value.codes == ["E0701"]
+
+
+def test_a_floor_run_is_not_converged_and_carries_its_floor_test(
+    crm_run: autan.Results,
+) -> None:
+    # A run that stopped at its round-off floor says so: status floor, never converged, with
+    # the floor test of its last iteration.
+    names = autan.results.residual_names(crm_run.case)
+    iterations = crm_run.run.iterations
+    document = json.loads((crm_run.path / "run.json").read_text())
+    document["status"] = "floor"
+    for record, accepted in (
+        (_floor_test(names, iterations), True),
+        (None, False),
+        (_floor_test(names, iterations - 1), False),
+    ):
+        document["convergence"] = record
+        (crm_run.path / "run.json").write_text(json.dumps(document))
+        if accepted:
+            assert autan.Results.open(crm_run.path).run.status == "floor"
+        else:
+            with pytest.raises(autan.CaseError) as error:
+                autan.Results.open(crm_run.path)
+            assert error.value.codes == ["E0701"]
 
 
 def test_a_fake_run_measures_no_timing(crm_run: autan.Results) -> None:
@@ -856,8 +895,8 @@ def test_a_fake_run_measures_no_timing(crm_run: autan.Results) -> None:
 @pytest.mark.parametrize(
     "damage",
     [
-        lambda d: d.update(convergence={"floor": {}}),
-        lambda d: d.update(convergence={"floor": {"bogus": 1e-6}}),
+        lambda d: d.update(convergence={"iteration": 1, "max_ratio": {}, "cells_at_floor": {}}),
+        lambda d: d.update(status="floor"),
         lambda d: d.update(monitors=None),
         lambda d: d["monitors"]["forces"].update(iteration=d["iterations"] - 1),
         lambda d: d.update(

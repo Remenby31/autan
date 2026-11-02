@@ -1010,7 +1010,6 @@ class Run final : public Log {
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
-      set_floor();
       status = std::string(iterate(done));
     } catch (const std::exception& e) {
       return fail(e.what(), done);
@@ -1019,31 +1018,54 @@ class Run final : public Log {
   }
 
  private:
-  // case-schema.md#time: in fp32+acc64, a steady run counts an equation
-  // converged at floor_k = round_off_floor * Phi_k at the latest, Phi_k the
-  // physics' constant flux scale; run.json records the floors.
-  void set_floor() {
-    const auto& in = p_.input;
-    const auto equations = residual_names(in);
-    const std::vector<double> scales = physics_->residual_scales();
-    if (scales.empty()) return;
-    if (scales.size() != equations.size()) {
-      throw std::runtime_error("the physics gave " + std::to_string(scales.size()) +
-                               " residual scales for " + std::to_string(equations.size()) +
-                               " equations");
+  // runtime.md, step: the floors a physics gives, in any run, are one ratio, finite and >= 0, and
+  // one count of cells at their floor among those evaluated per equation.
+  void check_floors(const StepReport& report) const {
+    const auto n = residual_names(p_.input).size();
+    if (report.floor_ratio.empty() && report.floor_cells.empty()) return;
+    if (report.floor_ratio.size() != n || report.floor_cells.size() != n) {
+      throw std::runtime_error("the physics gave floors for " +
+                               std::to_string(report.floor_ratio.size()) + " equations, not " +
+                               std::to_string(n));
     }
-    for (const double s : scales) {
-      if (!std::isfinite(s) || s < 0.0)
-        throw std::runtime_error("the physics gave a residual scale that is not finite and >= 0");
+    for (const double r : report.floor_ratio) {
+      if (!(r >= 0.0) || !std::isfinite(r))
+        throw std::runtime_error("the physics gave a floor ratio that is not finite and >= 0");
     }
-    if (in.time.kind != "steady" || in.precision != "fp32+acc64") return;
-    Json floors = Json::object();
-    for (std::size_t e = 0; e < equations.size(); ++e) {
-      floor_.push_back(round_off_floor * scales[e]);
-      floors[equations[e]] = floor_.back();
+    if (report.floor_evaluated <= 0)
+      throw std::runtime_error("the physics gave floors over no cell");
+    for (const std::int64_t c : report.floor_cells) {
+      if (c < 0 || c > report.floor_evaluated)
+        throw std::runtime_error("the physics gave a count of cells at their floor out of range");
     }
-    info_["convergence"] = Json{{"floor", floors}};
-    if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
+  }
+
+  // case-schema.md#time: the round-off floors of a steady fp32+acc64 run, judged cell by cell
+  // over every rank at an iteration where the physics evaluated them: per equation, the largest
+  // ratio of a cell's residual to its floor; run.json `convergence` records them. nullopt when
+  // the physics did not evaluate them.
+  std::optional<std::vector<double>> floor_ratios(const StepReport& report, std::int64_t it) {
+    const auto equations = residual_names(p_.input);
+    const auto n = equations.size();
+    const bool local = !report.floor_ratio.empty();
+    if (comm_.max(std::int64_t{local ? 1 : 0}) == 0) return std::nullopt;
+    if (!local) throw std::runtime_error("the physics evaluated the floors on some ranks only");
+    std::vector<double> ratio(n);
+    std::vector<ExactSum> cells(n + 1);
+    for (std::size_t e = 0; e < n; ++e) {
+      ratio[e] = comm_.max(report.floor_ratio[e]);
+      cells[e].add(static_cast<double>(report.floor_cells[e]));
+    }
+    cells[n].add(static_cast<double>(report.floor_evaluated));
+    comm_.sum(cells);
+    Json max_ratio = Json::object(), at_floor = Json::object();
+    for (std::size_t e = 0; e < n; ++e) {
+      max_ratio[equations[e]] = ratio[e];
+      at_floor[equations[e]] = cells[e].value() / cells[n].value();
+    }
+    info_["convergence"] =
+        Json{{"iteration", it}, {"max_ratio", max_ratio}, {"cells_at_floor", at_floor}};
+    return ratio;
   }
 
   // On several ranks, each runs its part of the mesh, partitioned by METIS
@@ -1313,6 +1335,7 @@ class Run final : public Log {
                                  " residuals for " + std::to_string(equations.size()) +
                                  " equations");
       }
+      check_floors(report);
       bool finite = !report.diverged_cell.has_value();
       Json residuals = Json::object();
       for (std::size_t e = 0; e < equations.size(); ++e) {
@@ -1375,14 +1398,20 @@ class Run final : public Log {
                                            {"floor", exempt.floor()}}
                                           .dump()});
         }
+        const auto ratios = in.precision == "fp32+acc64" ? floor_ratios(report, it) : std::nullopt;
+        // case-schema.md#time: every equation dropped (or exempt) is `converged`; one or more
+        // only at their floor, the others dropped, is `floor`.
         const double drop = std::pow(10.0, -in.time.residual_orders);
-        bool converged = true;
+        bool ends = true, at_floor = false;
         for (std::size_t e = 0; e < equations.size(); ++e) {
-          const double r = report.residuals[e];
-          converged = converged && (exempt.exempt(e) || r <= first[e] * drop ||
-                                    (!floor_.empty() && r <= floor_[e]));
+          if (exempt.exempt(e) || report.residuals[e] <= first[e] * drop) continue;
+          if (ratios && (*ratios)[e] <= 1.0) {
+            at_floor = true;
+          } else {
+            ends = false;
+          }
         }
-        if (converged) return "converged";
+        if (ends) return at_floor ? "floor" : "converged";
       }
     }
     return "completed";
@@ -1627,9 +1656,7 @@ class Run final : public Log {
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
   bool stopped_by_signal_ = false;
-  std::int64_t iteration_ = 0;
-  std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the
-                               // iteration being computed, 0 before the first
+  std::int64_t iteration_ = 0;  // the iteration being computed, 0 before the first
 };
 
 }  // namespace

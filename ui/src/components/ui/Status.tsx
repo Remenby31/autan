@@ -5,6 +5,7 @@ import { StateGlyph } from "./StateGlyph";
 const LABEL: Record<RunStatus, string> = {
   running: "Running",
   converged: "Converged",
+  floor: "At floor",
   completed: "Completed",
   stopped: "Stopped",
   diverged: "Diverged",

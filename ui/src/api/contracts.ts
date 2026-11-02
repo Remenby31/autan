@@ -1,10 +1,18 @@
 // Shapes of docs/contracts/results.md (autan.results/1) and case-schema.md diagnostics.
 
-export type RunStatus = "running" | "converged" | "completed" | "stopped" | "diverged" | "failed";
+export type RunStatus =
+  | "running"
+  | "converged"
+  | "floor"
+  | "completed"
+  | "stopped"
+  | "diverged"
+  | "failed";
 
 export const RUN_STATUSES: readonly RunStatus[] = [
   "running",
   "converged",
+  "floor",
   "completed",
   "stopped",
   "diverged",
@@ -39,8 +47,14 @@ export interface Run {
   diagnostics: Diagnostic[];
   /** Where the run started from, null from the freestream (results.md#runjson). */
   start: RunStart | null;
-  /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
-  convergence: { floor: Record<string, number> } | null;
+  /** The round-off floor judged cell by cell for a steady fp32+acc64 run (case-schema.md#time):
+   * per equation, the largest ratio of a cell's residual to its floor (≤ 1: at its floor) and the
+   * fraction of cells at their floor, at `iteration`. */
+  convergence: {
+    iteration: number;
+    max_ratio: Record<string, number>;
+    cells_at_floor: Record<string, number>;
+  } | null;
   /** Timing of this run alone, null while running, without iterations and for the fake backend
    * (results.md#runjson); bench/ measures performance. */
   timing: {

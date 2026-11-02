@@ -608,3 +608,60 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
           64 * eps * p / std::pow(rho, gamma));
   }
 }
+
+TEST_CASE("the FP32 residual differs from the FP64 one by less than every cell's round-off floor",
+          "[euler]") {
+  // case-schema.md#time: |R32_ik - R64_ik| <= c u sum_f T_f,k from the same stored state, the
+  // FP64 residual standing for the exact one, over the configurations that declare c
+  // (docs/design/euler.md#precision); low Mach numbers scale AUSM+-up's pressure diffusion by
+  // 1/fa, and every flux's dissipation by 1/M against |F|.
+  using autan::kernels::fp32_acc64;
+  using autan::kernels::fp64;
+  const char* file = GENERATE(from_range(meshes));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const double mach = GENERATE(0.03, 0.3, 0.8, 2.0);
+  const bool limiter = GENERATE(true, false);
+  INFO(file << " flux " << static_cast<int>(flux) << " M " << mach << " limiter " << limiter);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const double a = std::sqrt(1.4 * 1e5 / 1.2);
+  const Prim w{1.2, {mach * a * 0.8, mach * a * 0.36, mach * a * 0.48}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double x = c.geometry.cell_centroid_x[i];
+    const double y = c.geometry.cell_centroid_y[i];
+    const double z = c.geometry.cell_centroid_z[i];
+    const double s = std::sin(2.0 * std::numbers::pi * x) * std::cos(std::numbers::pi * y);
+    const auto q = conserved(
+        {w.rho * (1.0 + 0.1 * s),
+         {w.v[0] * (1.0 + 0.1 * std::cos(std::numbers::pi * z)), w.v[1] * (1.0 - 0.1 * s), w.v[2]},
+         w.p * (1.0 + 0.05 * std::sin(std::numbers::pi * (x + y + z)))});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+  }
+  auto scheme = second_order(flux, mach);
+  scheme.limiter = limiter;
+  scheme.reference = conserved(w);
+  Euler<fp32_acc64> single(c.mesh, c.geometry, air, scheme);
+  Euler<fp64> twice(c.mesh, c.geometry, air, scheme);
+  single.set_boundary(kind, data);
+  twice.set_boundary(kind, data);
+  std::vector<float> s32(5 * nc);
+  single.state(u, s32);
+  const std::vector<double> s64(s32.begin(), s32.end());
+  std::vector<double> r32(5 * nc), r64(5 * nc), terms(5 * nc);
+  single.residual(s32, r32);
+  twice.residual(s64, r64);
+  single.floor_terms(s32, terms);
+  const double unit = std::ldexp(1.0, -24);
+  for (std::size_t k = 0; k < 5 * nc; ++k) {
+    REQUIRE(std::isfinite(terms[k]));
+    CHECK(std::abs(r32[k] - r64[k]) <= autan::physics::round_off_bound * unit * terms[k]);
+  }
+}

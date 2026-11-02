@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from autan.schema import Forces as ForcesSpec
 
 SCHEMA_ID = "autan.results/1"
-Status = Literal["running", "converged", "completed", "stopped", "diverged", "failed"]
-SOLUTION_REQUIRED: frozenset[str] = frozenset({"converged", "completed", "stopped"})
+Status = Literal["running", "converged", "floor", "completed", "stopped", "diverged", "failed"]
+SOLUTION_REQUIRED: frozenset[str] = frozenset({"converged", "floor", "completed", "stopped"})
 Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 
 
@@ -113,9 +113,12 @@ class StartInfo(_Strict):
 
 
 class Convergence(_Strict):
-    """The round-off floor of each equation of an fp32+acc64 steady run (case-schema.md#time)."""
+    """Each equation's round-off floor test at the last iteration the physics evaluated it
+    (case-schema.md#time)."""
 
-    floor: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
+    iteration: Annotated[int, Field(strict=True, ge=1)]
+    max_ratio: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
+    cells_at_floor: dict[str, Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]]
 
 
 class FinalMonitor(BaseModel):
@@ -837,7 +840,7 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
     return found
 
 
-FINAL = frozenset({"converged", "completed", "stopped"})
+FINAL = frozenset({"converged", "floor", "completed", "stopped"})
 # run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
 # after the solution is written, or name its final state.
 NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "timing", "diagnostics")
@@ -884,14 +887,21 @@ def final_monitor_history_problems(records: list[dict[str, Any]], run: RunInfo) 
 
 
 def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
-    """run.json ``convergence``: the floors of a steady fp32+acc64 run, one per equation."""
-    if run.convergence is not None and (
-        run.precision != "fp32+acc64"
-        or not isinstance(case.time, Steady)
-        or set(run.convergence.floor) != set(residual_names(case))
-    ):
-        return ["convergence floors exist only for a steady fp32+acc64 run, one per equation"]
-    return []
+    """run.json ``convergence``: the floor test of a steady fp32+acc64 run, one entry per
+    equation, at an iteration it reached; a ``floor`` run's at its last iteration."""
+    found = []
+    record = run.convergence
+    if record is not None:
+        names = set(residual_names(case))
+        if run.precision != "fp32+acc64" or not isinstance(case.time, Steady):
+            found.append("a floor test exists only for a steady fp32+acc64 run")
+        if set(record.max_ratio) != names or set(record.cells_at_floor) != names:
+            found.append("the floor test has one entry per equation")
+        if record.iteration > run.iterations:
+            found.append("the floor test's iteration is past the run's")
+    if run.status == "floor" and (record is None or record.iteration != run.iterations):
+        found.append("a floor run carries its floor test at its last iteration")
+    return found
 
 
 def timing_problems(run: RunInfo, mesh_info: MeshInfo) -> list[str]:
