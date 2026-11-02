@@ -799,16 +799,17 @@ def test_a_solution_is_read_only_from_its_own_file(runs: Path, server: str, outs
     with h5py.File(directory / "solution.cgns", "r+") as tree:
         pressure = tree["Base"]["Zone"]["WallSolution"]["Pressure"]
         values = pressure[" data"][()]
-        del pressure[" data"]
         if outside == "external storage":
+            del pressure[" data"]
             secret.write_bytes(values.astype("<f8").tobytes())
             pressure.create_dataset(
                 " data", shape=values.shape, dtype="<f8", external=[(str(secret), 0, values.nbytes)]
             )
         else:
+            # Beside the data the viewer reads, unused by it: the file still reaches outside.
             with h5py.File(secret, "w") as other:
                 other.create_dataset("values", data=values)
-            pressure[" data"] = h5py.ExternalLink(str(secret), "/values")
+            tree["Base"]["Zone"]["Elsewhere"] = h5py.ExternalLink(str(secret), "/values")
 
     response = httpx.get(f"{server}/api/runs/{directory.name}/surface")
 
