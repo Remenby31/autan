@@ -209,9 +209,10 @@ _CODES = [
     ),
     Code(
         "E0134",
-        "Mesh refers to another file",
-        "The mesh refers to another file (CGNS link); meshes must be self-contained.",
-        "Export a self-contained mesh (no CGNS links to other files).",
+        "File refers to another file",
+        "A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.",
+        "Export a self-contained file: no links to other files, no external storage or virtual "
+        "datasets.",
     ),
     Code(
         "E0135",

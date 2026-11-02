@@ -177,8 +177,8 @@
     },
     "E0134": {
       "severity": "error",
-      "title": "Mesh refers to another file",
-      "fix": "Export a self-contained mesh (no CGNS links to other files).",
+      "title": "File refers to another file",
+      "fix": "Export a self-contained file: no links to other files, no external storage or virtual datasets.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0134"
     },
     "E0135": {
