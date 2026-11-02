@@ -68,58 +68,147 @@ HANG_ALONE = 'mkfifo "$0.fifo" 2>/dev/null; exec 3<>"$0.fifo"; read -r _ <&3'
 NET = {"AUTAN_WATCHDOG_NET_S": "2"}
 
 
+def rank(r: int, status: int = 0, then: str = "") -> str:
+    """A rank as autan-run-relaxation is (#380): its marker, "<status> <pid>", once it ended."""
+    marker = f'echo "{status} $$" > "$RANK_DIR/exit-{r}"'
+    return f"sh -c '{marker}{then}' &"
+
+
+def launcher(*ranks: str) -> str:
+    """mpiexec that starts its ranks, waits for them, then hangs as PRRTE 3.0.x does (#304)."""
+    return " ".join(ranks) + f" wait; {HANG_ALONE}"
+
+
 def watchdog(env, limit, stacks, command):
     return subprocess.run([str(WATCHDOG), str(limit), str(stacks), "--", "sh", "-c", command],
                           check=False, env=env, capture_output=True, text=True, timeout=90)  # fmt: skip
 
 
+def exits(tmp_path: Path) -> Path:
+    d = tmp_path / "exits"
+    d.mkdir()
+    return d
+
+
 def test_a_launcher_that_outlives_every_rank_is_killed_without_failing_the_test(tmp_path):
-    # #304: the ranks have ended (one ran 3 s, and exited), the launcher stays: past the net's
-    # delay it is killed with a warning naming the test, and the test's own status stands.
-    env = {**fake_tools(tmp_path, f"sleep 3; {HANG_ALONE}"), **NET}
+    # Both ranks ended with their markers; the launcher stays: it is killed, its stack is in
+    # the log, and the test's own status stands.
+    d = exits(tmp_path)
+    env = {**fake_tools(tmp_path, launcher(rank(0), rank(1))), **NET}
     stacks = tmp_path / "stacks"
     start = time.monotonic()
-    proc = watchdog(env, 60, stacks, "mpiexec; exit 0")
-    assert proc.returncode == 0
+    proc = watchdog(
+        env, 60, stacks, f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog; exit 0"
+    )
+    assert proc.returncode == 0, proc.stdout
     assert time.monotonic() - start < 30
     assert "outlived every rank" in proc.stdout
     assert "#304" in proc.stdout
-    assert "test: sh -c mpiexec; exit 0" in proc.stdout
+    assert "ranks proven ended by their exit markers: 2/2" in proc.stdout
+    assert "test: sh -c AUTAN_TEST_EXIT_DIR=" in proc.stdout
+    assert "fake backtrace of" in proc.stdout  # the stack in the log, not only on disk
     assert "killed after every rank ended" in (tmp_path / "summary").read_text()
-    (dump,) = stacks.iterdir()  # the launcher's stack, for the upstream report
+    (dump,) = stacks.iterdir()
     assert dump.name.startswith("net-")
-    assert "fake backtrace of" in dump.read_text()
 
 
-def test_a_launcher_whose_ranks_left_their_exit_markers_is_killed_too(tmp_path):
-    # Ranks so quick that the watchdog never saw them: their markers (#380) say they ended.
-    runs = tmp_path / "case" / "runs"
-    (tmp_path / "case" / "exits").mkdir(parents=True)
-    for rank in (0, 1):
-        (tmp_path / "case" / "exits" / f"exit-{rank}").write_text(f"2 {4000 + rank}\n")
+def test_markers_are_found_next_to_the_runs_and_with_np_equals(tmp_path):
+    # Without AUTAN_TEST_EXIT_DIR, <parent of --runs>/exits; the count as --np=2.
+    d = exits(tmp_path)
+    env = {**fake_tools(tmp_path, launcher(rank(0), rank(1))), **NET}
+    command = f"RANK_DIR={d} mpiexec --np=2 prog --runs={tmp_path / 'runs'}; exit 2"
+    proc = watchdog(env, 60, tmp_path / "stacks", command)
+    assert proc.returncode == 2, proc.stdout
+    assert "ranks proven ended by their exit markers: 2/2" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("ranks", "why"),
+    [
+        ((rank(0),), "one rank of two never wrote its marker"),
+        ((rank(0), rank(1, then="; exec sleep 30")), "a rank wrote its marker but still runs"),
+    ],
+)
+def test_without_proof_that_every_rank_ended_it_is_a_hang(tmp_path, ranks, why):
+    d = exits(tmp_path)
+    env = {**fake_tools(tmp_path, launcher(*ranks)), **NET}
+    proc = watchdog(
+        env, 8, tmp_path / "stacks", f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog"
+    )
+    assert proc.returncode != 0, why
+    assert "outlived every rank" not in proc.stdout, why
+    assert "MPI hang caught by the watchdog" in (tmp_path / "summary").read_text()
+
+
+def test_stale_or_foreign_markers_prove_nothing(tmp_path):
+    # Markers older than the launcher (an earlier run), and files that are not rank markers.
+    d = exits(tmp_path)
+    gone = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True, check=True)
+    for name in ("exit-0", "exit-1"):  # of a process that has ended: only their age is wrong
+        (d / name).write_text(f"0 {gone.stdout.strip()}\n")
+        os.utime(d / name, (time.time() - 3600, time.time() - 3600))
+    (d / "exit-17").write_text("")
+    (d / "exit-garbage").write_text("")
     env = {**fake_tools(tmp_path, HANG_ALONE), **NET}
-    proc = watchdog(env, 60, tmp_path / "stacks", f"mpiexec -n 2 prog --runs {runs}; exit 2")
-    assert proc.returncode == 2
-    assert "rank exit markers: 2/2" in proc.stdout
-
-
-def test_a_launcher_with_no_rank_seen_and_markers_missing_is_a_hang(tmp_path):
-    # One marker of two: a rank may not have ended, so the net does not apply; the hang
-    # watchdog fails the test at its limit.
-    runs = tmp_path / "case" / "runs"
-    (tmp_path / "case" / "exits").mkdir(parents=True)
-    (tmp_path / "case" / "exits" / "exit-0").write_text("0 4000\n")
-    env = {**fake_tools(tmp_path, HANG_ALONE), **NET}
-    proc = watchdog(env, 6, tmp_path / "stacks", f"mpiexec -n 2 prog --runs {runs}; exit 0")
+    proc = watchdog(
+        env, 8, tmp_path / "stacks", f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog"
+    )
     assert proc.returncode != 0
     assert "outlived every rank" not in proc.stdout
-    assert "MPI hang caught by the watchdog" in (tmp_path / "summary").read_text()
+
+
+def test_ranks_ending_near_the_limit_are_not_a_hang(tmp_path):
+    # The ranks end at 4 s, the net's delay ends past the 6 s limit: proof wins over the age.
+    d = exits(tmp_path)
+    body = launcher(rank(0, then="; sleep 4"), rank(1, then="; sleep 4"))
+    env = {**fake_tools(tmp_path, body), "AUTAN_WATCHDOG_NET_S": "4"}
+    proc = watchdog(
+        env,
+        6,
+        tmp_path / "stacks",
+        f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog; exit 0",
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "outlived every rank" in proc.stdout
+    assert "MPI hang caught" not in (tmp_path / "summary").read_text()
 
 
 def test_a_launcher_is_never_killed_while_a_rank_lives(tmp_path):
     # A rank that works longer than the net's delay: the launcher waits for it and ends normally.
-    env = {**fake_tools(tmp_path, "sleep 6"), **NET}
-    proc = watchdog(env, 60, tmp_path / "stacks", "mpiexec; exit 0")
+    d = exits(tmp_path)
+    env = {**fake_tools(tmp_path, f"{rank(0, then='; sleep 6')} wait"), **NET}
+    proc = watchdog(
+        env, 60, tmp_path / "stacks", f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 1 prog"
+    )
     assert proc.returncode == 0
     assert "outlived every rank" not in proc.stdout
     assert not (tmp_path / "summary").exists()
+
+
+def test_a_rank_that_left_the_launcher_s_tree_must_have_ended(tmp_path):
+    # Rank 1 reparented away from the launcher (its parent exited): its marker names a process
+    # that still runs, so the ranks have not all ended, whatever the launcher's tree says.
+    d = exits(tmp_path)
+    away = "sh -c 'sh -c \"echo 0 \\$\\$ > $RANK_DIR/exit-1; exec sleep 30\" &' "
+    env = {**fake_tools(tmp_path, f"{rank(0)} {away}; wait; {HANG_ALONE}"), **NET}
+    proc = watchdog(
+        env, 8, tmp_path / "stacks", f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog"
+    )
+    assert proc.returncode != 0
+    assert "outlived every rank" not in proc.stdout
+
+
+def test_a_process_still_living_below_the_launcher_holds_the_net_back(tmp_path):
+    # Every rank ended with its marker, but a helper of the launcher runs 8 s more: the launcher
+    # is killed (its stack dumped just before) only once nothing below it lives.
+    d = exits(tmp_path)
+    done = tmp_path / "helper-done"
+    helper = f"sh -c 'sleep 8; touch {done}' >/dev/null 2>&1 &"
+    env = {**fake_tools(tmp_path, f"{rank(0)} {rank(1)} {helper} {HANG_ALONE}"), **NET}
+    stacks = tmp_path / "stacks"
+    command = f"AUTAN_TEST_EXIT_DIR={d} RANK_DIR={d} mpiexec -n 2 prog; exit 0"
+    proc = watchdog(env, 60, stacks, command)
+    assert proc.returncode == 0, proc.stdout
+    (dump,) = stacks.iterdir()
+    assert done.exists()
+    assert dump.stat().st_mtime >= done.stat().st_mtime
