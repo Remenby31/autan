@@ -2,8 +2,9 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
 const port = 8767;
-// On a machine without Google Chrome (Linux arm64), AUTAN_UI_BENCH_CHANNEL=chromium and the flags
-// WebGPU needs there go in AUTAN_UI_BENCH_ARGS; AUTAN_UI_BENCH_MESHES lists meshes to load.
+// On a machine without Google Chrome (Linux arm64), AUTAN_UI_BENCH_CHANNEL=chromium (the full
+// browser in new headless mode, which has WebGPU) and the flags WebGPU needs there go in
+// AUTAN_UI_BENCH_ARGS; AUTAN_UI_BENCH_MESHES lists meshes to load.
 const channel = process.env.AUTAN_UI_BENCH_CHANNEL ?? "chrome";
 const args = (process.env.AUTAN_UI_BENCH_ARGS ?? "").split(" ").filter(Boolean);
 const meshes = process.env.AUTAN_UI_BENCH_MESHES;
@@ -18,7 +19,7 @@ export default defineConfig({
   reporter: "list",
   use: {
     baseURL: external ?? `http://127.0.0.1:${port}`,
-    ...(channel === "chromium" ? {} : { channel }),
+    channel,
     headless: true,
     viewport: { width: 1600, height: 1000 },
     launchOptions: { args: ["--disable-gpu-vsync", "--disable-frame-rate-limit", ...args] },
