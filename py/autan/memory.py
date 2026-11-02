@@ -45,11 +45,25 @@ class Memory(BaseModel):
 
 
 def estimate(
-    spec: CaseSpec, mesh: MeshInfo, *, equations: int, ranks: int, device_kind: DeviceKind
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    *,
+    equations: int,
+    ranks: int,
+    device_kind: DeviceKind,
+    vortices: int = 0,
 ) -> Memory:
     return max(
         (
-            _rank(spec, mesh, share, equations=equations, ranks=ranks, device_kind=device_kind)
+            _rank(
+                spec,
+                mesh,
+                share,
+                equations=equations,
+                ranks=ranks,
+                device_kind=device_kind,
+                vortices=vortices,
+            )
             for share in _shares(mesh, ranks)
         ),
         key=lambda memory: memory.bytes_per_gpu,
@@ -97,6 +111,7 @@ def _rank(
     equations: int,
     ranks: int,
     device_kind: DeviceKind,
+    vortices: int,
 ) -> Memory:
     counts = mesh.counts
     n = equations
@@ -127,8 +142,11 @@ def _rank(
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
     if ranks > 1:
         add("partition", (mesh_bytes + geometry) / ranks + 9 * f)
-    # The solution gathered on rank 0 at the end, fields and restart, and the writer's copy.
-    add("solution output", 2 * 8 * cells * (2 * n + 2), transient=True)
+    # The solution gathered on rank 0 at the end and the writer's copy: the n + 1 primitive
+    # fields and their means; the restart's n conserved, n + 1 average sums and their weight, the
+    # steady solver's n + 5 values, one circulation per point-vortex condition.
+    fields = 2 * (n + 1) + n + (n + 2) + (n + 5) + vortices
+    add("solution output", 2 * 8 * cells * fields, transient=True)
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.
@@ -146,8 +164,19 @@ def _rank(
         + n * fb * 8
     )
     add("physics", host_physics)
-    add("physics setup", 8 * (16 * f + 4 * c + 3 * k) + 32 * stencil, transient=True)
+    # The constructor's packed geometry (25F + 4C + 4K in FP64) and the stencil's twins and
+    # FP64 weights, freed when it returns.
+    packed = 8 * (25 * f + 4 * c + 4 * k)
+    add("physics setup", packed + 32 * stencil, transient=True)
     if device_kind != "cpu":
+        # DeviceMesh keeps on the host the packed geometry, its FP64 stencil weights, a copy of
+        # the stencil and the face colourings. Its setup passes through three phases in turn:
+        # construction (a second packed copy, incidence twins, colouring work), the weights'
+        # upload (an FP64 copy, the limiter's unit field) and bind (one field converted, the
+        # face moments 72F at most).
+        add("device mesh host", packed + 24 * stencil + 8 * (c + 1) + 4 * stencil + 4 * f)
+        setup = max(packed + 8 * k + 8 * f, 24 * stencil + n * c * s, 72 * f)
+        add("device setup", setup, transient=True)
         device = (
             2 * n * c * 8
             + 2 * c * 8

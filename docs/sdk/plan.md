@@ -19,9 +19,10 @@ Each component counts what the code allocates, listed by the lane that owns it a
 | `mesh` | host | the global mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C, its FP64 geometry 56F + 32C, colourings 12C, all *global*: every rank keeps them |
 | `mesh setup` | host | the reader's form and the MeshInfo pass, about the mesh and its geometry again, which the allocator keeps resident |
 | `partition` | host | several ranks: the rank's share of the mesh and geometry, and 9F face keys |
-| `solution output` | host | rank 0 gathers 2n + 2 fields of 8C *global* bytes, and the writer copies them |
+| `solution output` | host | rank 0 gathers 8C *global* bytes per field, and the writer copies them: the n + 1 primitive fields and their means, the restart's n conserved, n + 1 average sums and their weight, the steady solver's n + 5 values, and one circulation per point-vortex condition |
 | `physics` | host | packed geometry 8(16F + 4C + 3S), stencil 8C + 4S, state, primitives, limiters, gradients and boundary data in s, solution, stages, residual in 8 bytes |
-| `physics setup` | host | 8(16F + 4C + 3K) + 32S during setup: the stencil's twins and weights, built and released |
+| `physics setup` | host | the constructor's packed geometry 8(25F + 4C + 4K) and the stencil's twins and FP64 weights 32S, freed when it returns |
+| `device mesh host`, `device setup` | host | on `cuda` and `hip`: what DeviceMesh keeps on the host, the packed geometry, its FP64 weights 24S, a stencil copy 8(C + 1) + 4S and the face colourings 4F; and the largest of its setup phases, construction 8(25F + 4C + 4K) + 8K + 8F, the weights' upload 24S + nCs, bind 72F |
 | `physics device`, `device context` | device, host | on `cuda` and `hip`: the same state, topology, stencil and geometry on the device; 512 MiB for the device context |
 | `jacobian` | host | steady runs on `cpu` (a device run solves explicitly): face and cell Jacobians in s, the block matrix 8n²(C + 2F_i) |
 | `multigrid`, `lines`, `gauss-seidel` | host | the case's `linear_solver`: levels below the finest at most L + 0.15(C − L), L the cells of lines of at least 4 cells (which pair along their line) and the rest agglomerating by up to 8, with 7 neighbours per coarse cell, and the coarsest level's dense LU, 8u² + 8u bytes for u = min(5C, 1000) unknowns; line smoothing for the MeshInfo's `quality.lines.cells` on the finest level (the multigrid's own count, for the cell order it states) and for every coarse cell when there are lines; the lines built on the whole mesh at setup; the inverse diagonal blocks |
