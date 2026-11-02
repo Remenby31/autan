@@ -25,8 +25,8 @@ def prepare(
     capsys: pytest.CaptureFixture[str], case: Path, mesh: str, *extra: str
 ) -> tuple[int, Any]:
     status = main(["prepare", str(case), "--mesh-info", str(FIXTURES / mesh), *extra])
-    out = capsys.readouterr().out
-    return status, json.loads(out) if status == 0 else out
+    out, err = capsys.readouterr()
+    return status, json.loads(out) if status == 0 else out + err
 
 
 def test_crm_hl_input_is_resolved_and_closed_in_si(
@@ -110,8 +110,17 @@ def test_the_coupled_turbulence_step_is_an_sa_option(
     assert codes("autan.SA()", f"{on}, linear_solver='gauss-seidel'") == ["E0427", "W0426"]
     assert codes("autan.SA()", on, gpus=2) == ["E0427", "W0426"]
     case = write_case(CRM_HL + f"case.time = autan.Steady({on})\n")
-    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
-    assert json.loads(capsys.readouterr().out)["time"]["coupled_turbulence"] is True
+    status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
+    assert status == 0
+    assert document["time"]["coupled_turbulence"] is True
+    # The runtime and the published schema take a JSON boolean only.
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(
+            document | {"time": document["time"] | {"coupled_turbulence": "true"}}
+        )
+    status, refused = prepare(capsys, case, "crm-hl.meshinfo.json", "--device-count", "2")
+    assert status != 0
+    assert "E0427" in refused
 
 
 def test_heat_exchanger_media_and_inlets_in_si(
