@@ -31,6 +31,7 @@ from watchfiles import Change, awatch
 from autan_ui.cases import Meshes, materials, render
 from autan_ui.confine import Folder, is_link
 from autan_ui.history import read_lines
+from autan_ui.perf import PerfHistoryError, read_perf_history
 from autan_ui.registry import (
     Registry,
     RunNotFoundError,
@@ -222,6 +223,7 @@ def create_app(
     *,
     hosts: tuple[str, ...] = LOOPBACK,
     meshes_root: Path | None = None,
+    perf_root: Path | None = None,
 ) -> FastAPI:
     registry = Registry(runs_root)
     meshes = Meshes(meshes_root)
@@ -576,6 +578,17 @@ def create_app(
         """The MeshInfo files a case can be planned against."""
         return meshes.summaries()
 
+    @app.get("/api/perf")
+    def perf_history() -> dict[str, Any]:
+        """main's performance history from the `perf-history` artifact given by --perf; 404
+        without it, 422 for a file of another shape."""
+        if perf_root is None:
+            raise HTTPException(404, "no performance history: start with --perf DIR")
+        try:
+            return read_perf_history(perf_root)
+        except PerfHistoryError as error:
+            raise HTTPException(422, str(error)) from error
+
     @app.get("/api/materials")
     def list_materials() -> list[dict[str, Any]]:
         """The SDK's library gases and solids, by the name a case writes them."""
@@ -648,12 +661,13 @@ def serve(
     *,
     open_browser: bool = True,
     meshes: Path | None = None,
+    perf: Path | None = None,
 ) -> None:
     """Serve the UI for the run directories under `runs` until interrupted."""
     if not runs.is_dir():
         log.info("creating the runs directory %s", runs)
         runs.mkdir(parents=True)
-    app = create_app(runs, hosts=tuple({*LOOPBACK, host}), meshes_root=meshes)
+    app = create_app(runs, hosts=tuple({*LOOPBACK, host}), meshes_root=meshes, perf_root=perf)
     if open_browser:
         webbrowser.open(f"http://{host}:{port}/")
     uvicorn.run(app, host=host, port=port, log_level="info")
