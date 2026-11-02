@@ -38,6 +38,15 @@ Boundary faces add the same terms to their owner's row, A from `*_boundaries_jac
 
 `NavierStokes` sets the parameter; `EulerPhysics` does not, so every Euler run is bit for bit what `main` gives (the Euler physics' assembly is untouched). The same terms for Euler, where the limited cases are, are #409, with their own design and gate. The multigrid, the line smoother and the steady step are unchanged: the new entries land in the existing face blocks; the hierarchy and the Galerkin coarse operators take them as they take today's.
 
+## Two candidates, declared before the probe measurement
+
+A probe found, before any production code, that the Form's first statement (columns outside the pattern dropped, the full −Σ c kept on column s) makes J̃ worse: it no longer maps a uniform δW to zero, and its error grows to 0.525 on tets against 0.120 without the chain (Euler probe, #395 thread). Two candidates replace it, each justified independently of the plate, both measured by the declared threshold below and both recorded whatever they give:
+
+- **(a) lump**: in each row, the side's term keeps only the columns in that row's pattern, and the −Σ on column s runs over the kept columns only; a dropped δW_j is replaced by δW_s. Justification: a uniform δW gives exactly zero, as the true derivative does, on any mesh.
+- **(b) lump and boundary samples**: (a), with Ŵ taking a cell's boundary samples exactly when the residual's fit W does (a non-zero stencil weight; on a one-cell-thick mesh W takes every boundary face). A sample's value depends on its own cell only, so its term lands on column s, in the pattern. Justification: on the columns it can place, the Jacobian's fit uses the same samples as the residual's, i.e. consistency with the discretisation, not a fit to the plate.
+
+Declared reading for each, by the threshold of the gate (‖(J − J̃) v‖ / ‖J v‖ on the wall ring's continuity rows at the laminar plate's step 1000, #395's protocol, at most 0.5 times its value without the chain): at or below → the candidate passes; above → it fails. If neither passes, this note fails as declared within the pattern (the probable remainder: W's second ring, outside the pattern), recorded in #395, and the next step (a pattern extended to the second ring, or a generated boundary Jacobian per condition kind, E1004 today) goes back to the orchestrator with its cost. Probe measurements, before any production code: both candidates on a branch never merged, the boundary samples' derivative by central differences of the boundary states.
+
 ## Gate, declared before any run
 
 On `physics/ns-sa` with this change, against the same branch without it (the case files identical), fp64 unless stated:
