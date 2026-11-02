@@ -240,6 +240,7 @@ struct LineSmoother::Impl {
   template <class Off>
   void factor(const double* diag, const Off* off, void* stream) {
     if (n_lines > 0) {
+      kg::check(kg::detail::zero(singular.get(), sizeof(int), as_stream(stream)), "reset");
       factor_kernel<Off><<<grid(n_lines), block, 0, as_stream(stream)>>>(
           view(), diag, off, dinv.get(), lower.get(), gain.get(), singular.get());
       kg::check(kg::last_error(), "line factorisation");
@@ -248,7 +249,6 @@ struct LineSmoother::Impl {
                 "line factorisation");
       kg::check(kg::detail::synchronize(as_stream(stream)), "line factorisation");
       if (flag != 0) {
-        kg::check(kg::detail::zero(singular.get(), sizeof(int), as_stream(stream)), "reset");
         factored = false;
         throw std::domain_error("singular diagonal block");
       }
