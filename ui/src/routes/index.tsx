@@ -360,42 +360,51 @@ function Group({
   const navigate = useNavigate();
   const latest = runs[0];
   const sweep = study(runs.map((run) => summaries[run.run_id]?.settings));
+  const header = (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={() => setOpen(!open)}
+      className="flex h-full min-w-0 flex-1 items-center gap-2 px-4 text-left transition-colors hover:bg-bg-2"
+    >
+      <ChevronRight
+        className={cn(
+          "size-4 flex-none text-fg-3 transition-transform duration-[var(--dur-base)]",
+          open && "rotate-90",
+        )}
+      />
+      <span className="min-w-0 truncate font-medium" data-testid="study-name">
+        {shortName(names)}
+      </span>
+      {names.length > 1 && <span className="sr-only">: {names.join(", ")}</span>}
+      <span className="flex-none whitespace-nowrap text-fg-3">
+        {runs.length} {runs.length === 1 ? "run" : "runs"}
+      </span>
+      {sweep && (
+        <span className="flex min-w-0 items-center gap-2" data-testid="study">
+          <Badge tone="purple">study</Badge>
+          <span className="truncate font-mono text-fg-2 text-xs">{sweep}</span>
+        </span>
+      )}
+      {latest && (
+        <span className="ml-auto flex flex-none items-center gap-2 text-fg-3">
+          latest <StateGlyph status={latest.status} />{" "}
+          <RelativeTime iso={latest.started} card={false} />
+        </span>
+      )}
+    </button>
+  );
   return (
     <li className="border-line border-t first:border-t-0">
       <div className="flex h-10 items-center gap-2 bg-bg-1 pr-2 text-sm">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="flex h-full min-w-0 flex-1 items-center gap-2 px-4 text-left transition-colors hover:bg-bg-2"
-        >
-          <ChevronRight
-            className={cn(
-              "size-4 flex-none text-fg-3 transition-transform duration-[var(--dur-base)]",
-              open && "rotate-90",
-            )}
-          />
-          <Tooltip content={names.join(" · ")}>
-            <span className="min-w-0 truncate font-medium" data-testid="study-name">
-              {shortName(names)}
-            </span>
+        {/* Several case names: the header, hovered or focused, lists them all. */}
+        {names.length > 1 ? (
+          <Tooltip content={names.join(" · ")} side="bottom">
+            {header}
           </Tooltip>
-          <span className="flex-none whitespace-nowrap text-fg-3">
-            {runs.length} {runs.length === 1 ? "run" : "runs"}
-          </span>
-          {sweep && (
-            <span className="flex min-w-0 items-center gap-2" data-testid="study">
-              <Badge tone="purple">study</Badge>
-              <span className="truncate font-mono text-fg-2 text-xs">{sweep}</span>
-            </span>
-          )}
-          {latest && (
-            <span className="ml-auto flex flex-none items-center gap-2 text-fg-3">
-              latest <StateGlyph status={latest.status} />{" "}
-              <RelativeTime iso={latest.started} card={false} />
-            </span>
-          )}
-        </button>
+        ) : (
+          header
+        )}
         {runs.length > 1 && (
           <Button
             size="sm"

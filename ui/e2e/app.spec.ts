@@ -293,6 +293,14 @@ test("polars keep each Mach number apart and every run, and say which runs are m
     await expect(name).toHaveText(/^polar-\d+-\d \+\d+$/);
     const box = await name.boundingBox();
     expect(box?.height ?? 99).toBeLessThan(24);
+    // Every name is read out with the header, and focusing it from the keyboard lists them.
+    const header = group.locator("button[aria-expanded]").first();
+    for (const k of [0, 1, 2, 4]) {
+      await expect(header).toHaveAccessibleName(new RegExp(`polar-${tag}-${k}\\b`));
+    }
+    await page.keyboard.press("Tab");
+    await header.focus();
+    await expect(page.getByText(new RegExp(`polar-${tag}-\\d · .*polar-${tag}-\\d`))).toBeVisible();
   } finally {
     for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
