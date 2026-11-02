@@ -2,9 +2,10 @@ import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
 import { SearchX } from "lucide-react";
 import { MotionConfig } from "motion/react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useRegistrySubscription } from "../api/runs";
 import { CommandPalette } from "../components/CommandPalette";
+import { NavDrawer } from "../components/shell/nav";
 import { Sidebar } from "../components/shell/Sidebar";
 import { TopBar } from "../components/shell/TopBar";
 import { useTheme } from "../components/shell/theme";
@@ -41,16 +42,20 @@ function Root() {
   useRegistrySubscription();
   useTheme();
   const [find, setFind] = useState(false);
+  const [nav, setNav] = useState(false);
+  const closeNav = useCallback(() => setNav(false), []);
   return (
     <MotionConfig reducedMotion="user" transition={{ duration: 0.12 }}>
       <TooltipProvider delay={400}>
         <ToastProvider>
-          <div className="flex h-full">
-            <Sidebar onFind={() => setFind(true)} />
-            <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1">
-              <Outlet />
-            </main>
-          </div>
+          <NavDrawer.Provider value={() => setNav(true)}>
+            <div className="flex h-full">
+              <Sidebar onFind={() => setFind(true)} open={nav} onClose={closeNav} />
+              <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1">
+                <Outlet />
+              </main>
+            </div>
+          </NavDrawer.Provider>
           <CommandPalette open={find} onOpenChange={setFind} />
         </ToastProvider>
       </TooltipProvider>

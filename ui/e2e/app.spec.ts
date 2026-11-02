@@ -863,3 +863,38 @@ test("an unknown run or address says so, and outputs download as they are", asyn
     readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8"),
   );
 });
+
+test("at 390 px every page fits the width, and navigation sits behind a menu", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = encodeURIComponent(JSON.stringify(all.slice(0, 2).map((r) => r.run_id)));
+  const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  for (const url of ["/", `/runs/${run.run_id}`, `/compare?runs=${pair}`, "/cases/new"]) {
+    await page.goto(url);
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+    expect(await fits(), url).toBe(true);
+  }
+
+  // The drawer opens from the menu and closes on a choice, and on Escape.
+  const nav = page.getByRole("complementary", { name: "Navigation" });
+  await page.goto("/");
+  await expect(nav).toBeHidden();
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await expect(nav).toBeVisible();
+  await nav.getByRole("link", { name: "Compare" }).click();
+  await expect(page).toHaveURL(/\/compare/);
+  await expect(nav).toBeHidden();
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page.keyboard.press("Escape");
+  await expect(nav).toBeHidden();
+
+  // A run's actions fold behind one button; a row shows its run, state and drop.
+  await page.goto(`/runs/${run.run_id}`);
+  await page.getByRole("button", { name: "Actions" }).click();
+  await expect(page.getByRole("button", { name: "Open in Analysis" })).toBeVisible();
+  await page.goto("/");
+  const row = page.locator(`a[data-run="${run.run_id}"]`);
+  await expect(row.getByTestId("mach")).toBeHidden();
+  await expect(row).toContainText(run.run_id.slice(-8));
+});
