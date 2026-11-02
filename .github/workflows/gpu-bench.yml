@@ -213,7 +213,12 @@ jobs:
           needs.changes.outputs.measured != ''
         env:
           GOOD: ${{ needs.changes.outputs.measured }}
+        # Not on a machine below 97 % of its STREAM baseline: there every commit of the bandwidth-
+        # bound loops reads as regressed, so no point would be evidence (bench/ci/stream-health.py).
         run: >-
+          if ! bench/ci/stream-health.py results/stream.json bench/baselines/gb10.json; then
+          echo "::warning title=autan-bench::no bisection: STREAM below 97 % of gb10.json, the machine is not fit to measure";
+          exit 0; fi &&
           mkdir -p "results/bisect/$GITHUB_SHA" &&
           cp results/stream.json results/codegen-hex-n128-fp32.json "results/bisect/$GITHUB_SHA/" &&
           python3 bench/ci/bisect.py --good "$GOOD" --bad "$GITHUB_SHA" --out results/bisect
