@@ -120,42 +120,59 @@ class Merger {
       }
     }
     if (!has_cap || !has_top || low.size() != 3 || high.size() != 3) return std::nullopt;
-    // Per side: its low triangle (u, v, x) and the high triangle (w, y, z) sharing the diagonal
-    // w x, w in {u, v}; then the pillar of the other of u, v ends at x, w's at the other of y, z.
-    std::array<index_t, 3> partner{no_cell, no_cell, no_cell};
-    const auto set_partner = [&](index_t bottom, index_t top) {
-      const auto i =
-          static_cast<std::size_t>(std::ranges::find(p.bottom, bottom) - p.bottom.begin());
-      if (partner[i] != no_cell && partner[i] != top) return false;
-      partner[i] = top;
-      return true;
-    };
+    // Per side uv: its low triangle (u, v, x) and a high triangle (w, x, y), w in {u, v}, sharing
+    // the diagonal w x; then the other of u, v has its pillar at x, and w at y. The high triangles
+    // are assigned to the sides in the one way whose pillars agree: a high triangle of the next
+    // side shares the pillar w x too, so the first match need not be the side's.
+    std::array<std::optional<Tri>, 3> lows;
     for (std::size_t s = 0; s < 3; ++s) {
       const index_t u = p.bottom[s], v = p.bottom[(s + 1) % 3];
-      const auto side = std::ranges::find_if(low, [&](const Tri& t) {
-        return std::ranges::find(t.n, u) != t.n.end() && std::ranges::find(t.n, v) != t.n.end();
-      });
-      if (side == low.end()) return std::nullopt;
-      const index_t x = *std::ranges::find_if(side->n, [&](index_t q) { return !in_cap(q); });
-      std::optional<Tri> pair;
-      for (const Tri& t : high) {
-        const auto w = std::ranges::find_if(t.n, in_cap);
-        if ((*w == u || *w == v) && std::ranges::find(t.n, x) != t.n.end()) {
-          if (pair) return std::nullopt;
-          pair = t;
-        }
+      for (const Tri& t : low) {
+        if (std::ranges::find(t.n, u) != t.n.end() && std::ranges::find(t.n, v) != t.n.end())
+          lows[s] = t;
       }
-      if (!pair) return std::nullopt;
-      const index_t w = *std::ranges::find_if(pair->n, in_cap);
-      const index_t y = *std::ranges::find_if(pair->n, [&](index_t q) { return q != w && q != x; });
-      if (!set_partner(w == u ? v : u, x) || !set_partner(w, y)) return std::nullopt;
-      p.side_low[s] = *side;
-      p.side_high[s] = *pair;
+      if (!lows[s]) return std::nullopt;
     }
-    std::array<index_t, 3> tops = partner;
-    std::ranges::sort(tops);
-    if (tops[0] == no_cell || std::ranges::adjacent_find(tops) != tops.end()) return std::nullopt;
-    p.top = partner;
+    std::array<std::size_t, 3> order{0, 1, 2};
+    std::optional<Prism> found;
+    do {
+      std::array<index_t, 3> partner{no_cell, no_cell, no_cell};
+      const auto set_partner = [&](index_t bottom, index_t top) {
+        const auto i =
+            static_cast<std::size_t>(std::ranges::find(p.bottom, bottom) - p.bottom.begin());
+        if (partner[i] != no_cell && partner[i] != top) return false;
+        partner[i] = top;
+        return true;
+      };
+      bool fits = true;
+      for (std::size_t s = 0; s < 3 && fits; ++s) {
+        const index_t u = p.bottom[s], v = p.bottom[(s + 1) % 3];
+        const Tri& l = *lows[s];
+        const Tri& h = high[order[s]];
+        const index_t x = *std::ranges::find_if(l.n, [&](index_t q) { return !in_cap(q); });
+        const index_t w = *std::ranges::find_if(h.n, in_cap);
+        if ((w != u && w != v) || std::ranges::find(h.n, x) == h.n.end()) {
+          fits = false;
+          break;
+        }
+        const index_t y = *std::ranges::find_if(h.n, [&](index_t q) { return q != w && q != x; });
+        fits = set_partner(w == u ? v : u, x) && set_partner(w, y);
+      }
+      if (!fits) continue;
+      std::array<index_t, 3> tops = partner;
+      std::ranges::sort(tops);
+      if (tops[0] == no_cell || std::ranges::adjacent_find(tops) != tops.end()) continue;
+      if (found) return std::nullopt;  // two assignments: not a prism's pattern
+      Prism q = p;
+      q.top = partner;
+      for (std::size_t s = 0; s < 3; ++s) {
+        q.side_low[s] = *lows[s];
+        q.side_high[s] = high[order[s]];
+      }
+      found = q;
+    } while (std::ranges::next_permutation(order).found);
+    if (!found) return std::nullopt;
+    p = *found;
     return p;
   }
 
