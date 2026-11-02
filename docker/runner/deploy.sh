@@ -25,6 +25,8 @@ work=autan-runner-work$instance
 # floor protects the host from that.
 cpus=${AUTAN_RUNNER_CPUS:-}
 memory=${AUTAN_RUNNER_MEMORY:-64g}
+# A whole number: it is also CMake's build parallelism.
+[[ -z $cpus || $cpus =~ ^[1-9][0-9]?$ ]] || { echo "error: AUTAN_RUNNER_CPUS must be a whole number of cores, not $cpus" >&2; exit 2; }
 lock_dir=/home/admin/autan-gpu
 lock=$lock_dir/gpu.lock
 here=$(cd "$(dirname "$0")" && pwd)

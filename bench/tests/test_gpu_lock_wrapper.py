@@ -224,14 +224,16 @@ def allocate(lock, floor, steps, out, linger, *, hold="60", delay="0"):
 
 
 def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(lock, tmp_path):
-    # Each floor is taken from what is available just before (a shared host's memory moves):
-    # 1 GiB below it, 4 GiB of allocation crosses it; 2 GiB below it, 256 MiB does not.
+    # Each floor is taken from what is available just before, with room for what other
+    # processes of a shared host (a second CI runner's build) take or free meanwhile: 1 GiB
+    # below it, 6 GiB of allocation crosses it unless 5 GiB is freed; 4 GiB below it, 256 MiB
+    # stays above it unless 3.75 GiB is taken.
     def below_now(gib: int) -> str:
         return f"{(mem_available() - (gib << 30)) >> 20}M"
 
     done = tmp_path / "done"
     start = time.monotonic()
-    greedy = allocate(lock, below_now(1), 32, done, 60)
+    greedy = allocate(lock, below_now(1), 48, done, 60)
     assert greedy.wait(timeout=60) == 71
     # At once: no TERM grace, which the allocator would sit out.
     assert time.monotonic() - start < 8
@@ -243,12 +245,12 @@ def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(loc
     # The floor still holds during the grace of another stop (here the hold limit's).
     # (hold 20 s: TERM at 10 s, KILL at 20 s; the allocation crosses the floor at about 11.5 s)
     start = time.monotonic()
-    late = allocate(lock, below_now(1), 32, done, 60, hold="20", delay="11")
+    late = allocate(lock, below_now(1), 48, done, 60, hold="20", delay="11")
     assert late.wait(timeout=60) == 71
     assert time.monotonic() - start < 17
     assert [r[1] for r in events(lock)][-1] == "memory"
 
-    modest = allocate(lock, below_now(2), 2, done, 0)
+    modest = allocate(lock, below_now(4), 2, done, 0)
     assert modest.wait(timeout=60) == 0
     assert done.exists()
     assert [r[1] for r in events(lock)][-1] == "release"
