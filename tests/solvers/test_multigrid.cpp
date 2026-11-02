@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "autan/io/read_mesh.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/dense.hpp"
 #include "autan/solvers/line_smoother.hpp"
 #include "autan/solvers/multigrid.hpp"
 
@@ -335,6 +337,28 @@ void check_hierarchy(const Mesh& mesh, const std::vector<Level>& levels) {
   for (std::size_t l = 0; l < levels.size(); ++l) {
     const Level& lv = levels[l];
     INFO("level " << l);
+    // The smoother's colouring: every line in one colour, no two lines of a colour adjacent.
+    std::vector<int> colour_of(lv.n_lines(), -1);
+    const auto colours = autan::solvers::line_colours(lv);
+    for (std::size_t c = 0; c < colours.size(); ++c) {
+      for (const std::size_t li : colours[c]) {
+        REQUIRE(li < lv.n_lines());
+        CHECK(colour_of[li] == -1);
+        colour_of[li] = static_cast<int>(c);
+      }
+    }
+    CHECK(std::ranges::find(colour_of, -1) == colour_of.end());
+    std::vector<std::size_t> line_of(lv.n_nodes);
+    for (std::size_t li = 0; li < lv.n_lines(); ++li) {
+      for (auto k = lv.line_offsets[li]; k < lv.line_offsets[li + 1]; ++k) {
+        line_of[static_cast<std::size_t>(lv.line_nodes[static_cast<std::size_t>(k)])] = li;
+      }
+    }
+    for (std::size_t e = 0; e < lv.owner.size(); ++e) {
+      const auto a = line_of[static_cast<std::size_t>(lv.owner[e])];
+      const auto b = line_of[static_cast<std::size_t>(lv.neighbour[e])];
+      if (a != b) CHECK(colour_of[a] != colour_of[b]);
+    }
     // Lines partition the nodes, consecutive nodes adjacent.
     std::set<std::pair<index_t, index_t>> edges;
     for (std::size_t e = 0; e < lv.owner.size(); ++e) {
@@ -973,4 +997,68 @@ TEST_CASE("GCR reports a preconditioned direction that is not finite as a failed
                 },
                 r, x, 5, 1e-12);
   CHECK(std::isnan(report.residual_drop));
+}
+
+TEST_CASE("the dense LU of the coarsest level solves its system", "[multigrid]") {
+  // A random diagonally dominant 40 x 40 system with a known solution, then a singular one.
+  const std::size_t m = 40;
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  std::vector<double> a(m * m), x_exact(m), b(m, 0.0);
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) a[i * m + j] = u(rng) + (i == j ? 2.0 * m : 0.0);
+    x_exact[i] = u(rng);
+  }
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) b[i] += a[i * m + j] * x_exact[j];
+  }
+  std::vector<std::size_t> pivot(m);
+  autan::solvers::factor_dense(a, m, pivot);
+  std::vector<double> x = b;
+  autan::solvers::solve_dense(a, pivot, x);
+  for (std::size_t i = 0; i < m; ++i) {
+    CHECK(std::abs(x[i] - x_exact[i]) <= 1e3 * std::numeric_limits<double>::epsilon());
+  }
+  std::vector<double> singular(m * m, 1.0);
+  CHECK_THROWS_AS(autan::solvers::factor_dense(singular, m, pivot), std::domain_error);
+  // Partial pivoting by hand: [[1, 2, 3], [4, 5, 6], [7, 8, 10]] takes row 2 at step 0, then the
+  // former row 0 (now row 2) at step 1, where |2 - 8/7| > |5 - 32/7|; x = (1, 1, 1).
+  std::vector<double> p3{1, 2, 3, 4, 5, 6, 7, 8, 10};
+  std::vector<std::size_t> pv(3);
+  autan::solvers::factor_dense(p3, 3, pv);
+  CHECK(pv == std::vector<std::size_t>{2, 2, 2});
+  std::vector<double> x3{6, 15, 25};
+  autan::solvers::solve_dense(p3, pv, x3);
+  for (const double v : x3) CHECK(std::abs(v - 1.0) <= 16 * std::numeric_limits<double>::epsilon());
+  // A tie keeps the first row; a pivot that is not finite is refused.
+  std::vector<double> tie{2, 1, -2, 3};
+  std::vector<std::size_t> pv2(2);
+  autan::solvers::factor_dense(tie, 2, pv2);
+  CHECK(pv2[0] == 0);
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    std::vector<double> nf{bad, 1, 1, 1};
+    CHECK_THROWS_AS(autan::solvers::factor_dense(nf, 2, pv2), std::domain_error);
+  }
+}
+
+TEST_CASE("lines take the least colour no earlier neighbouring line has", "[multigrid]") {
+  // Five one-node lines: 0-1, 0-2, 1-2 (a triangle), 0-3, 3-4. Greedy in line order: 0 -> 0,
+  // 1 -> 1, 2 -> 2, 3 -> 1, 4 -> 0.
+  Level l;
+  l.n_nodes = 5;
+  l.owner = {0, 0, 1, 0, 3};
+  l.neighbour = {1, 2, 2, 3, 4};
+  l.line_offsets = {0, 1, 2, 3, 4, 5};
+  l.line_nodes = {0, 1, 2, 3, 4};
+  using C = std::vector<std::vector<std::size_t>>;
+  CHECK(autan::solvers::line_colours(l) == C{{0, 4}, {1, 3}, {2}});
+  // One two-node line {0, 1} and three single nodes: 2 and 3 touch the line, 4 touches 2 and 3.
+  Level m;
+  m.n_nodes = 5;
+  m.owner = {0, 1, 2, 3, 0};
+  m.neighbour = {1, 2, 4, 4, 3};
+  m.line_offsets = {0, 2, 3, 4, 5};
+  m.line_nodes = {0, 1, 2, 3, 4};
+  CHECK(autan::solvers::line_colours(m) == C{{0, 3}, {1, 2}});
 }

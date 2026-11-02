@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "autan/solvers/dense.hpp"
 #include "blocks.hpp"
 
 namespace autan::solvers {
@@ -130,7 +131,6 @@ struct Multigrid::Smoother {
     prev.assign(n, -1);
     next.assign(n, -1);
     slot.assign(n, 0);
-    std::vector<std::size_t> line_of(n);
     std::size_t n_slots = 0, longest = 1;
     for (std::size_t li = 0; li < l.n_lines(); ++li) {
       const auto b = static_cast<std::size_t>(l.line_offsets[li]);
@@ -138,7 +138,6 @@ struct Multigrid::Smoother {
       longest = std::max(longest, e - b);
       for (std::size_t k = b; k < e; ++k) {
         const auto i = static_cast<std::size_t>(l.line_nodes[k]);
-        line_of[i] = li;
         if (k > b) prev[i] = l.line_nodes[k - 1];
         if (k + 1 < e) next[i] = l.line_nodes[k + 1];
         if (e - b > 1) slot[i] = n_slots++;
@@ -148,32 +147,7 @@ struct Multigrid::Smoother {
     gain.assign(b2 * n_slots, 0.0);
     dinv.assign(b2 * n, 0.0);
     work.assign(5 * longest, 0.0);
-    // Greedy colouring of the lines in line order: lines of a colour share no edge.
-    std::vector<std::vector<std::size_t>> adjacent(l.n_lines());
-    for (std::size_t e = 0; e < l.owner.size(); ++e) {
-      const std::size_t a = line_of[static_cast<std::size_t>(l.owner[e])];
-      const std::size_t b = line_of[static_cast<std::size_t>(l.neighbour[e])];
-      if (a == b) continue;
-      adjacent[a].push_back(b);
-      adjacent[b].push_back(a);
-    }
-    std::vector<int> colour(l.n_lines(), -1);
-    std::vector<int> seen;
-    int n_colours = 0;
-    for (std::size_t li = 0; li < l.n_lines(); ++li) {
-      seen.assign(static_cast<std::size_t>(n_colours) + 1, 0);
-      for (const std::size_t o : adjacent[li]) {
-        if (colour[o] >= 0) seen[static_cast<std::size_t>(colour[o])] = 1;
-      }
-      int k = 0;
-      while (seen[static_cast<std::size_t>(k)] != 0) ++k;
-      colour[li] = k;
-      n_colours = std::max(n_colours, k + 1);
-    }
-    colours.assign(static_cast<std::size_t>(n_colours), {});
-    for (std::size_t li = 0; li < l.n_lines(); ++li) {
-      colours[static_cast<std::size_t>(colour[li])].push_back(li);
-    }
+    colours = line_colours(l);
   }
 
   // Block LU of every line: D'_0 = D_0, D'_k = D_k - A(k, k-1) D'_{k-1}^-1 A(k-1, k).
@@ -277,35 +251,12 @@ struct Multigrid::Smoother {
       }
     }
     pivot.resize(m);
-    for (std::size_t k = 0; k < m; ++k) {
-      std::size_t p = k;
-      for (std::size_t i = k + 1; i < m; ++i) {
-        if (std::abs(dense[i * m + k]) > std::abs(dense[p * m + k])) p = i;
-      }
-      if (dense[p * m + k] == 0.0 || !std::isfinite(dense[p * m + k])) {
-        throw std::domain_error("singular coarsest operator");
-      }
-      pivot[k] = p;
-      if (p != k) std::swap_ranges(&dense[k * m], &dense[k * m] + m, &dense[p * m]);
-      for (std::size_t i = k + 1; i < m; ++i) {
-        const double f = dense[i * m + k] /= dense[k * m + k];
-        if (f == 0.0) continue;
-        for (std::size_t j = k + 1; j < m; ++j) dense[i * m + j] -= f * dense[k * m + j];
-      }
-    }
+    autan::solvers::factor_dense(dense, m, pivot);
   }
 
   void solve_dense(std::span<const double> b, std::span<double> x) const {
-    const std::size_t m = pivot.size();
-    std::copy_n(b.begin(), m, x.begin());
-    for (std::size_t k = 0; k < m; ++k) std::swap(x[k], x[pivot[k]]);
-    for (std::size_t i = 0; i < m; ++i) {
-      for (std::size_t j = 0; j < i; ++j) x[i] -= dense[i * m + j] * x[j];
-    }
-    for (std::size_t i = m; i-- > 0;) {
-      for (std::size_t j = i + 1; j < m; ++j) x[i] -= dense[i * m + j] * x[j];
-      x[i] /= dense[i * m + i];
-    }
+    std::copy_n(b.begin(), pivot.size(), x.begin());
+    autan::solvers::solve_dense(dense, pivot, x);
   }
 };
 

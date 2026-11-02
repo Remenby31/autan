@@ -61,6 +61,12 @@ struct Lines {
 Lines smoother_lines(const Mesh& mesh, const Geometry& geometry,
                      const AgglomerationOptions& options = {});
 
+/// The colours the multigrid's smoother sweeps a level's lines in: lines of one colour share no
+/// edge, each line has one colour, colours are numbered from 0 and list their lines in increasing
+/// index. Greedy in line order (each line takes the least colour no earlier neighbouring line
+/// has). A device port of the smoother must sweep these, not a colouring of its own.
+std::vector<std::vector<std::size_t>> line_colours(const Level& level);
+
 /// Agglomeration hierarchy of a mesh without ghost cells, finest level first. Throws
 /// std::invalid_argument on a mesh with ghost cells. Deterministic: the result depends only on
 /// the mesh, its geometry and the options.

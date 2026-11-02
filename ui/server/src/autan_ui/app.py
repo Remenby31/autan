@@ -14,10 +14,13 @@ from typing import Annotated, Any, BinaryIO
 from urllib.parse import quote
 
 import autan
+import numpy as np
+import numpy.typing as npt
 import uvicorn
 from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
@@ -34,6 +37,7 @@ from autan_ui.registry import (
     RunRejectedError,
     read_run,
 )
+from autan_ui.slice import slice_surface
 from autan_ui.surface import synthetic_wing
 from autan_ui.wall import wall_surface
 
@@ -515,6 +519,53 @@ def create_app(
                     raise HTTPException(422, f"solution.cgns: {error}") from error
                 surfaces.clear()
                 surfaces[key] = message
+        return Response(message, media_type="application/octet-stream")
+
+    # One slice cut at a time, each needing memory of the order of its mesh; a slice asked again
+    # for the same run (a moved plane) supersedes the ones still waiting. Waiting holds no worker
+    # thread: only the cut runs in one.
+    slicing = asyncio.Lock()
+    asked: dict[str, int] = {}
+    app.state.slices_asked = asked
+
+    def cut_slice(
+        run_id: str, point: npt.NDArray[np.float64], direction: npt.NDArray[np.float64]
+    ) -> bytes:
+        with Folder(find_run(run_id)) as folder:
+            if read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            if folder.stat("solution.cgns") is None:
+                raise HTTPException(404, f"run {run_id} has no solution.cgns")
+            try:
+                return slice_surface(folder, point, direction)
+            except (OSError, ValueError, KeyError) as error:
+                raise HTTPException(422, f"slice: {error}") from error
+
+    @app.get("/api/runs/{run_id}/slice")
+    async def run_slice(
+        run_id: Annotated[str, Depends(existing_run)], origin: str, normal: str
+    ) -> Response:
+        """The cut of the run's solution by a plane, `origin` and `normal` as three comma-separated
+        numbers, as an `autan-ui.surface/1` message (`slice_surface`). 409 while the run is
+        running (results.md) or when a newer slice of the run was asked for before this one
+        started, 422 for a plane that is not one or meets no cell."""
+        try:
+            point, direction = (
+                np.array([float(x) for x in text.split(",")], dtype=np.float64)
+                for text in (origin, normal)
+            )
+        except ValueError as error:
+            raise HTTPException(
+                422, f"origin and normal are three numbers each: {error}"
+            ) from error
+        if point.shape != (3,) or direction.shape != (3,):
+            raise HTTPException(422, "origin and normal are three numbers each")
+        ticket = asked.get(run_id, 0) + 1
+        asked[run_id] = ticket
+        async with slicing:
+            if asked[run_id] != ticket:
+                raise HTTPException(409, f"a newer slice of run {run_id} was asked for")
+            message = await run_in_threadpool(cut_slice, run_id, point, direction)
         return Response(message, media_type="application/octet-stream")
 
     @app.get("/api/meshes")
