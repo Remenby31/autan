@@ -136,8 +136,9 @@ struct SolverInput {
   std::string mesh_path, mesh_sha256;
   double mesh_scale = 1.0;  ///< metres per mesh unit (solver-input.md, mesh.scale)
   /// The MeshInfo the input was planned with (solver-input.md, mesh_info), as JSON text, and
-  /// the cell order of its quality.lines.
+  /// the cell order and scale its quality.lines were counted in.
   std::string mesh_info, mesh_info_order;
+  double mesh_info_scale = 1.0;
   std::string precision;  ///< "fp32+acc64" or "fp64"
   /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
   std::string reproducibility = "run";

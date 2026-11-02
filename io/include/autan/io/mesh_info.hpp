@@ -30,7 +30,8 @@ MeshInfoZones meshinfo_zones(const Mesh& mesh);
 /// single-rank run, and with `partition` those of each rank of a run on
 /// several (autan::io::run_counts computes them).
 struct MeshInfoRun {
-  std::string line_order;  // "rcm" or "input"
+  std::string line_order;   // "rcm" or "input"
+  double line_scale = 1.0;  // metres per mesh unit the counts were computed with
   std::int64_t line_cells = 0;
   std::int64_t long_line_cells = 0;
   std::int64_t stencil_entries = 0;

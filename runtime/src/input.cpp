@@ -423,15 +423,19 @@ SolverInput parse_solver_input(const std::string& text) {
     // solver-input.md, mesh_info: the prepared document, written as the run's mesh-info.json.
     // The SDK has validated it; the runtime ties it to the mesh it reads.
     const Json& info = root.get("mesh_info");
-    // The member at `path` of `info`, a string, or E0705 naming it.
-    const auto member = [&](std::initializer_list<const char*> path) {
+    // The member at `path` of `info`, or E0705 naming it.
+    const auto at_path = [&](std::initializer_list<const char*> path, const char* expected) {
       const Json* v = &info;
       std::string where = "mesh_info";
       for (const char* key : path) {
         where += std::string(".") + key;
-        if (!v->is_object() || !v->contains(key)) invalid(where, "expected a string");
+        if (!v->is_object() || !v->contains(key)) invalid(where, expected);
         v = &(*v)[key];
       }
+      return std::pair<const Json*, std::string>{v, where};
+    };
+    const auto member = [&](std::initializer_list<const char*> path) {
+      const auto [v, where] = at_path(path, "expected a string");
       if (!v->is_string()) invalid(where, "expected a string");
       return v->get<std::string>();
     };
@@ -449,6 +453,12 @@ SolverInput parse_solver_input(const std::string& text) {
     in.mesh_info_order = member({"quality", "lines", "order"});
     if (in.mesh_info_order != "rcm" && in.mesh_info_order != "input")
       invalid("mesh_info.quality.lines.order", "expected rcm or input");
+    {
+      const auto [v, where] = at_path({"quality", "lines", "scale"}, "expected a positive number");
+      if (!v->is_number() || !(v->get<double>() > 0.0))
+        invalid(where, "expected a positive number");
+      in.mesh_info_scale = v->get<double>();
+    }
     in.mesh_info = info.dump(2);
   }
   if (!root.is_null("verification")) {

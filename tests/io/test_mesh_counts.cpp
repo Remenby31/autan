@@ -26,7 +26,7 @@ autan::CellwiseMesh box(int n, double stretch) {
 autan::io::MeshInfoRun counts(autan::CellwiseMesh cw, CellOrder order,
                               std::optional<autan::io::RanksRequest> ranks = std::nullopt) {
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cw)));
-  return autan::io::run_counts(mesh, autan::compute_geometry(mesh), order, ranks);
+  return autan::io::run_counts(mesh, 1.0, order, ranks);
 }
 
 // The face2 stencil of the n^3 hexahedra of a box, from its definition (kernels::StencilKind):
@@ -94,6 +94,7 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
   CHECK(periodic.stencil_entries > plain.stencil_entries);
 }
 
+#ifdef AUTAN_HAVE_METIS
 TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
   const int n = 4;
   const auto groups = GENERATE(autan::io::RankGroups::none, autan::io::RankGroups::lines);
@@ -124,3 +125,14 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
     CHECK(e.code() == autan::ErrorCode::partition_invalid_request);
   }
 }
+#else
+TEST_CASE("MeshInfo has no partition counts without METIS", "[mesh-info]") {
+  // The partitioner the run uses is not built: the refusal a run on several ranks would give.
+  try {
+    (void)counts(box(4, 1.0), CellOrder::rcm, autan::io::RanksRequest{.ranks = 2, .groups = {}});
+    FAIL("partitioned without METIS");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::partition_backend_failed);
+  }
+}
+#endif

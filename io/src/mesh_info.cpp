@@ -243,6 +243,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, const Me
         {"max_faces_per_cell", max_faces},
         {"lines",
          {{"order", run.line_order},
+          {"scale", run.line_scale},
           {"cells", run.line_cells},
           {"long_cells", run.long_line_cells}}}}},
   };

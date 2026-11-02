@@ -910,7 +910,7 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
     const auto groups =
         std::string(linear) == "lines" ? autan::io::RankGroups::lines : autan::io::RankGroups::none;
     const auto counts =
-        autan::io::run_counts(mesh, autan::compute_geometry(mesh), autan::io::CellOrder::rcm,
+        autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
                               autan::io::RanksRequest{.ranks = ranks, .groups = groups});
     REQUIRE(counts.partition);
     CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));

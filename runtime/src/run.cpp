@@ -783,6 +783,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                                  "', but the run computes in cell order '" +
                                                  p.cell_order + "'");
   }
+  if (p.input.mesh_info_scale != p.input.mesh_scale) {
+    invalid("mesh_info.quality.lines.scale",
+            "counted with " + std::to_string(p.input.mesh_info_scale) +
+                " metres per mesh unit, but mesh.scale is " + std::to_string(p.input.mesh_scale));
+  }
   p.mesh_info = p.input.mesh_info;
   if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
   if (p.input.start) load_start(p);

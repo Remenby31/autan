@@ -649,6 +649,9 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
       d["mesh_info"] = broken;
       require_error(run(d), "E0705");
     }
+    Json other_scale = input();
+    other_scale["mesh_info"]["quality"]["lines"]["scale"] = 0.0254;
+    require_error(run(other_scale), "E0705");
     Json no_lines = input();
     no_lines["mesh_info"]["quality"].erase("lines");
     require_error(run(no_lines), "E0705");
@@ -2158,9 +2161,8 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   std::int64_t owned = 0;
   for (const auto& n : partitioned["owned_cells"]) owned += n.get<std::int64_t>();
   CHECK(owned == mesh.n_cells());
-  const auto counts =
-      autan::io::run_counts(mesh, autan::compute_geometry(mesh), autan::io::CellOrder::rcm,
-                            autan::io::RanksRequest{.ranks = ranks, .groups = {}});
+  const auto counts = autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
+                                            autan::io::RanksRequest{.ranks = ranks, .groups = {}});
   REQUIRE(counts.partition);
   CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));
   CHECK(partitioned["ghost_cells"] == Json(counts.partition->ghosts));

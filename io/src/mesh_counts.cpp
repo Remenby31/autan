@@ -1,6 +1,7 @@
 #include "autan/io/mesh_counts.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -26,9 +27,14 @@ void count_lines(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
 
 }  // namespace
 
-MeshInfoRun run_counts(const Mesh& mesh, const Geometry& geometry, CellOrder order,
+MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                        std::optional<RanksRequest> ranks) {
+  // As prepare() does: the coordinates in metres before any geometry.
+  std::optional<Mesh> metres;
+  const Mesh& mesh = scale == 1.0 ? read : metres.emplace(scaled(read, scale));
+  const Geometry geometry = compute_geometry(mesh);
   MeshInfoRun out;
+  out.line_scale = scale;
   if (order == CellOrder::rcm) {
     out.line_order = "rcm";
     AssemblyMap map;

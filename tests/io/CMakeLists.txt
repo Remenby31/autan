@@ -17,7 +17,9 @@ target_link_libraries(
 )
 target_compile_definitions(
   autan_io_tests
-  PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
+  PRIVATE
+    AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
+    $<$<BOOL:${AUTAN_ENABLE_METIS}>:AUTAN_HAVE_METIS>
 )
 if(AUTAN_ENABLE_CGNS)
   find_program(AUTAN_CGNSCHECK cgnscheck REQUIRED)
@@ -44,23 +46,29 @@ add_cli_test(json 0 "\"max_faces_per_cell\": 105" --json ${mesh_dir}/hanging/pol
 add_cli_test(text 0 "cells +27\n" ${mesh_dir}/hex/hex.binary.msh)
 add_cli_test(coded-error 1 "E0130" ${mesh_dir}/missing.msh)
 add_cli_test(usage 2 "usage: autan-mesh-info" --unknown)
-add_cli_test(
-  partition
-  0
-  "\"groups\": \"lines\""
-  --json
-  --cell-order
-  input
-  --ranks
-  2
-  --groups
-  lines
-  ${mesh_dir}/hybrid/polyMesh
-)
+add_cli_test(scale 0 "\"scale\": 0.0254" --json --scale 0.0254 ${mesh_dir}/hex/polyMesh)
+add_cli_test(no-scale 2 "usage: autan-mesh-info" --json --scale 0 ${mesh_dir}/hex/polyMesh)
+if(AUTAN_ENABLE_METIS)
+  add_cli_test(
+    partition
+    0
+    "\"groups\": \"lines\""
+    --json
+    --cell-order
+    input
+    --ranks
+    2
+    --groups
+    lines
+    ${mesh_dir}/hybrid/polyMesh
+  )
+  add_cli_test(too-many-ranks 1 "E0140" --json --ranks 1000 ${mesh_dir}/hex/polyMesh)
+else()
+  add_cli_test(partition-without-metis 1 "E0142" --json --ranks 2 ${mesh_dir}/hex/polyMesh)
+endif()
 add_cli_test(groups-without-ranks 2 "usage: autan-mesh-info" --json --groups lines ${mesh_dir}/hex/polyMesh)
 add_cli_test(no-ranks 2 "usage: autan-mesh-info" --json --ranks 0 ${mesh_dir}/hex/polyMesh)
 add_cli_test(counts-without-json 2 "usage: autan-mesh-info" --ranks 2 ${mesh_dir}/hex/polyMesh)
-add_cli_test(too-many-ranks 1 "E0140" --json --ranks 1000 ${mesh_dir}/hex/polyMesh)
 add_test(
   NAME autan-mesh-info.surface
   COMMAND
