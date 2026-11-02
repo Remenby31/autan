@@ -47,3 +47,18 @@ if(AUTAN_ENABLE_CUDA)
     PRIVATE autan::solvers autan::io CUDA::cudart autan_compile_options
   )
 endif()
+
+# #406: the restriction's gather pattern against identity, random and contiguous access.
+if(AUTAN_ENABLE_CUDA)
+  add_executable(autan_gather_bound_bench bench/gather_bound_bench.cu)
+  add_dependencies(autan_gather_bound_bench autan_codegen_revision)
+  target_include_directories(
+    autan_gather_bound_bench
+    PRIVATE ${PROJECT_BINARY_DIR}/codegen/revision
+  )
+  target_link_libraries(autan_gather_bound_bench PRIVATE autan::solvers autan::io CUDA::cudart)
+  set_target_properties(
+    autan_gather_bound_bench
+    PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+  )
+endif()
