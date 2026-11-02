@@ -234,6 +234,8 @@ class CudaStepper final : public DeviceStepper<P> {
     }
     mesh_.set_stencil_weights(host.gradient_weights());
     mesh_.bind(d_);
+    // Everything the loops read is on the device now: the host geometry goes.
+    mesh_.release_host();
     d_.u = state_.get();
     d_.prim = prim_.get();
     d_.prim_b = prim_b_.get();
