@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RUN_STATUSES, type Run, type RunStatus, type RunSummary } from "../api/contracts";
 import { finalCoefficients } from "../api/polars";
 import { runsQuery } from "../api/runs";
-import { study } from "../api/studies";
+import { groupByStudy, study } from "../api/studies";
 import { coefficient, degrees } from "../api/units";
 import { Peek } from "../components/runs/Peek";
 import { SelectionBar } from "../components/runs/SelectionBar";
@@ -100,11 +100,7 @@ function Runs() {
     () => [...new Set((data?.runs ?? []).map((r) => r.case.name))].sort(),
     [data],
   );
-  const groups = useMemo(() => {
-    const byCase = new Map<string, Run[]>();
-    for (const run of runs) byCase.set(run.case.name, [...(byCase.get(run.case.name) ?? []), run]);
-    return [...byCase.entries()];
-  }, [runs]);
+  const groups = useMemo(() => groupByStudy(runs, data?.summaries), [runs, data]);
   const setSearch = (patch: Partial<Search>) =>
     void navigate({ search: (s: Search) => ({ ...s, ...patch }), replace: true });
 
@@ -273,8 +269,13 @@ function Runs() {
                 }
               >
                 {grouped && !filtered ? (
-                  groups.map(([name, members]) => (
-                    <Group key={name} name={name} runs={members} summaries={data.summaries} />
+                  groups.map((group) => (
+                    <Group
+                      key={group.key}
+                      name={group.name}
+                      runs={group.runs}
+                      summaries={data.summaries}
+                    />
                   ))
                 ) : (
                   <AnimatePresence initial={false}>
@@ -481,9 +482,14 @@ function RunRow({
             <Status status={run.status} duration={duration(run)} />
           </span>
           {run.diagnostics[0] && (
-            <span className="flex-none font-mono text-danger text-xs">
-              {run.diagnostics[0].code}
-            </span>
+            <>
+              <Tooltip content={run.diagnostics[0].message}>
+                <span className="flex-none font-mono text-danger text-xs">
+                  {run.diagnostics[0].code}
+                </span>
+              </Tooltip>
+              <span className="sr-only">: {run.diagnostics[0].message}</span>
+            </>
           )}
         </span>
         <span className="text-right font-mono text-sm tabular-nums">

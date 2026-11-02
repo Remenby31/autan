@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -11,7 +12,7 @@ from typing import Any
 import autan
 from autan.errors import CaseError, Location
 from autan.meshinfo import MeshInfo
-from autan.results import check_run_json
+from autan.results import IdentityParts, check_run_json, run_identity_parts
 from autan.schema import CaseSpec
 
 from autan_ui.confine import Folder, is_link
@@ -150,6 +151,7 @@ class Registry:
                     "target_orders": time.get("residual_orders"),
                     "max_iterations": time.get("max_iterations", time.get("steps")),
                     "settings": _settings(case),
+                    "study": _study(run_identity_parts(results.run, results.case)),
                 }
             except CaseError as error:
                 outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
@@ -189,6 +191,14 @@ def _inside(root: Path, directory: Path) -> bool:
         and directory.resolve().parent == root
         and not any(is_link(directory / name) for name in RUN_FILES)
     )
+
+
+def _study(parts: IdentityParts) -> str:
+    """The study a run belongs to (results.md#studies): runs of one study have the same identity
+    fields but the case's hash, and the same case without its name and freestream."""
+    fields = {k: v for k, v in parts.fields.items() if k != "case.sha256"}
+    key = json.dumps([fields, parts.case_without_freestream], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 def _settings(case: dict[str, Any]) -> dict[str, Any]:
