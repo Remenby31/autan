@@ -80,6 +80,8 @@ class Connectivity:
 
 
 Cut = tuple[I64, list[F64], npt.NDArray[np.uint32]]
+# Per segment: its cell, the names of its two points, and the points.
+Segments = tuple[I64, I64, I64, F64, F64]
 
 
 def _section(
@@ -178,12 +180,14 @@ def _cut(
     t = distance[a] / (distance[a] - distance[b])
     point = coords[a] + t[:, None] * (coords[b] - coords[a])
     key = np.minimum(a, b) * n_nodes + np.maximum(a, b)
+    raw_key, raw_point = key.copy(), point.copy()
     if moved is not None:
         at = np.where(moved[1][a], a, np.where(moved[1][b], b, -1))
         snapped = at >= 0
         point[snapped] = coords[at[snapped]]
         key[snapped] = n_nodes * n_nodes + at[snapped]
-    seg_face, seg_p, seg_q = _segments(face, point)
+    # Paired by the crossings as computed: snapped ones can coincide.
+    seg_face, seg_p, seg_q = _segments(face, raw_point)
 
     # The cells holding each crossed face, read cell by cell from NFACE.
     is_crossed = np.zeros(len(faces), dtype=bool)
@@ -205,13 +209,17 @@ def _cut(
         np.repeat(lo, taken) + np.arange(taken.sum()) - np.repeat(np.cumsum(taken) - taken, taken)
     ]
     p, q = seg_p[pick], seg_q[pick]
+    raw: Segments | None = None
     if moved is not None:
-        # Kept cells, and segments between two distinct points.
-        mine = moved[0][cell] & (key[p] != key[q])
+        kept = moved[0][cell]
+        cell, p, q = cell[kept], p[kept], q[kept]
+        raw = (cell, raw_key[p], raw_key[q], raw_point[p], raw_point[q])
+        # Segments between two distinct points.
+        mine = key[p] != key[q]
         cell, p, q = cell[mine], p[mine], q[mine]
         if not len(cell):
             return None
-    return _polygons(cell, key[p], key[q], point[p], point[q], unit)
+    return _polygons(cell, key[p], key[q], point[p], point[q], unit, raw)
 
 
 def _segments(face: I64, point: F64) -> tuple[I64, I64, I64]:
@@ -239,7 +247,7 @@ def _segments(face: I64, point: F64) -> tuple[I64, I64, I64]:
 
 
 def _polygons(
-    cell: I64, kp: I64, kq: I64, pp: F64, pq: F64, unit: F64
+    cell: I64, kp: I64, kq: I64, pp: F64, pq: F64, unit: F64, raw: "Segments | None" = None
 ) -> tuple[I64, list[F64], npt.NDArray[np.uint32]] | None:
     # Most cells cut in one convex loop: their points, ordered by angle about their mean, are
     # checked to run along their segments, and fanned, all at once. The others (a concave or
@@ -307,8 +315,19 @@ def _polygons(
 
     rest = ~fast & (area > small) | bad | ~same
     rest_rows = np.isin(cell, cells[rest])
+    if raw is not None:
+        raw_rows = np.isin(raw[0], cells[rest])
+        raw = (
+            raw[0][raw_rows],
+            raw[1][raw_rows],
+            raw[2][raw_rows],
+            raw[3][raw_rows],
+            raw[4][raw_rows],
+        )
     slow = _triangulated(
-        _sections(cell[rest_rows], kp[rest_rows], kq[rest_rows], pp[rest_rows], pq[rest_rows]),
+        _sections(
+            (cell[rest_rows], kp[rest_rows], kq[rest_rows], pp[rest_rows], pq[rest_rows]), raw
+        ),
         unit,
     )
     if slow is not None:
@@ -320,37 +339,60 @@ def _polygons(
     return out_cells.astype(np.int64), out_points, triangles.astype(np.uint32)
 
 
-def _sections(cell: I64, kp: I64, kq: I64, pp: F64, pq: F64) -> list[tuple[int, F64]]:
-    # Each cell's segments chained into closed loops; a loop is a section polygon. A cell that
-    # touches the plane only at nodes (fewer than three of them, or a node and an edge) has no
-    # loop of three distinct points.
+def _sections(segments: "Segments", raw: "Segments | None") -> list[tuple[int, F64]]:
+    # Each cell's segments chained into closed loops; a loop is a section polygon. Where crossings
+    # were snapped to on-plane nodes and that leaves a node on more than two segments (a concave
+    # cell cut through two of its reflex nodes), the cell is chained from its crossings unsnapped.
+    snapped = _by_cell(segments)
+    unsnapped = _by_cell(raw) if raw is not None else {}
+    out: list[tuple[int, F64]] = []
+    for c, mine in snapped.items():
+        neighbours, where = _graph(mine)
+        if c in unsnapped and any(len(n) != 2 for n in neighbours.values()):
+            neighbours, where = _graph(unsnapped[c])
+        out += [(c, loop) for loop in _loops(neighbours, where)]
+    return out
+
+
+def _by_cell(segments: "Segments") -> dict[int, list[tuple[int, int, F64, F64]]]:
+    cell, kp, kq, pp, pq = segments
     by_cell: dict[int, list[tuple[int, int, F64, F64]]] = defaultdict(list)
     for c, a, b, x, y in zip(cell.tolist(), kp.tolist(), kq.tolist(), pp, pq, strict=True):
         by_cell[c].append((a, b, x, y))
-    out: list[tuple[int, F64]] = []
-    for c, segments in by_cell.items():
-        neighbours: dict[int, list[int]] = defaultdict(list)
-        where: dict[int, F64] = {}
-        for a, b, x, y in segments:
-            if b in neighbours[a]:
-                continue
-            neighbours[a].append(b)
-            neighbours[b].append(a)
-            where[a], where[b] = x, y
-        seen: set[int] = set()
-        for begin in list(neighbours):
-            if begin in seen or len(neighbours[begin]) != 2:
-                continue
-            loop = [begin]
-            seen.add(begin)
-            previous, current = begin, neighbours[begin][0]
-            while current != begin and current not in seen and len(neighbours[current]) == 2:
-                loop.append(current)
-                seen.add(current)
-                a, b = neighbours[current]
-                previous, current = current, b if a == previous else a
-            if current == begin and len(loop) >= 3:
-                out.append((c, np.array([where[k] for k in loop])))
+    return by_cell
+
+
+def _graph(
+    segments: list[tuple[int, int, F64, F64]],
+) -> tuple[dict[int, list[int]], dict[int, F64]]:
+    neighbours: dict[int, list[int]] = defaultdict(list)
+    where: dict[int, F64] = {}
+    for a, b, x, y in segments:
+        if b in neighbours[a]:
+            continue
+        neighbours[a].append(b)
+        neighbours[b].append(a)
+        where[a], where[b] = x, y
+    return neighbours, where
+
+
+def _loops(neighbours: dict[int, list[int]], where: dict[int, F64]) -> list[F64]:
+    # The closed loops of three points or more, each through nodes on exactly two segments.
+    seen: set[int] = set()
+    out = []
+    for begin in list(neighbours):
+        if begin in seen or len(neighbours[begin]) != 2:
+            continue
+        loop = [begin]
+        seen.add(begin)
+        previous, current = begin, neighbours[begin][0]
+        while current != begin and current not in seen and len(neighbours[current]) == 2:
+            loop.append(current)
+            seen.add(current)
+            a, b = neighbours[current]
+            previous, current = current, b if a == previous else a
+        if current == begin and len(loop) >= 3:
+            out.append(np.array([where[k] for k in loop]))
     return out
 
 

@@ -340,3 +340,16 @@ def test_a_plane_through_a_cell_and_along_its_face_gives_both(run: Path, normal:
     tolerance = 64 * float(np.finfo(np.float32).eps)
     np.testing.assert_allclose(positions[:, 0], 1.0, atol=tolerance)
     assert _areas(positions, triangles).sum() == pytest.approx(2.0, rel=tolerance)
+
+
+def test_a_concave_cell_cut_through_its_reflex_nodes_keeps_its_section(run: Path) -> None:
+    # A prism over a hexagon whose two reflex corners, (-1, 0) and (1, 0), lie on y = 0: its
+    # section there is the full 4 by 1 rectangle.
+    _single_cell(run, [(-2, -1), (-1, 0), (2, -1), (2, 1), (1, 0), (-2, 1)])
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0,0,0.5&normal=0,1,0")
+
+    assert response.status_code == 200
+    positions, triangles, _ = _decode(response.content)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    assert _areas(positions, triangles).sum() == pytest.approx(4.0, rel=1e-6)
+    np.testing.assert_allclose(positions[:, 1], 0.0, atol=tolerance)
