@@ -42,10 +42,10 @@ endif()
 # The Euler physics through autan-run's run_case; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)
   FetchContent_GetProperties(picosha2)
-  # The coupled flow and SA product (docs/design/coupled-sa.md), part of the runtime's physics.
-  add_executable(autan_coupled_product_tests test_coupled_product.cpp)
+  # The matrix-free product of the viscous steady step, part of the runtime's physics.
+  add_executable(autan_matrix_free_product_tests test_matrix_free_product.cpp)
   target_link_libraries(
-    autan_coupled_product_tests
+    autan_matrix_free_product_tests
     PRIVATE
       autan::physics_runtime
       autan::physics
@@ -54,10 +54,10 @@ if(AUTAN_ENABLE_CGNS)
       autan_compile_options
   )
   target_compile_definitions(
-    autan_coupled_product_tests
+    autan_matrix_free_product_tests
     PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
   )
-  catch_discover_tests(autan_coupled_product_tests)
+  catch_discover_tests(autan_matrix_free_product_tests)
 
   add_executable(autan_euler_run_tests test_euler_run.cpp)
   target_include_directories(autan_euler_run_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})

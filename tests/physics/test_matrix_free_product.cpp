@@ -1,4 +1,4 @@
-// autan::physics::CoupledProduct, the coupled flow and SA product of docs/design/coupled-sa.md,
+// autan::physics::MatrixFreeProduct, the coupled flow and SA product of docs/design/coupled-sa.md,
 // against central differences of the coupled residual, on the test meshes of tests/data/mesh.
 #include <algorithm>
 #include <array>
@@ -19,7 +19,7 @@
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
-#include "autan/physics/coupled_product.hpp"
+#include "autan/physics/matrix_free_product.hpp"
 #include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -28,8 +28,8 @@ namespace {
 
 namespace fs = std::filesystem;
 using autan::physics::BoundaryKind;
-using autan::physics::CoupledProduct;
 using autan::physics::Gas;
+using autan::physics::MatrixFreeProduct;
 using autan::physics::NavierStokes;
 using autan::physics::NtBounds;
 using autan::physics::Scheme;
@@ -134,7 +134,7 @@ struct Setup {
   }
 
   // freeze()'s order: the unheld residual and eddy viscosity at (u, rnu), then start().
-  void start(CoupledProduct<P>& a, std::span<const double> rnu) {
+  void start(MatrixFreeProduct<P>& a, std::span<const double> rnu) {
     std::vector<S> s(5 * n);
     flow.state(u, s);
     residual(u, rnu, false);
@@ -143,7 +143,7 @@ struct Setup {
 
   // Root mean square of S^-1 x over the six unknowns, S the product's scales, as the product's
   // contract states eps (an exact sum, as the product sums).
-  double scaled_rms(const CoupledProduct<P>& a, std::span<const double> x) const {
+  double scaled_rms(const MatrixFreeProduct<P>& a, std::span<const double> x) const {
     std::array<autan::runtime::ExactSum, 2> sums;
     for (std::size_t k = 0; k < 6; ++k) {
       for (std::size_t c = 0; c < n; ++c) {
@@ -156,7 +156,7 @@ struct Setup {
   }
 
   // eps = relative (1 + |S^-1 X|) / |S^-1 v|, X = (u, rnu).
-  double eps(const CoupledProduct<P>& a, std::span<const double> rnu, double relative) const {
+  double eps(const MatrixFreeProduct<P>& a, std::span<const double> rnu, double relative) const {
     std::vector<double> x(u);
     x.insert(x.end(), rnu.begin(), rnu.end());
     return relative * (1.0 + scaled_rms(a, x)) / scaled_rms(a, v);
@@ -175,7 +175,7 @@ struct Setup {
   }
 
   // Central differences along v, the step h = epsilon^(1/3) on the scaled unknowns.
-  std::vector<double> central(const CoupledProduct<P>& a, std::span<const double> rnu) {
+  std::vector<double> central(const MatrixFreeProduct<P>& a, std::span<const double> rnu) {
     const double h = eps(a, rnu, std::cbrt(std::numeric_limits<double>::epsilon()));
     std::vector<double> up(5 * n), um(5 * n), np(n), nm(n);
     for (std::size_t i = 0; i < 5 * n; ++i) {
@@ -194,7 +194,7 @@ struct Setup {
 
   // The product's specification at the state of start(): shift v + one-sided difference at the
   // product's eps (no halving at the test states).
-  std::vector<double> expected(const CoupledProduct<P>& a, std::span<const double> rnu) {
+  std::vector<double> expected(const MatrixFreeProduct<P>& a, std::span<const double> rnu) {
     const double e = eps(a, rnu, std::sqrt(static_cast<double>(std::numeric_limits<S>::epsilon())));
     std::vector<double> y = one_sided(rnu, e);
     for (std::size_t k = 0; k < 6; ++k) {
@@ -215,10 +215,10 @@ struct Setup {
 };
 
 template <class P>
-CoupledProduct<P> product_of(Setup<P>& s) {
+MatrixFreeProduct<P> product_of(Setup<P>& s) {
   const double c = std::sqrt(air.gamma * p0 / rho);
-  return CoupledProduct<P>(s.flow, s.sa, air.gamma,
-                           {rho, rho * c, rho * c, rho * c, Setup<P>::energy}, NtBounds{});
+  return MatrixFreeProduct<P>(s.flow, &s.sa, air.gamma,
+                              {rho, rho * c, rho * c, rho * c, Setup<P>::energy}, NtBounds{});
 }
 
 }  // namespace

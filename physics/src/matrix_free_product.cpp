@@ -1,4 +1,4 @@
-#include "autan/physics/coupled_product.hpp"
+#include "autan/physics/matrix_free_product.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -34,21 +34,23 @@ double nt_step_fraction(std::span<const double> rho, std::span<const double> rnu
 }
 
 template <class P>
-CoupledProduct<P>::CoupledProduct(NavierStokes<P>& flow, SpalartAllmaras<P>& model, double gamma,
-                                  std::array<double, 5> flow_scale, NtBounds bounds)
+MatrixFreeProduct<P>::MatrixFreeProduct(NavierStokes<P>& flow, SpalartAllmaras<P>* model,
+                                        double gamma, std::array<double, 5> flow_scale,
+                                        NtBounds bounds)
     : flow_(flow),
       model_(model),
       gamma_(gamma),
       bounds_(bounds),
       n_(static_cast<std::size_t>(flow.n_cells())),
+      m_(model != nullptr ? 6 : 5),
       // Knoll and Keyes (2004), J. Comput. Phys. 193:357-397, sec. 2.2: sqrt of the precision
       // the state is stored in.
       eps_storage_(std::sqrt(static_cast<double>(std::numeric_limits<State>::epsilon()))) {
   for (std::size_t k = 0; k < 5; ++k) scale_[k] = flow_scale[k] > 0.0 ? flow_scale[k] : 1.0;
   scale_[5] = 1.0;
-  current_.assign(6 * n_, 0.0);
-  probe_.assign(6 * n_, 0.0);
-  base_.assign(6 * n_, 0.0);
+  current_.assign(m_ * n_, 0.0);
+  probe_.assign(m_ * n_, 0.0);
+  base_.assign(m_ * n_, 0.0);
   state_.assign(5 * n_, State(0));
   probe_state_.assign(5 * n_, State(0));
   nt_.assign(n_, State(0));
@@ -58,43 +60,55 @@ CoupledProduct<P>::CoupledProduct(NavierStokes<P>& flow, SpalartAllmaras<P>& mod
 }
 
 template <class P>
-void CoupledProduct<P>::start(std::span<const double> u, std::span<const State> state,
-                              std::span<const double> rnu, double nt_inf,
-                              std::span<const double> shift, std::array<bool, 6> left_out) {
+void MatrixFreeProduct<P>::start(std::span<const double> u, std::span<const State> state,
+                                 std::span<const double> rnu, double nt_inf,
+                                 std::span<const double> shift, std::array<bool, 6> left_out,
+                                 std::array<bool, 6> assembled, Operator matrix) {
   const std::size_t nf = 5 * n_;
-  if (u.size() != nf || state.size() != nf || rnu.size() != n_ || shift.size() != n_) {
-    throw std::invalid_argument("CoupledProduct::start: sizes do not match the mesh");
+  if (u.size() != nf || state.size() != nf || rnu.size() != (m_ - 5) * n_ || shift.size() != n_) {
+    throw std::invalid_argument("MatrixFreeProduct::start: sizes do not match the mesh");
+  }
+  for (std::size_t k = 0; k < 6; ++k) {
+    if (assembled[k] && (k >= 5 || !matrix)) {
+      throw std::invalid_argument("MatrixFreeProduct::start: assembled rows need a flow matrix");
+    }
   }
   std::copy(u.begin(), u.end(), current_.begin());
   std::copy(rnu.begin(), rnu.end(), current_.begin() + static_cast<std::ptrdiff_t>(nf));
   std::copy(state.begin(), state.end(), state_.begin());
-  for (std::size_t c = 0; c < n_; ++c) nt_current_[c] = State(rnu[c]);
+  for (std::size_t c = 0; c < rnu.size(); ++c) nt_current_[c] = State(rnu[c]);
   shift_.assign(shift.begin(), shift.end());
   nt_inf_ = nt_inf;
   left_out_ = left_out;
+  assembled_ = assembled;
+  matrix_ = std::move(matrix);
   halvings_ = 0;
   representation_ = 0.0;
   failed_ = false;
-  // rho nt's scale: its root mean square (it reaches 1e3-1e4 times the freestream's in the
-  // boundary layer, which would weigh it wrongly).
-  std::array<runtime::ExactSum, 2> sums;
-  for (std::size_t c = 0; c < n_; ++c) sums[0].add(rnu[c] * rnu[c]);
-  sums[1].add(static_cast<double>(n_));
-  scale_[5] = std::sqrt(sums[0].value() / sums[1].value());
-  if (!(scale_[5] > 0.0)) scale_[5] = scale_[0] * nt_inf;
-  if (!(scale_[5] > 0.0)) scale_[5] = 1.0;
   flow_.freeze(state_);
-  model_.freeze(nt_current_);
-  flow_.residual_frozen(state_, res_, [&] { model_.eddy_viscosity_frozen(nt_current_); });
-  model_.residual_frozen(nt_current_, res_nt_);
-  for (std::size_t c = 0; c < n_; ++c) base_[nf + c] = static_cast<double>(res_nt_[c]);
+  if (model_ == nullptr) {
+    flow_.residual_frozen(state_, res_);
+  } else {
+    // rho nt's scale: its root mean square (it reaches 1e3-1e4 times the freestream's in the
+    // boundary layer, which would weigh it wrongly).
+    std::array<runtime::ExactSum, 2> sums;
+    for (std::size_t c = 0; c < n_; ++c) sums[0].add(rnu[c] * rnu[c]);
+    sums[1].add(static_cast<double>(n_));
+    scale_[5] = std::sqrt(sums[0].value() / sums[1].value());
+    if (!(scale_[5] > 0.0)) scale_[5] = scale_[0] * nt_inf;
+    if (!(scale_[5] > 0.0)) scale_[5] = 1.0;
+    model_->freeze(nt_current_);
+    flow_.residual_frozen(state_, res_, [&] { model_->eddy_viscosity_frozen(nt_current_); });
+    model_->residual_frozen(nt_current_, res_nt_);
+    for (std::size_t c = 0; c < n_; ++c) base_[nf + c] = static_cast<double>(res_nt_[c]);
+  }
   for (std::size_t i = 0; i < nf; ++i) base_[i] = static_cast<double>(res_[i]);
 }
 
 template <class P>
-double CoupledProduct<P>::dot(std::span<const double> a, std::span<const double> b) const {
+double MatrixFreeProduct<P>::dot(std::span<const double> a, std::span<const double> b) const {
   runtime::ExactSum sum;
-  for (std::size_t k = 0; k < 6; ++k) {
+  for (std::size_t k = 0; k < m_; ++k) {
     const double w = 1.0 / (scale_[k] * scale_[k]);
     for (std::size_t c = 0; c < n_; ++c) sum.add(a[k * n_ + c] * b[k * n_ + c] * w);
   }
@@ -102,9 +116,9 @@ double CoupledProduct<P>::dot(std::span<const double> a, std::span<const double>
 }
 
 template <class P>
-double CoupledProduct<P>::max_abs(std::span<const double> a) const {
+double MatrixFreeProduct<P>::max_abs(std::span<const double> a) const {
   double m = 0.0;
-  for (std::size_t k = 0; k < 6; ++k) {
+  for (std::size_t k = 0; k < m_; ++k) {
     for (std::size_t c = 0; c < n_; ++c) {
       const double x = std::abs(a[k * n_ + c]) / scale_[k];
       m = std::isnan(x) ? std::numeric_limits<double>::infinity() : std::max(m, x);
@@ -114,21 +128,23 @@ double CoupledProduct<P>::max_abs(std::span<const double> a) const {
 }
 
 template <class P>
-double CoupledProduct<P>::scaled_rms(std::span<const double> x, bool skip_left_out) const {
+double MatrixFreeProduct<P>::scaled_rms(std::span<const double> x, bool skip_left_out) const {
   std::array<runtime::ExactSum, 2> sums;
-  for (std::size_t k = 0; k < 6; ++k) {
+  std::size_t rows = 0;
+  for (std::size_t k = 0; k < m_; ++k) {
     if (skip_left_out && left_out_[k]) continue;
+    rows += n_;
     for (std::size_t c = 0; c < n_; ++c) {
       const double a = x[k * n_ + c] / scale_[k];
       sums[0].add(a * a);
     }
   }
-  sums[1].add(static_cast<double>(6 * n_));
+  sums[1].add(static_cast<double>(rows));
   return std::sqrt(sums[0].value() / sums[1].value());
 }
 
 template <class P>
-void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
+void MatrixFreeProduct<P>::apply(std::span<const double> v, std::span<double> y) {
   const std::size_t nf = 5 * n_;
   std::fill(y.begin(), y.end(), 0.0);
   if (failed_) {
@@ -142,8 +158,14 @@ void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
   auto pressure = [&](const double* w) {
     return (gamma_ - 1.0) * (w[4] - 0.5 * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]) / w[0]);
   };
+  auto fail = [&](int halving, double ratio) {
+    halvings_ = std::max(halvings_, halving);
+    representation_ = std::max(representation_, ratio);
+    failed_ = true;
+    std::fill(y.begin(), y.end(), std::numeric_limits<double>::quiet_NaN());
+  };
   for (int halving = 0;; ++halving) {
-    for (std::size_t i = 0; i < 6 * n_; ++i) probe_[i] = current_[i] + eps * entry(i);
+    for (std::size_t i = 0; i < m_ * n_; ++i) probe_[i] = current_[i] + eps * entry(i);
     // Admissible and small: density and pressure within 10 % of the current state's in every
     // cell; rho nt within the step's bounds.
     double worst = 0.0;
@@ -157,18 +179,20 @@ void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
       const double p = pressure(w0);
       const double d = std::max(std::abs(w[0] - rho) / rho, std::abs(pressure(w) - p) / p);
       worst = std::isnan(d) ? std::numeric_limits<double>::infinity() : std::max(worst, d);
-      const double nt = current_[nf + c];
-      const double scale = std::max(std::abs(nt), rho * nt_inf_);
-      const double dn = probe_[nf + c] - nt;
-      if (!(dn >= -bounds_.decrease * scale && dn <= bounds_.increase * scale)) {
-        worst = std::numeric_limits<double>::infinity();
+      if (m_ == 6) {
+        const double nt = current_[nf + c];
+        const double scale = std::max(std::abs(nt), rho * nt_inf_);
+        const double dn = probe_[nf + c] - nt;
+        if (!(dn >= -bounds_.decrease * scale && dn <= bounds_.increase * scale)) {
+          worst = std::numeric_limits<double>::infinity();
+        }
       }
     }
     flow_.state(std::span<const double>(probe_).first(nf), probe_state_);
-    for (std::size_t c = 0; c < n_; ++c) nt_[c] = State(probe_[nf + c]);
+    for (std::size_t c = 0; c < n_ && m_ == 6; ++c) nt_[c] = State(probe_[nf + c]);
     // Representable: what the stored state received, against eps v.
     std::array<runtime::ExactSum, 2> sums;
-    for (std::size_t k = 0; k < 6; ++k) {
+    for (std::size_t k = 0; k < m_; ++k) {
       for (std::size_t c = 0; c < n_; ++c) {
         const std::size_t i = k * n_ + c;
         const double want = eps * entry(i) / scale_[k];
@@ -181,14 +205,24 @@ void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
       }
     }
     const double ratio = std::sqrt(sums[0].value() / sums[1].value());
-    if (worst <= 0.1 && ratio <= 1e-2) {
+    if (worst <= 0.1) {
+      if (!(ratio <= 1e-2)) {
+        fail(halving, ratio);
+        return;
+      }
       // Also admissible: no positivity fallback of a face state switched from the held one (a
       // kink the difference would take for a derivative), and a finite residual.
-      flow_.residual_frozen(probe_state_, res_, [&] { model_.eddy_viscosity_frozen(nt_); });
-      bool held = flow_.frozen_switches() == 0 && finite(res_);
-      if (held) {
-        model_.residual_frozen(nt_, res_nt_);
-        held = finite(res_nt_);
+      bool held;
+      if (model_ == nullptr) {
+        flow_.residual_frozen(probe_state_, res_);
+        held = flow_.frozen_switches() == 0 && finite(res_);
+      } else {
+        flow_.residual_frozen(probe_state_, res_, [&] { model_->eddy_viscosity_frozen(nt_); });
+        held = flow_.frozen_switches() == 0 && finite(res_);
+        if (held) {
+          model_->residual_frozen(nt_, res_nt_);
+          held = finite(res_nt_);
+        }
       }
       if (held) {
         halvings_ = std::max(halvings_, halving);
@@ -197,25 +231,26 @@ void CoupledProduct<P>::apply(std::span<const double> v, std::span<double> y) {
       }
     }
     if (halving == 10) {
-      halvings_ = halving;
-      representation_ = std::max(representation_, ratio);
-      failed_ = true;
-      std::fill(y.begin(), y.end(), std::numeric_limits<double>::quiet_NaN());
+      fail(halving, ratio);
       return;
     }
     eps *= 0.5;
   }
-  for (std::size_t k = 0; k < 6; ++k) {
+  if (std::find(assembled_.begin(), assembled_.end(), true) != assembled_.end()) {
+    rows_.resize(nf);
+    matrix_(v.first(nf), rows_);
+  }
+  for (std::size_t k = 0; k < m_; ++k) {
     if (left_out_[k]) continue;
     for (std::size_t c = 0; c < n_; ++c) {
       const std::size_t i = k * n_ + c;
       const double r = k < 5 ? static_cast<double>(res_[i]) : static_cast<double>(res_nt_[c]);
-      y[i] = shift_[c] * v[i] + (r - base_[i]) / eps;
+      y[i] = assembled_[k] ? rows_[i] : shift_[c] * v[i] + (r - base_[i]) / eps;
     }
   }
 }
 
-template class CoupledProduct<kernels::fp64>;
-template class CoupledProduct<kernels::fp32_acc64>;
+template class MatrixFreeProduct<kernels::fp64>;
+template class MatrixFreeProduct<kernels::fp32_acc64>;
 
 }  // namespace autan::physics
