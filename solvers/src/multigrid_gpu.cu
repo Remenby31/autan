@@ -16,36 +16,39 @@ namespace kg = autan::kernels::gpu;
 constexpr int components = 5;
 constexpr int block = 256;
 
-// One thread per coarse node and component. Plain sums in list order: __dadd_rn keeps the
-// compiler from reassociating or contracting them.
+// One thread per node, its 5 components in turn, so each index list is read once. Plain sums in
+// list order: __dadd_rn keeps the compiler from reassociating or contracting them.
 __global__ void restrict_kernel(std::int64_t n_fine, std::int64_t n_coarse, const offset_t* offsets,
                                 const index_t* children, const double* r, double* b_coarse) {
-  const std::int64_t t = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (t >= components * n_coarse) return;
-  const std::int64_t c = t / n_coarse;
-  const std::int64_t node = t - c * n_coarse;
-  const double* rc = r + c * n_fine;
-  double s = 0.0;
-  for (offset_t k = offsets[node]; k < offsets[node + 1]; ++k) s = __dadd_rn(s, rc[children[k]]);
-  b_coarse[t] = s;
+  const std::int64_t node = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (node >= n_coarse) return;
+  double s[components] = {0.0, 0.0, 0.0, 0.0, 0.0};
+  for (offset_t k = offsets[node]; k < offsets[node + 1]; ++k) {
+    const std::int64_t child = children[k];
+    for (int c = 0; c < components; ++c) s[c] = __dadd_rn(s[c], r[c * n_fine + child]);
+  }
+  for (int c = 0; c < components; ++c) b_coarse[c * n_coarse + node] = s[c];
 }
 
 __global__ void prolong_kernel(std::int64_t n_fine, std::int64_t n_coarse,
                                const index_t* coarse_node, const double* x_coarse, double* e) {
-  const std::int64_t t = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (t >= components * n_fine) return;
-  const std::int64_t c = t / n_fine;
-  e[t] = x_coarse[c * n_coarse + coarse_node[t - c * n_fine]];
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n_fine) return;
+  const std::int64_t parent = coarse_node[i];
+  for (int c = 0; c < components; ++c) e[c * n_fine + i] = x_coarse[c * n_coarse + parent];
 }
 
 __global__ void correct_kernel(std::int64_t n_fine, std::int64_t n_coarse,
                                const index_t* coarse_node, const double* alpha,
                                const double* x_coarse, double* x) {
-  const std::int64_t t = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (t >= components * n_fine) return;
-  const std::int64_t c = t / n_fine;
-  const double e = x_coarse[c * n_coarse + coarse_node[t - c * n_fine]];
-  x[t] = __dadd_rn(x[t], __dmul_rn(*alpha, e));
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n_fine) return;
+  const std::int64_t parent = coarse_node[i];
+  const double a = *alpha;
+  for (int c = 0; c < components; ++c) {
+    double& xi = x[c * n_fine + i];
+    xi = __dadd_rn(xi, __dmul_rn(a, x_coarse[c * n_coarse + parent]));
+  }
 }
 
 unsigned int grid(std::int64_t threads) {
@@ -140,22 +143,22 @@ Transfers& Transfers::operator=(Transfers&&) noexcept = default;
 void Transfers::restrict_residual(std::size_t l, const double* r, double* b_coarse,
                                   void* stream) const {
   const Impl::Pair& p = impl_->at(l);
-  restrict_kernel<<<grid(components * p.n_coarse), block, 0, as_stream(stream)>>>(
+  restrict_kernel<<<grid(p.n_coarse), block, 0, as_stream(stream)>>>(
       p.n_fine, p.n_coarse, p.offsets.get(), p.children.get(), r, b_coarse);
   kg::check(kg::last_error(), "multigrid restriction");
 }
 
 void Transfers::prolong(std::size_t l, const double* x_coarse, double* e, void* stream) const {
   const Impl::Pair& p = impl_->at(l);
-  prolong_kernel<<<grid(components * p.n_fine), block, 0, as_stream(stream)>>>(
-      p.n_fine, p.n_coarse, p.coarse_node.get(), x_coarse, e);
+  prolong_kernel<<<grid(p.n_fine), block, 0, as_stream(stream)>>>(p.n_fine, p.n_coarse,
+                                                                  p.coarse_node.get(), x_coarse, e);
   kg::check(kg::last_error(), "multigrid prolongation");
 }
 
 void Transfers::correct(std::size_t l, const double* alpha, const double* x_coarse, double* x,
                         void* stream) const {
   const Impl::Pair& p = impl_->at(l);
-  correct_kernel<<<grid(components * p.n_fine), block, 0, as_stream(stream)>>>(
+  correct_kernel<<<grid(p.n_fine), block, 0, as_stream(stream)>>>(
       p.n_fine, p.n_coarse, p.coarse_node.get(), alpha, x_coarse, x);
   kg::check(kg::last_error(), "multigrid correction");
 }
