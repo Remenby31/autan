@@ -21,6 +21,7 @@ export function coefficient(value: number): string {
 export function coefficientsCaveat(status: string, unsteady: boolean): string | null {
   if (status === "converged") return null;
   if (status === "running") return "still running";
+  if (status === "floor") return "at the round-off floor, not converged";
   if (status === "completed" && unsteady) return "last step of an unsteady run";
   return "not converged";
 }

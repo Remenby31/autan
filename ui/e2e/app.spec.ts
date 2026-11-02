@@ -444,8 +444,9 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
   expect(errors).toEqual([]);
 });
 
-test("floors written while a run page is open recompute its residual drop", async ({ page }) => {
-  // One monitor, recorded every 10 iterations: line 30 carries its final record.
+test("a run that ends at its round-off floor says so, never as converged", async ({ page }) => {
+  // case-schema.md#time: stopped with some equations at their floor, cell by cell; its drop is
+  // the one it made.
   const source = (await runs(page)).find(
     (r) => r.status === "converged" && Object.keys(r.monitors ?? {}).join() === "forces",
   ) as Run;
@@ -462,27 +463,34 @@ test("floors written while a run page is open recompute its residual drop", asyn
     .split("\n")
     .slice(0, 30);
   writeFileSync(join(staging, "history.jsonl"), `${lines.join("\n")}\n`);
-  const at30 = JSON.parse(lines.at(-1) as string).monitors ?? {};
+  const last = JSON.parse(lines.at(-1) as string);
   const monitors = Object.fromEntries(
-    Object.entries(at30).map(([name, record]) => [name, { ...(record as object), iteration: 30 }]),
+    Object.entries(last.monitors ?? {}).map(([name, record]) => [
+      name,
+      { ...(record as object), iteration: 30 },
+    ]),
   );
-  const run = { ...source, run_id: runId, started, status: "completed", iterations: 30, monitors };
-  writeFileSync(join(staging, "run.json"), JSON.stringify({ ...run, convergence: null }));
+  const names = Object.keys(last.residuals);
+  const [atFloor] = names;
+  const convergence = {
+    iteration: 30,
+    max_ratio: Object.fromEntries(names.map((n) => [n, n === atFloor ? 0.6 : 3])),
+    cells_at_floor: Object.fromEntries(names.map((n) => [n, n === atFloor ? 1 : 0.4])),
+  };
+  const run = { ...source, run_id: runId, started, status: "floor", iterations: 30, monitors };
+  writeFileSync(join(staging, "run.json"), JSON.stringify({ ...run, convergence }));
   renameSync(staging, join(RUNS, runId));
-  const last = JSON.parse(lines.at(-1) as string).residuals;
+  await expect.poll(async () => (await runs(page)).some((r) => r.run_id === runId)).toBe(true);
   const target = Number(
     /residual_orders = ([0-9.]+)/.exec(readFileSync(join(RUNS, runId, "case.toml"), "utf8"))?.[1],
   );
 
   await page.goto(`/runs/${runId}`);
-  const orders = page.getByTestId("orders");
-  await expect(orders).not.toHaveText(target.toFixed(2));
-  writeFileSync(
-    join(RUNS, runId, "run.json"),
-    JSON.stringify({ ...run, convergence: { floor: last } }),
-  );
-
-  await expect(orders).toHaveText(target.toFixed(2));
+  await expect(page.getByTestId("status")).toHaveText("At floor");
+  await expect(page.getByTestId(`at-floor-${atFloor}`)).toBeVisible();
+  await expect(page.getByTestId(`at-floor-${names[1]}`)).toHaveCount(0);
+  await expect(page.getByTestId("orders")).not.toHaveText(target.toFixed(2));
+  await expect(page.getByTestId("forces")).toContainText("at the round-off floor, not converged");
 });
 
 test("a run's iteration cost shows when run.json measured it", async ({ page }) => {

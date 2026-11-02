@@ -251,7 +251,7 @@ function RunView() {
                 <div className="h-96 min-w-0 rounded-md border border-line bg-bg-1 p-3">
                   <ResidualChart
                     history={history}
-                    floors={run?.convergence?.floor}
+                    maxRatio={run?.convergence?.max_ratio}
                     reference={run?.start?.residual_reference}
                     steady={time?.kind === "steady"}
                   />

@@ -12,17 +12,10 @@ const series = (k: number) => css(`--series-${(k % 8) + 1}`);
 // below its top; zero, which a log axis cannot place, is a gap.
 const DECADES = 20;
 const positive = (values: number[]) => values.map((v) => (v > 0 ? v : null));
-const range = (
-  _: uPlot,
-  data: number | null,
-  max: number | null,
-  floors: number[],
-): uPlot.Range.MinMax => {
-  const min = Math.min(data ?? Number.POSITIVE_INFINITY, ...floors);
-  // A floor can sit above every curve once divided by its R₀: the axis reaches it too.
-  const highest = Math.max(max ?? 0, ...floors);
-  if (!Number.isFinite(min) || !(highest > 0)) return [data, max];
-  const top = Math.ceil(Math.log10(highest));
+const range = (_: uPlot, data: number | null, max: number | null): uPlot.Range.MinMax => {
+  const min = data ?? Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(min) || max == null || !(max > 0)) return [data, max];
+  const top = Math.ceil(Math.log10(max));
   const bottom = Math.max(Math.floor(Math.log10(Math.max(min, Number.MIN_VALUE))), top - DECADES);
   return [10 ** Math.min(bottom, top - 1), 10 ** top];
 };
@@ -52,26 +45,26 @@ const decades = (_: uPlot, __: number, min: number, max: number) => {
 };
 
 /** Residuals relative to their first value, R/R₀, on a log axis with a label per decade (or
- * per few), the round-off floor of each equation dashed in its colour (run.json
- * `convergence.floor`), and the values at the cursor; redraws in place as the history grows.
+ * per few), and the values at the cursor; redraws in place as the history grows. An equation
+ * whose every cell is at its round-off floor (run.json `convergence.max_ratio` ≤ 1) says so: the
+ * floor is judged cell by cell, so no line on this chart of RMS residuals can show it.
  * A continued run divides by its `start.residual_reference`, the first residuals of the run it
  * continues. An equation exempt from the convergence rule (identically zero) is not drawn. */
 export function ResidualChart({
   history,
-  floors,
+  maxRatio,
   reference,
   steady,
 }: {
   history: HistoryColumns;
-  floors?: Record<string, number> | undefined;
+  /** Per equation, the largest ratio of a cell's residual to its round-off floor. */
+  maxRatio?: Record<string, number> | undefined;
   reference?: Record<string, number> | null | undefined;
   /** The convergence rule, and so its exemptions, applies to steady runs only. */
   steady: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const plot = useRef<uPlot | null>(null);
-  const floorsRef = useRef(floors);
-  floorsRef.current = floors;
   const names = [...history.residuals.keys()];
   const key = names.join(",");
   // R₀ of each equation: the reference a continued run carries, or its first positive residual.
@@ -105,16 +98,7 @@ export function ResidualChart({
           x: { time: false },
           y: {
             distr: 3,
-            range: (u, min, max) =>
-              range(
-                u,
-                min,
-                max,
-                Object.entries(floorsRef.current ?? {})
-                  .filter(([name]) => !latest.current.hidden(name))
-                  .map(([name, v]) => v / (r0.current[name] ?? 1))
-                  .filter((v) => v > 0),
-              ),
+            range,
           },
         },
         hooks: {
@@ -131,26 +115,6 @@ export function ResidualChart({
                 return raw === 0 && !latest.current.hidden(name) ? [[name, 0]] : [];
               });
               setReadout({ iteration, values });
-            },
-          ],
-          draw: [
-            (u) => {
-              const ctx = u.ctx;
-              ctx.save();
-              ctx.setLineDash([4 * devicePixelRatio, 4 * devicePixelRatio]);
-              ctx.lineWidth = devicePixelRatio;
-              names.forEach((name, k) => {
-                const raw = floorsRef.current?.[name];
-                if (raw === undefined || !(raw > 0) || latest.current.hidden(name)) return;
-                const floor = raw / (r0.current[name] ?? 1);
-                const y = Math.round(u.valToPos(floor, "y", true));
-                ctx.strokeStyle = series(k);
-                ctx.beginPath();
-                ctx.moveTo(u.bbox.left, y);
-                ctx.lineTo(u.bbox.left + u.bbox.width, y);
-                ctx.stroke();
-              });
-              ctx.restore();
             },
           ],
         },
@@ -198,8 +162,6 @@ export function ResidualChart({
     };
   }, [key]);
 
-  // A new floor rescales the axis: the data is set again, which recomputes the range.
-  const floorsKey = JSON.stringify(floors ?? null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `version` changes on every append
   useEffect(() => {
     plot.current?.setData([
@@ -210,7 +172,7 @@ export function ResidualChart({
         return positive(history.residuals.get(name) ?? []).map((v) => (v == null ? null : v / r));
       }),
     ]);
-  }, [history.version, key, floorsKey, steady, [...history.exempt].join()]);
+  }, [history.version, key, steady, [...history.exempt].join()]);
 
   return (
     <div className="flex h-full flex-col gap-2">
@@ -241,6 +203,11 @@ export function ResidualChart({
             <span key={name} className="flex items-center gap-1.5">
               <Swatch k={k} />
               {name}
+              {maxRatio?.[name] !== undefined && (maxRatio[name] as number) <= 1 && (
+                <span className="font-sans text-warning" data-testid={`at-floor-${name}`}>
+                  at its floor
+                </span>
+              )}
               {value(name) !== undefined && (
                 <span className="text-fg-2 tabular-nums" data-testid={`residual-${name}`}>
                   {short(value(name) as number)}
