@@ -27,7 +27,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
     "max_non_orthogonality_deg": 62.0, "max_faces_per_cell": 214,
     "lines": {"order": "rcm", "scale": 0.0254, "cells": 13014000, "long_cells": 13014000},
     "multigrid": {"cells_by_level": [48200000, 6025000, 753125, 94140, 11767, 1470, 183],
-                  "edges_by_level": [151000000, 39162500, 4895312, 611910, 76485, 9555, 1189]}
+                  "edges_by_level": [150093000, 39162500, 4895312, 611910, 76485, 9555, 1189]}
   }
 }
 ```
