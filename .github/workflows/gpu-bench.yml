@@ -173,6 +173,11 @@ jobs:
           bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
           bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
           -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
+      # changes.sh's measured directories are exactly those both benchmarks are built from, so
+      # that no change goes unmeasured and none waits for a measurement of nothing it changed.
+      - name: The measured paths are the benchmarks' build graph
+        if: needs.changes.outputs.bench == 'true'
+        run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
       - name: Generated loops, hex n = 128, fp32, RCM order
         if: needs.changes.outputs.bench == 'true'
         run: >-
