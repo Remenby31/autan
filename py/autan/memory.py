@@ -25,6 +25,7 @@ class StateFileLoad:
     faces: int
     zones: int
     kind: Literal["initial", "faces", "manufactured"]
+    longest_name: int = 0
 
 
 _CUDA_CONTEXT = 512 * 2**20
@@ -208,12 +209,13 @@ def _rank(
     # parses it once, at most 40 B of document per byte of text.
     loads = 0
     for x in files:
+        # A member name lives in the text, the parser's token buffer (twice its length at
+        # most), the key it builds and the document's key (runtime/src/run.cpp).
+        names = 4 * x.longest_name
         if x.kind == "initial":
-            loads += 2 * x.size + 1024 + 266 * x.rows + 160 * cells
+            loads += 2 * x.size + names + 1024 + 266 * x.rows + 160 * cells
         elif x.kind == "faces":
-            # Zone names: the document's key, two row-map keys and the zone map's, at most the
-            # text each beside the text itself.
-            loads += 6 * x.size + 1024 + 128 * x.rows + 1200 * x.zones + 40 * x.faces
+            loads += 2 * x.size + names + 1024 + 128 * x.rows + 1200 * x.zones + 40 * x.faces
         else:
             loads += _JSON_DOCUMENT * x.size
     if loads:
