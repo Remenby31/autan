@@ -214,7 +214,7 @@ struct Euler<P>::Impl {
     }
     fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();
-    band_weights(kind);
+    if (scheme.boundary_gradient == BoundaryGradient::quadratic) band_weights(kind);
   }
 
   // The boundary band's weights (kernels/euler.py, band_gradients): for every cell of face rings 1
@@ -533,6 +533,26 @@ std::vector<double> Euler<P>::gradient_weights() const {
 }
 
 template <class P>
+void Euler<P>::face2_gradient(std::span<typename P::grad> out) {
+  auto& m = *impl_;
+  if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
+  if (m.scheme.boundary_gradient == BoundaryGradient::face2) {
+    std::copy(m.grad.begin(), m.grad.end(), out.begin());
+    return;
+  }
+  // The gradients loop with no band and its limiter bounds into scratch.
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  std::vector<State> lo(5 * nc), hi(5 * nc);
+  std::vector<typename decltype(m.band)::value_type> none(nc, 0);
+  auto d = m.d;
+  d.grad = out.data();
+  d.wmin = lo.data();
+  d.wmax = hi.data();
+  d.band = none.data();
+  ek::cpu::gradients(d);
+}
+
+template <class P>
 typename Euler<P>::BandGradient Euler<P>::band_gradient() const {
   const auto& m = *impl_;
   return {{m.band.begin(), m.band.end()},
@@ -583,7 +603,7 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   ek::cpu::primitives(m.d);
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
-    m.band_gradients();
+    if (m.scheme.boundary_gradient == BoundaryGradient::quadratic) m.band_gradients();
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
@@ -612,7 +632,7 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
   ek::cpu::primitives_jacobian(m.d);
   ek::cpu::boundary_states(m.d);
   if (m.scheme.second_order) {
-    m.band_gradients();
+    if (m.scheme.boundary_gradient == BoundaryGradient::quadratic) m.band_gradients();
     ek::cpu::gradients(m.d);
     if (m.scheme.limiter) {
       ek::cpu::limiter(m.d);
