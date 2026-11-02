@@ -308,7 +308,9 @@ _CODES = [
         "E0208",
         "Not a manufactured solution",
         "The file named by `verification.manufactured.path` is not JSON with "
-        '`"schema": "autan.mms/1"` (docs/validation/mms.md).',
+        '`"schema": "autan.mms/1"` (docs/validation/mms.md), is larger than 1 MiB, or has an '
+        "expression that is not one or is deeper than 1 024 levels "
+        "(docs/contracts/case-schema.md#verification).",
         "Point the case at a manufactured solution exported by autan-vv.",
     ),
     Code(

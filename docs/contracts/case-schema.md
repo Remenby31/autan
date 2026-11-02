@@ -88,6 +88,10 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `verification` | [Verification](#verification) | absent |
 | `initial_state` | [Initial state file](#initial-state-file) | absent |
 
+### Free texts
+
+Every text of the case that is not a quantity, a unit or a keyword (the case `name`, material names, zone patterns, monitor names, file paths) is at most 4 096 bytes in UTF-8 (`E0003`). The solver allocates a text before it can check it, and the memory estimate bounds what it holds ([plan.md](../sdk/plan.md)); 4 096 bytes is a path's limit on Linux (`PATH_MAX`).
+
 ### Physics
 
 `kind = "compressible"`: density-based solver.
@@ -211,7 +215,7 @@ Coefficients are reported only when `ref_area` is set; moment coefficients also 
 
 ### Verification
 
-`verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`, not an `autan.mms/1` document `E0208` ([mms.md](../validation/mms.md)); and checks it against the case (`E0209`): the solution's declared `parameters` (`gamma`, `gas_constant`, `viscosity`, `prandtl`) must equal the case gas (constant viscosity), its declared `model` must be compressible flow with the case's turbulence model (`inviscid`, `laminar` or `sa`; `sa-noft2` has no case counterpart), and the case has no cell zone rules (one fluid medium). Manufactured solutions are steady, so a verification case is steady (`E0417`). In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
+`verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`, not an `autan.mms/1` document `E0208` ([mms.md](../validation/mms.md)); and checks it against the case (`E0209`): the solution's declared `parameters` (`gamma`, `gas_constant`, `viscosity`, `prandtl`) must equal the case gas (constant viscosity), its declared `model` must be compressible flow with the case's turbulence model (`inviscid`, `laminar` or `sa`; `sa-noft2` has no case counterpart), and the case has no cell zone rules (one fluid medium). The file is at most 1 MiB (1 048 576 bytes) and each of its expressions at most 1 024 levels deep, both `E0208`: the depth of a number or a name is 1, and a parenthesis, a unary minus, a binary operator (left-associative, so `a + b + c` is 3 deep) or a function adds one level above its deepest operand. The solver checks both before it reads the file and before it builds an expression, so its parser and evaluation stay within fixed memory and stack; the autan-vv catalogue reaches 18 387 bytes and 44 levels (`rans_sa`). Manufactured solutions are steady, so a verification case is steady (`E0417`). In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
 
 ### Initial state file
 

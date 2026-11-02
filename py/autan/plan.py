@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from autan import face_states, initial_state
 from autan.errors import Diagnostic, diagnostic
+from autan.manufactured import MMS_BYTES, too_deep
 from autan.memory import DeviceKind, Memory, StartMode, StateFileLoad, estimate
 from autan.meshinfo import mesh_sha256
 from autan.schema import (
@@ -215,7 +216,7 @@ def plan(
             vortices=_vortex_conditions(spec, boundaries),
             start=start,
             files=tuple(files),
-            input_bytes=_input_bytes(case, mesh),
+            input_bytes=_input_bytes(case, mesh, boundaries, cell_zones),
         ),
         diagnostics=tuple(found),
     )
@@ -237,12 +238,52 @@ def _longest_name(data: bytes) -> int:
     return longest
 
 
-def _input_bytes(case: Case, mesh: MeshInfo) -> int:
-    """A bound on the solver input's size (solver-input.md): the case's TOML, escaped in JSON
-    (at most 6 bytes a character) with its mesh path counted at PATH_MAX (however the case
-    names it), the MeshInfo, and 64 KiB for the rest of the document."""
-    toml = len(case.to_toml().encode()) - len(str(case.spec.mesh).encode()) + _PATH_MAX
-    return 6 * toml + len(json.dumps(mesh.document())) + 64 * 2**10
+# A zone's or a monitor's entry in the solver input besides its texts: keys, a kind, at most
+# 20 numbers of at most 24 characters each (Python's repr of a double) and a SHA-256.
+_ENTRY = 1024
+
+
+def _input_bytes(
+    case: Case,
+    mesh: MeshInfo,
+    boundaries: list[BoundaryResolution],
+    cell_zones: list[CellZoneResolution],
+) -> int:
+    """A bound on the solver input's size as ``autan prepare`` writes it (solver-input.md),
+    each text escaped as the producers escape it: the case's TOML (at most 6 bytes a byte)
+    with its mesh path counted at PATH_MAX (however the case names it), the MeshInfo, each
+    zone's entry with its name and its resolved condition or medium (a state file's path at
+    PATH_MAX), each monitor with the zones it matches, a point vortex with its walls, the
+    files the input names at PATH_MAX, and 64 KiB for the rest of the document."""
+    spec = case.spec
+
+    def text(value: object) -> int:
+        return len(json.dumps(value))  # as the producers escape it
+
+    toml = len(case.to_toml().encode()) - len(str(spec.mesh).encode()) + _PATH_MAX
+    zones = sum(text(z.zone) + text(z.medium) + _ENTRY for z in cell_zones)
+    for b in boundaries:
+        zones += text(b.zone) + text(b.condition) + _ENTRY
+        if (b.condition or {}).get("kind") == "oracle-state":
+            zones += 6 * _PATH_MAX
+        rule = spec.boundaries[b.rule] if b.rule is not None else None
+        if (
+            rule is not None
+            and isinstance(rule.condition, Farfield)
+            and rule.condition.point_vortex
+        ):
+            walls, _ = vortex_zones(rule.condition.point_vortex.surfaces, mesh, boundaries)
+            zones += sum(text(n) for n in walls)
+    names = [b.zone for b in boundaries]
+    monitors = sum(
+        text(m.name) + sum(text(n) for n in _matches(m.surfaces, names)) + _ENTRY
+        for m in spec.monitors
+    )
+    files = 6 * _PATH_MAX * 3  # the mesh, a start's run and a verification solution
+    # The MeshInfo as the producers indent it, nested one level deeper (2 B a line, 4 counted).
+    mesh_text = json.dumps(mesh.document(), indent=2)
+    mesh_bytes = len(mesh_text) + 4 * (mesh_text.count("\n") + 1)
+    return 6 * toml + mesh_bytes + zones + monitors + files + 64 * 2**10
 
 
 def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> int:
@@ -314,6 +355,15 @@ def _check_manufactured(
                 path=str(source),
             )
         )
+    elif (size := source.stat().st_size) > MMS_BYTES:
+        found.append(
+            diagnostic(
+                "E0208",
+                f"{str(source)!r} is {size} bytes, above the {MMS_BYTES} of {MMS_SCHEMA}",
+                location=where,
+                path=str(source),
+            )
+        )
     elif mesh_sha256(source) != expected:
         found.append(
             diagnostic(
@@ -324,7 +374,7 @@ def _check_manufactured(
             )
         )
     else:
-        files.append(StateFileLoad(source.stat().st_size, 0, 0, 0, "manufactured"))
+        files.append(StateFileLoad(size, 0, 0, 0, "manufactured"))
         document = _document(source)
         if document is None or document.get("schema") != MMS_SCHEMA:
             found.append(
@@ -335,6 +385,8 @@ def _check_manufactured(
                     path=str(source),
                 )
             )
+        elif (reason := too_deep(document)) is not None:
+            found.append(diagnostic("E0208", f"{str(source)!r}: {reason}", location=where))
         else:
             found.extend(
                 diagnostic("E0209", message, location=where, path=str(source))

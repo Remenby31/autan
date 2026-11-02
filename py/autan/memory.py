@@ -205,8 +205,10 @@ def _rank(
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
     # cell); face states the same with 1 200 B a zone, then 40 B per face of its oracle zones,
-    # which a rank keeps; a manufactured solution's text stays for the run, and the physics
-    # parses it once, at most 40 B of document per byte of text.
+    # which a rank keeps; a manufactured solution's text stays for the run with its compiled
+    # expressions, at most one 32 B node per byte of text in vectors up to twice that, and the
+    # physics parses it once, at most 40 B of document per byte of text, while the node
+    # vectors grow (the old buffer, half the new one, is freed after the copy).
     loads = 0
     for x in files:
         # A member name lives in the text, the parser's token buffer (twice its length at
@@ -217,13 +219,13 @@ def _rank(
         elif x.kind == "faces":
             loads += 2 * x.size + names + 1024 + 128 * x.rows + 1200 * x.zones + 40 * x.faces
         else:
-            loads += _JSON_DOCUMENT * x.size
+            loads += (_JSON_DOCUMENT + 32) * x.size
     if loads:
         add("state files", loads, transient=True)
     if any(x.kind == "faces" for x in files):
         add("face states", sum(40 * x.faces for x in files if x.kind == "faces"))
     if any(x.kind == "manufactured" for x in files):
-        add("manufactured solution", sum(x.size for x in files if x.kind == "manufactured"))
+        add("manufactured solution", sum(65 * x.size for x in files if x.kind == "manufactured"))
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.

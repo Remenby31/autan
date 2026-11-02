@@ -157,6 +157,29 @@ def test_document_errors_have_codes(
     assert sorted(codes(error)) == codes_expected
 
 
+@pytest.mark.parametrize(
+    "put",
+    [
+        lambda d, text: d.update(name=text),
+        lambda d, text: d["physics"]["gas"].update(name=text),
+        lambda d, text: d["boundaries"][0].update(zones=text),
+    ],
+)
+def test_free_texts_are_bounded(put: Callable[[dict[str, Any], str], None], tmp_path: Path) -> None:
+    # case-schema.md#free-texts: at most 4096 bytes in UTF-8, whatever the characters.
+    def load(text: str) -> autan.Case:
+        document = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+        put(document, text)
+        path = tmp_path / "case.json"
+        path.write_text(json.dumps(document))
+        return autan.load(path)
+
+    load("é" * 2048)
+    with pytest.raises(autan.CaseError) as error:
+        load("é" * 2048 + "x")
+    assert codes(error) == ["E0003"]
+
+
 def test_incompressible_freestream_rules(write_case: Callable[[str], Path]) -> None:
     head = (
         "import autan\nfrom autan.units import K, Pa, kg, m, s\n"
