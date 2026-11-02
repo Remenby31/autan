@@ -899,3 +899,26 @@ def test_runs_that_differ_only_by_freestream_and_name_are_one_study(tmp_path: Pa
     study = {name: s["study"] for name, s in Registry(runs).scan().summaries.items()}
     assert study[base] == study[swept]
     assert study[other] != study[base]
+
+
+@pytest.mark.parametrize(("kind", "host_solve"), [("cpu", True), ("cuda", False)])
+def test_a_runs_plan_counts_the_memory_of_the_devices_it_ran_on(
+    kind: str, host_solve: bool, runs: Path, server: str
+) -> None:
+    # memory.py (#358): a steady CPU run holds its Jacobian and host linear solver; a device run
+    # holds its state on the device instead. The run's devices are recorded in run.json, its
+    # identity recomputed as results.md defines it.
+    from autan.results import run_identity  # noqa: PLC0415
+
+    run = next(runs.iterdir())
+    document = json.loads((run / "run.json").read_text())
+    document["devices"] = {"kind": kind, "count": 1}
+    document["identity"] = run_identity(document)
+    (run / ".run.json").write_text(json.dumps(document))
+    (run / ".run.json").replace(run / "run.json")
+
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
+
+    components = {c["name"] for c in plan["memory"]["components"]}
+    assert ("jacobian" in components) is host_solve
+    assert plan["memory"]["device_kind"] == kind
