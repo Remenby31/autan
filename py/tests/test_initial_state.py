@@ -152,6 +152,15 @@ def _raw(case: Path, text: str) -> None:
             ),
             "E0508",
         ),
+        (  # a member twice, which the runtime's streaming reader refuses too
+            lambda case: _raw(
+                case,
+                (case.parent / "state.json")
+                .read_text()
+                .replace('"cells":', '"cells": 4, "cells":', 1),
+            ),
+            "E0508",
+        ),
         (lambda case: (case.parent / "state.json").unlink(), "E0508"),
         (_fifo, "E0508"),  # a FIFO with no writer: never a blocking read
     ],

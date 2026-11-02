@@ -113,6 +113,11 @@ def test_an_oracle_condition_reaches_the_solver_and_the_run(
     ("content", "digest", "code"),
     [
         (b"{}", "0" * 64, "E0420"),
+        (  # a member twice, which the runtime's streaming reader refuses too
+            json.dumps(states()).replace('"faces": 2,', '"faces": 2, "values": [],', 1).encode(),
+            None,
+            "E0420",
+        ),
         (states(schema="autan.mms/1"), None, "E0420"),
         (states(variables=["density", "pressure"]), None, "E0420"),
         (states(mesh_sha256="1" * 64), None, "E0422"),
