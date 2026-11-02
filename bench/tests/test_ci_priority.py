@@ -442,11 +442,13 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
         7: "host",
         9: "mcpbench-vllm",
     }
-    env = {**os.environ, "AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock")}
+    # A host that runs timed benchmarks (bench/ci/timed-hosts): a foreign tenant is an error.
+    env = {**os.environ, "AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock"),
+           "AUTAN_BENCH_HOST": "spark-5359"}  # fmt: skip
 
-    def report() -> list[str]:
-        return subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env=env, capture_output=True,
-                              text=True, check=True).stdout.splitlines()  # fmt: skip
+    def report(**extra: str) -> list[str]:
+        return subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env={**env, **extra},
+                              capture_output=True, text=True, check=True).stdout.splitlines()  # fmt: skip
 
     guard.publish(foreign)
     # The harness reads the same list to skip, not fail, tests that need the GPU to itself.
@@ -459,6 +461,12 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
     assert "autan_halo_tests" not in error
     assert not [line for line in out if line.startswith(("::", "##")) and line != error]
     assert not any("#" in line or "[" in line for line in out[1:])
+    # Elsewhere the tenant is allowed: the same line, as a warning.
+    (warning,) = [line for line in report(AUTAN_BENCH_HOST="spark-5512") if line.startswith("::")]
+    # Severity, host and tenants, each on its own: the memory reading may move between calls.
+    assert warning.startswith("::warning::GPU shared with a foreign tenant on spark-5512: ")
+    assert error.startswith("::error::GPU shared with a foreign tenant on spark-5359: ")
+    assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in warning
     guard.publish({})
     assert not [line for line in report() if line.startswith("::")]
     assert gpu.foreign_tenants(tmp_path / "gpu.lock") == []
