@@ -57,7 +57,8 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
     Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs. The derived counts
     of a run's memory estimate need the core, so they are upper bounds: every cell in lines of every
     length (RCM order, the mesh in metres) and a gradient stencil of each cell's face neighbours and
-    theirs. Fixture meshes have no periodic pairs. Nothing reads these counts from a fixture run.
+    theirs. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
+    periodic pairs. Nothing reads these counts from a fixture run.
     """
     kinds = mesh.cell_kinds or ("polyhedron",) * mesh.n_cells
     by_type = dict.fromkeys(KINDS.values(), 0)
@@ -118,6 +119,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
                 "cells": mesh.n_cells,
                 "long_cells": mesh.n_cells,
             },
+            "multigrid": {"cells_by_level": [mesh.n_cells], "edges_by_level": [mesh.n_interior]},
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))
