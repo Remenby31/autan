@@ -348,6 +348,9 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # them from cg_open), its 512 B of ZoneNames parsed (40 B a byte), and HDF5's default
     # caches: 4 MiB of metadata, 8 MiB of chunks and a 64 KiB sieve.
     standard = 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 24 * 30 + 4 * 10 + 52 * 40 + 16 * 160
+    # Sections read in chunks through 1 MiB and 32 KiB of buffers, the edges and points they
+    # skip kept as runs, 24 B for each of the 30 elements and one more.
+    standard += 2**20 + 32 * 2**10 + 24 * (10 + 20 + 1)
     caches = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
     assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches
     filtered: dict[str, Any] = tiny_mesh(20).document()
