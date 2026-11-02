@@ -2,11 +2,14 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Run } from "../api/contracts";
+import type { Run, RunSettings } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
+import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
-import { degrees } from "../api/units";
+import { studies } from "../api/studies";
+import { coefficient, degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
+import { DASHES, PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -30,23 +33,6 @@ const resolvedColor = (k: number) =>
   getComputedStyle(document.documentElement)
     .getPropertyValue(`--series-${(k % 8) + 1}`)
     .trim();
-
-/** Every leaf of a case document under its dotted path; arrays of tables by index. */
-export function flatten(value: unknown, prefix = ""): Map<string, string> {
-  const out = new Map<string, string>();
-  if (value !== null && typeof value === "object") {
-    for (const [key, child] of Object.entries(value)) {
-      const path = prefix ? (Array.isArray(value) ? `${prefix}[${key}]` : `${prefix}.${key}`) : key;
-      for (const [k, v] of flatten(child, path)) out.set(k, v);
-    }
-  } else {
-    out.set(
-      prefix,
-      value === undefined ? "—" : typeof value === "string" ? value : JSON.stringify(value),
-    );
-  }
-  return out;
-}
 
 function Compare() {
   const { runs: ids } = Route.useSearch();
@@ -88,9 +74,20 @@ function Compare() {
   }, [ids, live, version, registry.data]);
 
   const polar = useMemo(
-    () => polars(ids, runs, registry.data?.summaries ?? {}),
-    [ids, runs, registry.data],
+    () =>
+      polars(
+        ids.map((id, k) => ({
+          id,
+          role: String.fromCharCode(65 + k),
+          run: runs[k],
+          case: details[k]?.data?.case,
+          pending: details[k]?.isPending || !registry.data,
+        })),
+      ),
+    [ids, runs, details, registry.data],
   );
+  const plotted = polar.series.flatMap((s) => s.points.map((p) => ({ ...p, series: s.label })));
+  const runColor = (p: { role: string }) => seriesColor(p.role.charCodeAt(0) - 65);
 
   const diff = useMemo(() => {
     const flat = details.map((d) =>
@@ -102,7 +99,6 @@ function Compare() {
                 devices: devicesLabel(d.data.run.devices),
                 backend: d.data.run.solver.backend,
                 solver: d.data.run.solver.commit,
-                deterministic: d.data.run.deterministic,
               },
             }),
           ])
@@ -118,6 +114,7 @@ function Compare() {
   }, [details]);
 
   const others = (registry.data?.runs ?? []).filter((r) => !ids.includes(r.run_id));
+  const available = studies(registry.data);
 
   return (
     <>
@@ -153,7 +150,11 @@ function Compare() {
             {ids.length < MAX_RUNS && others.length > 0 && (
               <Menu
                 label="Add a run"
-                trigger={<Button size="sm" variant="tertiary" icon={<Plus className="size-4" />} />}
+                trigger={
+                  <Button size="sm" variant="tertiary" icon={<Plus className="size-4" />}>
+                    Add a run
+                  </Button>
+                }
               >
                 {others.slice(0, 20).map((run) => (
                   <MenuItem
@@ -162,7 +163,10 @@ function Compare() {
                     onClick={() => setRuns([...ids, run.run_id])}
                   >
                     {run.case.name}{" "}
-                    <span className="font-mono text-fg-3">{run.run_id.slice(-8)}</span>
+                    <span className="font-mono text-fg-3">
+                      {conditions(registry.data?.summaries[run.run_id]?.settings)}{" "}
+                      {run.run_id.slice(-8)}
+                    </span>
                   </MenuItem>
                 ))}
               </Menu>
@@ -173,10 +177,29 @@ function Compare() {
             <EmptyState
               icon={<GitCompareArrows className="size-5" />}
               title="Pick two runs or more"
-              description="Select runs on the Runs page with x, then press c."
+              description={
+                available.length
+                  ? "Compare a study, or add runs above."
+                  : "Add runs above, or select them on the Runs page."
+              }
             >
+              {available.map((s) => (
+                <Button
+                  key={s.key}
+                  onClick={() => {
+                    setRuns(s.ids);
+                    // The chosen button leaves with the empty state: focus goes to the heading.
+                    requestAnimationFrame(() => heading.current?.focus());
+                  }}
+                  data-testid="study-choice"
+                  className="justify-start"
+                >
+                  {s.name}
+                  <span className="font-mono text-fg-3 text-sm">{s.label}</span>
+                </Button>
+              ))}
               <Link to="/" className="self-center">
-                <Button>Go to Runs</Button>
+                <Button variant="tertiary">Go to Runs</Button>
               </Link>
             </EmptyState>
           ) : (
@@ -208,25 +231,107 @@ function Compare() {
                 </ChartCard>
               </div>
 
-              {polar && (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="polar">
-                  <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
-                    <OverlayChart
-                      series={[polar.lift]}
-                      xLabel="α (deg)"
-                      points
-                      version={polar.version}
-                    />
-                  </ChartCard>
-                  <ChartCard title="Drag polar" unit="CD against CL">
-                    <OverlayChart
-                      series={[polar.drag]}
-                      xLabel="CL"
-                      points
-                      version={polar.version}
-                    />
-                  </ChartCard>
+              {plotted.length > 0 && (
+                <div className="flex flex-col gap-3" data-testid="polar">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+                    {polar.fixed && (
+                      <span className="text-fg-3" data-testid="polar-fixed">
+                        {polar.fixed}
+                      </span>
+                    )}
+                    {polar.series.length > 1 &&
+                      polar.series.map((s, k) => (
+                        <span
+                          key={s.key}
+                          className="inline-flex items-center gap-2"
+                          data-testid="polar-series"
+                        >
+                          <svg width="20" height="6" aria-hidden className="flex-none">
+                            <line
+                              x1="0"
+                              x2="20"
+                              y1="3"
+                              y2="3"
+                              stroke="var(--fg-3)"
+                              strokeWidth="1.5"
+                              strokeDasharray={DASHES[k % DASHES.length]}
+                            />
+                          </svg>
+                          {s.label}
+                          <span className="font-mono text-fg-3">
+                            {s.points.map((p) => p.role).join(" ")}
+                          </span>
+                        </span>
+                      ))}
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <ChartCard title="Lift polar" unit="CL against α (deg), converged runs">
+                      <PolarChart
+                        series={polar.series}
+                        x={(p) => p.alpha}
+                        y={(p) => p.cl}
+                        xLabel="α (deg)"
+                        yLabel="CL"
+                        color={runColor}
+                        testId="lift-polar"
+                      />
+                    </ChartCard>
+                    <ChartCard title="Drag polar" unit="CD against CL">
+                      <PolarChart
+                        series={polar.series}
+                        x={(p) => p.cl}
+                        y={(p) => p.cd}
+                        xLabel="CL"
+                        yLabel="CD"
+                        color={runColor}
+                        testId="drag-polar"
+                      />
+                    </ChartCard>
+                  </div>
+                  <table className="w-full border-collapse text-sm" data-testid="polar-table">
+                    <thead>
+                      <tr className="text-left text-fg-3">
+                        <th className="h-8 px-2 font-normal">Run</th>
+                        <th className="px-2 text-right font-normal">α (deg)</th>
+                        <th className="px-2 text-right font-normal">CL</th>
+                        <th className="px-2 text-right font-normal">CD</th>
+                        {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {plotted.map((p) => (
+                        <tr key={p.id} className="border-line border-t font-mono">
+                          <td className="h-8 px-2">
+                            <span className="inline-flex items-center gap-2">
+                              <i
+                                className="inline-block size-2 rounded-full"
+                                style={{ background: runColor(p) }}
+                              />
+                              {p.role}
+                            </span>
+                          </td>
+                          <td className="px-2 text-right">{p.alpha}</td>
+                          <td className="px-2 text-right">{coefficient(p.cl)}</td>
+                          <td className="px-2 text-right">{coefficient(p.cd)}</td>
+                          {polar.series.length > 1 && (
+                            <td className="px-2 font-sans text-fg-2">{p.series}</td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
+              )}
+              {polar.unplotted.length > 0 && (
+                <p className="m-0 text-fg-2 text-sm" data-testid="polar-missing">
+                  Not on the polars:{" "}
+                  {polar.unplotted.map((u, k) => (
+                    <span key={u.id}>
+                      {k > 0 && " · "}
+                      <span className="font-mono">{u.role}</span> {u.reason}
+                    </span>
+                  ))}
+                </p>
               )}
 
               <section className="overflow-hidden rounded-lg border border-line bg-bg-0">
@@ -306,52 +411,15 @@ function Compare() {
   );
 }
 
-/** The coefficients a converged run ends with: its sole monitor giving them, on the final
- * state as run.json records it (results.md#runjson). Null otherwise. */
-function finalCoefficients(run: Run): { cl: number; cd: number } | null {
-  if (run.status !== "converged") return null;
-  const coefficients = Object.values(run.monitors ?? {}).filter(
-    (m) => m.cl !== undefined && m.cd !== undefined,
-  );
-  const [only] = coefficients;
-  return coefficients.length === 1 && only?.cl !== undefined && only.cd !== undefined
-    ? { cl: only.cl, cd: only.cd }
-    : null;
-}
-
-/** Lift and drag polars from the compared runs that converged (finalCoefficients); at a
- * repeated α the newest run wins. Null when fewer than two angles remain. */
-function polars(
-  ids: string[],
-  runs: (Run | undefined)[],
-  summaries: Record<string, { settings?: { aoa: string | null } }>,
-): { lift: OverlaySeries; drag: OverlaySeries; version: string } | null {
-  const byAlpha = new Map<number, { alpha: number; cl: number; cd: number; started: string }>();
-  ids.forEach((id, k) => {
-    const run = runs[k];
-    if (!run) return;
-    const alpha = degrees(summaries[id]?.settings?.aoa);
-    const ended = finalCoefficients(run);
-    if (alpha === null || ended === null) return;
-    const seen = byAlpha.get(alpha);
-    if (!seen || seen.started < run.started)
-      byAlpha.set(alpha, { alpha, ...ended, started: run.started });
-  });
-  const points = [...byAlpha.values()];
-  if (points.length < 2) return null;
-  const sortedAlpha = [...points].sort((a, b) => a.alpha - b.alpha);
-  const sortedCl = [...points].sort((a, b) => a.cl - b.cl);
-  const color = getComputedStyle(document.documentElement).getPropertyValue("--fg").trim();
-  return {
-    lift: {
-      label: "CL",
-      color,
-      x: sortedAlpha.map((p) => p.alpha),
-      y: sortedAlpha.map((p) => p.cl),
-    },
-    drag: { label: "CD", color, x: sortedCl.map((p) => p.cl), y: sortedCl.map((p) => p.cd) },
-    version: JSON.stringify(sortedAlpha),
-  };
+// "M 0.2 · α 11.29°": what tells a run of a study from the next, in a menu.
+function conditions(settings: RunSettings | undefined): string {
+  const alpha = degrees(settings?.aoa);
+  return [
+    settings?.mach != null && `M ${settings.mach}`,
+    alpha !== null && `α ${Number(alpha.toFixed(2))}°`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function ChartCard({

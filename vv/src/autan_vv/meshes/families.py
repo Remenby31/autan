@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from autan_vv.errors import VVError
-from autan_vv.meshes import ringleb
+from autan_vv.meshes import ringleb, vortex
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from autan_vv.meshes.fluent import write_fluent
@@ -92,6 +92,33 @@ class Family:
 
     def manifest(self) -> dict[str, Any]:
         return {"schema": MANIFEST_SCHEMA, **asdict(self)}
+
+
+def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
+    """The manifest entry of level `n`, written to `path` from `mesh`."""
+    volume = float(mesh.geometry.cell_volume.sum())
+    counts: dict[str, int] = {}
+    for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
+        counts[k] = counts.get(k, 0) + 1
+    return Level(
+        n=n,
+        file=path.name,
+        file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        mesh_sha256=mesh.sha256(),
+        n_cells=mesh.n_cells,
+        n_faces=mesh.n_faces,
+        n_points=int(mesh.points.shape[0]),
+        cell_counts=counts,
+        min_subvolume_ratio=mesh.min_subvolume_ratio(),
+        volume=volume,
+        h=(volume / mesh.n_cells) ** (1.0 / 3.0),
+    )
+
+
+def write_manifest(family: Family, out_dir: Path) -> None:
+    """Write `manifest.json` (schema autan.mesh-family/1) of `family` into `out_dir`."""
+    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
+    (out_dir / "manifest.json").write_text(manifest + "\n")
 
 
 def _build_geometry(gmsh: ModuleType, kind: str, n: int) -> None:
@@ -392,8 +419,11 @@ def _write_msh(
     cells: dict[str, IntArray],
     boundary: dict[str, IntArray],
     path: Path,
+    periodic: tuple[tuple[str, str, tuple[float, float, float]], ...] = (),
 ) -> None:
-    """Write arrays as MSH 4.1 ASCII through a discrete Gmsh model, so the file is exactly the arrays."""
+    """Write arrays as MSH 4.1 ASCII through a discrete Gmsh model, so the file is exactly the arrays.
+    Each (zone a, zone b, translation) of `periodic` becomes a `$Periodic` surface link, b the
+    translate of a (mesh.md, Periodic pairs: the reader pairs the faces by geometry)."""
     gmsh.model.add("export")
     volume = gmsh.model.addDiscreteEntity(3)
     gmsh.model.mesh.addNodes(
@@ -411,8 +441,10 @@ def _write_msh(
                 (conn + 1).ravel().tolist(),
             )
             tag += conn.shape[0]
+    surfaces: dict[str, int] = {}
     for name, faces in boundary.items():
         surface = gmsh.model.addDiscreteEntity(2)
+        surfaces[name] = surface
         for k, gmsh_type in ((3, 2), (4, 3)):
             rows = faces[(faces >= 0).sum(axis=1) == k][:, :k]
             if rows.size:
@@ -425,6 +457,9 @@ def _write_msh(
                 tag += rows.shape[0]
         gmsh.model.addPhysicalGroup(2, [surface], name=name)
     gmsh.model.addPhysicalGroup(3, [volume], name=CELL_ZONE)
+    for a, b, (tx, ty, tz) in periodic:
+        affine = [1.0, 0.0, 0.0, tx, 0.0, 1.0, 0.0, ty, 0.0, 0.0, 1.0, tz, 0.0, 0.0, 0.0, 1.0]
+        gmsh.model.mesh.setPeriodic(2, [surfaces[b]], [surfaces[a]], affine)
     gmsh.write(str(path))
     gmsh.model.remove()
 
@@ -450,11 +485,14 @@ def generate_level(
     ASCII. The file holds exactly the in-memory mesh: coordinates are rounded to the 16 significant
     digits Gmsh writes.
     """
-    if kind not in (*KINDS, "ringleb"):
-        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS} or 'ringleb'"
+    if kind not in (*KINDS, "ringleb", *vortex.KINDS):
+        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb' or {vortex.KINDS}"
         raise VVError(msg, code="V0304")
     if kind == "ringleb" and perturbation > 0.0:
         msg = "the Ringleb mesh follows the flow's streamlines and is not perturbed"
+        raise VVError(msg, code="V0309")
+    if kind in vortex.KINDS and perturbation > 0.0:
+        msg = f"{kind} is nested and periodic: it carries its own seeded jitter, not a perturbation"
         raise VVError(msg, code="V0309")
     if not (0.0 <= perturbation < 1.0) or n < 1:
         msg = f"need 0 <= perturbation < 1 and n >= 1, got {perturbation} and {n}"
@@ -468,8 +506,13 @@ def generate_level(
         gmsh.option.setNumber("Mesh.Binary", 0)
         gmsh.option.setNumber("Mesh.SaveAll", 0)
         version = str(gmsh.__version__)
+        periodic: tuple[tuple[str, str, tuple[float, float, float]], ...] = ()
         if kind == "ringleb":
             points, cells, boundary = ringleb.grid(n)
+        elif kind in vortex.KINDS:
+            points, cells = vortex.grid(kind, n, seed)
+            boundary = _box_boundary(points, cells)
+            periodic = vortex.PERIODIC
         else:
             if kind == "hybrid":
                 points, cells = _structured_hybrid(n)
@@ -491,7 +534,7 @@ def generate_level(
         else:
             mesh = _to_facemesh(points, cells, boundary)
             if path is not None:
-                _write_msh(gmsh, points, cells, boundary, path)
+                _write_msh(gmsh, points, cells, boundary, path, periodic)
     finally:
         gmsh.finalize()
     mesh.check()
@@ -513,27 +556,7 @@ def generate_family(
         meshes.append(mesh)
         if kind == "ringleb":
             ringleb.write_face_states(mesh, path, path.with_suffix(".states.json"))
-        g = mesh.geometry
-        volume = float(g.cell_volume.sum())
-        counts: dict[str, int] = {}
-        for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
-            counts[k] = counts.get(k, 0) + 1
-        records.append(
-            Level(
-                n=n,
-                file=name,
-                file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                mesh_sha256=mesh.sha256(),
-                n_cells=mesh.n_cells,
-                n_faces=mesh.n_faces,
-                n_points=int(mesh.points.shape[0]),
-                cell_counts=counts,
-                min_subvolume_ratio=mesh.min_subvolume_ratio(),
-                volume=volume,
-                h=(volume / mesh.n_cells) ** (1.0 / 3.0),
-            )
-        )
+        records.append(level_record(n, path, mesh))
     family = Family(kind, perturbation, seed, version, tuple(records))
-    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
-    (out_dir / "manifest.json").write_text(manifest + "\n")
+    write_manifest(family, out_dir)
     return family, meshes

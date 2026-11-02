@@ -46,7 +46,7 @@ from autan.schema import (
     Sutherland,
     require_tags,
 )
-from autan.units import parse, si
+from autan.units import metres_per, parse, si
 
 if TYPE_CHECKING:
     from autan.case import Case
@@ -130,6 +130,7 @@ AbsolutePath = Annotated[
 class MeshRef(_Strict):
     path: AbsolutePath
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+    scale: Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 
 
 class SutherlandLaw(_Strict):
@@ -289,6 +290,7 @@ class SteadyInput(_Strict):
     kind: Literal["steady"]
     max_iterations: Annotated[int, Field(ge=1)]
     residual_orders: Positive
+    linear_solver: Literal["multigrid", "gauss-seidel"]
 
 
 class UnsteadyInput(_Strict):
@@ -355,7 +357,7 @@ class SolverInput(_Strict):
     case: CaseRef
     mesh: MeshRef
     precision: Literal["fp32+acc64", "fp64"]
-    deterministic: bool
+    reproducibility: Literal["none", "run", "ranks"]
     devices: Devices
     physics: PhysicsInput
     freestream: FreestreamInput
@@ -405,6 +407,12 @@ class SolverInput(_Strict):
             raise ValueError(message) from None
         if case.hash() != self.case.sha256:
             message = "case.sha256 is not the hash of case.toml"
+            raise ValueError(message)
+        if self.mesh.scale != metres_per(case.mesh_unit):
+            message = "mesh.scale is not the case's mesh_unit in metres"
+            raise ValueError(message)
+        if self.reproducibility != case.physics.reproducibility:
+            message = "reproducibility differs from the case's physics.reproducibility"
             raise ValueError(message)
         initial = case.initial_state.sha256 if case.initial_state else None
         if initial != (self.initial_state.sha256 if self.initial_state else None):
@@ -675,7 +683,6 @@ def build(
     mesh_info: MeshInfo,
     *,
     devices: Devices,
-    deterministic: bool,
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
@@ -742,6 +749,7 @@ def build(
             kind="steady",
             max_iterations=spec.time.max_iterations,
             residual_orders=spec.time.residual_orders,
+            linear_solver=spec.time.linear_solver,
         )
         if isinstance(spec.time, Steady)
         else UnsteadyInput(
@@ -755,9 +763,13 @@ def build(
     return SolverInput(
         schema_=SCHEMA_ID,
         case=CaseRef(name=spec.name, sha256=spec.hash(), toml=case.to_toml()),
-        mesh=MeshRef(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
+        mesh=MeshRef(
+            path=str(case.mesh_path),
+            sha256=mesh_info.source.sha256,
+            scale=metres_per(spec.mesh_unit),
+        ),
         precision=spec.physics.precision,
-        deterministic=deterministic,
+        reproducibility=spec.physics.reproducibility,
         devices=devices,
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,

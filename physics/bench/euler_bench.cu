@@ -6,7 +6,9 @@
 //
 //   euler_bench MESH [--policy fp64|fp32+acc64] [--flux roe|hllc|ausm-up] [--block N]
 //                    [--stencil-slice N]   (cells per slice of the sliced stencil layout, 0: CSR)
-//                    [--warmup N] [--reps N] [--batch N]
+//                    [--warmup N] [--reps N] [--batch N] [--gate 1]
+//   --gate 1: after the host setup, print `autan-bench: ready` on stderr and wait for a line on
+//   stdin before any CUDA call (autan-bench run --ready takes the GPU lock only then).
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -14,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -44,6 +47,7 @@ struct Options {
   std::string flux = "roe";
   int block = 256;
   int stencil_slice = 0;
+  bool gate = false;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -52,6 +56,21 @@ struct Options {
 [[noreturn]] void fail(const std::string& msg) {
   std::fprintf(stderr, "error: %s\n", msg.c_str());
   std::exit(2);
+}
+
+/// With --gate 1 (autan-bench run --ready): the host setup is done, so announce it on stderr and
+/// wait for autan-bench to take the GPU lock and say go on stdin. No CUDA call comes before this,
+/// so the waiting process holds no device context.
+void wait_for_go(bool gate) {
+  if (!gate) {
+    return;
+  }
+  std::fprintf(stderr, "autan-bench: ready\n");
+  std::fflush(stderr);
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    fail("--gate: stdin closed before go");
+  }
 }
 
 Options parse(int argc, char** argv) {
@@ -67,6 +86,8 @@ Options parse(int argc, char** argv) {
       o.flux = v;
     else if (f == "--block")
       o.block = std::stoi(v);
+    else if (f == "--gate")
+      o.gate = std::stoi(v) != 0;
     else if (f == "--stencil-slice")
       o.stencil_slice = std::stoi(v);
     else if (f == "--warmup")
@@ -188,6 +209,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   std::vector<R> reference(5 * nc);
   host.residual(us, reference);
 
+  wait_for_go(o.gate);
   // Device copies of every dataset of the module.
   DeviceArray<index_t> owner(std::vector<index_t>(topo.owner, topo.owner + nf));
   DeviceArray<index_t> neighbour(std::vector<index_t>(topo.neighbour, topo.neighbour + ni));

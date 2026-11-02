@@ -149,18 +149,20 @@ class _FakeUI(types.ModuleType):
         super().__init__("autan_ui")
         self.calls: list[tuple[Any, ...]] = []
 
-    def serve(self, runs: Path, host: str, port: int, *, open_browser: bool) -> None:
-        self.calls.append((runs, host, port, open_browser))
+    def serve(
+        self, runs: Path, host: str, port: int, *, open_browser: bool, meshes: Path | None
+    ) -> None:
+        self.calls.append((runs, host, port, open_browser, meshes))
 
 
 def test_ui_serves_the_runs_directory(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeUI()
     monkeypatch.setitem(sys.modules, "autan_ui", fake)
-    assert main(["ui", "--runs", "out", "--port", "9000", "--no-open"]) == 0
+    assert main(["ui", "--runs", "out", "--port", "9000", "--no-open", "--meshes", "m"]) == 0
     assert main(["ui"]) == 0
     assert fake.calls == [
-        (Path("out"), "127.0.0.1", 9000, False),
-        (Path("runs"), "127.0.0.1", 8765, True),
+        (Path("out"), "127.0.0.1", 9000, False, Path("m")),
+        (Path("runs"), "127.0.0.1", 8765, True, None),
     ]
 
 

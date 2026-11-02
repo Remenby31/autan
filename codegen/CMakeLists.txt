@@ -1,7 +1,14 @@
 # Kernel generator: runs autan_codegen on kernels/*.py at build time and builds the generated loops.
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 
-set(AUTAN_KERNEL_MODULES advection advection_diffusion gradients roe)
+set(
+  AUTAN_KERNEL_MODULES
+  advection
+  advection_diffusion
+  blocks
+  gradients
+  roe
+)
 # AUTAN_ENABLE_CUDA (root) adds the GPU loops, the GPU spike driver and the loop benchmark.
 # AUTAN_ENABLE_HIP compiles the same generated GPU loops with HIP (no AMD device: compile only).
 option(AUTAN_ENABLE_HIP "Compile the generated GPU loops with HIP" OFF)
@@ -30,13 +37,19 @@ set(AUTAN_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 set(AUTAN_GENERATED_FILES)
 set(AUTAN_GENERATED_GPU_UNITS)
-# Test kernels (codegen/tests/kernels) are built into the spike library only.
-set(AUTAN_TEST_KERNEL_MODULES face_weighted)
+# Test kernels (codegen/tests/kernels) are built into the spike library and the loop benchmark only.
+set(AUTAN_TEST_KERNEL_MODULES diagonal_only face_weighted)
+# Modules with bodies computing in the accumulation type, which Metal cannot divide in (E1013).
+set(AUTAN_ACCUM_MODULES blocks diagonal_only)
 foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
   if(module IN_LIST AUTAN_TEST_KERNEL_MODULES)
     set(module_source ${CMAKE_CURRENT_SOURCE_DIR}/tests/kernels/${module}.py)
   else()
     set(module_source ${PROJECT_SOURCE_DIR}/kernels/${module}.py)
+  endif()
+  set(module_backends ${AUTAN_KERNEL_BACKENDS})
+  if(module IN_LIST AUTAN_ACCUM_MODULES)
+    list(REMOVE_ITEM module_backends metal)
   endif()
   set(outputs ${AUTAN_GENERATED_DIR}/${module}.hpp)
   list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp)
@@ -48,10 +61,10 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
     )
     list(APPEND AUTAN_GENERATED_GPU_UNITS ${AUTAN_GENERATED_DIR}/${module}_gpu.cu)
   endif()
-  if(AUTAN_ENABLE_METAL)
+  if("metal" IN_LIST module_backends)
     list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_metal.hpp)
   endif()
-  list(JOIN AUTAN_KERNEL_BACKENDS "," backends)
+  list(JOIN module_backends "," backends)
   add_custom_command(
     OUTPUT ${outputs}
     COMMAND

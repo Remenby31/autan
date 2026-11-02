@@ -2,6 +2,7 @@ import hashlib
 import http.client
 import json
 import math
+import os
 import shutil
 import socket
 import threading
@@ -12,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY
+from urllib.parse import quote
 
 import autan
 import autan.initial_state
@@ -105,6 +107,35 @@ def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
     assert snapshot.rejected[foreign.name].startswith("E0701")
 
 
+def test_the_registry_lists_the_runs_whose_solution_is_a_result(runs: Path) -> None:
+    # results.md: an ended run's solution.cgns is its result, history or not; a running run's
+    # is not yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+    source = next(p for p in runs.iterdir() if p != early)
+    assert (early / "solution.cgns").is_file()
+    assert sorted(Registry(runs).scan().solutions) == sorted([source.name, early.name])
+
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    assert Registry(runs).scan().solutions == [early.name]
+
+
+def test_a_run_without_history_has_a_summary_with_its_settings(runs: Path) -> None:
+    # py/examples/crm_hl.py: M 0.2, 19.57 deg; no iteration recorded yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+
+    summary = Registry(runs).scan().summaries[early.name]
+
+    assert (summary["iteration"], summary["trend"]) == (None, [])
+    assert (summary["settings"]["mach"], summary["settings"]["aoa"]) == (0.2, "19.57 deg")
+
+
 def test_registry_rechecks_a_run_when_any_contract_file_changes(runs: Path) -> None:
     source = next(runs.iterdir())
     registry = Registry(runs)
@@ -158,10 +189,12 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
         copy = staging.rename(runs / run["run_id"])
         kind, data = next(events)
         assert (kind, data["run_id"]) == ("run", copy.name)
+        assert next(events) == ("solutions", sorted([source.name, copy.name]))
 
         (copy / "run.json").write_text("{")
-        assert [next(events), next(events)] == [
+        assert [next(events), next(events), next(events)] == [
             ("removed", copy.name),
+            ("solutions", [source.name]),
             ("rejected", [{"dir": copy.name, "reason": ANY}]),
         ]
 
@@ -169,9 +202,13 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
 def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: str) -> None:
     directory = next(runs.iterdir())
     run_id = directory.name
+    ended = (directory / "run.json").read_text()
+    running = json.loads(ended) | {"status": "running", "finished": None, "monitors": None}
+    (directory / "run.json").write_text(json.dumps(running))
     with httpx.stream("GET", f"{server}/api/runs/{run_id}/history/events", timeout=10) as response:
         events = (e for e in sse_events(response) if e[0] != "log")
-        assert next(events)[0] == "run"
+        kind, data = next(events)
+        assert (kind, data["status"]) == ("run", "running")
         kind, records = next(events)
         assert kind == "history"
         assert len(records) == 30
@@ -181,11 +218,92 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
         kind, records = next(events)
         assert (kind, [r["iteration"] for r in records]) == ("history", [31])
 
-        run = json.loads((directory / "run.json").read_text())
-        run["status"] = "failed"
-        (directory / "run.json").write_text(json.dumps(run))
+        (directory / ".run.json").write_text(ended)
+        (directory / ".run.json").replace(directory / "run.json")
         kind, data = next(events)
-        assert (kind, data["status"]) == ("run", "failed")
+        assert (kind, data["status"]) == ("run", "stopped")
+
+
+def test_a_stream_ends_when_the_case_its_run_is_checked_against_changes(
+    runs: Path, server: str
+) -> None:
+    directory = next(runs.iterdir())
+    with httpx.stream(
+        "GET", f"{server}/api/runs/{directory.name}/history/events", timeout=10
+    ) as response:
+        events = (e for e in sse_events(response) if e[0] not in ("log", "history"))
+        assert next(events)[0] == "run"
+
+        # results.md: run.json's case.sha256 is the stored case's hash; this case is another.
+        case = (directory / "case.toml").read_text()
+        (directory / "case.toml").write_text(case.replace('name = "crm-hl"', 'name = "other"'))
+        kind, _ = next(events)
+        assert kind == "invalid"
+
+
+def test_a_replaced_run_json_is_checked_again_whatever_its_time_and_size(runs: Path) -> None:
+    directory = next(runs.iterdir())
+    registry = Registry(runs)
+    assert directory.name in registry.scan().runs
+    path = directory / "run.json"
+    before = path.stat()
+    text = path.read_text()
+    identity = json.loads(text)["identity"]
+    # Another identity of the same length: run.json no longer matches its definition.
+    other = ("0" if identity[0] != "0" else "1") + identity[1:]
+    (directory / ".run.json").write_text(text.replace(identity, other))
+    (directory / ".run.json").replace(path)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert (path.stat().st_mtime_ns, path.stat().st_size) == (before.st_mtime_ns, before.st_size)
+
+    assert directory.name in registry.scan().rejected
+
+
+def test_a_run_file_downloads_as_it_is_on_disk(runs: Path, server: str, tmp_path: Path) -> None:
+    directory = next(runs.iterdir())
+    (tmp_path / "secret.txt").write_text("SECRET")
+    (directory / "linked.txt").symlink_to(tmp_path / "secret.txt")
+    (directory / "states").mkdir(exist_ok=True)
+
+    for name in ("run.json", "case.toml", "history.jsonl", "solution.cgns"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}")
+        assert response.status_code == 200, name
+        assert response.content == (directory / name).read_bytes()
+        assert f'filename="{name}"' in response.headers["content-disposition"]
+
+    # Only the directory's own regular files: no link, no directory, no path, no other name.
+    for name in ("linked.txt", "states", "..%2Frun.json", "%2E%2E", "missing.json"):
+        status = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}").status_code
+        assert status == 404, name
+
+    # Any file name reaches the client whole (RFC 6266), and a growing file is sent as opened.
+    odd = 'résultat "final".txt'
+    (directory / odd).write_text("x" * 10)
+    response = httpx.get(f"{server}/api/runs/{directory.name}/files/{quote(odd)}")
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith(
+        f"filename*=UTF-8''{quote(odd, safe='')}"
+    )
+    assert response.headers["content-disposition"].count("filename=") == 1
+
+    # results.md: a running run's solution.cgns is a checkpoint, not a result.
+    run = json.loads((directory / "run.json").read_text())
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    status = httpx.get(f"{server}/api/runs/{directory.name}/files/solution.cgns").status_code
+    assert status == 409
+
+
+def test_a_download_cut_short_leaves_no_file_open(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    url = f"{server}/api/runs/{directory.name}/files/solution.cgns"
+    before = len(list(Path("/dev/fd").iterdir()))
+    for _ in range(5):
+        with httpx.stream("GET", url) as response:
+            assert response.status_code == 200
+    time.sleep(0.5)
+    assert len(list(Path("/dev/fd").iterdir())) <= before
 
 
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:
@@ -633,6 +751,27 @@ def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server:
     assert reason.startswith("log.jsonl")
 
 
+def test_a_run_json_its_reader_refuses_ends_the_stream(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    run = json.loads((directory / "run.json").read_text())
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        assert next(events)[0] == "run"
+        # Well-formed, but not what the run computes (results.md#runjson, identity), replaced
+        # atomically so that no reader sees a half-written file.
+        (directory / ".run.json").write_text(json.dumps(run | {"identity": "0" * 64}))
+        (directory / ".run.json").replace(directory / "run.json")
+        kind, reason = next(e for e in events if e[0] not in ("history", "log"))
+    assert kind == "invalid"
+    assert reason.startswith("run.json")
+    # Refused with its reason: 409 once the registry has rejected the run, 422 before.
+    for path in ("", "/plan", "/surface"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}{path}")
+        assert response.status_code in (409, 422)
+        assert response.json()["detail"]
+
+
 def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, server: str) -> None:
     import h5py  # noqa: PLC0415 -- only this test edits a CGNS file
     from autan.solver_input import freestream_state  # noqa: PLC0415
@@ -673,6 +812,24 @@ def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, s
     np.testing.assert_allclose(values("field:Cf"), 1.0, rtol=1e-5)
 
 
+def test_an_inviscid_run_shows_no_skin_friction(tmp_path: Path) -> None:
+    # Euler equations carry no wall shear: Cf is not a field of the run, not a field of zeros.
+    source = (PY / "examples" / "crm_hl.py").read_text()
+    (tmp_path / "case.py").write_text(
+        source.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
+    )
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    run = autan.load(tmp_path / "case.py").run(
+        mesh_info, backend=autan.FakeBackend(iterations=5), runs=tmp_path / "runs"
+    )
+
+    with serving(create_app(tmp_path / "runs", static=None)) as url:
+        message = httpx.get(f"{url}/api/runs/{run.path.name}/surface").content
+
+    header = json.loads(message[4 : 4 + int.from_bytes(message[:4], "little")])
+    assert [f["name"] for f in header["fields"]] == ["Cp", "Pressure"]
+
+
 def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Path) -> None:
     case = autan.load(PY / "examples" / "crm_hl.py")
     mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
@@ -689,3 +846,56 @@ def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Pa
     expected = min(math.log10(reference[k] / last[k]) for k in reference)
     assert summary["orders"] == pytest.approx(expected, abs=1e-3)
     assert summary["trend"][0] > 0  # the first line of the continuation is already below
+
+
+@pytest.mark.parametrize("outside", ["external storage", "external link"])
+def test_a_solution_is_read_only_from_its_own_file(runs: Path, server: str, outside: str) -> None:
+    # results.md#solutioncgns: one HDF5 file in the run directory. Data stored in or linked to
+    # another file would be read past the run directory's confinement.
+    import h5py  # noqa: PLC0415 -- only these tests edit a CGNS file
+
+    directory = next(runs.iterdir())
+    secret = runs.parent / "secret.cgns"
+    with h5py.File(directory / "solution.cgns", "r+") as tree:
+        pressure = tree["Base"]["Zone"]["WallSolution"]["Pressure"]
+        values = pressure[" data"][()]
+        if outside == "external storage":
+            del pressure[" data"]
+            secret.write_bytes(values.astype("<f8").tobytes())
+            pressure.create_dataset(
+                " data", shape=values.shape, dtype="<f8", external=[(str(secret), 0, values.nbytes)]
+            )
+        else:
+            # Beside the data the viewer reads, unused by it: the file still reaches outside.
+            with h5py.File(secret, "w") as other:
+                other.create_dataset("values", data=values)
+            tree["Base"]["Zone"]["Elsewhere"] = h5py.ExternalLink(str(secret), "/values")
+
+    response = httpx.get(f"{server}/api/runs/{directory.name}/surface")
+
+    assert response.status_code == 422
+
+
+def test_runs_that_differ_only_by_freestream_and_name_are_one_study(tmp_path: Path) -> None:
+    # results.md#studies: the same identity but the case's hash, and the same case without its
+    # name and freestream.
+    example = (PY / "examples" / "crm_hl.py").read_text()
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    runs = tmp_path / "runs"
+
+    def run(source: str) -> str:
+        path = tmp_path / f"case{len(list(tmp_path.glob('case*.py')))}.py"
+        path.write_text(source)
+        return (
+            autan.load(path)
+            .run(mesh_info, backend=autan.FakeBackend(iterations=3), runs=runs)
+            .path.name
+        )
+
+    base = run(example)
+    swept = run(example.replace('"crm-hl"', '"crm-hl-alpha-5"').replace("aoa=19.57", "aoa=5"))
+    other = run(example.replace("every=10", "every=30"))
+
+    study = {name: s["study"] for name, s in Registry(runs).scan().summaries.items()}
+    assert study[base] == study[swept]
+    assert study[other] != study[base]

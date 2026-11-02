@@ -8,8 +8,14 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/block_matrix.hpp"
+
+namespace autan::kernels::euler {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::euler
 
 namespace autan::physics {
 
@@ -73,7 +79,13 @@ class Euler {
   using State = typename P::state;
   using Res = typename P::residual;
 
-  Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme);
+  /// With `keys` (a partition's global numbering, kernels::GlobalKeys), every cell sums its faces
+  /// and stencil entries in global order and every face is evaluated in its global orientation,
+  /// so that the residual and the Jacobian of each owned cell have the same bits on any number
+  /// of ranks and in any cell order (solver-input.md, reproducibility "ranks"). The spans must
+  /// outlive the constructor only.
+  Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
+        const kernels::GlobalKeys* keys = nullptr);
   ~Euler();
   Euler(const Euler&) = delete;
   Euler& operator=(const Euler&) = delete;
@@ -135,6 +147,12 @@ class Euler {
   /// (n_boundary_faces, FP64) and, unless `force` is empty, the pressure force on each face as
   /// the residual integrates it, warped-face correction included (3 x n_boundary_faces).
   void boundary_pressure(std::span<double> p, std::span<double> force = {}) const;
+
+  /// For a device copy of the residual: the generated loops' data in host memory (geometry,
+  /// boundary conditions, source, parameters), the gradient stencil and the scheme.
+  [[nodiscard]] const kernels::euler::Data<P>& data() const;
+  [[nodiscard]] const kernels::CellStencil& stencil() const;
+  [[nodiscard]] const Scheme& scheme() const;
 
  private:
   struct Impl;

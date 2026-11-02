@@ -1,8 +1,34 @@
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { attribute, clamp, float, mix, texture, uniform, vec2, vec4 } from "three/tsl";
+import {
+  attribute,
+  clamp,
+  float,
+  mix,
+  positionWorld,
+  texture,
+  uniform,
+  vec2,
+  vec4,
+} from "three/tsl";
 import * as THREE from "three/webgpu";
 import type { Surface } from "../api/surface";
 import { COOL_WARM, colormapFor, displayRange, sampleColormap } from "./colormap";
+
+/** What a probe finds: the zone (null on the slice), the point and the displayed value. */
+export interface Probe {
+  zone: number | null;
+  point: number[];
+  value: number;
+}
+
+// The slice's id in the id pass, after any zone's (ids are 16-bit, 0 the background).
+const SLICE_ID = 0xfffe;
+
+// The id an id-pass pixel holds: zone index, SLICE_ID, or null for the background.
+function idOf(pixel: Uint8Array): number | null {
+  const id = (pixel[0] ?? 0) + 256 * (pixel[1] ?? 0);
+  return id === 0 ? null : id - 1;
+}
 
 export type Backend = "webgpu" | "webgl2";
 
@@ -12,6 +38,8 @@ const token = (name: string) =>
 interface ZoneMaterial {
   material: THREE.MeshStandardNodeMaterial;
   highlight: { value: number };
+  tint: { value: THREE.Color };
+  tinted: { value: number };
 }
 
 /** Renders one surface with a node field through a colormap; zones are pickable on the GPU. */
@@ -29,8 +57,30 @@ export class SurfaceViewer {
   private surface: Surface | null = null;
   private geometry: THREE.BufferGeometry | null = null;
   private zones: ZoneMaterial[] = [];
+  private zoneColors: (string | null)[] = [];
   private pickMaterials: THREE.MeshBasicNodeMaterial[] = [];
   private pickTarget = new THREE.RenderTarget(1, 1);
+  // Probing: the position and displayed value under the cursor, as the rasteriser interpolates
+  // them, into one float pixel; the slice gets the id after the zones' in the id pass.
+  private probeTarget = new THREE.RenderTarget(1, 1, { type: THREE.FloatType });
+  private readonly probeMaterial = SurfaceViewer.probing();
+  // A plane cut through the volume, drawn with the surface, coloured by its own field.
+  private slice: {
+    field?: string;
+    mesh: THREE.Mesh;
+    // Its own id and probe materials, released with it.
+    idMaterial: THREE.MeshBasicNodeMaterial;
+    probeMaterial: THREE.MeshBasicNodeMaterial;
+    surface: Surface;
+    lut: THREE.DataTexture;
+    point: THREE.Vector3;
+    normal: THREE.Vector3;
+  } | null = null;
+  // With a slice, the walls between the eye and the plane are clipped away, so a cut through a
+  // body or a closed domain is seen.
+  private readonly walls = new THREE.ClippingGroup();
+  private readonly clip = new THREE.Plane();
+  private readonly sliceRange = { min: uniform(0), span: uniform(1) };
   private frame = 0;
 
   static async create(
@@ -76,6 +126,10 @@ export class SurfaceViewer {
     this.lut.magFilter = THREE.LinearFilter;
     this.lut.needsUpdate = true;
 
+    this.walls.clippingPlanes = [this.clip];
+    this.walls.enabled = false;
+    this.scene.add(this.walls);
+
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.addEventListener("change", () => this.requestRender());
@@ -91,6 +145,16 @@ export class SurfaceViewer {
     geometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
     this.surface = surface;
     this.geometry = geometry;
+    if (surface.fields.length === 0) {
+      // A bare mesh: every node at the middle of the colormap, a neutral tone the selection
+      // highlight stands out from.
+      geometry.setAttribute(
+        "value",
+        new THREE.BufferAttribute(new Float32Array(surface.positions.length / 3), 1),
+      );
+      this.range.min.value = -1;
+      this.range.span.value = 2;
+    }
     this.setField(fieldName);
     geometry.computeBoundingSphere();
 
@@ -100,35 +164,42 @@ export class SurfaceViewer {
       1,
     );
     const fieldColor = texture(this.lut, vec2(t, float(0.5))).rgb;
+    this.zoneColors = [];
     this.zones = surface.zones.map((zone, index) => {
       geometry.addGroup(zone.first_triangle * 3, zone.triangles * 3, index);
       const highlight = uniform(0);
+      const tint = uniform(new THREE.Color());
+      const tinted = uniform(0);
       const material = new THREE.MeshStandardNodeMaterial({
         flatShading: true,
         roughness: 0.65,
         side: THREE.DoubleSide,
       });
-      material.colorNode = mix(fieldColor, this.accent, highlight);
-      return { material, highlight };
+      material.colorNode = mix(mix(fieldColor, tint, tinted), this.accent, highlight);
+      return { material, highlight, tint, tinted };
     });
-    this.pickMaterials = surface.zones.map((_, index) => {
-      const id = index + 1;
-      const material = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-      material.colorNode = vec4((id % 256) / 255, Math.floor(id / 256) / 255, 0, 1);
-      return material;
-    });
+    this.pickMaterials = surface.zones.map((_, index) => SurfaceViewer.idMaterial(index));
     this.mesh = new THREE.Mesh(
       geometry,
       this.zones.map((z) => z.material),
     );
-    this.scene.add(this.mesh);
+    this.walls.add(this.mesh);
     this.frameAll();
+  }
+
+  /** Draw nothing, until the next setSurface. */
+  clear(): void {
+    this.clearMesh();
+    this.clearSlice();
+    this.surface = null;
+    this.requestRender();
   }
 
   /** Re-read the background and selection colours from the design tokens. */
   applyTheme(): void {
     this.scene.background = token("--bg-0");
     this.accent.value.copy(token("--accent"));
+    this.setZoneColors(this.zoneColors);
     this.requestRender();
   }
 
@@ -146,6 +217,19 @@ export class SurfaceViewer {
     this.requestRender();
   }
 
+  /** Paint zones in a flat colour, by index: a CSS colour or design token (`--series-1`), or
+   * null to show the field. */
+  setZoneColors(colors: (string | null)[]): void {
+    this.zoneColors = colors;
+    this.zones.forEach((zone, k) => {
+      const color = colors[k] ?? null;
+      zone.tinted.value = color === null ? 0 : 1;
+      if (color !== null)
+        zone.tint.value.copy(color.startsWith("--") ? token(color) : new THREE.Color(color));
+    });
+    this.requestRender();
+  }
+
   setSelectedZone(index: number | null): void {
     this.zones.forEach((zone, k) => {
       zone.highlight.value = k === index ? 0.55 : 0;
@@ -155,32 +239,193 @@ export class SurfaceViewer {
 
   /** Zone index under the canvas pixel (CSS pixels), or null for the background. */
   async pick(x: number, y: number): Promise<number | null> {
+    // Zones are picked through the slice: it is not drawn into the pick target.
+    const read = this.renderId(x, y, false);
+    if (!read) return null;
+    const id = idOf((await read) as Uint8Array);
+    this.requestRender();
+    return id === null || id === SLICE_ID ? null : id;
+  }
+
+  /** What is drawn under the canvas pixel (CSS pixels): the zone or the slice, the point in the
+   * surface's coordinates and the displayed field's value there, interpolated as it is drawn;
+   * null for the background. */
+  async probe(x: number, y: number): Promise<Probe | null> {
+    if (!this.mesh || !this.surface) return null;
+    // Both passes are drawn from the same scene before either is read back.
+    const origin = this.surface.origin;
+    const ids = this.renderId(x, y, true);
+    const mesh = this.mesh;
+    const materials = mesh.material;
+    const slice = this.slice;
+    const sliceMesh = slice?.mesh;
+    const sliceMaterial = sliceMesh?.material;
+    mesh.material = this.zones.map(() => this.probeMaterial);
+    if (slice) slice.mesh.material = slice.probeMaterial;
+    const values = this.renderPixel(x, y, this.probeTarget);
+    mesh.material = materials;
+    if (sliceMesh && sliceMaterial) sliceMesh.material = sliceMaterial;
+    const [idPixel, pixel] = await Promise.all([ids, values]);
+    this.requestRender();
+    const id = idPixel ? idOf(idPixel as Uint8Array) : null;
+    if (id === null) return null;
+    return {
+      zone: id === SLICE_ID ? null : id,
+      point: [0, 1, 2].map((k) => (pixel[k] ?? 0) + (origin[k] ?? 0)),
+      value: pixel[3] ?? 0,
+    };
+  }
+
+  // The id pass drawn at the pixel (the slice drawn or not), read back later.
+  private renderId(
+    x: number,
+    y: number,
+    withSlice: boolean,
+  ): Promise<Uint8Array | Float32Array> | null {
     if (!this.mesh) return null;
+    const mesh = this.mesh;
+    const materials = mesh.material;
+    const slice = this.slice;
+    const sliceMesh = slice?.mesh;
+    const sliceMaterial = sliceMesh?.material;
+    mesh.material = this.pickMaterials;
+    if (slice) {
+      slice.mesh.visible = withSlice;
+      slice.mesh.material = slice.idMaterial;
+    }
+    const read = this.renderPixel(x, y, this.pickTarget);
+    mesh.material = materials;
+    if (sliceMesh && sliceMaterial) {
+      sliceMesh.visible = true;
+      sliceMesh.material = sliceMaterial;
+    }
+    return read;
+  }
+
+  // The scene's one pixel under (x, y) drawn now into `target`, on a black background; the
+  // promise reads it back.
+  private renderPixel(
+    x: number,
+    y: number,
+    target: THREE.RenderTarget,
+  ): Promise<Uint8Array | Float32Array> {
     const canvas = this.renderer.domElement;
     const ratio = this.renderer.getPixelRatio();
     const width = canvas.clientWidth * ratio;
     const height = canvas.clientHeight * ratio;
-    const materials = this.mesh.material;
     const background = this.scene.background;
-    this.mesh.material = this.pickMaterials;
     this.scene.background = new THREE.Color(0, 0, 0);
     this.camera.setViewOffset(width, height, Math.round(x * ratio), Math.round(y * ratio), 1, 1);
-    this.renderer.setRenderTarget(this.pickTarget);
+    this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.camera);
     this.renderer.setRenderTarget(null);
     this.camera.clearViewOffset();
-    this.mesh.material = materials;
     this.scene.background = background;
-    const pixel = (await this.renderer.readRenderTargetPixelsAsync(
-      this.pickTarget,
-      0,
+    return this.renderer.readRenderTargetPixelsAsync(target, 0, 0, 1, 1) as Promise<
+      Uint8Array | Float32Array
+    >;
+  }
+
+  /** Call `listener` whenever the camera moves; returns its removal. */
+  onCameraChange(listener: () => void): () => void {
+    this.controls.addEventListener("change", listener);
+    return () => this.controls.removeEventListener("change", listener);
+  }
+
+  // The colour the id pass draws id with: id + 1 in red and green, 0 being the background.
+  private static idMaterial(id: number): THREE.MeshBasicNodeMaterial {
+    const material = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
+    material.colorNode = vec4(((id + 1) % 256) / 255, Math.floor((id + 1) / 256) / 255, 0, 1);
+    return material;
+  }
+
+  private static probing(): THREE.MeshBasicNodeMaterial {
+    const material = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
+    material.outputNode = vec4(positionWorld, attribute<"float">("value", "float"));
+    return material;
+  }
+
+  /** Show `slice` (or none) with the surface, coloured by its field `fieldName` on its own
+   * scale; it is placed by its origin relative to the surface's. `plane` is the cut's plane in
+   * the surface's coordinates: the walls on the camera's side of it are not drawn. */
+  setSlice(
+    slice: Surface | null,
+    fieldName: string,
+    plane?: { origin: readonly number[]; normal: readonly number[] },
+  ): void {
+    this.clearSlice();
+    if (!slice) {
+      this.requestRender();
+      return;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(slice.positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(slice.indices, 1));
+    const lut = new THREE.DataTexture(sampleColormap(COOL_WARM), 256, 1);
+    lut.colorSpace = THREE.SRGBColorSpace;
+    lut.magFilter = THREE.LinearFilter;
+    const t = clamp(
+      attribute<"float">("value", "float").sub(this.sliceRange.min).div(this.sliceRange.span),
       0,
       1,
-      1,
-    )) as Uint8Array;
+    );
+    const material = new THREE.MeshStandardNodeMaterial({
+      roughness: 0.8,
+      side: THREE.DoubleSide,
+    });
+    material.colorNode = texture(lut, vec2(t, float(0.5))).rgb;
+    const mesh = new THREE.Mesh(geometry, material);
+    const base = this.surface?.origin ?? slice.origin;
+    mesh.position.set(
+      slice.origin[0] - base[0],
+      slice.origin[1] - base[1],
+      slice.origin[2] - base[2],
+    );
+    this.scene.add(mesh);
+    const at = plane?.origin ?? slice.origin;
+    this.slice = {
+      mesh,
+      idMaterial: SurfaceViewer.idMaterial(SLICE_ID),
+      probeMaterial: SurfaceViewer.probing(),
+      surface: slice,
+      lut,
+      point: new THREE.Vector3(at[0] ?? 0, at[1] ?? 0, at[2] ?? 0).sub(
+        new THREE.Vector3(...(base as [number, number, number])),
+      ),
+      normal: new THREE.Vector3(...((plane?.normal ?? [0, 0, 0]) as [number, number, number])),
+    };
+    this.setSliceField(fieldName);
+  }
+
+  /** The field the slice is coloured by, or null when no slice is drawn or none is applied. */
+  get sliceField(): string | null {
+    return this.slice?.field ?? null;
+  }
+
+  /** Colour the slice by another of its fields. */
+  setSliceField(fieldName: string): void {
+    const slice = this.slice;
+    const field = slice?.surface.fields.find((f) => f.name === fieldName);
+    if (!slice || !field) return;
+    slice.field = field.name;
+    slice.mesh.geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
+    const range = displayRange(field.min, field.max);
+    this.sliceRange.min.value = range.min;
+    this.sliceRange.span.value = range.max - range.min || 1;
+    (slice.lut.image.data as Uint8Array).set(sampleColormap(colormapFor(field.min, field.max)));
+    slice.lut.needsUpdate = true;
     this.requestRender();
-    const id = (pixel[0] ?? 0) + 256 * (pixel[1] ?? 0);
-    return id === 0 ? null : id - 1;
+  }
+
+  private clearSlice(): void {
+    if (!this.slice) return;
+    this.scene.remove(this.slice.mesh);
+    this.slice.mesh.geometry.dispose();
+    (this.slice.mesh.material as THREE.Material).dispose();
+    this.slice.idMaterial.dispose();
+    this.slice.probeMaterial.dispose();
+    this.slice.lut.dispose();
+    this.slice = null;
   }
 
   /** Milliseconds per frame, each frame rendered and waited for on the GPU, orbiting the camera. */
@@ -221,9 +466,21 @@ export class SurfaceViewer {
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
       const moving = this.controls.update();
+      this.clipWalls();
       this.renderer.render(this.scene, this.camera);
       if (moving) this.requestRender();
     });
+  }
+
+  // Fragments on the negative side of a clipping plane are discarded: the plane's normal points
+  // away from the camera.
+  private clipWalls(): void {
+    const slice = this.slice;
+    this.walls.enabled = slice !== null && slice.normal.lengthSq() > 0;
+    if (!slice || !this.walls.enabled) return;
+    const towards = this.camera.position.clone().sub(slice.point).dot(slice.normal) > 0;
+    const normal = slice.normal.clone().normalize();
+    this.clip.setFromNormalAndCoplanarPoint(towards ? normal.negate() : normal, slice.point);
   }
 
   dispose(): void {
@@ -231,14 +488,17 @@ export class SurfaceViewer {
     this.resize.disconnect();
     this.controls.dispose();
     this.clearMesh();
+    this.clearSlice();
     this.lut.dispose();
     this.pickTarget.dispose();
+    this.probeTarget.dispose();
+    this.probeMaterial.dispose();
     this.renderer.dispose();
   }
 
   private clearMesh(): void {
     if (!this.mesh) return;
-    this.scene.remove(this.mesh);
+    this.walls.remove(this.mesh);
     this.mesh.geometry.dispose();
     for (const zone of this.zones) zone.material.dispose();
     for (const material of this.pickMaterials) material.dispose();
@@ -270,6 +530,7 @@ export class SurfaceViewer {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.requestRender();
+    // What is under each pixel changed, as when the camera moves.
+    this.controls.dispatchEvent({ type: "change" });
   }
 }

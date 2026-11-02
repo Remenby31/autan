@@ -7,6 +7,7 @@ docs/contracts/results.md, which ``autan.Results`` reads back.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -31,6 +32,22 @@ if TYPE_CHECKING:
 EXECUTABLE_VARIABLE = "AUTAN_RUN"
 
 
+LAUNCHER_VARIABLE = "AUTAN_MPIEXEC"
+
+
+def find_launcher() -> Path | None:
+    """``$AUTAN_MPIEXEC`` if set, else ``mpiexec`` or ``mpirun`` on the PATH."""
+    explicit = os.environ.get(LAUNCHER_VARIABLE)
+    if explicit:
+        # A path is taken as given, from the working directory; a bare name from the PATH.
+        if os.sep in explicit:
+            return Path(explicit).absolute()
+        found = shutil.which(explicit)
+        return Path(found) if found else Path(explicit).absolute()
+    found = shutil.which("mpiexec") or shutil.which("mpirun")
+    return Path(found) if found else None
+
+
 def find_executable() -> Path | None:
     """``$AUTAN_RUN`` if set, else ``autan-run`` on the PATH."""
     explicit = os.environ.get(EXECUTABLE_VARIABLE)
@@ -48,7 +65,6 @@ class SolverBackend:
     ``KeyboardInterrupt`` after the runtime has finalized it."""
 
     devices: Devices = field(default_factory=lambda: Devices(kind="cpu", count=1))
-    deterministic: bool = False
     executable: Path | None = None
 
     def run(
@@ -57,23 +73,48 @@ class SolverBackend:
         executable = (self.executable or find_executable() or Path()).absolute()
         if not executable.is_file():
             raise CaseError([_not_installed(f"{executable} is not a file")])
-        document = build(
-            case, mesh_info, devices=self.devices, deterministic=self.deterministic, start=start
-        ).document()
+        document = build(case, mesh_info, devices=self.devices, start=start).document()
         runs = runs.absolute()
         runs.mkdir(parents=True, exist_ok=True)
         before = {p.name for p in runs.iterdir()}
         with tempfile.TemporaryDirectory(prefix="autan-input-") as folder:
             source = Path(folder) / "solver-input.json"
             source.write_text(json.dumps(document, indent=2) + "\n")
-            command = [str(executable), "--input", str(source), "--runs", str(runs)]
+            stop = Path(folder) / "stop"
+            command = [
+                str(executable),
+                "--input",
+                str(source),
+                "--runs",
+                str(runs),
+                "--stop-file",
+                str(stop),
+            ]
+            if self.devices.count > 1:  # one rank per device (solver-input.md, devices)
+                launcher = find_launcher()
+                if launcher is None:
+                    message = (
+                        f"{self.devices.count} devices need an MPI launcher: set "
+                        f"${LAUNCHER_VARIABLE}, or put mpiexec or mpirun on the PATH"
+                    )
+                    raise CaseError([diagnostic("E0808", message)])
+                command = [str(launcher), "-n", str(self.devices.count), *command]
             try:
+                # Its own session: the runtime, or the launcher and its local ranks, form one
+                # process group that the escalation below can signal as a whole.
                 process = subprocess.Popen(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
                 )
             except OSError as error:
+                if self.devices.count > 1:
+                    message = f"the MPI launcher {command[0]} cannot be started: {error}"
+                    raise CaseError([diagnostic("E0808", message)]) from None
                 raise CaseError([_not_installed(str(error))]) from None
-            stdout, stderr, interrupted = _wait(process)
+            stdout, stderr, interrupted = _wait(process, stop)
         if interrupted or process.returncode == 130:
             raise KeyboardInterrupt
         if process.returncode == 2:
@@ -102,7 +143,6 @@ class SolverBackend:
             "mesh": document["mesh"]["sha256"],  # type: ignore[index]
             "precision": document["precision"],
             "devices": self.devices,
-            "deterministic": self.deterministic,
             "start": document["start"],
         }
         found = {
@@ -110,7 +150,6 @@ class SolverBackend:
             "mesh": run.mesh.sha256,
             "precision": run.precision,
             "devices": run.devices,
-            "deterministic": run.deterministic,
             "start": (
                 {"run": document["start"]["run"], **run.start.model_dump(mode="json")}  # type: ignore[index]
                 if run.start is not None
@@ -123,6 +162,8 @@ class SolverBackend:
 FINISHED = frozenset({"converged", "completed", "stopped", "diverged"})
 # Seconds the runtime has to finalize a stopped run before it is terminated, then killed.
 GRACE = 60.0
+# Seconds left to read the pipes once the process group has been killed.
+DRAIN = 5.0
 
 
 def _not_installed(reason: str) -> Diagnostic:
@@ -137,11 +178,12 @@ def _failure(code: int, stderr: str) -> Diagnostic:
     return diagnostic("E0704", f"autan-run exited with {code}: {stderr.strip()}")
 
 
-def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
-    """Wait for the runtime. On SIGINT or SIGTERM of this process, forward SIGINT so the
-    runtime finalizes the run as stopped, ignore further interrupts, and terminate then
-    kill it only if it does not finish within GRACE seconds. The runtime is always reaped
-    before this returns."""
+def _wait(process: subprocess.Popen[str], stop: Path) -> tuple[str, str, bool]:
+    """Wait for the runtime. On SIGINT or SIGTERM of this process, create the stop file so
+    that every rank finalizes the run as stopped (a launcher would turn a signal into an
+    abort), ignore further interrupts, and terminate then kill its process group only if it
+    does not finish within GRACE seconds. The runtime is always reaped before this
+    returns."""
     deadline: float | None = None
     previous = None
     if threading.current_thread() is threading.main_thread():
@@ -154,7 +196,7 @@ def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
             except KeyboardInterrupt:
                 if deadline is None:
                     deadline = time.monotonic() + GRACE
-                    process.send_signal(signal.SIGINT)
+                    stop.touch()
                 continue
             except subprocess.TimeoutExpired:
                 stdout, stderr = _terminate(process)
@@ -165,12 +207,20 @@ def _wait(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
 
 
 def _terminate(process: subprocess.Popen[str]) -> tuple[str, str]:
-    process.terminate()
-    try:
-        return process.communicate(timeout=GRACE)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return process.communicate()
+    """Terminate, then kill, the runtime's whole process group; a descendant that left the
+    group and still holds the pipes cannot keep this waiting more than DRAIN seconds."""
+    for number, timeout in ((signal.SIGTERM, GRACE), (signal.SIGKILL, DRAIN)):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, number)
+        try:
+            return process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            continue
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()
+    process.wait()
+    return "", ""
 
 
 def _raise_interrupt(_signal: int, _frame: object) -> None:

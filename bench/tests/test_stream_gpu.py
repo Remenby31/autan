@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from autan_bench.cli import main
+from autan_bench.gpu import foreign_tenants
 
 # DGX Spark datasheet: 128 GB LPDDR5x, 256-bit, 273 GB/s.
 GB10_THEORETICAL_GBPS = 273.0
@@ -18,6 +19,12 @@ def stream_binary() -> Path:
         if os.environ.get("AUTAN_BENCH_REQUIRE_GPU"):
             pytest.fail("AUTAN_BENCH_REQUIRE_GPU is set but AUTAN_BENCH_STREAM is not")
         pytest.skip("set AUTAN_BENCH_STREAM to the built stream binary to run GPU tests")
+    # A measurement needs the GPU to itself. On a Spark another team's process may use it
+    # (the tests runner shares one with a vLLM): then these tests cannot run, they are not
+    # failing. A real measurement still refuses a busy GPU (GPU_BUSY).
+    tenants = foreign_tenants()
+    if tenants:
+        pytest.skip(f"the GPU is used by another tenant: {'; '.join(tenants)}")
     return Path(path)
 
 

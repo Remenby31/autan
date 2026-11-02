@@ -209,9 +209,10 @@ _CODES = [
     ),
     Code(
         "E0134",
-        "Mesh refers to another file",
-        "The mesh refers to another file (CGNS link); meshes must be self-contained.",
-        "Export a self-contained mesh (no CGNS links to other files).",
+        "File refers to another file",
+        "A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.",
+        "Export a self-contained file: no links to other files, no external storage or virtual "
+        "datasets.",
     ),
     Code(
         "E0135",
@@ -739,7 +740,7 @@ _CODES = [
     Code(
         "E1013",
         "Policy not available on the backend",
-        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).",
         "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
     ),
     Code(
@@ -797,6 +798,12 @@ _CODES = [
         "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
+        "E1109",
+        "Strategy not rank-independent",
+        "A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).",
+        "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",
@@ -843,6 +850,14 @@ _CODES = [
         "the process sees no CUDA device (`data.visible`, `data.needed`).",
         "Run on a host with a GPU visible to the process (`docker --gpus`), or use "
         "`devices.kind = cpu`.",
+    ),
+    Code(
+        "E0808",
+        "No MPI launcher",
+        "A run on several devices starts one rank per device through an MPI launcher, found "
+        "through `$AUTAN_MPIEXEC`, or `mpiexec` then `mpirun` on the PATH.",
+        "Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set "
+        "`$AUTAN_MPIEXEC`, or run on one device.",
     ),
 ]
 

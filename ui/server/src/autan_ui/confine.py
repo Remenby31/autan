@@ -67,6 +67,10 @@ class Folder:
             return file.read()
 
     def stat(self, name: str) -> os.stat_result | None:
+        """Status of the entry `name` of this directory, without following a link; None when
+        there is none or `name` is not a single entry name."""
+        if name in ("", ".", "..") or "/" in name or "\0" in name:
+            return None
         try:
             return os.stat(name, dir_fd=self.fd, follow_symlinks=False)
         except OSError:

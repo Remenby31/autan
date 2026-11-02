@@ -1,3 +1,4 @@
+import calendar
 import contextlib
 import fcntl
 import logging
@@ -118,12 +119,38 @@ def _sample_nvidia(gpu_index: int) -> GpuSample:
     )
 
 
+def _held(path: Path) -> bool:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(fd) as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+
+
+def ci_waiting(lock: Path) -> bool:
+    """Whether a job with priority waits for or holds the GPU (docs/infra/bench.md): outside CI,
+    any CI job (it holds ``ci.lock`` shared); in a CI job that is not on main, a job on main
+    (``main.lock``). A job on main never yields."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return _held(lock.parent / "ci.lock")
+    if os.environ.get("GITHUB_REF") == "refs/heads/main":
+        return False
+    return _held(lock.parent / "main.lock")
+
+
 @contextlib.contextmanager
 def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Iterator[float]:
     """Hold an exclusive flock on ``path``; yields the seconds spent waiting for it.
 
-    Waits as long as needed unless ``timeout_s`` is given, in which case a lock still held by
-    someone else after that long fails with ``LOCK_TIMEOUT``.
+    Outside CI, waits while a CI job announces itself (``ci_waiting``). Waits as long as needed
+    unless ``timeout_s`` is given, in which case a lock still unavailable after that long fails
+    with ``LOCK_TIMEOUT``.
     """
     # flock needs only a read-only descriptor, so the lock works on a file owned by another user.
     # O_CREAT is used only when the file is missing: in a sticky /tmp, fs.protected_regular
@@ -134,24 +161,27 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
         fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
     with os.fdopen(fd) as handle:
         start = time.monotonic()
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            _log.warning("waiting for %s", path)
-            if timeout_s is None:
-                fcntl.flock(handle, fcntl.LOCK_EX)
-            else:
-                while True:
-                    try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        warned = False
+        while True:
+            # CI goes first; a lock taken just as CI announced itself is given back.
+            if not ci_waiting(path):
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    if not ci_waiting(path):
                         break
-                    except BlockingIOError:
-                        if time.monotonic() - start > timeout_s:
-                            raise BenchError(
-                                Code.LOCK_TIMEOUT,
-                                f"{path} still held by another GPU job after {timeout_s:.0f} s",
-                            ) from None
-                        time.sleep(1.0)
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+            if not warned:
+                _log.warning("waiting for %s", path)
+                warned = True
+            if timeout_s is not None and time.monotonic() - start > timeout_s:
+                raise BenchError(
+                    Code.LOCK_TIMEOUT,
+                    f"{path} still held by another GPU job after {timeout_s:.0f} s",
+                )
+            time.sleep(0.2)
         try:
             yield time.monotonic() - start
         finally:
@@ -187,6 +217,33 @@ def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
                 Code.HOST_BUSY, f"CPU campaigns still running under the GPU lock: {running}"
             )
         time.sleep(0.1)
+
+
+FOREIGN_MAX_AGE_S = 120
+
+
+def foreign_tenants(lock: Path = DEFAULT_LOCK) -> list[str] | None:
+    """The GPU's processes outside Autan's containers, as autan-gpu-guard last listed them in
+    `foreign-gpu` next to the lock (bench/lock/autan-gpu-guard): one "name (container, MiB)"
+    each; None when there is no list, or one older than FOREIGN_MAX_AGE_S or that could not be
+    taken (unknown, not empty)."""
+    try:
+        text = (lock.parent / "foreign-gpu").read_text()
+    except OSError:
+        return None
+    lines = text.splitlines()
+    match = re.match(r"# (\S+Z) (\d+) foreign", lines[0]) if lines else None
+    if match is None:
+        return None
+    stamp = calendar.timegm(time.strptime(match[1], "%Y-%m-%dT%H:%M:%SZ"))
+    if time.time() - stamp > FOREIGN_MAX_AGE_S:
+        return None
+    tenants = []
+    for row in lines[1:]:
+        fields = row.split("\t")
+        if len(fields) == 4:
+            tenants.append(f"{fields[3]} ({fields[1]}, {fields[2]})")
+    return tenants
 
 
 def require_idle(

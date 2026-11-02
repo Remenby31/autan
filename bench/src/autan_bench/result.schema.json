@@ -440,6 +440,11 @@
             "type": "number",
             "minimum": 0
           }
+        },
+        "setup_outside_lock_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds a gated binary (autan-bench run --ready) spent setting up before the GPU lock was taken; absent for an ungated binary."
         }
       }
     },

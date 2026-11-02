@@ -101,7 +101,7 @@ On cells with planar faces, Σ_f c_f ⊗ S_f = V I (divergence theorem), so Gree
 
 ## Building a mesh
 
-Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `autan::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary); ghost cells last with `n_ghost_cells`, and `cell_global_id` when partitioned. Readers of element-based formats (Gmsh, CGNS) fill a `autan::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `autan::to_face_based`, which merges coincident faces by node set. A zone that labels faces takes their role (interior or boundary); a zone that labels none keeps its declared role.
+Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `autan::MeshInput`: faces in any order, each with `face_cell0` (normal points away from it) and `face_cell1` (`no_cell` on the boundary); ghost cells last with `n_ghost_cells`, and `cell_global_id` when partitioned. Readers of element-based formats (Gmsh, CGNS) fill a `autan::CellwiseMesh` with `add_cell` (tetra, pyramid, prism, hexa in Gmsh node order), `add_polyhedron` (outward faces) and `add_labelled_face` (boundary or internal surface elements carrying a zone), then call `autan::to_face_based`, which merges coincident faces by node set. A zone that labels faces takes their role (interior or boundary); a zone that labels none keeps its declared role. `autan::scaled(mesh, scale)` multiplies a mesh's coordinates and its periodic and ghost translations by `scale`, its topology unchanged: the runtime brings a mesh to metres with the solver input's `mesh.scale`.
 
 ## Readers
 
@@ -116,9 +116,36 @@ Readers of face-based formats (Fluent, OpenFOAM) and the partitioner fill a `aut
 
 `autan::io::write_solution(file, mesh, solution)` writes `solution.cgns` with the layout of [results.md](results.md#solutioncgns) (node names by its rule, `autan::io::zone_node_names`); files it writes read back through `read_cgns` to the same mesh.
 
-`autan::io::mesh_hash(path)` computes the mesh hash and `autan::io::mesh_info_json(mesh, hash)` the MeshInfo document, both as [mesh-info.md](mesh-info.md) defines them. The `autan-mesh-info [--json] MESH` tool prints a summary (counts, zones, quality maxima, closure) or that document; it exits 1 with the E01xx code on a read error.
+`autan::io::mesh_hash(path)` computes the mesh hash and `autan::io::mesh_info_json(mesh, hash)` the MeshInfo document, both as [mesh-info.md](mesh-info.md) defines them. The `autan-mesh-info [--json | --surface OUT] MESH` tool prints a summary (counts, zones, quality maxima, closure) or that document, or writes the [boundary surface](#boundary-surface); it exits 1 with the E01xx code on a read or write error.
 
 The test meshes and how they are generated: [tests/data/mesh/README.md](../../tests/data/mesh/README.md).
+
+## Boundary surface
+
+`autan::io::surface_bytes(mesh, hash)`, which `autan-mesh-info --surface OUT MESH` writes to `OUT`, gives the mesh's boundary faces as an `autan.surface/1` file, for a viewer to draw them and pick zones. It checks the geometry first (`E0120`, `E0121`), since an inverted cell would turn normals inward. A boundary whose node count, total of face nodes (`face_offsets[F]`) or padded header length exceeds 2³² − 1 is `E0113`.
+
+**Layout.** Little-endian: a `u32` byte length `n`, then `n` bytes of UTF-8 JSON (the header), padded with spaces so that `4 + n` is a multiple of 8, then the buffers. Buffer offsets count from byte `4 + n`, the end of the padded header; each is a multiple of 8.
+
+**Header.**
+
+| Key | Value |
+|---|---|
+| `schema` | `"autan.surface/1"` |
+| `source.sha256` | The mesh's `source.sha256`, as in its MeshInfo ([mesh-info.md](mesh-info.md)). |
+| `nodes` | Number of nodes N. |
+| `faces` | Number of boundary faces F, the sum of the zones' `faces`. |
+| `zones` | The MeshInfo `boundary_zones`, in their order, with their `name`, `type` and `native_type` ([mesh-info.md](mesh-info.md)), `first_face` and `faces`: zone k's faces are faces `first_face` to `first_face + faces − 1`, `faces` as in MeshInfo. |
+| `buffers` | `name`, `dtype` (`f64`, `u32`), `offset` (bytes), `length` (elements), for each buffer below. |
+
+**Buffers.**
+
+| Name | dtype | Length | Content |
+|---|---|---|---|
+| `positions` | `f64` | 3N | x, y, z of each node, nodes in the order the faces first use them. |
+| `face_offsets` | `u32` | F + 1 | `face_offsets[0] = 0`; face f's nodes are `face_nodes[face_offsets[f] .. face_offsets[f + 1])`. |
+| `face_nodes` | `u32` | `face_offsets[F]` | Node indices into `positions`. |
+
+Faces are the mesh's boundary faces, zone by zone, each zone's in mesh order. Each face is the polygon the mesh stores, not triangulated, its nodes in the mesh's order: by the right-hand rule its normal points out of the domain. Periodic zones are included; interior zones are not. The surface is closed and consistently oriented: each edge is traversed as often in one direction as in the other (once each way where the boundary is a manifold, more where it touches itself along an edge), and the area vectors sum to zero up to round-off.
 
 ## Errors
 
@@ -150,7 +177,7 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0131 | `io_unknown_format` | The content matches no supported format. |
 | E0132 | `io_malformed` | The file violates its format specification (syntax, truncation, inconsistent counts). |
 | E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
-| E0134 | `io_external_reference` | The mesh refers to another file (CGNS link); meshes must be self-contained. |
+| E0134 | `io_external_reference` | A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained. |
 | E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |
 | E0140 | `partition_invalid_request` | A part count, rank, part index or cell weight is out of range, or an array has the wrong size. |
 | E0141 | `partition_input_has_ghosts` | The mesh to partition already has ghost cells. |

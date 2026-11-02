@@ -66,6 +66,7 @@ def _run(args: argparse.Namespace) -> int:
         lock=args.lock,
         lock_timeout_s=args.lock_timeout,
         max_load_per_cpu=args.max_load,
+        ready_timeout_s=args.ready,
     )
     return _report(doc, args.out)
 
@@ -231,6 +232,15 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         metavar="PER_CPU",
         help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
+    )
+    r.add_argument(
+        "--ready",
+        type=float,
+        nargs="?",
+        const=1800.0,
+        metavar="TIMEOUT_S",
+        help="gated binary: start it without the lock, wait (default 1800 s) for its"
+        " 'autan-bench: ready' line on stderr, then take the lock and send 'go' on its stdin",
     )
     r.add_argument("binary_args", nargs=argparse.REMAINDER, help="-- then the binary's arguments")
     r.set_defaults(func=_run)

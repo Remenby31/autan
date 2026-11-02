@@ -1,7 +1,12 @@
+import contextlib
 import datetime as dt
 import json
 import logging
+import os
+import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +30,110 @@ def _run_binary(binary: Path, args: list[str]) -> dict[str, Any]:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise BenchError(Code.BINARY_FAILED, f"{binary} printed invalid JSON: {exc}") from exc
+
+
+READY = "autan-bench: ready"
+
+
+class _Gated:
+    """A benchmark binary run with --gate: it sets up (CPU work only, no GPU context), prints
+    READY on stderr and waits for one line on stdin before its timed work."""
+
+    def __init__(self, binary: Path, args: list[str]) -> None:
+        self.binary = binary
+        self.ready = threading.Event()
+        self.stderr: list[str] = []
+        self.stdout = ""
+        self.readers: list[threading.Thread] = []
+        try:
+            # Its own session: the whole tree it starts is killed with it. Diagnostic bytes that
+            # are not UTF-8 must not stop the readers, which would leave a pipe undrained.
+            self.proc = subprocess.Popen(
+                [str(binary), *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, errors="replace", start_new_session=True,
+            )  # fmt: skip
+        except OSError as exc:
+            raise BenchError(Code.BINARY_FAILED, f"{binary}: {exc}") from exc
+        try:
+            self.readers = [
+                threading.Thread(target=self._read_stderr, daemon=True),
+                threading.Thread(target=self._read_stdout, daemon=True),
+            ]
+            for reader in self.readers:
+                reader.start()
+        except BaseException:
+            self.kill()
+            raise
+
+    def _read_stderr(self) -> None:
+        assert self.proc.stderr is not None
+        for line in self.proc.stderr:
+            if line.rstrip("\n") == READY:
+                self.ready.set()
+            else:
+                self.stderr.append(line)
+
+    def _read_stdout(self) -> None:
+        assert self.proc.stdout is not None
+        self.stdout = self.proc.stdout.read()
+
+    def wait_ready(self, timeout_s: float) -> float:
+        start = time.monotonic()
+        while not self.ready.wait(0.1):
+            if self.proc.poll() is not None:
+                self._join()
+                raise BenchError(
+                    Code.BINARY_FAILED,
+                    f"{self.binary} exited {self.proc.returncode} before it was ready: "
+                    f"{''.join(self.stderr).strip()}",
+                )
+            if time.monotonic() - start > timeout_s:
+                self.kill()
+                raise BenchError(
+                    Code.BINARY_FAILED, f"{self.binary} not ready after {timeout_s:.0f} s"
+                )
+        return time.monotonic() - start
+
+    def go(self) -> dict[str, Any]:
+        assert self.proc.stdin is not None
+        try:
+            self.proc.stdin.write("go\n")
+            self.proc.stdin.close()
+        except BrokenPipeError as exc:
+            raise BenchError(
+                Code.BINARY_FAILED, f"{self.binary} closed its stdin before 'go'"
+            ) from exc
+        self.proc.wait()
+        # Helpers it left behind would keep the pipes open: the output is complete only once
+        # the whole session is gone.
+        self._kill_group()
+        self._join()
+        if self.proc.returncode != 0:
+            raise BenchError(
+                Code.BINARY_FAILED,
+                f"{self.binary} exited {self.proc.returncode}: {''.join(self.stderr).strip()}",
+            )
+        try:
+            return json.loads(self.stdout)
+        except json.JSONDecodeError as exc:
+            raise BenchError(
+                Code.BINARY_FAILED, f"{self.binary} printed invalid JSON: {exc}"
+            ) from exc
+
+    def kill(self) -> None:
+        self._kill_group()
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+        self._join()
+
+    def _kill_group(self) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(self.proc.pid, signal.SIGKILL)
+
+    def _join(self) -> None:
+        for reader in self.readers:
+            reader.join()
 
 
 def _benchmarks(suite: str, kernel: dict[str, Any]) -> list[dict[str, Any]]:
@@ -69,34 +178,67 @@ def run(
     lock: Path = gpu.DEFAULT_LOCK,
     lock_timeout_s: float | None = None,
     max_load_per_cpu: float | None = None,
+    ready_timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Run a benchmark binary under the GPU lock and return a validated result document.
 
     The binary prints one JSON object: ``revision`` {commit, dirty}, ``backend``,
     ``runtime_version``, ``driver_version``, ``device``, ``config``, ``verified`` and
     ``kernels``, each {name, bytes_per_rep, seconds[], optional cells, optional params}.
+    With ``ready_timeout_s``, the binary is gated: started without the lock, it sets up (CPU
+    work only: no GPU context before ``go``), prints ``autan-bench: ready`` on stderr and waits
+    for a line on stdin; the lock covers only what follows.
     """
+    gated = None
+    try:
+        gated = _Gated(binary, args) if ready_timeout_s is not None else None
+        setup = gated.wait_ready(ready_timeout_s) if gated else None
+        return _locked_run(binary, args, gated, setup, suite, precision, lock, lock_timeout_s,
+                           max_load_per_cpu)  # fmt: skip
+    finally:
+        if gated:
+            gated.kill()
+
+
+def _locked_run(
+    binary: Path, args: list[str], gated: _Gated | None, setup: float | None, suite: str,
+    precision: str, lock: Path, lock_timeout_s: float | None, max_load_per_cpu: float | None,
+) -> dict[str, Any]:  # fmt: skip
     with gpu.gpu_lock(lock, lock_timeout_s) as waited:
-        gpu.require_campaigns_frozen(lock)
-        idle = gpu.require_idle()
-        before = gpu.host_load()
-        per_cpu = before["runnable"] / before["cpus"]
-        if max_load_per_cpu is not None and per_cpu > max_load_per_cpu:
-            raise BenchError(
-                Code.HOST_BUSY,
-                f"{before['runnable']:g} runnable threads on {before['cpus']} CPUs exceed "
-                f"{max_load_per_cpu} per CPU",
-            )
-        if per_cpu > gpu.LOAD_WARN_PER_CPU:
-            _log.warning(
-                "%g runnable threads on %d CPUs: other processes share the memory bandwidth",
-                before["runnable"],
-                before["cpus"],
-            )
-        with gpu.Sampler() as sampler:
-            raw = _run_binary(binary, args)
-        during = sampler.summary()
-        after = gpu.host_load()
+        try:
+            return _measure(binary, args, gated, setup, suite, precision, lock, waited,
+                            max_load_per_cpu)  # fmt: skip
+        except BaseException:
+            # Stopped before the lock is released: the binary must never run without it.
+            if gated:
+                gated.kill()
+            raise
+
+
+def _measure(
+    binary: Path, args: list[str], gated: _Gated | None, setup: float | None, suite: str,
+    precision: str, lock: Path, waited: float, max_load_per_cpu: float | None,
+) -> dict[str, Any]:  # fmt: skip
+    gpu.require_campaigns_frozen(lock)
+    idle = gpu.require_idle()
+    before = gpu.host_load()
+    per_cpu = before["runnable"] / before["cpus"]
+    if max_load_per_cpu is not None and per_cpu > max_load_per_cpu:
+        raise BenchError(
+            Code.HOST_BUSY,
+            f"{before['runnable']:g} runnable threads on {before['cpus']} CPUs exceed "
+            f"{max_load_per_cpu} per CPU",
+        )
+    if per_cpu > gpu.LOAD_WARN_PER_CPU:
+        _log.warning(
+            "%g runnable threads on %d CPUs: other processes share the memory bandwidth",
+            before["runnable"],
+            before["cpus"],
+        )
+    with gpu.Sampler() as sampler:
+        raw = gated.go() if gated else _run_binary(binary, args)
+    during = sampler.summary()
+    after = gpu.host_load()
     if (during["compute_apps_max"] or 0) > 1:
         raise BenchError(
             Code.GPU_CONTENDED,
@@ -121,6 +263,7 @@ def run(
         "conditions": {
             "lock": provenance.path_label(lock),
             "lock_wait_s": waited,
+            **({"setup_outside_lock_s": setup} if setup is not None else {}),
             "idle_check": idle,
             "host_load": {
                 "cpus": before["cpus"],

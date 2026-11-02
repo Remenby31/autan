@@ -21,11 +21,19 @@ namespace autan::spike {
 struct SpikeMesh {
   autan::Mesh mesh;
   autan::Geometry geometry;
-  autan::kernels::PackedGeometry packed;
-  std::vector<autan::kernels::offset_t> twins;
-  autan::kernels::CellStencil stencil;
+  autan::kernels::PackedGeometry packed{};
+  std::vector<autan::kernels::offset_t> twins{};
+  autan::kernels::CellStencil stencil{};
   autan::kernels::Topology topo{};
-  std::vector<std::int64_t> face_global_id;  ///< partitions: face of the global mesh
+  std::vector<std::int64_t> face_global_id{};  ///< partitions: face of the global mesh
+  std::vector<std::uint8_t> face_reversed{};   ///< partitions: LocalPartition::face_reversed
+  /// Set by autan_spike_set_global_order: keys and the incidence order they give.
+  std::vector<std::int64_t> cell_key{}, face_key{};
+  autan::kernels::GlobalOrder order{};
+  bool global = false;
+  [[nodiscard]] autan::kernels::GlobalKeys keys() const {
+    return {cell_key, face_key, face_reversed, mesh.ghost_translation()};
+  }
 };
 
 inline int fail(char* err, std::size_t len, std::string_view code, std::string_view what) {
@@ -79,7 +87,7 @@ struct GeomArray {
 template <class P>
 struct GeomCopy {
   GeomArray<P> face_area, face_centroid, face_moment, face_normal, face_area_magnitude, face_r_left,
-      face_r_right, cell_centroid, cell_volume, lsq_weight, stencil_lsq_weight;
+      face_r_right, cell_centroid, cell_volume, lsq_weight, incidence_side, stencil_lsq_weight;
   explicit GeomCopy(const autan::kernels::PackedGeometry& g)
       : face_area(g.face_area),
         face_centroid(g.face_centroid),
@@ -91,6 +99,7 @@ struct GeomCopy {
         cell_centroid(g.cell_centroid),
         cell_volume(g.cell_volume),
         lsq_weight(g.lsq_weight),
+        incidence_side(g.incidence_side),
         stencil_lsq_weight(g.stencil_lsq_weight) {}
 };
 

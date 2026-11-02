@@ -8,9 +8,11 @@ import tomllib
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+import pint
 import tomli_w
+from pydantic import TypeAdapter, ValidationError
 
 from autan.errors import CaseError, Location, diagnostic
 from autan.plan import Plan, plan
@@ -44,33 +46,45 @@ from autan.schema import (
     Verification,
     Wall,
     _caller_location,
+    diagnostics_from,
 )
+from autan.units import UnitOfLength
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    import pint
-
     from autan.fake import FakeBackend
+
+    # A quantity, or its text "<number> <unit>" as the case document writes it.
+    type QuantityLike = pint.Quantity | str
     from autan.meshinfo import MeshInfo
     from autan.results import Results
     from autan.solver_backend import SolverBackend
 
+_MESH_UNIT = TypeAdapter(Annotated[pint.Unit, UnitOfLength])
 _collectors: list[list[Case]] = []
 
 
 class Case:
     """A case under construction: ``autan.Case("crm-hl", mesh="crm-hl.cgns")``.
 
+    ``mesh_unit`` is the length unit of the mesh file's coordinates (``"in"``, ``"mm"``, or
+    a Pint unit; default ``"m"``); every other length of the case carries its own unit.
+
     Builder methods validate their arguments immediately and raise ``autan.CaseError``
     with a coded diagnostic that points at the calling line. ``spec`` returns the
     complete, validated document (``autan.case/1``).
     """
 
-    def __init__(self, name: str, mesh: str | Path) -> None:
+    def __init__(self, name: str, mesh: str | Path, *, mesh_unit: str | pint.Unit = "m") -> None:
         self._origin = _caller_location()
         self._name = name
         self._mesh = str(mesh)
+        try:
+            self._mesh_unit = _MESH_UNIT.validate_python(mesh_unit)
+        except ValidationError as error:
+            located = self._origin.model_copy(update={"path": "mesh_unit"})
+            raise CaseError(diagnostics_from(error, located, {})) from None
         self._physics: Compressible | Incompressible | None = None
         self._freestream: Freestream | None = None
         self._time: Steady | Unsteady = Steady()
@@ -187,13 +201,13 @@ class Case:
         self,
         *,
         mach: float | None = None,
-        velocity: pint.Quantity | None = None,
-        aoa: pint.Quantity | None = None,
-        sideslip: pint.Quantity | None = None,
-        temperature: pint.Quantity | None = None,
-        pressure: pint.Quantity | None = None,
+        velocity: QuantityLike | None = None,
+        aoa: QuantityLike | None = None,
+        sideslip: QuantityLike | None = None,
+        temperature: QuantityLike | None = None,
+        pressure: QuantityLike | None = None,
         re: float | None = None,
-        ref_length: pint.Quantity | None = None,
+        ref_length: QuantityLike | None = None,
     ) -> None:
         """Set the freestream state; which parameters apply depends on the physics."""
         given = {
@@ -261,6 +275,7 @@ class Case:
             return CaseSpec(
                 name=self._name,
                 mesh=self._mesh,
+                mesh_unit=self._mesh_unit,
                 physics=self._physics,
                 freestream=self._freestream,
                 time=self._time,
@@ -294,7 +309,7 @@ class Case:
         """A case holding ``spec``; diagnostics point at ``file`` and document paths."""
         case = cls.__new__(cls)
         case._origin = Location(file=file)
-        case._name, case._mesh = spec.name, spec.mesh
+        case._name, case._mesh, case._mesh_unit = spec.name, spec.mesh, spec.mesh_unit
         case._physics, case._freestream, case._time = spec.physics, spec.freestream, spec.time
         case._boundaries = list(spec.boundaries)
         case._cell_zones = list(spec.cell_zones)
@@ -304,6 +319,17 @@ class Case:
         case._locations = {}
         case._document_file = file
         return case
+
+    def to_python(self) -> str:
+        """The case as SDK code in canonical form: ``autan.load`` on a file holding it gives
+        the same case. The form is fixed: ``import autan`` and the units it uses, then
+        ``autan.Case``, physics, freestream, time, initial state, verification, cell zones and
+        boundaries in the case's order, and monitors; only values that differ from their
+        default; quantities in the unit the case carries; library materials by name; numbers
+        in their shortest round-trip form. It is ``ruff format``-clean and has no docstring."""
+        from autan.render import to_python  # noqa: PLC0415 -- autan.render imports the autan package
+
+        return to_python(self.spec)
 
     def to_toml(self) -> str:
         return tomli_w.dumps(self.spec.document())
@@ -346,7 +372,7 @@ class BoundarySelector:
     def _add(self, condition: Any) -> None:
         self._case._add_boundary(BoundaryRule(zones=self._zones, condition=condition))
 
-    def wall(self, *, temperature: pint.Quantity | None = None) -> None:
+    def wall(self, *, temperature: QuantityLike | None = None) -> None:
         """No-slip wall, adiabatic unless ``temperature`` is given."""
         self._add(Wall() if temperature is None else Wall(temperature=temperature))
 
@@ -362,15 +388,15 @@ class BoundarySelector:
         a 2D lifting body."""
         self._add(Farfield(point_vortex=point_vortex))
 
-    def inlet(self, *, total_pressure: pint.Quantity, total_temperature: pint.Quantity) -> None:
+    def inlet(self, *, total_pressure: QuantityLike, total_temperature: QuantityLike) -> None:
         """Subsonic inlet at total conditions (compressible)."""
         self._add(Inlet(total_pressure=total_pressure, total_temperature=total_temperature))
 
-    def velocity_inlet(self, *, velocity: pint.Quantity) -> None:
+    def velocity_inlet(self, *, velocity: QuantityLike) -> None:
         """Inlet at a given normal velocity (incompressible)."""
         self._add(VelocityInlet(velocity=velocity))
 
-    def outlet(self, *, static_pressure: pint.Quantity) -> None:
+    def outlet(self, *, static_pressure: QuantityLike) -> None:
         """Subsonic outlet at a static pressure."""
         self._add(Outlet(static_pressure=static_pressure))
 
@@ -406,8 +432,8 @@ def forces(
     surfaces: str,
     *,
     name: str = "forces",
-    ref_area: pint.Quantity | None = None,
-    moment_center: tuple[pint.Quantity, pint.Quantity, pint.Quantity] | None = None,
+    ref_area: QuantityLike | None = None,
+    moment_center: tuple[QuantityLike, QuantityLike, QuantityLike] | None = None,
 ) -> Forces:
     """A forces monitor over the boundary zones matching ``surfaces``."""
     given: dict[str, Any] = {"surfaces": surfaces, "name": name}

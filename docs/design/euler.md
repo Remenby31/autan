@@ -67,14 +67,16 @@ Cells store U − U_ref, the reference being the freestream, and the primitive p
 
 Steady runs march in pseudo-time with an implicit step, (V/Δt + J̃) ΔU = −R(U), Δt = CFL V / Σ_f (|v·n| + c) A local to each cell:
 
-- J̃ is the approximate Jacobian: dF/dW of every face with the reconstruction's gradients and limiter held fixed, written by the face loops in the same pass as the residual (`*_jacobian` loops of `kernels/euler.py`), times dW/dU of each cell; it is assembled in 5 × 5 blocks (`BlockMatrix`) and the step's system is solved to a relative residual of 0.1 by the [agglomeration multigrid](multigrid.md).
+- J̃ is the approximate Jacobian: dF/dW of every face with the reconstruction's gradients and limiter held fixed, written by the face loops in the same pass as the residual (`*_jacobian` loops of `kernels/euler.py`), times dW/dU of each cell; it is assembled in 5 × 5 blocks (`BlockMatrix`) and the step's system is solved to a relative residual of 0.1 by the [agglomeration multigrid](multigrid.md) (`linear_solver = "multigrid"`, one rank), or by four symmetric block Gauss-Seidel sweeps over the runtime's colouring by global id (`"gauss-seidel"`), which runs the same algorithm on any number of ranks: ghost cells take ΔU after each colour, and dW/dU and the other cell data the coupling blocks read are filled into them first.
 - The run starts at first order, where J̃ is the exact Jacobian, and switches to second order once the first-order residual has dropped three orders (at most 200 steps).
 - CFL = 1000 / (largest residual relative to its value at the start of the current order) (switched evolution relaxation, Mulder and van Leer 1985), times a penalty halved whenever a step had to be shortened and recovering otherwise, between 1 and 10⁶.
-- A step is shortened so that no cell loses more than half its density or pressure, and logged (`solver` warning with alpha and the CFL number); the next CFL number is then at most half the one used.
+- A step is shortened so that no cell loses more than half its density or pressure: each cell's admissible fraction (its density bound, then halved until its pressure bound holds) independently, the least over every rank. It is logged (`solver` warning with alpha and the CFL number); the next CFL number is then at most half the one used.
 
 Steps to ten orders: [multigrid.md](multigrid.md#measurements). A Newton-Krylov variant (FGMRES on finite differences of the full residual, the limiter frozen, block Gauss-Seidel sweeps as preconditioner) was less robust far from the solution: on the MMS from the freestream (hex, n = 16) its steps were shortened at almost every iteration and the run stalled after 1.3 orders, where the defect correction converged ten orders in 177 steps (Gauss-Seidel, CFL = 10 / drop). It is left for M3 as an end phase, switched on once the residual has dropped.
 
 Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `dt` or `cfl`.
+
+Start: each cell takes its zone's `initial` state, or, with an initial-state file ([initial-state.md](../contracts/initial-state.md)), its row of the file; `autan_vv.initial_state.write_initial_state` writes one from an oracle (the isentropic vortex) at the cell centroids.
 
 Restart: `restart_fields` holds the conserved variables bit for bit, the averaging sums, and the steady solver's state (penalty, order, reference residuals) as uniform fields, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
 

@@ -126,6 +126,15 @@ class DeviceMesh {
     /// Cells per slice of the sliced stencil layout (Topology::stencil_stride), 0 for CSR. Same
     /// results bit for bit; a warp then reads its cells' stencil entries contiguously.
     int stencil_slice = 0;
+    /// The partition's global numbering (incidences by global face id, reversed faces evaluated
+    /// in their global orientation), for results that do not depend on the partition; the
+    /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
+    const GlobalKeys* global = nullptr;
+    /// Cells per slice of the sliced incidence layout (Topology::incidence_stride, with the
+    /// column index incidence_cell), 0 for CSR. Same results bit for bit. 32 for the block
+    /// solvers (kernels/blocks.py: the product reaches 88-93 % of GB10 peak, CSR 31-68 %); CSR
+    /// by default, the explicit Euler step being no faster sliced (+0.4 % tet, +1.1 % hex).
+    int incidence_slice = 0;
   };
 
   /// `stencil` may be null (no stencil reductions); it is copied.
@@ -133,8 +142,28 @@ class DeviceMesh {
              Options options)
       : geometry_(geometry), stream_(options.stream) {
     Topology host = kernels::topology(mesh.view());
-    const auto twins = incidence_twins(mesh);
+    GlobalOrder order;
+    if (options.global != nullptr) {
+      order = global_order(mesh, *options.global);
+      host.cell_faces = order.cell_faces.data();
+    } else {
+      order.twin = incidence_twins(mesh);
+    }
+    auto& twins = order.twin;
     host.incidence_twin = twins.data();
+    if (options.incidence_slice > 0) {
+      incidences_ = sliced_incidences(host, options.incidence_slice);
+      geometry_.lsq_weight = sliced_values(incidences_, geometry_.lsq_weight, 3);
+      geometry_.incidence_side = sliced_values(incidences_, geometry_.incidence_side, 1);
+      twins = incidences_.twin;
+      host.incidence_twin = twins.data();
+      host.n_incidences = static_cast<offset_t>(incidences_.cell_faces.size());
+      host.cell_face_offsets = incidences_.cell_face_offsets.data();
+      host.cell_faces = incidences_.cell_faces.data();
+      host.incidence_stride = incidences_.stride;
+      host.incidence_length = incidences_.length.data();
+      host.incidence_cell = incidences_.cell.data();
+    }
     if (stencil != nullptr) {
       csr_entries_ = stencil->entries.size();
       if (options.stencil_slice > 0) {
@@ -169,6 +198,17 @@ class DeviceMesh {
     topo_.cell_face_offsets = offsets_.get();
     topo_.cell_faces = cell_faces_.get();
     topo_.incidence_twin = twin_.get();
+    if (options.global != nullptr && !options.global->reversed.empty()) {
+      reversed_ = copy(options.global->reversed);
+      topo_.face_reversed = reversed_.get();
+    }
+    topo_.rank_independent = options.global != nullptr;
+    if (options.incidence_slice > 0) {
+      incidence_length_ = copy(std::span<const index_t>(incidences_.length));
+      incidence_cell_ = copy(std::span<const index_t>(incidences_.cell));
+      topo_.incidence_length = incidence_length_.get();
+      topo_.incidence_cell = incidence_cell_.get();
+    }
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
       stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));
@@ -226,6 +266,7 @@ class DeviceMesh {
     AUTAN_BIND_GEOMETRY(cell_centroid)
     AUTAN_BIND_GEOMETRY(cell_volume)
     AUTAN_BIND_GEOMETRY(lsq_weight)
+    AUTAN_BIND_GEOMETRY(incidence_side)
     AUTAN_BIND_GEOMETRY(stencil_lsq_weight)
 #undef AUTAN_BIND_GEOMETRY
   }
@@ -287,8 +328,11 @@ class DeviceMesh {
   stream_t stream_;
   DeviceArray<index_t> owner_, neighbour_, cell_faces_, interior_faces_, boundary_faces_;
   DeviceArray<offset_t> offsets_, twin_;
+  DeviceArray<std::uint8_t> reversed_;
   DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
   DeviceArray<index_t> stencil_entries_, stencil_length_;
+  SlicedIncidences incidences_;
+  DeviceArray<index_t> incidence_length_, incidence_cell_;
   HostColouring interior_, boundary_;
   DeviceArray<double> face_scratch_, incidence_scratch_;
   std::map<std::pair<std::string, std::type_index>, DeviceArray<std::byte>> fields_;
