@@ -172,7 +172,7 @@ def test_without_a_readable_base_everything_runs(repo):
 )
 def test_each_path_is_measured_tested_or_neither(repo, path, bench, harness):
     # Measured on the reference Spark: measured code, the image and the measurement method.
-    # The harness's GPU tests alone (tests runner): its tests, CI scripts, lock and campaign tools.
+    # The harness's GPU tests alone: its tests, CI scripts, lock and campaign tools.
     git(repo, "checkout", "-q", "-b", "change")
     commit(repo, path)
     pull_request_merge(repo, "change")
