@@ -131,6 +131,27 @@ MeshInfoZones meshinfo_zones(const Mesh& mesh) {
   return zones;
 }
 
+std::int64_t mesh_bytes(const fs::path& path) {
+  std::error_code ec;
+  std::uintmax_t total = 0;
+  const auto add = [&](const fs::path& file) {
+    const auto size = fs::file_size(file, ec);
+    if (ec) throw Error(ErrorCode::io_cannot_open, "cannot read '" + file.string() + "'");
+    total += size;
+  };
+  if (fs::is_directory(path, ec)) {
+    const fs::path dir = polymesh_directory(path);
+    for (const char* name : {"points", "faces", "owner", "neighbour", "boundary", "cellZones"}) {
+      const fs::path file = dir / name;
+      if (std::string_view(name) == "cellZones" && !fs::exists(file, ec)) continue;
+      add(file);
+    }
+  } else {
+    add(path);
+  }
+  return static_cast<std::int64_t>(total);
+}
+
 std::string mesh_hash(const fs::path& path) {
   picosha2::hash256_one_by_one hasher;
   std::error_code ec;
@@ -148,7 +169,8 @@ std::string mesh_hash(const fs::path& path) {
   return picosha2::get_hash_hex_string(hasher);
 }
 
-std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, const MeshInfoRun& run) {
+std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int64_t bytes,
+                           const MeshInfoRun& run) {
   if (mesh.n_owned_cells() != mesh.n_cells()) {
     throw Error(ErrorCode::mesh_inconsistent_sizes, "MeshInfo describes an unpartitioned mesh");
   }
@@ -219,7 +241,10 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, const Me
   Json doc{
       {"schema", "autan.mesh-info/1"},
       {"source",
-       {{"path", mesh.source().path}, {"format", mesh.source().format}, {"sha256", sha256}}},
+       {{"path", mesh.source().path},
+        {"format", mesh.source().format},
+        {"sha256", sha256},
+        {"bytes", bytes}}},
       {"counts",
        {{"cells", mesh.n_cells()},
         {"faces", mesh.n_faces()},

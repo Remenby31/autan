@@ -171,6 +171,7 @@ struct Prepared {
   SolverInput input;
   Mesh mesh;
   std::string mesh_hash;
+  std::int64_t mesh_bytes = 0;               // the size of what mesh_hash covers
   std::string mesh_info;                     // MeshInfo of the mesh as read, before mesh.scale
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
@@ -883,6 +884,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
              .mesh_hash = {},
+             .mesh_bytes = 0,
              .mesh_info = {},
              .face_zone = {},
              .monitor_zones = {},
@@ -900,6 +902,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
+    p.mesh_bytes = io::mesh_bytes(p.input.mesh_path);
   } catch (const Error& e) {
     throw InputError(Diagnostic{.code = error_code_string(e.code()),
                                 .message = e.what(),
@@ -913,6 +916,15 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
         .path = "mesh.sha256",
         .data_json =
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
+  }
+  // solver-input.md, mesh_info: its source.bytes is the size of the mesh read.
+  if (p.mesh_bytes != p.input.mesh_info_bytes) {
+    throw InputError(Diagnostic{
+        .code = "E0203",
+        .message = "mesh_info's source.bytes differs from the size of the mesh read",
+        .path = "mesh_info.source.bytes",
+        .data_json =
+            nlohmann::json{{"expected", p.input.mesh_info_bytes}, {"found", p.mesh_bytes}}.dump()});
   }
   check_periodic(p);
   const char* order = std::getenv("AUTAN_CELL_ORDER");

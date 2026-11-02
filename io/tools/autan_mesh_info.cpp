@@ -156,7 +156,8 @@ int main(int argc, char* const* argv) {
     } else if (json) {
       const auto run = autan::io::run_counts(mesh, scale.value_or(1.0),
                                              order.value_or(autan::io::CellOrder::rcm), ranks);
-      std::printf("%s\n", autan::io::mesh_info_json(mesh, hash, run).c_str());
+      std::printf("%s\n",
+                  autan::io::mesh_info_json(mesh, hash, autan::io::mesh_bytes(path), run).c_str());
     } else {
       print_text(mesh, hash);
     }

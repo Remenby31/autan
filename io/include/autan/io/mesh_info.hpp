@@ -16,6 +16,9 @@ namespace autan::io {
 /// "<name>\n<byte length>\n<bytes>" (docs/contracts/mesh-info.md).
 std::string mesh_hash(const std::filesystem::path& path);
 
+/// The size in bytes of what mesh_hash covers: the file, or the sum of a polyMesh's files.
+std::int64_t mesh_bytes(const std::filesystem::path& path);
+
 /// Zones in MeshInfo order: boundary zones are the face zones with
 /// `boundary` set, cell zones those holding at least one cell; indices into
 /// Mesh::face_zones() and Mesh::cell_zones().
@@ -48,7 +51,8 @@ struct MeshInfoRun {
 
 /// MeshInfo document (docs/contracts/mesh-info.md, schema autan.mesh-info/1)
 /// of an assembled, unpartitioned mesh read from its source, as JSON text.
-std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, const MeshInfoRun& run);
+std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int64_t bytes,
+                           const MeshInfoRun& run);
 
 /// The boundary surface of an assembled, unpartitioned mesh as an
 /// autan.surface/1 file (docs/contracts/mesh.md#boundary-surface): its

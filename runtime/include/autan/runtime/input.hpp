@@ -139,7 +139,8 @@ struct SolverInput {
   /// the cell order and scale its quality.lines were counted in.
   std::string mesh_info, mesh_info_order;
   double mesh_info_scale = 1.0;
-  std::string precision;  ///< "fp32+acc64" or "fp64"
+  std::int64_t mesh_info_bytes = 0;  ///< its source.bytes: the size of what the mesh hash covers
+  std::string precision;             ///< "fp32+acc64" or "fp64"
   /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
   std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip

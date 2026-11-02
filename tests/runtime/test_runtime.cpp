@@ -641,6 +641,13 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     Json other = input();
     other["mesh_info"]["source"]["sha256"] = std::string(64, '0');
     require_error(run(other), "E0203");
+    // Its source.bytes is the size of the mesh read: another is another mesh, 0 none.
+    Json other_size = input();
+    other_size["mesh_info"]["source"]["bytes"] =
+        other_size["mesh_info"]["source"]["bytes"].get<std::int64_t>() + 1;
+    require_error(run(other_size), "E0203");
+    other_size["mesh_info"]["source"]["bytes"] = 0;
+    require_error(run(other_size), "E0705");
     require_error(run(autan_test::planned(input(), mesh_path, "input")), "E0705");
     for (const Json& broken :
          {Json(nullptr), Json::object(), Json{{"schema", "autan.mesh-info/2"}}}) {
