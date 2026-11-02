@@ -7,11 +7,11 @@ on:
   push:
     branches: [main]
     paths:
-      - vv/src/autan_vv/meshes/**
-      - vv/src/autan_vv/oracles/**
-      - vv/src/autan_vv/cli.py
-      - vv/src/autan_vv/errors.py
-      - vv/src/autan_vv/__init__.py
+      # Broad on purpose: a fill is cheap, and the key (bench/ci/mesh-key.sh) decides.
+      - vv/src/autan_vv/**
+      - bench/ci/measured-mesh-files.txt
+      - bench/ci/mesh-modules.py
+      - bench/ci/mesh-key.sh
       - vv/pyproject.toml
       - vv/uv.lock
       - vv/.python-version
@@ -36,11 +36,14 @@ jobs:
         with:
           persist-credentials: false
       # The same key as gpu-bench's mesh job.
+      - name: The mesh's cache key (bench/ci/mesh-key.sh)
+        id: mesh-key
+        run: bench/ci/mesh-key.sh >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: mesh-cache
         with:
           path: meshes/
-          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/meshes/**', 'vv/src/autan_vv/oracles/**', 'vv/src/autan_vv/cli.py', 'vv/src/autan_vv/errors.py', 'vv/src/autan_vv/__init__.py', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
+          key: ${{ steps.mesh-key.outputs.key }}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: steps.mesh-cache.outputs.cache-hit != 'true'
         with:
@@ -53,4 +56,8 @@ jobs:
           libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
       - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
         if: steps.mesh-cache.outputs.cache-hit != 'true'
-        run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes
+        # Generated through mesh-modules.py, which checks that the repository modules the
+        # generator loads are exactly bench/ci/measured-mesh-files.txt (the key, the filter).
+        run: >-
+          uv run --project vv --locked python bench/ci/mesh-modules.py
+          --check bench/ci/measured-mesh-files.txt -- meshes hex --levels 128 --out meshes
