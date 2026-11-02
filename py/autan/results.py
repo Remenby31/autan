@@ -149,6 +149,7 @@ class RunInfo(_Strict):
     solver: Solver
     precision: Literal["fp32+acc64", "fp64"]
     devices: Devices
+    cell_order: Literal["rcm", "input"]
     started: str
     finished: str | None
     iterations: Annotated[int, Field(ge=0)]
@@ -183,6 +184,7 @@ IDENTITY = (
     "solver.backend",
     "devices.kind",
     "devices.count",
+    "cell_order",
     "start.identity",
     "start.mode",
     "start.iterations",

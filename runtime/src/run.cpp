@@ -29,6 +29,7 @@
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -133,6 +134,7 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
+  std::string cell_order;                   // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
   std::optional<StartState> start;          // input.start, read and checked
   Json start_averaging;                     // `continue`: the previous run's averaging
@@ -287,6 +289,13 @@ void load_start(Prepared& p) {
   }
   StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
   if (start.mode == "continue") {
+    // A continuation goes on in the order the run computed in (results.md,
+    // cell_order): another order would change its bits from the restart on.
+    const std::string order = text(metadata, "cell_order");
+    if (order != p.cell_order) {
+      start_mismatch("E0708", "the previous run computed in cell order '" + order + "'",
+                     "start.run", {{"expected", p.cell_order}, {"found", order}});
+    }
     if (!metadata.contains("averaging") || !is_averaging(metadata["averaging"]))
       unusable("RunMetadata has no valid averaging");
     p.start_averaging = metadata["averaging"];
@@ -654,6 +663,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .face_zone = {},
              .monitor_zones = {},
              .factory = nullptr,
+             .cell_order = {},
              .start = std::nullopt,
              .start_averaging = {},
              .boundary_states = {},
@@ -681,6 +691,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
   check_periodic(p);
+  const char* order = std::getenv("AUTAN_CELL_ORDER");
+  p.cell_order = order == nullptr ? "rcm" : order;
+  if (p.cell_order != "rcm" && p.cell_order != "input") {
+    throw std::runtime_error("AUTAN_CELL_ORDER is '" + p.cell_order + "', not rcm or input");
+  }
   // solver-input.md, `devices`: one rank per device, as many as the launcher started.
   if (p.input.device_count != ranks) {
     invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
@@ -884,26 +899,22 @@ class Run final : public Log {
       : p_(p),
         comm_(comm),
         launched_(launched),
-        geometry_(std::move(*p.geometry)),
+        ordered_(make_ordered()),
         groups_(std::move(p.cell_groups)),
+        geometry_(compute_physics_geometry()),
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
-    if (local_) {
-      ghosts_ = comm_.ghost_exchange(*local_);
+    ghosts_ = local_ ? comm_.ghost_exchange(*local_) : std::make_unique<NoGhosts>();
+    // The physics' cells and faces differ from the mesh's on a partition or
+    // a renumbered mesh: their shares of the start, the initial state and
+    // the face states, in its order.
+    if (local_ || ordered_) {
       if (p_.start) local_start_ = owned_start(*p_.start);
       if (p_.initial) local_initial_ = owned_fields(*p_.initial);
-    } else {
-      ghosts_ = std::make_unique<NoGhosts>();
     }
-    if (local_) {
-      face_global_id_ = local_->face_global_id;
-      face_reversed_ = local_->face_reversed;
-    } else {
-      face_global_id_.resize(at(p_.mesh.n_faces()));
-      std::iota(face_global_id_.begin(), face_global_id_.end(), std::int64_t{0});
-      face_reversed_.assign(face_global_id_.size(), 0);
-    }
+    local_states_ = physics_boundary_states();
     colour_cells_of_physics();
+    face_keys();
     // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
@@ -916,7 +927,7 @@ class Run final : public Log {
     const std::string backend = in.device_kind;
     std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" +
                         in.precision + "\n" + backend + "\n" + in.device_kind + "\n" +
-                        std::to_string(in.device_count);
+                        std::to_string(in.device_count) + "\n" + cell_order();
     Json start = nullptr;
     if (in.start) {
       const Start& s = *in.start;
@@ -951,6 +962,7 @@ class Run final : public Log {
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
+        {"cell_order", cell_order()},
         {"started", started_at},
         {"finished", nullptr},
         {"iterations", 0},
@@ -993,6 +1005,13 @@ class Run final : public Log {
     path = comm_.broadcast(path);
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
+    if (ordered_) {
+      note("info", "solver", "cells renumbered in reverse Cuthill-McKee order", "",
+           Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
+    } else {
+      note("warning", "solver", "the mesh's own cell order is kept (AUTAN_CELL_ORDER=input)", "",
+           Json{{"order", "input"}}.dump());
+    }
     if (comm_.size() > 1) log_partition();
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
       note("info", "solver",
@@ -1024,7 +1043,7 @@ class Run final : public Log {
                                  .start = start,
                                  .ghosts = *ghosts_,
                                  .ranks = comm_,
-                                 .boundary_states = p_.boundary_states,
+                                 .boundary_states = local_states_,
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
@@ -1084,14 +1103,21 @@ class Run final : public Log {
   // whose image ghosts make each periodic face an interior face; its owned
   // cells are the mesh's cells, in order. Otherwise, the mesh itself.
   std::optional<LocalPartition> make_part() {
-    const Mesh& mesh = p_.mesh;
+    const Mesh& mesh = compute_mesh();
     const std::int32_t n = comm_.size();
     // Reproducibility "ranks" computes on a partition, one part on one rank,
     // so that a physics finds the same global keys on any number of ranks.
     if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
       return std::nullopt;
-    const std::vector<std::int32_t> parts =
+    // Each cell keeps its part through the renumbering.
+    std::vector<std::int32_t> parts =
         n > 1 ? std::move(p_.parts) : std::vector<std::int32_t>(at(mesh.n_cells()), 0);
+    if (n > 1 && ordered_) {
+      std::vector<std::int32_t> ordered(parts.size());
+      for (std::size_t c = 0; c < ordered.size(); ++c)
+        ordered[c] = parts[at(ordered_->new_to_old[c])];
+      parts = std::move(ordered);
+    }
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1121,9 +1147,86 @@ class Run final : public Log {
   [[nodiscard]] std::vector<std::int64_t> owned_ids() const {
     const Mesh& mesh = physics_mesh();
     const auto global = mesh.cell_global_id();
-    std::vector<std::int64_t> ids(at(mesh.n_owned_cells()));
-    for (std::size_t c = 0; c < ids.size(); ++c) ids[c] = local_ ? global[c] : std::int64_t(c);
-    return ids;
+    return {global.begin(), global.begin() + mesh.n_owned_cells()};
+  }
+
+  // By default (AUTAN_CELL_ORDER unset or "rcm"), the mesh's cells in reverse
+  // Cuthill-McKee order (mesh.md, Renumbering), for memory locality; the
+  // outputs keep the mesh's numbering through cell_global_id and face_source.
+  // "input": the mesh's order.
+  struct Ordered {
+    Mesh mesh;
+    std::vector<index_t> new_to_old;  // the mesh cell of each cell of `mesh`
+    AssemblyMap map;                  // the mesh face of each face of `mesh`, flips
+  };
+  std::optional<Ordered> make_ordered() {
+    // Rank 0's order decides for every rank: ranks partitioning differently
+    // numbered meshes would exchange unrelated cells.
+    if (comm_.broadcast(p_.cell_order) == "input") return std::nullopt;
+    const auto start = std::chrono::steady_clock::now();
+    AssemblyMap map;
+    std::vector<index_t> new_to_old = rcm_order(p_.mesh);
+    Mesh mesh = renumber_cells(p_.mesh, new_to_old, &map);
+    renumber_seconds_ =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    return Ordered{
+        .mesh = std::move(mesh), .new_to_old = std::move(new_to_old), .map = std::move(map)};
+  }
+  // The geometry of the compute mesh, computed on the mesh the run read and
+  // carried through the renumbering: the same bits in either cell order.
+  [[nodiscard]] Geometry compute_physics_geometry() {
+    if (!ordered_) return std::move(*p_.geometry);
+    Geometry g = renumber_geometry(*p_.geometry, ordered_->new_to_old, ordered_->map);
+    p_.geometry.reset();
+    return g;
+  }
+  // The cell order the run computes in, as run.json records it.
+  [[nodiscard]] const char* cell_order() const { return ordered_ ? "rcm" : "input"; }
+  // The mesh the runtime partitions and the physics computes on: the mesh,
+  // or its renumbered copy.
+  [[nodiscard]] const Mesh& compute_mesh() const { return ordered_ ? ordered_->mesh : p_.mesh; }
+  // Each face of the physics' mesh, keyed in the mesh the run read: its face
+  // in the compute mesh (the partition's, or itself), then in the mesh (the
+  // renumbering's), reversed if one of the two flipped it.
+  void face_keys() {
+    const auto n = at(physics_mesh().n_faces());
+    face_global_id_.resize(n);
+    face_reversed_.resize(n);
+    for (std::size_t f = 0; f < n; ++f) {
+      const auto g =
+          local_ ? static_cast<index_t>(local_->face_global_id[f]) : static_cast<index_t>(f);
+      std::uint8_t reversed = local_ ? local_->face_reversed[f] : 0;
+      if (ordered_) reversed ^= ordered_->map.face_reversed[at(g)];
+      face_global_id_[f] = mesh_face(static_cast<index_t>(f));
+      face_reversed_[f] = reversed;
+    }
+  }
+  // The mesh face of face f of the physics' mesh.
+  [[nodiscard]] index_t mesh_face(index_t f) const {
+    const auto g = local_ ? static_cast<index_t>(local_->face_global_id[at(f)]) : f;
+    return ordered_ ? ordered_->map.face_source[at(g)] : g;
+  }
+
+  // The oracle-state face states in the order of the physics' owned
+  // boundary faces of each zone (PhysicsContext::boundary_states), from
+  // those in the mesh's zone order.
+  [[nodiscard]] std::map<index_t, std::vector<double>> physics_boundary_states() const {
+    std::map<index_t, std::vector<double>> out;
+    const Mesh& mesh = physics_mesh();
+    const auto offsets = mesh.boundary_zone_offsets();
+    const auto mesh_offsets = p_.mesh.boundary_zone_offsets();
+    for (const auto& [zone, states] : p_.boundary_states) {
+      const index_t first = mesh_offsets[at(zone)];
+      const auto total = at(mesh_offsets[at(zone) + 1] - first);
+      const auto n = at(offsets[at(zone) + 1] - offsets[at(zone)]);
+      std::vector<double> paired(5 * n);
+      for (std::size_t j = 0; j < n; ++j) {
+        const auto row = at(mesh_face(offsets[at(zone)] + static_cast<index_t>(j)) - first);
+        for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = states[k * total + row];
+      }
+      out.emplace(zone, std::move(paired));
+    }
+    return out;
   }
 
   // Owned and ghost cells of each rank, in log.jsonl.
@@ -1182,7 +1285,7 @@ class Run final : public Log {
     }
   }
 
-  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
+  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : compute_mesh(); }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
   }
@@ -1467,17 +1570,13 @@ class Run final : public Log {
     // face, ascending, and `slots` their positions in s.wall_faces.
     std::vector<index_t> physics_faces;
     std::vector<std::int64_t> slots;
-    if (local_) {
-      for (index_t f = local_->mesh.n_interior_faces(); f < local_->mesh.n_owned_faces(); ++f) {
-        const auto global = static_cast<index_t>(local_->face_global_id[at(f)]);
-        const auto it = std::ranges::lower_bound(s.wall_faces, global);
-        if (it == s.wall_faces.end() || *it != global) continue;
-        physics_faces.push_back(f);
-        slots.push_back(it - s.wall_faces.begin());
-      }
-    } else {
-      physics_faces = s.wall_faces;
-      for (std::size_t k = 0; k < physics_faces.size(); ++k) slots.push_back(std::int64_t(k));
+    const Mesh& own = physics_mesh();
+    for (index_t f = own.n_interior_faces(); f < own.n_owned_faces(); ++f) {
+      const index_t global = mesh_face(f);
+      const auto it = std::ranges::lower_bound(s.wall_faces, global);
+      if (it == s.wall_faces.end() || *it != global) continue;
+      physics_faces.push_back(f);
+      slots.push_back(it - s.wall_faces.begin());
     }
     try {
       s.fields = physics_->fields(false);
@@ -1631,11 +1730,14 @@ class Run final : public Log {
   double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
-  Geometry geometry_;
+  double renumber_seconds_ = 0.0;
+  std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
+  Geometry geometry_;
   std::optional<LocalPartition> local_;
-  // PhysicsContext's global keys of the physics' faces: the partition's, or
-  // the mesh's own (identity, none reversed).
+  std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
+  // PhysicsContext's global keys of the physics' faces: through the partition
+  // and the renumbering, in the mesh the run read.
   std::vector<std::int64_t> face_global_id_;
   std::vector<std::uint8_t> face_reversed_;
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
