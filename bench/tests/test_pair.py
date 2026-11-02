@@ -149,6 +149,28 @@ def test_a_median_that_gives_no_ratio_is_refused(bad):
     assert err.value.code == Code.NON_POSITIVE_MEDIAN
 
 
+def test_an_upper_bound_of_one_in_round_off_is_not_a_regression():
+    """Codex on #428: these pairs' exact upper bound is 1, computed as 0.9999999999999999."""
+    change = [[15625.0, 15625.0]] * 4 + [[676.0, 676.0]]
+    base = [[17576.0, 17576.0]] * 4 + [[625.0, 625.0]]
+    row = pair.judge("s.k", "u", "higher", change, base)
+    assert row.ratio < 0.95
+    assert row.ci[1] == pytest.approx(1.0, abs=1e-12)
+    assert row.verdict == pair.INCONCLUSIVE
+
+
+def test_extreme_medians_are_a_coded_error_not_a_crash():
+    """Codex on #428: 1e200/1e-200 overflowed as a quotient (math domain error). As logarithms
+    the ratio is 1, but resamples drawing that pair twice leave the float range: an explicit
+    error, not a crash."""
+    change = [[1e200, 1e200], [1e-200, 1e-200]] + [[1.0, 1.0]] * 3
+    base = [[1e-200, 1e-200], [1e200, 1e200]] + [[1.0, 1.0]] * 3
+    with pytest.raises(BenchError) as err:
+        pair.judge("s.k", "u", "higher", change, base)
+    assert err.value.code == Code.INCOMPATIBLE
+    assert "the interval beyond the float range" in str(err.value)
+
+
 def test_unpaired_runs_are_refused():
     with pytest.raises(BenchError) as err:
         pair.judge("s.k", "u", "higher", [[1.0]] * 5, [[1.0]] * 4)
@@ -280,6 +302,7 @@ def test_pair_alternates_the_sides_in_one_hold_and_records_each_run(
     summary = json.loads((out / "pair.json").read_text())
     assert summary["schema"] == pair.SCHEMA_ID
     assert summary["outcome"] == pair.OK
+    assert summary["state"] == "complete"
     (series,) = summary["series"]
     assert series["order"] == pair.order(5)
     assert series["hold_s"] > 0
@@ -346,11 +369,34 @@ def test_runs_measured_before_a_failure_are_kept(paired, tmp_path, capsys):
     assert kept == [f"{i + 1:02d}-{s}.json" for i, s in enumerate(pair.order(5)[:9])]
 
 
-def test_a_failed_confirmation_keeps_the_first_series(paired, tmp_path):
+def test_a_failed_confirmation_keeps_the_first_series_and_no_verdict(paired, tmp_path):
     # The first series reads a regression; the confirmation's last run crashes.
-    assert main([*paired(["1.1"] * 10, ["1.0"] * 9 + ["crash"]), "--confirm"]) == 2
+    summary_md = tmp_path / "summary.md"
+    argv = [
+        *paired(["1.1"] * 10, ["1.0"] * 9 + ["crash"]),
+        "--confirm",
+        "--summary",
+        str(summary_md),
+    ]
+    assert main(argv) == 2
     summary = json.loads((tmp_path / "out" / "pair.json").read_text())
     assert [s["outcome"] for s in summary["series"]] == [pair.REGRESSION]
+    # The gate did not conclude: no verdict, the error recorded and in the job summary.
+    assert summary["state"] == "failed"
+    assert "outcome" not in summary
+    assert "BINARY_FAILED" in summary["error"]
+    assert "DID NOT COMPLETE" in summary_md.read_text()
+
+
+def test_an_earlier_run_s_files_never_pass_for_this_one_s(paired, tmp_path):
+    out = tmp_path / "out"
+    (out / "series-2").mkdir(parents=True)
+    (out / "series-2" / "01-change.json").write_text("{}")
+    (out / "pair.json").write_text('{"outcome": "ok"}')
+    # This run crashes at once: nothing of the earlier one is left to read as its result.
+    assert main(paired(["crash"] * 5, ["1.0"] * 5)) == 2
+    assert json.loads((out / "pair.json").read_text())["state"] == "failed"
+    assert not (out / "series-2").exists()
 
 
 def test_pair_refuses_fewer_than_five_pairs(paired, capsys):

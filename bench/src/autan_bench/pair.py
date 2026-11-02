@@ -61,15 +61,21 @@ class Row:
     base_run_cv: float
 
 
-def _pair_ratio(change: list[float], base: list[float], better: str) -> float:
+def _log_ratio(change: list[float], base: list[float], better: str) -> float:
+    """log r for one pair, as a difference of logarithms: no quotient to overflow."""
     c, b = statistics.median(change), statistics.median(base)
     if not (math.isfinite(c) and math.isfinite(b) and c > 0 and b > 0):
         raise BenchError(Code.NON_POSITIVE_MEDIAN, f"medians {c!r} and {b!r}: no ratio")
-    return c / b if better == "higher" else b / c
+    log_r = math.log(c) - math.log(b)
+    return log_r if better == "higher" else -log_r
 
 
-def _geomean(ratios: list[float]) -> float:
-    return math.exp(statistics.fmean(math.log(r) for r in ratios))
+def _geomean(what: str, log_ratios: list[float]) -> float:
+    mean = statistics.fmean(log_ratios)
+    try:
+        return math.exp(mean)
+    except OverflowError:
+        raise BenchError(Code.INCOMPATIBLE, f"{what} beyond the float range") from None
 
 
 def limit(better: str, threshold: float) -> float:
@@ -106,20 +112,22 @@ def judge(name: str, unit: str, better: str, change_runs: list[list[float]],
             f"{name}: {len(change_runs)} change runs and {len(base_runs)} base runs do not pair",
         )
     pairs = list(zip(change_runs, base_runs, strict=True))
-    ratio = _geomean([_pair_ratio(c, b, better) for c, b in pairs])
+    ratio = _geomean(f"{name}: the ratio", [_log_ratio(c, b, better) for c, b in pairs])
     rng = random.Random(seed)
 
     def resample() -> float:
         drawn = rng.choices(pairs, k=len(pairs))
-        return _geomean([_pair_ratio(rng.choices(c, k=len(c)), rng.choices(b, k=len(b)), better)
-                         for c, b in drawn])  # fmt: skip
+        return _geomean(f"{name}: the interval", [_log_ratio(rng.choices(c, k=len(c)), rng.choices(b, k=len(b)),
+                                           better) for c, b in drawn])  # fmt: skip
 
     boot = sorted(resample() for _ in range(resamples))
     lo = boot[int(0.025 * (resamples - 1))]
     hi = boot[int(0.975 * (resamples - 1))]
     if ratio >= limit(better, threshold) - _ROUND_OFF:
         verdict = OK
-    elif hi < 1.0:
+    # The interval must exclude "no change" beyond round-off: an upper bound of 1 computed as
+    # 0.9999999999999999 is not evidence (codex on #428).
+    elif hi < 1.0 - _ROUND_OFF:
         verdict = REGRESSION
     else:
         verdict = INCONCLUSIVE
@@ -212,11 +220,12 @@ def series_record(
 def markdown(summary: dict[str, Any]) -> str:
     """pair.json as a job summary: per series, the lock's cost and each benchmark's ratio."""
     verdict = {OK: "ok", REGRESSION: "**REGRESSION**", INCONCLUSIVE: "**INCONCLUSIVE**"}
-    final = summary["outcome"]
-    if final == INCONCLUSIVE and len(summary["series"]) > 1:
+    if summary.get("state") == "failed":
+        final_text = f"**DID NOT COMPLETE**: {summary.get('error', 'unknown error')}"
+    elif summary["outcome"] == INCONCLUSIVE and len(summary["series"]) > 1:
         final_text = "**INCONCLUSIVE: noise too high**"
     else:
-        final_text = verdict[final]
+        final_text = verdict[summary["outcome"]]
     lines = [f"### Paired gate, {summary['suite']}: {final_text}", ""]
     for number, series in enumerate(summary["series"], 1):
         order = " ".join(side[0].upper() for side in series["order"])

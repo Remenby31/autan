@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -144,51 +145,75 @@ def _pair(args: argparse.Namespace) -> int:
         defaults = parser().parse_args(["stream", "--binary", "-", "--out", "-"])
         binary_args = _stream_args(defaults)
     args.out.mkdir(parents=True, exist_ok=True)
+    # Nothing of an earlier run in this directory may pass for this one's.
+    (args.out / "pair.json").unlink(missing_ok=True)
+    for old in args.out.glob("series-*"):
+        shutil.rmtree(old)
     summary: dict = {
         "schema": pair.SCHEMA_ID,
         "suite": args.suite,
         "threshold": args.threshold,
         "pairs": args.pairs,
+        "state": "running",
         "series": [],
     }
-    final = pair.OK
-    # A first series that is not ok is confirmed by a second, in a hold of its own, which
-    # decides (as gate.sh does for the absolute gate); never a third.
-    for number in (1, 2) if args.confirm else (1,):
-        directory = args.out / f"series-{number}"
-        directory.mkdir(exist_ok=True)
 
-        def keep(i: int, side: str, doc: dict, directory: Path = directory) -> None:
-            result.write(doc, directory / f"{i + 1:02d}-{side}.json")
-
-        series = runner.pair_series(
-            args.change,
-            args.base,
-            binary_args,
-            pair.order(args.pairs),
-            suite=args.suite,
-            precision=args.precision,
-            lock=args.lock,
-            lock_timeout_s=args.lock_timeout,
-            max_load_per_cpu=args.max_load,
-            on_run=keep,
-        )
-        change = [d for s, d in zip(series.sides, series.docs, strict=True) if s == "change"]
-        base = [d for s, d in zip(series.sides, series.docs, strict=True) if s == "base"]
-        rows = pair.judge_all(change, base, args.threshold)
-        final = pair.outcome(rows)
-        summary["series"].append(pair.series_record(series.sides, series.lock_wait_s,
-                                                    series.hold_s, rows, final))  # fmt: skip
-        # Written after each series: a failed confirmation keeps the first series' record.
-        summary["outcome"] = final
+    def save() -> None:
         (args.out / "pair.json").write_text(json.dumps(summary, indent=2) + "\n")
-        _say(f"series {number}: {len(series.sides)} runs, lock held {series.hold_s:.0f} s")
-        _say(_pair_table(rows))
-        if final == pair.OK:
-            break
-    if args.summary:
-        with args.summary.open("a") as out:
-            out.write(pair.markdown(summary))
+
+    def report() -> None:
+        if args.summary:
+            with args.summary.open("a") as out:
+                out.write(pair.markdown(summary))
+
+    save()
+    final = pair.OK
+    try:
+        # A first series that is not ok is confirmed by a second, in a hold of its own, which
+        # decides (as gate.sh does for the absolute gate); never a third.
+        for number in (1, 2) if args.confirm else (1,):
+            directory = args.out / f"series-{number}"
+            directory.mkdir()
+
+            def keep(i: int, side: str, doc: dict, directory: Path = directory) -> None:
+                result.write(doc, directory / f"{i + 1:02d}-{side}.json")
+
+            series = runner.pair_series(
+                args.change,
+                args.base,
+                binary_args,
+                pair.order(args.pairs),
+                suite=args.suite,
+                precision=args.precision,
+                lock=args.lock,
+                lock_timeout_s=args.lock_timeout,
+                max_load_per_cpu=args.max_load,
+                on_run=keep,
+            )
+            sides = series.sides
+            change = [d for s, d in zip(sides, series.docs, strict=True) if s == "change"]
+            base = [d for s, d in zip(sides, series.docs, strict=True) if s == "base"]
+            rows = pair.judge_all(change, base, args.threshold)
+            final = pair.outcome(rows)
+            summary["series"].append(pair.series_record(sides, series.lock_wait_s,
+                                                        series.hold_s, rows, final))  # fmt: skip
+            # Saved after each series: a failed confirmation keeps the first series' record,
+            # with the gate's state still "running", never a verdict.
+            save()
+            _say(f"series {number}: {len(sides)} runs, lock held {series.hold_s:.0f} s")
+            _say(_pair_table(rows))
+            if final == pair.OK:
+                break
+    except BenchError as err:
+        summary["state"] = "failed"
+        summary["error"] = str(err)
+        save()
+        report()
+        raise
+    summary["state"] = "complete"
+    summary["outcome"] = final
+    save()
+    report()
     _say(f"wrote {args.out / 'pair.json'}")
     confirmed = len(summary["series"]) == 2
     names = [r["name"] for r in summary["series"][-1]["rows"] if r["verdict"] == final]

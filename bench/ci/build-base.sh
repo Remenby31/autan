@@ -10,10 +10,23 @@
 # The worktree is left for the measurement; `bench/ci/build-base.sh --remove DIR` removes it.
 set -uo pipefail
 
-if [[ ${1:-} == --remove ]]; then
-  git worktree remove --force "$2" 2>/dev/null || rm -rf "$2"
+# Removes the base's worktree: git's removal (twice forced: it is ours, even locked), or, for a
+# directory git does not know, a plain removal. Anything left is an infrastructure error (exit 2),
+# never the base's.
+remove() {
+  local dir=$1
+  if git worktree list --porcelain | grep -qxF "worktree $(cd "$dir" 2> /dev/null && pwd -P)"; then
+    git worktree remove -f -f "$dir" || { echo "::error title=autan-bench::cannot remove the worktree $dir"; return 2; }
+  elif [[ -e $dir ]]; then
+    rm -rf "$dir" || { echo "::error title=autan-bench::cannot remove $dir"; return 2; }
+  fi
   git worktree prune
-  exit 0
+  [[ ! -e $dir ]] || { echo "::error title=autan-bench::$dir is still there"; return 2; }
+}
+
+if [[ ${1:-} == --remove ]]; then
+  remove "$2"
+  exit $?
 fi
 dir=$1 rev=${2:-HEAD^1}
 
@@ -27,10 +40,13 @@ base_failed() {
 }
 
 # A worktree left by a cancelled job would make the add fail.
-git worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"
-git worktree prune
+remove "$dir" || exit 2
 git rev-parse --verify --quiet "$rev^{commit}" > /dev/null || base_failed "no such commit"
-git worktree add --detach "$dir" "$rev" || base_failed "checkout"
+# The commit exists: a checkout that fails is the machine's (disk, permissions), not the base's.
+git worktree add --detach "$dir" "$rev" || {
+  echo "::error title=autan-bench::cannot check the base out into $dir"
+  exit 2
+}
 
 # The build writes its own status: a failure before it, of the lock wrapper (no lock in time, a
 # missing lock file, a signal), leaves none and is never blamed on the base.

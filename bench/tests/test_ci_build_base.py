@@ -113,6 +113,35 @@ def test_the_lock_is_waited_for_as_long_as_the_job_allows(repo):
     assert " -w 1500 " in f" {log.read_text()} "
 
 
+def test_a_locked_worktree_left_behind_is_removed_through_git(repo):
+    commit(repo, "fix.txt")
+    dir_ = repo.parent / "base"
+    assert build(repo, str(dir_)).returncode == 0
+    git(repo, "worktree", "lock", str(dir_))
+    out = build(repo, str(dir_))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "BASE BUILD FAILED" not in out.stdout
+
+
+def test_a_worktree_that_cannot_be_removed_is_not_the_base_s_failure(repo):
+    commit(repo, "fix.txt")
+    dir_ = repo.parent / "base"
+    assert build(repo, str(dir_)).returncode == 0
+    stuck = dir_ / "build" / "stuck"
+    stuck.mkdir(parents=True)
+    (stuck / "file").write_text("x")
+    stuck.chmod(0o500)  # its entries cannot be deleted
+    try:
+        out = build(repo, "--remove", str(dir_))
+        assert out.returncode == 2
+        assert "::error title=autan-bench::" in out.stdout
+        out = build(repo, str(dir_))
+        assert out.returncode == 2
+        assert "BASE BUILD FAILED" not in out.stdout
+    finally:
+        stuck.chmod(0o700)
+
+
 def test_a_worktree_left_by_a_cancelled_job_is_replaced(repo):
     commit(repo, "fix.txt")
     dir_ = repo.parent / "base"

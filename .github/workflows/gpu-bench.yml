@@ -178,12 +178,20 @@ jobs:
           --out results/pair/stream --confirm --summary "$GITHUB_STEP_SUMMARY"
       - name: STREAM against the GB10 baseline (pull requests, information)
         # The machine's state, recorded and annotated, never blocking a pull request (#403): the
-        # change's first run against gb10.json. Main keeps it blocking, below.
-        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
-        run: >-
-          uv run --project bench --locked autan-bench compare
-          results/pair/stream/series-1/01-change.json bench/baselines/gb10.json ||
-          echo "::warning title=autan-bench::STREAM below the GB10 baseline on this machine (information: the paired gate judges the change)"
+        # change's first run against gb10.json, whatever the paired verdict, as soon as that run
+        # exists. Main keeps it blocking, below.
+        if: >-
+          always() && needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request' &&
+          hashFiles('results/pair/stream/series-1/01-change.json') != ''
+        run: |
+          status=0
+          uv run --project bench --locked autan-bench compare \
+            results/pair/stream/series-1/01-change.json bench/baselines/gb10.json || status=$?
+          case $status in
+            0) ;;
+            1 | 3) echo "::warning title=autan-bench::STREAM below the GB10 baseline on this machine (information: the paired gate judges the change)" ;;
+            *) echo "::warning title=autan-bench::STREAM could not be compared with the GB10 baseline (exit $status): the machine's state is not recorded" ;;
+          esac
       # Main: the absolute gate against the GB10 baselines, the history and the bisection.
       - name: STREAM bandwidth
         if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
