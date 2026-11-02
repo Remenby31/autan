@@ -21,7 +21,13 @@ set_target_properties(autan_solvers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # warning flags of autan_compile_options.
 if(AUTAN_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
-  add_library(autan_solvers_cuda OBJECT src/multigrid_gpu.cu src/coarse_gpu.cu)
+  add_library(
+    autan_solvers_cuda
+    OBJECT
+    src/multigrid_gpu.cu
+    src/coarse_gpu.cu
+    src/line_smoother_gpu.cu
+  )
   target_link_libraries(autan_solvers_cuda PRIVATE autan::kernels CUDA::cudart)
   target_include_directories(autan_solvers_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   set_target_properties(autan_solvers_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
