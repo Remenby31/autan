@@ -1,8 +1,10 @@
 // Manufactured solutions read from autan.mms/1 documents (autan-vv's export of `euler`).
 #include <array>
 #include <cmath>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <numbers>
 #include <sstream>
 #include <stdexcept>
@@ -10,6 +12,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <pthread.h>
 
 #include "autan/physics/manufactured.hpp"
 
@@ -23,6 +26,34 @@ std::string read(const std::filesystem::path& path) {
 }
 
 const std::filesystem::path euler_mms{AUTAN_EULER_MMS};
+
+// Runs `body` on a thread of `bytes` of stack, rethrowing what it throws.
+void on_stack(std::size_t bytes, const std::function<void()>& body) {
+  struct Call {
+    const std::function<void()>* body;
+    std::exception_ptr error;
+  } call{&body, nullptr};
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, bytes);
+  pthread_t thread;
+  const int rc = pthread_create(
+      &thread, &attr,
+      [](void* arg) -> void* {
+        auto* c = static_cast<Call*>(arg);
+        try {
+          (*c->body)();
+        } catch (...) {
+          c->error = std::current_exception();
+        }
+        return nullptr;
+      },
+      &call);
+  pthread_attr_destroy(&attr);
+  REQUIRE(rc == 0);
+  pthread_join(thread, nullptr);
+  if (call.error) std::rethrow_exception(call.error);
+}
 
 }  // namespace
 
@@ -96,4 +127,38 @@ TEST_CASE("an expression outside the autan.mms/1 grammar is refused", "[manufact
                   std::invalid_argument);
   CHECK_THROWS_AS(autan::physics::Manufactured(with_subexpressions(R"({"a": "1"})", "a")),
                   std::invalid_argument);
+}
+
+TEST_CASE("expressions as deep as the contract allows read and evaluate on a small stack",
+          "[manufactured]") {
+  // case-schema.md, `verification`: the runtime refuses an expression whose tree is deeper than
+  // 1024. The runtime runs on the process's main thread (8 MiB of stack on Linux and macOS); these
+  // read and evaluate on 1 MiB. A left-deep chain of 2^17 terms, beyond the contract, evaluates
+  // too: the evaluation does not recurse.
+  auto repeat = [](const std::string& s, std::size_t n) {
+    std::string out;
+    for (std::size_t i = 0; i < n; ++i) out += s;
+    return out;
+  };
+  auto doc = [](const std::string& expr) {
+    return R"({"schema": "autan.mms/1", "model": {"physics": "compressible", "turbulence": null},
+               "parameters": {}, "fields": {"subexpressions": [], "outputs": {"rho": ")" +
+           expr + R"("}}})";
+  };
+  const std::array<std::string, 1> rho = {"rho"};
+  const std::vector<std::array<double, 3>> at = {{0.5, 0.0, 0.0}};
+  const std::array<std::pair<std::string, double>, 4> cases = {{
+      {"x" + repeat(" + x", 1023), 512.0},                           // depth 1024, left-deep
+      {repeat("(", 1023) + "x" + repeat(")", 1023), 0.5},            // depth 1024, parentheses
+      {repeat("-", 1023) + "x", -0.5},                               // depth 1024, unary minus
+      {"x" + repeat(" + x", (std::size_t{1} << 17U) - 1), 65536.0},  // depth 2^17
+  }};
+  for (const auto& [expr, expected] : cases) {
+    double value = 0.0;
+    on_stack(std::size_t{1} << 20U, [&] {
+      const autan::physics::Manufactured mms(doc(expr));
+      value = mms.evaluate("fields", rho, at)[0][0];
+    });
+    CHECK(value == expected);
+  }
 }

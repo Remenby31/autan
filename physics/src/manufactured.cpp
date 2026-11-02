@@ -153,10 +153,12 @@ class Parser {
   std::vector<Node>& nodes_;
 };
 
-double eval(const std::vector<Node>& nodes, int k, const std::vector<double>& slots) {
-  const Node& n = nodes[static_cast<std::size_t>(k)];
-  auto a = [&] { return eval(nodes, n.a, slots); };
-  auto b = [&] { return eval(nodes, n.b, slots); };
+// One node's value from its operands' values: every node's operands precede it in `nodes`
+// (the parser appends them first), so one pass in order evaluates a group with no recursion,
+// whatever an expression's depth.
+double apply(const Node& n, const std::vector<double>& value, const std::vector<double>& slots) {
+  auto a = [&] { return value[static_cast<std::size_t>(n.a)]; };
+  auto b = [&] { return value[static_cast<std::size_t>(n.b)]; };
   switch (n.op) {
     case Op::constant:
       return n.value;
@@ -259,14 +261,25 @@ std::vector<std::vector<double>> Manufactured::evaluate(
   }
   std::vector<std::vector<double>> out(names.size(), std::vector<double>(points.size()));
   std::vector<double> slots(3 + grp.subexpressions.size());
+  std::vector<double> value(grp.nodes.size());
   for (std::size_t i = 0; i < points.size(); ++i) {
     slots[0] = points[i][0];
     slots[1] = points[i][1];
     slots[2] = points[i][2];
-    for (std::size_t k = 0; k < grp.subexpressions.size(); ++k) {
-      slots[3 + k] = eval(grp.nodes, grp.subexpressions[k], slots);
+    // A subexpression's root is the last node of its expression: its slot is set before any
+    // later expression reads it.
+    std::size_t next = 0;
+    for (std::size_t j = 0; j < grp.nodes.size(); ++j) {
+      value[j] = apply(grp.nodes[j], value, slots);
+      if (next < grp.subexpressions.size() &&
+          static_cast<std::size_t>(grp.subexpressions[next]) == j) {
+        slots[3 + next] = value[j];
+        ++next;
+      }
     }
-    for (std::size_t k = 0; k < roots.size(); ++k) out[k][i] = eval(grp.nodes, roots[k], slots);
+    for (std::size_t k = 0; k < roots.size(); ++k) {
+      out[k][i] = value[static_cast<std::size_t>(roots[k])];
+    }
   }
   return out;
 }
