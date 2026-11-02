@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <functional>
@@ -16,6 +17,10 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/wall_distance.hpp"
 #include "fixtures.hpp"
+
+#ifdef AUTAN_HAVE_CUDA
+#include "wall_distance_device_test.hpp"
+#endif
 
 using autan::index_t;
 using Catch::Matchers::WithinAbs;
@@ -299,3 +304,97 @@ TEST_CASE("Wall inputs the surface cannot use are coded errors", "[wall]") {
   require_code(autan::ErrorCode::geometry_degenerate_face,
                [&] { (void)autan::WallSurface(wide, std::array<index_t, 1>{zone(wide, "ymin")}); });
 }
+
+#ifdef AUTAN_HAVE_CUDA
+TEST_CASE("The device computes the host's wall distances bit for bit", "[wall][gpu]") {
+  // The same query compiled for the device (wall_distance_query.hpp), FMA
+  // contraction off on both sides: every distance has the host's bits, on
+  // surfaces that exercise each path of the query.
+  const auto same = [](const autan::WallSurface& surface, const std::vector<Vec>& points) {
+    const auto device = autan::test::device_distances(surface, points);
+    REQUIRE(device.size() == points.size());
+    std::size_t differ = 0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+      const double host = surface.distance(points[i]);
+      const bool equal =
+          std::bit_cast<std::uint64_t>(host) == std::bit_cast<std::uint64_t>(device[i]);
+      if (!equal) ++differ;
+    }
+    CHECK(differ == 0);
+  };
+  std::mt19937 rng(11);
+  std::uniform_real_distribution<double> u(-0.5, 1.5);
+  const auto random_points = [&](std::size_t n, double s = 1.0) {
+    std::vector<Vec> p(n);
+    for (auto& q : p) q = {s * u(rng), s * u(rng), s * u(rng)};
+    return p;
+  };
+  SECTION("every side of a hybrid box, points inside and out, and points not finite") {
+    const autan::Mesh mesh = autan::assemble(
+        autan::to_face_based(autan::test::box(4, autan::test::BoxFill::hybrid, 0.2)));
+    std::vector<index_t> walls;
+    for (const char* side : {"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"})
+      walls.push_back(zone(mesh, side));
+    auto points = random_points(5000);
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    points.push_back({std::nan(""), 0.0, 0.0});
+    points.push_back({inf, 0.5, 0.5});
+    points.push_back({0.5, -inf, 0.5});
+    same(autan::WallSurface(mesh, walls), points);
+    same(autan::WallSurface(mesh, std::array<index_t, 0>{}), random_points(10));
+  }
+  SECTION("faces with hanging nodes, so fan triangles of zero area") {
+    const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::hanging_node_box()));
+    same(autan::WallSurface(mesh, std::array<index_t, 1>{zone(mesh, "unassigned")}),
+         random_points(2000, 2.0));
+  }
+  SECTION("extreme scales") {
+    for (const double scale : {1e-80, 1e80}) {
+      const autan::Mesh box =
+          mapped(autan::test::box(2, autan::test::BoxFill::tetra, 0.2),
+                 [&](const Vec& q) { return Vec{scale * q[0], scale * q[1], scale * q[2]}; });
+      same(autan::WallSurface(box, std::array<index_t, 1>{zone(box, "ymin")}),
+           random_points(500, scale));
+    }
+  }
+  SECTION("gaps at the ends of the double range") {
+    // A periodic unit cube with wall y = 0: a point 1e-310 above the wall's
+    // copy at x = 1 is at 1e-310, with box gaps that are subnormal. A wall
+    // 1e307 wide seen from just inside DBL_MAX: a finite distance whose
+    // box-distance product would overflow.
+    autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa);
+    cells.face_zones[0].kind = autan::BcKind::periodic;
+    cells.face_zones[1].kind = autan::BcKind::periodic;
+    cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    const autan::Mesh cube = autan::assemble(autan::to_face_based(std::move(cells)));
+    const autan::WallSurface tiny(cube, std::array<index_t, 1>{zone(cube, "ymin")});
+    // Subnormal: about 44 significant bits left.
+    CHECK_THAT(tiny.distance({1.25, 1e-310, 0.375}), Catch::Matchers::WithinRel(1e-310, 1e-9));
+    same(tiny, {{1.25, 1e-310, 0.375}, {0.5, 4e-320, 0.5}});
+    const autan::Mesh big =
+        mapped(autan::test::box(1, autan::test::BoxFill::hexa),
+               [](const Vec& q) { return Vec{1e307 * q[0], q[1], 1e307 * q[2]}; });
+    const autan::WallSurface huge(big, std::array<index_t, 1>{zone(big, "ymin")});
+    const double g = 0x1.6a09e667f3bcbp+1023;
+    CHECK(std::isfinite(huge.distance({-g, g, 3e306})));
+    same(huge, {{-g, g, 3e306}, {-1e308, 1e308, -1e308}});
+  }
+  SECTION("periodic walls, sheared and along oblique directions") {
+    autan::CellwiseMesh sheared = autan::test::box(3, autan::test::BoxFill::hexa);
+    sheared.face_zones[0].kind = autan::BcKind::periodic;
+    sheared.face_zones[1].kind = autan::BcKind::periodic;
+    sheared.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    const autan::Mesh a =
+        mapped(std::move(sheared), [](const Vec& q) { return Vec{q[0] + 10 * q[1], q[1], q[2]}; });
+    same(autan::WallSurface(a, std::array<index_t, 1>{zone(a, "ymin")}), random_points(500, 4.0));
+    autan::CellwiseMesh oblique = autan::test::box(1, autan::test::BoxFill::hexa);
+    for (const int z : {0, 1, 2, 3}) oblique.face_zones[at(z)].kind = autan::BcKind::periodic;
+    oblique.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    oblique.periodic.push_back({.zone_a = 2, .zone_b = 3, .translation = {1.0, 0.01, 0.0}});
+    const autan::Mesh b = mapped(std::move(oblique), [](const Vec& q) {
+      return Vec{q[0] + q[1], 0.01 * q[1] + q[2], q[2]};
+    });
+    same(autan::WallSurface(b, std::array<index_t, 1>{zone(b, "zmin")}), random_points(200));
+  }
+}
+#endif

@@ -25,48 +25,6 @@ Vec cross(const Vec& a, const Vec& b) {
 }
 double norm(const Vec& a) { return std::hypot(a[0], a[1], a[2]); }
 
-// For O(1) coordinates: plain products cannot overflow there.
-double segment_distance(const Vec& p, const Vec& u, const Vec& v) {
-  const Vec d = v - u;
-  const double dd = dot(d, d);
-  const double t = dd > 0.0 ? std::clamp(dot(p - u, d) / dd, 0.0, 1.0) : 0.0;
-  const Vec e = p - (u + t * d);
-  return std::sqrt(dot(e, e));
-}
-
-double max_abs(const Vec& a) { return std::max({std::abs(a[0]), std::abs(a[1]), std::abs(a[2])}); }
-
-// Distance from p to triangle abc. In coordinates relative to a and scaled
-// by the largest component of the edges and of p - a, so that every term is
-// O(1) and no intermediate overflows or underflows whatever the sizes: the
-// plane distance when p projects inside (sign of each edge's cross product
-// along the normal), else the nearest of the three edges. A triangle of zero
-// area reduces to its edges.
-double triangle_distance(const Vec& p, const Vec& a, const Vec& b, const Vec& c) {
-  const double scale = std::max({max_abs(b - a), max_abs(c - a), max_abs(c - b), max_abs(p - a)});
-  if (!(scale > 0.0)) return 0.0;
-  const double s = 1.0 / scale;
-  const Vec B = s * (b - a), C = s * (c - a), P = s * (p - a);
-  const Vec A{};
-  const Vec n = cross(B, C);
-  const double length = std::sqrt(dot(n, n));
-  // A projection inside the triangle is the nearest point.
-  if (length > 0.0 && dot(cross(B, P), n) >= 0.0 && dot(cross(C - B, P - B), n) >= 0.0 &&
-      dot(cross(A - C, P - C), n) >= 0.0) {
-    return std::abs(dot(P, n)) / length * scale;
-  }
-  return std::min(
-             {segment_distance(P, A, B), segment_distance(P, B, C), segment_distance(P, C, A)}) *
-         scale;
-}
-
-double box_distance(const Vec& p, const Vec& lo, const Vec& hi) {
-  Vec gap{};
-  for (std::size_t k = 0; k < 3; ++k)
-    gap[k] = p[k] < lo[k] ? lo[k] - p[k] : (p[k] > hi[k] ? p[k] - hi[k] : 0.0);
-  return norm(gap);
-}
-
 constexpr std::int64_t leaf_size = 4;
 constexpr double max_reach = 1e5;
 constexpr double max_combinations = 1e6;
@@ -288,54 +246,19 @@ void WallSurface::build(std::vector<std::int64_t>& order) {
   }
 }
 
-double WallSurface::nearest(const std::array<double, 3>& p, double best) const {
-  // A median split halves every level: 128 entries cover any tree.
-  std::array<std::int64_t, 128> stack{};
-  std::size_t top = 0;
-  stack[top++] = 0;
-  while (top > 0) {
-    const Node& node = nodes_[at(stack[--top])];
-    if (box_distance(p, node.lo, node.hi) >= best) continue;
-    if (node.count > 0) {
-      for (std::int64_t t = node.first; t < node.first + node.count; ++t)
-        best = std::min(best, triangle_distance(p, a_[at(t)], b_[at(t)], c_[at(t)]));
-      continue;
-    }
-    const Node& l = nodes_[at(node.first)];
-    const Node& r = nodes_[at(node.first + 1)];
-    const bool left_first = box_distance(p, l.lo, l.hi) <= box_distance(p, r.lo, r.hi);
-    stack[top++] = left_first ? node.first + 1 : node.first;
-    stack[top++] = left_first ? node.first : node.first + 1;
-  }
-  return best;
+wall::View WallSurface::view() const noexcept {
+  return {.nodes = nodes_.data(),
+          .n_nodes = static_cast<std::int64_t>(nodes_.size()),
+          .a = a_.data(),
+          .b = b_.data(),
+          .c = c_.data(),
+          .directions = directions_.data(),
+          .reach = reach_.data(),
+          .n_directions = static_cast<int>(directions_.size())};
 }
 
 double WallSurface::distance(const std::array<double, 3>& point) const {
-  if (!std::isfinite(point[0]) || !std::isfinite(point[1]) || !std::isfinite(point[2]))
-    return std::numeric_limits<double>::quiet_NaN();
-  if (nodes_.empty()) return std::numeric_limits<double>::infinity();
-  // The unshifted copy first, for a tight bound; then the others, skipped
-  // when the shifted point is farther from the whole surface's box.
-  double best = nearest(point, std::numeric_limits<double>::infinity());
-  const std::size_t n = directions_.size();
-  std::array<std::int64_t, 3> k{};
-  for (std::size_t i = 0; i < n; ++i) k[i] = -reach_[i];
-  while (n > 0) {
-    bool zero = true;
-    Vec q = point;
-    for (std::size_t i = 0; i < n; ++i) {
-      zero = zero && k[i] == 0;
-      q = q - static_cast<double>(k[i]) * directions_[i];
-    }
-    if (!zero && box_distance(q, nodes_[0].lo, nodes_[0].hi) < best) best = nearest(q, best);
-    std::size_t i = 0;
-    while (i < n && ++k[i] > reach_[i]) {
-      k[i] = -reach_[i];
-      ++i;
-    }
-    if (i == n) break;
-  }
-  return best;
+  return wall::distance(view(), point);
 }
 
 std::vector<double> wall_distance(const Mesh& mesh, const Geometry& geometry,
