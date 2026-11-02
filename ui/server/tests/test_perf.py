@@ -1,6 +1,8 @@
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from autan_ui import create_app
 from fastapi.testclient import TestClient
@@ -11,7 +13,8 @@ LOCAL = "http://127.0.0.1"
 
 
 def produced_history(tmp_path: Path) -> Path:
-    """history.json as gpu-bench's history job writes it, from two recorded bench artifacts."""
+    """history.json as gpu-bench's history job writes it (scripts/sample-perf.sh): three commits of
+    main, the middle one measured STREAM only, the newest blamed by a bisection."""
     out = tmp_path / "perf-history"
     subprocess.run([Path(__file__).parents[2] / "scripts" / "sample-perf.sh", out], check=True)
     return out
@@ -40,9 +43,34 @@ def test_the_perf_history_is_main_s_record_per_commit_as_a_percent_of_the_stream
         if b["unit"] == "GB/s":
             assert b["percent_of_peak"] == 100 * b["median"] / peak
     assert "codegen.advection_atomic" in doc["tracked"]
+    assert "codegen.advection_atomic" not in doc["records"][1]["benchmarks"]
+    assert doc["records"][-1]["regression"] == {
+        "status": "culprit",
+        "good": doc["records"][1]["commit"],
+        "bad": doc["records"][-1]["commit"],
+    }
 
     history = perf / "history.json"
-    history.write_text(json.dumps(json.loads(history.read_text()) | {"records": {}}))
-    assert client.get("/api/perf").status_code == 422
+    produced = json.loads(history.read_text())
+
+    def refused(change: Callable[[dict[str, Any]], None]) -> bool:
+        doc = json.loads(json.dumps(produced))
+        change(doc)
+        history.write_text(json.dumps(doc))
+        return bool(client.get("/api/perf").status_code == 422)
+
+    def copy(doc: dict[str, Any]) -> dict[str, Any]:
+        return cast("dict[str, Any]", doc["records"][0]["benchmarks"]["stream.copy"])
+
+    def timing(doc: dict[str, Any]) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]", doc["records"][0]["benchmarks"]["codegen.roe_atomic.time_per_cell"]
+        )
+
+    assert refused(lambda doc: doc.update(records={}))
+    assert refused(lambda doc: copy(doc).pop("percent_of_peak"))
+    assert refused(lambda doc: timing(doc).update(percent_of_peak=1.0))
+    assert refused(lambda doc: doc["records"][0].update(regression={}))
+    assert refused(lambda doc: doc["records"][0].update(regression=None))
     unset = TestClient(create_app(tmp_path / "runs", static=None), base_url=LOCAL)
     assert unset.get("/api/perf").status_code == 404

@@ -27,10 +27,10 @@ export const perfQuery = queryOptions({
   retry: false,
 });
 
-const TIME_PER_CELL = ".time_per_cell";
+export const TIME_PER_CELL = ".time_per_cell";
 
 /** One bandwidth benchmark over main: its % of peak per record (null where that commit did not
- * measure it), its last measurement, and the time per cell measured with it, if any. */
+ * measure it), and the record of its last measurement. */
 export interface PerfSeries {
   name: string;
   suite: string;
@@ -38,7 +38,6 @@ export interface PerfSeries {
   percent: (number | null)[];
   last: number;
   tracked: boolean;
-  nsPerCell: number | null;
 }
 
 export function perfSeries(history: PerfHistory): PerfSeries[] {
@@ -50,7 +49,6 @@ export function perfSeries(history: PerfHistory): PerfSeries[] {
     const percent = history.records.map((r) => r.benchmarks[name]?.percent_of_peak ?? null);
     let last = percent.length - 1;
     while (percent[last] === null) last--;
-    const timing = history.records[last]?.benchmarks[name + TIME_PER_CELL];
     const dot = name.indexOf(".");
     return {
       name,
@@ -59,7 +57,6 @@ export function perfSeries(history: PerfHistory): PerfSeries[] {
       percent,
       last,
       tracked: history.tracked.includes(name),
-      nsPerCell: timing?.unit === "ns" ? timing.median : null,
     };
   });
 }

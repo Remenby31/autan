@@ -20,6 +20,9 @@ const commit: string = results[0].provenance.solver.commit;
 const oldest: string = JSON.parse(
   readFileSync(join(RECORDED, readdirSync(RECORDED).sort()[0] as string, "stream.json"), "utf8"),
 ).provenance.solver.commit;
+// scripts/sample-perf.sh puts between them a commit that measured STREAM only, and has a bisection
+// blame the newest.
+const BETWEEN = "b".repeat(40);
 // bench.md: the GB10 peak is the highest STREAM median of bench/baselines/gb10.json.
 const peak = Math.max(
   ...JSON.parse(readFileSync("../bench/baselines/gb10.json", "utf8")).benchmarks.map(
@@ -51,6 +54,7 @@ test("each bandwidth benchmark of main reads as a % of the GB10 peak, with its l
     new RegExp(`/commit/${commit}$`),
   );
   await expect(page.getByTestId("perf-gate")).toHaveText(tracked.has(name) ? /baseline/ : "—");
+  await expect(page.getByTestId("perf-culprit")).toBeVisible();
   await expect(page.getByTestId("perf-chart").locator("[data-samples]")).toHaveAttribute(
     "data-samples",
     "2",
@@ -62,6 +66,11 @@ test("each bandwidth benchmark of main reads as a % of the GB10 peak, with its l
   if (!box) throw new Error("no plot area");
   await page.mouse.move(box.x + 2, box.y + box.height / 2);
   await expect(page.getByTestId("perf-commit").getByRole("link")).toHaveText(oldest.slice(0, 8));
+  await expect(page.getByTestId("perf-culprit")).toHaveCount(0);
+  // A commit that did not measure this benchmark says so, under its own name.
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.getByTestId("perf-commit").getByRole("link")).toHaveText(BETWEEN.slice(0, 8));
+  await expect(page.getByTestId("perf-percent")).toHaveText("not measured");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height + 80);
   await expect(page.getByTestId("perf-commit").getByRole("link")).toHaveText(commit.slice(0, 8));
 
@@ -76,4 +85,16 @@ test("each bandwidth benchmark of main reads as a % of the GB10 peak, with its l
   await expect(page.getByTestId("perf-gate")).toHaveText(/baseline/);
 
   await expect(page.getByTestId("perf-missing")).toContainText("ESTIMATE");
+});
+
+test("the benchmark shortcuts leave the selection alone behind the navigation drawer", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/perf?b=stream.copy");
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("j");
+  await expect(page).toHaveURL(/b=stream\.copy$/);
 });

@@ -23,6 +23,17 @@ def _text(value: object, where: str) -> str:
     return value
 
 
+def _culprit(value: object, where: str) -> dict[str, str]:
+    """A commit a bisection blamed, with the range it searched."""
+    if not isinstance(value, dict) or value.get("status") != "culprit":
+        raise PerfHistoryError(where, "is not a culprit")
+    return {
+        "status": "culprit",
+        "good": _text(value.get("good"), f"{where}.good"),
+        "bad": _text(value.get("bad"), f"{where}.bad"),
+    }
+
+
 def read_perf_history(folder: Path) -> dict[str, Any]:
     """main's performance history as bench/history/history.py writes it in the `perf-history`
     artifact of gpu-bench: the GB10 peak, the benchmarks gated against a baseline, and one record
@@ -53,18 +64,26 @@ def read_perf_history(folder: Path) -> dict[str, Any]:
                 "cv": _number(b.get("cv"), f"{at}.cv"),
                 "unit": _text(b.get("unit"), f"{at}.unit"),
             }
+            # history.py gives a % of peak to every bandwidth and to nothing else.
+            if (entry["unit"] == "GB/s") != ("percent_of_peak" in b):
+                raise PerfHistoryError(at, "has a percent_of_peak if and only if it is in GB/s")
             if "percent_of_peak" in b:
                 entry["percent_of_peak"] = _number(b["percent_of_peak"], f"{at}.percent_of_peak")
             benchmarks[name] = entry
-        regression = rec.get("regression")
+        regression = (
+            _culprit(rec["regression"], f"{where}.regression") if "regression" in rec else None
+        )
+        host = rec.get("host")
+        if host is not None:
+            host = _text(host, f"{where}.host")
         out.append(
             {
                 "commit": _text(rec.get("commit"), f"{where}.commit"),
                 "measured": _text(rec.get("measured"), f"{where}.measured"),
-                "host": rec.get("host") if isinstance(rec.get("host"), str) else None,
+                "host": host,
                 "gpu": _text(rec.get("gpu"), f"{where}.gpu"),
                 "benchmarks": benchmarks,
-                **({"regression": regression} if isinstance(regression, dict) else {}),
+                **({"regression": regression} if regression is not None else {}),
             }
         )
     return {

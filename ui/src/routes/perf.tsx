@@ -2,7 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Gauge } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { type PerfHistory, type PerfSeries, perfQuery, perfSeries, trendDomain } from "../api/perf";
+import {
+  type PerfHistory,
+  type PerfSeries,
+  perfQuery,
+  perfSeries,
+  TIME_PER_CELL,
+  trendDomain,
+} from "../api/perf";
 import { HttpError } from "../api/runs";
 import { PerfChart } from "../components/PerfChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -84,11 +91,12 @@ function PerfView({ history }: { history: PerfHistory }) {
   const dates = useMemo(() => history.records.map((r) => r.measured), [history]);
   const last = history.records.at(-1);
 
-  // j/k and the arrows walk the benchmarks, wherever focus is outside a field.
+  // j/k and the arrows walk the benchmarks, unless a field, a dialog or another handler has them.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target.closest("input, textarea, [contenteditable=true]")) return;
+      if (e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+      if (target.closest('input, textarea, [contenteditable=true], [role="dialog"]')) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const step =
         e.key === "j" || e.key === "ArrowDown" ? 1 : e.key === "k" || e.key === "ArrowUp" ? -1 : 0;
@@ -115,9 +123,11 @@ function PerfView({ history }: { history: PerfHistory }) {
       </div>
     );
 
-  const at = hovered !== null && selected.percent[hovered] != null ? hovered : selected.last;
+  // The commit under the cursor, measured or not; the last measurement otherwise.
+  const at = hovered ?? selected.last;
   const record = history.records[at] as PerfHistory["records"][number];
   const measure = record.benchmarks[selected.name];
+  const timing = record.benchmarks[selected.name + TIME_PER_CELL];
   const suites = [...new Set(series.map((s) => s.suite))];
 
   return (
@@ -155,15 +165,17 @@ function PerfView({ history }: { history: PerfHistory }) {
             <h1 className="m-0 font-mono font-medium text-md">{selected.kernel}</h1>
             <div className="flex items-baseline gap-3">
               <span className="font-semibold text-2xl tabular-nums" data-testid="perf-percent">
-                {measure?.percent_of_peak?.toFixed(1)} %
+                {measure?.percent_of_peak !== undefined
+                  ? `${measure.percent_of_peak.toFixed(1)} %`
+                  : "not measured"}
               </span>
-              <span className="text-fg-3 tabular-nums">
-                {measure?.median.toFixed(1)} GB/s ± {((measure?.cv ?? 0) * 100).toFixed(1)} %
-              </span>
-              {at === selected.last && selected.nsPerCell !== null && (
+              {measure && (
                 <span className="text-fg-3 tabular-nums">
-                  {selected.nsPerCell.toFixed(3)} ns/cell
+                  {measure.median.toFixed(1)} GB/s ± {(measure.cv * 100).toFixed(1)} %
                 </span>
+              )}
+              {timing?.unit === "ns" && (
+                <span className="text-fg-3 tabular-nums">{timing.median.toFixed(3)} ns/cell</span>
               )}
             </div>
           </div>
@@ -257,7 +269,7 @@ function Row({
         )}
       </span>
       <Sparkline
-        values={values}
+        values={series.percent}
         width={80}
         height={20}
         label={`${series.kernel} % of peak`}

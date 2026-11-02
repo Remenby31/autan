@@ -37,7 +37,6 @@ test("a bandwidth benchmark is one series over main's commits, gaps where a comm
       percent: [null, 85, null],
       last: 1,
       tracked: true,
-      nsPerCell: 0.9,
     },
     {
       name: "stream.copy",
@@ -46,7 +45,6 @@ test("a bandwidth benchmark is one series over main's commits, gaps where a comm
       percent: [98, 97, 99],
       last: 2,
       tracked: false,
-      nsPerCell: null,
     },
   ]);
 });

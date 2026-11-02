@@ -96,7 +96,7 @@ Home groups runs by study ([results.md](../contracts/results.md#studies): the sa
 
 ### Performance
 
-`/perf` reads only `/api/perf`: one row per bandwidth benchmark with its % of the GB10 peak over main's commits, and for the selected one a chart, its last measurement (commit, date, host, spread, time per cell) and its gate. The only gate the history carries is the CI regression gate of the tracked benchmarks (−5 % against the baseline); % of peak thresholds are drawn once the history carries them, never typed into the UI. What the history lacks is listed under the chart, an estimate always labelled ESTIMATE and kept apart from measurements.
+`/perf` reads only `/api/perf`: one row per bandwidth benchmark with its % of the GB10 peak over main's commits, and for the selected one a chart, its last measurement (commit, date, host, spread, time per cell) and its gate; hovering a commit reads that commit, "not measured" where it did not run the benchmark. A commit missing from a series keeps its place in the sparkline. The reader refuses a history whose bandwidths lack a % of peak, whose other units carry one, or whose regression marks are not a bisection's culprit. The only gate the history carries is the CI regression gate of the tracked benchmarks (−5 % against the baseline); % of peak thresholds are drawn once the history carries them, never typed into the UI. What the history lacks is listed under the chart, an estimate always labelled ESTIMATE and kept apart from measurements.
 
 ### Case editor
 
