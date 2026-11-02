@@ -18,3 +18,17 @@ test("the slider's ends cut inside a mesh its FP32 positions round outward", () 
   }
   expect(slicePlane(surface, "x", 0.5).origin[0]).toBeCloseTo(0.15, 12);
 });
+
+test("the ends stay inside when the walls sit far from the origin of their offsets", () => {
+  // The server writes offsets from the centre of the whole volume: walls from x = 0.1 to 0.2 in
+  // a volume centred at x = 1000 are offsets near -999.9, rounded by about 6e-5 in FP32.
+  const centre = [1000, 0.5, 0.5];
+  const corners = [0.1, 0.2].flatMap((x) => [x - 1000, -0.5, -0.5, x - 1000, 0.5, 0.5]);
+  const surface = { positions: new Float32Array(corners), origin: centre } as unknown as Surface;
+
+  for (const at of [0, 1]) {
+    const x = slicePlane(surface, "x", at).origin[0] as number;
+    expect(x).toBeGreaterThan(0.1);
+    expect(x).toBeLessThan(0.2);
+  }
+});

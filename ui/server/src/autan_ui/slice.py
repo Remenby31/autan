@@ -22,8 +22,9 @@ def slice_surface(folder: Folder, origin: F64, normal: F64) -> bytes:
     """The cut of every cell of the run's solution by the plane through `origin` normal to
     `normal`, as an `autan-ui.surface/1` message with one zone, `slice`: the section of each cell
     the plane crosses, carrying that cell's `FlowSolution` values (cell-centred, so constant on
-    the section). A cell that only touches the plane at a node or along an edge has no section;
-    a plane along mesh faces gives those faces once. ValueError when the plane meets no cell or
+    the section). A plane through mesh nodes is moved off them by at most 1e-7 of the mesh size,
+    to the side where its section is the larger: a plane along mesh faces gives those faces
+    once, with the values of the cells on that side. ValueError when the plane meets no cell or
     the normal is zero."""
     length = float(np.linalg.norm(normal))
     if not np.isfinite(length) or length == 0 or not np.isfinite(origin).all():
@@ -37,7 +38,7 @@ def slice_surface(folder: Folder, origin: F64, normal: F64) -> bytes:
         ).astype(np.float64)
         faces = Connectivity(zone["NGonElements"])
         cells = Connectivity(zone["NFaceElements"])
-        cut = _cut(coords, faces, cells, origin, unit)
+        cut = _section(coords, faces, cells, origin, unit)
         if cut is None:
             msg = "the plane meets no cell of the mesh"
             raise ValueError(msg)
@@ -78,48 +79,86 @@ class Connectivity:
         return offsets - offsets[0], np.abs(values.astype(np.int64, copy=False)) - 1
 
 
-def _cut(
+Cut = tuple[I64, list[F64], npt.NDArray[np.uint32]]
+
+
+def _section(
     coords: F64, faces: Connectivity, cells: Connectivity, origin: F64, unit: F64
-) -> tuple[I64, list[F64], npt.NDArray[np.uint32]] | None:
+) -> Cut | None:
+    if len(coords) >= 1 << 31:
+        msg = "a slice needs fewer than 2^31 nodes"
+        raise ValueError(msg)
     size = float(np.ptp(coords, axis=0).max()) or 1.0
     distance = (coords - origin) @ unit
     on_plane = np.abs(distance) < 1e-12 * size
-    # On-plane nodes count as above: a cell crossed through them still has its section, a cell
-    # only touching the plane from above has none, and one touching it from below has the
-    # on-plane part of its boundary, which faces lying in the plane give instead (below).
-    distance[on_plane] = 1e-12 * size
+    if not on_plane.any():
+        return _cut(coords, faces, cells, distance, unit)
+    # Nodes on the plane: it is moved off them, to each side by less than half the distance to
+    # the nearest other node, so that every crossing is inside an edge. Moved to one side, it also
+    # cuts slivers off the cells that only touch the plane from that side: a cell keeps its
+    # section there only if it has nodes beyond the plane, or a face lying in it (the section is
+    # then that face).
+    others = np.abs(distance[~on_plane])
+    shift = min(1e-7 * size, float(others.min()) / 2 if len(others) else size)
+    above, below, lying = _sides(faces, cells, distance > 0, distance < 0, on_plane)
+    cuts = [
+        _cut(coords, faces, cells, distance - shift, unit, (below | lying, on_plane)),
+        _cut(coords, faces, cells, distance + shift, unit, (above | lying, on_plane)),
+    ]
+    found = [c for c in cuts if c is not None]
+    return max(found, key=_area) if found else None
+
+
+def _sides(
+    faces: Connectivity,
+    cells: Connectivity,
+    above: npt.NDArray[np.bool_],
+    below: npt.NDArray[np.bool_],
+    on_plane: npt.NDArray[np.bool_],
+) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
+    # Per cell: a node strictly above the plane, one strictly below, a face lying in it.
+    face_flags = np.zeros(len(faces), dtype=np.uint8)
+    for first, last in faces.chunks():
+        offsets, node = faces.read(first, last)
+        count = np.diff(offsets)
+        starts = offsets[:-1]
+        flags = np.where(np.add.reduceat(above[node], starts, dtype=np.int32) > 0, 1, 0)
+        flags |= np.where(np.add.reduceat(below[node], starts, dtype=np.int32) > 0, 2, 0)
+        flags |= np.where(np.add.reduceat(on_plane[node], starts, dtype=np.int32) == count, 4, 0)
+        face_flags[first:last] = flags
+    cell_flags = np.zeros(len(cells), dtype=np.uint8)
+    for first, last in cells.chunks():
+        offsets, cell_face = cells.read(first, last)
+        cell_flags[first:last] = np.bitwise_or.reduceat(face_flags[cell_face], offsets[:-1])
+    return (cell_flags & 1) > 0, (cell_flags & 2) > 0, (cell_flags & 4) > 0
+
+
+def _area(cut: Cut) -> float:
+    points = np.concatenate(cut[1])
+    a, b, c = (points[cut[2][:, k].astype(np.int64)] for k in range(3))
+    return float(np.linalg.norm(np.cross(b - a, c - a), axis=1).sum() / 2)
+
+
+def _cut(
+    coords: F64,
+    faces: Connectivity,
+    cells: Connectivity,
+    distance: F64,
+    unit: F64,
+    moved: tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]] | None = None,
+) -> Cut | None:
+    # `moved`: the plane was moved off nodes (`moved[1]`); only the cells `moved[0]` keep their
+    # section, and a crossing on an edge from such a node is that node.
     above = distance > 0
     n_nodes = len(coords)
-    any_on_plane = bool(on_plane.any())
-    if n_nodes >= 1 << 30:
-        msg = "a slice needs fewer than 2^30 nodes"
-        raise ValueError(msg)
 
-    # Every face edge the plane crosses, face by face, in the face's node order. A crossing
-    # point is named by its edge, or by its node when that node is on the plane, so that edges
-    # meeting there give one point.
+    # Every face edge the plane crosses, face by face, in the face's node order; a crossing point
+    # is named by its edge.
     crossed: list[tuple[I64, I64, I64]] = []
-    flat: list[tuple[I64, I64, I64]] = []
     for first, last in faces.chunks():
         offsets, node = faces.read(first, last)
         node_above = above[node]
         count = np.diff(offsets)
-        # Faces lying in the plane: every edge of theirs, named by its nodes.
-        lying = (
-            np.flatnonzero(np.add.reduceat(on_plane[node], offsets[:-1], dtype=np.int32) == count)
-            if any_on_plane
-            else np.zeros(0, np.int64)
-        )
-        n = count[lying]
-        within = np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)
-        begin = np.repeat(offsets[lying], n)
-        flat.append(
-            (
-                np.repeat(first + lying, n),
-                node[begin + within],
-                node[begin + (within + 1) % np.repeat(n, n)],
-            )
-        )
         # The faces with nodes on both sides, then their edges.
         ups = np.add.reduceat(node_above, offsets[:-1], dtype=np.int32)
         cut = np.flatnonzero((ups > 0) & (ups < count))
@@ -134,32 +173,26 @@ def _cut(
     face = np.concatenate([c[0] for c in crossed])
     a = np.concatenate([c[1] for c in crossed])
     b = np.concatenate([c[2] for c in crossed])
-    flat_face = np.concatenate([f[0] for f in flat])
-    flat_a = np.concatenate([f[1] for f in flat])
-    flat_b = np.concatenate([f[2] for f in flat])
-    if not len(face) and not len(flat_face):
+    if not len(face):
         return None
     t = distance[a] / (distance[a] - distance[b])
     point = coords[a] + t[:, None] * (coords[b] - coords[a])
-    at_node = np.where(on_plane[a], a, np.where(on_plane[b], b, -1))
-    key: I64 = np.where(
-        at_node >= 0, n_nodes * n_nodes + at_node, np.minimum(a, b) * n_nodes + np.maximum(a, b)
-    )
+    key = np.minimum(a, b) * n_nodes + np.maximum(a, b)
+    if moved is not None:
+        at = np.where(moved[1][a], a, np.where(moved[1][b], b, -1))
+        snapped = at >= 0
+        point[snapped] = coords[at[snapped]]
+        key[snapped] = n_nodes * n_nodes + at[snapped]
+    seg_face, seg_p, seg_q = _segments(face, point)
 
-    seg_face, seg_p, seg_q = _segments(face, key, point)
-
-    # The cells holding each crossed or lying face, read cell by cell from NFACE.
+    # The cells holding each crossed face, read cell by cell from NFACE.
     is_crossed = np.zeros(len(faces), dtype=bool)
     is_crossed[seg_face] = True
-    is_lying = np.zeros(len(faces), dtype=bool)
-    is_lying[flat_face] = True
     pairs: list[tuple[I64, I64]] = []
-    lying_pairs: list[tuple[I64, I64]] = []
     for first, last in cells.chunks():
         offsets, cell_face = cells.read(first, last)
-        for mask, out in ((is_crossed, pairs), (is_lying, lying_pairs)):
-            hit = np.flatnonzero(mask[cell_face])
-            out.append((first + np.searchsorted(offsets, hit, side="right") - 1, cell_face[hit]))
+        hit = np.flatnonzero(is_crossed[cell_face])
+        pairs.append((first + np.searchsorted(offsets, hit, side="right") - 1, cell_face[hit]))
     pair_cell = np.concatenate([p[0] for p in pairs])
     pair_face = np.concatenate([p[1] for p in pairs])
     # Each cell's segments: its crossed faces' segments.
@@ -171,33 +204,17 @@ def _cut(
     pick = order[
         np.repeat(lo, taken) + np.arange(taken.sum()) - np.repeat(np.cumsum(taken) - taken, taken)
     ]
-    kp, kq, pp, pq = key[seg_p[pick]], key[seg_q[pick]], point[seg_p[pick]], point[seg_q[pick]]
-    # A cell with a face in the plane whose section has only on-plane nodes touches the plane by
-    # that face: the face is the section, given once whichever cells hold it.
-    lying_cell = np.concatenate([p[0] for p in lying_pairs])
-    lying_face = np.concatenate([p[1] for p in lying_pairs])
-    node_key = n_nodes * n_nodes
-    inside = np.zeros(len(cells), dtype=bool)
-    np.logical_or.at(inside, cell, (kp < node_key) | (kq < node_key))
-    touching = np.zeros(len(cells), dtype=bool)
-    touching[lying_cell] = True
-    keep = inside[cell] | ~touching[cell]
-    cell, kp, kq, pp, pq = cell[keep], kp[keep], kq[keep], pp[keep], pq[keep]
-    # Each lying face as a section of the first cell holding it, from its edges.
-    faces_seen, first_pair = np.unique(lying_face, return_index=True)
-    owner = np.zeros(len(faces), dtype=np.int64)
-    owner[faces_seen] = lying_cell[first_pair]
-    cell = np.concatenate([cell, owner[flat_face]])
-    kp = np.concatenate([kp, node_key + flat_a])
-    kq = np.concatenate([kq, node_key + flat_b])
-    pp = np.concatenate([pp, coords[flat_a]])
-    pq = np.concatenate([pq, coords[flat_b]])
-    if not len(cell):
-        return None
-    return _polygons(cell, kp, kq, pp, pq, unit)
+    p, q = seg_p[pick], seg_q[pick]
+    if moved is not None:
+        # Kept cells, and segments between two distinct points.
+        mine = moved[0][cell] & (key[p] != key[q])
+        cell, p, q = cell[mine], p[mine], q[mine]
+        if not len(cell):
+            return None
+    return _polygons(cell, key[p], key[q], point[p], point[q], unit)
 
 
-def _segments(face: I64, key: I64, point: F64) -> tuple[I64, I64, I64]:
+def _segments(face: I64, point: F64) -> tuple[I64, I64, I64]:
     # The pieces of each face inside the plane: its crossing points, two by two. A face crossed
     # twice (every convex face) gives one segment; a concave face crossed 2k times gives k, its
     # points paired in order along the line the plane cuts it.
@@ -218,10 +235,7 @@ def _segments(face: I64, key: I64, point: F64) -> tuple[I64, I64, I64]:
         seg_face.append(np.full(n // 2, face[s]))
         seg_p.append(index[0 : 2 * (n // 2) : 2])
         seg_q.append(index[1 : 2 * (n // 2) : 2])
-    f, p, q = np.concatenate(seg_face), np.concatenate(seg_p), np.concatenate(seg_q)
-    # A segment between two names of the same point (two edges meeting at an on-plane node).
-    keep = key[p] != key[q]
-    return f[keep], p[keep], q[keep]
+    return np.concatenate(seg_face), np.concatenate(seg_p), np.concatenate(seg_q)
 
 
 def _polygons(

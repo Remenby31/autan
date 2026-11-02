@@ -311,3 +311,32 @@ def test_faces_in_the_plane_count_once_whichever_side_the_mesh_is(run: Path, nor
     tolerance = 64 * float(np.finfo(np.float32).eps)
     np.testing.assert_allclose(positions[:, 2], 0.0, atol=tolerance)
     assert _areas(positions, triangles).sum() == pytest.approx(2.0, rel=tolerance)
+
+
+@pytest.mark.parametrize("normal", ["0,0,1", "0,0,-1"])
+def test_a_face_in_the_plane_split_in_triangles_is_the_whole_face(run: Path, normal: str) -> None:
+    # A unit cube whose top is two triangles: the plane of its top gives the unit square.
+    coords = np.array([(x, y, z) for z in (0.0, 1.0) for x, y in ((0, 0), (1, 0), (1, 1), (0, 1))])
+    faces = [[3, 2, 1, 0], [4, 5, 6], [4, 6, 7]]
+    faces += [[k, (k + 1) % 4, 4 + (k + 1) % 4, 4 + k] for k in range(4)]
+    _mesh(run, coords, faces, [list(range(len(faces)))])
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0,0,1&normal={normal}")
+
+    assert response.status_code == 200
+    positions, triangles, _ = _decode(response.content)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    assert _areas(positions, triangles).sum() == pytest.approx(1.0, rel=tolerance)
+
+
+@pytest.mark.parametrize("normal", ["1,0,0", "-1,0,0"])
+def test_a_plane_through_a_cell_and_along_its_face_gives_both(run: Path, normal: str) -> None:
+    # The L-shaped prism with a node at (1, 0): x = 1 crosses its foot (y from 0 to 1) and lies
+    # along its notch (y from 1 to 2), the section of the cell on its x < 1 side: area 2.
+    _single_cell(run, [(0, 0), (1, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)])
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=1,0,0.5&normal={normal}")
+
+    assert response.status_code == 200
+    positions, triangles, _ = _decode(response.content)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    np.testing.assert_allclose(positions[:, 0], 1.0, atol=tolerance)
+    assert _areas(positions, triangles).sum() == pytest.approx(2.0, rel=tolerance)
