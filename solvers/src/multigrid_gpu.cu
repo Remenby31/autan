@@ -15,6 +15,8 @@ namespace kg = autan::kernels::gpu;
 
 constexpr int components = 5;
 constexpr int block = 256;
+// Children of an isotropic agglomerate (at most 8 for 2 x 2 x 2 hexahedra) restricted in one burst.
+constexpr int unrolled = 8;
 
 // One thread per node, its 5 components in turn, so each index list is read once. Plain sums in
 // list order: __dadd_rn keeps the compiler from reassociating or contracting them.
@@ -22,8 +24,29 @@ __global__ void restrict_kernel(std::int64_t n_fine, std::int64_t n_coarse, cons
                                 const index_t* children, const double* r, double* b_coarse) {
   const std::int64_t node = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (node >= n_coarse) return;
+  const offset_t first = offsets[node];
+  const auto m = static_cast<int>(offsets[node + 1] - first);
+  if (m <= unrolled) {
+    // Every load issued before the first addition, so a thread keeps its children in flight.
+    std::int64_t child[unrolled];
+#pragma unroll
+    for (int k = 0; k < unrolled; ++k) child[k] = k < m ? children[first + k] : 0;
+#pragma unroll
+    for (int c = 0; c < components; ++c) {
+      double v[unrolled];
+#pragma unroll
+      for (int k = 0; k < unrolled; ++k) v[k] = k < m ? r[c * n_fine + child[k]] : 0.0;
+      double s = 0.0;
+#pragma unroll
+      for (int k = 0; k < unrolled; ++k) {
+        if (k < m) s = __dadd_rn(s, v[k]);
+      }
+      b_coarse[c * n_coarse + node] = s;
+    }
+    return;
+  }
   double s[components] = {0.0, 0.0, 0.0, 0.0, 0.0};
-  for (offset_t k = offsets[node]; k < offsets[node + 1]; ++k) {
+  for (offset_t k = first; k < first + m; ++k) {
     const std::int64_t child = children[k];
     for (int c = 0; c < components; ++c) s[c] = __dadd_rn(s[c], r[c * n_fine + child]);
   }
