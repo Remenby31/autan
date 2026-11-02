@@ -68,17 +68,47 @@ TEST_CASE("Zone names a polyMesh cannot hold are written as words, and reported"
   const autan::Mesh back = autan::io::read_polymesh(dir);
   CHECK(back.face_zones()[0].name == "Patch_1");
   CHECK(back.cell_zones()[0].name == "fluid_core_");
-  // A leading digit (a number to OpenFOAM's tokenizer), `$`, and the reader's own `interior`
-  // (a patch of a single cell, whose mesh has no internal face to take that name).
+  // A leading digit (a number to OpenFOAM's tokenizer) and `$`.
   auto odd = autan::test::box(1, autan::test::BoxFill::hexa);
   odd.face_zones[0].name = "1";
   odd.face_zones[1].name = "a$b";
-  odd.face_zones[2].name = "interior";
-  const auto odd_names = autan::io::write_polymesh(
-      dir.parent_path() / "odd", autan::assemble(autan::to_face_based(std::move(odd))));
-  CHECK(odd_names ==
-        std::map<std::string, std::string>{{"1", "_1"}, {"a$b", "a_b"}, {"interior", "interior_"}});
-  CHECK(autan::io::read_polymesh(dir.parent_path() / "odd").face_zones()[2].name == "interior_");
+  CHECK(autan::io::write_polymesh(dir.parent_path() / "odd",
+                                  autan::assemble(autan::to_face_based(std::move(odd)))) ==
+        std::map<std::string, std::string>{{"1", "_1"}, {"a$b", "a_b"}});
+  // A patch named `interior` beside internal faces of another zone (as Fluent's `int_fluid`): the
+  // reader gives the internal faces its own zone `interior`, so the patch is written `interior_`.
+  const autan::Mesh box =
+      autan::assemble(autan::to_face_based(autan::test::box(2, autan::test::BoxFill::hexa)));
+  autan::MeshInput in;
+  in.x.assign(box.x().begin(), box.x().end());
+  in.y.assign(box.y().begin(), box.y().end());
+  in.z.assign(box.z().begin(), box.z().end());
+  in.face_node_offsets.assign(box.face_node_offsets().begin(), box.face_node_offsets().end());
+  in.face_nodes.assign(box.face_nodes().begin(), box.face_nodes().end());
+  in.face_cell0.assign(box.owner().begin(), box.owner().end());
+  in.cell_zone.assign(box.cell_zone().begin(), box.cell_zone().end());
+  in.face_zones.assign(box.face_zones().begin(), box.face_zones().end());
+  in.cell_zones.assign(box.cell_zones().begin(), box.cell_zones().end());
+  const auto inner = static_cast<autan::index_t>(in.face_zones.size());
+  in.face_zones.push_back(autan::FaceZone{.name = "inner",
+                                          .bc_type = "",
+                                          .kind = autan::BcKind::unspecified,
+                                          .boundary = false,
+                                          .provenance = {}});
+  for (autan::index_t f = 0; f < box.n_faces(); ++f) {
+    const auto i = static_cast<std::size_t>(f);
+    const bool interior = f < box.n_interior_faces();
+    in.face_cell1.push_back(interior ? box.neighbour()[i] : autan::no_cell);
+    in.face_zone.push_back(interior ? inner : box.face_zone()[i]);
+  }
+  for (auto& zone : in.face_zones) {
+    if (zone.name == "interior") zone.name = "unused";  // assembly's zone, emptied above
+  }
+  in.face_zones[static_cast<std::size_t>(box.face_zone().back())].name = "interior";
+  CHECK(autan::io::write_polymesh(dir.parent_path() / "inner", autan::assemble(std::move(in))) ==
+        std::map<std::string, std::string>{{"interior", "interior_"}});
+  CHECK(autan::io::read_polymesh(dir.parent_path() / "inner").n_interior_faces() ==
+        box.n_interior_faces());
   // Two names that become one word are refused.
   auto clash = autan::test::box(2, autan::test::BoxFill::hexa);
   clash.face_zones[0].name = "a b";
