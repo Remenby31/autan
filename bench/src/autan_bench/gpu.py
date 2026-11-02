@@ -405,31 +405,46 @@ VMSTAT = re.compile(r"^(pgscan|pgsteal|compact|pgmigrate|thp)_\w+$|^pgfault$|^pg
 MEMINFO = ("MemFree", "MemAvailable", "Cached", "Dirty", "Writeback", "AnonPages")
 
 
+def _lxcfs(path: str) -> bool:
+    """Whether path is LXCFS's view (a container's numbers labelled /proc), not the host's."""
+    with contextlib.suppress(OSError):
+        for line in (PROC / "self" / "mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) > 2 and fields[1] == path and "lxcfs" in fields[2]:
+                return True
+    return False
+
+
 def host_activity() -> dict[str, object] | None:
-    """The host's load, pressure (PSI), reclaim and compaction counters and memory now; None off
-    Linux. A counter that cannot be read is left out, so that a reading never fails a run."""
+    """The host's load, pressure (PSI), reclaim and compaction counters and memory now, with the
+    monotonic time of the reading (so that counters give rates); None off Linux. A counter that
+    cannot be read or parsed is left out, so that a reading never fails a run; memory and pressure
+    served by LXCFS (a container's view) are left out too, and flagged."""
     if sys.platform != "linux":
         return None
-    out: dict[str, object] = {}
+    out: dict[str, object] = {"monotonic_s": time.monotonic()}
     with contextlib.suppress(OSError, ValueError):
-        out["loadavg"] = [float(v) for v in (PROC / "loadavg").read_text().split()[:3]]
-    try:
+        load = [float(v) for v in (PROC / "loadavg").read_text().split()[:3]]
+        if len(load) == 3:
+            out["loadavg"] = load
+    with contextlib.suppress(OSError, ValueError):
         for line in (PROC / "stat").read_text().splitlines():
             key, _, value = line.partition(" ")
             if key in ("procs_running", "procs_blocked"):
                 out[key] = int(value)
-    except (OSError, ValueError):
-        pass
+    lxcfs = [p for p in ("/proc/meminfo", "/proc/pressure") if _lxcfs(p)]
+    if lxcfs:
+        out["lxcfs"] = lxcfs
     pressure: dict[str, dict[str, dict[str, float]]] = {}
-    for resource in ("cpu", "memory", "io"):
-        try:
+    for resource in () if "/proc/pressure" in lxcfs else ("cpu", "memory", "io"):
+        with contextlib.suppress(OSError, ValueError):
             lines = (PROC / "pressure" / resource).read_text().splitlines()
-        except OSError:
-            continue
-        pressure[resource] = {
-            kind: {k: float(v) for k, v in (f.split("=") for f in fields)}
-            for kind, *fields in (line.split() for line in lines)
-        }
+            parsed = {
+                kind: {k: float(v) for k, v in (f.split("=", 1) for f in fields)}
+                for kind, *fields in (line.split() for line in lines)
+            }
+            if all(set(v) == {"avg10", "avg60", "avg300", "total"} for v in parsed.values()):
+                pressure[resource] = parsed
     if pressure:
         out["pressure"] = pressure
     with contextlib.suppress(OSError, ValueError):
@@ -438,15 +453,14 @@ def host_activity() -> dict[str, object] | None:
             for k, v in (line.split() for line in (PROC / "vmstat").read_text().splitlines())
             if VMSTAT.match(k)
         }
-    try:
-        mem = {}
-        for line in (PROC / "meminfo").read_text().splitlines():
-            key, _, rest = line.partition(":")
-            if key in MEMINFO:
-                mem[key] = int(rest.split()[0]) * 1024
-        out["meminfo_bytes"] = mem
-    except (OSError, ValueError, IndexError):
-        pass
+    if "/proc/meminfo" not in lxcfs:
+        with contextlib.suppress(OSError, ValueError, IndexError):
+            mem = {}
+            for line in (PROC / "meminfo").read_text().splitlines():
+                key, _, rest = line.partition(":")
+                if key in MEMINFO:
+                    mem[key] = int(rest.split()[0]) * 1024
+            out["meminfo_bytes"] = mem
     return out
 
 
