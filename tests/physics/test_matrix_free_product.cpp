@@ -19,6 +19,7 @@
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/physics/block_matrix.hpp"
 #include "autan/physics/matrix_free_product.hpp"
 #include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
@@ -56,12 +57,14 @@ struct Setup {
   using S = typename P::state;
   using R = typename P::residual;
 
-  Setup(const char* file, bool limiter)
+  // `viscosity`: mu; `gauge`: the reference state the stored state is measured from, as a
+  // multiple of the freestream's.
+  Setup(const char* file, bool limiter, double viscosity = mu, double gauge = 1.0)
       : mesh(autan::io::read_mesh(mesh_dir / file)),
         g(autan::compute_geometry(mesh)),
         n(static_cast<std::size_t>(mesh.n_cells())),
-        flow(mesh, g, air, scheme_of(limiter), transport()),
-        sa(mesh, g, flow, transport()) {
+        flow(mesh, g, air, scheme_of(limiter, gauge), transport(viscosity)),
+        sa(mesh, g, flow, transport(viscosity)) {
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
@@ -102,16 +105,16 @@ struct Setup {
     }
   }
 
-  static Scheme scheme_of(bool limiter) {
+  static Scheme scheme_of(bool limiter, double gauge) {
     Scheme s;
     s.limiter = limiter;
-    s.reference = {rho, 0.0, 0.0, 0.0, p0 / (air.gamma - 1.0)};
+    s.reference = {gauge * rho, 0.0, 0.0, 0.0, gauge * p0 / (air.gamma - 1.0)};
     return s;
   }
-  static Transport transport() {
+  static Transport transport(double viscosity) {
     Transport t;
     t.sutherland = false;
-    t.mu_ref = mu;
+    t.mu_ref = viscosity;
     return t;
   }
 
@@ -214,6 +217,14 @@ struct Setup {
   std::vector<double> u, v, shift;
 };
 
+// The flow's own product (no turbulence model).
+template <class P>
+MatrixFreeProduct<P> flow_product_of(Setup<P>& s) {
+  const double c = std::sqrt(air.gamma * p0 / rho);
+  return MatrixFreeProduct<P>(s.flow, nullptr, air.gamma,
+                              {rho, rho * c, rho * c, rho * c, Setup<P>::energy}, NtBounds{});
+}
+
 template <class P>
 MatrixFreeProduct<P> product_of(Setup<P>& s) {
   const double c = std::sqrt(air.gamma * p0 / rho);
@@ -308,4 +319,185 @@ TEST_CASE("a step that would move rho nt out of its bounds is shortened as a who
   CHECK(autan::physics::nt_step_fraction(density, rnu, within, 0.5, NtBounds{}) == 1.0);
   const std::vector<double> nan{0.0, std::numeric_limits<double>::quiet_NaN(), 0.0};
   CHECK(autan::physics::nt_step_fraction(density, rnu, nan, 0.5, NtBounds{}) == 0.0);
+}
+
+TEMPLATE_TEST_CASE("the flow's product is the assembled operator where that is the Jacobian",
+                   "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // matrix-free-step.md: at first order, with a viscosity too small to count, the assembled
+  // operator diag(shift) + J~ is the Jacobian (dF/dW of each face, times dW/dU), so the product
+  // equals it to the difference's error, 10 sqrt(epsilon of the stored state) of its magnitude.
+  using P = TestType;
+  using S = typename P::state;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  Setup<P> s(file, false, 1e-12);
+  s.flow.set_second_order(false);
+  std::vector<S> state(5 * s.n);
+  std::vector<typename P::residual> r(5 * s.n);
+  s.flow.state(s.u, state);
+  s.flow.residual_and_jacobian(state, r);
+  autan::physics::BlockMatrix matrix(s.mesh);
+  s.flow.assemble(s.shift, matrix);
+  auto a = flow_product_of(s);
+  a.start(s.u, state, {}, 0.0, s.shift, {});
+  const std::span<const double> v = std::span<const double>(s.v).first(5 * s.n);
+  std::vector<double> y(5 * s.n), w(5 * s.n);
+  a.apply(v, y);
+  matrix.multiply(v, w);
+  double error = 0.0, magnitude = 0.0;
+  for (std::size_t i = 0; i < 5 * s.n; ++i) {
+    error = std::max(error, std::abs(y[i] - w[i]) / a.scale()[i / s.n]);
+    magnitude = std::max(magnitude, std::abs(w[i]) / a.scale()[i / s.n]);
+  }
+  CHECK(a.halvings() == 0);
+  CHECK(error <=
+        10.0 * std::sqrt(static_cast<double>(std::numeric_limits<S>::epsilon())) * magnitude);
+}
+
+TEMPLATE_TEST_CASE("a product whose perturbation rounds away in the stored state fails",
+                   "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // The stored state is U - U_ref: with a reference 1e12 times the state, a perturbation of
+  // sqrt(epsilon) relative to U is below the stored values' spacing. The product fails at once
+  // (NaN, no halving: a smaller step only rounds more away), and stays failed.
+  using P = TestType;
+  using S = typename P::state;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  Setup<P> s(file, false, mu, 1e12);
+  std::vector<S> state(5 * s.n);
+  std::vector<typename P::residual> r(5 * s.n);
+  s.flow.state(s.u, state);
+  s.flow.residual(state, r);
+  auto a = flow_product_of(s);
+  a.start(s.u, state, {}, 0.0, s.shift, {});
+  const std::span<const double> v = std::span<const double>(s.v).first(5 * s.n);
+  std::vector<double> y(5 * s.n);
+  a.apply(v, y);
+  CHECK(std::all_of(y.begin(), y.end(), [](double x) { return std::isnan(x); }));
+  CHECK(a.halvings() == 0);
+  CHECK(a.representation() > 1e-2);
+  std::fill(y.begin(), y.end(), 0.0);
+  a.apply(v, y);
+  CHECK(std::all_of(y.begin(), y.end(), [](double x) { return std::isnan(x); }));
+}
+
+TEMPLATE_TEST_CASE("near a shock two products of one direction are bit for bit equal",
+                   "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // matrix-free-step.md: the limiter is held at the state of start(), so a direction's product
+  // does not depend on what the solve evaluated before it. A jump of density and pressure at
+  // x = 0.5, the limiter on.
+  using P = TestType;
+  using S = typename P::state;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  Setup<P> s(file, true);
+  for (std::size_t c = 0; c < s.n; ++c) {
+    if (s.g.cell_centroid_x[c] > 0.5) {
+      for (std::size_t k = 0; k < 5; ++k) s.u[k * s.n + c] *= k == 4 ? 2.0 : 1.5;
+    }
+  }
+  std::vector<S> state(5 * s.n);
+  std::vector<typename P::residual> r(5 * s.n);
+  s.flow.state(s.u, state);
+  s.flow.residual(state, r);
+  auto a = flow_product_of(s);
+  a.start(s.u, state, {}, 0.0, s.shift, {});
+  const std::span<const double> v = std::span<const double>(s.v).first(5 * s.n);
+  std::vector<double> other(5 * s.n), y1(5 * s.n), y2(5 * s.n);
+  for (std::size_t i = 0; i < 5 * s.n; ++i) other[i] = v[i] * std::cos(static_cast<double>(i));
+  a.apply(v, y1);
+  a.apply(other, y2);
+  a.apply(v, y2);
+  CHECK(std::all_of(y1.begin(), y1.end(), [](double x) { return std::isfinite(x); }));
+  CHECK(y1 == y2);
+}
+
+TEMPLATE_TEST_CASE("a probe that switches a face state's fallback is halved", "[navier-stokes]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // One cell's conserved state U scaled by f: below a threshold f* a reconstructed face state of
+  // a neighbour falls back (NavierStokes::frozen_switches against f = 1). Along v = -U of that
+  // cell a probe of step eps moves f to f - eps; the base sits half a step above f*, so the
+  // first probe crosses f* (the half step lands on f* itself, either side by round-off). The
+  // product halves eps and equals the one-sided difference of the held residual at that eps,
+  // bit for bit.
+  using P = TestType;
+  using S = typename P::state;
+  using R = typename P::residual;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  Setup<P> s(file, false);
+  const std::size_t n = s.n;
+  std::size_t c0 = 0;
+  double best = 1e300;
+  for (std::size_t c = 0; c < n; ++c) {
+    const double dx = s.g.cell_centroid_x[c] - 0.5, dy = s.g.cell_centroid_y[c] - 0.5;
+    const double dz = s.g.cell_centroid_z[c] - 0.5;
+    const double d = dx * dx + dy * dy + dz * dz;
+    if (d < best) best = d, c0 = c;
+  }
+  const std::vector<double> u1 = s.u;
+  auto scaled = [&](double f) {
+    std::vector<double> u = u1;
+    for (std::size_t k = 0; k < 5; ++k) u[k * n + c0] *= f;
+    return u;
+  };
+  std::vector<S> state(5 * n);
+  std::vector<R> r(5 * n);
+  s.flow.state(u1, state);
+  s.flow.residual(state, r);
+  s.flow.freeze(state);
+  auto switched = [&](double f) {
+    s.flow.state(scaled(f), state);
+    s.flow.residual_frozen(state, r);
+    return s.flow.frozen_switches() > 0;
+  };
+  double lo = 1.0;
+  while (lo > 1e-12 && !switched(lo)) lo *= 0.1;
+  REQUIRE(switched(lo));
+  double hi = 1.0;
+  for (int i = 0; i < 80; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    (switched(mid) ? lo : hi) = mid;
+  }
+  auto a = flow_product_of(s);
+  std::vector<double> v(5 * n, 0.0);
+  for (std::size_t k = 0; k < 5; ++k) v[k * n + c0] = -u1[k * n + c0];
+  // eps by the product's contract; v scales with the base, so f - eps after one step.
+  auto eps_at = [&](std::span<const double> u) {
+    auto rms = [&](std::span<const double> x) {
+      std::array<autan::runtime::ExactSum, 2> sums;
+      for (std::size_t i = 0; i < 5 * n; ++i) {
+        const double q = x[i] / a.scale()[i / n];
+        sums[0].add(q * q);
+      }
+      sums[1].add(static_cast<double>(5 * n));
+      return std::sqrt(sums[0].value() / sums[1].value());
+    };
+    return std::sqrt(static_cast<double>(std::numeric_limits<S>::epsilon())) * (1.0 + rms(u)) /
+           rms(v);
+  };
+  const double f = hi + 0.5 * eps_at(scaled(hi));
+  s.u = scaled(f);
+  for (std::size_t k = 0; k < 5; ++k) v[k * n + c0] = -u1[k * n + c0];
+  s.flow.state(s.u, state);
+  s.flow.residual(state, r);
+  a.start(s.u, state, {}, 0.0, s.shift, {});
+  std::vector<double> y(5 * n);
+  a.apply(v, y);
+  CHECK(a.halvings() > 0);
+  const double e = std::ldexp(eps_at(s.u), -a.halvings());
+  std::vector<double> up(s.u);
+  for (std::size_t i = 0; i < 5 * n; ++i) up[i] = s.u[i] + e * v[i];
+  std::vector<R> r0(5 * n), r1(5 * n);
+  s.flow.residual_frozen(state, r0);
+  std::vector<S> probe(5 * n);
+  s.flow.state(up, probe);
+  s.flow.residual_frozen(probe, r1);
+  CHECK(s.flow.frozen_switches() == 0);
+  std::vector<double> expected(5 * n);
+  for (std::size_t i = 0; i < 5 * n; ++i) {
+    expected[i] =
+        s.shift[i % n] * v[i] + (static_cast<double>(r1[i]) - static_cast<double>(r0[i])) / e;
+  }
+  CHECK(y == expected);
 }
