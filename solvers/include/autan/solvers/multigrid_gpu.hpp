@@ -3,8 +3,10 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/galerkin_lists.hpp"
 
 namespace autan::solvers::gpu {
 
@@ -38,6 +40,65 @@ class Transfers {
   /// multiply-add; α is a device scalar.
   void correct(std::size_t l, const double* alpha, const double* x_coarse, double* x,
                void* stream = nullptr) const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+/// The Galerkin coarse operator A_c = Pᵀ A P on the GPU (docs/design/multigrid-gpu.md#galerkin-
+/// coarse-operator): each coarse block is the sum, from +0.0 and in list order, of the blocks of
+/// its `GalerkinLists` list, in FP64, so the coarse operator is bitwise the host multigrid's.
+/// Blocks are 5 x 5 row-major, stored in structure of arrays: entry q of the block of node i at
+/// q * n_nodes + i (diagonal), of slot s at q * n_slots + s (off-diagonal). The fine diagonal is
+/// FP64; the fine off-diagonal blocks are FP32 or FP64 (converted exactly). Calls are
+/// asynchronous on `stream`.
+class Galerkin {
+ public:
+  /// Uploads the lists from `n_fine_nodes` fine nodes and `n_fine_slots` fine slots to their
+  /// coarse level. Throws std::invalid_argument when a list entry is out of range.
+  Galerkin(const GalerkinLists& lists, std::size_t n_fine_nodes, std::size_t n_fine_slots);
+  ~Galerkin();
+  Galerkin(Galerkin&&) noexcept;
+  Galerkin& operator=(Galerkin&&) noexcept;
+  Galerkin(const Galerkin&) = delete;
+  Galerkin& operator=(const Galerkin&) = delete;
+
+  [[nodiscard]] std::size_t n_coarse_nodes() const;
+  [[nodiscard]] std::size_t n_coarse_slots() const;
+  void apply(const double* fine_diag, const double* fine_off, double* coarse_diag,
+             double* coarse_off, void* stream = nullptr) const;
+  void apply(const double* fine_diag, const float* fine_off, double* coarse_diag,
+             double* coarse_off, void* stream = nullptr) const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+/// The coarsest level's direct solve on the GPU (docs/design/multigrid-gpu.md#coarsest-level):
+/// the host multigrid's dense matrix of the level (unknown c of node h at c * n + h, host
+/// numbering), factored by `factor_dense` as the host does, its inverse formed column by column
+/// with `solve_dense`, then applied on the device as x = A⁻¹ b, one warp per row in a fixed
+/// order. Vectors are in the level's device numbering (`order`), 5 components in structure of
+/// arrays. Throws std::domain_error on a singular matrix, as factor_dense does.
+class CoarsestSolve {
+ public:
+  /// `diag`: one block per host node; `upper`, `lower`: A(owner, neighbour) and A(neighbour,
+  /// owner) per edge of `level`, row-major 5 x 5, FP64, host numbering.
+  CoarsestSolve(const Level& level, std::span<const index_t> order, std::span<const double> diag,
+                std::span<const double> upper, std::span<const double> lower);
+  ~CoarsestSolve();
+  CoarsestSolve(CoarsestSolve&&) noexcept;
+  CoarsestSolve& operator=(CoarsestSolve&&) noexcept;
+  CoarsestSolve(const CoarsestSolve&) = delete;
+  CoarsestSolve& operator=(const CoarsestSolve&) = delete;
+
+  /// Unknowns, 5 per node.
+  [[nodiscard]] std::size_t size() const;
+  /// The inverse, row-major in the device numbering, as uploaded.
+  [[nodiscard]] const std::vector<double>& inverse() const;
+  void solve(const double* b, double* x, void* stream = nullptr) const;
 
  private:
   struct Impl;
