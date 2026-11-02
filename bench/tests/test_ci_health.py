@@ -120,3 +120,38 @@ def test_health_sh_gives_no_state_for_a_probe_of_another_commit(repo, tmp_path):
                           capture_output=True, text=True, check=False)  # fmt: skip
     assert proc.returncode == 2
     assert proc.stdout == ""
+
+
+def test_health_sh_builds_the_probe_from_an_export_and_keeps_a_full_history(repo, tmp_path):
+    # main's checkout keeps its whole history (the bisection walks it): with the baseline's
+    # commit present, the probe is built from `git archive` without any fetch, and the
+    # repository stays complete; nothing is registered as a worktree.
+    root = Path(repo["ROOT"])
+    env = {**repo, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}  # fmt: skip
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "base"]):
+        subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, env=env, check=True,
+                            capture_output=True, text=True).stdout.strip()  # fmt: skip
+    base = json.loads((root / "baseline.json").read_text())
+    base["provenance"]["solver"]["commit"] = commit
+    (root / "baseline.json").write_text(json.dumps(base))
+    # The fake lock "builds": it creates the binary the cmake command would (-B DIR).
+    (root / "bench" / "lock" / "autan-gpu-lock").write_text(
+        '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift\n'
+        'case "$*" in *cmake*) d=$(printf %s "$*" | sed "s/.*-B .\\([^ \']*\\).*/\\1/");'
+        ' mkdir -p "$d" && : > "$d/stream" && chmod +x "$d/stream"; exit 0;; esac\nexec "$@"\n'
+    )
+    probe = result(tmp_path / "measured.json", BASELINE, commit=commit)
+    out = tmp_path / "out2"
+    proc = subprocess.run(["bash", "bench/ci/health.sh", "baseline.json", str(out)], cwd=root,
+                          env={**env, "PROBE": str(probe)}, capture_output=True, text=True,
+                          check=False)  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    assert (out / f"reference-{commit}" / "src" / "bench" / "ci" / "health.py").is_file()
+    shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=root, env=env,
+                             check=True, capture_output=True, text=True).stdout.strip()  # fmt: skip
+    assert shallow == "false"
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=root, env=env, check=True,
+                               capture_output=True, text=True).stdout.splitlines()  # fmt: skip
+    assert len(worktrees) == 1

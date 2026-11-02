@@ -12,7 +12,15 @@ commit=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["proven
 # worktree: nothing is registered in the repository, so a cleaned RUNNER_TEMP leaves nothing stale.
 ref=$out/reference-$commit
 if [[ ! -x $ref/build/stream ]]; then
-  git fetch -q --depth 1 origin "$commit"
+  # Only if missing, and shallow only in a shallow checkout (a pull request's): main's checkout
+  # keeps its whole history, which the bisection walks.
+  if ! git cat-file -e "$commit^{commit}" 2>/dev/null; then
+    if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+      git fetch -q --depth 1 origin "$commit"
+    else
+      git fetch -q origin "$commit"
+    fi
+  fi
   rm -rf "$ref"
   mkdir -p "$ref/src"
   git archive "$commit" bench | tar -x -C "$ref/src"
