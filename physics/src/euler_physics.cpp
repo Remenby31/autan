@@ -827,7 +827,17 @@ class EulerPhysics final : public runtime::Physics {
   // R(u) of the FP64 solution, through the policy's state type.
   void residual_of(const std::vector<double>& u) {
     euler_.state(u, state_);
+    eddy_viscosity_of_state();
     euler_.residual(state_, res_);
+  }
+
+  // With SA, the eddy viscosity the flow reads is that of state_ and the current rho nt, from the
+  // primitives of a flow evaluation at state_: the residual is a function of the state alone,
+  // which a continued run rebuilds.
+  void eddy_viscosity_of_state() {
+    if (!sa_) return;
+    euler_.residual(state_, res_);
+    sa_->model.eddy_viscosity(sa_->stored(sa_->rnu));
   }
 
   // results.md#history: sqrt(sum R_i^2 / N) over the owned cells of every rank, summed exactly.
@@ -849,6 +859,7 @@ class EulerPhysics final : public runtime::Physics {
 
   void steady_step(StepReport& report) {
     euler_.state(u_, state_);
+    eddy_viscosity_of_state();
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
       // runtime never judges convergence on the first-order one.
@@ -965,7 +976,6 @@ class EulerPhysics final : public runtime::Physics {
               alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
         }
       }
-      t.model.eddy_viscosity(t.stored(t.rnu));
     }
   }
 

@@ -36,7 +36,7 @@ The convective flux of a `wall` face is the pressure flux of a slip face (v · n
 
 ## Implicit solver
 
-The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the same pass as the residual, the cell gradients held fixed: the difference quotients of the face gradients give the compact part of the viscous Jacobian. `NavierStokes<P>::assemble` adds them, times dW/dU, to the Euler blocks. The local time step adds four times the viscous spectral radius Σ_f max(4/3, γ) (μ/Pr + μ_t/Pr_t) A² / (ρ V) to the convective one (Blazek 2015, eqs. 6.20 and 6.22).
+The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the same pass as the residual, the cell gradients held fixed: the difference quotients of the face gradients give the compact part of the viscous Jacobian. `NavierStokes<P>::assemble` adds them, times dW/dU, to the Euler blocks. The local time step adds four times the viscous spectral radius Σ_f max(4/3, γ) (μ/Pr + μ_t/Pr_t) A² / (ρ V) to the convective one (Blazek 2015, eqs. 6.20 and 6.22). With Spalart-Allmaras, every flow residual reads the μ_t of its own state, from that state's primitives and ρν̃, which costs one more flow evaluation per step: the residual is then a function of the state alone, and a continued run repeats the uninterrupted one bit for bit (#430).
 
 ## Verification
 
