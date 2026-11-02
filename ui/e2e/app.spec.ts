@@ -302,7 +302,8 @@ test("Analysis without a run lists the runs it can show, never a stand-in surfac
   const picker = page.getByTestId("run-picker");
   await expect(picker.getByRole("link")).toHaveCount(solved.length);
   await expect(page.getByTestId("viewport")).toHaveCount(0);
-  await page.goto("/viewer?bench=1");
+  // The benchmark's stand-in surface, small: a CPU renderer draws it in no time.
+  await page.goto("/viewer?bench=1&triangles=2000");
   await expect(page.getByText("Synthetic surface · viewer benchmark")).toBeVisible();
   await page.goBack();
   await picker
