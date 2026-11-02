@@ -1,0 +1,3 @@
+# Hosts that run timed benchmarks (gpu-bench): a foreign GPU tenant there refuses a GPU step
+# (bench/ci/gpu-admit.sh); elsewhere it does not. One AUTAN_BENCH_HOST name per line.
+spark-5359
