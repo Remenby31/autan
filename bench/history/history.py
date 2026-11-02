@@ -54,7 +54,8 @@ def record(docs: list[dict], peak: float) -> dict | None:
     for doc in docs:
         for b in doc["benchmarks"]:
             entry = {"median": b["stats"]["median"], "cv": b["stats"]["cv"], "unit": b["unit"]}
-            if b["unit"] == "GB/s":
+            # The peak is the GPU's STREAM: a host loop's bandwidth is not a fraction of it.
+            if b["unit"] == "GB/s" and doc["provenance"]["backend"] != "cpu":
                 entry["percent_of_peak"] = 100 * b["stats"]["median"] / peak
             benchmarks[b["name"]] = entry
     return {

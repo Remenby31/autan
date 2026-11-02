@@ -237,9 +237,11 @@ def _measure(
         )
     with gpu.Sampler() as sampler:
         raw = gated.go() if gated else _run_binary(binary, args)
-    during = sampler.summary()
+    # A host benchmark (backend cpu) leaves the GPU alone: none of its processes, none other.
+    host = raw.get("backend") == "cpu"
+    during = sampler.summary(gpu_work=not host)
     after = gpu.host_load()
-    if (during["compute_apps_max"] or 0) > 1:
+    if (during["compute_apps_max"] or 0) > (0 if host else 1):
         raise BenchError(
             Code.GPU_CONTENDED,
             f"{during['compute_apps_max']} compute processes shared the GPU during the run",

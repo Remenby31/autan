@@ -32,10 +32,24 @@ def commit(repo: Path, path: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+# The measured files of these tests (bench/ci/measured-files.txt's format): files the benchmarks
+# are built from; their neighbours in the same directories are not.
+MEASURED_FILES = """# a comment
+kernels/flux.cu
+io/gmsh.cpp
+partition/metis.cpp
+physics/src/euler.cpp
+bench/stream/stream.cu
+"""
+
+
 def decide(repo: Path, event: str, draft: str = "false", before: str = "") -> dict[str, str]:
+    files = repo.parent / "measured-files.txt"
+    files.write_text(MEASURED_FILES)
     out = subprocess.run(
-        [str(SCRIPT), event, draft, before], cwd=repo, check=True, capture_output=True, text=True
-    )
+        [str(SCRIPT), event, draft, before], cwd=repo, check=True, capture_output=True, text=True,
+        env={**os.environ, "AUTAN_MEASURED_FILES": str(files)},
+    )  # fmt: skip
     return dict(line.split("=", 1) for line in out.stdout.splitlines())
 
 
@@ -142,10 +156,14 @@ def test_without_a_readable_base_everything_runs(repo):
         ("kernels/flux.cu", "true", "false"),
         ("io/gmsh.cpp", "true", "false"),
         ("partition/metis.cpp", "true", "false"),
-        # Not built into any benchmark (bench/ci/check-measured.py): never measured.
+        ("physics/src/euler.cpp", "true", "false"),
+        # Not built into any benchmark (bench/ci/check-measured.py): never measured, whatever its
+        # directory.
         ("runtime/src/run.cpp", "false", "false"),
-        ("physics/src/euler.cpp", "false", "false"),
+        ("physics/src/navier_stokes.cpp", "false", "false"),
+        ("kernels/flux_test.cu", "false", "false"),
         ("solvers/src/gauss_seidel.cpp", "false", "false"),
+        ("bench/ci/measured-files.txt", "true", "true"),
         ("docker/dev/Dockerfile", "true", "true"),
         ("bench/src/autan_bench/stats.py", "true", "true"),
         ("bench/stream/stream.cu", "true", "true"),
@@ -187,7 +205,19 @@ def test_every_input_of_the_measured_mesh_is_a_measured_path():
     assert key is not None
     globs = re.findall(r"'([^']+)'", key.group(1))
     pattern = subprocess.run(["bash", str(SCRIPT), "--measured"], capture_output=True,
-                             text=True, check=True).stdout.splitlines()[1]  # fmt: skip
+                             text=True, check=True).stdout.splitlines()[0]  # fmt: skip
     for glob in globs:
         sample = glob.replace("/**", "/x.py")
         assert re.search(pattern, sample), glob
+
+
+def test_without_its_list_the_filter_refuses_to_decide(repo):
+    # Fails closed: without measured-files.txt, the filter refuses to decide.
+    git(repo, "checkout", "-q", "-b", "change")
+    commit(repo, "kernels/flux.cu")
+    pull_request_merge(repo, "change")
+    proc = subprocess.run([str(SCRIPT), "pull_request", "false", ""], cwd=repo, capture_output=True,
+                          text=True, check=False,
+                          env={**os.environ, "AUTAN_MEASURED_FILES": str(repo / "none")})  # fmt: skip
+    assert proc.returncode != 0
+    assert "is missing" in proc.stderr

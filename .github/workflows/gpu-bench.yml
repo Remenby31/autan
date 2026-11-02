@@ -172,12 +172,15 @@ jobs:
         run: >-
           bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
           bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
-          -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
+          -DAUTAN_BUILD_HOST_BENCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
+          && cmake --build build/autan --target autan_loop_bench autan_host_bench'
       # changes.sh's measured directories are exactly those both benchmarks are built from, so
       # that no change goes unmeasured and none waits for a measurement of nothing it changed.
       - name: The measured paths are the benchmarks' build graph
         if: needs.changes.outputs.bench == 'true'
-        run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
+        run: >-
+          python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench
+          build/autan:bench/host/autan_host_bench build/bench:stream
       - name: Generated loops, hex n = 128, fp32, RCM order
         if: needs.changes.outputs.bench == 'true'
         run: >-
@@ -196,6 +199,24 @@ jobs:
           --out results/codegen-hex-n128-fp32.json
           -- meshes/hex-n128.msh --policy fp32 --order rcm || status=$?;
           echo "status=${status:-0}" >> "$GITHUB_OUTPUT"; exit "${status:-0}"
+      # The generated HOST loops (kernels/euler.py's CPU backend), pinned to one Cortex-X925 core:
+      # the same method as the device suites, under the lock with campaigns frozen, the GPU idle.
+      - name: Host loops, hex n = 128, fp32+acc64, RCM order, CPU 9
+        if: needs.changes.outputs.bench == 'true'
+        run: >-
+          uv run --project bench --locked autan-bench run --suite host
+          --binary build/autan/bench/host/autan_host_bench --precision fp32+acc64 --ready
+          --out results/host-hex-n128-fp32acc64.json
+          -- meshes/hex-n128.msh --policy fp32+acc64 --order rcm --cpu 9 --gate 1
+      - name: Compare the host loops with their GB10 baseline (failures confirmed by a rerun)
+        if: needs.changes.outputs.bench == 'true' && hashFiles('bench/baselines/gb10-host-hex-n128-fp32acc64.json') != ''
+        run: >-
+          bench/ci/gate.sh results/host-hex-n128-fp32acc64.json
+          bench/baselines/gb10-host-hex-n128-fp32acc64.json --
+          uv run --project bench --locked autan-bench run --suite host
+          --binary build/autan/bench/host/autan_host_bench --precision fp32+acc64 --ready
+          --out results/host-hex-n128-fp32acc64.json
+          -- meshes/hex-n128.msh --policy fp32+acc64 --order rcm --cpu 9 --gate 1
       # A regression of main confirmed by the gate, on a machine that passed STREAM: find its
       # commit here, on this Spark and with this protocol, before the runner takes other jobs.
       - name: Bisect the regression

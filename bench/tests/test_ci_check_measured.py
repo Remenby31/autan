@@ -36,67 +36,82 @@ def fake_build(
     return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REPO": str(repo)}
 
 
-def check(env: dict[str, str]) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(CHECK), "build:bench"], cwd=env["REPO"], env=env,
-                          capture_output=True, text=True, check=False)  # fmt: skip
+def check(env: dict[str, str], listed: list[str], *flags: str) -> subprocess.CompletedProcess:
+    """The check against a measured-files.txt holding `listed` (its comment line included)."""
+    files = Path(env["REPO"]).parent / "measured-files.txt"
+    files.write_text("# Files the benchmarks are built from\n" + "".join(f"{f}\n" for f in listed))
+    env = {**env, "AUTAN_MEASURED_FILES": str(files)}
+    return subprocess.run([sys.executable, str(CHECK), *flags, "build:bench"], cwd=env["REPO"],
+                          env=env, capture_output=True, text=True, check=False)  # fmt: skip
 
 
-MEASURED = ("codegen", "core", "io", "kernels", "partition")
+SOURCES = ["../codegen/src/a.cpp", "../io/src/b.cpp", "../kernels/euler.py"]
+LISTED = ["codegen/src/a.cpp", "io/src/b.cpp", "kernels/euler.py"]
 
 
-def test_a_graph_of_exactly_the_measured_directories_passes(tmp_path):
+def test_a_list_of_exactly_the_graph_s_files_passes(tmp_path):
     # Sources relative to the tree, a header absolute; system headers and generated files in the
     # build tree are not the repository's.
-    sources = [f"../{d}/src/x.cpp" for d in MEASURED]
     header = str(tmp_path / "repo" / "core" / "include" / "x.hpp")
-    env = fake_build(tmp_path, sources, [header, "/usr/include/stdio.h", "gen/revision.h"])
-    proc = check(env)
+    env = fake_build(tmp_path, SOURCES, [header, "/usr/include/stdio.h", "gen/revision.h"])
+    proc = check(env, [*LISTED, "core/include/x.hpp"])
     assert proc.returncode == 0, proc.stdout
-    assert "6 repository files in the graph, under codegen core io kernels partition" in proc.stdout
+    assert "4 repository files in the graph, under codegen core io kernels" in proc.stdout
 
 
-def test_a_header_from_an_unmeasured_directory_fails(tmp_path):
-    # A measured source including runtime/'s header: a change there changes the benchmark.
-    sources = [f"../{d}/src/x.cpp" for d in MEASURED]
-    env = fake_build(tmp_path, sources, ["../runtime/include/run.hpp"])
-    proc = check(env)
+def test_a_header_missing_from_the_list_fails(tmp_path):
+    # A measured source including runtime/'s header: a change there changes the benchmark, while
+    # runtime/'s other files stay unmeasured.
+    proc = check(fake_build(tmp_path, SOURCES, ["../runtime/include/run.hpp"]), LISTED)
     assert proc.returncode == 1
     assert (
-        "runtime/include/run.hpp is built into a benchmark but is not a measured path"
+        "runtime/include/run.hpp is built into a benchmark but is not in measured-files.txt"
+        in proc.stdout
+    )
+    assert "rewrite it with: python3 bench/ci/check-measured.py --write build:bench" in proc.stdout
+
+
+def test_a_listed_file_no_benchmark_is_built_from_fails(tmp_path):
+    proc = check(fake_build(tmp_path, SOURCES, []), [*LISTED, "physics/src/old.cpp"])
+    assert proc.returncode == 1
+    assert (
+        "physics/src/old.cpp is in measured-files.txt but no benchmark is built from it"
         in proc.stdout
     )
 
 
-def test_a_measured_directory_no_benchmark_is_built_from_fails(tmp_path):
-    env = fake_build(tmp_path, ["../codegen/a.cpp", "../core/b.cpp", "../io/c.cpp"], [])
-    proc = check(env)
-    assert proc.returncode == 1
-    assert "kernels/ is measured but no benchmark is built from it" in proc.stdout
-    assert "partition/ is measured but no benchmark is built from it" in proc.stdout
+def test_write_lists_the_graph_and_the_check_then_passes(tmp_path):
+    env = fake_build(tmp_path, [*SOURCES, "../io/CMakeLists.txt"], ["../core/include/x.hpp"])
+    assert check(env, [], "--write").returncode == 0
+    files = Path(env["REPO"]).parent / "measured-files.txt"
+    lines = files.read_text().splitlines()
+    assert lines[0].startswith("# ")  # how to rewrite it
+    assert lines[1:] == sorted([*LISTED, "core/include/x.hpp"])  # build files left to the pattern
+    proc = subprocess.run([sys.executable, str(CHECK), "build:bench"], cwd=env["REPO"],
+                          env={**env, "AUTAN_MEASURED_FILES": str(files)}, capture_output=True,
+                          text=True, check=False)  # fmt: skip
+    assert proc.returncode == 0, proc.stdout
 
 
 def test_a_tree_that_is_not_built_is_refused(tmp_path):
     env = fake_build(tmp_path, [], [])
     (Path(env["REPO"]) / "build" / "build.ninja").unlink()
-    proc = check(env)
+    proc = check(env, LISTED)
     assert proc.returncode != 0
     assert "not a Ninja build tree" in proc.stderr
-
-
-SOURCES = [f"../{d}/src/x.cpp" for d in MEASURED]
 
 
 @pytest.mark.parametrize("state", ["deps not found", "#deps 2, deps mtime 1 (STALE)"])
 def test_an_object_without_a_valid_dependency_record_fails(tmp_path, state):
     # Its headers would go unseen: the check refuses instead of passing.
-    proc = check(fake_build(tmp_path, SOURCES, [], state=state))
+    proc = check(fake_build(tmp_path, SOURCES, [], state=state), LISTED)
     assert proc.returncode != 0
     assert "obj/a.o" in proc.stderr
 
 
 def test_a_quoted_input_is_read_as_its_path(tmp_path):
     # ninja shell-quotes a path with a space: it is still a repository file.
-    proc = check(fake_build(tmp_path, [*SOURCES, "'../runtime/gen script.py'"], []))
+    proc = check(fake_build(tmp_path, [*SOURCES, "'../runtime/gen script.py'"], []), LISTED)
     assert proc.returncode == 1
     assert "runtime/gen script.py is built into a benchmark" in proc.stdout
 
@@ -109,17 +124,15 @@ def test_a_symlinked_source_counts_where_it_lies_too(tmp_path):
     (repo / "codegen" / "real.cpp").write_text("")
     (repo / "runtime").mkdir()
     (repo / "runtime" / "link.cpp").symlink_to("../codegen/real.cpp")
-    proc = check(env)
+    proc = check(env, [*LISTED, "codegen/real.cpp"])
     assert proc.returncode == 1
     assert "runtime/link.cpp is built into a benchmark" in proc.stdout
 
 
-def test_build_files_alone_do_not_keep_a_directory_measured(tmp_path):
-    # kernels/ has only a .cmake file in the graph: .cmake files start the bench anyway.
-    sources = [s for s in SOURCES if "kernels" not in s] + ["../kernels/config.cmake"]
-    proc = check(fake_build(tmp_path, sources, []))
-    assert proc.returncode == 1
-    assert "kernels/ is measured but no benchmark is built from it" in proc.stdout
+def test_build_files_are_left_to_the_pattern(tmp_path):
+    # A .cmake input of the graph needs no line in the list: changes.sh's pattern measures it.
+    proc = check(fake_build(tmp_path, [*SOURCES, "../kernels/config.cmake"], []), LISTED)
+    assert proc.returncode == 0, proc.stdout
 
 
 def load_check():

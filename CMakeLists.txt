@@ -55,6 +55,11 @@ endif()
 add_subdirectory(codegen)
 add_subdirectory(solvers)
 add_subdirectory(physics)
+# The host loop benchmark (bench/host, autan-bench run --suite host): built by gpu-bench only.
+option(AUTAN_BUILD_HOST_BENCH "Build autan_host_bench" OFF)
+if(AUTAN_BUILD_HOST_BENCH)
+  add_subdirectory(bench/host)
+endif()
 
 if(AUTAN_BUILD_TESTS)
   include(CTest)
