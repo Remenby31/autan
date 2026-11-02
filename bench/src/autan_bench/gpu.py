@@ -319,7 +319,10 @@ class Sampler:
                 return
             self._stop.wait(self.interval_s)
 
-    def summary(self) -> dict[str, object]:
+    def summary(self, gpu_work: bool = True) -> dict[str, object]:
+        """The GPU during the run. A GPU benchmark (``gpu_work``) is described while the GPU
+        works; a host benchmark's GPU must stay idle throughout (GPU_CONTENDED otherwise), and
+        is described over every sample."""
         if self._error is not None:
             raise self._error
         if not self.samples:
@@ -328,15 +331,31 @@ class Sampler:
         # Clocks, power and temperature describe the GPU while it works: setup and host-side
         # verification leave it idle at base clock for part of the run.
         threshold = BUSY_UTILIZATION_PCT_MACOS if sys.platform == "darwin" else BUSY_UTILIZATION_PCT
-        busy = [s for s in self.samples if (s.utilization_pct or 0.0) > threshold]
-        if not busy:
+        if not gpu_work:
+            # A host benchmark needs the GPU idle, as before any run: an unknown utilization
+            # does not prove it.
+            threshold = IDLE_UTILIZATION_PCT
+            busy = [
+                s
+                for s in self.samples
+                if s.utilization_pct is None or s.utilization_pct > threshold
+            ]
+        else:
+            busy = [s for s in self.samples if (s.utilization_pct or 0.0) > threshold]
+        if gpu_work and not busy:
             raise BenchError(Code.NO_SAMPLES, "no clock sample was taken while the GPU was busy")
+        if not gpu_work and busy:
+            raise BenchError(
+                Code.GPU_CONTENDED,
+                f"the GPU was busy in {len(busy)} of {len(self.samples)} samples of a host run",
+            )
+        described = busy if gpu_work else self.samples
 
         def values(name: str) -> list[float]:
-            return [v for s in busy if (v := getattr(s, name)) is not None]
+            return [v for s in described if (v := getattr(s, name)) is not None]
 
         listed = [s.compute_apps for s in self.samples if s.compute_apps is not None]
-        masks = [s.event_reasons for s in busy if s.event_reasons is not None]
+        masks = [s.event_reasons for s in described if s.event_reasons is not None]
         reasons = None
         for mask in masks:
             reasons = (reasons or 0) | mask

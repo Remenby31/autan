@@ -164,6 +164,43 @@
           "minimum": 0
         }
       }
+    },
+    "cpu_device": {
+      "description": "The host core a CPU benchmark is pinned to, as the kernel reports it (sysfs): the generated host loops are serial, and GB10 mixes Cortex-X925 and A725 cores.",
+      "type": "object",
+      "required": [
+        "name",
+        "cpus",
+        "midr",
+        "max_khz",
+        "online_cpus"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "cpus": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minItems": 1
+        },
+        "midr": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]+$"
+        },
+        "max_khz": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "online_cpus": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   },
   "properties": {
@@ -283,6 +320,9 @@
             },
             {
               "$ref": "#/$defs/metal_gpu"
+            },
+            {
+              "$ref": "#/$defs/cpu_device"
             }
           ]
         },
@@ -357,8 +397,8 @@
             },
             "busy_samples": {
               "type": "integer",
-              "minimum": 1,
-              "description": "Samples above busy_threshold_pct; the clock, power and temperature spreads cover only these."
+              "minimum": 0,
+              "description": "Samples above busy_threshold_pct; for a GPU benchmark (at least one) the clock, power and temperature spreads cover only these; a host benchmark (backend cpu) has none, and its spreads cover every sample."
             },
             "sm_mhz": {
               "$ref": "#/$defs/spread"
@@ -601,6 +641,81 @@
                   "fp32+acc64"
                 ],
                 "description": "Metal has no FP64 arithmetic."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "cpu"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "gpu": {
+                "$ref": "#/$defs/cpu_device"
+              },
+              "runtime_version": {
+                "description": "The compiler's version (GCC: major x 10000 + minor x 100 + patch): a host loop has no runtime."
+              }
+            }
+          },
+          "conditions": {
+            "properties": {
+              "during_run": {
+                "properties": {
+                  "busy_samples": {
+                    "const": 0
+                  },
+                  "compute_apps_max": {
+                    "const": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend": {
+                "enum": [
+                  "cuda",
+                  "hip",
+                  "metal"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "conditions": {
+            "properties": {
+              "during_run": {
+                "properties": {
+                  "busy_samples": {
+                    "minimum": 1
+                  }
+                }
               }
             }
           }
