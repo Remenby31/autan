@@ -459,3 +459,36 @@ def test_per_entry_outputs_go_to_the_entries_and_take_no_active_input(tmp_path: 
     with pytest.raises(CodegenError) as info:
         generate(src, tmp_path / "gen", ["cpu"])
     assert info.value.code == "E1012"
+
+
+LISTED_ON_METAL = """
+from autan_codegen.dsl import Residual, State, Sum, cell_reduce, cells, pointwise
+
+q = cells.field("q", State)
+r = cells.field("r", Residual)
+
+
+@pointwise
+def across(qo: State) -> Residual:
+    return qo
+
+
+listed = cell_reduce(across, qo=q.other(None), acc=Sum(r), derivatives=False, listed=True)
+"""
+
+
+def test_listed_reductions_have_no_derivatives_run_over_incidences_and_not_on_metal(
+    tmp_path: Path,
+) -> None:
+    # Listed cells are written in place across faces: no derivatives, an incidence reduction,
+    # and no Metal kernel (the CPU and CUDA/HIP ones only).
+    for kwargs in ({"listed": True}, {"listed": True, "derivatives": False, "over": dsl.STENCIL}):
+        with pytest.raises(CodegenError) as info:
+            dsl.cell_reduce(block_value, b=dsl.faces.field("f", dsl.Jac), acc=dsl.Sum(r), **kwargs)
+        assert info.value.code == "E1004"
+    src = tmp_path / "listed.py"
+    src.write_text(LISTED_ON_METAL)
+    generate(src, tmp_path / "cpu", ["cpu"])
+    with pytest.raises(CodegenError) as info:
+        generate(src, tmp_path / "metal", ["metal"])
+    assert info.value.code == "E1001"
