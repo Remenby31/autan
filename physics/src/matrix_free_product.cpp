@@ -62,16 +62,10 @@ MatrixFreeProduct<P>::MatrixFreeProduct(NavierStokes<P>& flow, SpalartAllmaras<P
 template <class P>
 void MatrixFreeProduct<P>::start(std::span<const double> u, std::span<const State> state,
                                  std::span<const double> rnu, double nt_inf,
-                                 std::span<const double> shift, std::array<bool, 6> left_out,
-                                 std::array<bool, 6> assembled, Operator matrix) {
+                                 std::span<const double> shift, std::array<bool, 6> left_out) {
   const std::size_t nf = 5 * n_;
   if (u.size() != nf || state.size() != nf || rnu.size() != (m_ - 5) * n_ || shift.size() != n_) {
     throw std::invalid_argument("MatrixFreeProduct::start: sizes do not match the mesh");
-  }
-  for (std::size_t k = 0; k < 6; ++k) {
-    if (assembled[k] && (k >= 5 || !matrix)) {
-      throw std::invalid_argument("MatrixFreeProduct::start: assembled rows need a flow matrix");
-    }
   }
   std::copy(u.begin(), u.end(), current_.begin());
   std::copy(rnu.begin(), rnu.end(), current_.begin() + static_cast<std::ptrdiff_t>(nf));
@@ -80,8 +74,6 @@ void MatrixFreeProduct<P>::start(std::span<const double> u, std::span<const Stat
   shift_.assign(shift.begin(), shift.end());
   nt_inf_ = nt_inf;
   left_out_ = left_out;
-  assembled_ = assembled;
-  matrix_ = std::move(matrix);
   halvings_ = 0;
   representation_ = 0.0;
   failed_ = false;
@@ -236,16 +228,12 @@ void MatrixFreeProduct<P>::apply(std::span<const double> v, std::span<double> y)
     }
     eps *= 0.5;
   }
-  if (std::find(assembled_.begin(), assembled_.end(), true) != assembled_.end()) {
-    rows_.resize(nf);
-    matrix_(v.first(nf), rows_);
-  }
   for (std::size_t k = 0; k < m_; ++k) {
     if (left_out_[k]) continue;
     for (std::size_t c = 0; c < n_; ++c) {
       const std::size_t i = k * n_ + c;
       const double r = k < 5 ? static_cast<double>(res_[i]) : static_cast<double>(res_nt_[c]);
-      y[i] = assembled_[k] ? rows_[i] : shift_[c] * v[i] + (r - base_[i]) / eps;
+      y[i] = shift_[c] * v[i] + (r - base_[i]) / eps;
     }
   }
 }

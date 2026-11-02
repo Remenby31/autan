@@ -65,9 +65,19 @@ jobs:
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
       - name: GPU tests (under the GPU lock, at most 10 minutes)
+        # The multi-rank GPU tests (the halo tests on 1-8 ranks) under the MPI watchdog: an MPI
+        # launcher alive past 120 s has its processes' activity (state, CPU, wait channel) and any
+        # stacks dumped, then is killed, so the hung test is named before the lock's 10 minutes.
         run: >-
           bench/lock/autan-gpu-lock -m "gpu-tests: ctest -L gpu" -t 600 --
+          bench/ci/ctest-watchdog.sh 120 "$RUNNER_TEMP/mpi-hang-stacks" --
           ctest --test-dir build -L gpu -j 1 --output-on-failure --no-tests=error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: gpu-mpi-hang-stacks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mpi-hang-stacks/
+          if-no-files-found: ignore
       - name: Install the generator's test environment
         working-directory: codegen
         run: uv sync --locked

@@ -11,6 +11,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -914,7 +915,8 @@ class EulerPhysics final : public runtime::Physics {
     // matrix-free; with SA, of the flow and rho nt together, when the case asks for it
     // (time.coupled_turbulence), the loose step with the assembled operator otherwise.
     const bool requested = sa_ != nullptr && ctx_.input.time.coupled_turbulence;
-    const bool matrix_free = is_viscous && second_order_ && multigrid_ && (!sa_ || requested);
+    const bool matrix_free = is_viscous && second_order_ && multigrid_ &&
+                             (sa_ ? requested : ctx_.input.time.matrix_free);
     // The step that switches to second order is still the loose one, its rho nt solved alone.
     const bool coupled = matrix_free && requested;
     switch_order(drop);
@@ -1128,6 +1130,12 @@ class EulerPhysics final : public runtime::Physics {
         q.announced = true;
         ctx_.log.write("info", "linear", "matrix-free products of the residual from this step", {},
                        "{}");
+        if (!coupled) {
+          ctx_.log.write("warning", "solver",
+                         "the matrix-free laminar step is validated on the TMR laminar flat plate "
+                         "only (#429)",
+                         "W0429", "{}");
+        }
       }
       if (coupled && !q.announced_coupled) {
         q.announced_coupled = true;
@@ -1145,11 +1153,10 @@ class EulerPhysics final : public runtime::Physics {
             euler_, coupled ? &sa_->model : nullptr, gas_.gamma, flow_scales(),
             NtBounds{nt_max_decrease, nt_max_increase});
       }
-      // An equation at the round-off floor (the runtime's exemption: the span momentum of a
-      // one-cell-thick mesh) has no derivative a difference can resolve, only its round-off over
-      // eps. The flow's solve takes its rows from the assembled operator, so that the solve
-      // leaves it at the floor; the coupled solve leaves it out, its update zero (coupled-sa.md,
-      // amendment 2).
+      // coupled-sa.md, amendment 2, and matrix-free-step.md: an equation at the round-off floor
+      // (the runtime's exemption: the span momentum of a one-cell-thick mesh) is left out of the
+      // solve, its update zero: its residual is round-off, so the difference resolves no
+      // derivative for it and solving for it only puts round-off into its unknowns.
       std::array<bool, 6> exempt{};
       for (std::size_t k = 0; k < m; ++k) exempt[k] = exempt_.exempt(k);
       const std::size_t nf = 5 * n_;
@@ -1159,9 +1166,7 @@ class EulerPhysics final : public runtime::Physics {
         a.start(std::span<const double>(u_).first(nf), state_, t.rnu, t.nt_inf, shift, exempt);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
       } else {
-        a.start(
-            std::span<const double>(u_).first(nf), state_, {}, 0.0, shift, {}, exempt,
-            [this](std::span<const double> v, std::span<double> y) { matrix_->multiply(v, y); });
+        a.start(std::span<const double>(u_).first(nf), state_, {}, 0.0, shift, exempt);
       }
       q.r.assign(m * n_, 0.0);
       q.x.assign(m * n_, 0.0);
@@ -1170,7 +1175,7 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) q.r[nf + c] = -static_cast<double>(sa_->res[c]);
       }
       auto drop_left_out = [&](std::span<double> x) {
-        for (std::size_t k = 0; coupled && k < 6; ++k) {
+        for (std::size_t k = 0; k < 6; ++k) {
           if (exempt[k]) std::fill_n(x.begin() + static_cast<std::ptrdiff_t>(k * n_), n_, 0.0);
         }
       };
@@ -1545,24 +1550,29 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // case-schema.md#time: the coupled turbulence step is SA's, in the host's steady
-  // multigrid on one rank.
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    if (in.turbulence.model != "sa") {
-      return runtime::PhysicsRefusal{
-          .message =
-              "time.coupled_turbulence needs the SA model, not '" + in.turbulence.model + "'",
-          .path = "time.coupled_turbulence",
-          .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
-          .code = "E0426"};
-    }
-    if (in.time.linear_solver != "multigrid" || ranks > 1) {
-      return runtime::PhysicsRefusal{
-          .message = "time.coupled_turbulence runs in the host multigrid on one rank",
-          .path = "time.coupled_turbulence",
-          .data_json =
-              nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
-          .code = "E0427"};
+  // case-schema.md#time: the opt-in steps, the coupled turbulence step SA's and the matrix-free
+  // step laminar flow's, in the host's steady multigrid on one rank.
+  if (in.time.kind == "steady") {
+    for (const auto& [key, on, model, code] :
+         {std::tuple{"coupled_turbulence", in.time.coupled_turbulence, "sa", "E0426"},
+          std::tuple{"matrix_free", in.time.matrix_free, "laminar", "E0429"}}) {
+      if (!on) continue;
+      const std::string path = std::string("time.") + key;
+      if (in.turbulence.model != model) {
+        return runtime::PhysicsRefusal{
+            .message = path + " needs the " + model + " model, not '" + in.turbulence.model + "'",
+            .path = path,
+            .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
+            .code = code};
+      }
+      if (in.time.linear_solver != "multigrid" || ranks > 1) {
+        return runtime::PhysicsRefusal{
+            .message = path + " runs in the host multigrid on one rank",
+            .path = path,
+            .data_json =
+                nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
+            .code = "E0427"};
+      }
     }
   }
   // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
@@ -1712,12 +1722,13 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    return runtime::PhysicsRefusal{
-        .message = "time.coupled_turbulence runs in the host multigrid, not on a device",
-        .path = "time.coupled_turbulence",
-        .data_json = "{}",
-        .code = "E0427"};
+  if (in.time.kind == "steady" && (in.time.coupled_turbulence || in.time.matrix_free)) {
+    const std::string path =
+        in.time.coupled_turbulence ? "time.coupled_turbulence" : "time.matrix_free";
+    return runtime::PhysicsRefusal{.message = path + " runs in the host multigrid, not on a device",
+                                   .path = path,
+                                   .data_json = "{}",
+                                   .code = "E0427"};
   }
   // The device loops sum in local order: the host's global-order gathers have no device
   // counterpart in the Euler physics yet.

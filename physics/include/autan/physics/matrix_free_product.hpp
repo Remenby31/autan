@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstddef>
-#include <functional>
 #include <span>
 #include <vector>
 
@@ -40,7 +39,6 @@ class MatrixFreeProduct {
  public:
   using State = typename P::state;
   using Res = typename P::residual;
-  using Operator = std::function<void(std::span<const double> v, std::span<double> y)>;
 
   /// `model`: SA, or null for the flow alone. `flow_scale`: the scales of the five conserved
   /// unknowns (the freestream's); rho nt's is the root mean square of rho nt at each start().
@@ -50,11 +48,9 @@ class MatrixFreeProduct {
   /// Holds the switches at X = (u, rnu) and evaluates R(X). `u`: conserved, 5 n; `state`: the
   /// flow's stored state of u; `rnu`: n with a model, empty without; `shift`: V/dt per cell.
   /// Call after the flow's residual at `state` (and the model's at rnu), as freeze() requires.
-  /// The rows of `left_out` equations are zero and their entries of v ignored; the rows of
-  /// `assembled` equations take `matrix`'s (y = A v over the five flow unknowns).
+  /// The rows of `left_out` equations are zero and their entries of v ignored.
   void start(std::span<const double> u, std::span<const State> state, std::span<const double> rnu,
-             double nt_inf, std::span<const double> shift, std::array<bool, 6> left_out,
-             std::array<bool, 6> assembled = {}, Operator matrix = {});
+             double nt_inf, std::span<const double> shift, std::array<bool, 6> left_out);
   void apply(std::span<const double> v, std::span<double> y);
 
   /// The inner product and largest entry of residuals scaled by S^-1, for the GCR.
@@ -82,10 +78,8 @@ class MatrixFreeProduct {
   double eps_storage_;
   std::array<double, 6> scale_{};
   std::array<bool, 6> left_out_{};
-  std::array<bool, 6> assembled_{};
-  Operator matrix_;
   double nt_inf_ = 0.0;
-  std::vector<double> current_, probe_, base_, shift_, rows_;
+  std::vector<double> current_, probe_, base_, shift_;
   std::vector<State> state_, probe_state_, nt_, nt_current_;
   std::vector<Res> res_, res_nt_;
   int halvings_ = 0;

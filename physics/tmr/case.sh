@@ -9,15 +9,19 @@
 #   naca0012   2DN00: M 0.15, Re 6e6 per chord, farfield 500 chords away, adiabatic airfoil.
 # T = 300 K throughout; the meshes are one layer of thickness $SPAN (default 1) between `sides`.
 # The flat plate with SA sets time.coupled_turbulence, the case docs/design/coupled-sa.md validated
-# (COUPLED=0: the loose step).
+# (COUPLED=0: the loose step); laminar, time.matrix_free (docs/design/matrix-free-step.md;
+# MATRIX_FREE=0: the assembled operator).
 set -euo pipefail
 kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000} alpha=${6:-0}
 turbulence=${TURBULENCE:-"{ model = \"sa\", nu_tilde_ratio = 3.0 }"}
 span=${SPAN:-1.0}
-coupled=""
+opt_in=""
 if [ "$kind" = flatplate ] && [[ $turbulence =~ model[[:space:]]*=[[:space:]]*[\"\']sa[\"\'] ]] &&
   [ "${COUPLED:-1}" = 1 ]; then
-  coupled="coupled_turbulence = true"
+  opt_in="coupled_turbulence = true"
+elif [ "$kind" = flatplate ] && [[ $turbulence =~ model[[:space:]]*=[[:space:]]*[\"\']laminar[\"\'] ]] &&
+  [ "${MATRIX_FREE:-1}" = 1 ]; then
+  opt_in="matrix_free = true"
 fi
 top=$(git rev-parse --show-toplevel)
 build=${AUTAN_BUILD:-$top/build}
@@ -78,7 +82,7 @@ temperature = "300.0 K"
 kind = "steady"
 max_iterations = $iterations
 residual_orders = 10.0
-$coupled
+$opt_in
 
 $(boundaries)
 

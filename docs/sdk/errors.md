@@ -184,9 +184,9 @@ Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exa
 
 **Periodic faces do not match** (error)
 
-The faces of a periodic pair do not match one to one under its translation.
+The faces of a periodic pair do not match one to one under its translation, the pairs place a node in two ways, or moving the matched nodes onto translates makes a face or cell degenerate.
 
-Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
+Fix: Regenerate the mesh with conforming periodic faces, and check the translations.
 
 ## E0120
 
@@ -307,6 +307,14 @@ Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
 A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
+
+## W0150
+
+**Periodic nodes moved** (warning)
+
+The nodes of a periodic pair matched within the tolerance but not exactly, so assembly moved them onto translates, and the run computes on the moved coordinates (mesh.md, Periodic pairs). `data` gives the nodes moved by more than round-off, the largest move, the largest pair mismatch relative to its tolerance (at most 1) and the largest relative change of a cell's volume.
+
+Fix: Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.
 
 ## E0201
 
@@ -558,11 +566,27 @@ Fix: Compare with a run without the option before relying on the result.
 
 ## E0427
 
-**Coupled turbulence needs the host multigrid** (error)
+**Opt-in step needs the host multigrid** (error)
 
-The coupled turbulence step runs in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs.
+The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs; the message names the key.
 
 Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
+
+## E0429
+
+**Matrix-free step not applicable** (error)
+
+`time.matrix_free` is set on a case whose physics has no matrix-free step: only compressible laminar physics has one.
+
+Fix: Remove `matrix_free=True`, or use compressible laminar physics.
+
+## W0429
+
+**Matrix-free step outside its validated domain** (warning)
+
+`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar flat plate only (#429). `autan plan` reports it, and the run logs it at its first matrix-free step.
+
+Fix: Compare with a run without the option before relying on the result.
 
 ## E0501
 

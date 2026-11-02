@@ -465,9 +465,10 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
-  // E1109. The coupled turbulence step is SA's (case-schema.md#time), in the host multigrid:
-  // E0426 on inviscid flow, E0427 with the line solver.
-  const std::string reason = GENERATE("periodic", "ranks", "coupled", "coupled-lines");
+  // E1109. The opt-in steps (case-schema.md#time) are SA's and laminar flow's, in the host
+  // multigrid: E0426 and E0429 on inviscid flow, E0427 with the line solver.
+  const std::string reason =
+      GENERATE("periodic", "ranks", "coupled", "matrix-free", "coupled-lines");
   CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     if (reason == "periodic") {
@@ -479,6 +480,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       inviscid_along_x(d, "fp64");
       if (reason == "ranks") d["reproducibility"] = "ranks";
       if (reason == "coupled") d["time"]["coupled_turbulence"] = true;
+      if (reason == "matrix-free") d["time"]["matrix_free"] = true;
     }
   });
   const auto out = run(doc);
@@ -490,6 +492,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       {"periodic", {"E0706", "time.linear_solver"}},
       {"ranks", {"E1109", "reproducibility"}},
       {"coupled", {"E0426", "time.coupled_turbulence"}},
+      {"matrix-free", {"E0429", "time.matrix_free"}},
       {"coupled-lines", {"E0427", "time.coupled_turbulence"}}};
   CHECK(diagnostic["code"] == expected.at(reason).first);
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
@@ -1051,6 +1054,7 @@ TEST_CASE("a laminar run's matrix-free phase starts after the switch to second o
       inviscid_along_x(d, precision);
       d["physics"]["turbulence"]["model"] = "laminar";
       ringleb_case(d, 0.0);
+      d["time"]["matrix_free"] = true;
       d["time"]["max_iterations"] = budget;
       d["time"]["residual_orders"] = 30.0;
     });
@@ -1098,14 +1102,15 @@ TEST_CASE("a laminar run keeps its span momentum at the round-off floor", "[navi
   // matrix-free-step.md, on the one-cell-thick tests/data/mesh/ringleb with the freestream along
   // x: w is zero by symmetry and the z-momentum's residual is round-off, which the runtime
   // exempts. Neither the first-order phase with the assembled operator nor the matrix-free
-  // phase after it may wake it (W0710), and through the matrix-free phase it stays within the
-  // round-off of the phase before it.
+  // phase after it may wake it (W0710); the matrix-free phase leaves the exempt equation out of
+  // its solve, so its unknowns do not change in that phase, bit for bit.
   const char* precision = GENERATE("fp64", "fp32+acc64");
   CAPTURE(precision);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
     d["physics"]["turbulence"]["model"] = "laminar";
     ringleb_case(d, 0.0);
+    d["time"]["matrix_free"] = true;
     d["time"]["max_iterations"] = 260;
     d["time"]["residual_orders"] = 30.0;
   });
@@ -1143,6 +1148,12 @@ TEST_CASE("a laminar run keeps its span momentum at the round-off floor", "[navi
   INFO("z-momentum residual: " << before << " before the phase, " << after << " in it");
   REQUIRE(before > 0.0);
   CHECK(after <= before);
+  auto at = doc;
+  at["time"]["max_iterations"] = start - 1;
+  const auto first = run(at);
+  REQUIRE(first.status == ExitStatus::finished);
+  CHECK(field(first.run, "MomentumZ", "RestartState") ==
+        field(out.run, "MomentumZ", "RestartState"));
 }
 
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
