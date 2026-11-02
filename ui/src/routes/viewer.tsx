@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { runsQuery } from "../api/runs";
 import { fetchSurface, type Surface } from "../api/surface";
 import { TopBar } from "../components/shell/TopBar";
@@ -14,6 +14,7 @@ import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
 import { colormapFor, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
+import { slicePlane } from "../viewer/slice";
 
 interface Search {
   run?: string;
@@ -146,18 +147,6 @@ function shownField(surface: Surface, name: string): string {
   return surface.fields.some((f) => f.name === name) ? name : (surface.fields[0]?.name ?? "");
 }
 
-function bounds(surface: Surface): { min: number[]; max: number[] } {
-  const min = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
-  const max = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY];
-  const p = surface.positions;
-  for (let i = 0; i < p.length; i += 3)
-    for (let k = 0; k < 3; k++) {
-      const v = (p[i + k] as number) + (surface.origin[k] as number);
-      if (v < (min[k] as number)) min[k] = v;
-      if (v > (max[k] as number)) max[k] = v;
-    }
-  return { min, max };
-}
 const format = (v: number) =>
   Math.abs(v) >= 1e4 || (v !== 0 && Math.abs(v) < 1e-2) ? v.toExponential(2) : v.toFixed(3);
 
@@ -289,21 +278,15 @@ function Viewer() {
   // The slice: a plane through the wall surface's extent, fetched again (debounced) as it moves.
   const [cut, setCut] = useState<Surface | null>(null);
   const [cutError, setCutError] = useState<string | null>(null);
-  const extent = useMemo(() => (surface ? bounds(surface) : null), [surface]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the field is applied below without refetching
   useEffect(() => {
-    if (!run || !axis || !extent) {
+    if (!run || !axis || !surface) {
       setCut(null);
       setCutError(null);
       viewer.current?.setSlice(null, "");
       return;
     }
-    const k = "xyz".indexOf(axis);
-    const origin = extent.min.map((low, j) => (low + (extent.max[j] as number)) / 2);
-    origin[k] =
-      (extent.min[k] as number) + at * ((extent.max[k] as number) - (extent.min[k] as number));
-    const normal = [0, 0, 0];
-    normal[k] = 1;
+    const { origin, normal } = slicePlane(surface, axis, at);
     const abort = new AbortController();
     const timer = setTimeout(() => {
       fetchSurface(
@@ -326,7 +309,7 @@ function Viewer() {
       clearTimeout(timer);
       abort.abort();
     };
-  }, [run, axis, at, extent]);
+  }, [run, axis, at, surface]);
   useEffect(() => {
     if (cut) viewer.current?.setSliceField(shownField(cut, sliceField));
   }, [cut, sliceField]);

@@ -163,13 +163,13 @@ def test_a_plane_through_mesh_nodes_leaves_no_empty_triangle(run: Path) -> None:
     assert area.min() > 1e-3 / 64
 
 
-def _single_cell(run: Path, base: list[tuple[float, float]]) -> None:
-    # One prism over the polygon `base`, z from 0 to 1, as the run's whole solution mesh.
-    n = len(base)
-    coords = np.array([(x, y, z) for z in (0.0, 1.0) for x, y in base])
-    faces = [list(range(n))[::-1], list(range(n, 2 * n))]
-    faces += [[k, (k + 1) % n, n + (k + 1) % n, n + k] for k in range(n)]
+def _mesh(
+    run: Path, coords: npt.NDArray[Any], faces: list[list[int]], cells: list[list[int]]
+) -> None:
+    # The run's whole solution mesh replaced by these nodes, faces and cells (0-based), every
+    # field 1 in every cell.
     face_start = np.cumsum([0] + [len(f) for f in faces])
+    cell_start = np.cumsum([0] + [len(c) for c in cells])
     with h5py.File(run / "solution.cgns", "r+") as tree:
         zone = tree["Base"]["Zone"]
         arrays = {
@@ -177,17 +177,52 @@ def _single_cell(run: Path, base: list[tuple[float, float]]) -> None:
         } | {
             ("NGonElements", "ElementStartOffset"): face_start,
             ("NGonElements", "ElementConnectivity"): np.concatenate(faces) + 1,
-            ("NFaceElements", "ElementStartOffset"): np.array([0, len(faces)]),
-            ("NFaceElements", "ElementConnectivity"): np.arange(1, len(faces) + 1),
+            ("NFaceElements", "ElementStartOffset"): cell_start,
+            ("NFaceElements", "ElementConnectivity"): np.concatenate(cells) + 1,
         }
         for name, group in zone["FlowSolution"].items():
             if isinstance(group, h5py.Group) and name != "GridLocation":
-                arrays[("FlowSolution", name)] = np.array([1.0])
+                arrays[("FlowSolution", name)] = np.ones(len(cells))
         for (parent, name), values in arrays.items():
             group = zone[parent][name]
             dtype = group[" data"].dtype
             del group[" data"]
             group.create_dataset(" data", data=np.asarray(values).astype(dtype))
+
+
+def _single_cell(run: Path, base: list[tuple[float, float]]) -> None:
+    # One prism over the polygon `base`, z from 0 to 1.
+    n = len(base)
+    coords = np.array([(x, y, z) for z in (0.0, 1.0) for x, y in base])
+    faces = [list(range(n))[::-1], list(range(n, 2 * n))]
+    faces += [[k, (k + 1) % n, n + (k + 1) % n, n + k] for k in range(n)]
+    _mesh(run, coords, faces, [list(range(len(faces)))])
+
+
+def _cubes(run: Path, corners: list[tuple[int, int, int]]) -> None:
+    # Unit cubes at these integer corners, sharing their common nodes and faces.
+    nodes: dict[tuple[int, int, int], int] = {}
+    faces: dict[frozenset[int], int] = {}
+    face_nodes: list[list[int]] = []
+    cells = []
+    sides = [
+        [(0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)],
+        [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
+        [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)],
+        [(0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)],
+        [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)],
+        [(1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)],
+    ]
+    for x, y, z in corners:
+        cell = []
+        for side in sides:
+            ids = [nodes.setdefault((x + i, y + j, z + k), len(nodes)) for i, j, k in side]
+            cell.append(faces.setdefault(frozenset(ids), len(face_nodes)))
+            if cell[-1] == len(face_nodes):
+                face_nodes.append(ids)
+        cells.append(cell)
+    coords = np.array(sorted(nodes, key=nodes.__getitem__), dtype=np.float64)
+    _mesh(run, coords, face_nodes, cells)
 
 
 def test_a_concave_cell_is_cut_along_its_notch(run: Path) -> None:
@@ -222,8 +257,9 @@ def test_a_slice_is_read_only_from_the_solution_file(run: Path, tmp_path: Path) 
 def test_slices_asked_while_one_is_cut_leave_only_the_newest(
     run: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A plane dragged across the view: requests pile up while the first is cut. Only the newest
-    # waiting one is cut next; the ones it superseded are refused without cutting.
+    # A plane dragged across the view: requests pile up while the first is cut, more of them
+    # than the server has worker threads. The server keeps answering; only the newest waiting
+    # slice is cut next, the ones it superseded are refused without cutting.
     import threading  # noqa: PLC0415
     import time  # noqa: PLC0415
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
@@ -237,22 +273,41 @@ def test_slices_asked_while_one_is_cut_leave_only_the_newest(
     def held(folder: Any, origin: Any, normal: Any) -> bytes:
         calls.append(float(origin[0]))
         started.set()
-        release.wait(10)
+        release.wait(30)
         return cut(folder, origin, normal)
 
     monkeypatch.setattr(autan_ui.app, "slice_surface", held)
-    client = _client(run)
     url = f"/api/runs/{run.name}/slice?normal=1,0,0&origin="
-    with ThreadPoolExecutor(4) as pool:
+    waiting_count = 48
+    # One event loop serves every request, as uvicorn does.
+    with _client(run) as client, ThreadPoolExecutor(waiting_count + 2) as pool:
         first = pool.submit(client.get, url + "0.1,0,0")
         assert started.wait(10)
-        waiting = [pool.submit(client.get, url + f"0.{k},0,0") for k in (2, 3)]
-        # Both have taken their turn (the server's count of slices asked) before the first ends.
-        while client.app.state.slices_asked.get(run.name, 0) < 3:  # type: ignore[attr-defined]
+        waiting = [pool.submit(client.get, url + f"0.{k + 2},0,0") for k in range(waiting_count)]
+        # Every one has taken its turn (the server's count of slices asked) while the first is
+        # still being cut.
+        deadline = time.monotonic() + 10
+        while client.app.state.slices_asked.get(run.name, 0) < waiting_count + 1:  # type: ignore[attr-defined]
+            assert time.monotonic() < deadline, "requests waiting for a slice starve the server"
             time.sleep(0.01)
+        assert pool.submit(client.get, "/api/materials").result(timeout=10).status_code == 200
         release.set()
         codes = [first.result().status_code] + [w.result().status_code for w in waiting]
 
     assert codes[0] == 200
-    assert sorted(codes[1:]) == [200, 409]
+    assert sorted(codes[1:]) == [200] + [409] * (waiting_count - 1)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("normal", ["0,0,1", "0,0,-1"])
+def test_faces_in_the_plane_count_once_whichever_side_the_mesh_is(run: Path, normal: str) -> None:
+    # Three unit cubes: two side by side on z = 0, one under the first. z = 0 holds an interior
+    # face (between the first and the lower cube) and a boundary face (under the second).
+    _cubes(run, [(0, 0, 0), (1, 0, 0), (0, 0, -1)])
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0,0,0&normal={normal}")
+
+    assert response.status_code == 200
+    positions, triangles, _ = _decode(response.content)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    np.testing.assert_allclose(positions[:, 2], 0.0, atol=tolerance)
+    assert _areas(positions, triangles).sum() == pytest.approx(2.0, rel=tolerance)
