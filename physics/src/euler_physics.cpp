@@ -971,7 +971,7 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
       first_norms_.clear();
-      ctx_.log.write("info", "solver", "second order from this step", {},
+      ctx_.log.write("info", "solver", "second order from the next step", {},
                      nlohmann::json{{"first_order_steps", first_order_steps_}}.dump());
     }
   }

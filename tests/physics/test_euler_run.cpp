@@ -971,9 +971,13 @@ TEST_CASE("a steady step whose linear solve stops above its tolerance halves the
   const auto first = run(doc(k));
   REQUIRE(first.status == ExitStatus::finished);
   auto runs = std::vector<fs::path>{first.run};
+  // Every continuation keeps the original run's residual reference (solver-input.md, start).
+  const auto origin = continue_from(first.run);
   for (int j = 1; j <= 3; ++j) {
     auto next = doc(k + j);
     next["start"] = continue_from(runs.back());
+    next["start"]["residual_reference"] = origin["residual_reference"];
+    next["start"]["woken"] = origin["woken"];
     const auto r = run(next);
     INFO(r.err);
     REQUIRE(r.status == ExitStatus::finished);
