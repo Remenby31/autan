@@ -62,7 +62,7 @@ All runs fp64 unless stated, against `main` at the merge base (the reference), t
 - SA 69×49: at most 3332 steps;
 - SA 137×97: within the 6000 steps.
 
-**Transonic SA with an active limiter**: RAE 2822, AGARD AR-138 case 9 (M 0.73, α 2.79° corrected, Re 6.5 × 10⁶ per chord; `vv` catalog `rae2822`), on the NPARC study #4 C-grid (369 × 65, one layer, `physics/tmr/plot3d.py`), 10 000 steps. To be set up by CFD - Navier-Stokes SA before any run (grid licence checked; the case added to `case.sh`); the limiter is active by construction (no manufactured solution). Pass:
+**Transonic SA with an active limiter**: RAE 2822, AGARD AR-138 case 9 (M 0.73, α 2.79° corrected, Re 6.5 × 10⁶ per chord; `vv` catalog `rae2822`), on a C-grid generated from the catalog's `geom.txt` by CFD - Navier-Stokes SA (three levels, declared before their generation; the NPARC grid's licence is ambiguous, #408), 10 000 steps on the level NS declares as the reference; the limiter is active by construction (no manufactured solution). **The grid is to be generated (NS); ΨTC cannot be validated before it exists.** Pass:
 
 - ten orders below each equation's peak within the 10 000 steps (the plate's measure), and steps at most `main`'s when `main` converges;
 - CL, CD and CM at the last step within 10⁻⁸ |c| + 10⁻¹⁰ of `main`'s when `main` converges; when it does not, of a reference run of `main` with the CFL number held at 1 to ten orders (the iteration converged on the plate at CFL 1, #395), so that both runs compare one discrete solution;
