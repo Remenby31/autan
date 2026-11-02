@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""autan-memprof: where a command's memory goes, stage by stage, without changing its code.
+
+    autan-memprof [--every S] [--stacks S] --out PREFIX -- COMMAND...
+
+Runs COMMAND and, while it lives, samples every --every seconds (default 0.5) its resident
+memory and peak (VmRSS, VmHWM), its device memory as nvidia-smi reports it, and the host's
+MemAvailable, into PREFIX.tsv (GiB); every --stacks seconds (default 5, 0 for none) the main
+thread's stack with gdb, into PREFIX.stacks, and one line into PREFIX.table and stdout: time,
+memory, the step since the previous stack sample and the innermost frames of our own code
+(namespace autan), the stage the memory went to. Every line is written as it is sampled, so
+the files hold the stages up to the end even when the command, or this sampler, is killed.
+Exits with COMMAND's status.
+
+gdb needs ptrace rights over COMMAND: run it as root in a container started with
+--cap-add SYS_PTRACE (docs/infra/bench.md). On GB10 the GPU allocates from host memory, so run
+it under autan-gpu-lock, whose floor stops a command before the host runs out.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+GIB = 1 << 30
+
+
+def status_gib(pid: int) -> tuple[float, float] | None:
+    """VmRSS and VmHWM of a live process, in GiB."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    kib = dict(re.findall(r"^(VmRSS|VmHWM):\s+(\d+) kB", text, re.MULTILINE))
+    if len(kib) < 2:
+        return None
+    return int(kib["VmRSS"]) * 1024 / GIB, int(kib["VmHWM"]) * 1024 / GIB
+
+
+def available_gib() -> float:
+    match = re.search(r"^MemAvailable:\s+(\d+) kB", Path("/proc/meminfo").read_text(), re.MULTILINE)
+    return int(match[1]) * 1024 / GIB if match else float("nan")
+
+
+def device_gib(pid: int) -> float | None:
+    """The process's device memory as nvidia-smi reports it; None without nvidia-smi."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                             timeout=10, check=False).stdout  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        fields = [f.strip() for f in line.split(",")]
+        if fields[0] == str(pid) and fields[1].isdigit():
+            return int(fields[1]) / 1024
+    return 0.0
+
+
+def own_frames(pid: int) -> list[str]:
+    """The main thread's frames in namespace autan, innermost first, arguments dropped."""
+    try:
+        out = subprocess.run(["gdb", "-batch", "-p", str(pid), "-ex", "thread apply 1 bt 40"],
+                             capture_output=True, text=True, timeout=30, check=False).stdout  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return []
+    frames = []
+    for line in out.splitlines():
+        match = re.match(r"#\d+\s+(?:0x[0-9a-f]+ in )?(autan::[^(]*)", line)
+        if match:
+            frames.append(match[1].strip())
+    return frames
+
+
+def table(samples: list[tuple], stacks: list[tuple[float, list[str]]]) -> list[str]:
+    """One line per stack sample: time, RSS, peak, step since the previous one, stage."""
+    lines = []
+    previous = 0.0
+    for t, frames in stacks:
+        row = min(samples, key=lambda s: abs(s[0] - t)) if samples else None
+        if row is None:
+            continue
+        rss, hwm = row[1], row[2]
+        stage = " < ".join(f.removeprefix("autan::") for f in frames[:3]) or "-"
+        lines.append(
+            f"{t:7.1f} s  RSS {rss:7.2f} GiB  peak {hwm:7.2f}  step {rss - previous:+7.2f}  {stage}"
+        )
+        previous = rss
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    split = argv.index("--") if "--" in argv else len(argv)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--every", type=float, default=0.5)
+    parser.add_argument("--stacks", type=float, default=5.0)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args(argv[:split])
+    command = argv[split + 1 :]
+    if not command:
+        parser.error("a command is required after --")
+    if args.stacks and not shutil.which("gdb"):
+        sys.stderr.write("autan-memprof: gdb not found; no stacks\n")
+        args.stacks = 0
+    proc = subprocess.Popen(command)
+    start = time.monotonic()
+    samples: list[tuple] = []
+    stacks: list[tuple[float, list[str]]] = []
+    next_stack = 0.0
+    with args.out.with_suffix(".tsv").open("w") as tsv, \
+            args.out.with_suffix(".stacks").open("w") as stack_file, \
+            args.out.with_suffix(".table").open("w") as table_file:  # fmt: skip
+        tsv.write("t_s\trss_gib\thwm_gib\tdevice_gib\tavailable_gib\n")
+        while proc.poll() is None:
+            t = time.monotonic() - start
+            vm = status_gib(proc.pid)
+            if vm is not None:
+                device = device_gib(proc.pid)
+                row = (t, *vm, device, available_gib())
+                samples.append(row)
+                dev = "" if device is None else f"{device:.3f}"
+                tsv.write(f"{t:.2f}\t{vm[0]:.3f}\t{vm[1]:.3f}\t{dev}\t{row[4]:.3f}\n")
+                tsv.flush()
+            if args.stacks and t >= next_stack:
+                frames = own_frames(proc.pid)
+                stacks.append((t, frames))
+                stack_file.write(f"== {t:.1f} s\n" + "".join(f + "\n" for f in frames))
+                stack_file.flush()
+                line = table(samples, stacks)[-1:]
+                if line:
+                    table_file.write(line[0] + "\n")
+                    table_file.flush()
+                    sys.stdout.write(line[0] + "\n")
+                    sys.stdout.flush()
+                next_stack = t + args.stacks
+            time.sleep(args.every)
+    return proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

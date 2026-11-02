@@ -76,6 +76,20 @@ The campaign runs `COMMAND` in `autan-dev:local` (`--image`), limited to 12 core
 
 The lane protects measurements that take the lock, which every GPU job must (AGENTS.md). A campaign never takes the lock, and nothing that holds the lock may wait for a campaign. Checked on spark-5359 (2026-11-01): a campaign of 4 spinning threads was frozen 156 ms after the lock was taken (its state read `frozen` after 106 ms in a later run), and runnable threads fell from 9 to 4. A STREAM run with a frozen 12-core memory campaign (12 × `dd bs=64M`) passed `--max-load 0.15`, although the 1-minute average was 10.2 just before, and matched `bench/baselines/gb10.json` within each kernel's CV (copy −1.60 %, scale +0.00 %, add −1.00 %, triad −0.96 %; baseline CV 1.2–1.7 %). The same load left running drops STREAM to 111–126 GB/s, about half. With 9 extra spinning threads outside a campaign, the watcher removed it 65 s later. After the watcher was killed with SIGKILL, the container stopped itself 62 s later.
 
+## Where a run's memory goes
+
+`bench/memprof/autan-memprof --out PREFIX -- COMMAND` runs a command (an `autan-run`, a mesh tool) and samples it from outside, without changing its code: every 0.5 s its resident memory and peak, its device memory as `nvidia-smi` reports it and the host's `MemAvailable` (`PREFIX.tsv`); every 5 s the main thread's stack with gdb (`PREFIX.stacks`), with one line per stack sample in `PREFIX.table` and on stdout: memory, the step since the previous sample, and the innermost frames of our code, the stage the memory went to. Lines are written as they are sampled, so they survive the command being killed. gdb needs ptrace rights, so run it as root in the image `bench/memprof/Dockerfile` builds (`docker build -t autan-memprof:local bench/memprof`), started with `--cap-add SYS_PTRACE`, and under `autan-gpu-lock`, whose floor stops the command before the host runs out:
+
+```text
+docker run --rm --gpus all --cap-add SYS_PTRACE -u 0 -v "$PWD":/w -w /w \
+  -v /home/admin/autan-gpu:/home/admin/autan-gpu:ro \
+  -v /home/admin/autan-gpu/holders.log:/home/admin/autan-gpu/holders.log autan-memprof:local \
+  /home/admin/autan-gpu/bin/autan-gpu-lock -m "AGENT: memory profile" -t 600 -- \
+  bench/memprof/autan-memprof --out prof -- build/runtime/autan-run --input in.json --runs runs
+```
+
+Files it writes belong to root: `chown` them inside the container. On GB10, device memory comes from host memory and `nvidia-smi` may not count all of it, so the resident memory is the figure to compare.
+
 ## Results, baselines and the regression gate
 
 Results follow `bench/src/autan_bench/result.schema.json` (`autan.bench-result/1`); `autan-bench validate` checks a file: the schema, finite numbers only, and statistics that match their samples. `autan-bench compare RESULT BASELINE` judges every baseline benchmark. Its median is a **regression** when it is more than 5 % worse (exactly 5 % passes) *and* the 95 % confidence intervals of the two medians are disjoint (percentile bootstrap, 2000 resamples, fixed seed, so the verdict is reproducible); more than 5 % worse with overlapping intervals is **inconclusive**: the shift is within the noise. It exits 1 on a regression, 3 when only inconclusive verdicts remain, 2 when the files cannot be compared (different GPU, configuration or metric, missing benchmark). In CI, `bench/ci/gate.sh` measures once more whenever a median is more than 5 % worse, and the second measurement decides: a regression there fails, an inconclusive verdict there is a warning. `autan-bench baseline RESULT --out bench/baselines/<gpu>.json` promotes a result only if its binary was built from a clean checkout, it records its environment (the image digest; on macOS, where Metal runs without a container, the OS version), each STREAM array is at least 4 × L2, and every benchmark has a CV below 2 %.
