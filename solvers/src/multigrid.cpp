@@ -341,6 +341,16 @@ Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> 
                     residual_, x, max_cycles, tolerance);
 }
 
+Multigrid::Report Multigrid::solve(const Gcr::Operator& apply, std::span<const double> b,
+                                   std::span<double> x, int max_cycles, double tolerance) {
+  residual_.resize(b.size());
+  apply(x, residual_);
+  for (std::size_t i = 0; i < b.size(); ++i) residual_[i] = b[i] - residual_[i];
+  return gcr_.solve(
+      apply, [&](std::span<const double> r, std::span<double> z) { cycle_level(0, r, z); },
+      residual_, x, max_cycles, tolerance);
+}
+
 void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<double> x) {
   Smoother& s = smoothers_[l];
   const Operator& a = ops_[l];

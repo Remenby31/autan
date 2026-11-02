@@ -59,6 +59,11 @@ class Multigrid {
   /// multigrid cycle per iteration, until |b - A x| <= tolerance |b - A x0| or `max_cycles`
   /// iterations.
   Report solve(std::span<const double> b, std::span<double> x, int max_cycles, double tolerance);
+  /// As solve, the outer iteration's operator being `apply` (y = A' x, for instance a
+  /// finite-difference product of the true Jacobian) while each cycle still works on the matrix
+  /// of set_operator, which then preconditions A' x = b.
+  Report solve(const Gcr::Operator& apply, std::span<const double> b, std::span<double> x,
+               int max_cycles, double tolerance);
   /// `sweeps` symmetric line Gauss-Seidel sweeps of the finest level alone on A x = b from x.
   void smooth(std::span<const double> b, std::span<double> x, int sweeps);
 

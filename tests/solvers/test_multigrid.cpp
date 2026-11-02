@@ -949,6 +949,39 @@ int iterations(const Mesh& mesh, const autan::Geometry& g, const MultigridOption
   return report.cycles;
 }
 
+TEST_CASE("the multigrid preconditions an outer operator other than its own matrix",
+          "[multigrid]") {
+  // The cycles work on A (one random block coupling), the outer GCR on A' (another): the solve
+  // must reduce b - A' x, which a solve of A x = b alone does not.
+  const auto mesh = layered_box(16, 1.0 / 16, Fill::hexa);
+  const auto g = autan::compute_geometry(mesh);
+  const auto a = diffusion(mesh, g, 1e-3, 0.1, false, 7);
+  const auto a_true = diffusion(mesh, g, 1e-3, 0.1, false, 8);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> b(5 * n);
+  for (std::size_t k = 0; k < b.size(); ++k) b[k] = std::sin(0.7 * static_cast<double>(k));
+  Multigrid mg(mesh, g);
+  mg.set_operator(a.diag, a.upper, a.lower);
+  auto true_residual = [&](const std::vector<double>& x) {
+    const auto r = apply(mesh, a_true, x);
+    double rr = 0.0;
+    for (std::size_t k = 0; k < r.size(); ++k) rr += (b[k] - r[k]) * (b[k] - r[k]);
+    return std::sqrt(rr) / norm(b);
+  };
+  std::vector<double> x(5 * n, 0.0);
+  const auto report = mg.solve(
+      [&](std::span<const double> v, std::span<double> y) {
+        const auto av = apply(mesh, a_true, std::vector<double>(v.begin(), v.end()));
+        std::copy(av.begin(), av.end(), y.begin());
+      },
+      b, x, 60, 1e-8);
+  CHECK(report.residual_drop <= 1e-8);
+  CHECK(true_residual(x) <= 1.01e-8);
+  std::vector<double> own(5 * n, 0.0);
+  mg.solve(b, own, 60, 1e-8);
+  CHECK(true_residual(own) > 1e-4);
+}
+
 TEST_CASE("multigrid iterations do not grow with refinement", "[multigrid]") {
   // Diffusion, the stiff part of the viscous Jacobian, with a small pseudo-time shift on
   // isotropic cells; Gauss-Seidel alone needs O(n^2) sweeps for the same drop.
