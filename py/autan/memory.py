@@ -17,12 +17,13 @@ StartMode = Literal["continue", "warm"]
 
 @dataclass(frozen=True)
 class StateFileLoad:
-    """A state file the runtime reads before the physics: its bytes, its rows, and the faces
-    of the case's oracle zones it gives states for (0 for an initial state)."""
+    """A state file the runtime reads before the physics: its bytes, its rows, the faces of
+    the case's oracle zones it gives states for and its zones (both 0 for an initial state)."""
 
     size: int
     rows: int
     faces: int
+    zones: int
 
 
 _CUDA_CONTEXT = 512 * 2**20
@@ -177,12 +178,15 @@ def _rank(
     if start is not None:
         read = fields if start == "continue" else n + 1
         add("start", 8 * (cells + c) * read, transient=True)
-    # State files: the text, the parsed document (at most 400 B a row), the rows extracted
-    # (64 B) and, for face states, the zone map (64 B a row); then the paired values, 40 B per
-    # cell or face of the mesh. A face-state rank keeps 40 B per face of its oracle zones.
+    # State files, read by streaming (runtime.md): the text, kept until the run directory
+    # exists; the rows straight into vectors, 64 B a row; the rest of the document, at most
+    # 1 KiB, 300 B a zone and its strings (at most the text again); then the pairing, 138 B a
+    # row and, for an initial state, 120 B per cell and its fields 40 B per cell, for face
+    # states the zone map 64 B a row and 40 B per face of the oracle zones. A face-state rank
+    # keeps 40 B per face of its oracle zones.
     if files:
-        loads = sum(x.size + 528 * x.rows for x in files)
-        paired = sum(40 * (x.faces or cells) for x in files)
+        loads = sum(2 * x.size + 1024 + 300 * x.zones + 202 * x.rows for x in files)
+        paired = sum(64 * x.rows + 40 * x.faces if x.zones else 160 * cells for x in files)
         add("state files", loads + paired, transient=True)
         add("face states", sum(40 * x.faces for x in files))
 

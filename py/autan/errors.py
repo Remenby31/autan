@@ -676,8 +676,9 @@ _CODES = [
         "device together against the lower of `MemAvailable` and the container's limit; on a "
         "discrete device, each against its own pool. `data` gives `required_bytes`, "
         "`available_bytes`, `margin_bytes`, `device_kind`, `cgroup_limit` (`known`, or `unknown` "
-        "when a memory cgroup above the process could not be read, `W0713`) and "
-        "`unseen_cgroups`. The run starts nothing.",
+        "when a memory cgroup above the process could not be read, `W0713`), `cgroup_scope` "
+        "(`host`, or `namespace_root` in a private cgroup namespace) and `unseen_cgroups`. "
+        "The run starts nothing.",
         "Run on more devices or a machine with more free memory; `--allow-oversubscription` "
         "starts it anyway, at the risk of exhausting the machine.",
     ),
@@ -694,7 +695,7 @@ _CODES = [
         "A memory cgroup above the process (its own excepted when mounted) is shown by no mount "
         "of /proc/self/mountinfo, so its limit, if any, could not be read: the memory check rests "
         "on `MemAvailable` and the limits it could read. `data` gives `cgroup_limit` "
-        "(`unknown`) and `unseen_cgroups`, the cgroups rank 0 could not read.",
+        "(`unknown`), `cgroup_scope` and `unseen_cgroups`, the cgroups rank 0 could not read.",
         "Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check "
         "the job's memory limit by other means.",
     ),

@@ -548,7 +548,7 @@ def _check_initial_state(
             "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
         )
         return
-    files.append(StateFileLoad(size=len(data), rows=document.cells, faces=0))
+    files.append(StateFileLoad(size=len(data), rows=document.cells, faces=0, zones=0))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
     if fluid_cells is not None and document.cells != fluid_cells:
@@ -590,7 +590,11 @@ def _check_oracle(
         )
         return
     rows = sum(z.faces for z in document.zones.values())
-    files.append(StateFileLoad(size=len(data), rows=rows, faces=sum(zones.values())))
+    files.append(
+        StateFileLoad(
+            size=len(data), rows=rows, faces=sum(zones.values()), zones=len(document.zones)
+        )
+    )
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0422", "the face states were exported for another mesh")
     for zone, faces in zones.items():
