@@ -46,8 +46,7 @@ std::set<std::vector<std::int64_t>> line_sets(const autan::Mesh& mesh, const aut
 
 }  // namespace
 
-TEST_CASE("lines follow the strong coupling of stretched cells, whatever the cell order",
-          "[lines]") {
+TEST_CASE("lines follow the strong coupling of stretched cells", "[lines]") {
   // 4^3 hexahedra of 2.5 x 2.5 x 0.25 (x and y stretched tenfold): a z face couples A/d =
   // 6.25 / 0.25 = 25, an x or y face 0.625 / 2.5 = 0.25, a ratio of 100 >= 4. Every z column of
   // four cells is one line, its cells consecutive in z; the isotropic box has none.
@@ -76,7 +75,9 @@ TEST_CASE("lines follow the strong coupling of stretched cells, whatever the cel
   }
   const auto isotropic = stretched_box(4, 1.0);
   CHECK(autan::smoother_lines(isotropic, autan::compute_geometry(isotropic)).cells.empty());
-  // The same lines, as sets of cells, after a random renumbering and after RCM.
+  // No two candidates tie here (each cell has one z neighbour on each side), so the lines, as
+  // sets of cells, do not depend on the cell order: the same after a random renumbering and after
+  // RCM. Where candidates tie, the smaller index wins and the order can matter (#365).
   std::vector<index_t> order(at(mesh.n_cells()));
   std::iota(order.begin(), order.end(), 0);
   std::mt19937 rng(7);
