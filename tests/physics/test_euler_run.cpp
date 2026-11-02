@@ -1513,6 +1513,63 @@ TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after th
   }
 }
 
+TEST_CASE("a coupled step that would move rho nt out of its bounds is shortened as a whole",
+          "[navier-stokes]") {
+  // coupled-sa.md: with the initial nt 1000 times the freestream's, the coupled steps would cut
+  // rho nt by more than half; the step is shortened (logged with its alpha < 1), so that every
+  // cell's change stays within -0.5 ... +2 of max(|rho nt|, rho nt_inf), the cell that sets
+  // alpha exactly at its bound: one fraction for the whole step, not a clip cell by cell.
+  auto doc = [&](int budget) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      d["precision"] = "fp64";
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+      d["time"]["coupled_turbulence"] = true;
+      for (auto& z : d["cell_zones"]) {
+        z["initial"]["nu_tilde"] = 1000.0 * z["initial"]["nu_tilde"].get<double>();
+      }
+    });
+  };
+  const auto whole = run(doc(40));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  int coupled = -1, shortened = -1;
+  double alpha = 1.0;
+  std::istringstream log(read(whole.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    const auto e = Json::parse(line);
+    const auto message = e["message"].get<std::string>();
+    if (message.starts_with("the flow and nu-tilde")) coupled = e["iteration"].get<int>();
+    if (coupled > 0 && shortened < 0 && message == "step shortened") {
+      shortened = e["iteration"].get<int>();
+      alpha = e["data"]["alpha"].get<double>();
+    }
+  }
+  INFO("coupled from step " << coupled << ", shortened at step " << shortened);
+  REQUIRE(shortened >= coupled);
+  REQUIRE(coupled > 0);
+  CHECK(alpha < 1.0);
+  auto restart = [&](int steps, const char* name) {
+    const auto r = run(doc(steps));
+    REQUIRE(r.status == ExitStatus::finished);
+    return field(r.run, name, "RestartState");
+  };
+  const auto rnu0 = restart(shortened - 1, "DensityNuTilde"),
+             rnu1 = restart(shortened, "DensityNuTilde");
+  const auto rho0 = restart(shortened - 1, "Density");
+  const double nt_inf = doc(1)["freestream"]["nu_tilde"].get<double>();
+  std::size_t at_bound = 0;
+  bool within = true;
+  for (std::size_t c = 0; c < rnu0.size(); ++c) {
+    const double scale = std::max(std::abs(rnu0[c]), rho0[c] * nt_inf);
+    const double ratio = (rnu1[c] - rnu0[c]) / scale;
+    within = within && ratio >= -0.5 * (1.0 + 1e-12) && ratio <= 2.0 * (1.0 + 1e-12);
+    if (std::abs(ratio + 0.5) <= 1e-12 || std::abs(ratio - 2.0) <= 1e-12) ++at_bound;
+  }
+  CHECK(within);
+  CHECK(at_bound >= 1);
+}
+
 TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit for bit",
           "[navier-stokes]") {
   // The residual is a function of the state: the eddy viscosity the flow reads is the current
