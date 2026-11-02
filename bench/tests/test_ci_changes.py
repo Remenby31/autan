@@ -140,6 +140,11 @@ def test_without_a_readable_base_everything_runs(repo):
     [
         ("kernels/flux.cu", "true", "false"),
         ("io/gmsh.cpp", "true", "false"),
+        ("partition/metis.cpp", "true", "false"),
+        # Not built into any benchmark (bench/ci/check-measured.py): never measured.
+        ("runtime/src/run.cpp", "false", "false"),
+        ("physics/src/euler.cpp", "false", "false"),
+        ("solvers/src/gauss_seidel.cpp", "false", "false"),
         ("docker/dev/Dockerfile", "true", "true"),
         ("bench/src/autan_bench/stats.py", "true", "true"),
         ("bench/stream/stream.cu", "true", "true"),
@@ -153,6 +158,7 @@ def test_without_a_readable_base_everything_runs(repo):
         ("bench/pyproject.toml", "true", "true"),
         ("bench/uv.lock", "true", "true"),
         ("bench/ci/changes.sh", "false", "true"),
+        ("bench/ci/check-measured.py", "false", "true"),
         ("bench/lock/autan-gpu-lock", "false", "true"),
         ("bench/campaign/autan-campaign", "false", "true"),
         ("docker/runner/entrypoint.sh", "false", "true"),
