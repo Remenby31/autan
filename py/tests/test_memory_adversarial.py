@@ -28,9 +28,9 @@ FREESTREAM = [1.2, 68.0, 0.0, 0.0, 101325.0]
 FARFIELD = "case.boundary('*').farfield()\n"
 
 
-def pad(kind: str, source: Path, out: Path, *extra: str) -> Path:
+def pad(kind: str, source: Path, out: Path, *extra: str, size: int = PADDED) -> Path:
     subprocess.run(
-        [sys.executable, str(PAD), kind, str(source), str(out), str(PADDED), *extra], check=True
+        [sys.executable, str(PAD), kind, str(source), str(out), str(size), *extra], check=True
     )
     return out
 
@@ -83,6 +83,14 @@ def padded_polymesh(tmp_path: Path) -> tuple[Path, str]:
 
 def padded_cgns(tmp_path: Path) -> tuple[Path, str]:
     return pad("cgns", HYBRID / "hybrid.cgns", tmp_path / "padded.cgns"), FARFIELD
+
+
+def cgns_skipped_elements(tmp_path: Path) -> tuple[Path, str]:
+    # A section of a million edges the reader does not use, around a small mesh.
+    out = tmp_path / "skipped.cgns"
+    return pad(
+        "cgns", HYBRID / "hybrid.cgns", out, "--skipped-elements", "1000000", size=1
+    ), FARFIELD
 
 
 def padded_initial_state(tmp_path: Path) -> tuple[Path, str]:
@@ -166,6 +174,7 @@ def long_case_name(tmp_path: Path) -> tuple[Path, str]:
         padded_gmsh,
         padded_polymesh,
         padded_cgns,
+        cgns_skipped_elements,
         padded_initial_state,
         padded_face_states,
         long_zone_name,
@@ -177,8 +186,8 @@ def test_the_estimate_bounds_a_run_on_padded_files(
 ) -> None:
     # plan.md: each file of the case counts at its size, whatever it carries beyond the mesh
     # and the states (skipped sections, unreferenced nodes, descriptors, whitespace, empty
-    # zones and their names, the case's own name): the measured peak (VmHWM, CPU) never
-    # exceeds the estimate.
+    # zones and their names, element sections the reader skips, the case's own name): the
+    # measured peak (VmHWM, CPU) never exceeds the estimate.
     mesh, boundaries = make(tmp_path)
     info = mesh_info(mesh, tmp_path)
     name = "c" * LONG if make is long_case_name else "padded"
