@@ -47,6 +47,7 @@ def generate(
             )
     m = model.load(path.resolve())
     derive(m)
+    model.check_chains(m)
     files = {f"{m.name}.hpp": emit_common_header(m, line_directives)}
     if "cpu" in backends:
         files[f"{m.name}_cpu.hpp"] = emit_cpu_header(m)

@@ -300,6 +300,33 @@ def build_chain(name: str, loop: dsl.Loop) -> LoopModel:
     return lm
 
 
+def check_chains(m: Module) -> None:
+    """Refuses a loop declared after a chain that reads a dataset the chain's first reduction
+    computes but does not store (`keep` omits it), with no loop in between writing it: it would
+    read a value the chain left stale. Declared order, derived loops after the module's: the run
+    order is the caller's, which the module does not know."""
+    for i, lm in enumerate(m.loops):
+        if lm.chain is None:
+            continue
+        kept = {id(d) for d in lm.loop.keep}
+        omitted = {
+            id(o.dataset): o.dataset.name
+            for o in lm.chain[0].loop.outputs
+            if getattr(o, "write", False) and id(o.dataset) not in kept
+        }
+        for later in m.loops[i + 1 :]:
+            for d in later.reads():
+                if id(d) in omitted:
+                    raise CodegenError(
+                        Code.INVALID_BINDING,
+                        f"loop {later.name} reads {omitted[id(d)]}, which chain {lm.name} does "
+                        "not store and no loop declared between them writes",
+                        str(m.path),
+                    )
+            for d in later.writes():
+                omitted.pop(id(d), None)
+
+
 def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
     if loop.kind == "chain":
         return build_chain(name, loop)

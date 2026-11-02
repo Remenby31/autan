@@ -539,3 +539,41 @@ def test_a_chain_compiles_whatever_its_names_and_refuses_writing_what_it_reads(
     with pytest.raises(CodegenError) as info:
         build_loop("bad", dsl.chain(first, second, keep=[g]))
     assert info.value.code == "E1003"
+
+
+CHAIN_STALE = """
+from autan_codegen.dsl import Residual, Sum, cell_reduce, cell_loop, cells, chain, pointwise, Write
+
+g = cells.field("g", Residual)
+h = cells.field("h", Residual)
+x = cells.field("x", Residual)
+y = cells.field("y", Residual)
+
+
+@pointwise
+def pass_on(v: Residual) -> Residual:
+    return v
+
+
+first = cell_reduce(pass_on, v=x.other(None), acc=Sum(g))
+second = cell_reduce(pass_on, v=g.self_, acc=Sum(h))
+fused = chain(first, second)
+REWRITE
+reader = cell_loop(pass_on, v=g, out=Write(y))
+"""
+
+
+def test_a_loop_after_a_chain_does_not_read_what_the_chain_left_unstored(tmp_path: Path) -> None:
+    # g is computed in registers only; a loop declared after the chain reading g, with nothing
+    # writing g in between, would read a stale g. Writing g in between, or keeping it, is fine;
+    # Euler's module, whose unfused limiter is declared before its chain, generates.
+    for rewrite, code in (("", "E1003"), ("again = cell_loop(pass_on, v=x, out=Write(g))", None)):
+        src = tmp_path / f"stale_{code}.py"
+        src.write_text(CHAIN_STALE.replace("REWRITE", rewrite))
+        if code is None:
+            generate(src, tmp_path / "ok", ["cpu"])
+        else:
+            with pytest.raises(CodegenError) as info:
+                generate(src, tmp_path / "bad", ["cpu"])
+            assert info.value.code == code
+    generate(ROOT / "kernels" / "euler.py", tmp_path / "euler", ["cpu"])
