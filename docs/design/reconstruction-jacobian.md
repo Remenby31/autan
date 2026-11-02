@@ -36,12 +36,14 @@ Boundary faces add the same terms to their owner's row, A from `*_boundaries_jac
 
 ## Gate, declared before any run
 
-On `physics/ns-sa` with this change, fp64, against the same branch without it (the case files identical):
+On `physics/ns-sa` with this change, against the same branch without it (the case files identical), fp64 unless stated:
 
-- **laminar TMR flat plate 69×49** (`physics/tmr/case.sh flatplate`, laminar, 6000 steps): ten orders below each equation's peak (the identically zero z-momentum excepted) in at most 3332 steps, and every such equation at most 10⁻¹⁰ of its peak at the last step (#395's measure);
+- **laminar TMR flat plate 69×49** (`physics/tmr/case.sh flatplate`, laminar, 6000 steps): ten orders below each equation's peak (the identically zero z-momentum excepted) in at most 3332 steps, every such equation at most 10⁻¹⁰ of its peak at the last step, and the z-momentum never leaving its floor (no W0710) (#395's measure). Not the runtime's rule, which counts from iteration 1: the plate's uniform start leaves density at 4.6 × 10⁻⁸ against 6.0 for ρu there, so ten orders of density would ask for 10⁻¹⁸, below round-off (the same choice as #395 and the pseudo-transient note);
 - **Euler bit for bit**: the Euler MMS (hex, tet, poly, 16–32), Ni's bump 96 and 384 and the NACA 0012 cases of #356 (M 0.5 α 1.25°, M 0.8 α 0°, M 0.8 α 1.25°; 128² and 256²): `history.jsonl` byte-identical to `main`'s (SHA-256), since the Euler physics never sets the parameter;
 - **reported, not gated**: per step, the linear solve's drop and cycles and the number of linear failures, before and after, on the laminar plate and SA 35×25 / 69×49 / 137×97 (the new entries can reduce the blocks' diagonal dominance: the multigrid's and line smoother's behaviour is reported); ‖(J − J̃) v‖ / ‖J v‖ at the same cycle state, before and after, by #395's protocol;
-- **accuracy** (AGENTS.md): the discretisation does not change (only J̃); the NS MMS observed orders of `ns-mms-order` unchanged.
+- **the residual is unchanged**: at a fixed state (the laminar plate's step 1000, and an NS MMS state), R(U) with the parameter set and unset is bit for bit equal (it only enters `assemble`);
+- **the operator does what it claims**: at the laminar plate's step 1000, ‖(J − J̃) v‖ / ‖J v‖ on the wall ring's continuity rows (#395's protocol: three v, ε 10⁻⁵ and 10⁻⁷, limiter held) is below its value without the change; and a unit test of the face-neighbour fit reproduces the gradient of a linear field exactly (to round-off) on hex, tet, prism and polyhedral cells, and on a one-cell-thick slab in its plane;
+- **accuracy** (AGENTS.md): the discretisation does not change (only J̃); the NS MMS observed orders of `ns-mms-order` unchanged in fp64, and fp32+acc64 agreeing with fp64 level by level (`autan-vv agree`, [acceptance.md](../validation/acceptance.md)), fp32 orders reported; the laminar plate 69×49 in fp32+acc64 ends at its round-off floor, its skin friction at x = 0.97 within 1 % of the fp64 run's;
 - **cost**, reported: CPU time per step and to convergence of the laminar plate with and without the change, measured alone under the GPU lock (Form, Cost).
 
 The SA plates (35×25, 69×49, 137×97) are note 2's gate, with this note's flow model; RAE 2822 (transonic, limited) joins when its grid exists.
