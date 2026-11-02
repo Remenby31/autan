@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -20,6 +21,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/point_vortex.hpp"
@@ -313,6 +315,28 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
   }
   // Central differences: truncation O(h^2) and round-off O(eps / h) relative.
   CHECK(diff <= 1e-6 * norm);
+  // The tangent's arrays are allocated by its first call; residuals between calls leave them as
+  // they were: a second call gives the first one's bits.
+  std::vector<double> again(5 * nc);
+  e.first_order_tangent(u, du, again);
+  CHECK(std::memcmp(again.data(), jv.data(), jv.size() * sizeof(double)) == 0);
+}
+
+TEST_CASE("the stencil twins built on demand are those of the cell stencil", "[euler]") {
+  // Euler keeps no twins (no forward loop reads them); the adjoint asks for them: they must be
+  // kernels::cell_stencil's, bit for bit.
+  using P = autan::kernels::fp32_acc64;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.5));
+  CHECK(e.stencil().twin.empty());
+  const auto reference =
+      autan::kernels::cell_stencil(c.mesh, autan::kernels::pack_geometry(c.mesh, c.geometry),
+                                   autan::kernels::StencilKind::face2);
+  const auto twin = e.stencil_twin();
+  REQUIRE(twin.size() == reference.twin.size());
+  CHECK(std::equal(twin.begin(), twin.end(), reference.twin.begin()));
 }
 
 TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass divergence", "[euler]",

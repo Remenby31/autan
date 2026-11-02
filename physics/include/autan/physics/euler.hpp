@@ -128,6 +128,11 @@ class Euler {
   /// boundary conditions, source, parameters), the gradient stencil and the scheme.
   [[nodiscard]] const kernels::euler::Data<P>& data() const;
   [[nodiscard]] const kernels::CellStencil& stencil() const;
+  /// The twin of each entry of the gradient stencil (kernels::CellStencil::twin: the entry of
+  /// cell c in the stencil of the entry's cell, -1 for a boundary face), for the adjoint's reverse
+  /// reductions. No forward loop reads it, so it is built on the first call, not at construction;
+  /// stencil().twin stays empty.
+  [[nodiscard]] std::span<const kernels::offset_t> stencil_twin();
   [[nodiscard]] const Scheme& scheme() const;
 
  private:

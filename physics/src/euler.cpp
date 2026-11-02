@@ -35,6 +35,7 @@ struct Euler<P>::Impl {
   stored<decltype(D::cell_volume)> cell_volume;
   stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
+  std::vector<kernels::offset_t> twin;  // stencil_twin(), on demand
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
@@ -94,8 +95,12 @@ struct Euler<P>::Impl {
     topo.n_stencil = static_cast<kernels::offset_t>(stencil.entries.size());
     topo.stencil_offsets = stencil.offsets.data();
     topo.stencil = stencil.entries.data();
-    topo.stencil_twin = stencil.twin.data();
     fill(stencil_lsq_weight, stencil.lsq_weight);
+    // No forward loop reads the twins (the adjoint's reverse reductions do: stencil_twin() builds
+    // them on demand), and set_boundary recomputes the weights: neither is kept.
+    stencil.twin = {};
+    stencil.lsq_weight = {};
+    topo.stencil_twin = nullptr;
     fill(face_normal, packed.face_normal);
     fill(face_area_magnitude, packed.face_area_magnitude);
     fill(face_centroid, packed.face_centroid);
@@ -112,10 +117,7 @@ struct Euler<P>::Impl {
     wmax.assign(5 * nc, State(0));
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
-    prim_tan.assign(5 * nc, State(0));
-    zero_state.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
-    zero_grad.assign(15 * nc, Gr(0));
 
     d.topo = topo;
     d.prim = prim.data();
@@ -163,7 +165,9 @@ struct Euler<P>::Impl {
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
     const auto nst = stencil.entries.size();
-    std::vector<double> w(3 * nst, 0.0);
+    // Written into the stored weights entry by entry: no FP64 copy of the whole stencil.
+    stencil_lsq_weight.assign(3 * nst, typename decltype(stencil_lsq_weight)::value_type(0));
+    auto& w = stencil_lsq_weight;
     constexpr double coordinate_eps =
         std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
     for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
@@ -216,15 +220,15 @@ struct Euler<P>::Impl {
         for (std::size_t k = begin; k < end; ++k) {
           const auto& dk = offs[k - begin];
           for (std::size_t u = 0; u < 3; ++u) {
-            w[u * nst + k] =
+            const double weight =
                 dk[3] * (inv[3 * u] * dk[0] + inv[3 * u + 1] * dk[1] + inv[3 * u + 2] * dk[2]);
+            w[u * nst + k] = static_cast<std::remove_reference_t<decltype(w[0])>>(weight);
           }
         }
         return true;
       };
       if (!weights(false)) weights(true);
     }
-    fill(stencil_lsq_weight, w);
     d.stencil_lsq_weight = stencil_lsq_weight.data();
   }
 
@@ -451,6 +455,13 @@ template <class P>
 void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const State> du,
                                    std::span<Res> dres) {
   auto& m = *impl_;
+  // The tangent's own arrays, allocated on its first call: the residual does not use them.
+  if (m.prim_tan.empty()) {
+    const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+    m.prim_tan.assign(5 * nc, State(0));
+    m.zero_state.assign(5 * nc, State(0));
+    m.zero_grad.assign(15 * nc, typename P::grad(0));
+  }
   auto d = m.d;
   d.u = const_cast<State*>(u.data());
   d.grad = m.zero_grad.data();
@@ -479,6 +490,32 @@ const kernels::euler::Data<P>& Euler<P>::data() const {
 template <class P>
 const kernels::CellStencil& Euler<P>::stencil() const {
   return impl_->stencil;
+}
+
+template <class P>
+std::span<const kernels::offset_t> Euler<P>::stencil_twin() {
+  auto& m = *impl_;
+  if (m.twin.empty() && !m.stencil.entries.empty()) {
+    // As kernels::cell_stencil builds it: for each cell entry, the position of the cell among the
+    // cell entries of that entry's stencil.
+    const auto& off = m.stencil.offsets;
+    const auto& entries = m.stencil.entries;
+    m.twin.assign(entries.size(), -1);
+    for (std::size_t c = 0; c + 1 < off.size(); ++c) {
+      for (auto k = off[c]; k < off[c + 1]; ++k) {
+        const index_t e = entries[static_cast<std::size_t>(k)];
+        if (e < 0) continue;
+        const auto first = entries.begin() + off[static_cast<std::size_t>(e)];
+        const auto last = entries.begin() + off[static_cast<std::size_t>(e) + 1];
+        const auto cells_end = std::find_if(first, last, [](index_t x) { return x < 0; });
+        const auto it = std::find(first, cells_end, static_cast<index_t>(c));
+        if (it != cells_end) m.twin[static_cast<std::size_t>(k)] = it - entries.begin();
+      }
+    }
+    m.topo.stencil_twin = m.twin.data();
+    m.d.topo.stencil_twin = m.twin.data();
+  }
+  return m.twin;
 }
 
 template <class P>
