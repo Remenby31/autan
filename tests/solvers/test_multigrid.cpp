@@ -791,4 +791,44 @@ TEST_CASE("the dense LU of the coarsest level solves its system", "[multigrid]")
   }
   std::vector<double> singular(m * m, 1.0);
   CHECK_THROWS_AS(autan::solvers::factor_dense(singular, m, pivot), std::domain_error);
+  // Partial pivoting by hand: [[1, 2, 3], [4, 5, 6], [7, 8, 10]] takes row 2 at step 0, then the
+  // former row 0 (now row 2) at step 1, where |2 - 8/7| > |5 - 32/7|; x = (1, 1, 1).
+  std::vector<double> p3{1, 2, 3, 4, 5, 6, 7, 8, 10};
+  std::vector<std::size_t> pv(3);
+  autan::solvers::factor_dense(p3, 3, pv);
+  CHECK(pv == std::vector<std::size_t>{2, 2, 2});
+  std::vector<double> x3{6, 15, 25};
+  autan::solvers::solve_dense(p3, pv, x3);
+  for (const double v : x3) CHECK(std::abs(v - 1.0) <= 16 * std::numeric_limits<double>::epsilon());
+  // A tie keeps the first row; a pivot that is not finite is refused.
+  std::vector<double> tie{2, 1, -2, 3};
+  std::vector<std::size_t> pv2(2);
+  autan::solvers::factor_dense(tie, 2, pv2);
+  CHECK(pv2[0] == 0);
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    std::vector<double> nf{bad, 1, 1, 1};
+    CHECK_THROWS_AS(autan::solvers::factor_dense(nf, 2, pv2), std::domain_error);
+  }
+}
+
+TEST_CASE("lines take the least colour no earlier neighbouring line has", "[multigrid]") {
+  // Five one-node lines: 0-1, 0-2, 1-2 (a triangle), 0-3, 3-4. Greedy in line order: 0 -> 0,
+  // 1 -> 1, 2 -> 2, 3 -> 1, 4 -> 0.
+  Level l;
+  l.n_nodes = 5;
+  l.owner = {0, 0, 1, 0, 3};
+  l.neighbour = {1, 2, 2, 3, 4};
+  l.line_offsets = {0, 1, 2, 3, 4, 5};
+  l.line_nodes = {0, 1, 2, 3, 4};
+  using C = std::vector<std::vector<std::size_t>>;
+  CHECK(autan::solvers::line_colours(l) == C{{0, 4}, {1, 3}, {2}});
+  // One two-node line {0, 1} and three single nodes: 2 and 3 touch the line, 4 touches 2 and 3.
+  Level m;
+  m.n_nodes = 5;
+  m.owner = {0, 1, 2, 3, 0};
+  m.neighbour = {1, 2, 4, 4, 3};
+  m.line_offsets = {0, 2, 3, 4, 5};
+  m.line_nodes = {0, 1, 2, 3, 4};
+  CHECK(autan::solvers::line_colours(m) == C{{0, 3}, {1, 2}});
 }
