@@ -40,6 +40,7 @@
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
+#include "planned.hpp"
 #include "relaxation.hpp"
 
 extern char** environ;
@@ -81,7 +82,7 @@ Json input(const std::function<void(Json&)>& edit = {},
   if (doc["verification"].is_object())
     doc["verification"]["path"] = fs::absolute(mms_path).string();
   if (edit) edit(doc);
-  return doc;
+  return autan_test::planned(doc, mesh_path);
 }
 
 struct Outcome {
@@ -369,9 +370,8 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
                                expected);
   CHECK(info["identity"] == expected);
   CHECK(read(o.run / "case.toml") == doc["case"]["toml"].get<std::string>());
-  CHECK(read(o.run / "mesh-info.json") ==
-        autan::io::mesh_info_json(autan::io::read_mesh(mesh_path),
-                                  doc["mesh"]["sha256"].get<std::string>()));
+  // solver-input.md, mesh_info: written as planned, not computed again.
+  CHECK(read(o.run / "mesh-info.json") == doc["mesh_info"].dump(2));
 
   const auto lines = history(o.run);
   REQUIRE(lines.size() == 28);
@@ -1055,7 +1055,7 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   // In another cell order than the run it continues, whose bits it would
   // change from the restart on, a continuation is refused.
   REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
-  const Outcome other_order = run(second, options);
+  const Outcome other_order = run(autan_test::planned(second, mesh_path), options);
   unsetenv("AUTAN_CELL_ORDER");
   require_error(other_order, "E0708");
 
@@ -1957,7 +1957,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // In the mesh's own order too (AUTAN_CELL_ORDER=input; RCM is the
   // default): partitioned on other cells, the same outputs.
   const fs::path rcm = run_on_ranks(
-      doc, ranks,
+      autan_test::planned(doc, mesh_path, "input"), ranks,
       {"AUTAN_CELL_ORDER=input", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
        "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
   CHECK(lines_of(rcm / "history.jsonl") == lines_of(one.run / "history.jsonl"));
@@ -2005,7 +2005,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // default) and its flipped faces: in the mesh's own order the physics
   // finds the same keys, so "ranks" gives the same bits in either order.
   const fs::path input_keyed = run_on_ranks(
-      keyed, ranks,
+      autan_test::planned(keyed, mesh_path, "input"), ranks,
       {"AUTAN_CELL_ORDER=input", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
        "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
   CHECK(lines_of(input_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
@@ -2258,6 +2258,8 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     InputOrder(const InputOrder&) = delete;
     InputOrder& operator=(const InputOrder&) = delete;
   };
+  // The input planned in the mesh's order: mesh_info's lines are those of the run's order.
+  const auto in_input_order = [](const Json& d) { return autan_test::planned(d, mesh_path); };
   SECTION("bit for bit when nothing sums over faces: the relaxation physics") {
     // Fields that vary per cell, forces at every iteration, a cell that
     // diverges, an initial state and the periodic box: each output mapped back.
@@ -2273,7 +2275,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     Outcome a;
     {
       const InputOrder input_order;
-      a = run(doc, options);
+      a = run(in_input_order(doc), options);
     }
     REQUIRE(a.status == ExitStatus::finished);
     const Outcome b = run(doc, options);
@@ -2302,7 +2304,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     const Json in_rcm = diverged(doc);
     {
       const InputOrder input_order;
-      CHECK(diverged(doc) == in_rcm);
+      CHECK(diverged(in_input_order(doc)) == in_rcm);
     }
     if (!periodic) {
       Json plain = doc;
@@ -2310,7 +2312,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
       const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
       const Outcome c = run(from_file, options);
       const InputOrder input_order;
-      const Outcome d = run(from_file, options);
+      const Outcome d = run(in_input_order(from_file), options);
       CHECK(solution_field(c.run / "solution.cgns", "FlowSolution", "Pressure") ==
             solution_field(d.run / "solution.cgns", "FlowSolution", "Pressure"));
     }
@@ -2351,7 +2353,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     Outcome a;
     {
       const InputOrder input_order;
-      a = run(doc, euler);
+      a = run(in_input_order(doc), euler);
     }
     REQUIRE(a.status == ExitStatus::finished);
     const Outcome b = run(doc, euler);
@@ -2442,15 +2444,15 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
   }
   in_inches["mesh"] = {
       {"path", inches.string()}, {"sha256", autan::io::mesh_hash(inches)}, {"scale", 0.0254}};
+  in_inches = autan_test::planned(in_inches, mesh_path);
   autan::runtime::PhysicsRegistry registry;
   autan::physics::register_euler(registry);
   const Outcome a = run(metres, registry);
   const Outcome b = run(in_inches, registry);
   REQUIRE(a.status == ExitStatus::finished);
   REQUIRE(b.status == ExitStatus::finished);
-  // The archived MeshInfo describes the file, in its units.
-  CHECK(read(b.run / "mesh-info.json") ==
-        autan::io::mesh_info_json(autan::io::read_mesh(inches), autan::io::mesh_hash(inches)));
+  // The archived MeshInfo is the planned one, of the file in its units.
+  CHECK(read(b.run / "mesh-info.json") == in_inches["mesh_info"].dump(2));
 
   // The fields' precision; the coordinates are FP64 in either.
   double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;

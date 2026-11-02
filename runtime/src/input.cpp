@@ -399,10 +399,11 @@ SolverInput parse_solver_input(const std::string& text) {
   } catch (const Json::exception& e) {
     invalid("", std::string("not JSON: ") + e.what());
   }
-  const Object root(doc, "",
-                    {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
-                     "precision", "reproducibility", "devices", "memory", "physics", "freestream",
-                     "boundaries", "cell_zones", "time", "monitors"});
+  const Object root(
+      doc, "",
+      {"schema", "case", "mesh", "mesh_info", "verification", "start", "initial_state", "periodic",
+       "precision", "reproducibility", "devices", "memory", "physics", "freestream", "boundaries",
+       "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -417,6 +418,32 @@ SolverInput parse_solver_input(const std::string& text) {
       invalid("mesh.path", "must be an absolute path");
     in.mesh_sha256 = sha256(m, "sha256");
     in.mesh_scale = m.positive("scale");
+  }
+  {
+    // solver-input.md, mesh_info: the prepared document, written as the run's mesh-info.json.
+    // The SDK has validated it; the runtime ties it to the mesh it reads.
+    const Json& info = root.get("mesh_info");
+    if (!info.is_object()) invalid("mesh_info", "expected an object");
+    if (info.value("schema", "") != "autan.mesh-info/1")
+      invalid("mesh_info.schema", "expected autan.mesh-info/1");
+    const Json* sha = info.contains("source") && info["source"].is_object() &&
+                              info["source"].contains("sha256") &&
+                              info["source"]["sha256"].is_string()
+                          ? &info["source"]["sha256"]
+                          : nullptr;
+    if (sha == nullptr) invalid("mesh_info.source.sha256", "expected a string");
+    if (sha->get<std::string>() != in.mesh_sha256) {
+      throw InputError(
+          Diagnostic{.code = "E0203",
+                     .message = "mesh_info describes another mesh than mesh.sha256",
+                     .path = "mesh_info.source.sha256",
+                     .data_json = Json{{"expected", in.mesh_sha256}, {"found", *sha}}.dump()});
+    }
+    const Json order = info.value(Json::json_pointer("/quality/lines/order"), Json());
+    if (order != "rcm" && order != "input")
+      invalid("mesh_info.quality.lines.order", "expected rcm or input");
+    in.mesh_info = info.dump(2);
+    in.mesh_info_order = order.get<std::string>();
   }
   if (!root.is_null("verification")) {
     const Object v(root.get("verification"), "verification", {"path", "sha256"});

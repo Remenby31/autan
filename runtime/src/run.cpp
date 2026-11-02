@@ -777,7 +777,13 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   // solver-input.md, mesh.scale: the coordinates and periodic translations in
   // metres once checked against the file, before any geometry or pairing.
-  p.mesh_info = io::mesh_info_json(p.mesh, p.mesh_hash);
+  // solver-input.md, mesh_info: planned with the lines of the order this run computes in.
+  if (p.input.mesh_info_order != p.cell_order) {
+    invalid("mesh_info.quality.lines.order", "is '" + p.input.mesh_info_order +
+                                                 "', but the run computes in cell order '" +
+                                                 p.cell_order + "'");
+  }
+  p.mesh_info = p.input.mesh_info;
   if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
   if (p.input.start) load_start(p);
   if (p.input.verification) {

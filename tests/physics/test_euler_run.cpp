@@ -28,6 +28,7 @@
 extern char** environ;
 #endif
 
+#include "../runtime/planned.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -60,7 +61,7 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
   if (doc["verification"].is_object())
     doc["verification"]["path"] = fs::absolute(mms_path).string();
   edit(doc);
-  return doc;
+  return autan_test::planned(doc, mesh_path);
 }
 
 struct Outcome {

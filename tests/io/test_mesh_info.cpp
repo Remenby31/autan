@@ -74,7 +74,7 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
   CAPTURE(source);
   const fs::path path = data_dir / source;
   const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path), {}));
 
   CHECK(doc["schema"] == "autan.mesh-info/1");
   CHECK(doc["source"]["sha256"] == autan::io::mesh_hash(path));
@@ -105,7 +105,7 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
 TEST_CASE("MeshInfo types follow the normalisation table", "[mesh-info]") {
   const fs::path path = data_dir / "hanging" / "hanging.fluent.msh";
   const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path), {}));
   CHECK(doc["source"]["format"] == "fluent");
   CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
   CHECK(doc["counts"]["cells_by_type"]["hexa"] == 100);
@@ -141,7 +141,7 @@ TEST_CASE("Only cells with the topology of a standard shape count as that shape"
   cw.cell_zones.push_back(autan::CellZone{
       .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
-  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(mesh, std::string(64, '0')));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(mesh, std::string(64, '0'), {}));
   CHECK(doc["counts"]["cells_by_type"]["hexa"] == 0);
   CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
 }
@@ -158,7 +158,7 @@ TEST_CASE("MeshInfo omits cell zones without cells", "[mesh-info]") {
         "2 ( fluid { type cellZone; cellLabels List<label> 27(" +
             labels + "); } unused { type cellZone; cellLabels List<label> 0(); } )\n");
   const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(dir), autan::io::mesh_hash(dir)));
+      autan::io::mesh_info_json(autan::io::read_mesh(dir), autan::io::mesh_hash(dir), {}));
   REQUIRE(doc["cell_zones"].size() == 1);
   CHECK(doc["cell_zones"][0]["name"] == "fluid");
 }
@@ -170,7 +170,7 @@ TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh
   cells.face_zones[1].kind = autan::BcKind::periodic;
   cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
   const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
-      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0')));
+      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0'), {}));
   REQUIRE(doc["periodic"].size() == 1);
   CHECK(doc["periodic"][0] ==
         nlohmann::json{{"zones", {"xmin", "xmax"}},
@@ -248,7 +248,7 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     CHECK(next == header["nodes"]);
 
     // Zones: MeshInfo's boundary zones, their faces in a row.
-    const auto info = nlohmann::json::parse(autan::io::mesh_info_json(mesh, hash));
+    const auto info = nlohmann::json::parse(autan::io::mesh_info_json(mesh, hash, {}));
     const auto& zones = header["zones"];
     REQUIRE(zones.size() == info["boundary_zones"].size());
     std::size_t first = 0;
@@ -348,7 +348,7 @@ TEST_CASE("MeshInfo counts the nodes of every face", "[mesh-info]") {
     CAPTURE(mesh);
     const fs::path path = data_dir / mesh;
     const auto doc = nlohmann::json::parse(
-        autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+        autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path), {}));
     CHECK(doc["counts"]["face_nodes"] ==
           nodes_per_face * doc["counts"]["faces"].get<std::int64_t>());
   }
