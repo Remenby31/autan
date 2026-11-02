@@ -184,6 +184,16 @@ _CODES = [
         "Repair the cell in the meshing tool; it is inverted or flat.",
     ),
     Code(
+        "E0122",
+        "Mesh text too long",
+        "A name or text the reader keeps is longer than its cap: 4096 bytes for a zone, family, "
+        "BC or patch name, a dictionary entry or `PeriodicTranslation`; (families + 1) x 25 600 "
+        "bytes for `ZoneNames` (a CGNS name of at most 32 bytes and a zone name of at most 4096, "
+        "each escaped up to 6 bytes per byte, and their framing, per family). It is refused "
+        "before the text is allocated; `data` gives what, its bytes and the limit.",
+        "Shorten the name in the meshing tool: names identify zones, they carry no data.",
+    ),
+    Code(
         "E0130",
         "Mesh file cannot be opened",
         "The file or directory cannot be opened or read.",
@@ -640,7 +650,8 @@ _CODES = [
         "Previous run cannot be resumed",
         "A start needs a previous run that ended converged, completed or stopped after at least one "
         "iteration and holds a solution that conforms to its run.json; diverged and failed runs, "
-        "and runs without a sound solution, cannot be resumed.",
+        "and runs without a sound solution, cannot be resumed. A solution whose RunMetadata "
+        "exceeds 64 KiB is not sound: it is refused before it is read (results.md).",
         "Start from another run, or run the case from the freestream.",
     ),
     Code(

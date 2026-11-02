@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "autan/core/mesh.hpp"
+#include "autan/io/cgns.hpp"
 
 namespace autan::io {
 
@@ -18,6 +19,10 @@ std::string mesh_hash(const std::filesystem::path& path);
 
 /// The size in bytes of what mesh_hash covers: the file, or the sum of a polyMesh's files.
 std::int64_t mesh_bytes(const std::filesystem::path& path);
+
+/// What reading `path` costs in bytes (cgns_logical_bytes for CGNS); for every other format,
+/// mesh_bytes and no descriptors (mesh-info.md, source).
+LogicalBytes mesh_logical_bytes(const std::filesystem::path& path);
 
 /// Zones in MeshInfo order: boundary zones are the face zones with
 /// `boundary` set, cell zones those holding at least one cell; indices into
@@ -52,7 +57,7 @@ struct MeshInfoRun {
 /// MeshInfo document (docs/contracts/mesh-info.md, schema autan.mesh-info/1)
 /// of an assembled, unpartitioned mesh read from its source, as JSON text.
 std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int64_t bytes,
-                           const MeshInfoRun& run);
+                           const LogicalBytes& logical, const MeshInfoRun& run);
 
 /// The boundary surface of an assembled, unpartitioned mesh as an
 /// autan.surface/1 file (docs/contracts/mesh.md#boundary-surface): its

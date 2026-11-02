@@ -4,7 +4,10 @@
     "path": "heat-exchanger.msh",
     "format": "fluent",
     "sha256": "2c5a776f8a65fd979846b7d589de0306154e9683cf3ed8298d3ea0c97b141dba",
-    "bytes": 412000000
+    "bytes": 412000000,
+    "logical_bytes": 412000000,
+    "descriptor_bytes": 0,
+    "zone_names_bytes": 0
   },
   "counts": {
     "cells": 1200000,

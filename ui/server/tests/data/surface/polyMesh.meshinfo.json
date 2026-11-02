@@ -4,7 +4,10 @@
     "path": "/src/tests/data/mesh/hybrid/polyMesh",
     "format": "polymesh",
     "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6",
-    "bytes": 20388
+    "bytes": 20388,
+    "logical_bytes": 20388,
+    "descriptor_bytes": 0,
+    "zone_names_bytes": 0
   },
   "counts": {
     "cells": 216,

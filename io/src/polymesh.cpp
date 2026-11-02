@@ -18,6 +18,7 @@
 
 #include "autan/io/read_mesh.hpp"
 #include "cursor.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -57,6 +58,7 @@ std::string entry_value(Cursor& c, std::string_view data) {
       while (!c.at_end() && c.peek_raw() != '"') {
         value += c.peek_raw();
         c.advance();
+        if (value.size() > max_name_bytes) check_text(c.path(), "dictionary entry", value.size());
       }
       c.expect('"');
       continue;
@@ -69,6 +71,7 @@ std::string entry_value(Cursor& c, std::string_view data) {
       }
       value += t;
       c.advance();
+      if (value.size() > max_name_bytes) check_text(c.path(), "dictionary entry", value.size());
     }
   }
 }
@@ -319,13 +322,17 @@ std::vector<NamedDict> read_dict_list(FoamFile& file, std::string_view label_key
     skip_blank(c);
     if (c.accept(')')) break;
     NamedDict d;
-    d.name = std::string(c.token("{/"));
+    const std::string_view name = c.token("{/");
+    check_text(c.path(), "patch or zone name", name.size());
+    d.name = std::string(name);
     skip_blank(c);
     c.expect('{');
     for (;;) {
       skip_blank(c);
       if (c.accept('}')) break;
-      const std::string key(c.token("{};/"));
+      const std::string_view key_text = c.token("{};/");
+      check_text(c.path(), "dictionary key", key_text.size());
+      const std::string key(key_text);
       skip_blank(c);
       if (!label_key.empty() && key == label_key) {
         d.labels = file.labels();

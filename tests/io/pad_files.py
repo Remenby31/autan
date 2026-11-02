@@ -2,13 +2,15 @@
 tests that compare a memory estimate with what reading the file costs (#358).
 
     python tests/io/pad_files.py KIND SOURCE OUT BYTES [--empty-zone NAME] [--skipped-elements N]
+                                 [--skipped-mixed N]
 
 KIND is one of:
   gmsh       a Gmsh 4.1 file, ASCII or binary: a $NodeData section the reader skips, at its end
   polymesh   an ASCII OpenFOAM polyMesh directory: points that no face uses, then whitespace
   cgns       a CGNS/HDF5 file: grid points that no element uses, and a base Descriptor_t; with
              --skipped-elements N, also a BAR_2 section of N edges after its last element id,
-             which the reader skips (mesh.md, Readers)
+             and with --skipped-mixed N a MIXED section of N such edges, which the reader skips
+             (mesh.md, Readers)
   json       a JSON document (MMS, initial or face states): whitespace after its opening brace;
              with --empty-zone, a face-state document also gets a zone with no faces
 The mesh and state hashes of OUT differ from SOURCE's: compute them again.
@@ -61,33 +63,46 @@ def polymesh(source: Path, out: Path, size: int) -> None:
         f.write("\n" * max(0, size - used))
 
 
-def bar_section(zone: h5py.Group, count: int) -> None:
-    """A BAR_2 section of `count` edges between the zone's first two grid points, numbered after
-    its last element id, copied from the layout of one of its sections."""
+def bar_section(zone: h5py.Group, count: int, mixed: bool = False) -> None:
+    """A section of `count` BAR_2 edges between the zone's first two grid points, numbered after
+    its last element id, copied from the layout of one of its sections; with `mixed`, a MIXED
+    section of them, each element led by its type code and an ElementStartOffset."""
     sections = [k for k in zone if zone[k].attrs.get("label") == b"Elements_t"]
     if not sections:
         fail("cgns: an element section to copy the node layout from is expected")
     last = max(int(zone[k]["ElementRange"][" data"][()].max()) for k in sections)
-    zone.copy(sections[0], "SkippedEdges")
-    node = zone["SkippedEdges"]
+    title = b"SkippedMixed" if mixed else b"SkippedEdges"
+    zone.copy(sections[0], title.decode())
+    node = zone[title.decode()]
     name = node.attrs["name"]
-    node.attrs.modify("name", np.array(b"SkippedEdges", dtype=name.dtype))
+    node.attrs.modify("name", np.array(title, dtype=name.dtype))
     header = node[" data"][()]
-    header[0] = 3  # ElementType_t BAR_2 (CGNS SIDS)
+    header[0] = 20 if mixed else 3  # ElementType_t MIXED, BAR_2 (CGNS SIDS)
     header[1] = 0
     node[" data"][...] = header
     ids = node["ElementRange"][" data"]
     node["ElementRange"][" data"][...] = np.array([last + 1, last + count], dtype=ids.dtype)
     connectivity = node["ElementConnectivity"][" data"]
-    edges = np.tile(np.array([1, 2], dtype=connectivity.dtype), count)
+    one = [3, 1, 2] if mixed else [1, 2]
+    edges = np.tile(np.array(one, dtype=connectivity.dtype), count)
     del node["ElementConnectivity"][" data"]
     node["ElementConnectivity"].create_dataset(" data", data=edges)
     for child in list(node):
         if child not in (" data", "ElementRange", "ElementConnectivity"):
             del node[child]
+    if mixed:
+        node.copy(node["ElementConnectivity"], "ElementStartOffset")
+        offsets = node["ElementStartOffset"]
+        offsets.attrs.modify(
+            "name", np.array(b"ElementStartOffset", dtype=offsets.attrs["name"].dtype)
+        )
+        del offsets[" data"]
+        offsets.create_dataset(
+            " data", data=np.arange(0, 3 * count + 1, 3, dtype=connectivity.dtype)
+        )
 
 
-def cgns(source: Path, out: Path, size: int, skipped: int = 0) -> None:
+def cgns(source: Path, out: Path, size: int, skipped: int = 0, mixed: int = 0) -> None:
     shutil.copyfile(source, out)
     with h5py.File(out, "r+") as f:
         bases = [k for k in f if f[k].attrs.get("label") == b"CGNSBase_t"]
@@ -121,6 +136,8 @@ def cgns(source: Path, out: Path, size: int, skipped: int = 0) -> None:
         node.create_dataset(" data", data=np.full(text, ord(" "), dtype=np.int8))
         if skipped > 0:
             bar_section(zone, skipped)
+        if mixed > 0:
+            bar_section(zone, mixed, mixed=True)
 
 
 def json_document(source: Path, out: Path, size: int, empty_zone: str | None) -> None:
@@ -141,13 +158,14 @@ def main() -> None:
     parser.add_argument("bytes", type=int)
     parser.add_argument("--empty-zone")
     parser.add_argument("--skipped-elements", type=int, default=0)
+    parser.add_argument("--skipped-mixed", type=int, default=0)
     a = parser.parse_args()
     if a.kind == "gmsh":
         gmsh(a.source, a.out, a.bytes)
     elif a.kind == "polymesh":
         polymesh(a.source, a.out, a.bytes)
     elif a.kind == "cgns":
-        cgns(a.source, a.out, a.bytes, a.skipped_elements)
+        cgns(a.source, a.out, a.bytes, a.skipped_elements, a.skipped_mixed)
     else:
         json_document(a.source, a.out, a.bytes, a.empty_zone)
 

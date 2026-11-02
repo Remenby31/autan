@@ -19,6 +19,7 @@
 #include "autan/core/cellwise.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "cursor.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -199,6 +200,7 @@ class GmshReader {
       const std::string_view name = c_.line();
       if (name.size() < 2 || name.front() != '"' || name.back() != '"')
         c_.fail("unquoted physical name");
+      check_text(c_.path(), "physical name", name.size() - 2);
       names_[{dim, tag}] = std::string(name.substr(1, name.size() - 2));
     }
   }

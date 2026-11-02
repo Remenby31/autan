@@ -295,6 +295,18 @@ void load_start(Prepared& p) {
   io::StoredSolution stored;
   try {
     // A warm start takes the fields alone (solver-input.md, `start`).
+    // results.md, Sizes a reader accepts: what the writer wrote for this mesh, checked before
+    // the CGNS library loads the file.
+    if (const std::int64_t cells = io::solution_cells(snapshot->path());
+        cells != p.mesh.n_cells()) {
+      start_mismatch("E0203", "the previous run was computed on another mesh", "start.run",
+                     {{"expected_cells", p.mesh.n_cells()}, {"found_cells", cells}});
+    }
+    const io::MeshInfoZones zones = io::meshinfo_zones(p.mesh);
+    io::check_start_solution(
+        snapshot->path(),
+        {.zones = static_cast<std::int64_t>(zones.boundary.size() + zones.cell.size()),
+         .periodic_pairs = static_cast<std::int64_t>(p.mesh.periodic_pairs().size())});
     stored = io::read_solution(snapshot->path(), start.mode == "continue");
   } catch (const Error& e) {
     if (e.code() == ErrorCode::io_external_reference) {

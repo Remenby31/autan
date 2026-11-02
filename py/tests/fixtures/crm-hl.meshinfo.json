@@ -4,7 +4,10 @@
     "path": "crm-hl.cgns",
     "format": "cgns",
     "sha256": "9933a79571244040a48c983d0c14c9818acf8d1281e213ab0ec6bdd9099a47fa",
-    "bytes": 28400000000
+    "bytes": 28400000000,
+    "logical_bytes": 28400000000,
+    "descriptor_bytes": 0,
+    "zone_names_bytes": 0
   },
   "counts": {
     "cells": 48200000,

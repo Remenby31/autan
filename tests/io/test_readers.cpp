@@ -434,3 +434,45 @@ TEST_CASE("Gmsh $Periodic surface links become periodic pairs", "[io][periodic]"
   // A link of a dimension the format does not have.
   require_error(autan::ErrorCode::io_malformed, edited("2 2 1\n16 1 0 0 1", "4 2 1\n16 1 0 0 1"));
 }
+
+TEST_CASE("A zone name longer than 4096 bytes is E0122 in the text readers", "[io]") {
+  // mesh.md, E0122: tests/data/mesh/hex with its zone xmin renamed to 4096 bytes (read) and to
+  // 4097 (refused), in each format whose names are text: the Gmsh physical name, the Fluent
+  // zone name, the polyMesh patch name.
+  const std::string format = GENERATE("gmsh", "fluent", "polymesh");
+  CAPTURE(format);
+  const auto slurp = [](const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  };
+  for (const std::size_t bytes : {std::size_t{4096}, std::size_t{4097}}) {
+    CAPTURE(bytes);
+    const std::string name(bytes, 'x');
+    const std::string tag = format + "-" + std::to_string(bytes);
+    fs::path path;
+    if (format == "polymesh") {
+      path = temp_dir() / tag / "polyMesh";
+      fs::create_directories(path);
+      for (const auto& entry : fs::directory_iterator(data_dir / "hex" / "polyMesh"))
+        fs::copy_file(entry.path(), path / entry.path().filename());
+      std::string boundary = slurp(path / "boundary");
+      const auto at = boundary.find("    xmin\n");
+      REQUIRE(at != std::string::npos);
+      boundary.replace(at + 4, 4, name);
+      std::ofstream(path / "boundary", std::ios::binary) << boundary;
+    } else {
+      const bool gmsh = format == "gmsh";
+      std::string text = slurp(data_dir / "hex" / (gmsh ? "hex.ascii.msh" : "hex.fluent.msh"));
+      const std::string old = gmsh ? "\"xmin\"" : " xmin)";
+      const auto at = text.find(old);
+      REQUIRE(at != std::string::npos);
+      text.replace(at, old.size(), gmsh ? "\"" + name + "\"" : " " + name + ")");
+      path = write_temp(tag + ".msh", text);
+    }
+    if (bytes == 4096) {
+      CHECK(zone_named(autan::io::read_mesh(path), name).boundary);
+    } else {
+      require_error(autan::ErrorCode::mesh_text_too_long, path);
+    }
+  }
+}

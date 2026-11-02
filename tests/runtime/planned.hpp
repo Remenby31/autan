@@ -31,8 +31,9 @@ inline nlohmann::json planned(nlohmann::json doc, const std::filesystem::path& r
   const double scale = given.is_number() && given.get<double>() > 0.0 ? given.get<double>() : 1.0;
   const auto counts = autan::io::run_counts(
       m, scale, order == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm);
-  doc["mesh_info"] = nlohmann::json::parse(autan::io::mesh_info_json(
-      m, autan::io::mesh_hash(mesh), autan::io::mesh_bytes(mesh), counts));
+  doc["mesh_info"] = nlohmann::json::parse(
+      autan::io::mesh_info_json(m, autan::io::mesh_hash(mesh), autan::io::mesh_bytes(mesh),
+                                autan::io::mesh_logical_bytes(mesh), counts));
   return doc;
 }
 

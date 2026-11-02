@@ -151,6 +151,12 @@
       "fix": "Repair the cell in the meshing tool; it is inverted or flat.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0121"
     },
+    "E0122": {
+      "severity": "error",
+      "title": "Mesh text too long",
+      "fix": "Shorten the name in the meshing tool: names identify zones, they carry no data.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0122"
+    },
     "E0130": {
       "severity": "error",
       "title": "Mesh file cannot be opened",

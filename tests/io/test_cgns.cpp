@@ -1,10 +1,13 @@
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -565,18 +568,29 @@ TEST_CASE("Zone names outside the node-name rule survive a write and read", "[cg
 }
 
 TEST_CASE("Point and edge sections are skipped, and the ids after them still resolve", "[cgns]") {
-  // mesh.md, Readers (CGNS): BAR_2 and NODE sections carry nothing the mesh uses. A tet whose
-  // face (1, 2, 3) a BC "wall" names by its element id, without and with a BAR_2 section of three
-  // edges before that face: the same mesh, the face still found by its id.
-  const auto write = [](bool edges) {
-    return cgns_file(edges ? "edges.cgns" : "no-edges.cgns", [&](int fn, int base) {
+  // mesh.md, Readers (CGNS): BAR_2 and NODE elements carry nothing the mesh uses. A tet whose
+  // face (1, 2, 3) a BC "wall" names by its element id, without and with three edges before that
+  // face, in a BAR_2 section or a MIXED one: the same mesh, the face still found by its id.
+  enum class Edges : std::uint8_t { none, section, mixed };
+  const auto write = [](Edges edges) {
+    const char* name = edges == Edges::none      ? "no-edges.cgns"
+                       : edges == Edges::section ? "edges.cgns"
+                                                 : "mixed-edges.cgns";
+    return cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
       int section = 0, bc = 0;
       cgsize_t next = 2;
-      if (edges) {
+      if (edges == Edges::section) {
         const std::array<cgsize_t, 6> bars{1, 2, 2, 3, 3, 1};
         REQUIRE(cg_section_write(fn, base, 1, "Edges", CGNS_ENUMV(BAR_2), next, next + 2, 0,
                                  bars.data(), &section) == CG_OK);
+        next += 3;
+      } else if (edges == Edges::mixed) {
+        const cgsize_t bar = CGNS_ENUMV(BAR_2);
+        const std::array<cgsize_t, 9> bars{bar, 1, 2, bar, 2, 3, bar, 3, 1};
+        const std::array<cgsize_t, 4> offsets{0, 3, 6, 9};
+        REQUIRE(cg_poly_section_write(fn, base, 1, "Edges", CGNS_ENUMV(MIXED), next, next + 2, 0,
+                                      bars.data(), offsets.data(), &section) == CG_OK);
         next += 3;
       }
       const std::array<cgsize_t, 3> tri{1, 3, 2};
@@ -587,9 +601,10 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
       REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
     });
   };
-  const autan::Mesh plain = autan::io::read_mesh(write(false));
-  const autan::Mesh with_edges = autan::io::read_mesh(write(true));
-  for (const autan::Mesh* m : {&plain, &with_edges}) {
+  const autan::Mesh plain = autan::io::read_mesh(write(Edges::none));
+  const autan::Mesh with_edges = autan::io::read_mesh(write(Edges::section));
+  const autan::Mesh mixed = autan::io::read_mesh(write(Edges::mixed));
+  for (const autan::Mesh* m : {&plain, &with_edges, &mixed}) {
     CHECK(m->n_cells() == 1);
     CHECK(m->n_faces() == 4);
     const auto zones = m->face_zones();
@@ -599,6 +614,7 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
     CHECK(m->boundary_zone_offsets()[z + 1] - m->boundary_zone_offsets()[z] == 1);
   }
   CHECK(std::ranges::equal(plain.face_nodes(), with_edges.face_nodes()));
+  CHECK(std::ranges::equal(plain.face_nodes(), mixed.face_nodes()));
 }
 
 TEST_CASE("CGNS content that contradicts itself is E0132", "[cgns]") {
@@ -638,3 +654,269 @@ TEST_CASE("CGNS content that contradicts itself is E0132", "[cgns]") {
         }));
   }
 }
+
+namespace {
+
+// `json` padded with spaces after its first character to `bytes` bytes: the same document.
+std::string padded(const std::string& json, std::size_t bytes) {
+  REQUIRE(bytes >= json.size());
+  return json.substr(0, 1) + std::string(bytes - json.size(), ' ') + json.substr(1);
+}
+
+// Overwrites a base descriptor of `file`.
+void write_base_descriptor(const fs::path& file, const char* name, const std::string& text) {
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+  REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+  REQUIRE(cg_descriptor_write(name, text.c_str()) == CG_OK);
+  REQUIRE(cg_close(fn) == CG_OK);
+}
+
+int families_of(const fs::path& file) {
+  int fn = 0, families = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  REQUIRE(cg_nfamilies(fn, 1, &families) == CG_OK);
+  REQUIRE(cg_close(fn) == CG_OK);
+  return families;
+}
+
+}  // namespace
+
+TEST_CASE("The CGNS reader caps the texts it keeps and counts every descriptor", "[cgns]") {
+  // mesh.md, E0122: a zone name of at most 4096 bytes; PeriodicTranslation of at most 4096;
+  // ZoneNames of at most (families + 1) x 25 600. Any other descriptor is accepted whatever its
+  // size, and counted in source.descriptor_bytes, since the CGNS library loads it.
+  fs::create_directories(temp_dir());
+  const autan::Mesh mesh = autan::io::read_mesh(data_dir / "hybrid" / "polyMesh");
+  SECTION("a zone name of 4096 bytes, not 4097") {
+    for (const std::size_t bytes : {std::size_t{4096}, std::size_t{4097}}) {
+      CAPTURE(bytes);
+      const std::string name(bytes, 'z');  // longer than a CGNS name: it goes to ZoneNames
+      const autan::Mesh named = renamed(mesh, {{"xmin", name}});
+      const fs::path file = temp_dir() / ("zone-name-" + std::to_string(bytes) + ".cgns");
+      autan::io::write_solution(file, named, solution_for(named));
+      if (bytes == 4096) {
+        CHECK(zone_named(autan::io::read_mesh(file), name).boundary);
+      } else {
+        require_error(autan::ErrorCode::mesh_text_too_long, file);
+      }
+    }
+  }
+  SECTION("ZoneNames up to (families + 1) x 25 600 bytes") {
+    const autan::Mesh named = renamed(mesh, {{"xmin",
+                                              "entr\xc3\xa9"
+                                              "e"}});
+    const fs::path file = temp_dir() / "zone-names-cap.cgns";
+    autan::io::write_solution(file, named, solution_for(named));
+    const auto cap = static_cast<std::size_t>(families_of(file) + 1) * 25600;
+    const std::string names = R"({"boundary": {}, "cell": {}})";
+    write_base_descriptor(file, "ZoneNames", padded(names, cap));
+    CHECK(autan::io::read_mesh(file).n_cells() == mesh.n_cells());
+    write_base_descriptor(file, "ZoneNames", padded(names, cap + 1));
+    require_error(autan::ErrorCode::mesh_text_too_long, file);
+  }
+  SECTION("a few hundred zones whose ZoneNames exceeds 4 KiB") {
+    // Each boundary face of a 6^3 box in a zone of its own, its name outside the CGNS rule.
+    autan::CellwiseMesh cells = autan::test::box(6, autan::test::BoxFill::hexa);
+    const std::size_t faces = cells.labelled_face_zone.size();
+    cells.face_zones.resize(faces, cells.face_zones[0]);
+    for (std::size_t f = 0; f < faces; ++f) {
+      cells.face_zones[f].name = "c\xc3\xb4t\xc3\xa9 " + std::to_string(f);
+      cells.labelled_face_zone[f] = static_cast<index_t>(f);
+    }
+    const autan::Mesh many = autan::assemble(autan::to_face_based(std::move(cells)));
+    const fs::path file = temp_dir() / "many-zones.cgns";
+    autan::io::write_solution(file, many, solution_for(many));
+    int fn = 0;
+    REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    std::size_t zone_names = 0;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "ZoneNames") zone_names = std::string_view(text).size();
+      cg_free(text);
+    }
+    cg_close(fn);
+    CHECK(zone_names > 4096);
+    const autan::Mesh back = autan::io::read_mesh(file);
+    CHECK(faces >= 200);
+    CHECK(zone_named(back, "c\xc3\xb4t\xc3\xa9 199").boundary);
+  }
+  SECTION("PeriodicTranslation of 4096 bytes, not 4097") {
+    for (const std::size_t bytes : {std::size_t{4096}, std::size_t{4097}}) {
+      CAPTURE(bytes);
+      // The two reciprocal connections translate by (1, 0, 0) and (-1, 0, 0).
+      const fs::path file =
+          periodic_slab("translation-" + std::to_string(bytes) + ".cgns", false, false, false);
+      int fn = 0;
+      REQUIRE(cg_open(file.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+      for (const auto& [conn, json] : {std::pair{1, "[1, 0, 0]"}, std::pair{2, "[-1, 0, 0]"}}) {
+        REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "ZoneGridConnectivity_t", 1, "GridConnectivity_t", conn,
+                        "end") == CG_OK);
+        REQUIRE(cg_descriptor_write("PeriodicTranslation", padded(json, bytes).c_str()) == CG_OK);
+      }
+      REQUIRE(cg_close(fn) == CG_OK);
+      if (bytes == 4096) {
+        CHECK(autan::io::read_mesh(file).periodic_pairs().size() == 1);
+      } else {
+        require_error(autan::ErrorCode::mesh_text_too_long, file);
+      }
+    }
+  }
+  SECTION("another descriptor is accepted and counted, whatever its size") {
+    const auto write = [](bool about) {
+      return cgns_file(about ? "about.cgns" : "no-about.cgns", [&](int fn, int base) {
+        unstructured_tet(fn, base, "Zone");
+        if (about) {
+          REQUIRE(cg_goto(fn, base, "end") == CG_OK);
+          REQUIRE(cg_descriptor_write("About", std::string(std::size_t{1} << 20, 'a').c_str()) ==
+                  CG_OK);
+        }
+      });
+    };
+    const fs::path plain = write(false), about = write(true);
+    CHECK(autan::io::read_mesh(about).n_cells() == 1);
+    const auto with = autan::io::cgns_logical_bytes(about);
+    const auto without = autan::io::cgns_logical_bytes(plain);
+    CHECK(with.descriptors - without.descriptors == std::int64_t{1} << 20);
+    CHECK(with.total - without.total == std::int64_t{1} << 20);
+    CHECK(with.zone_names == 0);
+  }
+  SECTION("ten thousand families and a small ZoneNames") {
+    const fs::path file = cgns_file("families.cgns", [](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      for (int f = 0; f < 10000; ++f) {
+        int family = 0;
+        REQUIRE(cg_family_write(fn, base, ("F" + std::to_string(f)).c_str(), &family) == CG_OK);
+      }
+      REQUIRE(cg_goto(fn, base, "end") == CG_OK);
+      REQUIRE(cg_descriptor_write("ZoneNames", R"({"boundary": {}, "cell": {}})") == CG_OK);
+    });
+    CHECK(autan::io::read_mesh(file).n_cells() == 1);
+  }
+}
+
+TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns]") {
+  // mesh-info.md, source.logical_bytes: each dataset at its element count times its element
+  // size. The coordinates of a 12^3 box rewritten as deflated chunks: a smaller file, the same
+  // logical bytes, the same mesh.
+  fs::create_directories(temp_dir());
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(12, autan::test::BoxFill::hexa)));
+  const fs::path plain = temp_dir() / "plain.cgns", packed = temp_dir() / "packed.cgns";
+  autan::io::write_solution(plain, mesh, solution_for(mesh));
+  fs::copy_file(plain, packed, fs::copy_options::overwrite_existing);
+  const hid_t file = H5Fopen(packed.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  REQUIRE(file >= 0);
+  for (const char* axis : {"CoordinateX", "CoordinateY", "CoordinateZ"}) {
+    const std::string path = std::string("/Base/Zone/GridCoordinates/") + axis + "/ data";
+    const hid_t old = H5Dopen2(file, path.c_str(), H5P_DEFAULT);
+    REQUIRE(old >= 0);
+    const hid_t space = H5Dget_space(old);
+    const auto n = static_cast<std::size_t>(H5Sget_simple_extent_npoints(space));
+    std::vector<double> values(n);
+    REQUIRE(H5Dread(old, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+    H5Dclose(old);
+    REQUIRE(H5Ldelete(file, path.c_str(), H5P_DEFAULT) >= 0);
+    const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
+    const hsize_t chunk = n;
+    H5Pset_chunk(properties, 1, &chunk);
+    H5Pset_deflate(properties, 9);
+    const hid_t dataset =
+        H5Dcreate2(file, path.c_str(), H5T_IEEE_F64LE, space, H5P_DEFAULT, properties, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >=
+            0);
+    H5Dclose(dataset);
+    H5Pclose(properties);
+    H5Sclose(space);
+  }
+  H5Fclose(file);
+  CHECK(autan::io::cgns_logical_bytes(packed).total == autan::io::cgns_logical_bytes(plain).total);
+  CHECK(autan::io::mesh_logical_bytes(packed).total == autan::io::cgns_logical_bytes(plain).total);
+  CHECK(autan::io::read_mesh(packed).n_points() == mesh.n_points());
+  // The coordinates alone are 3 x 13^3 doubles.
+  CHECK(autan::io::cgns_logical_bytes(plain).total > 3 * 13 * 13 * 13 * 8);
+}
+
+#if defined(__linux__)
+namespace {
+
+// A /proc/self/status field, in bytes.
+std::int64_t status_bytes(const std::string& key) {
+  std::ifstream in("/proc/self/status");
+  for (std::string line; std::getline(in, line);) {
+    if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
+  }
+  return -1;
+}
+
+// The peak resident memory cg_open of `file` adds, until cg_close.
+std::int64_t open_peak(const fs::path& file) {
+  const std::int64_t before = status_bytes("VmRSS");
+  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  const std::int64_t peak = status_bytes("VmHWM") - before;
+  REQUIRE(cg_close(fn) == CG_OK);
+  return peak;
+}
+
+}  // namespace
+
+TEST_CASE("cg_open holds at most twice a file's descriptors", "[cgns]") {
+  // mesh-info.md, source.descriptor_bytes: the CGNS library loads every descriptor at cg_open,
+  // through a buffer of its size, and a compressed one also through a chunk buffer while it is
+  // read (CGNS 4.5 cgi_read_node, HDF5 filter pipeline): at most 2 bytes per descriptor byte. A
+  // tet with an "About" descriptor of 8 and of 32 MiB stored as one deflated chunk, against the
+  // same tet without it.
+  fs::create_directories(temp_dir());
+  const auto write = [](const std::string& name, std::size_t bytes) {
+    const fs::path file = cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      if (bytes > 0) {
+        REQUIRE(cg_goto(fn, base, "end") == CG_OK);
+        REQUIRE(cg_descriptor_write("About", std::string(bytes, 'a').c_str()) == CG_OK);
+      }
+    });
+    if (bytes == 0) return file;
+    const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+    REQUIRE(h5 >= 0);
+    const char* path = "/Base/About/ data";
+    const hid_t old = H5Dopen2(h5, path, H5P_DEFAULT);
+    REQUIRE(old >= 0);
+    const hid_t type = H5Dget_type(old);
+    const hid_t space = H5Dget_space(old);
+    std::vector<char> text(bytes);
+    REQUIRE(H5Dread(old, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, text.data()) >= 0);
+    H5Dclose(old);
+    REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
+    const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
+    const hsize_t chunk = bytes;
+    H5Pset_chunk(properties, 1, &chunk);
+    H5Pset_deflate(properties, 9);
+    const hid_t dataset = H5Dcreate2(h5, path, type, space, H5P_DEFAULT, properties, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    REQUIRE(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, text.data()) >= 0);
+    H5Dclose(dataset);
+    H5Pclose(properties);
+    H5Sclose(space);
+    H5Tclose(type);
+    H5Fclose(h5);
+    return file;
+  };
+  const std::int64_t baseline = open_peak(write("about-0.cgns", 0));
+  for (const std::size_t bytes : {std::size_t{8} << 20, std::size_t{32} << 20}) {
+    CAPTURE(bytes);
+    const fs::path file = write("about-" + std::to_string(bytes) + ".cgns", bytes);
+    CHECK(autan::io::cgns_logical_bytes(file).descriptors == static_cast<std::int64_t>(bytes));
+    const std::int64_t added = open_peak(file) - baseline;
+    CHECK(added >= static_cast<std::int64_t>(bytes));  // loaded, as the bound assumes
+    CHECK(added <= 2 * static_cast<std::int64_t>(bytes));
+  }
+}
+#endif

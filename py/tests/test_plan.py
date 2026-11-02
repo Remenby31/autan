@@ -206,7 +206,15 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
     return autan.MeshInfo.from_document(
         {
             "schema": "autan.mesh-info/1",
-            "source": {"path": "m.cgns", "format": "cgns", "sha256": "0" * 64, "bytes": 4096},
+            "source": {
+                "path": "m.cgns",
+                "format": "cgns",
+                "sha256": "0" * 64,
+                "bytes": 4096,
+                "logical_bytes": 4096,
+                "descriptor_bytes": 0,
+                "zone_names_bytes": 0,
+            },
             "counts": {
                 "cells": 10,
                 "faces": 40,

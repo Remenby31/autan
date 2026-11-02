@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -14,6 +15,20 @@ namespace autan::io {
 /// ZoneSubRegion_t or the families of element sections; supported layouts
 /// and rejections are listed in docs/contracts/mesh.md, "Readers".
 Mesh read_cgns(const std::filesystem::path& file);
+
+/// What reading a mesh file costs beyond its arrays' counts, in bytes at their stored element count
+/// times element size whatever the compression (mesh-info.md, source): `total` the datasets the
+/// reader reads and every descriptor, `descriptors` every Descriptor_t (the CGNS library loads them
+/// all at cg_open), `zone_names` the ZoneNames descriptor the reader parses. 0 descriptors and zone
+/// names for a format without them.
+struct LogicalBytes {
+  std::int64_t total = 0;
+  std::int64_t descriptors = 0;
+  std::int64_t zone_names = 0;
+};
+
+/// LogicalBytes of a CGNS file, from its node metadata only, through cgio (no cg_open).
+LogicalBytes cgns_logical_bytes(const std::filesystem::path& file);
 
 struct Field {
   std::string name;  ///< SIDS name, e.g. "Density"
@@ -52,6 +67,23 @@ struct StoredSolution {
   std::vector<Field> restart_fields;
 };
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state = true);
+
+/// The run's mesh a start solution was written for: its boundary and cell zones and its periodic
+/// pairs (results.md, Sizes a reader accepts).
+struct StartLimits {
+  std::int64_t zones = 0;
+  std::int64_t periodic_pairs = 0;
+};
+
+/// Checks through cgio alone, before the CGNS library loads anything, that `file` holds no
+/// descriptor or family beyond what results.md's writer writes for a mesh of `limits`:
+/// RunMetadata of at most 64 KiB and ZoneNames of at most (zones + 1) × 25 600 bytes in the base,
+/// at most 2 × periodic_pairs PeriodicTranslation of at most 4096 bytes, no other descriptor,
+/// at most `zones` Family_t. Throws E0132 otherwise.
+void check_start_solution(const std::filesystem::path& file, const StartLimits& limits);
+
+/// The cells of a solution's zone, through cgio alone (no cg_open).
+std::int64_t solution_cells(const std::filesystem::path& file);
 
 /// Writes `solution` and `mesh` (unpartitioned) as solution.cgns with the
 /// layout of docs/contracts/results.md. Throws E0101 when the arrays do not

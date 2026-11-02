@@ -4,7 +4,10 @@
     "path": "/src/tests/data/mesh/hybrid/hybrid.ascii.msh",
     "format": "gmsh",
     "sha256": "54a9e0b4efd741811e223ea15ad79cb319195f9fde3b2f0c90c8d08aebdca185",
-    "bytes": 9078
+    "bytes": 9078,
+    "logical_bytes": 9078,
+    "descriptor_bytes": 0,
+    "zone_names_bytes": 0
   },
   "counts": {
     "cells": 216,

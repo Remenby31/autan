@@ -45,6 +45,9 @@ class Source(_Strict):
     format: Literal["cgns", "gmsh", "fluent", "polymesh"]
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
     bytes: Positive
+    logical_bytes: Count
+    descriptor_bytes: Count
+    zone_names_bytes: Count
 
 
 class CellsByType(_Strict):

@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <limits>
 #include <map>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,6 +23,7 @@
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
 #include "self_contained.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 
@@ -34,12 +34,6 @@ namespace {
 namespace fs = std::filesystem;
 
 std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
-
-// A descriptor's text as the library allocated it: read in place, never copied (#358).
-struct CgFree {
-  void operator()(char* p) const noexcept { cg_free(p); }
-};
-using CgText = std::unique_ptr<char, CgFree>;
 
 // Once the file is open, a library error means its content breaks the SIDS
 // (E0132); opening it is checked by CgnsFile (E0130).
@@ -244,6 +238,7 @@ class Reader {
             Section{.start = start,
                     .count = count,
                     .elements = {},
+                    .skipped = {},
                     .ignored = Element{.type = type, .connectivity = {}, .family = family}});
         continue;
       }
@@ -270,12 +265,16 @@ class Reader {
       }
       check_offsets(offsets, connectivity.size(), name);
       Section& section = sections_.emplace_back(Section{
-          .start = start, .count = count, .elements = std::vector<Element>(count), .ignored = {}});
+          .start = start,
+          .count = count,
+          .elements = {},
+          .skipped = {},
+          .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}, .family = family}});
+      if (type != CGNS_ENUMV(MIXED)) section.elements.resize(count);
       for (std::size_t e = 0; e < count; ++e) {
-        Element& element = section.elements[e];
         auto first = connectivity.begin() + offsets[e];
         const auto last = connectivity.begin() + offsets[e + 1];
-        element.type = type;
+        CGNS_ENUMT(ElementType_t) element_type = type;
         if (type == CGNS_ENUMV(MIXED)) {
           const cgsize_t code = *first;
           ++first;
@@ -285,9 +284,18 @@ class Reader {
               last - first != nodes) {
             malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
           }
-          element.type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
+          element_type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
+          // Points and edges of a MIXED section: their index alone, as in a section of them.
+          if (is_ignored_type(element_type)) {
+            section.skipped.push_back(e);
+            continue;
+          }
+          section.elements.emplace_back();
         }
-        if (!is_ignored_type(element.type)) element.connectivity.assign(first, last);
+        Element& element =
+            type == CGNS_ENUMV(MIXED) ? section.elements.back() : section.elements[e];
+        element.type = element_type;
+        element.connectivity.assign(first, last);
         element.family = family;
         classify(element, name);
       }
@@ -324,7 +332,7 @@ class Reader {
     const Section& section = *std::prev(it);
     const cgsize_t index = id - section.start;
     if (!std::cmp_less(index, section.count)) return nullptr;
-    return section.elements.empty() ? &section.ignored : &section.elements[at(index)];
+    return section.at(at(index));
   }
 
   void classify(const Element& element, const char* section) {
@@ -460,19 +468,28 @@ class Reader {
   // Files Autan writes (results.md) map node names to zone names in the
   // ZoneNames descriptor of the base; zones keep their own names and those
   // declared without faces stay visible.
+  // mesh.md, Periodic pairs and Readers: only ZoneNames is read among the base's descriptors,
+  // sized from its node first; the others are never read.
   void restore_zone_names() {
-    ok(cg_goto(fn_, 1, "end"), "go to base");
-    int count = 0;
-    ok(cg_ndescriptors(&count), "count descriptors");
-    for (int d = 1; d <= count; ++d) {
-      char name[33];
-      char* text = nullptr;
-      ok(cg_descriptor_read(d, name, &text), "read descriptor");
-      const CgText owned(text);
-      if (std::string_view(name) != "ZoneNames") continue;
+    const CgioTree tree(fn_);
+    const auto base = tree.child(tree.root(), "CGNSBase_t");
+    const auto descriptor = base ? tree.child(*base, "Descriptor_t", "ZoneNames") : std::nullopt;
+    if (descriptor) {
+      // Each entry: a node name of at most 32 bytes and a zone name of at most 4096, both escaped
+      // by the writer's ensure_ascii (6 bytes per byte at worst), and their framing.
+      // Its keys are the families that results.md's writer declares, one per zone.
+      check_text(path_, "ZoneNames descriptor",
+                 static_cast<std::size_t>(tree.logical_bytes(*descriptor)),
+                 (families_.size() + 1) * 25600);
       nlohmann::json names;
       try {
-        names = nlohmann::json::parse(text != nullptr ? text : "");
+        names = nlohmann::json::parse(tree.text(*descriptor));
+        for (const char* side : {"boundary", "cell"}) {
+          for (const auto& [key, value] : names.at(side).items()) {
+            if (value.is_string())
+              check_text(path_, "zone name", value.get_ref<const std::string&>().size());
+          }
+        }
         for (auto& zone : face_zones_) {
           if (names.at("boundary").contains(zone.name))
             zone.name = names["boundary"][zone.name].get<std::string>();
@@ -623,19 +640,20 @@ class Reader {
         malformed(path_, std::string("Periodic of '") + name + "' has no Translation");
       // Files of results.md keep the translation to the bit in a descriptor;
       // it must round to the R4 one.
-      ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneGridConnectivity_t", 1, "GridConnectivity_t", i, "end"),
-         "go to connectivity", name);
-      int descriptors = 0;
-      ok(cg_ndescriptors(&descriptors), "count descriptors", name);
-      for (int d = 1; d <= descriptors; ++d) {
-        char descriptor[33];
-        char* text = nullptr;
-        ok(cg_descriptor_read(d, descriptor, &text), "read descriptor", name);
-        const CgText owned(text);
-        if (std::string_view(descriptor) != "PeriodicTranslation") continue;
+      // Only that descriptor is read, sized from its node first.
+      const CgioTree tree(fn_);
+      std::optional<double> node = tree.child(tree.root(), "CGNSBase_t");
+      for (const auto& [label, child] : {std::pair<const char*, std::string>{"Zone_t", ""},
+                                         {"ZoneGridConnectivity_t", ""},
+                                         {"GridConnectivity_t", name},
+                                         {"Descriptor_t", "PeriodicTranslation"}}) {
+        if (node) node = tree.child(*node, label, child);
+      }
+      if (node) {
+        check_text(path_, "PeriodicTranslation descriptor",
+                   static_cast<std::size_t>(tree.logical_bytes(*node)));
         std::array<double, 3> exact{};
-        const nlohmann::json value =
-            nlohmann::json::parse(text != nullptr ? text : "", nullptr, false);
+        const nlohmann::json value = nlohmann::json::parse(tree.text(*node), nullptr, false);
         if (!value.is_array() || value.size() != 3 ||
             !std::ranges::all_of(
                 value, [](const nlohmann::json& v) { return v.is_number() && !v.is_boolean(); })) {
@@ -768,8 +786,7 @@ class Reader {
     std::vector<cgsize_t> ids;
     for (const Section& section : sections_) {
       for (std::size_t e = 0; e < section.count; ++e) {
-        const Element& element = section.elements.empty() ? section.ignored : section.elements[e];
-        if (keep(element)) ids.push_back(section.start + static_cast<cgsize_t>(e));
+        if (keep(*section.at(e))) ids.push_back(section.start + static_cast<cgsize_t>(e));
       }
     }
     return ids;
@@ -900,13 +917,22 @@ class Reader {
   cgsize_t n_cells_ = 0;
   std::vector<double> x_, y_, z_;
   std::map<std::string, Family> families_;
-  // A section's elements, or for a section of ignored points or edges, their count and one
-  // element standing for all of them.
+  // A section's elements but its points and edges: none in a section of them, those of a
+  // MIXED section listed by index in `skipped`, one element standing for them all.
   struct Section {
     cgsize_t start;
     std::size_t count;
     std::vector<Element> elements;
+    std::vector<std::size_t> skipped;  // ascending
     Element ignored;
+
+    [[nodiscard]] const Element* at(std::size_t index) const {
+      if (elements.empty()) return &ignored;
+      if (skipped.empty()) return &elements[index];
+      const auto it = std::ranges::lower_bound(skipped, index);
+      if (it != skipped.end() && *it == index) return &ignored;
+      return &elements[index - static_cast<std::size_t>(it - skipped.begin())];
+    }
   };
   std::vector<Section> sections_;
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
@@ -931,6 +957,61 @@ Mesh read_cgns(const fs::path& file) {
   Mesh mesh = assemble(reader.read(), &map);
   reader.check_declared_pairs(mesh, map);
   return mesh;
+}
+
+LogicalBytes cgns_logical_bytes(const fs::path& file) {
+  reject_outside_data(file);
+  const CgioTree tree(file);
+  LogicalBytes out;
+  // Every Descriptor_t, at any level: cg_open loads them all.
+  const auto descriptors = [&](const auto& self, double node) -> void {
+    for (const double child : tree.children(node)) {
+      if (tree.label(child) == "Descriptor_t") out.descriptors += tree.logical_bytes(child);
+      self(self, child);
+    }
+  };
+  descriptors(descriptors, tree.root());
+  // The datasets the reader reads, descriptors aside.
+  std::int64_t arrays = 0;
+  const auto subtree = [&](const auto& self, double node) -> void {
+    arrays += tree.logical_bytes(node);
+    for (const double child : tree.children(node)) {
+      if (tree.label(child) != "Descriptor_t") self(self, child);
+    }
+  };
+  for (const double base : tree.children(tree.root())) {
+    if (tree.label(base) != "CGNSBase_t") continue;
+    arrays += tree.logical_bytes(base);
+    if (const auto names = tree.child(base, "Descriptor_t", "ZoneNames"))
+      out.zone_names = tree.logical_bytes(*names);
+    for (const double node : tree.children(base)) {
+      const std::string label = tree.label(node);
+      if (label == "Family_t") subtree(subtree, node);
+      if (label != "Zone_t") continue;
+      arrays += tree.logical_bytes(node);
+      for (const double child : tree.children(node)) {
+        const std::string kind = tree.label(child);
+        if (kind == "ZoneType_t" || kind == "GridCoordinates_t" || kind == "ZoneBC_t" ||
+            kind == "ZoneSubRegion_t" || kind == "FamilyName_t" ||
+            kind == "ZoneGridConnectivity_t") {
+          subtree(subtree, child);
+        } else if (kind == "Elements_t") {
+          // A section of points or edges: its header and range only (mesh.md, Readers).
+          std::array<std::int64_t, 2> header{};
+          tree.read_integers(child, header);
+          if (header[0] == CGNS_ENUMV(NODE) || header[0] == CGNS_ENUMV(BAR_2)) {
+            arrays += tree.logical_bytes(child);
+            if (const auto range = tree.child(child, "IndexRange_t", "ElementRange"))
+              arrays += tree.logical_bytes(*range);
+          } else {
+            subtree(subtree, child);
+          }
+        }
+      }
+    }
+  }
+  out.total = arrays + out.descriptors;
+  return out;
 }
 
 }  // namespace autan::io

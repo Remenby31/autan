@@ -15,6 +15,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1293,6 +1294,27 @@ TEST_CASE("A warm start takes the previous state and counts from 1", "[runtime]"
              WithinRel(doc["freestream"]["density"].get<double>() * std::pow(1.25, 5.0), 1e-14));
 }
 
+TEST_CASE("A start from a run with the longest case name and mesh path is honoured", "[runtime]") {
+  // results.md, RunMetadata: a case name of 4096 control bytes, which ensure_ascii writes as
+  // \u00XX (6 bytes each), and a mesh path of about 4000 bytes stay under its 64 KiB.
+  fs::path deep = fresh_dir();
+  while (deep.string().size() < 3800) deep /= std::string(200, 'd');
+  fs::create_directories(deep);
+  const fs::path mesh = deep / "polyMesh";
+  fs::copy(data_dir / "mesh" / "hybrid" / "polyMesh", mesh, fs::copy_options::recursive);
+  const auto edit = [&](Json& d) {
+    d["case"]["name"] = std::string(4096, '\x01');
+    d["mesh"]["path"] = fs::absolute(mesh).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+    d["time"]["max_iterations"] = 2;
+  };
+  const Outcome a = run(input(edit));
+  REQUIRE(a.status == ExitStatus::finished);
+  Json doc = input(edit);
+  doc["start"] = start_from(a.run, "warm");
+  CHECK(run(doc).status == ExitStatus::finished);
+}
+
 TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[runtime]") {
   const Outcome a = run(input([](Json& d) { d["time"]["max_iterations"] = 4; }));
   const auto from = [&](const std::function<void(Json&)>& edit) {
@@ -1310,6 +1332,57 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   }
   SECTION("the previous run used another precision") {
     require_error(from([](Json& d) { d["precision"] = "fp64"; }), "E0708");
+  }
+  SECTION("a solution holding what the writer does not write") {
+    // results.md, Sizes a reader accepts: a descriptor beside RunMetadata and ZoneNames, or one
+    // family more than the mesh has zones, is refused before the CGNS library loads the file.
+    const fs::path solution = a.run / "solution.cgns";
+    const bool descriptor = GENERATE(true, false);
+    CAPTURE(descriptor);
+    int fn = 0;
+    REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    if (descriptor) {
+      REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+      REQUIRE(cg_descriptor_write("About", "a note") == CG_OK);
+    } else {
+      int family = 0;
+      REQUIRE(cg_family_write(fn, 1, "Extra", &family) == CG_OK);
+    }
+    REQUIRE(cg_close(fn) == CG_OK);
+    require_error(from([](Json&) {}), "E0707");
+  }
+  SECTION("RunMetadata of 64 KiB, not 64 KiB + 1") {
+    // results.md, RunMetadata: at most 64 KiB, sized before it is read. The previous run's own
+    // metadata, padded with spaces after its opening brace: the same document.
+    const fs::path solution = a.run / "solution.cgns";
+    for (const std::size_t bytes : {std::size_t{64} << 10, (std::size_t{64} << 10) + 1}) {
+      CAPTURE(bytes);
+      int fn = 0;
+      REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+      REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+      int count = 0;
+      REQUIRE(cg_ndescriptors(&count) == CG_OK);
+      std::string metadata;
+      for (int d = 1; d <= count; ++d) {
+        char name[33];
+        char* text = nullptr;
+        REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+        if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text).dump();
+        cg_free(text);
+      }
+      REQUIRE(!metadata.empty());
+      REQUIRE(metadata.size() < bytes);
+      const std::string padded =
+          "{" + std::string(bytes - metadata.size(), ' ') + metadata.substr(1);
+      REQUIRE(cg_descriptor_write("RunMetadata", padded.c_str()) == CG_OK);
+      REQUIRE(cg_close(fn) == CG_OK);
+      const Outcome o = from([](Json&) {});
+      if (bytes == std::size_t{64} << 10) {
+        CHECK(o.status == ExitStatus::finished);
+      } else {
+        require_error(o, "E0707");
+      }
+    }
   }
   SECTION("the previous run solved other variables") {
     require_error(from([](Json& d) {

@@ -173,9 +173,14 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     return o.is_null(key) ? std::string() : o.tag(key, allowed);
   };
 
-  const Object source(root.get("source"), root.at("source"), {"path", "format", "sha256", "bytes"});
+  const Object source(root.get("source"), root.at("source"),
+                      {"path", "format", "sha256", "bytes", "logical_bytes", "descriptor_bytes",
+                       "zone_names_bytes"});
   (void)source.string("path");
   in.mesh_info_bytes = source.integer("bytes", 1);
+  (void)source.integer("logical_bytes", 0);
+  (void)source.integer("descriptor_bytes", 0);
+  (void)source.integer("zone_names_bytes", 0);
   (void)source.tag("format", {"cgns", "gmsh", "fluent", "polymesh"});
   const std::string sha = sha256(source, "sha256");
   if (sha != in.mesh_sha256) {

@@ -1,7 +1,9 @@
 // Reading back the cell fields of a solution.cgns (results.md) to restart.
 
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +14,7 @@
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
 #include "self_contained.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -26,6 +29,50 @@ void ok(int status, const std::string& what) {
 }
 
 }  // namespace
+
+std::int64_t solution_cells(const std::filesystem::path& file) {
+  reject_outside_data(file);
+  const CgioTree tree(file);
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+  if (!zone) throw Error(ErrorCode::io_malformed, file.string() + ": no zone");
+  std::array<std::int64_t, 2> size{};  // [nodes, cells, ...]
+  tree.read_integers(*zone, size);
+  return size[1];
+}
+
+void check_start_solution(const std::filesystem::path& file, const StartLimits& limits) {
+  reject_outside_data(file);
+  const CgioTree tree(file);
+  const auto refuse = [&](const std::string& what) {
+    throw Error(ErrorCode::io_malformed,
+                file.string() + ": " + what + ", which results.md's writer does not write");
+  };
+  std::int64_t translations = 0, families = 0;
+  // Every descriptor of the tree, where the writer puts them and no larger than it writes them.
+  const auto walk = [&](const auto& self, double node, const std::string& parent) -> void {
+    for (const double child : tree.children(node)) {
+      const std::string label = tree.label(child);
+      if (label == "Descriptor_t") {
+        const std::string name = tree.name(child);
+        const std::int64_t bytes = tree.logical_bytes(child);
+        const bool in_base = parent == "CGNSBase_t";
+        if (in_base && name == "RunMetadata" && bytes <= (std::int64_t{64} << 10)) continue;
+        if (in_base && name == "ZoneNames" && bytes <= (limits.zones + 1) * 25600) continue;
+        if (parent == "GridConnectivity_t" && name == "PeriodicTranslation" && bytes <= 4096 &&
+            ++translations <= 2 * limits.periodic_pairs) {
+          continue;
+        }
+        refuse("a descriptor '" + name + "' of " + std::to_string(bytes) + " bytes");
+      }
+      if (label == "Family_t" && ++families > limits.zones)
+        refuse(std::to_string(families) + " families for " + std::to_string(limits.zones) +
+               " zones");
+      self(self, child, label);
+    }
+  };
+  walk(walk, tree.root(), "");
+}
 
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state) {
   reject_outside_data(file);  // E0134, before the library reads anything
@@ -48,14 +95,15 @@ StoredSolution read_solution(const std::filesystem::path& file, bool whole_state
     unsupported(file, std::to_string(size[1]) + " cells");
   }
   out.cells = static_cast<index_t>(size[1]);
-  ok(cg_goto(fn, 1, "end"), "go to the base");
-  int descriptors = 0;
-  ok(cg_ndescriptors(&descriptors), "count descriptors");
-  for (int d = 1; d <= descriptors; ++d) {
-    char* text = nullptr;
-    ok(cg_descriptor_read(d, name, &text), "read a descriptor");
-    if (std::string_view(name) == "RunMetadata") out.run_metadata = text;
-    cg_free(text);
+  // results.md, RunMetadata: run.json's fields with two free texts (the case name, the mesh
+  // path) of at most 4096 bytes, each escaped up to 6 bytes per byte by ensure_ascii, and fixed
+  // structure: at most 64 KiB, sized from its node before it is read. No other descriptor is read.
+  const CgioTree tree(fn);
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  if (const auto node = base ? tree.child(*base, "Descriptor_t", "RunMetadata") : std::nullopt) {
+    check_text(file.string(), "RunMetadata descriptor",
+               static_cast<std::size_t>(tree.logical_bytes(*node)), std::size_t{64} << 10);
+    out.run_metadata = tree.text(*node);
   }
   int solutions = 0;
   ok(cg_nsols(fn, 1, 1, &solutions), "count solutions");

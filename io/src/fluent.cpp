@@ -15,6 +15,7 @@
 
 #include "autan/io/read_mesh.hpp"
 #include "cursor.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -336,8 +337,12 @@ class FluentReader {
     c_.expect('(');
     const auto id = c_.integer<std::int64_t>(10, "()");
     ZoneInfo info;
-    info.type = std::string(c_.token("()"));
-    info.name = std::string(c_.token("()"));
+    const std::string_view type = c_.token("()");
+    check_text(c_.path(), "zone type", type.size());
+    info.type = std::string(type);
+    const std::string_view name = c_.token("()");
+    check_text(c_.path(), "zone name", name.size());
+    info.name = std::string(name);
     while (c_.peek() != ')') (void)c_.token("()");
     c_.expect(')');
     skip_rest();
