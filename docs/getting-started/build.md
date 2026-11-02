@@ -7,7 +7,7 @@ Build the solver runtime `autan-run` and the mesh tool `autan-mesh-info` from a 
 ## Prerequisites
 
 - Linux, x86-64 or arm64. These steps are checked on Ubuntu 24.04.
-- A C++20 compiler (GCC 13 or Clang 18), CMake 3.28 or later, Git and Python 3.12. On Ubuntu 24.04: `sudo apt-get install build-essential cmake git python3`.
+- A C++20 compiler: GCC 13, or Clang 18 to 20 (CI builds with each, warnings as errors; newer Clang, Apple's included, may warn where these do not), CMake 3.28 or later, Git and Python 3.12. On Ubuntu 24.04: `sudo apt-get install build-essential cmake git python3`.
 - [uv](https://docs.astral.sh/uv/) for the Python SDK.
 - [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) for the CGNS library: Autan reads and writes CGNS 4, which the Ubuntu packages do not provide.
 

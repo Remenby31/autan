@@ -6,7 +6,7 @@ import type { Run, RunSettings } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
-import { studies } from "../api/studies";
+import { shortName, studies } from "../api/studies";
 import { coefficient, degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { DASHES, PolarChart } from "../components/PolarChart";
@@ -185,7 +185,7 @@ function Compare() {
             >
               {available.map((s) => (
                 <Button
-                  key={s.name}
+                  key={s.key}
                   onClick={() => {
                     setRuns(s.ids);
                     // The chosen button leaves with the empty state: focus goes to the heading.
@@ -194,7 +194,7 @@ function Compare() {
                   data-testid="study-choice"
                   className="justify-start"
                 >
-                  {s.name}
+                  {shortName(s.names)}
                   <span className="font-mono text-fg-3 text-sm">{s.label}</span>
                 </Button>
               ))}
@@ -288,38 +288,40 @@ function Compare() {
                       />
                     </ChartCard>
                   </div>
-                  <table className="w-full border-collapse text-sm" data-testid="polar-table">
-                    <thead>
-                      <tr className="text-left text-fg-3">
-                        <th className="h-8 px-2 font-normal">Run</th>
-                        <th className="px-2 text-right font-normal">α (deg)</th>
-                        <th className="px-2 text-right font-normal">CL</th>
-                        <th className="px-2 text-right font-normal">CD</th>
-                        {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {plotted.map((p) => (
-                        <tr key={p.id} className="border-line border-t font-mono">
-                          <td className="h-8 px-2">
-                            <span className="inline-flex items-center gap-2">
-                              <i
-                                className="inline-block size-2 rounded-full"
-                                style={{ background: runColor(p) }}
-                              />
-                              {p.role}
-                            </span>
-                          </td>
-                          <td className="px-2 text-right">{p.alpha}</td>
-                          <td className="px-2 text-right">{coefficient(p.cl)}</td>
-                          <td className="px-2 text-right">{coefficient(p.cd)}</td>
-                          {polar.series.length > 1 && (
-                            <td className="px-2 font-sans text-fg-2">{p.series}</td>
-                          )}
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm" data-testid="polar-table">
+                      <thead>
+                        <tr className="text-left text-fg-3">
+                          <th className="h-8 px-2 font-normal">Run</th>
+                          <th className="px-2 text-right font-normal">α (deg)</th>
+                          <th className="px-2 text-right font-normal">CL</th>
+                          <th className="px-2 text-right font-normal">CD</th>
+                          {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {plotted.map((p) => (
+                          <tr key={p.id} className="border-line border-t font-mono">
+                            <td className="h-8 px-2">
+                              <span className="inline-flex items-center gap-2">
+                                <i
+                                  className="inline-block size-2 rounded-full"
+                                  style={{ background: runColor(p) }}
+                                />
+                                {p.role}
+                              </span>
+                            </td>
+                            <td className="px-2 text-right">{p.alpha}</td>
+                            <td className="px-2 text-right">{coefficient(p.cl)}</td>
+                            <td className="px-2 text-right">{coefficient(p.cd)}</td>
+                            {polar.series.length > 1 && (
+                              <td className="px-2 font-sans text-fg-2">{p.series}</td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
               {polar.unplotted.length > 0 && (
