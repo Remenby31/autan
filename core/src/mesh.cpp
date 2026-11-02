@@ -370,7 +370,13 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   mesh.source_ = std::move(in.source);
 
   check_cells_closed(mesh);
-  mesh.periodic_partners_ = match_periodic_faces(mesh, in.periodic);
+  PeriodicMatch match = match_periodic_faces(mesh, in.periodic);
+  const PeriodicSnap snap = snap_periodic_nodes(mesh.x_, mesh.y_, mesh.z_, in.periodic, match);
+  mesh.periodic_snap_ = {
+      .nodes = std::max(snap.nodes, in.periodic_snap.nodes),
+      .max_distance = std::max(snap.max_distance, in.periodic_snap.max_distance),
+      .max_relative = std::max(snap.max_relative, in.periodic_snap.max_relative)};
+  mesh.periodic_partners_ = std::move(match.partners);
   mesh.periodic_pairs_ = std::move(in.periodic);
   return mesh;
 }
@@ -407,6 +413,8 @@ Mesh scaled(const Mesh& mesh, double scale) {
   for (auto& pair : in.periodic) {
     for (double& c : pair.translation) c *= scale;
   }
+  in.periodic_snap = mesh.periodic_snap();
+  in.periodic_snap.max_distance *= scale;
   in.source = mesh.source();
   return assemble(std::move(in));
 }

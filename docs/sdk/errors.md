@@ -308,6 +308,14 @@ A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
 
+## W0150
+
+**Periodic nodes moved** (warning)
+
+The nodes of a periodic pair matched within the tolerance but not exactly, so assembly moved them to make every pair an exact translation, and the run computes on the moved coordinates (mesh.md, Periodic pairs). `data` gives the number of nodes moved, the largest move and the largest mismatch relative to the tolerance (at most 1).
+
+Fix: Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.
+
 ## E0201
 
 **No mesh information** (error)

@@ -263,6 +263,16 @@ _CODES = [
         "Run this build on one rank, or use a build with MPI, such as the dev image.",
     ),
     Code(
+        "W0150",
+        "Periodic nodes moved",
+        "The nodes of a periodic pair matched within the tolerance but not exactly, so assembly "
+        "moved them to make every pair an exact translation, and the run computes on the moved "
+        "coordinates (mesh.md, Periodic pairs). `data` gives the number of nodes moved, the "
+        "largest move and the largest mismatch relative to the tolerance (at most 1).",
+        "Nothing is required. To avoid the move, regenerate the mesh so that one side of each "
+        "pair is the other side translated.",
+    ),
+    Code(
         "E0201",
         "No mesh information",
         "Planning a case needs the MeshInfo of its mesh (docs/contracts/mesh-info.md). The "

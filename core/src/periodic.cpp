@@ -6,6 +6,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "autan/core/error.hpp"
@@ -85,7 +86,13 @@ std::vector<double> shortest_edges(const Mesh& mesh, index_t zone) {
   return h;
 }
 
-std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std::size_t p) {
+struct PairMatch {
+  std::vector<index_t> partners;
+  std::vector<std::array<index_t, 2>> nodes;
+  double max_relative = 0.0;
+};
+
+PairMatch match_pair(const Mesh& mesh, const PeriodicPair& pair, std::size_t p) {
   const auto off = mesh.boundary_zone_offsets();
   const auto zones = mesh.face_zones();
   const std::string name_a = zones[at(pair.zone_a)].name, name_b = zones[at(pair.zone_b)].name;
@@ -152,6 +159,7 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     }
   }
 
+  PairMatch out;
   std::vector<index_t> image(at(mesh.n_points()), -1);
   for (index_t f = a0; f < a1; ++f) {
     for (const index_t n : mesh.face_nodes(f)) {
@@ -192,6 +200,9 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
                                " nodes of zone '", name_b, "'")));
       }
       image[at(n)] = found;
+      out.nodes.push_back({n, found});
+      const double d = std::hypot(x[at(found)] - q[0], y[at(found)] - q[1], z[at(found)] - q[2]);
+      out.max_relative = std::max(out.max_relative, d / tolerance);
     }
   }
 
@@ -225,18 +236,71 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     used[at(it->second - b0)] = 1;
     partner[at(f - a0)] = it->second;
   }
-  return partner;
+  out.partners = std::move(partner);
+  return out;
 }
 
 }  // namespace
 
-std::vector<std::vector<index_t>> match_periodic_faces(const Mesh& mesh,
-                                                       std::span<const PeriodicPair> pairs) {
+PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
   check_declaration(mesh, pairs);
-  std::vector<std::vector<index_t>> partners;
-  partners.reserve(pairs.size());
-  for (std::size_t p = 0; p < pairs.size(); ++p) partners.push_back(match_pair(mesh, pairs[p], p));
-  return partners;
+  PeriodicMatch out;
+  out.partners.reserve(pairs.size());
+  out.nodes.reserve(pairs.size());
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    PairMatch m = match_pair(mesh, pairs[p], p);
+    out.partners.push_back(std::move(m.partners));
+    out.nodes.push_back(std::move(m.nodes));
+    out.max_relative = std::max(out.max_relative, m.max_relative);
+  }
+  return out;
+}
+
+PeriodicSnap snap_periodic_nodes(std::span<double> x, std::span<double> y, std::span<double> z,
+                                 std::span<const PeriodicPair> pairs, const PeriodicMatch& match) {
+  // Each matched pair of nodes is an edge x_b = x_a + t (and back, - t), in the order of the
+  // pairs and of zone a's nodes, so the walk below is the same on every rank and run.
+  struct Edge {
+    index_t to;
+    std::size_t pair;
+    double sign;
+  };
+  std::vector<std::vector<Edge>> edges(x.size());
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    for (const auto& [a, b] : match.nodes[p]) {
+      edges[at(a)].push_back({b, p, 1.0});
+      edges[at(b)].push_back({a, p, -1.0});
+    }
+  }
+  PeriodicSnap snap{.nodes = 0, .max_distance = 0.0, .max_relative = match.max_relative};
+  std::vector<char> placed(x.size(), 0);
+  std::vector<index_t> queue;
+  for (std::size_t root = 0; root < x.size(); ++root) {
+    if (placed[root] != 0 || edges[root].empty()) continue;
+    placed[root] = 1;
+    queue.assign(1, static_cast<index_t>(root));
+    for (std::size_t next = 0; next < queue.size(); ++next) {
+      const auto from = at(queue[next]);
+      for (const Edge& e : edges[from]) {
+        const auto to = at(e.to);
+        if (placed[to] != 0) continue;
+        placed[to] = 1;
+        queue.push_back(e.to);
+        const auto& t = pairs[e.pair].translation;
+        const std::array<double, 3> moved{x[from] + e.sign * t[0], y[from] + e.sign * t[1],
+                                          z[from] + e.sign * t[2]};
+        if (moved[0] != x[to] || moved[1] != y[to] || moved[2] != z[to]) {
+          ++snap.nodes;
+          snap.max_distance = std::max(
+              snap.max_distance, std::hypot(moved[0] - x[to], moved[1] - y[to], moved[2] - z[to]));
+          x[to] = moved[0];
+          y[to] = moved[1];
+          z[to] = moved[2];
+        }
+      }
+    }
+  }
+  return snap;
 }
 
 }  // namespace autan

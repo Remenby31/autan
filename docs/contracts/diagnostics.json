@@ -229,6 +229,12 @@
       "fix": "Run this build on one rank, or use a build with MPI, such as the dev image.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0146"
     },
+    "W0150": {
+      "severity": "warning",
+      "title": "Periodic nodes moved",
+      "fix": "Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0150"
+    },
     "E0201": {
       "severity": "error",
       "title": "No mesh information",

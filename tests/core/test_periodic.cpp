@@ -121,6 +121,45 @@ TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[perio
   CHECK(autan::assemble(both).periodic_partners(0).size() == 9);
 }
 
+TEST_CASE("Periodic nodes matched within the tolerance become exact translates", "[periodic]") {
+  // n = 3, periodic in x and y: the tolerance on the sides is 1e-4 / 3. Zone b of the x pair
+  // (x = 1) is moved by half of it; assembly moves it back onto zone a translated, to the bit,
+  // and records what it moved: the 16 nodes of that side, by the offset.
+  using autan::test::BoxFill;
+  const double tolerance = 1e-4 / 3.0;
+  const double delta = 0.5 * tolerance;
+  const autan::Mesh exact = autan::assemble(periodic_box(3, BoxFill::hexa, {0, 1}));
+  CHECK(exact.periodic_snap().nodes == 0);
+  const autan::Mesh moved =
+      autan::assemble(periodic_box(3, BoxFill::hexa, {0, 1}, [&](autan::CellwiseMesh& m) {
+        for (std::size_t i = 0; i < m.x.size(); ++i) {
+          if (m.x[i] == 1.0) m.z[i] += delta;
+        }
+      }));
+  const auto& snap = moved.periodic_snap();
+  CHECK(snap.nodes == 16);
+  CHECK_THAT(snap.max_distance, WithinAbs(delta, 1e-15));
+  CHECK_THAT(snap.max_relative, WithinAbs(0.5, 1e-9));
+  const auto x = moved.x(), y = moved.y(), z = moved.z();
+  for (std::size_t p = 0; p < moved.periodic_pairs().size(); ++p) {
+    const auto& t = moved.periodic_pairs()[p].translation;
+    const auto off = moved.boundary_zone_offsets();
+    const auto partners = moved.periodic_partners(p);
+    for (std::size_t i = 0; i < partners.size(); ++i) {
+      const auto a = static_cast<index_t>(off[at(moved.periodic_pairs()[p].zone_a)] + i);
+      for (const index_t na : moved.face_nodes(a)) {
+        bool found = false;
+        for (const index_t nb : moved.face_nodes(partners[i])) {
+          found = found || (x[at(na)] + t[0] == x[at(nb)] && y[at(na)] + t[1] == y[at(nb)] &&
+                            z[at(na)] + t[2] == z[at(nb)]);
+        }
+        CHECK(found);
+      }
+    }
+  }
+  check_partners(moved);
+}
+
 TEST_CASE("A periodic declaration that the mesh contradicts is a coded error", "[periodic]") {
   using autan::ErrorCode;
   using autan::test::BoxFill;

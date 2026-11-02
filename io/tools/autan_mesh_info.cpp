@@ -41,6 +41,10 @@ void print_text(const autan::Mesh& mesh, const std::string& hash) {
   std::printf("cells     %d\nfaces     %d (%d interior)\nnodes     %d\nvolume    %.17g\n",
               mesh.n_cells(), mesh.n_faces(), mesh.n_interior_faces(), mesh.n_points(),
               std::accumulate(g.cell_volume.begin(), g.cell_volume.end(), 0.0));
+  if (const auto& snap = mesh.periodic_snap(); snap.nodes > 0) {
+    std::printf("W0150     %lld periodic nodes moved, at most %.3g (%.3g of the tolerance)\n",
+                static_cast<long long>(snap.nodes), snap.max_distance, snap.max_relative);
+  }
   std::printf("\nboundary zones\n");
   const auto offsets = mesh.boundary_zone_offsets();
   for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
