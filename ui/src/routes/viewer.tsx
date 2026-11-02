@@ -376,15 +376,18 @@ function Viewer() {
   const pending = useRef<{ x: number; y: number } | null>(null);
   const probing = useRef(false);
   const hovering = useRef(false);
+  // Bumped whenever what was read stops holding: a probe started before shows nothing.
+  const generation = useRef(0);
   const probeNext = async () => {
     probing.current = true;
     try {
       while (pending.current) {
         const { x, y } = pending.current;
         pending.current = null;
+        const started = generation.current;
         const probe = await viewer.current?.probe(x, y);
-        // The pointer may have left, or pressed a button, while the pixel was read.
-        setProbed(probe && hovering.current ? { x, y, probe } : null);
+        const current = started === generation.current && hovering.current;
+        setProbed(probe && current ? { x, y, probe } : null);
       }
     } catch {
       setProbed(null);
@@ -396,16 +399,20 @@ function Viewer() {
     pending.current = { x, y };
     if (!probing.current) void probeNext();
   };
+  const forget = () => {
+    generation.current += 1;
+    setProbed(null);
+  };
   const stopProbing = () => {
     hovering.current = false;
     pending.current = null;
-    setProbed(null);
+    forget();
   };
   // What was read no longer holds once the camera, the field or the slice changes.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the viewer exists once a surface is shown
-  useEffect(() => viewer.current?.onCameraChange(() => setProbed(null)), [surface]);
+  useEffect(() => viewer.current?.onCameraChange(forget), [surface]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: clears on each change of these
-  useEffect(() => setProbed(null), [fieldName, sliceField, cut]);
+  useEffect(() => forget(), [fieldName, sliceField, cut]);
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.buttons !== 0) return stopProbing();
     hovering.current = true;
@@ -414,6 +421,7 @@ function Viewer() {
   };
   // From the keyboard: the focused view reads what is at its centre.
   const onFocus = (e: React.FocusEvent<HTMLCanvasElement>) => {
+    if (!e.currentTarget.matches(":focus-visible")) return;
     hovering.current = true;
     probeAt(e.currentTarget.clientWidth / 2, e.currentTarget.clientHeight / 2);
   };

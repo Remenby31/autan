@@ -422,7 +422,9 @@ test("hovering a slice reads the value drawn there and where it is", async ({ pa
   // last converged run, which no other test reads values from.
   const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
   const solution = join(RUNS, run.run_id, "solution.cgns");
-  const dir = mkdtempSync(join(tmpdir(), "autan-probe-"));
+  // Kept with the runs (a dot directory, which the registry skips), so that putting it back is
+  // a rename on one file system.
+  const dir = mkdtempSync(join(RUNS, ".probe-"));
   cpSync(solution, join(dir, "solution.cgns"));
   try {
     execFileSync("uv", [

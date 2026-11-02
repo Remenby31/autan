@@ -64,12 +64,13 @@ export class SurfaceViewer {
   // them, into one float pixel; the slice gets the id after the zones' in the id pass.
   private probeTarget = new THREE.RenderTarget(1, 1, { type: THREE.FloatType });
   private readonly probeMaterial = SurfaceViewer.probing();
-  private readonly sliceProbeMaterial = SurfaceViewer.probing();
-  private readonly sliceIdMaterial = SurfaceViewer.idMaterial(SLICE_ID);
   // A plane cut through the volume, drawn with the surface, coloured by its own field.
   private slice: {
     field?: string;
     mesh: THREE.Mesh;
+    // Its own id and probe materials, released with it.
+    idMaterial: THREE.MeshBasicNodeMaterial;
+    probeMaterial: THREE.MeshBasicNodeMaterial;
     surface: Surface;
     lut: THREE.DataTexture;
     point: THREE.Vector3;
@@ -256,10 +257,11 @@ export class SurfaceViewer {
     const ids = this.renderId(x, y, true);
     const mesh = this.mesh;
     const materials = mesh.material;
-    const sliceMesh = this.slice?.mesh;
+    const slice = this.slice;
+    const sliceMesh = slice?.mesh;
     const sliceMaterial = sliceMesh?.material;
     mesh.material = this.zones.map(() => this.probeMaterial);
-    if (sliceMesh) sliceMesh.material = this.sliceProbeMaterial;
+    if (slice) slice.mesh.material = slice.probeMaterial;
     const values = this.renderPixel(x, y, this.probeTarget);
     mesh.material = materials;
     if (sliceMesh && sliceMaterial) sliceMesh.material = sliceMaterial;
@@ -283,12 +285,13 @@ export class SurfaceViewer {
     if (!this.mesh) return null;
     const mesh = this.mesh;
     const materials = mesh.material;
-    const sliceMesh = this.slice?.mesh;
+    const slice = this.slice;
+    const sliceMesh = slice?.mesh;
     const sliceMaterial = sliceMesh?.material;
     mesh.material = this.pickMaterials;
-    if (sliceMesh) {
-      sliceMesh.visible = withSlice;
-      sliceMesh.material = this.sliceIdMaterial;
+    if (slice) {
+      slice.mesh.visible = withSlice;
+      slice.mesh.material = slice.idMaterial;
     }
     const read = this.renderPixel(x, y, this.pickTarget);
     mesh.material = materials;
@@ -382,6 +385,8 @@ export class SurfaceViewer {
     const at = plane?.origin ?? slice.origin;
     this.slice = {
       mesh,
+      idMaterial: SurfaceViewer.idMaterial(SLICE_ID),
+      probeMaterial: SurfaceViewer.probing(),
       surface: slice,
       lut,
       point: new THREE.Vector3(at[0] ?? 0, at[1] ?? 0, at[2] ?? 0).sub(
@@ -417,6 +422,8 @@ export class SurfaceViewer {
     this.scene.remove(this.slice.mesh);
     this.slice.mesh.geometry.dispose();
     (this.slice.mesh.material as THREE.Material).dispose();
+    this.slice.idMaterial.dispose();
+    this.slice.probeMaterial.dispose();
     this.slice.lut.dispose();
     this.slice = null;
   }
@@ -486,8 +493,6 @@ export class SurfaceViewer {
     this.pickTarget.dispose();
     this.probeTarget.dispose();
     this.probeMaterial.dispose();
-    this.sliceProbeMaterial.dispose();
-    this.sliceIdMaterial.dispose();
     this.renderer.dispose();
   }
 
@@ -525,6 +530,7 @@ export class SurfaceViewer {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.requestRender();
+    // What is under each pixel changed, as when the camera moves.
+    this.controls.dispatchEvent({ type: "change" });
   }
 }
