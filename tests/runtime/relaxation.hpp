@@ -221,6 +221,7 @@ class Relaxation final : public autan::runtime::Physics {
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
       report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
     }
+    last_residuals_ = report.residuals;
     if (options_.floor > 0.0 && iteration % options_.floor_every == 0) floors(report);
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
@@ -238,6 +239,15 @@ class Relaxation final : public autan::runtime::Physics {
         if (!report.diverged_cell) report.diverged_cell = c;
       }
     }
+    return report;
+  }
+
+  // The last step's residuals, with floors whenever the physics gives them.
+  [[nodiscard]] std::optional<autan::runtime::StepReport> final_floors() override {
+    if (options_.floor <= 0.0) return std::nullopt;
+    autan::runtime::StepReport report;
+    report.residuals = last_residuals_;
+    floors(report);
     return report;
   }
 
@@ -536,6 +546,7 @@ class Relaxation final : public autan::runtime::Physics {
   double rms_ = 1.0;
   std::vector<double> smooth_;  // the field colour_sweeps smooths
   std::int64_t last_stepped_iteration_ = 0;
+  std::vector<double> last_residuals_;
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
