@@ -281,7 +281,7 @@ class Steady(Spec):
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
     residual_orders: PositiveNumber = 8.0
-    linear_solver: Literal["multigrid", "gauss-seidel"] = "multigrid"
+    linear_solver: Literal["multigrid", "gauss-seidel", "lines"] = "multigrid"
 
 
 class Unsteady(Spec):

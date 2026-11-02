@@ -256,7 +256,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  const char* linear = GENERATE("multigrid", "gauss-seidel");
+  const char* linear = GENERATE("multigrid", "gauss-seidel", "lines");
   INFO(precision << " " << linear);
   const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
     d["precision"] = precision;
@@ -461,7 +461,7 @@ void unsteady_through_pairs(Json& d, int steps) {
 TEST_CASE("steady cases the steady solver cannot run are refused before any directory exists",
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
-  // `time.linear_solver`. The steady solvers sum in local cell order: reproducibility "ranks" is
+  // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
   // E1109.
   const bool periodic = GENERATE(true, false);
   CAPTURE(periodic);
@@ -825,22 +825,26 @@ TEST_CASE("a steady run whose state is not physical on some ranks stops every ra
   CHECK((*d107)["data"]["zone"] == "lower");
 }
 
-TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank solution",
+TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the one-rank solution",
           "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. The face sums
   // still follow local order (#199), so the bits differ: converged 10 orders, the fields agree
   // within 1e-9 of their magnitude (the largest speed for velocity components), and a fixed rank
   // count repeats bit for bit. Two zones at different states on the hybrid mesh, farfield around.
+  // "lines" sweeps the multigrid's fine lines, kept whole by the partition, over the runtime's
+  // colouring of the lines, sums faces in global order and reduces exactly: under
+  // reproducibility "ranks" it repeats the one-rank run bit for bit.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
+  const char* linear = GENERATE("gauss-seidel", "lines");
+  CAPTURE(ranks, linear);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp64");
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
     auto& init = d["cell_zones"].back()["initial"];
     init["density"] = 1.2 * init["density"].get<double>();
     init["pressure"] = 1.3 * init["pressure"].get<double>();
-    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["linear_solver"] = linear;
     d["time"]["max_iterations"] = 2000;
     d["time"]["residual_orders"] = 10.0;
   });
@@ -871,6 +875,24 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
   }
   const fs::path again = run_on_ranks(doc, ranks);
   CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
+  if (std::string(linear) == "lines") {
+    auto exact = doc;
+    exact["reproducibility"] = "ranks";
+    const auto exact_one = run(exact);
+    INFO(exact_one.err);
+    REQUIRE(exact_one.status == ExitStatus::finished);
+    const fs::path exact_many = run_on_ranks(exact, ranks);
+    REQUIRE(!exact_many.empty());
+    CHECK(read(exact_many / "history.jsonl") == read(exact_one.run / "history.jsonl"));
+    for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+      INFO(name);
+      const auto a = field(exact_one.run, name), b = field(exact_many, name);
+      REQUIRE(a.size() == b.size());
+      CHECK(std::ranges::equal(a, b, [](double x, double y) {
+        return std::bit_cast<std::uint64_t>(x) == std::bit_cast<std::uint64_t>(y);
+      }));
+    }
+  }
 }
 
 TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank steps",

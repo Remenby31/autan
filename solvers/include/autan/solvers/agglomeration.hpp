@@ -49,6 +49,18 @@ struct AgglomerationOptions {
   int max_levels = 30;
 };
 
+/// The fine level's lines of at least two cells (Level::line_offsets / line_nodes of
+/// agglomerate's level 0, single cells left out), CSR over the cells of `mesh`, each line in
+/// its sweep order. Deterministic: the same mesh and geometry give the same lines, so every rank
+/// of a run computes them alike on the global mesh. Throws std::invalid_argument on a mesh with
+/// ghost cells.
+struct Lines {
+  std::vector<offset_t> offsets{0};
+  std::vector<index_t> cells;
+};
+Lines smoother_lines(const Mesh& mesh, const Geometry& geometry,
+                     const AgglomerationOptions& options = {});
+
 /// The colours the multigrid's smoother sweeps a level's lines in: lines of one colour share no
 /// edge, each line has one colour, colours are numbered from 0 and list their lines in increasing
 /// index. Greedy in line order (each line takes the least colour no earlier neighbouring line
