@@ -121,10 +121,14 @@ class EulerPhysics final : public runtime::Physics {
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
-        nlohmann::json nodes = nlohmann::json::array();
-        for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
+        nlohmann::json nodes = nlohmann::json::array(), edges = nlohmann::json::array();
+        for (const auto& l : multigrid_->levels()) {
+          nodes.push_back(l.n_nodes);
+          edges.push_back(l.owner.size());
+        }
         ctx.log.write("info", "linear", "agglomeration multigrid", {},
                       nlohmann::json{{"nodes", nodes},
+                                     {"edges", edges},
                                      {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
                           .dump());
       } else if (in.time.linear_solver == "lines") {

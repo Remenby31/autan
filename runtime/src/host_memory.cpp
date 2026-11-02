@@ -85,6 +85,23 @@ struct Mount {
   fs::path root, point;
 };
 
+// proc(5): mountinfo writes a space, tab, newline and backslash of a path as \040, \011, \012 and
+// \134 (the kernel's show_path); every \ followed by three octal digits is one byte.
+std::string unescaped(const std::string& field) {
+  std::string out;
+  for (std::size_t i = 0; i < field.size(); ++i) {
+    const auto octal = [&](std::size_t k) { return field[k] >= '0' && field[k] <= '7'; };
+    if (field[i] == '\\' && i + 3 < field.size() && octal(i + 1) && octal(i + 2) && octal(i + 3)) {
+      out.push_back(static_cast<char>((field[i + 1] - '0') * 64 + (field[i + 2] - '0') * 8 +
+                                      (field[i + 3] - '0')));
+      i += 3;
+    } else {
+      out.push_back(field[i]);
+    }
+  }
+  return out;
+}
+
 // proc(5), /proc/self/mountinfo: "id parent major:minor root mountpoint options... - fstype
 // source superoptions"; the mounts of cgroup v2, or of the cgroup v1 memory controller.
 std::vector<Mount> cgroup_mounts(const fs::path& proc, bool v2) {
@@ -98,7 +115,8 @@ std::vector<Mount> cgroup_mounts(const fs::path& proc, bool v2) {
     if (!(left >> id >> parent >> device >> root >> point) || !(right >> type >> source >> options))
       continue;
     const bool memory = ("," + options + ",").find(",memory,") != std::string::npos;
-    if (v2 ? type == "cgroup2" : type == "cgroup" && memory) mounts.push_back({root, point});
+    if (v2 ? type == "cgroup2" : type == "cgroup" && memory)
+      mounts.push_back({unescaped(root), unescaped(point)});
   }
   return mounts;
 }

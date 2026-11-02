@@ -1075,14 +1075,20 @@ class Run final : public Log {
     std::string path;
     if (comm_.rank() == 0) {
       try {
+        // The log is published with the diagnostics run.json names from the start.
+        std::string first_lines = log_line(
+            "info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
+            Json{
+                {"cells", p_.mesh.n_cells()}, {"faces", p_.mesh.n_faces()}, {"ranks", comm_.size()}}
+                .dump());
+        if (p_.memory_warning) {
+          const auto& w = *p_.memory_warning;
+          first_lines += "\n" + log_line("warning", "solver", w.message, w.code,
+                                         info_["diagnostics"][0]["data"].dump());
+        }
         dir_ = std::make_unique<RunDirectory>(
             runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
-            p_.mesh_info,
-            log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
-                     Json{{"cells", p_.mesh.n_cells()},
-                          {"faces", p_.mesh.n_faces()},
-                          {"ranks", comm_.size()}}
-                         .dump()),
+            p_.mesh_info, first_lines,
             p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
                                   : std::nullopt,
             p_.state_files);
@@ -1103,10 +1109,6 @@ class Run final : public Log {
            Json{{"order", "input"}}.dump());
     }
     if (comm_.size() > 1) log_partition();
-    if (p_.memory_warning) {
-      const auto& w = *p_.memory_warning;
-      note("warning", "solver", w.message, w.code, info_["diagnostics"][0]["data"].dump());
-    }
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
       note("info", "solver",
            "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
