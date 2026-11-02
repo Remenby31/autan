@@ -7,3 +7,4 @@ bench/.runs/
 e2e/.runs/
 e2e/.meshes/
 *.tsbuildinfo
+e2e/.golden/
