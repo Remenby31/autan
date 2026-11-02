@@ -536,8 +536,8 @@ def test_a_file_written_by_the_sdk_starts_the_real_runtime(tmp_path: Path) -> No
 def test_a_run_at_its_round_off_floor_reads_back_as_floor(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The runtime's own floor decision (the test physics reports every cell at a floor of
-    # 2⁻¹² of its residual scale), read back through the results contract.
+    # The runtime's own floor decision (the test physics gives cell c of equation e the floor
+    # 2⁻¹² (e + 1)(1 + 2g/N), g its global id), read back through the results contract.
     case, mesh = hybrid
     monkeypatch.setenv("AUTAN_TEST_FLOOR", str(2.0**-12))
     result = case.run(

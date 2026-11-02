@@ -74,6 +74,7 @@ struct RelaxationOptions {
   double floor = 0.0;
   int floor_every = 1;
   bool floor_overcount = false;  ///< one cell more at its floor than were evaluated
+  int floor_hot = 0;             ///< cells of least global id whose floor is 2^-20 times smaller
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
   /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
@@ -110,6 +111,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_TOUCH_RANK", o.touch_rank);
     read("AUTAN_TEST_FLOOR", o.floor);
     read("AUTAN_TEST_FLOOR_EVERY", o.floor_every);
+    read("AUTAN_TEST_FLOOR_HOT", o.floor_hot);
     if (const char* v = std::getenv("AUTAN_TEST_TOUCH_FILE")) o.touch_file = v;
     return o;
   }
@@ -252,7 +254,9 @@ class Relaxation final : public autan::runtime::Physics {
       std::int64_t at = 0;
       for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
         const auto g = static_cast<double>(mesh.cell_global_id()[static_cast<std::size_t>(c)]);
-        const double floor = options_.floor * static_cast<double>(e + 1) * (1.0 + 2.0 * g / n);
+        const double hot = g < options_.floor_hot ? 0x1p-20 : 1.0;
+        const double floor =
+            hot * options_.floor * static_cast<double>(e + 1) * (1.0 + 2.0 * g / n);
         ratio = std::max(ratio, r / floor);
         at += r <= floor ? 1 : 0;
       }
