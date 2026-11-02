@@ -1546,8 +1546,8 @@ TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged",
   CHECK(late["iterations"] == 15);
   convergence(late, 15, 0.25, 1.0);
   // The final state is judged too (case-schema.md#time): at its floor at k = 13, between two
-  // evaluations, a run that ends there by its budget or by a signal ends `floor`; one cut at
-  // k = 12, before it, stays `completed`.
+  // evaluations, a run that ends there by its budget ends `floor`; one stopped there stays
+  // `stopped` with that test recorded; one cut at k = 12, before it, stays `completed`.
   const Json budget = Json::parse(read(run(input([](Json& d) {
                                              d["precision"] = "fp32+acc64";
                                              d["time"]["max_iterations"] = 13;
@@ -1563,8 +1563,9 @@ TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged",
   const Outcome stopped = run(input([](Json& d) { d["precision"] = "fp32+acc64"; }), signalled);
   CHECK(stopped.status == ExitStatus::signalled);
   const Json stopped_info = Json::parse(read(stopped.run / "run.json"));
-  CHECK(stopped_info["status"] == "floor");
+  CHECK(stopped_info["status"] == "stopped");
   CHECK(stopped_info["iterations"] == 13);
+  convergence(stopped_info, 13, 1.0, 1.0);
   const Json short_of = Json::parse(read(run(input([](Json& d) {
                                                d["precision"] = "fp32+acc64";
                                                d["time"]["max_iterations"] = 12;

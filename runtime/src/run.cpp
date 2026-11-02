@@ -1342,8 +1342,9 @@ class Run final : public Log {
       if (!ends) return nullptr;
       return at_floor ? "floor" : "converged";
     };
-    // case-schema.md#time: a steady fp32+acc64 run that ends otherwise is judged once more on
-    // its final state, whose floors the physics gives on request.
+    // case-schema.md#time: a steady fp32+acc64 run that reaches its budget is judged once more
+    // on its final state, whose floors the physics gives on request; a stopped run records that
+    // test in `convergence` and stays `stopped`.
     const auto final_state = [&](const char* status) -> const char* {
       if (!steady || in.precision != "fp32+acc64" || first.empty()) return status;
       const std::optional<StepReport> state = physics_->final_floors();
@@ -1356,7 +1357,7 @@ class Run final : public Log {
       }
       check_floors(*state);
       const char* judged = verdict(*state, done);
-      return judged != nullptr ? judged : status;
+      return judged != nullptr && std::string_view(status) == "completed" ? judged : status;
     };
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
