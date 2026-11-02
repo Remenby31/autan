@@ -17,6 +17,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema  # noqa: TC002 -- pydantic reads it at runtime
 
 from autan.errors import CaseError, Location, diagnostic
 from autan.units import fail
@@ -176,7 +177,7 @@ class MeshInfo(_Strict):
     interfaces: tuple[Interface, ...]
     periodic: tuple[PeriodicPair, ...]
     quality: Quality
-    partition: Partition | None = None
+    partition: Partition | SkipJsonSchema[None] = None
 
     @model_validator(mode="before")
     @classmethod

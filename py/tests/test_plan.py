@@ -293,11 +293,12 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert fp64.bytes_device > cuda.bytes_device
     # The components plan.md gives in closed form, on 10 hexahedra, 40 faces (20 boundary),
     # 30 nodes and 160 face nodes, 5 equations: the mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C,
-    # its geometry 56F + 32C and colourings 12C; the output 2(2n + 2) fields of 8C bytes.
+    # its geometry 56F + 32C and colourings 12C; the output gathered and copied, 2 x 8C bytes
+    # for each of a steady run's 2(n + 1) + n + (n + 2) + (n + 5) = 34 fields.
     tiny = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu").memory
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
-    assert by_name["solution output"].bytes_host == 2 * 12 * 80
+    assert by_name["solution output"].bytes_host == 2 * 34 * 80
 
 
 @pytest.mark.parametrize(

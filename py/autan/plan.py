@@ -198,8 +198,27 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1, device_kind: DeviceKind =
         },
         boundaries=tuple(boundaries),
         cell_zones=tuple(cell_zones),
-        memory=estimate(spec, mesh, equations=equations(spec), ranks=gpus, device_kind=device_kind),
+        memory=estimate(
+            spec,
+            mesh,
+            equations=equations(spec),
+            ranks=gpus,
+            device_kind=device_kind,
+            vortices=_vortex_conditions(spec, boundaries),
+        ),
         diagnostics=tuple(found),
+    )
+
+
+def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> int:
+    """The zones whose farfield condition carries a point vortex: one restart field each."""
+    rules = [spec.boundaries[b.rule] if b.rule is not None else None for b in boundaries]
+    return sum(
+        1
+        for rule in rules
+        if rule is not None
+        and isinstance(rule.condition, Farfield)
+        and rule.condition.point_vortex is not None
     )
 
 
@@ -222,7 +241,7 @@ def _check_prepared(
     the same partition (mesh-info.md)."""
     problems = []
     scale = metres_per(spec.mesh_unit)
-    if not math.isclose(mesh.quality.lines.scale, scale, rel_tol=1e-12):
+    if mesh.quality.lines.scale != scale:
         problems.append(
             f"quality.lines was computed at scale {mesh.quality.lines.scale:g}, "
             f"the case's mesh_unit is {scale:g} m"

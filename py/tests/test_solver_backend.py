@@ -421,7 +421,19 @@ needs_mpi = pytest.mark.skipif(
 def test_two_ranks_run_and_stop_through_the_launcher(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
-    case, mesh = hybrid
+    case, _ = hybrid
+    # mesh-info.md: a run on two ranks is planned with the partition of that run.
+    assert MESH_INFO is not None
+    meshinfo = tmp_path / "hybrid.meshinfo.json"
+    meshinfo.write_text(
+        subprocess.run(
+            [str(MESH_INFO), "--json", "--ranks", "2", str(MESH)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    mesh = autan.MeshInfo.load(meshinfo)
     devices = autan.Devices(kind="cpu", count=2)
     result = case.run(
         mesh,
