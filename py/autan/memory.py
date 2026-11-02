@@ -157,7 +157,8 @@ def _rank(
         + 2 * n * f * s
         + 5 * n * c * s
         + 3 * n * c * s
-        + (4 * n + n + 1 + n) * c * 8
+        + (n + 1 + n) * c * 8
+        + (n + 3 * n * (device_kind == "cpu")) * c * 8
         + (n + 1) * c * s
         + n * fb * 8
     )
@@ -167,14 +168,14 @@ def _rank(
     packed = 8 * (25 * f + 4 * c + 4 * k)
     add("physics setup", packed + 32 * stencil, transient=True)
     if device_kind != "cpu":
-        # DeviceMesh keeps on the host the packed geometry moved into it, its FP64 stencil
-        # weights and the face colourings (the physics does not call release_host). Its setup
-        # passes through three phases in turn: construction (incidence twins, colouring work),
-        # the weights' upload (the physics' FP64 copy, the limiter's unit field) and bind (one
-        # staged chunk of 2^20 values).
-        add("device mesh host", packed + 24 * stencil + 4 * f)
-        setup = max(8 * k + 8 * f, 24 * stencil + n * c * s, 8 * _UPLOAD_CHUNK)
-        add("device setup", setup, transient=True)
+        # DeviceMesh keeps the face colourings on the host; it holds the packed geometry moved
+        # into it until release_host after bind. Its setup passes through three phases in
+        # turn, each with that geometry: construction (incidence twins, colouring work), the
+        # weights' upload (its FP64 weights and the physics' copy, the limiter's unit field)
+        # and bind (its weights, one staged chunk of 2^20 values).
+        add("device mesh host", 4 * f)
+        phases = (8 * k + 8 * f, 48 * stencil + n * c * s, 24 * stencil + 8 * _UPLOAD_CHUNK)
+        add("device setup", packed + max(phases), transient=True)
         device = (
             2 * n * c * 8
             + 2 * c * 8
