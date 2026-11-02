@@ -470,6 +470,46 @@ TEST_CASE("a steady multigrid case with periodic pairs is refused before any dir
   CHECK(diagnostic["location"]["path"] == "time.linear_solver");
 }
 
+TEST_CASE("a force monitor records the forces of its own iteration, whatever its cadence",
+          "[euler]") {
+  // Two zones at different states evolve over four unsteady steps. Recorded every iteration by
+  // two monitors, or at the fourth only, the forces of iteration 4 are the same bits: the boundary
+  // pressure every monitor of an iteration reads belongs to that iteration's state.
+  auto doc = [](int every, int count) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", 4},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", nullptr}};
+      Json monitor = d["monitors"][0];
+      monitor["every"] = every;
+      d["monitors"] = Json::array();
+      for (int k = 0; k < count; ++k) {
+        monitor["name"] = "forces" + std::to_string(k);
+        d["monitors"].push_back(monitor);
+      }
+    });
+  };
+  const auto each = run(doc(1, 2));
+  const auto last = run(doc(4, 1));
+  INFO(each.err << last.err);
+  REQUIRE(each.status == ExitStatus::finished);
+  REQUIRE(last.status == ExitStatus::finished);
+  const auto a = history(each.run), b = history(last.run);
+  REQUIRE(a.size() == 4);
+  REQUIRE(b.size() == 4);
+  const Json& at4 = a[3]["monitors"];
+  CHECK(at4["forces0"] == at4["forces1"]);
+  CHECK(at4["forces0"] == b[3]["monitors"]["forces0"]);
+  CHECK(a[0]["monitors"]["forces0"] != at4["forces0"]);  // the forces do evolve
+}
+
 TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
   // Image ghosts hold their owners' values: a uniform flow crossing both pairs is steady.
   const char* precision = GENERATE("fp64", "fp32+acc64");
