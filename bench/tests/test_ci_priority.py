@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+from autan_bench import gpu
 
 ROOT = Path(__file__).parents[1]
 WRAPPER = ROOT / "lock" / "autan-gpu-lock"
@@ -213,6 +214,10 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
                               text=True, check=True).stdout.splitlines()  # fmt: skip
 
     guard.publish(foreign)
+    # The harness reads the same list to skip, not fail, tests that need the GPU to itself.
+    tenants = gpu.foreign_tenants(tmp_path / "gpu.lock")
+    assert "VLLM::EngineCore (mcpbench-vllm, 22484 MiB)" in tenants
+    assert len(tenants) == 3
     out = report()
     (error,) = [line for line in out if line.startswith("::error::")]
     assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in error
@@ -221,7 +226,9 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
     assert not any("#" in line or "[" in line for line in out[1:])
     guard.publish({})
     assert not [line for line in report() if line.startswith("::")]
+    assert gpu.foreign_tenants(tmp_path / "gpu.lock") == []
     guard.publish(None)
+    assert gpu.foreign_tenants(tmp_path / "gpu.lock") is None
     assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]
     (tmp_path / "foreign-gpu").unlink()
     assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]
