@@ -33,9 +33,9 @@ from autan.results import (
     RunWriter,
     Solver,
     field_names,
-    identity,
     iso,
     residual_names,
+    run_identity,
     run_metadata,
     utc_now,
 )
@@ -57,7 +57,7 @@ from autan.solver_input import (
     turbulence_input,
 )
 from autan.solver_input import freestream_state as closed_freestream
-from autan.units import si
+from autan.units import metres_per, si
 from autan.version import COMMIT, __version__
 
 if TYPE_CHECKING:
@@ -243,14 +243,7 @@ class FakeBackend:
         devices = Devices(kind="cpu", count=1)
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
-            identity=identity(
-                spec.hash(),
-                mesh_info.source.sha256,
-                solver,
-                spec.physics.precision,
-                devices,
-                start.info if start is not None else None,
-            ),
+            identity="0" * 64,
             status="running",
             case=CaseIdentity(name=spec.name, sha256=spec.hash()),
             mesh=MeshIdentity(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
@@ -265,6 +258,7 @@ class FakeBackend:
             start=start.info if start is not None else None,
             diagnostics=(),
         )
+        info = info.model_copy(update={"identity": run_identity(info)})
         manufactured = (
             case.resolve(spec.verification.manufactured.path).read_bytes()
             if spec.verification is not None
@@ -568,7 +562,7 @@ def _write_solution(
             cgns.node(bc, "FamilyName", "FamilyName_t", name)
 
         if periodic:
-            _write_periodic(zone, periodic, owned, node_of)
+            _write_periodic(zone, periodic, metres_per(spec.mesh_unit), owned, node_of)
 
         for zone_name, name in zip(cell_names, cell_nodes, strict=True):
             members = [c for c, owner in enumerate(layout) if owner == zone_name]
@@ -630,6 +624,7 @@ def _sizes(total: int, zones: list[str], pairs: list[tuple[str, str]]) -> dict[s
 def _write_periodic(
     zone: Any,
     periodic: tuple[PeriodicPair, ...],
+    scale: float,
     owned: dict[str, NDArray[Any]],
     node_of: dict[str, str],
 ) -> None:
@@ -638,7 +633,7 @@ def _write_periodic(
     connectivity = cgns.node(zone, "ZoneGridConnectivity", "ZoneGridConnectivity_t")
     for pair in periodic:
         a, b = pair.zones
-        vector = np.array(pair.transform.vector)
+        vector = np.array(pair.transform.vector) * scale
         for side, other, shift in ((a, b, vector), (b, a, -vector)):
             gc = cgns.node(connectivity, node_of[side], "GridConnectivity_t", "Zone")
             cgns.node(gc, "GridConnectivityType", "GridConnectivityType_t", "Abutting1to1")
