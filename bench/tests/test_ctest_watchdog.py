@@ -67,12 +67,24 @@ def test_a_hang_s_dump_tells_a_spinning_rank_from_a_blocked_one(tmp_path):
     (report,) = stacks.glob("*-activity.txt")
     lines = {line.split()[1]: line for line in report.read_text().splitlines()}
     spinning, blocked = lines[spin.read_text().strip()], lines[block.read_text().strip()]
+    # However loaded the host, a spinning shell is runnable and accrues CPU; a sleeping one never.
     assert "state R" in spinning
-    assert int(spinning.split("CPU ")[1].split()[0]) >= 50
+    assert int(spinning.split("CPU ")[1].split()[0]) > 0
     assert "state S" in blocked
     assert "CPU 0 %" in blocked
     assert report.read_text() in proc.stdout  # in the job's log as well
     assert "no debugger" in proc.stdout
+
+
+def test_the_watchdog_ends_as_soon_as_its_command_does(tmp_path):
+    # Not at the end of a poll: under a lock with a hard limit, a command that passed just before
+    # it must not be reported as stopped because the watchdog was asleep.
+    env = fake_tools(tmp_path, "true")
+    start = time.monotonic()
+    proc = subprocess.run([str(WATCHDOG), "120", str(tmp_path / "stacks"), "--", "sh", "-c",
+                           "sleep 0.3; exit 7"], check=False, env=env, timeout=60)  # fmt: skip
+    assert proc.returncode == 7
+    assert time.monotonic() - start < 1.5
 
 
 def test_a_launcher_that_finishes_in_time_is_left_alone(tmp_path):
