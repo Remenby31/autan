@@ -123,10 +123,14 @@ class Log:
         self.tail = [field(why, 500), field(shlex.join(command), 1000)]
         self.warned = False
 
-    def warn(self) -> None:
+    def unrecorded(self, line: str) -> None:
+        # A CI runner mounts the lock's directory read-only (docker/runner/deploy.sh): its holds
+        # are recorded by autan-gpu-guard, and the wrapper's own events go to the job's log.
         if not self.warned:
-            sys.stderr.write(f"autan-gpu-lock: cannot write {LOG}; this hold is not recorded\n")
+            sys.stderr.write(f"autan-gpu-lock: {LOG} is not writable here; the guard records "
+                             "this hold, and this wrapper's events follow, tagged [for the guard]\n")  # fmt: skip
             self.warned = True
+        sys.stderr.write(f"autan-gpu-lock [for the guard]: {line}\n")
 
     def record(self, event: str, secs: float, status: object = "-") -> None:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -139,11 +143,11 @@ class Log:
             fd = os.open(LOG, flags)
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode) or os.write(fd, data) != len(data):
-                    self.warn()
+                    self.unrecorded(line)
             finally:
                 os.close(fd)
         except OSError:
-            self.warn()
+            self.unrecorded(line)
 
 
 def _held(path: Path) -> bool:

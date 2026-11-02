@@ -12,6 +12,8 @@ from autan_bench.errors import Code
 
 ROOT = Path(__file__).parents[1]
 WRAPPER = ROOT / "lock" / "autan-gpu-lock"
+# The guard, loaded as a module below, imports autan_memfloor from its own directory.
+sys.path.insert(0, str(ROOT / "lock"))
 # The default memory floor (24 GiB) is a Spark's; a test host may have less memory in all.
 NO_FLOOR = ["-f", "0G"]
 PRIORITY = ROOT / "ci" / "priority.sh"
@@ -380,6 +382,31 @@ def test_the_guard_records_every_holder_and_never_announces_ci_for_others(spark)
     finally:
         guard.terminate()
         guard.wait(timeout=10)
+
+
+@pytest.mark.parametrize(("gib", "low"), [(10, True), (100, False)])
+def test_the_guard_records_memory_below_the_floor_during_a_hold(spark, meminfo, gib, low):
+    # A CI runner cannot write holders.log: the guard records the memory its holders saw.
+    meminfo(gib)
+    env = {**spark, "AUTAN_MEMINFO": os.environ["AUTAN_MEMINFO"]}
+    guard = subprocess.Popen([sys.executable, str(GUARD)], env=env, stderr=subprocess.PIPE)
+    try:
+        time.sleep(1)
+        subprocess.run(["flock", spark["AUTAN_GPU_LOCK"], "sleep", "1.5"], check=True)
+        time.sleep(1.5)
+    finally:
+        guard.terminate()
+        guard.wait(timeout=10)
+    log = Path(spark["AUTAN_GPU_LOCK"]).parent / "holders.log"
+    records = [line.split("\t") for line in log.read_text().splitlines()]
+    lows = [r for r in records if r[1] == "low-memory"]
+    if low:
+        (record,) = lows
+        assert record[5] == f"MemAvailable down to {gib:.1f} GiB"
+        assert [r[1] for r in records if not r[1].startswith("foreign")][:3] == [
+            "held", "released", "low-memory"]  # fmt: skip
+    else:
+        assert not lows
 
 
 def test_the_guard_reads_holders_and_waiters_from_proc_locks():
