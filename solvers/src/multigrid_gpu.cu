@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "autan/kernels/device.cuh"
+#include "autan/solvers/device_order.hpp"
 #include "autan/solvers/multigrid_gpu.hpp"
 
 namespace autan::solvers::gpu {
@@ -109,32 +110,19 @@ struct Transfers::Impl {
   }
 };
 
-// Device numbering: level 0 keeps the mesh's; each coarse node takes the rank of its least child
-// in the finer level's device numbering, so that consecutive coarse nodes gather nearby fine
-// nodes. Lists keep the host's summation order (children by increasing host index), so every
-// value is the host's, only stored at another index.
+// Lists keep the host's summation order (children by increasing host index) in the device
+// numbering of device_orders, so every value is the host's, only stored at another index.
 Transfers::Transfers(std::span<const Level> levels) : impl_(std::make_unique<Impl>()) {
-  if (levels.empty()) return;
-  std::vector<index_t> fine_order(levels[0].n_nodes), fine_rank(levels[0].n_nodes);
-  for (std::size_t i = 0; i < fine_order.size(); ++i) {
-    fine_order[i] = fine_rank[i] = static_cast<index_t>(i);
-  }
-  impl_->order.push_back(fine_order);
+  impl_->order = device_orders(levels);
   for (std::size_t l = 0; l + 1 < levels.size(); ++l) {
     const Level& f = levels[l];
     const std::size_t n = f.n_nodes, nc = levels[l + 1].n_nodes;
-    std::vector<index_t> least(nc, static_cast<index_t>(n));
-    for (std::size_t h = 0; h < n; ++h) {
-      index_t& m = least[static_cast<std::size_t>(f.coarse_node[h])];
-      m = std::min(m, fine_rank[h]);
-    }
-    std::vector<index_t> coarse_order(nc), coarse_rank(nc);
-    for (std::size_t H = 0; H < nc; ++H) coarse_order[H] = static_cast<index_t>(H);
-    std::sort(coarse_order.begin(), coarse_order.end(), [&](index_t a, index_t b) {
-      return least[static_cast<std::size_t>(a)] < least[static_cast<std::size_t>(b)];
-    });
+    const std::vector<index_t>& fine_order = impl_->order[l];
+    std::vector<index_t> fine_rank(n), coarse_rank(nc);
+    for (std::size_t j = 0; j < n; ++j)
+      fine_rank[static_cast<std::size_t>(fine_order[j])] = static_cast<index_t>(j);
     for (std::size_t J = 0; J < nc; ++J) {
-      coarse_rank[static_cast<std::size_t>(coarse_order[J])] = static_cast<index_t>(J);
+      coarse_rank[static_cast<std::size_t>(impl_->order[l + 1][J])] = static_cast<index_t>(J);
     }
     std::vector<offset_t> offsets(nc + 1, 0);
     for (const index_t H : f.coarse_node) {
@@ -155,8 +143,6 @@ Transfers::Transfers(std::span<const Level> levels) : impl_(std::make_unique<Imp
     p.children = kg::DeviceArray<index_t>(std::span<const index_t>(children));
     p.coarse_node = kg::DeviceArray<index_t>(std::span<const index_t>(coarse_node));
     impl_->pairs.push_back(std::move(p));
-    impl_->order.push_back(coarse_order);
-    fine_rank = std::move(coarse_rank);
   }
 }
 
