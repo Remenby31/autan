@@ -12,6 +12,10 @@ struct PrismOptions {
   double planarity_deg = 5.0;
   /// Most height of a prism (mean pillar length) per shortest edge of its wall-side cap.
   double aspect = 1.0;
+  /// Most angle, in degrees, between a pillar and the normal of the wall-side cap: a set of
+  /// tetrahedra leaning into a neighbouring column can fill an oblique prism, whose pillars
+  /// cross a cap edge sideways (at least atan(1 / aspect) from the normal).
+  double pillar_deg = 30.0;
 };
 
 /// What the merge did: the cells of the result, and why front triangles were left.
@@ -25,6 +29,7 @@ struct PrismReport {
   std::int64_t no_candidate = 0;     ///< no three tetrahedra form a prism on it
   std::int64_t ambiguous = 0;        ///< several sets of three do
   std::int64_t not_planar = 0;       ///< a side quadrilateral beyond the planarity tolerance
+  std::int64_t not_aligned = 0;      ///< a pillar beyond the pillar tolerance
   std::int64_t not_layer = 0;        ///< a prism higher than `aspect` times its cap
   std::int64_t invalid = 0;          ///< a prism with a corner of non-positive volume
   std::int64_t across_zones = 0;     ///< tetrahedra of different cell zones

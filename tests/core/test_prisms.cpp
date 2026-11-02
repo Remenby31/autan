@@ -136,6 +136,8 @@ TEST_CASE("Boundary-layer tetrahedra merge into prisms, layer by layer from the 
   const auto merged = autan::merge_layer_prisms(mesh);
   const auto& r = merged.report;
   const std::int64_t columns = 2 * g.n * g.n;
+  CAPTURE(r.no_candidate, r.ambiguous, r.not_planar, r.not_layer, r.invalid, r.across_zones,
+          r.not_tetrahedron);
   // Every thin layer merges; the top layer, twice as high as wide, is left as tetrahedra.
   CHECK(r.prisms + r.split_prisms == columns * g.layers);
   CHECK(r.split_prisms == border_triangles(g.n) * g.layers);
@@ -143,7 +145,7 @@ TEST_CASE("Boundary-layer tetrahedra merge into prisms, layer by layer from the 
   CHECK(r.other_cells == 0);
   CHECK(r.layers == g.layers);
   CHECK(r.not_layer == columns);
-  CHECK(r.no_candidate + r.ambiguous + r.not_planar + r.invalid + r.across_zones +
+  CHECK(r.no_candidate + r.ambiguous + r.not_planar + r.not_aligned + r.invalid + r.across_zones +
             r.not_tetrahedron ==
         0);
   CHECK(merged.mesh.n_cells() == mesh.n_cells() - 2 * columns * g.layers);
@@ -170,16 +172,21 @@ TEST_CASE("A column stops at its first prism beyond the planarity tolerance", "[
   // and (2, 2), one of (1, 2) and one of (2, 1).
   const std::int64_t around = 6, columns = 2 * g.n * g.n;
   CHECK(r.prisms + r.split_prisms == columns * g.layers - around * (g.layers - 2));
-  CHECK(r.not_planar + r.invalid == around);
-  CHECK(r.not_layer == columns - around);
+  // Every column stops once: the six at layer 2, the others at the top layer. (Which check a
+  // column fails is reported for the set that came furthest, informational here.)
+  CHECK(r.not_planar + r.not_aligned + r.not_layer + r.invalid == columns);
+  CHECK(r.no_candidate + r.ambiguous + r.across_zones + r.not_tetrahedron == 0);
   CHECK(r.layers == g.layers);
 }
 
 TEST_CASE("Tolerances decide which layers merge", "[prisms]") {
-  // An aspect of 4 lets the top layer (height 2 / n against edges of 1 / n) merge too.
+  // An aspect of 4 lets the top layer (height 2 / n against edges of 1 / n) merge too, with
+  // pillars within 20 degrees of the normal: an oblique prism of that layer leaning into the
+  // next column leans atan(1 / 2) = 26.6 degrees.
   const Layered g{.n = 3, .layers = 2, .moved = std::nullopt};
   const autan::Mesh mesh = assembled(g);
-  const auto wide = autan::merge_layer_prisms(mesh, {.planarity_deg = 5.0, .aspect = 4.0});
+  const auto wide =
+      autan::merge_layer_prisms(mesh, {.planarity_deg = 5.0, .aspect = 4.0, .pillar_deg = 20.0});
   CHECK(wide.report.prisms + wide.report.split_prisms == 2 * g.n * g.n * (g.layers + 1));
   CHECK(wide.report.tetrahedra == 0);
   // A mesh without wall zone merges nothing.

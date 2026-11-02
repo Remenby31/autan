@@ -19,15 +19,17 @@
 namespace {
 
 constexpr const char* usage =
-    "usage: autan-mesh-prisms [--planarity DEG] [--aspect A] MESH OUT\n"
+    "usage: autan-mesh-prisms [--planarity DEG] [--pillar DEG] [--aspect A] MESH OUT\n"
     "\n"
     "Reads MESH, merges in its boundary layer each set of three tetrahedra that\n"
     "fills a triangular prism into that prism, advancing in layers from its\n"
     "wall zones, and writes the result to the polyMesh directory OUT, with the\n"
     "same nodes, boundary faces and zones. A prism's side quadrilateral must be\n"
-    "planar within DEG degrees (default 5) and its height at most A times its\n"
-    "cap's shortest edge (default 1). Prints a JSON report. Exits 1 with a coded\n"
-    "error (E01xx) if the mesh cannot be read or written, 2 on a usage error.\n";
+    "planar within --planarity degrees (default 5), its pillars within --pillar\n"
+    "degrees of its wall-side cap's normal (default 30) and its height at most A\n"
+    "times its cap's shortest edge (default 1). Prints a JSON report. Exits 1 with\n"
+    "a coded error (E01xx) if the mesh cannot be read or written, 2 on a usage\n"
+    "error.\n";
 
 std::optional<double> positive(std::string_view text) {
   const std::string copy(text);
@@ -49,6 +51,9 @@ int main(int argc, char* const* argv) {
     const std::string_view next = i + 1 < argc ? argv[i + 1] : "";
     if (arg == "--planarity" && positive(next) && *positive(next) < 90.0) {
       options.planarity_deg = *positive(next);
+      ++i;
+    } else if (arg == "--pillar" && positive(next) && *positive(next) < 90.0) {
+      options.pillar_deg = *positive(next);
       ++i;
     } else if (arg == "--aspect" && positive(next)) {
       options.aspect = *positive(next);
@@ -74,23 +79,26 @@ int main(int argc, char* const* argv) {
     const auto merged = autan::merge_layer_prisms(mesh, options);
     autan::io::write_polymesh(out, merged.mesh);
     const auto& r = merged.report;
-    const nlohmann::ordered_json report{
-        {"cells_in", mesh.n_cells()},
-        {"cells_out", merged.mesh.n_cells()},
-        {"prisms", r.prisms},
-        {"split_prisms", r.split_prisms},
-        {"tetrahedra", r.tetrahedra},
-        {"other_cells", r.other_cells},
-        {"layers", r.layers},
-        {"options", {{"planarity_deg", options.planarity_deg}, {"aspect", options.aspect}}},
-        {"stopped",
-         {{"no_candidate", r.no_candidate},
-          {"ambiguous", r.ambiguous},
-          {"not_planar", r.not_planar},
-          {"not_layer", r.not_layer},
-          {"invalid", r.invalid},
-          {"across_zones", r.across_zones},
-          {"not_tetrahedron", r.not_tetrahedron}}}};
+    const nlohmann::ordered_json report{{"cells_in", mesh.n_cells()},
+                                        {"cells_out", merged.mesh.n_cells()},
+                                        {"prisms", r.prisms},
+                                        {"split_prisms", r.split_prisms},
+                                        {"tetrahedra", r.tetrahedra},
+                                        {"other_cells", r.other_cells},
+                                        {"layers", r.layers},
+                                        {"options",
+                                         {{"planarity_deg", options.planarity_deg},
+                                          {"pillar_deg", options.pillar_deg},
+                                          {"aspect", options.aspect}}},
+                                        {"stopped",
+                                         {{"no_candidate", r.no_candidate},
+                                          {"ambiguous", r.ambiguous},
+                                          {"not_planar", r.not_planar},
+                                          {"not_aligned", r.not_aligned},
+                                          {"not_layer", r.not_layer},
+                                          {"invalid", r.invalid},
+                                          {"across_zones", r.across_zones},
+                                          {"not_tetrahedron", r.not_tetrahedron}}}};
     std::printf("%s\n", report.dump(2).c_str());
   } catch (const autan::Error& e) {
     std::fprintf(stderr, "autan-mesh-prisms: %s\n", e.what());

@@ -51,6 +51,7 @@ enum class Fail : std::uint8_t {
   no_candidate,
   ambiguous,
   not_planar,
+  not_aligned,
   not_layer,
   invalid,
   across_zones,
@@ -92,9 +93,15 @@ class Merger {
   [[nodiscard]] std::optional<Prism> pattern(const std::array<index_t, 3>& cells,
                                              const Tri& cap) const {
     std::vector<Tri> faces;
+    std::vector<index_t> nodes;
     for (const index_t c : cells) {
-      for (const Tri& t : outward(c)) faces.push_back(t);
+      for (const Tri& t : outward(c)) {
+        faces.push_back(t);
+        nodes.insert(nodes.end(), t.n.begin(), t.n.end());
+      }
     }
+    std::ranges::sort(nodes);
+    if (std::distance(nodes.begin(), std::ranges::unique(nodes).begin()) != 6) return std::nullopt;
     std::vector<Tri> outer;
     for (const Tri& t : faces) {
       const auto twice =
@@ -197,6 +204,14 @@ class Merger {
       }
       if (positive != 0 && positive != 4) return Fail::not_planar;
     }
+    // The pillars point into the prism, against the bottom cap's outward normal.
+    const Vec down = cross(sub(point(p.bottom[1]), point(p.bottom[0])),
+                           sub(point(p.bottom[2]), point(p.bottom[0])));
+    const double cos_pillar = std::cos(o_.pillar_deg * std::numbers::pi / 180.0);
+    for (std::size_t i = 0; i < 3; ++i) {
+      const Vec pillar = sub(point(p.top[i]), point(p.bottom[i]));
+      if (-dot(pillar, down) < cos_pillar * length(pillar) * length(down)) return Fail::not_aligned;
+    }
     double height = 0.0, shortest = std::numeric_limits<double>::max();
     for (std::size_t i = 0; i < 3; ++i) {
       height += length(sub(point(p.top[i]), point(p.bottom[i]))) / 3.0;
@@ -249,16 +264,36 @@ class Merger {
       }
     }
     if (found.empty()) return {std::nullopt, Fail::no_candidate};
-    if (found.size() > 1) return {std::nullopt, Fail::ambiguous};
-    const Prism& p = found.front();
-    for (const index_t c : p.cells) {
+    // Of the sets the pattern admits (a set leaning into a neighbouring column can have it too),
+    // exactly one must be a valid layer cell; when none is, the reason is that of the set that
+    // came furthest through the checks (zones, planarity, pillars, height, corners).
+    std::vector<Prism> valid;
+    Fail furthest = Fail::none;
+    const auto stage = [](Fail why) {
+      return why == Fail::across_zones  ? 0
+             : why == Fail::not_planar  ? 1
+             : why == Fail::not_aligned ? 2
+             : why == Fail::not_layer   ? 3
+                                        : 4;
+    };
+    for (const Prism& p : found) {
+      const index_t zone = m_.cell_zone()[at(p.cells[0])];
+      const Fail why =
+          m_.cell_zone()[at(p.cells[1])] != zone || m_.cell_zone()[at(p.cells[2])] != zone
+              ? Fail::across_zones
+              : geometry(p);
+      if (why == Fail::none) {
+        valid.push_back(p);
+      } else if (furthest == Fail::none || stage(why) > stage(furthest)) {
+        furthest = why;
+      }
+    }
+    if (valid.empty()) return {std::nullopt, furthest};
+    if (valid.size() > 1) return {std::nullopt, Fail::ambiguous};
+    for (const index_t c : valid.front().cells) {
       if (merged_[at(c)] >= 0) return {std::nullopt, Fail::not_tetrahedron};
     }
-    const index_t zone = m_.cell_zone()[at(p.cells[0])];
-    if (m_.cell_zone()[at(p.cells[1])] != zone || m_.cell_zone()[at(p.cells[2])] != zone)
-      return {std::nullopt, Fail::across_zones};
-    if (const Fail g = geometry(p); g != Fail::none) return {std::nullopt, g};
-    return {p, Fail::none};
+    return {valid.front(), Fail::none};
   }
 
   // Advances the layers from the walls, zones in order, faces in order, layer by layer.
@@ -310,6 +345,9 @@ class Merger {
         break;
       case Fail::not_planar:
         ++r.not_planar;
+        break;
+      case Fail::not_aligned:
+        ++r.not_aligned;
         break;
       case Fail::not_layer:
         ++r.not_layer;
