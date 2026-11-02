@@ -72,9 +72,9 @@ struct PeriodicPair {
 };
 
 /// What assembly moved to make each periodic pair a translation (mesh.md, Periodic pairs): the
-/// nodes moved by more than round-off, the largest move, the largest mismatch of a matched pair
-/// of nodes relative to its tolerance (at most 1), and the largest relative change of an owned
-/// cell's volume.
+/// nodes moved by more than round-off, the largest move of any node, the largest mismatch of a
+/// matched pair of nodes relative to its tolerance (at most 1), and the largest relative change of
+/// an owned cell's volume.
 struct PeriodicSnap {
   std::int64_t nodes = 0;
   double max_distance = 0.0;

@@ -418,9 +418,22 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
         }
       }
     }
+    // A face or cell already degenerate keeps its own error: the move must not repair it.
     std::vector<GeometryCheck> face_before, cell_before;
-    for (const index_t f : faces) face_before.push_back(check_face(mesh, f));
-    for (const index_t c : cells) cell_before.push_back(check_cell(mesh, c));
+    for (const index_t f : faces) {
+      face_before.push_back(check_face(mesh, f));
+      if (!face_before.back().valid) {
+        throw Error(ErrorCode::geometry_degenerate_face,
+                    "face " + std::to_string(f) + " has zero or non-finite area");
+      }
+    }
+    for (const index_t c : cells) {
+      cell_before.push_back(check_cell(mesh, c));
+      if (!cell_before.back().valid) {
+        throw Error(ErrorCode::geometry_non_positive_volume,
+                    "cell " + std::to_string(c) + " has non-positive or non-finite volume");
+      }
+    }
     for (std::size_t i = 0; i < moves.nodes.size(); ++i) {
       const auto p = to_size(moves.nodes[i]);
       mesh.x_[p] = moves.to[i][0];
@@ -429,12 +442,10 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
     }
     for (std::size_t i = 0; i < faces.size(); ++i) {
       const GeometryCheck after = check_face(mesh, faces[i]);
-      if (face_before[i].valid && !after.valid)
-        refuse_snap("face", "area", faces[i], face_before[i].value, after.value);
+      if (!after.valid) refuse_snap("face", "area", faces[i], face_before[i].value, after.value);
     }
     for (std::size_t i = 0; i < cells.size(); ++i) {
       const GeometryCheck after = check_cell(mesh, cells[i]);
-      if (!cell_before[i].valid) continue;
       if (!after.valid) refuse_snap("cell", "volume", cells[i], cell_before[i].value, after.value);
       snap.max_volume_change =
           std::max(snap.max_volume_change,

@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -124,19 +126,29 @@ TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[perio
 
 TEST_CASE("Periodic nodes matched within the tolerance become exact translates", "[periodic]") {
   // n = 3, periodic in x and y: the tolerance on the sides is 1e-4 / 3. Zone b of the x pair
-  // (x = 1) is moved by half of it; assembly moves it back onto zone a translated, to the bit,
-  // and records what it moved: the 16 nodes of that side, by the offset.
+  // (x = 1) is moved outward by half of it; assembly moves it back onto zone a translated, to the
+  // bit, and records what it moved: the 16 nodes of that side, by the offset, and the volume
+  // change of the cells beside it, against the same mesh assembled without its pairs.
   using autan::test::BoxFill;
   const double tolerance = 1e-4 / 3.0;
   const double delta = 0.5 * tolerance;
   const autan::Mesh exact = autan::assemble(periodic_box(3, BoxFill::hexa, {0, 1}));
   CHECK(exact.periodic_snap().nodes == 0);
-  const autan::Mesh moved =
-      autan::assemble(periodic_box(3, BoxFill::hexa, {0, 1}, [&](autan::CellwiseMesh& m) {
-        for (std::size_t i = 0; i < m.x.size(); ++i) {
-          if (m.x[i] == 1.0) m.z[i] += delta;
-        }
-      }));
+  const auto outward = [&](autan::CellwiseMesh& m) {
+    for (double& x : m.x) {
+      if (x == 1.0) x += delta;
+    }
+  };
+  const autan::Mesh moved = autan::assemble(periodic_box(3, BoxFill::hexa, {0, 1}, outward));
+  const autan::Geometry before =
+      autan::compute_geometry(autan::assemble(periodic_box(3, BoxFill::hexa, {}, outward)));
+  const autan::Geometry after = autan::compute_geometry(moved);
+  double change = 0.0;
+  for (std::size_t c = 0; c < before.cell_volume.size(); ++c) {
+    change = std::max(
+        change, std::abs(after.cell_volume[c] - before.cell_volume[c]) / before.cell_volume[c]);
+  }
+  REQUIRE(change > 0.0);
   const auto& snap = moved.periodic_snap();
   CHECK(snap.nodes == 16);
   CHECK_THAT(snap.max_distance, WithinAbs(delta, 1e-15));
@@ -159,7 +171,7 @@ TEST_CASE("Periodic nodes matched within the tolerance become exact translates",
     }
   }
   check_partners(moved);
-  CHECK(snap.max_volume_change > 0.0);
+  CHECK_THAT(snap.max_volume_change, Catch::Matchers::WithinRel(change, 1e-12));
   CHECK(exact.periodic_snap().max_volume_change == 0.0);
 }
 
@@ -185,6 +197,25 @@ TEST_CASE("Moving periodic nodes that would make a valid cell degenerate is a co
     CHECK(e.code() == autan::ErrorCode::mesh_periodic_unmatched);
     CHECK(e.data_json().find("\"volume_after\"") != std::string::npos);
   }
+}
+
+TEST_CASE("A cell already degenerate keeps its own error whatever the periodic move",
+          "[periodic]") {
+  // As above with the planes inside out: x = 1 - 1.25e-5 inside, xmax at 1 - 2.5e-5. The cells
+  // beside xmax have negative volume before any move; moving xmax back onto x = 1 would right
+  // them, and must not: E0121, as compute_geometry reports it without the pair.
+  using autan::test::BoxFill;
+  const auto inside_out = [](autan::CellwiseMesh& m) {
+    for (double& x : m.x) {
+      if (x == 1.0) {
+        x = 1.0 - 2.5e-5;
+      } else if (x != 0.0) {
+        x = 1.0 - 1.25e-5;
+      }
+    }
+  };
+  require_code(autan::ErrorCode::geometry_non_positive_volume,
+               periodic_box(2, BoxFill::hexa, {0}, inside_out));
 }
 
 TEST_CASE("Periodic pairs that place a node in two ways are a coded error", "[periodic]") {

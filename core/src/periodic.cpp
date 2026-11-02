@@ -259,6 +259,7 @@ PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPai
 PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const double> y,
                                    std::span<const double> z, std::span<const PeriodicPair> pairs,
                                    const PeriodicMatch& match) {
+  if (pairs.empty()) return {};
   const std::size_t n = x.size();
   std::vector<char> zone_b(n, 0), periodic(n, 0);
   std::vector<std::vector<std::pair<index_t, std::size_t>>> forward(n);
@@ -346,6 +347,13 @@ PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const do
       }
     }
   }
+  // A move counts when it exceeds the round-off of the additions that placed the node: 4 ulps
+  // of the larger of its coordinate and the largest translation.
+  std::array<double, 3> largest{};
+  for (const auto& pair : pairs) {
+    for (std::size_t d = 0; d < 3; ++d)
+      largest[d] = std::max(largest[d], std::abs(pair.translation[d]));
+  }
   PeriodicMoves out;
   for (std::size_t i = 0; i < n; ++i) {
     if (placed[i] == 0) continue;
@@ -353,18 +361,15 @@ PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const do
     if (position[i] == from) continue;
     out.nodes.push_back(static_cast<index_t>(i));
     out.to.push_back(position[i]);
+    out.max_distance = std::max(
+        out.max_distance,
+        std::hypot(position[i][0] - from[0], position[i][1] - from[1], position[i][2] - from[2]));
     bool significant = false;
     for (std::size_t d = 0; d < 3; ++d) {
-      significant =
-          significant || std::abs(position[i][d] - from[d]) >
-                             4.0 * ulp(std::max(std::abs(from[d]), std::abs(position[i][d])));
+      const double scale = std::max({std::abs(from[d]), std::abs(position[i][d]), largest[d]});
+      significant = significant || std::abs(position[i][d] - from[d]) > 4.0 * ulp(scale);
     }
-    if (significant) {
-      ++out.significant;
-      out.max_distance = std::max(
-          out.max_distance,
-          std::hypot(position[i][0] - from[0], position[i][1] - from[1], position[i][2] - from[2]));
-    }
+    if (significant) ++out.significant;
   }
   return out;
 }
