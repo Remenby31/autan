@@ -178,13 +178,6 @@ def test_every_live_campaign_is_excluded_from_the_outside_load(tmp_path, monkeyp
             proc.wait()
 
 
-def mem_available() -> int:
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        if line.startswith("MemAvailable:"):
-            return int(line.split()[1]) * 1024
-    pytest.fail("no MemAvailable")
-
-
 def until(predicate, timeout: float = 30.0) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -195,7 +188,9 @@ def until(predicate, timeout: float = 30.0) -> bool:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc/meminfo and cgroups are Linux's")
-def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(tmp_path, monkeypatch):
+def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
+    tmp_path, monkeypatch, meminfo
+):
     # Through the CLI, whose detached watcher enforces the floor. docker is faked at the
     # boundary: it records its calls and reports the container running as this test's own
     # process, so that the container's cgroup is a real one.
@@ -219,24 +214,21 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(tmp_path, m
         return [c for c in calls.read_text().splitlines() if c.endswith(f"autan-campaign-{name}")]
 
     # Below the floor before it starts: never started, removed.
-    high = f"{(mem_available() >> 20) + 4096}M"
-    assert campaign.main(["start", "c1", "--free", high, "--dir", str(tmp_path), "--", "x"]) == 0
+    meminfo(5)
+    assert campaign.main(["start", "c1", "--free", "10G", "--dir", str(tmp_path), "--", "x"]) == 0
     assert until(lambda: "not started" in (logs / "c1.log").read_text())
     assert until(lambda: "rm -f autan-campaign-c1" in calls_of("c1"))
     assert "start autan-campaign-c1" not in calls_of("c1")
 
     # Running, then frozen behind a stalled `docker pause` (a measurement took the GPU lock), when
-    # real host memory is taken past a floor 1 GiB below what is available: the container is
-    # killed at once, not once docker answers.
-    low = f"{(mem_available() - (1 << 30)) >> 20}M"
-    assert campaign.main(["start", "c2", "--free", low, "--dir", str(tmp_path), "--", "x"]) == 0
+    # memory falls below the floor: the container is killed at once, not once docker answers.
+    meminfo(20)
+    assert campaign.main(["start", "c2", "--free", "10G", "--dir", str(tmp_path), "--", "x"]) == 0
     assert until(lambda: "start autan-campaign-c2" in calls_of("c2"))
     measurement = lock.open()
     fcntl.flock(measurement, fcntl.LOCK_EX)
     assert until(lambda: "pause autan-campaign-c2" in calls_of("c2"))
-    hog = subprocess.Popen([sys.executable, "-c", (
-        "import time\nchunks = []\nfor _ in range(32):\n"
-        "    chunks.append(b'\\1' * (128 << 20)); time.sleep(0.05)\ntime.sleep(60)\n")])  # fmt: skip
+    meminfo(5)
     try:
         assert until(lambda: "kill autan-campaign-c2" in calls_of("c2"), timeout=8)
         fcntl.flock(measurement, fcntl.LOCK_UN)
@@ -244,5 +236,3 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(tmp_path, m
         assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         measurement.close()
-        hog.kill()
-        hog.wait()

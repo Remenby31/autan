@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """autan-gpu-lock: run a command under the Spark GPU lock, bounded, and record who held it.
 
-    autan-gpu-lock -m WHY [-n] [-w WAIT_S] [-t HOLD_S] [-f FLOOR] -- COMMAND...
+    autan-gpu-lock -m WHY [-n] [-w WAIT_S] [-t HOLD_S] [-f FLOOR] [-r RECOVER_S] -- COMMAND...
+-r RECOVER_S  with the lock taken and the host below the floor, wait up to this long, 0 to 600
+           (default 120), for memory to come back before refusing: a holder the floor just
+           killed takes seconds to return its memory
 
 -m WHY     what the command is for (agent, task), written to the holders log; required
 -w WAIT_S  give up (exit 75) if the lock is not free after this long (default 3600)
@@ -69,19 +72,21 @@ def seconds(text: str, low: int, high: int) -> int:
     return int(text)
 
 
-def parse(argv: list[str]) -> tuple[str, int, int, int, bool, list[str]]:
-    why, wait_s, hold_s, floor, self_locking = "", 3600, MAX_HOLD_S, None, False
+def parse(argv: list[str]) -> tuple[str, int, int, int, int, bool, list[str]]:
+    why, wait_s, hold_s, floor, recover_s, self_locking = "", 3600, MAX_HOLD_S, None, 120, False
     while argv and argv[0] != "--":
         if argv[0] == "-n":
             self_locking, argv = True, argv[1:]
             continue
-        if len(argv) < 2 or argv[0] not in ("-m", "-w", "-t", "-f"):
+        if len(argv) < 2 or argv[0] not in ("-m", "-w", "-t", "-f", "-r"):
             usage(f"unexpected {argv[0]!r}")
         flag, value, argv = argv[0], argv[1], argv[2:]
         if flag == "-m":
             why = value
         elif flag == "-w":
             wait_s = seconds(value, 0, 10**6)
+        elif flag == "-r":
+            recover_s = seconds(value, 0, MAX_HOLD_S)
         elif flag == "-f":
             floor = memfloor.parse(value)
             if floor is None:
@@ -93,7 +98,7 @@ def parse(argv: list[str]) -> tuple[str, int, int, int, bool, list[str]]:
         usage("-m WHY and a command after -- are required")
     if floor is None:
         floor = memfloor.parse(memfloor.DEFAULT)
-    return why, wait_s, hold_s, floor, self_locking, command
+    return why, wait_s, hold_s, floor, recover_s, self_locking, command
 
 
 def field(text: str, limit: int) -> str:
@@ -290,7 +295,7 @@ class Container:
 
 
 def main() -> int:
-    why, wait_s, hold_s, floor, self_locking, command = parse(sys.argv[1:])
+    why, wait_s, hold_s, floor, recover_s, self_locking, command = parse(sys.argv[1:])
     log = Log(why, command)
     cancel = []
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -332,11 +337,25 @@ def main() -> int:
         if cancel:
             log.record("cancelled", 0, 143)
             return 143
+        # Memory a holder the floor just killed takes seconds to come back: wait for it, bounded,
+        # before refusing (waiters would otherwise all be refused at once). Holding the lock,
+        # the wait counts in the hold and ends before the hold's TERM time; with -n, where the
+        # command takes the lock itself, the hold limit counts from the command's start.
+        recover_end = time.monotonic() + recover_s
+        if not self_locking:
+            recover_end = min(recover_end, taken + hold_s - min(10.0, hold_s / 2))
+        while memfloor.below(floor) and time.monotonic() < recover_end and not cancel:
+            time.sleep(0.5)
+        if cancel:
+            log.record("cancelled", time.monotonic() - taken, 143)
+            return 143
         if memfloor.below(floor):
             log.record("memory", time.monotonic() - taken, 71)
             sys.stderr.write(f"autan-gpu-lock: {memfloor.show(memfloor.available())} available, "
                              f"below the -f floor of {memfloor.show(floor)}; not started\n")  # fmt: skip
             return 71
+        if self_locking:
+            taken = time.monotonic()
         become_subreaper()
         helpers: set[int] = set()
         container = Container(helpers)
