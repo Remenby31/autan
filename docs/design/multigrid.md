@@ -17,7 +17,7 @@ Block Gauss-Seidel damps the error components a few cells long. The viscous Jaco
 | Start of the pseudo-time continuation | **CFL = 1000 / drop** (SER), instead of 10 / drop | With an exact-enough linear solve, the number of steps is set by the pseudo-time continuation: with the viscous time step ∝ h², a start at 10 made the laminar steps grow as the mesh (51 → 200 from 16³ to 48³). Gauss-Seidel gains nothing from a larger start (its solve is the limit). Checked on Ni's transonic bump from the freestream ([measurements](#measurements)). |
 | Smoother | **Line-implicit block Gauss-Seidel**, one symmetric sweep before and after each coarse correction | Lines are solved exactly by block-tridiagonal elimination; the other cells are point block Gauss-Seidel, as before. Lines of one colour share no face, so their solves are independent; colours are visited forwards then backwards. |
 
-On the Navier-Stokes physics, from the step after the switch to second order, the outer GCR's operator is the true Jacobian applied matrix-free, the cycle on J̃ its preconditioner ([matrix-free-step.md](matrix-free-step.md)); with SA and `time.coupled_turbulence`, the operator is that of the flow and ν̃ together, the cycle then ν̃'s own solve its preconditioner ([coupled-sa.md](coupled-sa.md)).
+On the laminar Navier-Stokes physics with `time.matrix_free`, from the step after the switch to second order, the outer GCR's operator is the true Jacobian applied matrix-free, the cycle on J̃ its preconditioner ([matrix-free-step.md](matrix-free-step.md)); with SA and `time.coupled_turbulence`, the operator is that of the flow and ν̃ together, the cycle then ν̃'s own solve its preconditioner ([coupled-sa.md](coupled-sa.md)). Without either option the operator is J̃.
 
 ## Lines
 
