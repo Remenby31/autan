@@ -704,6 +704,34 @@ TEMPLATE_TEST_CASE(
   e.freeze(at);
   e.residual_frozen(at, frozen);
   CHECK(bits(frozen, r));
+  // Every boundary kind residual() knows is held alike: at its own state, one kind on every
+  // boundary face, the frozen residual is the residual.
+  {
+    const double t = w.p / (w.rho * air.gas_constant);
+    const std::array<std::pair<BoundaryKind, std::array<double, 5>>, 6> each = {{
+        {BoundaryKind::state, {w.rho, w.v[0], w.v[1], w.v[2], w.p}},
+        {BoundaryKind::farfield, {w.rho, w.v[0], w.v[1], w.v[2], w.p}},
+        {BoundaryKind::slip, {0.0, 0.0, 0.0, 0.0, 0.0}},
+        {BoundaryKind::inlet, {1.2 * w.p, 1.05 * t, 0.0, 0.0, 0.0}},
+        {BoundaryKind::outlet, {0.0, 0.0, 0.0, 0.0, w.p}},
+        {BoundaryKind::wall, {t, 0.0, 0.0, 0.0, 0.0}},
+    }};
+    for (const auto& [k, v] : each) {
+      INFO("kind " << static_cast<int>(k));
+      Euler<P> one(c.mesh, c.geometry, air, scheme);
+      std::vector<BoundaryKind> kinds(nb, k);
+      std::vector<double> values(5 * nb);
+      for (std::size_t b = 0; b < nb; ++b) {
+        for (std::size_t j = 0; j < 5; ++j) values[j * nb + b] = v[j];
+      }
+      one.set_boundary(kinds, values);
+      std::vector<Res> plain(5 * nc), held_one(5 * nc);
+      one.residual(at, plain);
+      one.freeze(at);
+      one.residual_frozen(at, held_one);
+      CHECK(bits(held_one, plain));
+    }
+  }
   // Its workspace holds what residual() computed at that state, for a physics adding terms.
   const auto held_data = e.frozen_data();
   CHECK(std::memcmp(held_data.prim, cache.prim, 5 * nc * sizeof(State)) == 0);
