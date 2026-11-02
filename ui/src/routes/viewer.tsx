@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { runsQuery } from "../api/runs";
 import { fetchSurface, type Surface } from "../api/surface";
 import { TopBar } from "../components/shell/TopBar";
@@ -21,6 +21,11 @@ interface Search {
   triangles?: number;
   webgl?: boolean;
   bench?: boolean;
+  /** A plane cut through a run's solution, normal to this axis. */
+  slice?: "x" | "y" | "z";
+  /** Where along the axis, as a fraction of the wall surface's extent. */
+  at?: number;
+  sliceField?: string;
 }
 
 export const Route = createFileRoute("/viewer")({
@@ -32,6 +37,10 @@ export const Route = createFileRoute("/viewer")({
     if (Number.isFinite(triangles) && triangles > 0) search.triangles = triangles;
     if (raw.webgl === true || raw.webgl === 1 || raw.webgl === "1") search.webgl = true;
     if (raw.bench === true || raw.bench === 1 || raw.bench === "1") search.bench = true;
+    if (raw.slice === "x" || raw.slice === "y" || raw.slice === "z") search.slice = raw.slice;
+    const at = Number(raw.at);
+    if (raw.at !== undefined && Number.isFinite(at) && at >= 0 && at <= 1) search.at = at;
+    if (typeof raw.sliceField === "string" && raw.sliceField) search.sliceField = raw.sliceField;
     return search;
   },
   component: Analysis,
@@ -115,7 +124,28 @@ declare global {
 }
 
 const BENCH_FRAMES = 200;
-const UNITS: Record<string, string> = { Pressure: "Pa" };
+const UNITS: Record<string, string> = {
+  Pressure: "Pa",
+  Density: "kg/m³",
+  Temperature: "K",
+  VelocityX: "m/s",
+  VelocityY: "m/s",
+  VelocityZ: "m/s",
+};
+
+// The box around a surface's nodes, in the mesh's own coordinates.
+function bounds(surface: Surface): { min: number[]; max: number[] } {
+  const min = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  const max = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY];
+  const p = surface.positions;
+  for (let i = 0; i < p.length; i += 3)
+    for (let k = 0; k < 3; k++) {
+      const v = (p[i + k] as number) + (surface.origin[k] as number);
+      if (v < (min[k] as number)) min[k] = v;
+      if (v > (max[k] as number)) max[k] = v;
+    }
+  return { min, max };
+}
 const format = (v: number) =>
   Math.abs(v) >= 1e4 || (v !== 0 && Math.abs(v) < 1e-2) ? v.toExponential(2) : v.toFixed(3);
 
@@ -126,6 +156,9 @@ function Viewer() {
     triangles = 200_000,
     webgl = false,
     bench = false,
+    slice: axis,
+    at = 0.5,
+    sliceField = "Pressure",
   } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const registry = useQuery(runsQuery);
@@ -192,6 +225,52 @@ function Viewer() {
   }, [surface, fieldName]);
 
   useEffect(() => viewer.current?.setSelectedZone(selected), [selected]);
+
+  // The slice: a plane through the wall surface's extent, fetched again (debounced) as it moves.
+  const [cut, setCut] = useState<Surface | null>(null);
+  const [cutError, setCutError] = useState<string | null>(null);
+  const extent = useMemo(() => (surface ? bounds(surface) : null), [surface]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the field is applied below without refetching
+  useEffect(() => {
+    if (!run || !axis || !extent) {
+      setCut(null);
+      setCutError(null);
+      viewer.current?.setSlice(null, "");
+      return;
+    }
+    const k = "xyz".indexOf(axis);
+    const origin = extent.min.map((low, j) => (low + (extent.max[j] as number)) / 2);
+    origin[k] =
+      (extent.min[k] as number) + at * ((extent.max[k] as number) - (extent.min[k] as number));
+    const normal = [0, 0, 0];
+    normal[k] = 1;
+    const abort = new AbortController();
+    const timer = setTimeout(() => {
+      fetchSurface(
+        `/api/runs/${run}/slice?origin=${origin.join(",")}&normal=${normal.join(",")}`,
+        abort.signal,
+      )
+        .then((s) => {
+          setCut(s);
+          setCutError(null);
+          viewer.current?.setSlice(s, sliceField);
+        })
+        .catch((e: unknown) => {
+          if (abort.signal.aborted) return;
+          setCut(null);
+          setCutError(e instanceof Error ? e.message : String(e));
+          viewer.current?.setSlice(null, "");
+        });
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      abort.abort();
+    };
+  }, [run, axis, at, extent]);
+  useEffect(() => {
+    if (cut) viewer.current?.setSliceField(sliceField);
+  }, [cut, sliceField]);
+  const cutField = cut?.fields.find((f) => f.name === sliceField) ?? cut?.fields[0];
 
   const theme = useResolvedTheme();
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the displayed theme changes
@@ -268,6 +347,93 @@ function Viewer() {
               </button>
             ))}
           </aside>
+        )}
+        {run && surface && (
+          <div
+            className="absolute top-4 right-4 flex items-center gap-2 rounded-lg border border-line bg-glass p-2 text-sm backdrop-blur"
+            data-testid="slice-controls"
+          >
+            <span className="text-fg-2">Slice</span>
+            {(["x", "y", "z"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                aria-pressed={axis === k}
+                aria-label={`Slice normal to ${k}`}
+                onClick={() =>
+                  void navigate({
+                    search: (s: Search) => {
+                      const { slice: _, ...rest } = s;
+                      return axis === k ? rest : { ...rest, slice: k };
+                    },
+                    replace: true,
+                  })
+                }
+                className="rounded-md px-2 py-0.5 font-mono hover:bg-bg-2 aria-pressed:bg-accent-soft aria-pressed:text-accent"
+              >
+                {k}
+              </button>
+            ))}
+            {axis && (
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={at}
+                aria-label="Slice position"
+                onChange={(e) =>
+                  void navigate({
+                    search: (s: Search) => ({ ...s, at: Number(e.target.value) }),
+                    replace: true,
+                  })
+                }
+              />
+            )}
+            {cut && (
+              <select
+                aria-label="Slice field"
+                value={cutField?.name ?? ""}
+                onChange={(e) =>
+                  void navigate({
+                    search: (s: Search) => ({ ...s, sliceField: e.target.value }),
+                    replace: true,
+                  })
+                }
+                className="rounded-md bg-transparent px-1 font-mono"
+              >
+                {cut.fields.map((f) => (
+                  <option key={f.name} value={f.name}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+        {cutError && (
+          <p className="absolute top-16 right-4 m-0 text-danger text-sm" data-testid="slice-error">
+            {cutError}
+          </p>
+        )}
+        {cutField && (
+          <div
+            className="pointer-events-none absolute right-4 bottom-28 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs"
+            data-testid="slice-legend"
+          >
+            <span>
+              slice · {cutField.name}
+              {UNITS[cutField.name] ? ` (${UNITS[cutField.name]})` : ""}
+            </span>
+            <div
+              className="h-2 rounded"
+              style={{ background: cssGradient(colormapFor(cutField.min, cutField.max)) }}
+            />
+            <div className="flex justify-between">
+              <span>{format(displayRange(cutField.min, cutField.max).min)}</span>
+              <span>{format(displayRange(cutField.min, cutField.max).max)}</span>
+            </div>
+          </div>
         )}
         {field && range && (
           <div className="pointer-events-none absolute right-4 bottom-10 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs">

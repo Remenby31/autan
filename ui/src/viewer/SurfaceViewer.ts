@@ -31,6 +31,9 @@ export class SurfaceViewer {
   private zones: ZoneMaterial[] = [];
   private pickMaterials: THREE.MeshBasicNodeMaterial[] = [];
   private pickTarget = new THREE.RenderTarget(1, 1);
+  // A plane cut through the volume, drawn with the surface, coloured by its own field.
+  private slice: { mesh: THREE.Mesh; surface: Surface; lut: THREE.DataTexture } | null = null;
+  private readonly sliceRange = { min: uniform(0), span: uniform(1) };
   private frame = 0;
 
   static async create(
@@ -138,6 +141,7 @@ export class SurfaceViewer {
   /** Draw nothing, until the next setSurface. */
   clear(): void {
     this.clearMesh();
+    this.clearSlice();
     this.surface = null;
     this.requestRender();
   }
@@ -180,6 +184,8 @@ export class SurfaceViewer {
     const materials = this.mesh.material;
     const background = this.scene.background;
     this.mesh.material = this.pickMaterials;
+    // Zones are picked through the slice: it is not drawn into the pick target.
+    if (this.slice) this.slice.mesh.visible = false;
     this.scene.background = new THREE.Color(0, 0, 0);
     this.camera.setViewOffset(width, height, Math.round(x * ratio), Math.round(y * ratio), 1, 1);
     this.renderer.setRenderTarget(this.pickTarget);
@@ -187,6 +193,7 @@ export class SurfaceViewer {
     this.renderer.setRenderTarget(null);
     this.camera.clearViewOffset();
     this.mesh.material = materials;
+    if (this.slice) this.slice.mesh.visible = true;
     this.scene.background = background;
     const pixel = (await this.renderer.readRenderTargetPixelsAsync(
       this.pickTarget,
@@ -198,6 +205,65 @@ export class SurfaceViewer {
     this.requestRender();
     const id = (pixel[0] ?? 0) + 256 * (pixel[1] ?? 0);
     return id === 0 ? null : id - 1;
+  }
+
+  /** Show `slice` (or none) with the surface, coloured by its field `fieldName` on its own
+   * scale; it is placed by its origin relative to the surface's. */
+  setSlice(slice: Surface | null, fieldName: string): void {
+    this.clearSlice();
+    if (!slice) {
+      this.requestRender();
+      return;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(slice.positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(slice.indices, 1));
+    const lut = new THREE.DataTexture(sampleColormap(COOL_WARM), 256, 1);
+    lut.colorSpace = THREE.SRGBColorSpace;
+    lut.magFilter = THREE.LinearFilter;
+    const t = clamp(
+      attribute<"float">("value", "float").sub(this.sliceRange.min).div(this.sliceRange.span),
+      0,
+      1,
+    );
+    const material = new THREE.MeshStandardNodeMaterial({
+      roughness: 0.8,
+      side: THREE.DoubleSide,
+    });
+    material.colorNode = texture(lut, vec2(t, float(0.5))).rgb;
+    const mesh = new THREE.Mesh(geometry, material);
+    const base = this.surface?.origin ?? slice.origin;
+    mesh.position.set(
+      slice.origin[0] - base[0],
+      slice.origin[1] - base[1],
+      slice.origin[2] - base[2],
+    );
+    this.scene.add(mesh);
+    this.slice = { mesh, surface: slice, lut };
+    this.setSliceField(fieldName);
+  }
+
+  /** Colour the slice by another of its fields. */
+  setSliceField(fieldName: string): void {
+    const slice = this.slice;
+    const field = slice?.surface.fields.find((f) => f.name === fieldName);
+    if (!slice || !field) return;
+    slice.mesh.geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
+    const range = displayRange(field.min, field.max);
+    this.sliceRange.min.value = range.min;
+    this.sliceRange.span.value = range.max - range.min || 1;
+    (slice.lut.image.data as Uint8Array).set(sampleColormap(colormapFor(field.min, field.max)));
+    slice.lut.needsUpdate = true;
+    this.requestRender();
+  }
+
+  private clearSlice(): void {
+    if (!this.slice) return;
+    this.scene.remove(this.slice.mesh);
+    this.slice.mesh.geometry.dispose();
+    (this.slice.mesh.material as THREE.Material).dispose();
+    this.slice.lut.dispose();
+    this.slice = null;
   }
 
   /** Milliseconds per frame, each frame rendered and waited for on the GPU, orbiting the camera. */
@@ -248,6 +314,7 @@ export class SurfaceViewer {
     this.resize.disconnect();
     this.controls.dispose();
     this.clearMesh();
+    this.clearSlice();
     this.lut.dispose();
     this.pickTarget.dispose();
     this.renderer.dispose();

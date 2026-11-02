@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
 import autan
+import numpy as np
 import uvicorn
 from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
@@ -32,6 +33,7 @@ from autan_ui.registry import (
     RunRejectedError,
     read_run,
 )
+from autan_ui.slice import slice_surface
 from autan_ui.surface import synthetic_wing
 from autan_ui.wall import wall_surface
 
@@ -449,6 +451,35 @@ def create_app(
                     raise HTTPException(422, f"solution.cgns: {error}") from error
                 surfaces.clear()
                 surfaces[key] = message
+        return Response(message, media_type="application/octet-stream")
+
+    @app.get("/api/runs/{run_id}/slice")
+    def run_slice(
+        run_id: Annotated[str, Depends(existing_run)], origin: str, normal: str
+    ) -> Response:
+        """The cut of the run's solution by a plane, `origin` and `normal` as three comma-separated
+        numbers, as an `autan-ui.surface/1` message (`slice_surface`). 409 while the run is
+        running (results.md), 422 for a plane that is not one or meets no cell."""
+        try:
+            point, direction = (
+                np.array([float(x) for x in text.split(",")], dtype=np.float64)
+                for text in (origin, normal)
+            )
+        except ValueError as error:
+            raise HTTPException(
+                422, f"origin and normal are three numbers each: {error}"
+            ) from error
+        if point.shape != (3,) or direction.shape != (3,):
+            raise HTTPException(422, "origin and normal are three numbers each")
+        with Folder(find_run(run_id)) as folder:
+            if read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            if folder.stat("solution.cgns") is None:
+                raise HTTPException(404, f"run {run_id} has no solution.cgns")
+            try:
+                message = slice_surface(folder, point, direction)
+            except (OSError, ValueError, KeyError) as error:
+                raise HTTPException(422, f"slice: {error}") from error
         return Response(message, media_type="application/octet-stream")
 
     @app.get("/api/meshes")
