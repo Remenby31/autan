@@ -277,11 +277,14 @@ function Viewer() {
 
   // The slice: a plane through the wall surface's extent, fetched again (debounced) as it moves.
   const [cut, setCut] = useState<Surface | null>(null);
+  // The field the renderer colours the slice by, as it reports it.
+  const [drawn, setDrawn] = useState<string | null>(null);
   const [cutError, setCutError] = useState<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the field is applied below without refetching
   useEffect(() => {
     if (!run || !axis || !surface) {
       setCut(null);
+      setDrawn(null);
       setCutError(null);
       viewer.current?.setSlice(null, "");
       return;
@@ -297,10 +300,12 @@ function Viewer() {
           setCut(s);
           setCutError(null);
           viewer.current?.setSlice(s, shownField(s, sliceField), { origin, normal });
+          setDrawn(viewer.current?.sliceField ?? null);
         })
         .catch((e: unknown) => {
           if (abort.signal.aborted) return;
           setCut(null);
+          setDrawn(null);
           setCutError(e instanceof Error ? e.message : String(e));
           viewer.current?.setSlice(null, "");
         });
@@ -311,7 +316,9 @@ function Viewer() {
     };
   }, [run, axis, at, surface]);
   useEffect(() => {
-    if (cut) viewer.current?.setSliceField(shownField(cut, sliceField));
+    if (!cut) return;
+    viewer.current?.setSliceField(shownField(cut, sliceField));
+    setDrawn(viewer.current?.sliceField ?? null);
   }, [cut, sliceField]);
   const cutField = cut?.fields.find((f) => f.name === shownField(cut, sliceField));
 
@@ -370,6 +377,7 @@ function Viewer() {
           className="block h-full w-full touch-none"
           aria-label="3D surface"
           data-testid="viewport"
+          data-slice-field={drawn ?? ""}
         />
         {error && <p className="absolute top-4 left-4 m-0 text-danger">{error}</p>}
         {surface && (

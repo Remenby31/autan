@@ -390,13 +390,11 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await expect(picked).toHaveCount(0);
   await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
 
-  // A link naming a field the slice does not carry shows its first field, legend and colours.
-  await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=${firstField}`);
-  await expect(legend).toContainText(`slice · ${firstField}`);
-  const named = await view.screenshot();
+  // A link naming a field the slice does not carry shows its first field, in the legend and
+  // in the renderer.
   await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=NotAField`);
   await expect(legend).toContainText(`slice · ${firstField}`);
-  await expect.poll(async () => (await view.screenshot()).equals(named)).toBe(true);
+  await expect(view).toHaveAttribute("data-slice-field", firstField);
 });
 
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {

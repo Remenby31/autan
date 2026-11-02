@@ -36,6 +36,7 @@ export class SurfaceViewer {
   private pickTarget = new THREE.RenderTarget(1, 1);
   // A plane cut through the volume, drawn with the surface, coloured by its own field.
   private slice: {
+    field?: string;
     mesh: THREE.Mesh;
     surface: Surface;
     lut: THREE.DataTexture;
@@ -291,11 +292,17 @@ export class SurfaceViewer {
     this.setSliceField(fieldName);
   }
 
+  /** The field the slice is coloured by, or null when no slice is drawn or none is applied. */
+  get sliceField(): string | null {
+    return this.slice?.field ?? null;
+  }
+
   /** Colour the slice by another of its fields. */
   setSliceField(fieldName: string): void {
     const slice = this.slice;
     const field = slice?.surface.fields.find((f) => f.name === fieldName);
     if (!slice || !field) return;
+    slice.field = field.name;
     slice.mesh.geometry.setAttribute("value", new THREE.BufferAttribute(field.values, 1));
     const range = displayRange(field.min, field.max);
     this.sliceRange.min.value = range.min;
