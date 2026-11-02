@@ -1,73 +1,82 @@
-# #411: every device allocation of the shipped code goes through an allocator that records it in
+# #411: every device allocation of the code base goes through an allocator that records it in
 # autan::device_memory. Fails on a cudaMalloc/hipMalloc family call outside those allocators, or
-# on an allocator that no longer records. Run as: cmake -DROOT=<source dir> -P device_allocations.cmake
+# on an allocator file with fewer recordings than allocation calls.
+# Run as: cmake -DROOT=<source dir> -P device_allocations.cmake
 set(
   allocators
   codegen/include/autan/kernels/device.cuh
   partition/src/device_self.cu
   partition/src/halo_exchange.cpp
 )
+# Programs of their own that no run links: benchmarks, the codegen spike driver (loaded by the
+# codegen tests through ctypes) and its generator tests, the image smoke test, the packaging probe.
+set(
+  standalone
+  "^bench/"
+  "^codegen/bench/"
+  "^codegen/spike/"
+  "^codegen/tests/"
+  "^docker/"
+  "^packaging/probe/"
+  "^physics/bench/"
+  "^solvers/bench/"
+)
 set(
   pattern
   "(cuda|hip)(Malloc|MallocAsync|MallocManaged|MallocHost|MallocPitch|HostAlloc|Malloc3D)[ \t]*\\("
 )
-file(
-  GLOB_RECURSE sources
-  RELATIVE ${ROOT}
-  ${ROOT}/core/*.cpp
-  ${ROOT}/core/*.hpp
-  ${ROOT}/core/*.cu
-  ${ROOT}/core/*.cuh
-  ${ROOT}/io/*.cpp
-  ${ROOT}/io/*.hpp
-  ${ROOT}/io/*.cu
-  ${ROOT}/io/*.cuh
-  ${ROOT}/partition/*.cpp
-  ${ROOT}/partition/*.hpp
-  ${ROOT}/partition/*.cu
-  ${ROOT}/partition/*.cuh
-  ${ROOT}/runtime/*.cpp
-  ${ROOT}/runtime/*.hpp
-  ${ROOT}/runtime/*.cu
-  ${ROOT}/runtime/*.cuh
-  ${ROOT}/codegen/include/*.cpp
-  ${ROOT}/codegen/include/*.hpp
-  ${ROOT}/codegen/include/*.cu
-  ${ROOT}/codegen/include/*.cuh
-  ${ROOT}/codegen/cpp/*.cpp
-  ${ROOT}/codegen/cpp/*.hpp
-  ${ROOT}/codegen/cpp/*.cu
-  ${ROOT}/codegen/cpp/*.cuh
-  ${ROOT}/solvers/src/*.cpp
-  ${ROOT}/solvers/src/*.hpp
-  ${ROOT}/solvers/src/*.cu
-  ${ROOT}/solvers/src/*.cuh
-  ${ROOT}/solvers/include/*.cpp
-  ${ROOT}/solvers/include/*.hpp
-  ${ROOT}/solvers/include/*.cu
-  ${ROOT}/solvers/include/*.cuh
-  ${ROOT}/physics/src/*.cpp
-  ${ROOT}/physics/src/*.hpp
-  ${ROOT}/physics/src/*.cu
-  ${ROOT}/physics/src/*.cuh
-  ${ROOT}/physics/include/*.cpp
-  ${ROOT}/physics/include/*.hpp
-  ${ROOT}/physics/include/*.cu
-  ${ROOT}/physics/include/*.cuh
-)
+# Every source directory but the tests, the docs and the web UI (no device code), and no build tree.
+file(GLOB tops LIST_DIRECTORIES true RELATIVE ${ROOT} ${ROOT}/*)
+set(sources "")
+foreach(top IN LISTS tops)
+  if(
+    NOT IS_DIRECTORY ${ROOT}/${top}
+    OR top MATCHES "^(\\.|tests$|docs$|ui$|website$)"
+    OR EXISTS ${ROOT}/${top}/CMakeCache.txt
+  )
+    continue()
+  endif()
+  file(
+    GLOB_RECURSE found
+    RELATIVE ${ROOT}
+    ${ROOT}/${top}/*.cpp
+    ${ROOT}/${top}/*.cc
+    ${ROOT}/${top}/*.h
+    ${ROOT}/${top}/*.hpp
+    ${ROOT}/${top}/*.cu
+    ${ROOT}/${top}/*.cuh
+    ${ROOT}/${top}/*.py
+  )
+  list(APPEND sources ${found})
+endforeach()
+list(FILTER sources EXCLUDE REGEX "/(\\.venv|node_modules)/")
 set(failures "")
 foreach(source IN LISTS sources)
-  file(READ ${ROOT}/${source} text)
-  if(text MATCHES "${pattern}")
-    list(FIND allocators ${source} known)
-    if(known EQUAL -1)
-      string(
-        APPEND failures
-        "\n  ${source}: allocates device memory outside the counted allocators"
-      )
-    elseif(NOT text MATCHES "device_memory::allocated")
-      string(APPEND failures "\n  ${source}: allocates without recording in autan::device_memory")
+  set(skip FALSE)
+  foreach(prefix IN LISTS standalone)
+    if(source MATCHES "${prefix}")
+      set(skip TRUE)
     endif()
+  endforeach()
+  if(skip)
+    continue()
+  endif()
+  file(READ ${ROOT}/${source} text)
+  string(REGEX MATCHALL "${pattern}" calls "${text}")
+  list(LENGTH calls n_calls)
+  if(n_calls EQUAL 0)
+    continue()
+  endif()
+  list(FIND allocators ${source} known)
+  string(REGEX MATCHALL "device_memory::allocated\\(" records "${text}")
+  list(LENGTH records n_records)
+  if(known EQUAL -1)
+    string(APPEND failures "\n  ${source}: allocates device memory outside the counted allocators")
+  elseif(n_records LESS n_calls)
+    string(
+      APPEND failures
+      "\n  ${source}: ${n_calls} allocation calls, ${n_records} recordings in autan::device_memory"
+    )
   endif()
 endforeach()
 if(failures)
