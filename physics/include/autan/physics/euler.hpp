@@ -77,7 +77,13 @@ class Euler {
   using State = typename P::state;
   using Res = typename P::residual;
 
-  Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme);
+  /// With `keys` (a partition's global numbering, kernels::GlobalKeys), every cell sums its faces
+  /// and stencil entries in global order and every face is evaluated in its global orientation,
+  /// so that the residual and the Jacobian of each owned cell have the same bits on any number
+  /// of ranks and in any cell order (solver-input.md, reproducibility "ranks"). The spans must
+  /// outlive the constructor only.
+  Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
+        const kernels::GlobalKeys* keys = nullptr);
   ~Euler();
   Euler(const Euler&) = delete;
   Euler& operator=(const Euler&) = delete;
@@ -128,6 +134,11 @@ class Euler {
   /// boundary conditions, source, parameters), the gradient stencil and the scheme.
   [[nodiscard]] const kernels::euler::Data<P>& data() const;
   [[nodiscard]] const kernels::CellStencil& stencil() const;
+  /// The twin of each entry of the gradient stencil (kernels::CellStencil::twin: the entry of
+  /// cell c in the stencil of the entry's cell, -1 for a boundary face), for the adjoint's reverse
+  /// reductions. No forward loop reads it, so it is built on the first call, not at construction;
+  /// stencil().twin stays empty.
+  [[nodiscard]] std::span<const kernels::offset_t> stencil_twin();
   [[nodiscard]] const Scheme& scheme() const;
 
  private:

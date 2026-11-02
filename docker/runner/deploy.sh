@@ -29,7 +29,7 @@ prepare() {
   install -d -m 0755 "$lock_dir"
   [[ -e $lock ]] || install -m 0666 /dev/null "$lock"
   local file
-  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock" "$lock_dir/main.lock"; do
+  for file in "$lock_dir/holders.log" "$lock_dir/ci.lock" "$lock_dir/main.lock" "$lock_dir/turn.lock"; do
     [[ -f $file ]] || { (set -C; : >"$file") 2>/dev/null && chmod 0666 "$file"; }
     [[ -f $file ]] || { echo "error: $file is not a regular file" >&2; exit 1; }
   done
@@ -37,6 +37,7 @@ prepare() {
   # runs from cron, one instance (flock -n), so it comes back within a minute and after a reboot.
   install -d -m 0755 "$lock_dir/bin" "$HOME/autan-gpu-guard"
   install -m 0755 "$here/../../bench/lock/autan-gpu-lock" "$here/../../bench/lock/autan-gpu-guard" "$lock_dir/bin/"
+  install -m 0644 "$here/../../bench/lock/autan_memfloor.py" "$lock_dir/bin/"
   # A running guard keeps its old code: stop it, and cron starts the new one within a minute.
   pkill -f "^python3 $lock_dir/bin/autan-gpu-guard" || true
   local cron="* * * * * flock -n $HOME/autan-gpu-guard/run.lock $lock_dir/bin/autan-gpu-guard >> $HOME/autan-gpu-guard/guard.log 2>&1"

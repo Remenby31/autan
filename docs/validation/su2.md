@@ -2,7 +2,7 @@
 
 A direct comparison of Autan with [SU2](https://su2code.github.io/) on the same meshes: iterations and wall time to one convergence criterion, and accuracy against published references (issue #195). Source: `vv/src/autan_vv/su2/`, `vv/su2/`.
 
-**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
+**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
 
 ## SU2, an external tool
 
@@ -28,7 +28,7 @@ Fixed on 2026-11-01, before any measurement, and revised by the [fairness audit]
 | Flux | Roe, Harten's fix (width 0.1 c) on the acoustic waves only | SU2-Roe: `ROE`, entropy fix \|λ\| ≥ 0.001 λ_max on every wave (`roe.cpp`). SU2-JST: central flux with JST scalar dissipation (sensor coefficients 0.5, 0.02), no reconstruction or limiter | the entropy fixes differ in form; JST is another scheme altogether |
 | Reconstruction | primitive (ρ, u, v, w, p), least squares 1/d², face2 stencil | MUSCL κ = 0 on (T, v, p, ρ), `WEIGHTED_LEAST_SQUARES` over edge neighbours | variables and stencils differ |
 | Limiter | Venkatakrishnan, ε_k² = (K/L)³ V q_k², K = 10 per cell | `VENKATAKRISHNAN`, one ε² = (K_SU2 · 1)³ for the whole mesh on variables scaled by the freestream (`FREESTREAM_PRESS_EQ_ONE`) | SU2's threshold cannot vary with the cell; it is matched to Autan's on the median cell within one chord of mid-chord: K_SU2 = K V_med^(1/3)/L. Velocity is scaled by c∞ in Autan and c∞/√γ in SU2 |
-| Wall, far field | slip; characteristic far field, uniform freestream, no point vortex, 148 c away | `MARKER_EULER`; `MARKER_FAR` (same) | none |
+| Wall, far field | slip; characteristic far field 148 c away, uniform freestream at α = 0°, with the point vortex of the lift at c/4 on the lifting conditions ([cases.md](cases.md#naca-0012-inviscid)) | `MARKER_EULER`; `MARKER_FAR`, uniform freestream: SU2 v8.6.0 has no point-vortex correction | on the lifting conditions only; phase 2 also runs Autan's lifting cases without the vortex, so that the two codes solve one problem, while the gates keep Autan's vortex case |
 | Forces | chord 1, area chord × span, moment about (c/4, 0) nose-up | per unit span; nose-up moment = −CMz in 2D, CMy in 3D | none |
 | Convergence | every residual 10 orders below its first value ([case-schema.md](../contracts/case-schema.md#time)) | the same rule, applied by `autan_vv.su2.history` to SU2's history | none: both residuals are the RMS of the integrated flux balances over the control volumes |
 | Solver controls | the defaults of the measured commit | SU2-Roe: `inv_NACA0012_Roe.cfg`: implicit Euler, CFL 30, BiCGSTAB (3 iterations, 10⁻¹) with ILU(0), 3-level W-cycle multigrid. SU2-JST: `inv_NACA0012.cfg`: implicit Euler, CFL 1000, FGMRES (5 iterations, 10⁻³) with LU-SGS, 3-level full multigrid | each code as its developers publish it; identical for every level |
@@ -84,6 +84,45 @@ autan-vv su2 study su2-jst/m080-a125/n* --out m080-a125.json               # cri
 `prepare` writes `OUT/meshes/` and one directory per condition and level with `case.cfg` and `level.json` (`autan.su2-level/1`: scheme, K_SU2, configuration hash, Autan case hash, source mesh hash, conversion record). `study` refuses a run whose configuration or mesh, as hashed when it ran and as on disk, is not the prepared one, or whose SU2 failed (`V0904`), and runs that mix conditions, schemes or SU2 images (`V0905`).
 
 SU2-Roe's K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). In freestream units the threshold ε² = K_SU2³ is 12 at 32², 0.18 at 256² and 0.012 at 1024²; the squared density jump across the M 0.8 shock is about 0.2, so in both codes the limiter barely acts below 256². Autan's threshold uses h³ = V, and on a one-layer slab V includes the span (1 chord here): the same grid with another span limits differently.
+
+## Phase 1: SU2 on the NACA 0012 cases
+
+SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/` (`autan.su2-study/1` per scheme and condition). CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count. Continuum estimates come from the three finest levels.
+
+### SU2-JST, the accuracy reference
+
+| Level | M 0.8, α 0°: it. | CD | M 0.8, α 1.25°: it. | CL | CD | CM | M 0.5, α 1.25°: it. | CL | CD |
+|---|---|---|---|---|---|---|---|---|---|
+| 32² | 560 | 0.002683 | 557 | 0.296699 | 0.014153 | −0.024564 | 273 | 0.155056 | −0.013512 |
+| 64² | 367 | 0.006085 | 389 | 0.337825 | 0.019849 | −0.034309 | 170 | 0.172758 | −0.005328 |
+| 128² | 328 | 0.007504 | 286 | 0.349362 | 0.021546 | −0.037310 | 209 | 0.177844 | −0.001673 |
+| 256² | 409 | 0.008124 | 443 | 0.351659 | 0.022237 | −0.037936 | 268 | 0.179315 | −0.000411 |
+| 512² | 632 | 0.008292 | 670 | 0.352357 | 0.022431 | −0.038119 | 373 | 0.179668 | −0.000087 |
+| 1024² | 1 284 | 0.008329 | 1 402 | 0.352232 | 0.022459 | −0.038070 | 487 | 0.179750 | −0.000011 |
+| Continuum (order) | | 0.008340 (2.15) | | — | 0.022464 (2.77) | — | | 0.179775 (2.11) | +0.000012 (2.10) |
+| Vassberg–Jameson | | 0.008342 | | 0.3516–0.3562 | 0.02268 | | | 0.180346 (FLO82) | → 0 |
+
+- **M 0.8, α 0°:** CD converges at order 2.15 to 0.008340, 0.02 count from the paper: gate passed.
+- **M 0.5, α 1.25°:** the drag of this shock-free flow decreases in magnitude at every level, at order 2.1, to +0.12 count: gate passed. CL converges at order 2.1 to 0.17977, 0.3 % below FLO82's continuum.
+- **M 0.8, α 1.25°:** CD converges at order 2.8 to 0.022464, 2.2 counts below the paper: the one-count gate fails. CL lies in the paper's band from 256² but changes direction between 512² and 1024², so it has no Richardson estimate (`V0107`) and its gate cannot be evaluated. SU2's far field is the uniform freestream, where the paper's lifting values come from point-vortex far-field runs; the missing vortex lowers the circulation the boundary sees and can plausibly account for part or all of the gap, but no run here varies the far field to show it. Autan's lifting cases carry the vortex, so this gate is not a like-for-like check of SU2.
+
+**What this says about the cases.** SU2's reference scheme passes, at second order, the two gates that the far-field circulation hardly affects (the drag at zero lift, and the vanishing drag of the subcritical flow): the meshes, the conditions, the slip wall and the force reference are consistent with the paper. The lifting gate is not tested like for like, since SU2 has no point-vortex far field.
+
+### SU2-Roe, the closest scheme
+
+Roe with the matched limiter threshold, the controls of `inv_NACA0012_Roe.cfg` (`su2-roe/`); the [audit](#fairness-audit) gives the reasons for the differences from SU2-JST.
+
+| Level | M 0.8, α 0°: it. | CD | M 0.8, α 1.25°: it. | CL | CD | CM | M 0.5, α 1.25°: it. | CL | CD |
+|---|---|---|---|---|---|---|---|---|---|
+| 32² | 459 | −0.004477 | 455 | 0.249619 | 0.005854 | −0.014450 | 180 | 0.115582 | −0.020010 |
+| 64² | 451 | 0.008512 | 474 | 0.316844 | 0.021396 | −0.029516 | 195 | 0.152902 | −0.001639 |
+| 128² | 662 | 0.011083 | 683 | 0.344790 | 0.025040 | −0.036798 | 316 | 0.169238 | 0.002933 |
+| 256² | 916 | 0.010440 | 1 381 | 0.352372 | 0.024654 | −0.038565 | 515 | 0.175435 | 0.002505 |
+| 512² | 1 972 | 0.009574 | 2 072 | 0.352651 | 0.023760 | −0.038453 | 1 326 | 0.177912 | 0.001517 |
+| 1024² | stalls at 7.4 orders | 0.009005 | 8 235 | 0.353147 | 0.023198 | −0.038467 | 3 316 | 0.178959 | 0.000831 |
+| Continuum (order) | | — | | — | 0.022246 (0.67) | — | | 0.179728 (1.24) | −0.000732 (0.53) |
+
+No gate passes: at M 0.8, α 0° the 1024² run stalls and the three finest converged levels give no estimate (`V0108`); at M 0.5 the drag falls at order 0.53 and is still 8.3 counts at 1024². With SU2's published `inv_NACA0012_Roe.cfg` run as it is (`su2-published-roe/`, scheme `published:2592a85c…`), M 0.8, α 0° stalls below one order at 128²–512² and M 0.5 gives −14.0, +13.7 and +10.5 counts; the other upwind variants of the audit are in `upwind-variants.json` and the limiter study in `limiter-sensitivity.json`. A rerun of the SU2-Roe campaign from scratch gave the same forces and iteration counts at every level.
 
 ## Tests
 

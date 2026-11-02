@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { Plus, Trash2 } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   type BoundaryForm,
@@ -21,7 +21,7 @@ import {
 import type { Diagnostic } from "../api/contracts";
 import { globEscape, globMatches } from "../api/glob";
 import { type Plan, runQuery } from "../api/runs";
-import { MeshView } from "../components/case/MeshView";
+import { conditionColor, MeshView } from "../components/case/MeshView";
 import { TopBar } from "../components/shell/TopBar";
 import { Button } from "../components/ui/Button";
 import { cn } from "../components/ui/cn";
@@ -52,7 +52,7 @@ const TURBULENCE = [
   { value: "sst", label: "k-ω SST" },
 ] as const;
 const PRECISION = [
-  { value: "fp32+acc64", label: "fp32 + fp64 accumulation" },
+  { value: "fp32+acc64", label: "fp32+acc64" },
   { value: "fp64", label: "fp64" },
 ] as const;
 const KINDS = Object.keys(CONDITIONS).map((kind) => ({
@@ -124,6 +124,32 @@ function CaseEditor() {
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
   const [picked, setPicked] = useState<string | null>(null);
+  // The code beside the stage, which can give its width to the mesh; on a narrow window it
+  // starts hidden. Its tab is kept while it is, and focus goes to the button that undoes.
+  const [codeOpen, setCodeOpen] = useState(() => window.innerWidth >= 1280);
+  const [codeTab, setCodeTab] = useState<string>("python");
+  const showCode = useRef<HTMLButtonElement>(null);
+  const hideCode = useRef<HTMLButtonElement>(null);
+  // The heights of what lies over the stage, as --overlay-top and --overlay-bottom on it: what
+  // is drawn under them (the zone list of a mesh without a 3D view) keeps clear of them.
+  const stage = useRef<HTMLElement>(null);
+  const overlayTop = useRef<HTMLDivElement>(null);
+  const overlayBottom = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const observer = new ResizeObserver(() => {
+      const top = overlayTop.current?.offsetHeight ?? 0;
+      const bottom = overlayBottom.current?.offsetHeight ?? 0;
+      stage.current?.style.setProperty("--overlay-top", `${top}px`);
+      stage.current?.style.setProperty("--overlay-bottom", `${bottom}px`);
+    });
+    for (const element of [overlayTop.current, overlayBottom.current])
+      if (element) observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const toggleCode = (open: boolean) => {
+    setCodeOpen(open);
+    requestAnimationFrame(() => (open ? hideCode : showCode).current?.focus());
+  };
   // After a change of mesh, the rules whose pattern matches none of its zones, offered for
   // removal; rules typed afterwards are the user's own business (the plan reports them).
   const [inherited, setInherited] = useState<{ mesh: string; rules: Set<object> } | null>(null);
@@ -185,6 +211,36 @@ function CaseEditor() {
     setFocusRule(null);
   }, [focusRule]);
 
+  // The freestream is given by a Reynolds number or by a pressure (case-schema.md#freestream,
+  // E0306); an inviscid flow has no Reynolds number to give, unless the case already has one.
+  const [givenBy, setGivenBy] = useState<"re" | "pressure">("re");
+  const inviscid = form.physics.turbulence === "inviscid";
+  const given: "re" | "pressure" = form.freestream.re.trim()
+    ? "re"
+    : form.freestream.pressure.trim() || inviscid
+      ? "pressure"
+      : givenBy;
+  const shown = rendered.data;
+  const uncoveredZones =
+    shown?.ok && shown.plan ? shown.plan.boundaries.filter((b) => b.condition === null).length : 0;
+  const announcement =
+    shown?.ok === false
+      ? "The case is not complete yet."
+      : uncoveredZones > 0
+        ? `${uncoveredZones} ${uncoveredZones === 1 ? "zone" : "zones"} without a condition.`
+        : shown?.plan?.ok
+          ? "The plan is ready."
+          : "";
+  // The condition the plan gives each zone (from a rule or from the mesh's type), once the plan
+  // is the form's own: a plan of the previous mesh or edit colours nothing.
+  const planned = shown?.ok && !rendered.isPlaceholderData && settled === form ? shown.plan : null;
+  const conditions = new Map(
+    (planned?.boundaries ?? []).flatMap((b) =>
+      b.condition ? [[b.zone, b.condition.kind] as const] : [],
+    ),
+  );
+  const byKind = new Map<string, string[]>();
+  for (const [zone, kind] of conditions) byKind.set(kind, [...(byKind.get(kind) ?? []), zone]);
   const set = <K extends keyof CaseForm>(key: K, value: CaseForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
   const setIn = <K extends "physics" | "freestream" | "time">(
@@ -206,10 +262,10 @@ function CaseEditor() {
 
   return (
     <>
-      <TopBar crumbs={[{ label: "Cases" }, { label: "New case" }]} />
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] overflow-hidden">
+      <TopBar crumbs={[{ label: "New case" }]} />
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)] overflow-hidden">
         <form
-          className="flex flex-col gap-8 overflow-auto px-8 py-6"
+          className="flex flex-col gap-8 overflow-auto border-line border-r px-6 py-6"
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
@@ -268,7 +324,7 @@ function CaseEditor() {
                     }));
                   }}
                   options={(meshes.data ?? []).map((m) => ({ value: m.name, label: m.name }))}
-                  placeholder="Choose a MeshInfo…"
+                  placeholder="Choose a mesh…"
                 />
               </Field>
             </Section>
@@ -282,12 +338,12 @@ function CaseEditor() {
                   placeholder="Choose…"
                 />
               </Field>
-              <Field label="Precision">
+              <Field label="Precision" hint="acc64: sums in fp64">
                 <SelectInput
                   value={form.physics.precision as (typeof PRECISION)[number]["value"] | ""}
                   onChange={(v) => setIn("physics", "precision", v)}
                   options={PRECISION}
-                  placeholder="Default (fp32 + fp64 accumulation)"
+                  placeholder="Default (fp32+acc64)"
                 />
               </Field>
               <Field label="Gas">
@@ -384,24 +440,50 @@ function CaseEditor() {
                   units={UNITS.angle}
                 />
               </Field>
-              <Field label="Reynolds number" hint="per reference length">
-                <NumberInput
-                  value={form.freestream.re}
-                  onChange={(v) => setIn("freestream", "re", v)}
-                />
-              </Field>
-              <Field label="Reference length">
+              {(!inviscid || form.freestream.re.trim() !== "") && (
+                <Field label="Given by" className="col-span-2">
+                  <SelectInput
+                    value={given}
+                    onChange={(v) => {
+                      if (!v || v === given) return;
+                      setGivenBy(v);
+                      // The case states exactly one of the two (E0306): the other is cleared.
+                      setForm((f) => ({
+                        ...f,
+                        freestream:
+                          v === "pressure"
+                            ? { ...f.freestream, re: "" }
+                            : { ...f.freestream, pressure: "" },
+                      }));
+                    }}
+                    options={[
+                      { value: "re", label: "Reynolds number" },
+                      { value: "pressure", label: "Pressure" },
+                    ]}
+                  />
+                </Field>
+              )}
+              {given === "re" ? (
+                <Field label="Reynolds number" hint="per reference length">
+                  <NumberInput
+                    value={form.freestream.re}
+                    onChange={(v) => setIn("freestream", "re", v)}
+                  />
+                </Field>
+              ) : (
+                <Field label="Pressure">
+                  <QuantityInput
+                    value={form.freestream.pressure}
+                    onChange={(v) => setIn("freestream", "pressure", v)}
+                    units={UNITS.pressure}
+                  />
+                </Field>
+              )}
+              <Field label="Reference length" hint={given === "re" ? undefined : "for moments"}>
                 <QuantityInput
                   value={form.freestream.ref_length}
                   onChange={(v) => setIn("freestream", "ref_length", v)}
                   units={UNITS.length}
-                />
-              </Field>
-              <Field label="Pressure" hint="optional">
-                <QuantityInput
-                  value={form.freestream.pressure}
-                  onChange={(v) => setIn("freestream", "pressure", v)}
-                  units={UNITS.pressure}
                 />
               </Field>
               <Field label="Temperature" hint="default 288.15 K">
@@ -588,59 +670,110 @@ function CaseEditor() {
           </fieldset>
         </form>
 
-        <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
-          {form.mesh && (
-            <MeshView
-              mesh={form.mesh}
-              zones={zones}
-              selected={picked}
-              onPick={pick}
-              webgl={webgl}
-            />
-          )}
-          {stale.length > 0 && (
-            <Note
-              tone="warning"
-              title={`${stale.length} ${stale.length === 1 ? "rule matches" : "rules match"} no zone of ${form.mesh}`}
-              action={
-                <Button size="sm" onClick={removeStale}>
-                  Remove
-                </Button>
-              }
+        <div className="relative flex min-h-0 min-w-0">
+          {/* The mesh fills the stage; what concerns it lies over it. */}
+          <section
+            ref={stage}
+            className="relative min-w-0 flex-1 overflow-hidden bg-bg-0"
+            data-testid="stage"
+          >
+            {form.mesh ? (
+              <MeshView
+                mesh={form.mesh}
+                zones={zones}
+                conditions={conditions}
+                selected={picked}
+                onPick={pick}
+                webgl={webgl}
+              />
+            ) : (
+              <p className="absolute inset-0 m-0 grid place-items-center text-fg-3 text-sm">
+                Choose a mesh to see its boundary.
+              </p>
+            )}
+            <div
+              ref={overlayTop}
+              className="pointer-events-none absolute inset-x-4 top-4 flex max-h-[45%] max-w-xl flex-col items-start gap-2 overflow-y-auto [&>*]:pointer-events-auto"
             >
-              <span className="font-mono" data-testid="stale-rules">
-                {stale.map((r) => r.zones).join(" · ")}
-              </span>
-            </Note>
-          )}
-          {notice && (
-            <Note tone="info" title="Periodic zone">
-              {notice}
-            </Note>
-          )}
-          {rendered.isError && (
-            <Note tone="error" title="The SDK could not be reached">
-              The code below is from an earlier version of the case: {rendered.error.message}
-            </Note>
-          )}
-          {rendered.data?.ok === false ? (
-            <Diagnostics items={rendered.data.diagnostics} testId="diagnostics" />
-          ) : (
-            <TabsRoot
-              defaultValue="python"
-              className={cn(
-                "flex min-w-0 flex-none flex-col gap-3 transition-opacity",
-                (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
+              {form.mesh && byKind.size > 0 && (
+                <ul
+                  className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1 rounded-lg border border-line bg-glass px-3 py-2 text-fg-2 text-sm backdrop-blur"
+                  data-testid="condition-legend"
+                >
+                  {[...byKind].map(([kind, zoneNames]) => (
+                    <li
+                      key={kind}
+                      className="inline-flex items-center gap-2"
+                      aria-label={`${kind}: ${zoneNames.join(", ")}`}
+                    >
+                      <i
+                        aria-hidden
+                        className="inline-block size-2.5 rounded-sm"
+                        style={{ background: `var(${conditionColor(kind)})` }}
+                      />
+                      {kind}
+                      <span className="font-mono text-fg-3">
+                        {zoneNames.length <= 3 ? zoneNames.join(" ") : `${zoneNames.length} zones`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
+              {stale.length > 0 && (
+                <Note
+                  tone="warning"
+                  title={`${stale.length} ${stale.length === 1 ? "rule matches" : "rules match"} no zone of ${form.mesh}`}
+                  action={
+                    <Button size="sm" onClick={removeStale}>
+                      Remove
+                    </Button>
+                  }
+                >
+                  <span className="font-mono" data-testid="stale-rules">
+                    {stale.map((r) => r.zones).join(" · ")}
+                  </span>
+                </Note>
+              )}
+              {notice && (
+                <Note tone="info" title="Periodic zone">
+                  {notice}
+                </Note>
+              )}
+              {rendered.isError && (
+                <Note tone="error" title="The SDK could not be reached">
+                  The code below is from an earlier version of the case: {rendered.error.message}
+                </Note>
+              )}
+            </div>
+            {/* Mounted for good, so that a screen reader hears what blocks the case as it changes. */}
+            <p role="status" className="sr-only">
+              {announcement}
+            </p>
+            <div
+              ref={overlayBottom}
+              className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2"
             >
-              <div className="flex items-center gap-3">
-                <TabList
-                  tabs={[
-                    { value: "python", label: <span className="font-mono">case.py</span> },
-                    { value: "toml", label: <span className="font-mono">case.toml</span> },
-                  ]}
-                />
-                <span className="text-fg-3 text-sm">written by the SDK</span>
+              <div className="min-w-0">
+                {rendered.data?.ok === false ? (
+                  <div className="pointer-events-auto max-h-[40vh] w-fit max-w-2xl overflow-y-auto rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
+                    <Refusal
+                      diagnostics={rendered.data.diagnostics}
+                      document={caseDocument(form, library)}
+                    />
+                  </div>
+                ) : (
+                  rendered.data?.ok &&
+                  rendered.data.plan && (
+                    <div className="pointer-events-auto max-h-[40vh] w-fit max-w-2xl overflow-y-auto rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
+                      <PlanSummary
+                        plan={rendered.data.plan}
+                        current={!rendered.isPlaceholderData}
+                      />
+                    </div>
+                  )
+                )}
+              </div>
+              <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2 self-end">
                 <CaseActions
                   name={form.name}
                   // Only the case shown, once it is the form's: an edit not yet rendered waits.
@@ -650,19 +783,73 @@ function CaseEditor() {
                       : null
                   }
                 />
+                {!codeOpen && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<PanelRightOpen className="size-4" />}
+                    ref={showCode}
+                    onClick={() => toggleCode(true)}
+                  >
+                    Code
+                  </Button>
+                )}
               </div>
-              <TabPanel value="python" className="min-w-0 outline-none">
-                <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
-              </TabPanel>
-              <TabPanel value="toml" className="min-w-0 outline-none">
-                <Code testId="case-toml" text={rendered.data?.ok ? rendered.data.toml : ""} />
-              </TabPanel>
-            </TabsRoot>
+            </div>
+          </section>
+          {codeOpen && (
+            <aside
+              // Below 1280 px it lies over the stage as a drawer; wider, beside it.
+              className="absolute inset-y-0 right-0 z-10 flex w-[min(30rem,90%)] flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5 shadow-tooltip xl:relative xl:inset-auto xl:z-auto xl:min-h-0 xl:w-[min(30rem,40%)] xl:min-w-[19rem] xl:flex-none xl:shadow-none"
+              aria-label="The case's code"
+              // A drawer over the stage (below 1280 px) closes with Escape, like other drawers.
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && !window.matchMedia("(min-width: 1280px)").matches)
+                  toggleCode(false);
+              }}
+            >
+              <Button
+                size="sm"
+                variant="tertiary"
+                className="absolute top-4 right-4"
+                icon={<PanelRightClose className="size-4" />}
+                ref={hideCode}
+                aria-label="Hide the code"
+                onClick={() => toggleCode(false)}
+              />
+              {rendered.data?.ok === false ? (
+                <p className="m-0 pr-10 text-fg-3 text-sm">
+                  No code while the SDK refuses the case.
+                </p>
+              ) : (
+                <TabsRoot
+                  value={codeTab}
+                  onValueChange={(v) => setCodeTab(String(v))}
+                  className={cn(
+                    "flex min-w-0 flex-none flex-col gap-3 transition-opacity",
+                    (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
+                  )}
+                >
+                  <div className="flex items-center gap-3 pr-10">
+                    <TabList
+                      tabs={[
+                        { value: "python", label: <span className="font-mono">case.py</span> },
+                        { value: "toml", label: <span className="font-mono">case.toml</span> },
+                      ]}
+                    />
+                    <span className="truncate text-fg-3 text-sm">written by the SDK</span>
+                  </div>
+                  <TabPanel value="python" className="min-w-0 outline-none">
+                    <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
+                  </TabPanel>
+                  <TabPanel value="toml" className="min-w-0 outline-none">
+                    <Code testId="case-toml" text={rendered.data?.ok ? rendered.data.toml : ""} />
+                  </TabPanel>
+                </TabsRoot>
+              )}
+            </aside>
           )}
-          {rendered.data?.ok && rendered.data.plan && (
-            <PlanSummary plan={rendered.data.plan} current={!rendered.isPlaceholderData} />
-          )}
-        </aside>
+        </div>
       </div>
     </>
   );
@@ -808,7 +995,7 @@ function CaseActions({
     URL.revokeObjectURL(link.href);
   };
   return (
-    <span className="ml-auto flex items-center gap-2">
+    <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
       <span role="status" className="text-danger text-sm">
         {copied === "refused" && "The clipboard refused: select the code instead."}
       </span>
@@ -841,19 +1028,80 @@ function PlanSummary({ plan, current }: { plan: Plan; current: boolean }) {
         </span>
       </h2>
       {uncovered.length > 0 && (
-        <p className="m-0 font-mono text-fg-2 text-sm">
-          {uncovered.map((b) => b.zone).join(" · ")}
+        <p className="m-0 text-fg-2 text-sm" data-testid="uncovered">
+          {uncovered.length} {uncovered.length === 1 ? "zone" : "zones"} without a condition:{" "}
+          <span className="font-mono">{uncovered.map((b) => b.zone).join(" · ")}</span>
         </p>
       )}
-      <p className="m-0 text-fg-3 text-sm">
-        Planned against the MeshInfo; the mesh file itself is read when the case runs.
-      </p>
       <Diagnostics
-        // The editor plans without the mesh file by design: W0205 says so of every case.
-        items={plan.diagnostics.filter((d) => !(d.code === "W0205" && d.location?.path === "mesh"))}
+        // The editor plans without the mesh file by design: W0205 says so of every case. E0412,
+        // one per zone without a condition, is the line above.
+        items={plan.diagnostics.filter(
+          (d) => !(d.code === "W0205" && d.location?.path === "mesh") && d.code !== "E0412",
+        )}
         testId="plan-diagnostics"
       />
     </section>
+  );
+}
+
+// What the editor calls a setting, from its path in the case document.
+const LABELS: Record<string, string> = {
+  name: "Name",
+  mesh: "Mesh",
+  "physics.turbulence": "Turbulence",
+  "freestream.mach": "Mach",
+  "freestream.ref_length": "Reference length",
+  freestream: "Reynolds number or pressure",
+};
+const OWNERS = { boundaries: "boundary rule", cell_zones: "cell zone", monitors: "monitor" };
+function label(path: string): string {
+  const known = LABELS[path];
+  if (known) return known;
+  const owned = /^(boundaries|cell_zones|monitors)\[(\d+)\]/.exec(path);
+  const leaf = (path.split(".").pop() ?? path).replaceAll("_", " ");
+  return owned
+    ? `${OWNERS[owned[1] as keyof typeof OWNERS]} ${Number(owned[2]) + 1} ${leaf}`
+    : leaf.charAt(0).toUpperCase() + leaf.slice(1);
+}
+
+// The value at a diagnostic's path in the case document; unset when absent or empty.
+function isSet(document: CaseDocument, path: string): boolean {
+  let value: unknown = document;
+  for (const part of path.split(/\.|\[(\d+)\]/).filter(Boolean)) {
+    value =
+      value !== null && typeof value === "object"
+        ? (value as Record<string, unknown>)[part]
+        : undefined;
+  }
+  if (value === undefined || value === "") return false;
+  return typeof value !== "object" || value === null || Object.keys(value).length > 0;
+}
+
+/** Why the SDK refuses the case: the settings still to fill in, in a line, and the problems
+ * with what was set, each with its code. Nothing alarming before anything was typed. */
+function Refusal({ diagnostics, document }: { diagnostics: Diagnostic[]; document: CaseDocument }) {
+  // A setting not given yet is to be set, not an error; "freestream" is the choice of
+  // Reynolds number or pressure, pending while neither is given.
+  const pending = (d: Diagnostic) => {
+    const path = d.location?.path;
+    if (path === undefined) return false;
+    if (path === "freestream")
+      return !isSet(document, "freestream.re") && !isSet(document, "freestream.pressure");
+    return !isSet(document, path);
+  };
+  const missing = [
+    ...new Set(diagnostics.filter(pending).map((d) => label(d.location?.path ?? ""))),
+  ];
+  return (
+    <div className="flex flex-col gap-2">
+      {missing.length > 0 && (
+        <p className="m-0 text-fg-2 text-sm" data-testid="still-to-set">
+          Still to set: {missing.join(" · ")}
+        </p>
+      )}
+      <Diagnostics items={diagnostics.filter((d) => !pending(d))} testId="diagnostics" />
+    </div>
   );
 }
 
