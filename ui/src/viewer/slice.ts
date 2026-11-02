@@ -8,13 +8,13 @@ export type Axis = "x" | "y" | "z";
 const ROUNDING = 4 * 2 ** -24;
 const INSET = 1e-6;
 
-/** The plane normal to `axis` at the fraction `at` (0 to 1) of the surface's extent along it,
- * through the middle of the other two; its ends are kept just inside the extent. */
-export function slicePlane(
-  surface: Surface,
-  axis: Axis,
-  at: number,
-): { origin: number[]; normal: number[] } {
+const known = new WeakMap<Surface, { min: number[]; max: number[]; offset: number[] }>();
+
+/** The surface's extent in absolute coordinates, and the largest offset from its origin along
+ * each axis; read once per surface. */
+export function bounds(surface: Surface): { min: number[]; max: number[]; offset: number[] } {
+  const cached = known.get(surface);
+  if (cached) return cached;
   const min = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
   const max = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY];
   const p = surface.positions;
@@ -26,6 +26,19 @@ export function slicePlane(
       if (v < (min[k] as number)) min[k] = v;
       if (v > (max[k] as number)) max[k] = v;
     }
+  const found = { min, max, offset };
+  known.set(surface, found);
+  return found;
+}
+
+/** The plane normal to `axis` at the fraction `at` (0 to 1) of the surface's extent along it,
+ * through the middle of the other two; its ends are kept just inside the extent. */
+export function slicePlane(
+  surface: Surface,
+  axis: Axis,
+  at: number,
+): { origin: number[]; normal: number[] } {
+  const { min, max, offset } = bounds(surface);
   const k = "xyz".indexOf(axis);
   const origin = min.map((low, j) => (low + (max[j] as number)) / 2);
   const low = min[k] as number;
