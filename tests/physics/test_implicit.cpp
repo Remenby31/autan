@@ -415,4 +415,33 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
     blocks_differ += !same(mb.lower(f), reversed[f] != 0 ? ma.upper(fa) : ma.lower(fa));
   }
   CHECK(blocks_differ == 0);
+  // Gauss-Seidel sweeps a row's blocks in global face order (BlockMatrix::order_rows), over
+  // colours given by global id: the update keeps its bits too.
+  ma.order_rows(keys_a);
+  mb.order_rows(keys_b);
+  ma.factor();
+  mb.factor();
+  std::vector<std::size_t> local(nc);
+  for (std::size_t c = 0; c < nc; ++c) local[cell(c)] = c;
+  std::vector<std::vector<std::size_t>> colours_a(4), colours_b(4);
+  for (std::size_t c = 0; c < nc; ++c) {
+    colours_a[c % 4].push_back(c);
+    colours_b[c % 4].push_back(local[c]);
+  }
+  std::vector<double> rhs_a(5 * nc), rhs_b(5 * nc), xa(5 * nc, 0.0), xb(5 * nc, 0.0);
+  for (std::size_t i = 0; i < 5 * nc; ++i) rhs_a[i] = -static_cast<double>(ra[i]);
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (std::size_t k = 0; k < 5; ++k) rhs_b[k * nc + c] = rhs_a[k * nc + cell(c)];
+  }
+  const auto none = [](std::span<double>) {};
+  ma.gauss_seidel(rhs_a, xa, 2, colours_a, none);
+  mb.gauss_seidel(rhs_b, xb, 2, colours_b, none);
+  REQUIRE(std::ranges::all_of(xa, [](double x) { return std::isfinite(x); }));
+  std::size_t update_differs = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (std::size_t k = 0; k < 5; ++k) {
+      update_differs += bits_differ(xb[k * nc + c], xa[k * nc + cell(c)]);
+    }
+  }
+  CHECK(update_differs == 0);
 }
