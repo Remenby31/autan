@@ -684,15 +684,12 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
   const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
   const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
   REQUIRE(o.status == ExitStatus::finished);
-  // The device figures are sampled over the whole device, which other
-  // processes share (unified memory): only their shape is certain here.
+  // The physics' device arrays are counted from its construction on.
   const Json memory = memory_event(o.run);
   const auto peak = memory["device_peak_bytes"].get<std::int64_t>();
-  CHECK(peak >= 0);
+  CHECK(memory["after_setup"]["device"].get<std::int64_t>() > 0);
   CHECK(memory["after_setup"]["device"].get<std::int64_t>() <= peak);
   CHECK(memory["device_peak_bytes_by_rank"] == Json::array({peak}));
-  // Once the stream exists, the process's resident memory is positive.
-  CHECK(memory["host_at_device_start_bytes_by_rank"][0].get<std::int64_t>() > 0);
   std::ifstream log_in(o.run / "log.jsonl");
   Json ready, cuda;
   for (std::string line; std::getline(log_in, line);) {
@@ -2167,7 +2164,6 @@ TEST_CASE("A run logs the memory it used", "[runtime]") {
   CHECK(memory["host_peak_bytes_by_rank"] == Json::array({host}));
   CHECK(memory["device_peak_bytes"] == 0);
   CHECK(memory["device_peak_bytes_by_rank"] == Json::array({0}));
-  CHECK(memory["host_at_device_start_bytes_by_rank"] == Json::array({0}));
 }
 
 TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime][unit]") {

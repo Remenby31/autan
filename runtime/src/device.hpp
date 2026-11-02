@@ -25,7 +25,7 @@ class Gpu {
   [[nodiscard]] const std::string& name() const noexcept { return name_; }
   /// The device memory this process's allocators hold now (autan::device_memory): not the
   /// driver's free memory, which on a unified-memory device (GB10) is the whole host's (#411).
-  std::int64_t sample() noexcept;
+  [[nodiscard]] std::int64_t sample() const noexcept;
   /// The most device memory those allocators ever held at once: the exact peak.
   [[nodiscard]] std::int64_t peak() const noexcept;
 

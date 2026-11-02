@@ -53,7 +53,7 @@ Gpu::~Gpu() = default;
 
 #endif
 
-std::int64_t Gpu::sample() noexcept { return device_memory::current(); }
+std::int64_t Gpu::sample() const noexcept { return device_memory::current(); }
 
 std::int64_t Gpu::peak() const noexcept { return device_memory::peak(); }
 
