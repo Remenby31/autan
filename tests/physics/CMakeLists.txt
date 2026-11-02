@@ -9,6 +9,8 @@ target_compile_definitions(
     AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
     AUTAN_EULER_MMS="${PROJECT_SOURCE_DIR}/py/tests/fixtures/euler.mms.json"
 )
+# The generated loops' data, which Euler::data() returns.
+target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/physics/generated)
 catch_discover_tests(autan_physics_tests)
 
 # The Euler residual on the generated Metal loops against the CPU physics (macOS).

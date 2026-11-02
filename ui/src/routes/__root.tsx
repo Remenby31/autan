@@ -1,33 +1,77 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
+import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
+import { SearchX } from "lucide-react";
 import { MotionConfig } from "motion/react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRegistrySubscription } from "../api/runs";
 import { CommandPalette } from "../components/CommandPalette";
+import { NavDrawer } from "../components/shell/nav";
 import { Sidebar } from "../components/shell/Sidebar";
+import { TopBar } from "../components/shell/TopBar";
 import { useTheme } from "../components/shell/theme";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
 import { ToastProvider } from "../components/ui/Toast";
 import { TooltipProvider } from "../components/ui/Tooltip";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
+  notFoundComponent: NotFound,
 });
+
+function NotFound() {
+  return (
+    <>
+      <TopBar crumbs={[{ label: "Not found" }]} />
+      <div className="flex flex-1 items-start justify-center px-8 py-16" data-testid="not-found">
+        <EmptyState
+          icon={<SearchX className="size-5" />}
+          title="Nothing here"
+          description="This address is not a page of Autan."
+        >
+          <Link to="/" className="self-center">
+            <Button>Go to Runs</Button>
+          </Link>
+        </EmptyState>
+      </div>
+    </>
+  );
+}
 
 function Root() {
   useRegistrySubscription();
   useTheme();
   const [find, setFind] = useState(false);
+  const [nav, setNav] = useState(false);
+  const closeNav = useCallback(() => setNav(false), []);
+  // The drawer exists below 768 px only: wider, it closes, and the page behind is live again.
+  useEffect(() => {
+    const wide = window.matchMedia("(min-width: 768px)");
+    const onChange = () => {
+      if (wide.matches) setNav(false);
+    };
+    wide.addEventListener("change", onChange);
+    return () => wide.removeEventListener("change", onChange);
+  }, []);
+  // ⌘K opens over everything: the drawer closes first, so Escape then closes the palette.
+  const openFind = useCallback((open: boolean) => {
+    if (open) setNav(false);
+    setFind(open);
+  }, []);
   return (
     <MotionConfig reducedMotion="user" transition={{ duration: 0.12 }}>
       <TooltipProvider delay={400}>
         <ToastProvider>
-          <div className="flex h-full">
-            <Sidebar onFind={() => setFind(true)} />
-            <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1">
-              <Outlet />
-            </main>
-          </div>
-          <CommandPalette open={find} onOpenChange={setFind} />
+          <NavDrawer.Provider value={{ open: nav, openNav: () => setNav(true) }}>
+            <div className="flex h-full">
+              <Sidebar onFind={() => openFind(true)} open={nav} onClose={closeNav} />
+              {/* Behind the open drawer, the page takes neither focus nor pointer. */}
+              <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1" inert={nav}>
+                <Outlet />
+              </main>
+            </div>
+          </NavDrawer.Provider>
+          <CommandPalette open={find} onOpenChange={openFind} />
         </ToastProvider>
       </TooltipProvider>
     </MotionConfig>

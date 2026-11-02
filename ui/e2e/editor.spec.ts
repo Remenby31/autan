@@ -216,6 +216,7 @@ test("the heat exchanger built in the editor writes py/examples/heat_exchanger.p
   await page.getByLabel("Turbulence").selectOption("sst");
   await page.getByLabel("Mach").fill("0.1");
   await page.getByLabel("Temperature", { exact: true }).fill("300.0");
+  await page.getByLabel("Given by").selectOption("pressure");
   await page.getByLabel("Pressure", { exact: true }).fill("101325.0");
   await cellZone(page, 1, "co2", "fluid", "CO2");
   await cellZone(page, 2, "plate", "solid", "COPPER");
@@ -384,7 +385,9 @@ test("a clipboard that refuses the copy says so", async ({ page }) => {
   await expect(page.getByRole("status").filter({ hasText: "clipboard" })).toBeVisible();
 });
 
-test("the plan sits below the code, and its status counts its errors", async ({ page }) => {
+test("the plan lies over the mesh, clear of the code, and its status counts its errors", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/cases/new");
   await page.getByLabel("Name").fill("box");
@@ -395,12 +398,75 @@ test("the plan sits below the code, and its status counts its errors", async ({ 
 
   const plan = page.getByTestId("plan");
   await expect(page.getByTestId("plan-status")).toContainText("refused");
-  const errors = await page.getByTestId("plan-diagnostics").getByRole("alert").count();
-  await expect(page.getByTestId("plan-status")).toHaveText(`refused: ${errors} errors`);
+  // One error per note, and one per zone on the line of zones without a condition (E0412).
+  const notes = await page.getByTestId("plan-diagnostics").getByRole("alert").count();
+  const uncovered = Number((await page.getByTestId("uncovered").textContent())?.split(" ")[0]);
+  await expect(page.getByTestId("plan-status")).toHaveText(`refused: ${notes + uncovered} errors`);
   const code = await page.getByTestId("case-py").boundingBox();
   const status = await plan.boundingBox();
-  if (!code || !status) throw new Error("the code or the plan is not laid out");
-  expect(status.y).toBeGreaterThanOrEqual(code.y + code.height);
+  const stage = await page.getByTestId("stage").boundingBox();
+  if (!code || !status || !stage)
+    throw new Error("the code, the plan or the stage is not laid out");
+  expect(status.x + status.width).toBeLessThanOrEqual(code.x);
+  expect(status.x).toBeGreaterThanOrEqual(stage.x);
+  expect(status.y + status.height).toBeLessThanOrEqual(stage.y + stage.height);
+});
+
+test("the mesh fills the stage, and the code gives it its width", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/cases/new");
+  await expect(page.getByTestId("stage")).toContainText("Choose a mesh");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+  const fills = async () => {
+    const stage = await page.getByTestId("stage").boundingBox();
+    const box = await view.boundingBox();
+    return { stage, box };
+  };
+  const before = await fills();
+  expect(before.box?.width).toBeCloseTo(before.stage?.width ?? 0, 0);
+  expect(before.box?.height).toBeCloseTo(before.stage?.height ?? 0, 0);
+
+  const code = page.getByRole("complementary", { name: "The case's code" });
+  await expect(code).toBeVisible();
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await expect(code).toHaveCount(0);
+  await expect
+    .poll(async () => (await fills()).box?.width ?? 0)
+    .toBeGreaterThan((before.box?.width ?? 0) + 200);
+  // From the keyboard, focus lands on the button that undoes; the chosen tab is kept.
+  await expect(page.getByRole("button", { name: "Code", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(code).toBeVisible();
+  await expect(page.getByRole("button", { name: "Hide the code" })).toBeFocused();
+
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mach").fill("0.3");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+  await page.getByRole("tab", { name: "case.toml" }).click();
+  await expect(page.getByTestId("case-toml")).toBeVisible();
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(page.getByTestId("case-toml")).toBeVisible();
+
+  // What the SDK refuses shows on the stage, the code hidden or not.
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await page.getByLabel("Mach").fill("-1");
+  await expect(page.getByTestId("stage")).toContainText("E0304");
+
+  // A narrow window starts with the mesh alone; the code opens over it, the actions reachable.
+  await page.setViewportSize({ width: 960, height: 768 });
+  await page.goto("/cases/new");
+  await expect(page.getByRole("button", { name: "Code", exact: true })).toBeVisible();
+  await expect(code).toHaveCount(0);
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(code).toBeVisible();
+  await expect(page.getByRole("button", { name: "Hide the code" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(code).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy case.py" })).toBeInViewport();
 });
 
 test("rules a new mesh does not have are offered for removal", async ({ page }) => {
@@ -448,4 +514,110 @@ test("a mesh without a 3D view lists its zones to pick from", async ({ page }) =
   const rule = page.getByRole("group", { name: "Boundary rule 1" });
   await expect(rule.getByLabel("Zones")).toHaveValue("symmetry");
   await expect(rule.getByLabel("Condition")).toHaveValue("symmetry");
+
+  // However tall the refusal laid over the stage, the last zone scrolls clear of it.
+  await page.setViewportSize({ width: 860, height: 600 });
+  for (const label of ["Mach", "Reynolds number"]) {
+    await page.getByLabel(label, { exact: true }).fill("-1");
+  }
+  await expect(page.getByTestId("stage")).toContainText("E0304");
+  const last = list.getByRole("button").last();
+  await last.evaluate((el) => el.closest(".overflow-auto")?.scrollTo(0, 1e6));
+  await expect
+    .poll(async () => {
+      const button = await last.boundingBox();
+      const stage = await page.getByTestId("stage").boundingBox();
+      const cover = await page
+        .getByTestId("stage")
+        .evaluate((el) =>
+          Number.parseFloat(getComputedStyle(el).getPropertyValue("--overlay-bottom")),
+        );
+      if (!button || !stage) return false;
+      return button.y + button.height <= stage.y + stage.height - 16 - cover;
+    })
+    .toBe(true);
+});
+
+test("a new case asks for what it lacks before showing errors", async ({ page }) => {
+  await page.goto("/cases/new");
+  // Nothing typed yet: what the SDK requires (case-schema.md), not its errors.
+  await expect(page.getByTestId("still-to-set")).toHaveText(
+    "Still to set: Name · Mesh · Turbulence",
+  );
+  await expect(page.getByTestId("diagnostics").getByRole("alert")).toHaveCount(0);
+
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("hybrid-cgns");
+  await page.getByLabel("Turbulence").selectOption("sa");
+  await page.getByLabel("Mach").fill("0.3");
+  await expect(page.getByTestId("still-to-set")).toHaveText(
+    "Still to set: Reynolds number or pressure",
+  );
+  // A value set and refused is an error at once.
+  await page.getByLabel("Mach").fill("-0.3");
+  await expect(page.getByTestId("diagnostics")).toContainText("freestream.mach");
+  await page.getByLabel("Mach").fill("0.3");
+
+  // A Reynolds number needs its reference length (E0306): still to set, not an error.
+  await page.getByLabel("Reynolds number", { exact: true }).fill("1000000");
+  await expect(page.getByTestId("still-to-set")).toHaveText("Still to set: Reference length");
+  await expect(page.getByTestId("diagnostics").getByRole("alert")).toHaveCount(0);
+  await page.getByLabel("Reference length", { exact: true }).fill("1");
+  // Inviscid with a Reynolds number already given: the choice stays, to give a pressure.
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await expect(page.getByLabel("Given by")).toBeVisible();
+  await page.getByLabel("Turbulence").selectOption("sa");
+  // One of Reynolds number and pressure (E0306): choosing one clears the other; the reference
+  // length stays, the moments need it.
+  await page.getByLabel("Given by").selectOption("pressure");
+  await expect(page.getByLabel("Reference length", { exact: true })).toHaveValue("1");
+  await expect(page.getByLabel("Reynolds number", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+  await expect(page.getByTestId("case-py")).toContainText("pressure=101325");
+  expect(await page.getByTestId("case-py").textContent()).not.toMatch(/\bre=/);
+  // An inviscid flow has no Reynolds number to give.
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await expect(page.getByLabel("Given by")).toHaveCount(0);
+
+  // Zones without a condition are one line, not one error each.
+  await expect(page.getByTestId("uncovered")).toContainText("6 zones without a condition");
+  await expect(page.getByRole("status").filter({ hasText: "without a condition" })).toHaveText(
+    "6 zones without a condition.",
+  );
+  await expect(page.getByTestId("plan-diagnostics")).not.toContainText("E0412");
+});
+
+test("zones take the colour of their condition in 3D", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await page.getByLabel("Turbulence").selectOption("sa");
+  await page.getByLabel("Mach").fill("0.3");
+  await page.getByLabel("Reynolds number", { exact: true }).fill("1000000");
+  await page.getByLabel("Reference length", { exact: true }).fill("1");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+  const box = await view.boundingBox();
+  if (!box) throw new Error("the mesh view has no box");
+  // The middle of the default view is zone ymin (SurfaceViewer frameAll), which the MeshInfo
+  // types as a wall: the plan gives it that condition before any rule.
+  const centre = {
+    x: box.x + box.width / 2 - 2,
+    y: box.y + box.height / 2 - 2,
+    width: 4,
+    height: 4,
+  };
+  // Which zone has which condition is said in words too: polyMesh types zmax as a symmetry.
+  await expect(page.getByLabel("symmetry: zmax")).toBeVisible();
+  await expect(page.getByLabel("wall: ymin")).toBeVisible();
+  await expect(page.getByTestId("condition-legend")).not.toContainText("slip");
+  const wall = await page.screenshot({ clip: centre });
+
+  await rule(page, 1, "ymin", "slip");
+  await expect(page.getByTestId("condition-legend")).toContainText("slip");
+  await expect.poll(async () => (await page.screenshot({ clip: centre })).equals(wall)).toBe(false);
+
+  await page.getByRole("button", { name: "Remove boundary rule 1" }).click();
+  await expect(page.getByTestId("condition-legend")).not.toContainText("slip");
+  await expect.poll(async () => (await page.screenshot({ clip: centre })).equals(wall)).toBe(true);
 });

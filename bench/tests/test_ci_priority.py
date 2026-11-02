@@ -7,9 +7,13 @@ import time
 from pathlib import Path
 
 import pytest
+from autan_bench import gpu
+from autan_bench.errors import Code
 
 ROOT = Path(__file__).parents[1]
 WRAPPER = ROOT / "lock" / "autan-gpu-lock"
+# The default memory floor (24 GiB) is a Spark's; a test host may have less memory in all.
+NO_FLOOR = ["-f", "0G"]
 PRIORITY = ROOT / "ci" / "priority.sh"
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="flock(1) and /proc are Linux's")
 
@@ -17,7 +21,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="flock(1) and /p
 @pytest.fixture
 def spark(tmp_path: Path) -> dict[str, str]:
     """A lock directory as deploy.sh prepares it, and the environment of an agent outside CI."""
-    for name in ("gpu.lock", "ci.lock", "main.lock", "holders.log"):
+    for name in ("gpu.lock", "ci.lock", "main.lock", "turn.lock", "holders.log"):
         (tmp_path / name).touch()
     env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_ACTIONS", "GITHUB_REF")}
     env |= {"AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock"), "RUNNER_TEMP": str(tmp_path)}
@@ -25,7 +29,17 @@ def spark(tmp_path: Path) -> dict[str, str]:
 
 
 def agent(env: dict[str, str], line: str, order: Path, *args: str) -> subprocess.Popen:
-    cmd = [str(WRAPPER), "-m", "agent", *args, "--", "sh", "-c", f"echo {line} >> {order}"]
+    cmd = [
+        str(WRAPPER),
+        *NO_FLOOR,
+        "-m",
+        "agent",
+        *args,
+        "--",
+        "sh",
+        "-c",
+        f"echo {line} >> {order}",
+    ]
     return subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)
 
 
@@ -52,7 +66,7 @@ def test_an_agent_waiting_with_ci_goes_after_ci(spark, tmp_path):
     order = tmp_path / "order"
     # Someone holds the GPU; CI announces itself and queues; an agent queues after it.
     hold = ["--", "sh", "-c", f"echo first >> {order}; sleep 1"]
-    first = subprocess.Popen([str(WRAPPER), "-m", "first", *hold], env=spark)
+    first = subprocess.Popen([str(WRAPPER), *NO_FLOOR, "-m", "first", *hold], env=spark)
     time.sleep(0.3)
     priority(spark, "start", "5")
     ci = ci_step(spark, order)
@@ -98,7 +112,8 @@ def test_a_self_locking_command_waits_for_ci_then_takes_the_lock_itself(spark, t
     lock = spark["AUTAN_GPU_LOCK"]
     priority(spark, "start", "5")
     take = f"flock -n {lock} sh -c 'echo agent >> {order}'"
-    proc = subprocess.Popen([str(WRAPPER), "-n", "-m", "agent", "--", "sh", "-c", take], env=spark)
+    proc = subprocess.Popen([str(WRAPPER), *NO_FLOOR, "-n", "-m", "agent", "--", "sh", "-c", take],
+                            env=spark)  # fmt: skip
     time.sleep(1)
     assert proc.poll() is None
     ci = ci_step(spark, order)
@@ -110,6 +125,240 @@ def test_a_self_locking_command_waits_for_ci_then_takes_the_lock_itself(spark, t
 
 
 GUARD = ROOT / "lock" / "autan-gpu-guard"
+
+
+PR_REF = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/pull/7/merge"}
+MAIN_REF = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main"}
+
+
+def test_an_agent_that_waited_long_enough_takes_a_turn_past_pull_requests_not_past_main(
+    spark, tmp_path
+):
+    # The fairness delay (600 s on the Sparks) shortened to 2 s. A pull request's job holds
+    # ci.lock for all of its duration: after 2 s the agent takes a turn anyway, recorded.
+    order = tmp_path / "order"
+    fair = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "2"}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        start = time.monotonic()
+        waiting = agent(fair, "agent", order)
+        assert waiting.wait(timeout=20) == 0
+        assert 2 <= time.monotonic() - start < 6
+        assert events(spark)[:5] == ["wait", "yield", "fair", "bypass", "take"]
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    # A job on main holds main.lock too: an agent, however long it has waited and with a turn
+    # free (the first one's 2 s cooldown is over within its 5 s), still yields.
+    priority({**spark, **MAIN_REF}, "start", "30")
+    try:
+        held_back = agent(fair, "late", order, "-w", "5")
+        assert held_back.wait(timeout=20) == 75
+        assert lines(order) == ["agent"]
+        assert events(spark).count("bypass") == 1
+    finally:
+        priority({**spark, **MAIN_REF}, "stop")
+
+
+def test_turns_are_one_at_a_time_and_ci_gets_the_gpu_after_each(spark, tmp_path):
+    # Two agents wait behind a pull request's job; with a 2 s delay, a turn is followed by a 2 s
+    # cooldown. The first takes a turn and holds 1 s, while a CI step queues: CI goes next, and
+    # the second agent only once the cooldown has passed.
+    order = tmp_path / "order"
+    fair = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "2"}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        start = time.monotonic()
+        agents = [
+            subprocess.Popen(
+                [
+                    str(WRAPPER),
+                    *NO_FLOOR,
+                    "-m",
+                    name,
+                    "--",
+                    "sh",
+                    "-c",
+                    f"echo {name} >> {order}; sleep 1",
+                ],
+                env=fair,
+                stderr=subprocess.PIPE,
+            )
+            for name in ("a", "b")
+        ]
+        while not order.exists() and time.monotonic() - start < 10:
+            time.sleep(0.05)
+        ci = ci_step(spark, order)
+        assert ci.wait(timeout=20) == 0
+        done = []
+        for proc in agents:
+            assert proc.wait(timeout=30) == 0
+            done.append(time.monotonic() - start)
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    first, second = lines(order)[0], lines(order)[2]
+    assert lines(order) == [first, "ci", second]
+    assert {first, second} == {"a", "b"}
+    assert events(spark).count("bypass") == 2
+    # The first turn: 2 s of waiting, 1 s held; the second starts after the 2 s cooldown and
+    # holds 1 s (without the cooldown, it would be done at about 4.3 s).
+    assert max(done) >= 2 + 1 + 2 + 0.5
+
+
+def test_autan_gpu_lock_n_hands_its_turn_to_autan_bench(spark):
+    # -n runs autan-bench, which takes the lock again itself: during the wrapper's turn, it does
+    # not yield to the pull request's CI either.
+    fair = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "2"}
+    lock = spark["AUTAN_GPU_LOCK"]
+    bench = (
+        "from pathlib import Path; from autan_bench import gpu\n"
+        f"with gpu.gpu_lock(Path({lock!r}), timeout_s=3) as waited: print(f'waited {{waited:.1f}}')"
+    )
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        run = subprocess.run(
+            [str(WRAPPER), *NO_FLOOR, "-m", "agent", "-n", "--", sys.executable, "-c", bench],
+            env=fair, capture_output=True, text=True, timeout=30, check=False,
+        )  # fmt: skip
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    assert run.returncode == 0, run.stderr
+    assert "bypass" in events(spark)
+
+
+def test_a_fair_n_waits_for_a_turn_even_without_ci(spark, tmp_path):
+    # Another agent's turn (or its cooldown) holds turn.lock for 3 s and no CI waits: an aged -n
+    # still waits for a turn, so that its command never runs without one and yields to a CI job
+    # that comes between two measurements.
+    order = tmp_path / "order"
+    now_fair = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "0"}
+    other = subprocess.Popen(["flock", str(Path(spark["AUTAN_GPU_LOCK"]).parent / "turn.lock"),
+                              "sleep", "3"])  # fmt: skip
+    try:
+        time.sleep(0.5)
+        start = time.monotonic()
+        told = agent(now_fair, '"told=$AUTAN_GPU_LOCK_BYPASS"', order, "-n")
+        assert told.wait(timeout=20) == 0
+        assert time.monotonic() - start >= 2
+    finally:
+        other.wait(timeout=10)
+    assert lines(order) == ["told=1"]
+
+
+def test_a_turn_reaches_autan_bench_inside_docker_run(spark, tmp_path):
+    # The docker client does not pass its environment into the container: the wrapper adds it.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(f'#!/bin/sh\necho "$@" > {tmp_path / "args"}\n')
+    docker.chmod(0o755)
+    env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "0", "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        run = subprocess.run(
+            [str(WRAPPER), *NO_FLOOR, "-m", "agent", "-n", "--", "docker", "run", "img",
+             "autan-bench", "stream"],
+            env=env, capture_output=True, text=True, timeout=30, check=False,
+        )  # fmt: skip
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    assert run.returncode == 0, run.stderr
+    assert "--env=AUTAN_GPU_LOCK_BYPASS=1" in (tmp_path / "args").read_text().split()
+
+
+def test_a_turn_s_hold_counts_from_its_start_memory_wait_included(spark, tmp_path):
+    # CI's bound is the hold in progress and one turn of at most -t: with -n, a turn's 2 s of
+    # waiting for memory are taken from its -t 6 (TERM 3 s before the limit), so a 2 s command
+    # overruns; outside a turn, -n counts from the command's start, and it would finish.
+    meminfo = tmp_path / "meminfo"
+
+    def available(gib: int) -> None:
+        tmp = meminfo.with_suffix(".tmp")
+        tmp.write_text(f"MemTotal: {128 << 20} kB\nMemAvailable: {gib << 20} kB\n")
+        tmp.replace(meminfo)
+
+    available(5)
+    env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "0", "AUTAN_MEMINFO": str(meminfo)}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        turn = subprocess.Popen(
+            [str(WRAPPER), "-f", "10G", "-r", "30", "-t", "6", "-m", "agent", "-n", "--",
+             "sleep", "2"],
+            env=env, stderr=subprocess.PIPE,
+        )  # fmt: skip
+        time.sleep(2)
+        available(20)
+        assert turn.wait(timeout=30) == 124
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    assert "bypass" in events(spark)
+
+
+def test_a_turn_s_memory_wait_ends_within_its_hold(spark, tmp_path):
+    # Memory that never comes back: a turn (-t 6, TERM 3 s before) refuses within its hold,
+    # not after -r's 30 s, which would take the time CI is promised.
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal: {128 << 20} kB\nMemAvailable: {5 << 20} kB\n")
+    env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "0", "AUTAN_MEMINFO": str(meminfo)}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        start = time.monotonic()
+        turn = subprocess.run(
+            [str(WRAPPER), "-f", "10G", "-r", "30", "-t", "6", "-m", "agent", "-n", "--", "true"],
+            env=env, capture_output=True, timeout=60, check=False,
+        )  # fmt: skip
+        assert turn.returncode == 71
+        assert time.monotonic() - start < 6
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+
+
+def test_a_turn_s_cooldown_survives_a_failed_sleeper(spark):
+    # No `sleep` to start (an empty PATH): the wrapper keeps the turn's lock for the cooldown
+    # itself, so that no other turn follows at once.
+    env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "3", "PATH": ""}
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        start = time.monotonic()
+        turn = subprocess.Popen([sys.executable, str(WRAPPER), *NO_FLOOR, "-m", "agent", "--",
+                                 "/bin/true"], env=env, stderr=subprocess.PIPE, text=True)  # fmt: skip
+        _, err = turn.communicate(timeout=30)
+        assert turn.returncode == 0, err
+        assert "no sleeper for the turn's cooldown" in err
+        # Fair after 3 s, then the 3 s cooldown kept in-process.
+        assert time.monotonic() - start >= 3 + 3
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    assert "bypass" in events(spark)
+
+
+def test_autan_bench_alone_never_takes_a_turn(spark):
+    # Nothing bounds how long autan-bench alone holds the lock: it waits behind a pull request's
+    # job however long it has waited (a fresh process, so that a delay read at import would
+    # apply), and passes it only during a turn autan-gpu-lock -n took, never past main.
+    bench = (
+        "import sys; from pathlib import Path; from autan_bench import gpu\n"
+        "from autan_bench.errors import BenchError\n"
+        "try:\n"
+        f"    with gpu.gpu_lock(Path({spark['AUTAN_GPU_LOCK']!r}), timeout_s=2): print('taken')\n"
+        "except BenchError as err: print(err.code.value)\n"
+    )
+
+    def autan_bench(**env: str) -> str:
+        env = {**spark, "AUTAN_GPU_LOCK_FAIR_S": "0", **env}
+        return subprocess.run([sys.executable, "-c", bench], env=env, capture_output=True,
+                              text=True, timeout=30, check=True).stdout.strip()  # fmt: skip
+
+    priority({**spark, **PR_REF}, "start", "30")
+    try:
+        assert autan_bench() == Code.LOCK_TIMEOUT.value
+        assert autan_bench(AUTAN_GPU_LOCK_BYPASS="1") == "taken"
+    finally:
+        priority({**spark, **PR_REF}, "stop")
+    priority({**spark, **MAIN_REF}, "start", "30")
+    try:
+        assert autan_bench(AUTAN_GPU_LOCK_BYPASS="1") == Code.LOCK_TIMEOUT.value
+    finally:
+        priority({**spark, **MAIN_REF}, "stop")
 
 
 def test_the_guard_records_every_holder_and_never_announces_ci_for_others(spark):
@@ -200,6 +449,10 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
                               text=True, check=True).stdout.splitlines()  # fmt: skip
 
     guard.publish(foreign)
+    # The harness reads the same list to skip, not fail, tests that need the GPU to itself.
+    tenants = gpu.foreign_tenants(tmp_path / "gpu.lock")
+    assert "VLLM::EngineCore (mcpbench-vllm, 22484 MiB)" in tenants
+    assert len(tenants) == 3
     out = report()
     (error,) = [line for line in out if line.startswith("::error::")]
     assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in error
@@ -208,7 +461,9 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
     assert not any("#" in line or "[" in line for line in out[1:])
     guard.publish({})
     assert not [line for line in report() if line.startswith("::")]
+    assert gpu.foreign_tenants(tmp_path / "gpu.lock") == []
     guard.publish(None)
+    assert gpu.foreign_tenants(tmp_path / "gpu.lock") is None
     assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]
     (tmp_path / "foreign-gpu").unlink()
     assert [line.split("::")[1] for line in report() if line.startswith("::")] == ["warning"]

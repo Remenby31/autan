@@ -32,6 +32,37 @@ test("home lists every run directory and filters by state", async ({ page }) => 
   await expect(rows.first()).toContainText("D0107");
 });
 
+test("each run in the list shows its Mach, angle and final coefficients", async ({ page }) => {
+  // The crm-hl sweep of scripts/sample-runs.sh: M 0.2 at four angles, from its case files.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const sweep: Run[] = registry.runs.filter(
+    (r: Run) =>
+      r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
+  );
+  expect(sweep.length).toBeGreaterThan(0);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto("/");
+  // At 1024 px every row fits its frame: nothing scrolls sideways, nothing overlaps.
+  const first = page.locator("a[data-row]").first();
+  await expect(first).toBeVisible();
+  expect(await first.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  // A diverged run's diagnostic code shows whole beside its state.
+  const diverged = (registry.runs as Run[]).find((r) => r.status === "diverged") as Run;
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diverged.diagnostics[0]?.code ?? "", { exact: true });
+  await expect(code).toBeVisible();
+  expect(await code.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  for (const run of sweep) {
+    const row = page.locator(`a[data-run="${run.run_id}"]`);
+    await expect(row.getByTestId("mach")).toHaveText("0.2");
+    await expect(row.getByTestId("alpha")).toHaveText("11.29°");
+    const forces = run.monitors?.forces;
+    await expect(row.getByTestId("cl")).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
+    await expect(row.getByTestId("cd")).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
+  }
+});
+
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
@@ -251,6 +282,25 @@ test("polars keep each Mach number apart and every run, and say which runs are m
       await expect(row.locator("td").nth(2)).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
       await expect(row.locator("td").nth(3)).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
     }
+
+    // On Home these runs are one study whatever their case names (results.md#studies): its
+    // header names the newest run's case and counts the others, on one line.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "Group by study" })).toBeVisible();
+    const group = page.locator("li").filter({ has: page.locator(`a[data-run="${ids[0]}"]`) });
+    const name = group.getByTestId("study-name");
+    await expect(name).toHaveText(/^polar-\d+-\d \+\d+$/);
+    const box = await name.boundingBox();
+    expect(box?.height ?? 99).toBeLessThan(24);
+    // Every name is read out with the header, and focusing it from the keyboard lists them.
+    const header = group.locator("button[aria-expanded]").first();
+    for (const k of [0, 1, 2, 4]) {
+      await expect(header).toHaveAccessibleName(new RegExp(`polar-${tag}-${k}\\b`));
+    }
+    await page.keyboard.press("Tab");
+    await header.focus();
+    await expect(page.getByText(new RegExp(`polar-${tag}-\\d · .*polar-${tag}-\\d`))).toBeVisible();
   } finally {
     for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
@@ -271,7 +321,8 @@ test("Analysis without a run lists the runs it can show, never a stand-in surfac
   const picker = page.getByTestId("run-picker");
   await expect(picker.getByRole("link")).toHaveCount(solved.length);
   await expect(page.getByTestId("viewport")).toHaveCount(0);
-  await page.goto("/viewer?bench=1");
+  // The benchmark's stand-in surface, small: a CPU renderer draws it in no time.
+  await page.goto("/viewer?bench=1&triangles=2000");
   await expect(page.getByText("Synthetic surface · viewer benchmark")).toBeVisible();
   await page.goBack();
   await picker
@@ -311,6 +362,191 @@ test("a converged run opens its wall surface in Analysis and switches fields", a
   await page.getByRole("tab", { name: "Cf" }).click();
   await expect(page.getByTestId("legend")).toHaveText("Cf");
   await expect(page).toHaveURL(/field=Cf/);
+});
+
+test("Analysis cuts a run's solution by a plane and keeps the cut in its link", async ({
+  page,
+}) => {
+  const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toContainText("wing.main");
+  const view = page.getByTestId("viewport");
+  const walls = await view.screenshot();
+  const box = await view.boundingBox();
+  if (!box) throw new Error("no viewport");
+  const picked = page.getByTestId("zones").getByRole("button", { pressed: true });
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const front = (await picked.textContent()) ?? "";
+  expect(front).not.toBe("");
+
+  await page.getByRole("button", { name: "Slice normal to y" }).click();
+  const legend = page.getByTestId("slice-legend");
+  await expect(legend).toContainText("slice · Pressure");
+  await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(false);
+  await expect(page).toHaveURL(/slice=y/);
+  // The walls between the eye and the plane are clipped: the centre now reaches a wall behind it.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(picked).not.toHaveText(front);
+  await expect(picked).toHaveCount(1);
+
+  const field = page.getByLabel("Slice field");
+  const firstField = (await field.locator("option").first().textContent()) ?? "";
+  const other = (await field.locator("option").allTextContents()).find((f) => f !== "Pressure");
+  if (!other) throw new Error("the slice carries one field only");
+  await field.selectOption(other);
+  await expect(legend).toContainText(`slice · ${other}`);
+
+  await page.reload();
+  await expect(legend).toContainText(`slice · ${other}`);
+  await expect(page.getByRole("button", { name: "Slice normal to y" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await page.getByRole("button", { name: "Slice normal to y" }).click();
+  await expect(legend).toHaveCount(0);
+  await expect(page).not.toHaveURL(/slice=/);
+  await page.mouse.click(box.x + 20, box.y + box.height - 20);
+  await expect(picked).toHaveCount(0);
+  // Off the view: no readout over it.
+  await page.mouse.move(0, 0);
+  await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
+
+  // A link naming a field the slice does not carry shows its first field, in the legend and
+  // in the renderer.
+  await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=NotAField`);
+  await expect(legend).toContainText(`slice · ${firstField}`);
+  await expect(view).toHaveAttribute("data-slice-field", firstField);
+});
+
+// Density = x + 2y + 3z at each cell's centroid (the mean of its nodes, a hexahedron's centroid):
+// the manufactured field of a run's solution.cgns, written by h5py from its own connectivity.
+const MANUFACTURE = `
+import sys, h5py, numpy as np
+with h5py.File(sys.argv[1], "r+") as tree:
+    zone = tree["Base"]["Zone"]
+    coords = np.stack([zone["GridCoordinates"][f"Coordinate{a}"][" data"][()] for a in "XYZ"], 1)
+    fs = zone["NGonElements"]["ElementStartOffset"][" data"][()]
+    fn = zone["NGonElements"]["ElementConnectivity"][" data"][()] - 1
+    cs = zone["NFaceElements"]["ElementStartOffset"][" data"][()]
+    cf = np.abs(zone["NFaceElements"]["ElementConnectivity"][" data"][()]) - 1
+    values = []
+    for c in range(len(cs) - 1):
+        nodes = np.unique(np.concatenate([fn[fs[f]:fs[f + 1]] for f in cf[cs[c]:cs[c + 1]]]))
+        values.append(coords[nodes].mean(axis=0) @ [1.0, 2.0, 3.0])
+    zone["FlowSolution"]["Density"][" data"][...] = values
+`;
+
+test("hovering a slice reads the value drawn there and where it is", async ({ page }) => {
+  // A sample run's solution with the manufactured density, put back as it was afterwards; the
+  // last converged run, which no other test reads values from.
+  const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
+  const solution = join(RUNS, run.run_id, "solution.cgns");
+  // Kept with the runs (a dot directory, which the registry skips), so that putting it back is
+  // a rename on one file system.
+  const dir = mkdtempSync(join(RUNS, ".probe-"));
+  cpSync(solution, join(dir, "solution.cgns"));
+  try {
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c", MANUFACTURE, solution],
+    ]);
+    await page.goto(`/viewer?run=${run.run_id}&slice=y&at=0.4&sliceField=Density`);
+    await expect(page.getByTestId("slice-legend")).toContainText("slice · Density");
+    await expect(page.getByTestId("viewport")).toHaveAttribute("data-slice-field", "Density");
+    const box = await page.getByTestId("viewport").boundingBox();
+    if (!box) throw new Error("no viewport");
+
+    // Off the centre, away from the lines where cells meet in the default view.
+    await page.mouse.move(box.x + box.width * 0.47, box.y + box.height * 0.43);
+    const probe = page.getByTestId("probe");
+    await expect(probe).toContainText("slice ·");
+    await expect(probe).toContainText("Density");
+    const point = ((await probe.getAttribute("data-point")) ?? "").split(",").map(Number);
+    const value = Number(await probe.getAttribute("data-value"));
+    // On the plane, inside the unit cube; the value is that of a cell holding the point (one
+    // of two where it lies on a face between cells, to FP32 rounding).
+    const tolerance = 64 * 2 ** -23;
+    expect(Math.abs((point[1] ?? 0) - 0.4)).toBeLessThan(1e-3);
+    const cells = (v: number) =>
+      [v - 1e-4, v + 1e-4].map((u) => (Math.min(7, Math.max(0, Math.floor(u * 8))) + 0.5) / 8);
+    const expected = cells(point[0] ?? 0).flatMap((x) =>
+      cells(point[1] ?? 0).flatMap((y) => cells(point[2] ?? 0).map((z) => x + 2 * y + 3 * z)),
+    );
+    expect(expected.some((e) => Math.abs(value - e) < tolerance * 6)).toBe(true);
+
+    // A zoom moves what is under the pointer: the reading goes.
+    await page.mouse.wheel(0, 200);
+    await expect(probe).toHaveCount(0);
+
+    await page.mouse.move(box.x + 4, box.y + 4);
+    await expect(probe).toHaveCount(0);
+    // From the keyboard, the focused view reads what is at its centre.
+    await page.getByTestId("viewport").focus();
+    await expect(probe).toContainText("Density");
+    await page.keyboard.press("Tab");
+    await expect(probe).toHaveCount(0);
+  } finally {
+    cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
+    renameSync(join(dir, "restored.cgns"), solution);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The wall pressure of a run's solution.cgns set so that Cp = (p − p∞)/q∞ is -0.42 on every
+// wall face, p∞ and q∞ from the SDK's freestream state of the run's case.
+const UNIFORM_CP = `
+import sys, h5py, autan
+from autan.solver_input import freestream_state
+run = sys.argv[1]
+state = freestream_state(autan.Results.open(run).case)
+q = 0.5 * state.density * state.speed**2
+with h5py.File(run + "/solution.cgns", "r+") as tree:
+    tree["Base"]["Zone"]["WallSolution"]["Pressure"][" data"][...] = state.pressure - 0.42 * q
+`;
+
+test("a slice plots the walls' Cp along the chord of their section", async ({ page }) => {
+  const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
+  const solution = join(RUNS, run.run_id, "solution.cgns");
+  const dir = mkdtempSync(join(RUNS, ".section-"));
+  cpSync(solution, join(dir, "solution.cgns"));
+  try {
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c", UNIFORM_CP],
+      join(RUNS, run.run_id),
+    ]);
+    await page.goto(`/viewer?run=${run.run_id}&field=Cp`);
+    await expect(page.getByTestId("zones")).toBeVisible();
+    await expect(page.getByTestId("wall-section")).toHaveCount(0);
+    await page.getByRole("button", { name: "Slice normal to y" }).click();
+    const chart = page.getByTestId("section-chart");
+    await expect(chart).toHaveAttribute("aria-label", /^−Cp along the chord/);
+    expect(Number(await chart.getAttribute("data-segments"))).toBeGreaterThan(0);
+    // −Cp, suction up: 0.42 wherever the walls are cut, to FP32 rounding.
+    for (const end of ["data-least", "data-greatest"]) {
+      expect(Number(await chart.getAttribute(end))).toBeCloseTo(0.42, 5);
+    }
+    // Each cut segment is drawn at the middle of the −Cp axis, whose ticks span 0.42 ± 0.5 for a
+    // uniform value.
+    const curve = chart.locator('line[stroke="var(--accent)"]');
+    await expect(curve).toHaveCount(Number(await chart.getAttribute("data-segments")));
+    const ticks = await chart
+      .locator('text[text-anchor="end"]')
+      .evaluateAll((texts) =>
+        texts.map((t) => Number(t.getAttribute("y")) - 3).sort((a, b) => a - b),
+      );
+    expect(ticks).toHaveLength(3);
+    const tick = ticks[1] as number;
+    for (const y of await curve.evaluateAll((lines) =>
+      lines.flatMap((l) => [Number(l.getAttribute("y1")), Number(l.getAttribute("y2"))]),
+    )) {
+      expect(y).toBeCloseTo(tick, 3);
+    }
+    await expect(page.getByTestId("wall-section")).toContainText("walls at y =");
+  } finally {
+    cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
+    renameSync(join(dir, "restored.cgns"), solution);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
@@ -430,6 +666,17 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
   await expect(page.getByTestId("residual-chart").locator("canvas")).toBeVisible();
   await expect(page.getByTestId("iteration")).toHaveText(String(lines.at(-1).iteration));
   await expect(page.locator("[data-exempt]")).toHaveText(/momentum-y\s*exempt/);
+  // At the last iteration the cursor reads R/R₀, each residual over its first; the exempt
+  // equation is not drawn, so not read.
+  const plotArea = page.getByTestId("residual-chart").locator(".u-over");
+  const box = await plotArea.boundingBox();
+  if (!box) throw new Error("the residual chart has no plot area");
+  await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 5 });
+  const last = lines.at(-1);
+  const ratio = (last.residuals.density / lines[0].residuals.density).toExponential(2);
+  await expect(page.getByTestId("residual-iteration")).toHaveText(`iteration ${last.iteration}`);
+  await expect(page.getByTestId("residual-density")).toHaveText(ratio);
+  await expect(page.getByTestId("residual-momentum-y")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -565,7 +812,6 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     solver,
     devices,
     timing,
-    deterministic: !source.deterministic,
   };
   writeFileSync(join(staging, "run.json"), JSON.stringify(run));
   renameSync(staging, join(RUNS, runId));
@@ -578,7 +824,6 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     ["run.devices", "1 CPU rank", "4 CUDA ranks"],
     ["run.backend", source.solver.backend, "cuda"],
     ["run.solver", source.solver.commit, solver.commit],
-    ["run.deterministic", String(source.deterministic), String(!source.deterministic)],
   ]) {
     await expect(diff.getByRole("row", { name: new RegExp(`^${key} `) })).toContainText(
       a as string,
@@ -587,4 +832,153 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       b as string,
     );
   }
+});
+
+test("views of results carry no renderer figures, and codes explain themselves", async ({
+  page,
+}) => {
+  const all = await runs(page);
+  const converged = all.find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toBeVisible();
+  await expect(page.getByTestId("viewer-status")).toHaveText("");
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByTestId("viewer-status")).toContainText("triangles");
+
+  const diverged = all.find((r) => r.status === "diverged") as Run;
+  const diagnostic = diverged.diagnostics[0];
+  await page.goto("/");
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diagnostic?.code ?? "")
+    .first();
+  // The message is part of the row's text for a screen reader, and shows on hover.
+  await expect(page.locator(`a[data-run="${diverged.run_id}"]`)).toContainText(
+    diagnostic?.message ?? "",
+  );
+  await code.hover();
+  await expect(page.getByText(diagnostic?.message ?? "", { exact: true })).toBeVisible();
+});
+
+test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {
+  // The crm-hl sweep of scripts/sample-runs.sh is one study (results.md#studies): the same
+  // case at four angles, with the runs other tests add to it. Its newest eight are compared,
+  // newest first.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const sweep = (registry.runs as Run[]).find(
+    (r) => registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
+  ) as Run;
+  const key = registry.summaries[sweep.run_id].study;
+  const newest = (registry.runs as Run[])
+    .filter((r) => registry.summaries[r.run_id]?.study === key)
+    .sort((a, b) => b.started.localeCompare(a.started))
+    .slice(0, 8)
+    .map((r) => r.run_id);
+  expect(newest.length).toBeGreaterThan(1);
+  const compared = () =>
+    JSON.parse(new URL(page.url()).searchParams.get("runs") ?? "[]") as string[];
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("compare crm-hl");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  expect(compared()).toEqual(newest);
+
+  await page.goto("/compare");
+  const add = page.getByRole("button", { name: "Add a run" });
+  await expect(add).toHaveText("Add a run");
+  await add.click();
+  // Each run to add says its conditions: crm-hl at M 0.2 and its angle.
+  await expect(page.getByRole("menuitem").filter({ hasText: "crm-hl" }).first()).toContainText(
+    /M 0\.2 · α \d/,
+  );
+  await page.keyboard.press("Escape");
+  await page.getByTestId("study-choice").filter({ hasText: "crm-hl" }).click();
+  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+  expect(compared()).toEqual(newest);
+  await expect(page.getByRole("heading", { name: "Compare" })).toBeFocused();
+});
+
+test("an unknown run or address says so, and outputs download as they are", async ({ page }) => {
+  await page.goto("/runs/run-20200101T000000Z-deadbeef");
+  await expect(page.getByRole("heading", { name: "No such run" })).toBeVisible();
+  await page.goto("/no/such/page");
+  await expect(page.getByTestId("not-found")).toBeVisible();
+
+  const run = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/runs/${run.run_id}?tab=outputs`);
+  await page.getByRole("tab", { name: /Outputs/ }).click();
+  const link = page.getByRole("link", { name: "case.toml" }).first();
+  await expect(link).toBeVisible();
+  await expect(page.getByText("Log: warnings, errors and diagnostics").first()).toBeVisible();
+  const download = page.waitForEvent("download");
+  await link.click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("case.toml");
+  expect(readFileSync(await file.path(), "utf8")).toBe(
+    readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8"),
+  );
+});
+
+test("at 390 px every page fits the width, and navigation sits behind a menu", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = encodeURIComponent(JSON.stringify(all.slice(0, 2).map((r) => r.run_id)));
+  // The page, and every box of it that scrolls sideways, but data tables, fit their width.
+  const fits = () =>
+    page.evaluate(() =>
+      [document.documentElement, ...document.querySelectorAll("main *")]
+        .filter((e) => !e.closest("table") && !e.querySelector("table"))
+        .every(
+          (e) =>
+            e.scrollWidth <= e.clientWidth + 1 ||
+            !["auto", "scroll"].includes(getComputedStyle(e).overflowX),
+        ),
+    );
+  for (const url of ["/", `/runs/${run.run_id}`, `/compare?runs=${pair}`, "/cases/new"]) {
+    await page.goto(url);
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+    expect(await fits(), url).toBe(true);
+  }
+
+  // The drawer opens from the menu and closes on a choice, and on Escape.
+  const nav = page.locator("#nav-drawer");
+  const menu = page.getByRole("button", { name: "Open navigation" });
+  await page.goto("/");
+  await expect(nav).toBeHidden();
+  await menu.click();
+  await expect(nav).toBeVisible();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  // The page behind takes no focus while the drawer is open.
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
+  await nav.getByRole("link", { name: "Compare" }).click();
+  await expect(page).toHaveURL(/\/compare/);
+  await expect(nav).toBeHidden();
+  await menu.click();
+  await page.keyboard.press("Escape");
+  await expect(nav).toBeHidden();
+  await expect(menu).toBeFocused();
+  // ⌘K over the drawer: the drawer closes, and Escape closes the palette.
+  await menu.click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(nav).toBeHidden();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // Widened past 768 px, an open drawer gives the page back.
+  await menu.click();
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(page.locator("main")).not.toHaveAttribute("inert");
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  // A run's actions fold behind one button; a row shows its run, state and drop.
+  await page.goto(`/runs/${run.run_id}`);
+  await page.getByRole("button", { name: "Actions" }).click();
+  await expect(page.getByRole("button", { name: "Open in Analysis" })).toBeVisible();
+  await page.goto("/");
+  const row = page.locator(`a[data-run="${run.run_id}"]`);
+  await expect(row.getByTestId("mach")).toBeHidden();
+  await expect(row).toContainText(run.run_id.slice(-8));
 });
