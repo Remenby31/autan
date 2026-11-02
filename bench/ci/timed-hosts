@@ -1,3 +1,5 @@
 # Hosts that run timed benchmarks (gpu-bench): a foreign GPU tenant there refuses a GPU step
-# (bench/ci/gpu-admit.sh); elsewhere it does not. One AUTAN_BENCH_HOST name per line.
+# (bench/ci/gpu-admit.sh); elsewhere it does not. One AUTAN_BENCH_HOST name per line: each
+# runner of the host (docker/runner/deploy.sh names the main runner <host>-main).
 spark-5359
+spark-5359-main

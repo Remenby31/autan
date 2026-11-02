@@ -8,6 +8,8 @@
 set -uo pipefail
 lock=${AUTAN_GPU_LOCK:-/home/admin/autan-gpu/gpu.lock}
 host=${AUTAN_BENCH_HOST:-$(hostname)}
+# The job can set the variable itself: a name outside [A-Za-z0-9._-] is never printed or trusted.
+[[ $host =~ ^[A-Za-z0-9._-]{1,64}$ ]] || host=unnamed-host
 level=warning
 grep -qxF "$host" "$(cd "$(dirname "$0")" && pwd)/timed-hosts" && level=error
 state=${lock%/*}/foreign-gpu

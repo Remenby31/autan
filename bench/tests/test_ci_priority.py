@@ -463,9 +463,10 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
     assert not any("#" in line or "[" in line for line in out[1:])
     # Elsewhere the tenant is allowed: the same line, as a warning.
     (warning,) = [line for line in report(AUTAN_BENCH_HOST="spark-5512") if line.startswith("::")]
-    assert warning == "::warning::" + error.removeprefix("::error::").replace(
-        "spark-5359", "spark-5512", 1
-    )
+    # Severity, host and tenants, each on its own: the memory reading may move between calls.
+    assert warning.startswith("::warning::GPU shared with a foreign tenant on spark-5512: ")
+    assert error.startswith("::error::GPU shared with a foreign tenant on spark-5359: ")
+    assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in warning
     guard.publish({})
     assert not [line for line in report() if line.startswith("::")]
     assert gpu.foreign_tenants(tmp_path / "gpu.lock") == []
