@@ -12,7 +12,7 @@ It exits with 1 when it finds an error. The SDK does not call the mesh readers y
 
 The estimate is what one rank allocates at its peak, on the host and on its device, by component; `--gpus` is the number of ranks and `--device-kind` (`cpu`, `cuda`, `hip`, default `cuda`) their device. `bytes_per_gpu` is a rank's host plus device bytes, which share one pool on a unified-memory device such as the GB10, and `bytes_total` that times the ranks. `autan prepare` writes a rank's figures into the solver input (`memory`), and `autan-run` refuses to start a run that does not fit (`E0711`).
 
-Each component counts what the code allocates, listed by the lane that owns it and summed here (#325). Notation, per rank: C cells, F faces, F_i interior faces, F_b boundary faces, K = 2F_i + F_b, S gradient stencil entries (bounded per cell: tetrahedron 16, pyramid and prism 25, hexahedron 36, polyhedron 110), n solved equations, s = 4 bytes in `fp32+acc64` and 8 in `fp64`; N nodes, P face nodes (`counts.face_nodes`) and the cell and face counts of the whole mesh where marked *global*.
+Each component counts what the code allocates, listed by the lane that owns it and summed here (#325). Notation, per rank: C cells, F faces, F_i interior faces, F_b boundary faces, K = 2F_i + F_b, S gradient stencil entries (per cell at most: tetrahedron 16, pyramid 25, prism 19, hexahedron 24, polyhedron 105, the largest measured on the V&V families), n solved equations, s = 4 bytes in `fp32+acc64` and 8 in `fp64`; N nodes, P face nodes (`counts.face_nodes`) and the cell and face counts of the whole mesh where marked *global*.
 
 | Component | Where | Bytes |
 |---|---|---|
@@ -20,8 +20,8 @@ Each component counts what the code allocates, listed by the lane that owns it a
 | `mesh setup` | host | the reader's form and the MeshInfo pass, about the mesh and its geometry again, which the allocator keeps resident |
 | `partition` | host | several ranks: the rank's share of the mesh and geometry, and 9F face keys |
 | `solution output` | host | rank 0 gathers 2n + 2 fields of 8C *global* bytes, and the writer copies them |
-| `physics` | host | packed geometry 8(16F + 4C + 3S), stencil 8C + 36S, state, primitives, limiters, gradients and boundary data in s, solution, stages, residual in 8 bytes |
-| `physics setup` | host | 8(16F + 4C + 3K) + 24S during setup |
+| `physics` | host | packed geometry 8(16F + 4C + 3S), stencil 8C + 4S, state, primitives, limiters, gradients and boundary data in s, solution, stages, residual in 8 bytes |
+| `physics setup` | host | 8(16F + 4C + 3K) + 32S during setup: the stencil's twins and weights, built and released |
 | `physics device`, `device context` | device, host | on `cuda` and `hip`: the same state, topology, stencil and geometry on the device; 512 MiB for the device context |
 | `jacobian` | host | steady runs on `cpu` (a device run solves explicitly): face and cell Jacobians in s, the block matrix 8n²(C + 2F_i) |
 | `multigrid`, `lines`, `gauss-seidel` | host | the case's `linear_solver`: levels below the finest at most L + 0.15(C − L), L the cells of lines of at least 4 cells (which pair along their line) and the rest agglomerating by up to 8, with 7 neighbours per coarse cell; line smoothing for the MeshInfo's `quality.lines.cells` on the finest level (the multigrid's own count, for the cell order it states) and for every coarse cell when there are lines; the lines built on the whole mesh at setup; the inverse diagonal blocks |

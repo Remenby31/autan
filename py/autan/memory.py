@@ -91,17 +91,17 @@ def estimate(
     host_physics = (
         geometry_packed
         + 8 * c
-        + 36 * stencil
+        + 4 * stencil
         + 8 * f
         + 2 * n * f * s
-        + 7 * n * c * s
-        + 2 * 3 * n * c * s
+        + 5 * n * c * s
+        + 3 * n * c * s
         + (4 * n + n + 1 + n) * c * 8
         + (n + 1) * c * s
         + n * fb * 8
     )
     add("physics", host_physics)
-    add("physics setup", 8 * (16 * f + 4 * c + 3 * k) + 24 * stencil, transient=True)
+    add("physics setup", 8 * (16 * f + 4 * c + 3 * k) + 32 * stencil, transient=True)
     if device_kind != "cpu":
         device = (
             2 * n * c * 8
