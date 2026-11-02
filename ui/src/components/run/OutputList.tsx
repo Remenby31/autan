@@ -15,7 +15,16 @@ const ROLE: Record<string, string> = {
 };
 
 /** The files of the run directory, each one a download. */
-export function OutputList({ runId, outputs }: { runId: string; outputs: RunOutput[] }) {
+export function OutputList({
+  runId,
+  running,
+  outputs,
+}: {
+  runId: string;
+  /** While the run is running its solution.cgns is a checkpoint, not a result (results.md). */
+  running: boolean;
+  outputs: RunOutput[];
+}) {
   return (
     <ul className="m-0 flex list-none flex-col divide-y divide-line p-0">
       {outputs.map((o) => (
@@ -23,16 +32,24 @@ export function OutputList({ runId, outputs }: { runId: string; outputs: RunOutp
           <Entity
             icon={<FileText className="size-4" />}
             title={
-              <a
-                href={`/api/runs/${runId}/files/${encodeURIComponent(o.name)}`}
-                download={o.name}
-                className="inline-flex items-center gap-1.5 font-mono hover:underline"
-              >
-                {o.name}
-                <Download aria-hidden className="size-3.5 text-fg-3" />
-              </a>
+              running && o.name === "solution.cgns" ? (
+                <span className="font-mono">{o.name}</span>
+              ) : (
+                <a
+                  href={`/api/runs/${runId}/files/${encodeURIComponent(o.name)}`}
+                  download={o.name}
+                  className="inline-flex items-center gap-1.5 font-mono hover:underline"
+                >
+                  {o.name}
+                  <Download aria-hidden className="size-3.5 text-fg-3" />
+                </a>
+              )
             }
-            description={ROLE[o.name] ?? "Written by the run"}
+            description={
+              running && o.name === "solution.cgns"
+                ? "Checkpoint, not a result until the run ends"
+                : (ROLE[o.name] ?? "Written by the run")
+            }
             meta={
               <>
                 <span className="font-mono tabular-nums">{formatBytes(o.bytes)}</span>

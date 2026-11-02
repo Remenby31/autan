@@ -7,6 +7,7 @@ import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import {
   type HistoryColumns,
+  HttpError,
   planQuery,
   runQuery,
   runsQuery,
@@ -118,20 +119,18 @@ function RunView() {
   ];
 
   // A run the server does not have, or refuses, is said so, never left as a skeleton.
-  const missing = !run && details.isError ? details.error.message : null;
-  if (missing)
+  const missing = !run && details.isError ? details.error : null;
+  if (missing) {
+    const absent = missing instanceof HttpError && missing.status === 404;
+    const reason = missing instanceof HttpError ? missing.detail : missing.message;
     return (
       <>
         <TopBar crumbs={[{ label: "Runs", to: "/" }, { label: runId.slice(-8) }]} />
         <div className="flex flex-1 items-start justify-center px-8 py-16">
           <EmptyState
             icon={<SearchX className="size-5" />}
-            title={missing.endsWith("HTTP 404") ? "No such run" : "This run cannot be read"}
-            description={
-              missing.endsWith("HTTP 404")
-                ? `There is no run ${runId} in this runs directory.`
-                : `The server refuses run ${runId}: ${missing}.`
-            }
+            title={absent ? "No such run" : "This run cannot be read"}
+            description={absent ? `There is no run ${runId} in this runs directory.` : reason}
           >
             <Link to="/" className="self-center">
               <Button>Go to Runs</Button>
@@ -140,6 +139,7 @@ function RunView() {
         </div>
       </>
     );
+  }
   return (
     <>
       <TopBar
@@ -345,7 +345,13 @@ function RunView() {
                     )
                   }
                 >
-                  {details.data && <OutputList runId={runId} outputs={details.data.outputs} />}
+                  {details.data && (
+                    <OutputList
+                      runId={runId}
+                      running={run?.status === "running"}
+                      outputs={details.data.outputs}
+                    />
+                  )}
                 </Collapse>
                 <Collapse
                   title="Log"
@@ -382,7 +388,13 @@ function RunView() {
               value="outputs"
               className="rounded-lg border border-line bg-bg-0 px-4 outline-none"
             >
-              {details.data && <OutputList runId={runId} outputs={details.data.outputs} />}
+              {details.data && (
+                <OutputList
+                  runId={runId}
+                  running={run?.status === "running"}
+                  outputs={details.data.outputs}
+                />
+              )}
             </TabPanel>
           </div>
         </div>

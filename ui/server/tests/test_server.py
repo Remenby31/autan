@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY
+from urllib.parse import quote
 
 import autan
 import autan.initial_state
@@ -262,6 +263,35 @@ def test_a_run_file_downloads_as_it_is_on_disk(runs: Path, server: str, tmp_path
     for name in ("linked.txt", "states", "..%2Frun.json", "%2E%2E", "missing.json"):
         status = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}").status_code
         assert status == 404, name
+
+    # Any file name reaches the client whole (RFC 6266), and a growing file is sent as opened.
+    odd = 'résultat "final".txt'
+    (directory / odd).write_text("x" * 10)
+    response = httpx.get(f"{server}/api/runs/{directory.name}/files/{quote(odd)}")
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith(
+        f"filename*=UTF-8''{quote(odd, safe='')}"
+    )
+    assert response.headers["content-disposition"].count("filename=") == 1
+
+    # results.md: a running run's solution.cgns is a checkpoint, not a result.
+    run = json.loads((directory / "run.json").read_text())
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    status = httpx.get(f"{server}/api/runs/{directory.name}/files/solution.cgns").status_code
+    assert status == 409
+
+
+def test_a_download_cut_short_leaves_no_file_open(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    url = f"{server}/api/runs/{directory.name}/files/solution.cgns"
+    before = len(list(Path("/dev/fd").iterdir()))
+    for _ in range(5):
+        with httpx.stream("GET", url) as response:
+            assert response.status_code == 200
+    time.sleep(0.5)
+    assert len(list(Path("/dev/fd").iterdir())) <= before
 
 
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:

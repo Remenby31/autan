@@ -2,9 +2,24 @@ import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-
 import { useEffect, useState } from "react";
 import type { Diagnostic, Forces, HistoryRecord, LogLine, Run, RunRegistry } from "./contracts";
 
+/** A response the server refused: its status, and the reason it gave (FastAPI's `detail`). */
+export class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+    url: string,
+  ) {
+    super(`${url}: HTTP ${status}${detail ? `: ${detail}` : ""}`);
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = typeof body?.detail === "string" ? body.detail : "";
+    throw new HttpError(response.status, detail, url);
+  }
   return (await response.json()) as T;
 }
 
@@ -78,7 +93,8 @@ export const runQuery = (runId: string) =>
     queryKey: ["run", runId],
     queryFn: () => getJson<RunDetails>(`/api/runs/${runId}`),
     // A run the server does not have stays missing: no retry before saying so.
-    retry: (failures, error) => !error.message.endsWith("HTTP 404") && failures < 3,
+    retry: (failures, error) =>
+      !(error instanceof HttpError && error.status === 404) && failures < 3,
   });
 
 const EMPTY: RunRegistry = { runs: [], rejected: [], summaries: {}, solutions: [] };

@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import autan
 import uvicorn
@@ -21,6 +22,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
+from starlette.background import BackgroundTask
 from watchfiles import Change, awatch
 
 from autan_ui.cases import Meshes, materials, render
@@ -335,7 +337,7 @@ def create_app(
     @app.get("/api/runs/{run_id}/files/{name}")
     def run_file(run_id: Annotated[str, Depends(existing_run)], name: str) -> Response:
         """A regular file of the run directory, as a download; 404 for any name the directory
-        does not list as one (names come from the listing, read through the pinned folder)."""
+        does not list as one, 409 for the solution of a run still running (results.md)."""
         directory = find_run(run_id)
         listed = {
             entry.name: entry.name
@@ -344,30 +346,45 @@ def create_app(
         }.get(name)
         if listed is None:
             raise HTTPException(404, f"run {run_id} has no file {name}")
-        folder = Folder(directory)
-        try:
-            descriptor = folder.open(listed)
-        except OSError as error:
-            folder.close()
-            raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        with Folder(directory) as folder:
+            if listed == "solution.cgns" and read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            try:
+                descriptor = folder.open(listed)
+            except OSError as error:
+                raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        file = os.fdopen(descriptor, "rb")
+        # The length as opened: a file still being appended to is sent up to it.
         size = os.fstat(descriptor).st_size
 
         def chunks() -> Iterator[bytes]:
-            with os.fdopen(descriptor, "rb") as file:
-                try:
-                    while chunk := file.read(1 << 20):
-                        yield chunk
-                finally:
-                    folder.close()
+            try:
+                left = size
+                while left > 0 and (chunk := file.read(min(left, 1 << 20))):
+                    left -= len(chunk)
+                    yield chunk
+            finally:
+                file.close()
 
-        return StreamingResponse(
-            chunks(),
-            media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{listed}"',
-                "Content-Length": str(size),
-            },
-        )
+        # Closed by the stream when it ends or fails, by the background task when the client
+        # leaves before it starts, and here if the response cannot be built.
+        try:
+            # RFC 6266: an ASCII fallback, and the exact name in UTF-8.
+            fallback = re.sub(r"[^A-Za-z0-9._-]", "_", listed)
+            return StreamingResponse(
+                chunks(),
+                media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(listed, safe='')}"
+                    ),
+                    "Content-Length": str(size),
+                },
+                background=BackgroundTask(file.close),
+            )
+        except BaseException:
+            file.close()
+            raise
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
