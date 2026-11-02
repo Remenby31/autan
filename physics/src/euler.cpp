@@ -51,7 +51,7 @@ struct Euler<P>::Impl {
   // freeze() and residual_frozen(): the matrix-free product's own state, primitives and gradients,
   // the limiter and the reconstruction branches held at freeze()'s state.
   struct Frozen {
-    std::vector<State> prim, prim_b, phi;
+    std::vector<State> prim, prim_b, phi, wmin, wmax;
     std::vector<Gr> grad;
     std::vector<typename P::flag> keep;
   };
@@ -64,6 +64,8 @@ struct Euler<P>::Impl {
     out.prim_b = f.prim_b.data();
     out.grad = f.grad.data();
     out.phi = f.phi.data();
+    out.wmin = f.wmin.data();
+    out.wmax = f.wmax.data();
     out.keep = f.keep.data();
     return out;
   }
@@ -420,6 +422,8 @@ template <class P>
 void Euler<P>::set_second_order(bool on) {
   auto& m = *impl_;
   m.scheme.second_order = on;
+  // A held limiter belongs to the reconstruction it was evaluated with.
+  m.frozen.reset();
   if (!on) {
     std::fill(m.grad.begin(), m.grad.end(), typename P::grad(0));
     std::fill(m.phi.begin(), m.phi.end(), State(0));
@@ -467,6 +471,8 @@ void Euler<P>::freeze(std::span<const State> s) {
     m.frozen->prim.assign(5 * nc, State(0));
     m.frozen->prim_b.assign(5 * nf, State(0));
     m.frozen->phi.assign(5 * nc, State(0));
+    m.frozen->wmin.assign(5 * nc, State(0));
+    m.frozen->wmax.assign(5 * nc, State(0));
     m.frozen->grad.assign(15 * nc, typename P::grad(0));
     m.frozen->keep.assign(2 * nf, typename P::flag(0));
   }
