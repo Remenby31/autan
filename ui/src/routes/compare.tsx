@@ -185,7 +185,7 @@ function Compare() {
             >
               {available.map((s) => (
                 <Button
-                  key={s.name}
+                  key={s.key}
                   onClick={() => {
                     setRuns(s.ids);
                     // The chosen button leaves with the empty state: focus goes to the heading.

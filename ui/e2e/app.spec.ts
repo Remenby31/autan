@@ -766,13 +766,47 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
   }
 });
 
+test("views of results carry no renderer figures, and codes explain themselves", async ({
+  page,
+}) => {
+  const all = await runs(page);
+  const converged = all.find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toBeVisible();
+  await expect(page.getByTestId("viewer-status")).toHaveText("");
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByTestId("viewer-status")).toContainText("triangles");
+
+  const diverged = all.find((r) => r.status === "diverged") as Run;
+  const diagnostic = diverged.diagnostics[0];
+  await page.goto("/");
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diagnostic?.code ?? "")
+    .first();
+  // The message is part of the row's text for a screen reader, and shows on hover.
+  await expect(page.locator(`a[data-run="${diverged.run_id}"]`)).toContainText(
+    diagnostic?.message ?? "",
+  );
+  await code.hover();
+  await expect(page.getByText(diagnostic?.message ?? "", { exact: true })).toBeVisible();
+});
+
 test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {
-  // The crm-hl runs of scripts/sample-runs.sh form a study: one case name, several angles; the
-  // newest eight are compared, newest first.
-  const crm = (await runs(page))
-    .filter((r) => r.case.name === "crm-hl")
-    .sort((a, b) => b.started.localeCompare(a.started));
-  const newest = crm.slice(0, 8).map((r) => r.run_id);
+  // The crm-hl sweep of scripts/sample-runs.sh is one study (results.md#studies): the same
+  // case at four angles, with the runs other tests add to it. Its newest eight are compared,
+  // newest first.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const sweep = (registry.runs as Run[]).find(
+    (r) => registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
+  ) as Run;
+  const key = registry.summaries[sweep.run_id].study;
+  const newest = (registry.runs as Run[])
+    .filter((r) => registry.summaries[r.run_id]?.study === key)
+    .sort((a, b) => b.started.localeCompare(a.started))
+    .slice(0, 8)
+    .map((r) => r.run_id);
+  expect(newest.length).toBeGreaterThan(1);
   const compared = () =>
     JSON.parse(new URL(page.url()).searchParams.get("runs") ?? "[]") as string[];
   await page.goto("/");
