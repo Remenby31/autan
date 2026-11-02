@@ -1,12 +1,13 @@
 """Measure, validate and compare Autan benchmark results."""
 
 import argparse
+import json
 import os
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
-from autan_bench import gpu, result, runner
+from autan_bench import e2e, gpu, result, runner
 from autan_bench.compare import DEFAULT_THRESHOLD, INCONCLUSIVE, REGRESSION, compare
 from autan_bench.errors import BenchError, Code
 
@@ -174,6 +175,44 @@ def _peak(args: argparse.Namespace) -> int:
     return 0
 
 
+def _e2e_case(args: argparse.Namespace) -> int:
+    mesh_info = json.loads(args.mesh_info.read_text())
+    args.out.write_text(e2e.dpw4_case(mesh_info, args.mesh, args.turbulence,
+                                      max_iterations=args.max_iterations,
+                                      residual_orders=args.residual_orders,
+                                      linear_solver=args.linear_solver))  # fmt: skip
+    _say(f"wrote {args.out}")
+    return 0
+
+
+def _e2e_run(args: argparse.Namespace) -> int:
+    chain = e2e.run_chain(case=args.case, mesh_info=args.mesh_info, device_kind=args.device_kind,
+                          runs=args.runs, autan=args.autan.split(), autan_run=args.autan_run,
+                          lock=[*args.lock.split(), "--"], idle=args.idle.split(),
+                          budget_s=args.budget, max_runs=args.max_runs,
+                          cooldown_s=args.cooldown)  # fmt: skip
+    for run_dir in chain:
+        _say(str(run_dir))
+    return 0
+
+
+def _e2e_report(args: argparse.Namespace) -> int:
+    mesh_info = json.loads(args.mesh_info.read_text())
+    cpu = json.loads(args.cpu.read_text()) if args.cpu else None
+    doc = e2e.report([e2e.link(d) for d in args.runs], mesh_info,
+                     result.peak_bandwidth(result.load(args.stream)),
+                     json.loads(args.reference.read_text()), stages=args.stages, cpu=cpu)  # fmt: skip
+    args.out.write_text(json.dumps(doc, indent=1) + "\n")
+    _say(e2e.summary(doc))
+    return 0
+
+
+def _idle(args: argparse.Namespace) -> int:
+    gpu.require_campaigns_frozen(args.lock)
+    gpu.require_idle()
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="autan-bench", description=__doc__)
     sub = p.add_subparsers(required=True)
@@ -278,6 +317,46 @@ def parser() -> argparse.ArgumentParser:
     k = sub.add_parser("peak", help="print the peak STREAM bandwidth (GB/s) of a baseline")
     k.add_argument("baseline", type=Path)
     k.set_defaults(func=_peak)
+
+    i = sub.add_parser("idle", help="exit 0 once campaigns are frozen and the GPU idle, else 2")
+    i.add_argument("--lock", type=Path, default=gpu.DEFAULT_LOCK)
+    i.set_defaults(func=_idle)
+
+    ec = sub.add_parser("e2e-case", help="write the DPW4 case for a mesh's MeshInfo")
+    ec.add_argument("mesh_info", type=Path)
+    ec.add_argument("--mesh", required=True, help="mesh path the case names")
+    ec.add_argument("--turbulence", choices=sorted(e2e.CONDITIONS), default="inviscid")
+    ec.add_argument("--max-iterations", type=int, default=3000)
+    ec.add_argument("--residual-orders", type=float, default=8.0)
+    ec.add_argument("--linear-solver", choices=["multigrid", "gauss-seidel"], default="multigrid")
+    ec.add_argument("--out", type=Path, required=True)
+    ec.set_defaults(func=_e2e_case)
+
+    er = sub.add_parser("e2e-run", help="run a case to its end, one GPU lock hold per run")
+    er.add_argument("case", type=Path)
+    er.add_argument("--mesh-info", type=Path, required=True)
+    er.add_argument("--device-kind", choices=["cuda", "cpu"], required=True)
+    er.add_argument("--runs", type=Path, required=True, help="directory of the run directories")
+    er.add_argument("--autan", default="autan", help="the SDK command, split on spaces")
+    er.add_argument("--autan-run", type=Path, required=True)
+    er.add_argument("--lock", default="autan-gpu-lock -m e2e -t 600",
+                    help="the lock command and its options, split on spaces")  # fmt: skip
+    er.add_argument("--budget", type=int, default=420, help="seconds of a hold before stopping")
+    er.add_argument("--idle", default="autan-bench idle",
+                    help="command checking, inside the hold, that the GPU is idle")  # fmt: skip
+    er.add_argument("--cooldown", type=float, default=120.0, help="seconds between two holds")
+    er.add_argument("--max-runs", type=int, default=40)
+    er.set_defaults(func=_e2e_run)
+
+    ep = sub.add_parser("e2e-report", help="normalise a chain of runs against FUN3D and PyFR")
+    ep.add_argument("runs", type=Path, nargs="+", help="run directories, oldest first")
+    ep.add_argument("--mesh-info", type=Path, required=True)
+    ep.add_argument("--stream", type=Path, required=True, help="STREAM result or baseline")
+    ep.add_argument("--reference", type=Path, required=True, help="bench/e2e/fun3d-dpw4.json")
+    ep.add_argument("--stages", type=int, help="right-hand sides per iteration (explicit)")
+    ep.add_argument("--cpu", type=Path, help="e2e report of the same case on the CPU")
+    ep.add_argument("--out", type=Path, required=True)
+    ep.set_defaults(func=_e2e_report)
     return p
 
 
