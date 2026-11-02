@@ -136,7 +136,8 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
 TEST_CASE("The ranks of a host fit its memory up to the margin, to the byte", "[runtime]") {
   // solver-input.md, `memory`: the need of the host's ranks against what a pool can give less the
   // margin; at exactly that, it fits.
-  const MemoryPools one{.host_available = 10 * gib, .device_free = {}, .devices = 1};
+  const MemoryPools one{
+      .host_available = 10 * gib, .device_free = {}, .devices = 1, .unseen_cgroups = {}};
   const std::int64_t margin = 2 * gib;
   CHECK_FALSE(memory_shortfall(4 * gib, 0, 2, one, margin));
   CHECK_FALSE(memory_shortfall(3 * gib, gib, 2, one, margin));  // one pool: host and device
@@ -145,7 +146,8 @@ TEST_CASE("The ranks of a host fit its memory up to the margin, to the byte", "[
   CHECK(over->required == 8 * gib + 2);
   CHECK(over->available == 10 * gib);
   // A discrete device holds the device shares of the ranks that run on it, the host the rest.
-  const MemoryPools split{.host_available = 10 * gib, .device_free = 6 * gib, .devices = 2};
+  const MemoryPools split{
+      .host_available = 10 * gib, .device_free = 6 * gib, .devices = 2, .unseen_cgroups = {}};
   CHECK_FALSE(memory_shortfall(2 * gib, 2 * gib, 4, split, margin));  // 2 ranks per device
   const auto device = memory_shortfall(gib, 2 * gib + 1, 3, split, margin);
   REQUIRE(device);
