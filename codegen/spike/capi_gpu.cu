@@ -339,6 +339,16 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     } catch (const std::invalid_argument& e) {
       out[4] = std::string_view(e.what()).starts_with("E1101") ? 1 : 0;
     }
+    // A forward-only stencil (no twins, weights given later), sliced: no twin array.
+    auto stencil =
+        autan::kernels::cell_stencil(m->mesh, m->packed, autan::kernels::StencilKind::face2);
+    const std::vector<double> weights = stencil.lsq_weight;
+    stencil.twin.clear();
+    stencil.lsq_weight.clear();
+    autan::kernels::DeviceMesh lean(m->mesh, m->packed, &stencil,
+                                    {.block = 128, .stencil_slice = 4});
+    lean.set_stencil_weights(weights);
+    out[5] = lean.topology().stencil_twin == nullptr && lean.topology().stencil != nullptr ? 1 : 0;
   });
 }
 

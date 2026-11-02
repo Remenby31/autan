@@ -145,7 +145,9 @@ class DeviceMesh {
   };
 
   /// `geometry` is kept until release_host() (move it in to avoid a copy); `stencil` may be
-  /// null (no stencil reductions) and is read during construction only, its weights kept.
+  /// null (no stencil reductions) and is read during construction only, its weights kept. A
+  /// stencil may come without twins (then Topology::stencil_twin is null: no reduction
+  /// adjoint over it) and without weights (then set_stencil_weights() provides them).
   DeviceMesh(const Mesh& mesh, PackedGeometry geometry, const CellStencil* stencil, Options options)
       : geometry_(std::move(geometry)), chunk_(options.upload_chunk), stream_(options.stream) {
     if (chunk_ == 0) {
@@ -208,10 +210,16 @@ class DeviceMesh {
     if (stencil != nullptr) {
       stencil_offsets_ = copy(std::span<const offset_t>(st->offsets));
       stencil_entries_ = copy(std::span<const index_t>(st->entries));
-      stencil_twin_ = copy(std::span<const offset_t>(st->twin));
       topo_.stencil_offsets = stencil_offsets_.get();
       topo_.stencil = stencil_entries_.get();
-      topo_.stencil_twin = stencil_twin_.get();
+      // Twins serve the reductions' deterministic adjoints only; a stencil without them
+      // leaves stencil_twin null.
+      if (!st->twin.empty()) {
+        stencil_twin_ = copy(std::span<const offset_t>(st->twin));
+        topo_.stencil_twin = stencil_twin_.get();
+      } else {
+        topo_.stencil_twin = nullptr;
+      }
       if (!length_.empty()) {
         stencil_length_ = copy(std::span<const index_t>(length_));
         topo_.stencil_length = stencil_length_.get();
