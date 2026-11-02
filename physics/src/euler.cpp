@@ -53,7 +53,8 @@ struct Euler<P>::Impl {
   struct Frozen {
     std::vector<State> prim, prim_b, phi, wmin, wmax;
     std::vector<Gr> grad;
-    std::vector<typename P::flag> keep;
+    std::vector<typename P::flag> keep, keep_now;
+    std::size_t switches = 0;
   };
   std::optional<Frozen> frozen;
 
@@ -475,6 +476,7 @@ void Euler<P>::freeze(std::span<const State> s) {
     m.frozen->wmax.assign(5 * nc, State(0));
     m.frozen->grad.assign(15 * nc, typename P::grad(0));
     m.frozen->keep.assign(2 * nf, typename P::flag(0));
+    m.frozen->keep_now.assign(2 * nf, typename P::flag(0));
   }
   auto& f = *m.frozen;
   auto d = m.frozen_data(f);
@@ -488,6 +490,7 @@ void Euler<P>::freeze(std::span<const State> s) {
   }
   ek::cpu::fallbacks_faces(d);
   ek::cpu::fallbacks_boundaries(d);
+  f.switches = 0;
 }
 
 template <class P>
@@ -501,6 +504,21 @@ void Euler<P>::residual_frozen(std::span<const State> s, std::span<Res> res) {
   m.reconstruction_inputs(d, f.prim, f.grad);
   ek::cpu::sources(d);
   m.faces_held(d);
+  // The branches this state would take, against the held ones.
+  d.keep = f.keep_now.data();
+  ek::cpu::fallbacks_faces(d);
+  ek::cpu::fallbacks_boundaries(d);
+  f.switches = 0;
+  for (std::size_t i = 0; i < f.keep.size(); ++i) {
+    f.switches += static_cast<std::size_t>(f.keep_now[i] != f.keep[i]);
+  }
+}
+
+template <class P>
+std::size_t Euler<P>::frozen_switches() const {
+  const auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("Euler::frozen_switches before freeze");
+  return m.frozen->switches;
 }
 
 template <class P>

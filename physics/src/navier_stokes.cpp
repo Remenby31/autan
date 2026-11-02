@@ -38,11 +38,26 @@ struct NavierStokes<P>::Impl {
   stored<decltype(D::cell_volume)> cell_volume;
   std::vector<State> mu_t, mu_t_b, lam_v, traction, ut, ut_b;
   // freeze(): the viscous terms' workspace for residual_frozen, apart from the cache above.
+  // The viscous reconstruction's positivity fallbacks at freeze()'s state and at the last
+  // residual_frozen's, and how many face sides differ.
   struct Frozen {
     std::vector<State> ut, ut_b, mu_t, mu_t_b;
     std::array<std::vector<typename P::grad>, 7> fits;
+    std::vector<typename P::flag> viscous_keep_base, viscous_keep;
+    std::size_t switches = 0;
   };
   std::optional<Frozen> frozen;
+
+  // viscous_keep of Euler<P>'s frozen primitives and gradients into `out` (2 x n_faces).
+  void viscous_fallbacks(std::vector<typename P::flag>& out) {
+    const auto a = euler.frozen_data();
+    auto v = d;
+    v.prim = a.prim;
+    v.grad = a.grad;
+    v.viscous_keep = out.data();
+    nk::cpu::viscous_fallbacks_faces(v);
+    nk::cpu::viscous_fallbacks_boundaries(v);
+  }
   // The boundary fit's weights: 19 per stencil entry in seven 3-vectors (kernels/navier_stokes.py).
   std::array<stored<decltype(D::q0)>, 7> q;
   stored<decltype(D::quad)> quad;
@@ -715,9 +730,14 @@ void NavierStokes<P>::freeze(std::span<const State> s) {
     m.frozen->ut_b.assign(m.ut_b.size(), State(0));
     m.frozen->mu_t.assign(m.mu_t.size(), State(0));
     m.frozen->mu_t_b.assign(m.mu_t_b.size(), State(0));
+    const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+    m.frozen->viscous_keep_base.assign(2 * nf, typename P::flag(0));
+    m.frozen->viscous_keep.assign(2 * nf, typename P::flag(0));
     for (std::size_t k = 0; k < 7; ++k)
       m.frozen->fits[k].assign(m.fits[k].size(), typename P::grad(0));
   }
+  m.viscous_fallbacks(m.frozen->viscous_keep_base);
+  m.frozen->switches = 0;
 }
 
 template <class P>
@@ -735,9 +755,14 @@ void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> r
   auto& m = *impl_;
   if (!m.frozen) throw std::logic_error("NavierStokes::residual_frozen before freeze");
   m.euler.residual_frozen(s, res);
+  auto& f = *m.frozen;
+  m.viscous_fallbacks(f.viscous_keep);
+  f.switches = 0;
+  for (std::size_t i = 0; i < f.viscous_keep.size(); ++i) {
+    f.switches += static_cast<std::size_t>(f.viscous_keep[i] != f.viscous_keep_base[i]);
+  }
   eddy();
   const auto a = m.euler.frozen_data();
-  auto& f = *m.frozen;
   auto d = m.d;
   d.prim = a.prim;
   d.grad = a.grad;
@@ -759,6 +784,13 @@ void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> r
   nk::cpu::cubic_fits(d);
   nk::cpu::viscous_faces(d);
   nk::cpu::viscous_boundaries(d);
+}
+
+template <class P>
+std::size_t NavierStokes<P>::frozen_switches() const {
+  const auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("NavierStokes::frozen_switches before freeze");
+  return m.euler.frozen_switches() + m.frozen->switches;
 }
 
 template <class P>

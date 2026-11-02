@@ -123,9 +123,19 @@ class Euler {
   /// both for residual_frozen. Leaves what residual() last evaluated untouched.
   void freeze(std::span<const State> s);
   /// R(s) into res with the limiter and the reconstruction branches of freeze()'s state, in a
-  /// workspace of its own: equal to residual(s) bit for bit at that state. Throws
-  /// std::logic_error before freeze() and after set_second_order(), which drops what freeze held.
+  /// workspace of its own: equal to residual(s) bit for bit at that state. The numerical flux's
+  /// own switches are not held (Roe's |v.n|, HLLC's wave speeds, AUSM+-up's split functions, the
+  /// characteristic boundary states' branches): a difference quotient is a secant across one
+  /// wherever a face's v.n, or a branch's argument, lies within the step's change of it from zero.
+  /// Throws std::logic_error before freeze() and after set_second_order(), which drops what
+  /// freeze held.
   void residual_frozen(std::span<const State> s, std::span<Res> res);
+  /// After residual_frozen: how many face sides take another branch of the reconstruction's
+  /// positivity fallback (the cell value where the reconstructed density or pressure would be
+  /// non-positive) than the one held from freeze()'s state. Nonzero: the evaluation is not the
+  /// smooth continuation of the residual at freeze()'s state. Throws std::logic_error before
+  /// freeze().
+  [[nodiscard]] std::size_t frozen_switches() const;
   /// Frees what freeze() allocated.
   void release_frozen();
   /// The loops' data of the frozen workspace: the primitives, boundary states and gradients of
