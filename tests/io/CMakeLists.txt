@@ -84,3 +84,12 @@ add_cli_test(
   ${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/out.bin
   ${mesh_dir}/hex/polyMesh
 )
+
+# What reading a mesh costs in memory beyond the mesh (#358): a measuring tool, not a test.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(reader_memory_probe reader_memory_probe.cpp)
+  target_link_libraries(
+    reader_memory_probe
+    PRIVATE autan::io nlohmann_json::nlohmann_json autan_compile_options
+  )
+endif()
