@@ -1,7 +1,7 @@
 add_executable(autan_physics_tests test_euler.cpp test_implicit.cpp test_manufactured.cpp)
 target_link_libraries(
   autan_physics_tests
-  PRIVATE autan::physics autan::io Catch2::Catch2WithMain autan_compile_options
+  PRIVATE autan::physics autan::io autan::partition Catch2::Catch2WithMain autan_compile_options
 )
 target_compile_definitions(
   autan_physics_tests
@@ -60,7 +60,9 @@ if(AUTAN_ENABLE_CGNS)
     )
     add_dependencies(autan_euler_run_tests autan-run)
   endif()
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]")
+  # [mpi] cases carry the CTest label mpi: CI's hosted MPI ranks job selects them by it.
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]")
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES LABELS mpi)
   if(AUTAN_ENABLE_CUDA)
     target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
     catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)

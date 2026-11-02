@@ -33,6 +33,7 @@
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/runtime/diagnostic.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
 #include "run_directory.hpp"
@@ -131,8 +132,9 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
-  std::optional<StartState> start;  // input.start, read and checked
-  Json start_averaging;             // `continue`: the previous run's averaging
+  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
+  std::optional<StartState> start;          // input.start, read and checked
+  Json start_averaging;                     // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -664,6 +666,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
   check_periodic(p);
+  // solver-input.md, `devices`: one rank per device, as many as the launcher started.
+  if (p.input.device_count != ranks) {
+    invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
+                                 std::to_string(ranks) + " ranks run the case");
+  }
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
@@ -774,6 +781,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
+  p.groups = entry != nullptr ? &entry->groups : nullptr;
   if (entry != nullptr && entry->scope) {
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
@@ -840,8 +848,15 @@ Json forces_record(const Loads& loads, const ForcesMonitor& monitor, const Frees
 
 class Run final : public Log {
  public:
-  Run(Prepared& p, const SolverBuild& build, Comm& comm)
-      : p_(p), comm_(comm), geometry_(compute_geometry(p.mesh)), local_(make_part()) {
+  Run(Prepared& p, const SolverBuild& build, Comm& comm,
+      std::chrono::steady_clock::time_point launched)
+      : p_(p),
+        comm_(comm),
+        launched_(launched),
+        geometry_(compute_geometry(p.mesh)),
+        groups_(p.groups != nullptr && *p.groups ? (*p.groups)(p.input, p.mesh, geometry_)
+                                                 : CellGroups{}),
+        local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
     if (local_) {
       ghosts_ = comm_.ghost_exchange(*local_);
@@ -914,6 +929,7 @@ class Run final : public Log {
         {"convergence", nullptr},
         {"start", start},
         {"monitors", nullptr},
+        {"timing", nullptr},
         {"diagnostics", Json::array()}};
     if (continued()) {
       info_["iterations"] = in.start->iterations;
@@ -964,6 +980,7 @@ class Run final : public Log {
     }
   }
   [[nodiscard]] const fs::path& path() const { return dir_->path(); }
+  void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
     const StartState* start = nullptr;
@@ -984,7 +1001,11 @@ class Run final : public Log {
                                  .face_global_id = face_global_id_,
                                  .face_reversed = face_reversed_,
                                  .cell_colours = colours_,
-                                 .n_colours = n_colours_};
+                                 .n_colours = n_colours_,
+                                 .group_offsets = group_offsets_,
+                                 .group_cells = group_cells_,
+                                 .cell_group_colours = group_colours_,
+                                 .n_group_colours = n_group_colours_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1026,7 +1047,8 @@ class Run final : public Log {
   }
 
   // On several ranks, each runs its part of the mesh, partitioned by METIS
-  // with the face-count cost of each cell; every rank partitions the same
+  // with the face-count cost of each cell and the physics' groups kept
+  // whole; every rank partitions the same
   // mesh with the same seed, so all agree on the parts (partitioning.md).
   // On one rank, a mesh with periodic pairs runs on its one-part partition,
   // whose image ghosts make each periodic face an interior face; its owned
@@ -1039,7 +1061,12 @@ class Run final : public Log {
     if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
       return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
-    if (n > 1) parts = partition_cells(mesh, n, {.cell_weights = cell_cost_weights(mesh)});
+    if (n > 1) {
+      parts = partition_cells(mesh, n,
+                              {.cell_weights = cell_cost_weights(mesh),
+                               .group_offsets = groups_.offsets,
+                               .group_cells = groups_.cells});
+    }
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1092,17 +1119,42 @@ class Run final : public Log {
   }
   // The global colouring of the mesh (colour_cells), for each cell of the
   // physics' mesh through its global id: every rank computes the same.
+  // With the physics' groups, their colouring and the groups this rank owns
+  // (by increasing least global id, each in the physics' order) likewise.
   void colour_cells_of_physics() {
     const Mesh& mesh = p_.mesh;
-    const auto colours = colour_cells(mesh);
-    std::vector<std::int32_t> by_id(colours.size());
-    for (std::size_t c = 0; c < colours.size(); ++c)
-      by_id[static_cast<std::size_t>(mesh.cell_global_id()[c])] = colours[c];
+    const auto z = [](std::int64_t i) { return static_cast<std::size_t>(i); };
+    const auto global_ids = mesh.cell_global_id();
     const auto ids = physics_mesh().cell_global_id();
-    colours_.resize(ids.size());
-    for (std::size_t c = 0; c < ids.size(); ++c)
-      colours_[c] = by_id[static_cast<std::size_t>(ids[c])];
-    for (const std::int32_t k : colours) n_colours_ = std::max(n_colours_, k + 1);
+    const auto of_physics = [&](const std::vector<std::int32_t>& colours,
+                                std::vector<std::int32_t>& out, std::int32_t& n_out) {
+      std::vector<std::int32_t> by_id(colours.size());
+      for (std::size_t c = 0; c < colours.size(); ++c) by_id[z(global_ids[c])] = colours[c];
+      out.resize(ids.size());
+      for (std::size_t c = 0; c < ids.size(); ++c) out[c] = by_id[z(ids[c])];
+      for (const std::int32_t k : colours) n_out = std::max(n_out, k + 1);
+    };
+    of_physics(colour_cells(mesh), colours_, n_colours_);
+    if (p_.groups == nullptr || !*p_.groups) return;
+    of_physics(colour_cells(mesh, groups_.offsets, groups_.cells), group_colours_,
+               n_group_colours_);
+    std::vector<index_t> owned_at(at(mesh.n_cells()), -1);  // by global id
+    for (index_t c = 0; c < physics_mesh().n_owned_cells(); ++c) owned_at[z(ids[at(c)])] = c;
+    std::vector<std::pair<std::int64_t, std::size_t>> order;  // (least global id, group)
+    for (std::size_t g = 0; g + 1 < groups_.offsets.size(); ++g) {
+      std::int64_t least = std::numeric_limits<std::int64_t>::max();
+      for (auto k = groups_.offsets[g]; k < groups_.offsets[g + 1]; ++k)
+        least = std::min(least, global_ids[at(groups_.cells[z(k)])]);
+      order.emplace_back(least, g);
+    }
+    std::ranges::sort(order);
+    group_offsets_.assign(1, 0);
+    for (const auto& [least, g] : order) {
+      if (owned_at[z(least)] < 0) continue;
+      for (auto k = groups_.offsets[g]; k < groups_.offsets[g + 1]; ++k)
+        group_cells_.push_back(owned_at[z(global_ids[at(groups_.cells[z(k)])])]);
+      group_offsets_.push_back(static_cast<offset_t>(group_cells_.size()));
+    }
   }
 
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
@@ -1181,6 +1233,8 @@ class Run final : public Log {
   // errors, with their rank in `data`.
   void write(std::string_view level, std::string_view source, std::string_view message,
              std::string_view code, std::string_view data_json) override {
+    // Time spent here is the log's, not the solve's (timing.solve_seconds).
+    const auto start = std::chrono::steady_clock::now();
     if (comm_.rank() == 0) {
       dir_->append_log(log_line(level, source, message, code, data_json));
     } else if (level != "info") {
@@ -1188,6 +1242,7 @@ class Run final : public Log {
       data["rank"] = comm_.rank();
       dir_->append_log(log_line(level, source, message, code, data.dump()));
     }
+    log_seconds_ += seconds_since(start);
   }
 
  private:
@@ -1221,8 +1276,8 @@ class Run final : public Log {
     // Steady convergence is measured against iteration 1 of the original run
     // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
-    std::vector<char> exempt;
-    double floor = 0.0;
+    RoundOffExemption exempt(
+        equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -1233,14 +1288,25 @@ class Run final : public Log {
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
     }
     for (std::int64_t it = from; it <= budget; ++it) {
-      // A launcher forwards a signal to every rank, not at the same instant:
-      // the ranks stop together once any has received it.
-      if (comm_.max(std::int64_t{stop_requested}) != 0) {
+      // A launcher forwards a signal to every rank, not at the same instant,
+      // and may abort the job on one: the stop file asks for the same stop
+      // without signals. Rank 0 looks for it; the ranks stop together once
+      // any has a reason to.
+      std::int64_t stop = stop_requested;
+      if (comm_.rank() == 0 && !stop_file_.empty()) {
+        std::error_code ec;
+        if (fs::exists(stop_file_, ec)) stop = 1;
+      }
+      if (comm_.max(stop) != 0) {
         stopped_by_signal_ = true;
         return "stopped";
       }
       iteration_ = it;
+      // The solve: the physics' own work, without the history and log writes.
+      const auto stepping = std::chrono::steady_clock::now();
+      const double logged = log_seconds_;
       StepReport report = physics_->step(it);
+      solve_seconds_ += seconds_since(stepping) - (log_seconds_ - logged);
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -1264,7 +1330,10 @@ class Run final : public Log {
       Json averaging = info_["averaging"];
       if (!steady && in.time.average_from && it > *in.time.average_from) {
         if (it == *in.time.average_from + 1) average_start = time;
+        const auto averaging_start = std::chrono::steady_clock::now();
+        const double logged_before = log_seconds_;
         physics_->accumulate_average(report.time_step);
+        solve_seconds_ += seconds_since(averaging_start) - (log_seconds_ - logged_before);
         averaging = Json{{"from_step", *in.time.average_from + 1},
                          {"to_step", it},
                          {"from_time", average_start},
@@ -1291,39 +1360,26 @@ class Run final : public Log {
       }
       if (steady) {
         if (first.empty()) first = report.residuals;
-        // case-schema.md#time: an equation whose residual at iteration 1 is
-        // below 1e-12 of the largest is exempt while it stays below that
-        // floor; once above, it must drop like the others (W0710, once).
-        if (exempt.empty()) {
-          floor = 1e-12 * *std::ranges::max_element(first);
-          // Equations that left their floor earlier in a continued chain
-          // stay subject to the drop (solver-input.md, `start.woken`).
-          const std::vector<std::string> woken =
-              continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{};
-          for (std::size_t e = 0; e < equations.size(); ++e) {
-            exempt.push_back(
-                first[e] < floor && std::ranges::find(woken, equations[e]) == woken.end() ? 1 : 0);
-          }
+        exempt.reference(first);
+        // case-schema.md#time: equations at the round-off floor are exempt while they stay there
+        // (runtime/round_off.hpp); one leaving it reports W0710, once.
+        for (const std::size_t e : exempt.update(report.residuals)) {
+          add_diagnostic(
+              Diagnostic{.code = "W0710",
+                         .message = "equation " + equations[e] + " left its floor at iteration " +
+                                    std::to_string(it) + ": it now has to converge like the others",
+                         .path = "",
+                         .data_json = Json{{"equation", equations[e]},
+                                           {"iteration", it},
+                                           {"residual", report.residuals[e]},
+                                           {"floor", exempt.floor()}}
+                                          .dump()});
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
         for (std::size_t e = 0; e < equations.size(); ++e) {
           const double r = report.residuals[e];
-          if (exempt[e] != 0 && r > floor) {
-            exempt[e] = 0;
-            add_diagnostic(Diagnostic{
-                .code = "W0710",
-                .message = "equation " + equations[e] + " left its floor at iteration " +
-                           std::to_string(it) + ": it now has to converge like the others",
-                .path = "",
-                .data_json = Json{
-                    {"equation", equations[e]},
-                    {"iteration", it},
-                    {"residual", r},
-                    {"floor",
-                     floor}}.dump()});
-          }
-          converged = converged && (exempt[e] != 0 || r <= first[e] * drop ||
+          converged = converged && (exempt.exempt(e) || r <= first[e] * drop ||
                                     (!floor_.empty() && r <= floor_[e]));
         }
         if (converged) return "converged";
@@ -1365,7 +1421,8 @@ class Run final : public Log {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
-    for (const char* key : {"status", "finished", "iterations", "monitors", "diagnostics"})
+    for (const char* key :
+         {"status", "finished", "iterations", "monitors", "timing", "diagnostics"})
       metadata.erase(key);
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
@@ -1479,6 +1536,25 @@ class Run final : public Log {
     info_["monitors"] = std::move(monitors);
   }
 
+  static double seconds_since(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+  }
+
+  // results.md, run.json `timing`: the process's wall-clock seconds and those
+  // of the physics' steps and averaging (the slowest rank's), for this run's
+  // iterations; null without any. Collective.
+  Json timing(std::int64_t done) {
+    const double solve = -comm_.min(-solve_seconds_);
+    const std::int64_t iterations = done - (continued() ? p_.input.start->iterations : 0);
+    if (iterations <= 0) return nullptr;
+    return Json{
+        {"wall_seconds", seconds_since(launched_)},
+        {"solve_seconds", solve},
+        {"iterations", iterations},
+        {"ns_per_cell_iteration",
+         solve * 1e9 / (static_cast<double>(p_.mesh.n_cells()) * static_cast<double>(iterations))}};
+  }
+
   ExitStatus finish(std::string status, std::int64_t done) {
     info_["iterations"] = done;
     if (physics_ && status != "failed" && status != "diverged") {
@@ -1510,6 +1586,8 @@ class Run final : public Log {
     }
     // Only rank 0 writes the solution: its status is the run's.
     status = comm_.broadcast(status);
+    // A failed run is not timed (results.md).
+    info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
@@ -1522,9 +1600,14 @@ class Run final : public Log {
 
   Prepared& p_;
   Comm& comm_;
+  std::chrono::steady_clock::time_point launched_;  // run_case's entry
+  double log_seconds_ = 0.0;                        // spent in write()
+  fs::path stop_file_;                              // --stop-file; empty: none
+  double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;
+  CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   std::optional<LocalPartition> local_;
   // PhysicsContext's global keys of the physics' faces: the partition's, or
   // the mesh's own (identity, none reversed).
@@ -1532,6 +1615,11 @@ class Run final : public Log {
   std::vector<std::uint8_t> face_reversed_;
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
   std::int32_t n_colours_ = 0;
+  // The groups this rank owns, over the physics mesh's owned cells, and their colouring.
+  std::vector<offset_t> group_offsets_;
+  std::vector<index_t> group_cells_;
+  std::vector<std::int32_t> group_colours_;
+  std::int32_t n_group_colours_ = 0;
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial
@@ -1547,8 +1635,9 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks) {
-  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks});
+                          bool several_ranks, PartitionGroups groups) {
+  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
+                                              std::move(groups)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
@@ -1566,7 +1655,8 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
-                    std::FILE* err) {
+                    std::FILE* err, const fs::path& stop_file) {
+  const auto launched = std::chrono::steady_clock::now();
   // Every rank reads and checks the same input, so all reach the same
   // verdict; rank 0 prints it.
   std::unique_ptr<Comm> comm;
@@ -1605,7 +1695,8 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   stop_requested = 0;
   const SignalGuard signals;
   try {
-    Run run(*prepared, build, *comm);
+    Run run(*prepared, build, *comm, launched);
+    run.stop_on(stop_file);
     run.open(runs);
     if (comm->rank() == 0) {
       std::fprintf(out, "%s\n", run.path().string().c_str());
@@ -1613,16 +1704,22 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     }
     return run.execute();
   } catch (const std::exception& e) {
-    // The run directory could not be created or its run.json not written:
+    // The run could not be set up (a coded error keeps its code, invalid
+    // partition groups E0140), its directory created or its run.json written:
     // nothing records the failure but this diagnostic. On several ranks, the
     // others may wait in a collective call: every rank ends.
-    std::fprintf(err, "%s\n",
-                 Diagnostic{.code = "E0704",
-                            .message = e.what(),
-                            .path = "",
-                            .data_json = Json{{"rank", comm->rank()}}.dump()}
-                     .json()
-                     .c_str());
+    // Every rank may fail here at once: each line goes out in one write, so
+    // that the launcher's merged stderr keeps lines whole.
+    const auto* coded = dynamic_cast<const Error*>(&e);
+    const std::string line =
+        Diagnostic{.code = coded != nullptr ? error_code_string(coded->code()) : "E0704",
+                   .message = e.what(),
+                   .path = "",
+                   .data_json = Json{{"rank", comm->rank()}}.dump()}
+            .json() +
+        "\n";
+    std::fwrite(line.data(), 1, line.size(), err);
+    std::fflush(err);
     if (comm->size() > 1) comm->abort(static_cast<int>(ExitStatus::failed));
     return ExitStatus::failed;
   }
