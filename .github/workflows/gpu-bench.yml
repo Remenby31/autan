@@ -118,9 +118,10 @@ jobs:
       results: ${{ steps.results.outputs.artifact-id }}
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
-      # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
-      # behind other measurements on the shared Spark.
-      AUTAN_BENCH_LOCK_TIMEOUT: "900"
+      # Every wait for the GPU lock fails clearly after 25 minutes instead of waiting forever
+      # behind other measurements on the shared Spark: CI waits at most for the hold in
+      # progress and one agent's turn, 10 minutes each (docs/infra/bench.md).
+      AUTAN_BENCH_LOCK_TIMEOUT: "1500"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

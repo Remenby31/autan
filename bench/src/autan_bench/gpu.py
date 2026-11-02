@@ -133,18 +133,13 @@ def _held(path: Path) -> bool:
         return False
 
 
-# After this long waiting, an agent yields to main's CI only, not to pull requests' (#360);
-# AUTAN_GPU_LOCK_FAIR=1 says autan-gpu-lock -n already waited that long. As in autan-gpu-lock.
-FAIR_S = float(os.environ.get("AUTAN_GPU_LOCK_FAIR_S", "600"))
-
-
-def ci_waiting(lock: Path, fair: bool = False) -> bool:
+def ci_waiting(lock: Path, bypass: bool = False) -> bool:
     """Whether a job with priority waits for or holds the GPU (docs/infra/bench.md): outside CI,
-    any CI job (it holds ``ci.lock`` shared), or once ``fair``, a job on main only
-    (``main.lock``); in a CI job that is not on main, a job on main. A job on main never
-    yields."""
+    any CI job (it holds ``ci.lock`` shared), or during an agent's turn (``bypass``), a job on
+    main only (``main.lock``); in a CI job that is not on main, a job on main. A job on main
+    never yields."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
-        return _held(lock.parent / ("main.lock" if fair else "ci.lock"))
+        return _held(lock.parent / ("main.lock" if bypass else "ci.lock"))
     if os.environ.get("GITHUB_REF") == "refs/heads/main":
         return False
     return _held(lock.parent / "main.lock")
@@ -168,17 +163,18 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
     with os.fdopen(fd) as handle:
         start = time.monotonic()
         warned = False
-        earned = os.environ.get("AUTAN_GPU_LOCK_FAIR") == "1"
+        # A turn autan-gpu-lock -n took for this run (#360), bounded by its -t; autan-bench alone
+        # never takes one, since nothing bounds how long it holds the lock.
+        bypass = os.environ.get("AUTAN_GPU_LOCK_BYPASS") == "1"
         while True:
-            fair = earned or time.monotonic() - start >= FAIR_S
             # CI goes first; a lock taken just as CI announced itself is given back.
-            if not ci_waiting(path, fair):
+            if not ci_waiting(path, bypass):
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     pass
                 else:
-                    if not ci_waiting(path, fair):
+                    if not ci_waiting(path, bypass):
                         break
                     fcntl.flock(handle, fcntl.LOCK_UN)
             if not warned:
