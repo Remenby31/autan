@@ -124,9 +124,10 @@ class EulerPhysics final : public runtime::Physics {
         // colouring of the lines by global id: the same sweeps on any number of ranks.
         // A mesh without lines has no groups: every cell is its own, coloured as cell_colours.
         const bool grouped = !ctx.cell_group_colours.empty();
+        // Each cell sums its couplings by global face id: the same sums on any partition.
         lines_.emplace(mesh, ctx.group_offsets, ctx.group_cells,
                        grouped ? ctx.cell_group_colours : ctx.cell_colours,
-                       grouped ? ctx.n_group_colours : ctx.n_colours);
+                       grouped ? ctx.n_group_colours : ctx.n_colours, ctx.face_global_id);
         ctx.log.write("info", "linear", "line-implicit block Gauss-Seidel", {},
                       nlohmann::json{{"colours", lines_->n_colours()},
                                      {"sweeps", gauss_seidel_sweeps},
