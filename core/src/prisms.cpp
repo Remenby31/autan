@@ -321,6 +321,7 @@ class Merger {
     in.face_zones.assign(m_.face_zones().begin(), m_.face_zones().end());
     in.cell_zones.assign(m_.cell_zones().begin(), m_.cell_zones().end());
     in.source = m_.source();
+    in.face_node_offsets.push_back(0);
     old_to_new.assign(at(m_.n_cells()), no_cell);
     std::vector<index_t> prism_cell(prisms_.size(), no_cell);
     index_t n = 0;
