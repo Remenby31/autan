@@ -407,8 +407,8 @@ SolverInput parse_solver_input(const std::string& text) {
   }
   const Object root(doc, "",
                     {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
-                     "precision", "deterministic", "devices", "physics", "freestream", "boundaries",
-                     "cell_zones", "time", "monitors"});
+                     "precision", "reproducibility", "devices", "physics", "freestream",
+                     "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -436,7 +436,7 @@ SolverInput parse_solver_input(const std::string& text) {
     in.verification = std::move(verification);
   }
   in.precision = root.tag("precision", {"fp32+acc64", "fp64"});
-  in.deterministic = root.boolean("deterministic");
+  in.reproducibility = root.tag("reproducibility", {"none", "run", "ranks"});
   {
     const Object d(root.get("devices"), "devices", {"kind", "count"});
     in.device_kind = d.tag("kind", {"cpu", "cuda", "hip"});
@@ -490,10 +490,11 @@ SolverInput parse_solver_input(const std::string& text) {
     const Json& t = root.get("time");
     const Json kind = t.is_object() && t.contains("kind") ? t.at("kind") : Json();
     if (kind == "steady") {
-      const Object o(t, "time", {"kind", "max_iterations", "residual_orders"});
+      const Object o(t, "time", {"kind", "max_iterations", "residual_orders", "linear_solver"});
       in.time.kind = "steady";
       in.time.max_iterations = o.integer("max_iterations", 1);
       in.time.residual_orders = o.positive("residual_orders");
+      in.time.linear_solver = o.tag("linear_solver", {"multigrid", "gauss-seidel"});
     } else if (kind == "unsteady") {
       const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from"});
       in.time.kind = "unsteady";

@@ -226,6 +226,8 @@ class WMLES(Spec):
 
 Turbulence = Annotated[Inviscid | Laminar | SA | SST | DDES | WMLES, Field(discriminator="model")]
 Precision = Literal["fp32+acc64", "fp64"]
+# What bits a run guarantees to repeat (case-schema.md#physics).
+Reproducibility = Literal["none", "run", "ranks"]
 
 
 def _air() -> IdealGas:
@@ -240,6 +242,7 @@ class Compressible(Spec):
     kind: Literal["compressible"] = "compressible"
     turbulence: Turbulence
     precision: Precision = "fp32+acc64"
+    reproducibility: Reproducibility = "run"
     gas: IdealGas = Field(default_factory=_air)
 
 
@@ -249,6 +252,7 @@ class Incompressible(Spec):
     kind: Literal["incompressible"] = "incompressible"
     turbulence: Turbulence
     precision: Precision = "fp32+acc64"
+    reproducibility: Reproducibility = "run"
     fluid: ConstantDensityFluid
 
 
@@ -271,11 +275,13 @@ class Freestream(Spec):
 
 class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
-    ``max_iterations`` iterations."""
+    ``max_iterations`` iterations; an implicit physics solves each step's linear system with
+    ``linear_solver``."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
     residual_orders: PositiveNumber = 8.0
+    linear_solver: Literal["multigrid", "gauss-seidel"] = "multigrid"
 
 
 class Unsteady(Spec):

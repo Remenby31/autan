@@ -7,10 +7,11 @@ import re
 import tempfile
 import tomllib
 import webbrowser
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, BinaryIO
+from urllib.parse import quote
 
 import autan
 import uvicorn
@@ -18,9 +19,10 @@ from autan.errors import CaseError, doc_url
 from autan.results import LogLine, log_line_problems
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 from watchfiles import Change, awatch
 
 from autan_ui.cases import Meshes, materials, render
@@ -80,7 +82,7 @@ class Follower:
         self.offsets = {name: offsets.get(name, 0) for name in STREAMED}
         self.read = dict(self.offsets)
         self.run: dict[str, Any] | None = None
-        self.run_mtime: int | None = None
+        self.version: tuple[object, ...] | None = None
         self.sent = False
         self.done = False
 
@@ -89,10 +91,10 @@ class Follower:
         the stream calls `delivered` once it has sent it, so that a reconnection resumes from
         what the client received, not from what was read."""
         events: list[tuple[str, Any]] = []
-        mtime = _mtime(self.folder)
-        if self.run is None or mtime != self.run_mtime:
+        version = _version(self.folder)
+        if self.run is None or version != self.version:
             try:
-                self.run_mtime, self.run = mtime, read_run(self.folder)
+                self.version, self.run = version, read_run(self.folder)
             except ValueError as error:
                 self.done = True
                 return [("invalid", str(error))]
@@ -121,6 +123,21 @@ class Follower:
 
 
 STREAMED = {"history.jsonl": "history", "log.jsonl": "log"}
+
+
+class _FileResponse(StreamingResponse):
+    """A stream over an open file, which closes it once the response has run, sent in full or
+    not: neither a background task nor the generator's own cleanup runs when sending fails."""
+
+    def __init__(self, file: BinaryIO, content: Iterator[bytes], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._file = file
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._file.close()
 
 
 def _log_line(record: object) -> dict[str, Any]:
@@ -155,9 +172,11 @@ def _file_offsets(value: object) -> dict[str, int]:
     return {k: v for k, v in value.items() if k in STREAMED and type(v) is int and v >= 0}
 
 
-def _mtime(folder: Folder) -> int | None:
-    stat = folder.stat("run.json")
-    return stat.st_mtime_ns if stat else None
+def _version(folder: Folder) -> tuple[object, ...]:
+    # Every file run.json is checked against: a change to any of them, even one that keeps the
+    # modification time and size, can change the verdict (ctime moves with any write).
+    stats = (folder.stat(name) for name in ("run.json", "case.toml", "mesh-info.json"))
+    return tuple((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats)
 
 
 def _open_build(static: Path | None) -> Folder | None:
@@ -184,6 +203,13 @@ def _list_build(build: Folder) -> set[str]:
             if not is_link(here / name):
                 names.add((here / name).relative_to(build.path).as_posix())
     return names
+
+
+def checked_run(folder: Folder) -> dict[str, Any]:
+    try:
+        return read_run(folder)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 def create_app(
@@ -318,13 +344,65 @@ def create_app(
 
     @app.get("/api/runs/{run_id}")
     def run_details(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
-        return registry.details(find_run(run_id))
+        try:
+            return registry.details(find_run(run_id))
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.get("/api/runs/{run_id}/files/{name}")
+    def run_file(run_id: Annotated[str, Depends(existing_run)], name: str) -> Response:
+        """A regular file of the run directory, as a download; 404 for any name the directory
+        does not list as one, 409 for the solution of a run still running (results.md)."""
+        directory = find_run(run_id)
+        listed = {
+            entry.name: entry.name
+            for entry in directory.iterdir()
+            if not entry.name.startswith(".")
+        }.get(name)
+        if listed is None:
+            raise HTTPException(404, f"run {run_id} has no file {name}")
+        with Folder(directory) as folder:
+            if listed == "solution.cgns" and read_run(folder)["status"] == "running":
+                raise HTTPException(409, f"run {run_id} is still running: no solution yet")
+            try:
+                descriptor = folder.open(listed)
+            except OSError as error:
+                raise HTTPException(404, f"run {run_id} has no file {name}") from error
+        file = os.fdopen(descriptor, "rb")
+        # The length as opened: a file still being appended to is sent up to it.
+        size = os.fstat(descriptor).st_size
+
+        def chunks() -> Iterator[bytes]:
+            left = size
+            while left > 0 and (chunk := file.read(min(left, 1 << 20))):
+                left -= len(chunk)
+                yield chunk
+
+        # Closed when the response has run, whatever happened while sending, and here if the
+        # response cannot be built.
+        try:
+            # RFC 6266: an ASCII fallback, and the exact name in UTF-8.
+            fallback = re.sub(r"[^A-Za-z0-9._-]", "_", listed)
+            return _FileResponse(
+                file,
+                chunks(),
+                media_type=mimetypes.guess_type(listed)[0] or "application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(listed, safe='')}"
+                    ),
+                    "Content-Length": str(size),
+                },
+            )
+        except BaseException:
+            file.close()
+            raise
 
     @app.get("/api/runs/{run_id}/plan")
     def run_plan(run_id: Annotated[str, Depends(existing_run)]) -> dict[str, Any]:
         """`autan plan --json` of the run's stored case against its stored MeshInfo."""
         with Folder(find_run(run_id)) as folder:
-            run = read_run(folder)
+            run = checked_run(folder)
             case_toml = folder.read("case.toml")
             mesh_info = folder.read("mesh-info.json")
             manufactured = (
@@ -422,7 +500,7 @@ def create_app(
         """The wall surface of the run's solution.cgns with Cp, Cf and Pressure per node."""
         directory = find_run(run_id)
         with Folder(directory) as folder:
-            if read_run(folder)["status"] == "running":
+            if checked_run(folder)["status"] == "running":
                 # results.md: the solution is not a result while the run is running.
                 raise HTTPException(409, f"run {run_id} is still running")
             stat = folder.stat("solution.cgns")

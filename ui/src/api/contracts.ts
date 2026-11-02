@@ -30,7 +30,6 @@ export interface Run {
   mesh: { path: string; sha256: string; groups_sha256: string | null };
   solver: { version: string; commit: string; backend: "cuda" | "hip" | "cpu" | "fake" };
   precision: "fp32+acc64" | "fp64";
-  deterministic: boolean;
   devices: { kind: "cuda" | "hip" | "cpu"; count: number };
   started: string;
   finished: string | null;
@@ -42,6 +41,14 @@ export interface Run {
   start: RunStart | null;
   /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
   convergence: { floor: Record<string, number> } | null;
+  /** Timing of this run alone, null while running, without iterations and for the fake backend
+   * (results.md#runjson); bench/ measures performance. */
+  timing: {
+    wall_seconds: number;
+    solve_seconds: number;
+    iterations: number;
+    ns_per_cell_iteration: number;
+  } | null;
   /** Every monitor's record on the final state, null while running and for diverged and
    * failed runs (results.md#runjson). */
   monitors: Record<string, Forces & { iteration: number }> | null;
@@ -90,7 +97,8 @@ export interface RunRegistry {
 }
 
 export interface RunSummary {
-  iteration: number;
+  /** Null until the history records an iteration; run.json's count holds then. */
+  iteration: number | null;
   /** Orders of magnitude the slowest residual has dropped since iteration 1. */
   orders: number | null;
   /** `orders` along the run, at most 48 points. */

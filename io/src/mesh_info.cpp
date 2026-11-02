@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <regex>
@@ -371,6 +374,93 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256,
       {"quality", {{"max_non_orthogonality_deg", max_angle}, {"max_faces_per_cell", max_faces}}},
   };
   return doc.dump(2);
+}
+
+std::string surface_bytes(const Mesh& mesh, const std::string& sha256) {
+  static_assert(std::endian::native == std::endian::little, "autan.surface/1 is little-endian");
+  if (mesh.n_owned_cells() != mesh.n_cells()) {
+    throw Error(ErrorCode::mesh_inconsistent_sizes, "a surface describes an unpartitioned mesh");
+  }
+  // Outward normals need positive cells: the geometry checks them (E0120, E0121).
+  (void)compute_geometry(mesh);
+  const MeshInfoZones zones = meshinfo_zones(mesh);
+  const auto offsets = mesh.boundary_zone_offsets();
+  std::vector<std::int64_t> node_of(at(mesh.n_points()), -1);
+  std::vector<double> positions;
+  std::vector<std::uint64_t> face_offsets{0}, face_nodes;
+  Json zone_list = Json::array();
+  for (const index_t zi : zones.boundary) {
+    const auto z = at(zi);
+    const FaceZone& zone = mesh.face_zones()[z];
+    zone_list.push_back(Json{{"name", zone.name},
+                             {"type", name_or_null(bc_type_name(zone.kind))},
+                             {"native_type", string_or_null(zone.bc_type)},
+                             {"first_face", face_offsets.size() - 1},
+                             {"faces", offsets[z + 1] - offsets[z]}});
+    for (index_t f = offsets[z]; f < offsets[z + 1]; ++f) {
+      for (const index_t p : mesh.face_nodes(f)) {
+        auto& node = node_of[at(p)];
+        if (node < 0) {
+          node = static_cast<std::int64_t>(positions.size() / 3);
+          const auto x = mesh.x()[at(p)], y = mesh.y()[at(p)], zc = mesh.z()[at(p)];
+          positions.insert(positions.end(), {x, y, zc});
+        }
+        face_nodes.push_back(static_cast<std::uint64_t>(node));
+      }
+      face_offsets.push_back(face_nodes.size());
+    }
+  }
+  constexpr std::uint64_t u32_max = std::numeric_limits<std::uint32_t>::max();
+  if (face_nodes.size() > u32_max || positions.size() / 3 > u32_max) {
+    throw Error(ErrorCode::mesh_too_large, "the boundary surface exceeds 32-bit indices");
+  }
+  const auto to_u32 = [](const std::vector<std::uint64_t>& v) {
+    std::vector<std::uint32_t> out(v.begin(), v.end());
+    return out;
+  };
+  const std::vector<std::uint32_t> offsets32 = to_u32(face_offsets), nodes32 = to_u32(face_nodes);
+
+  struct Buffer {
+    const char* name;
+    const char* dtype;
+    const void* data;
+    std::size_t length, bytes;
+  };
+  const std::array<Buffer, 3> buffers{{
+      {"positions", "f64", positions.data(), positions.size(), positions.size() * sizeof(double)},
+      {"face_offsets", "u32", offsets32.data(), offsets32.size(),
+       offsets32.size() * sizeof(std::uint32_t)},
+      {"face_nodes", "u32", nodes32.data(), nodes32.size(), nodes32.size() * sizeof(std::uint32_t)},
+  }};
+  const auto aligned = [](std::size_t n) { return (n + 7) / 8 * 8; };
+  Json layout = Json::array();
+  std::size_t offset = 0;
+  for (const Buffer& b : buffers) {
+    layout.push_back(
+        Json{{"name", b.name}, {"dtype", b.dtype}, {"offset", offset}, {"length", b.length}});
+    offset = aligned(offset + b.bytes);
+  }
+  const Json header{{"schema", "autan.surface/1"},
+                    {"source", {{"sha256", sha256}}},
+                    {"nodes", positions.size() / 3},
+                    {"faces", face_offsets.size() - 1},
+                    {"zones", zone_list},
+                    {"buffers", layout}};
+  std::string text = header.dump();
+  text.append(aligned(4 + text.size()) - 4 - text.size(), ' ');
+  if (text.size() > u32_max) {
+    throw Error(ErrorCode::mesh_too_large, "the surface header exceeds 2^32 - 1 bytes");
+  }
+  std::string out(4 + text.size() + offset, '\0');
+  const auto length = static_cast<std::uint32_t>(text.size());
+  std::memcpy(out.data(), &length, 4);
+  std::memcpy(out.data() + 4, text.data(), text.size());
+  std::size_t at_byte = 4 + text.size();
+  for (const Buffer& b : buffers) {
+    if (b.bytes > 0) std::memcpy(out.data() + at_byte, b.data, b.bytes);
+    at_byte += aligned(b.bytes);
+  }
+  return out;
 }
 
 }  // namespace autan::io

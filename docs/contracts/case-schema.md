@@ -27,6 +27,7 @@ mesh_unit = "m"
 [physics]
 kind = "compressible"
 precision = "fp32+acc64"
+reproducibility = "run"
 turbulence = { model = "sa", nu_tilde_ratio = 3.0 }
 gas = { kind = "ideal-gas", name = "air", molar_mass = "0.0289647 kg / mol", gamma = 1.4, prandtl = 0.72, viscosity = { law = "sutherland", mu_ref = "1.716e-05 Pa * s", t_ref = "273.15 K", s = "110.4 K" } }
 
@@ -42,6 +43,7 @@ temperature = "288.15 K"
 kind = "steady"
 max_iterations = 10000
 residual_orders = 8.0
+linear_solver = "multigrid"
 
 [[boundaries]]
 zones = "wing.*"
@@ -94,6 +96,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `gas` | [IdealGas](#materials) | air |
 
 `kind = "incompressible"`: pressure-based solver.
@@ -102,9 +105,12 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `fluid` | [ConstantDensityFluid](#materials) | required |
 
 `precision = "fp32+acc64"` computes in FP32 and accumulates solution updates, norms and geometry in FP64 (see `docs/PLAN.md`). `"fp64"` computes everything in FP64.
+
+`reproducibility` sets which bits a run repeats ([results.md](results.md#runjson)). `"run"` repeats them from run to run on the same number of ranks. `"ranks"` also repeats them on any number of ranks, one included, and in any cell order, at the cost of gathering sums in a fixed order; a physics that cannot honour it refuses the case before any directory exists (`E1109`). `"none"` repeats nothing and allows floating-point atomics.
 
 `gas` and `fluid` are the default medium of every fluid cell zone.
 
@@ -144,16 +150,18 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0 |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"`, default `"multigrid"` |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
 
 A steady run uses local time stepping and has converged when every residual of [results.md](results.md#history) has dropped `residual_orders` orders of magnitude below its value at iteration 1 (of the original run, for a continued one); it stops after `max_iterations` otherwise.
+
+`linear_solver` chooses how an implicit physics solves each step's linear system: `"multigrid"`, agglomeration multigrid, or `"gauss-seidel"`, symmetric block Gauss-Seidel over a colouring of the whole mesh, the same algorithm on any number of ranks. A physics states which it runs where (the Euler physics: `"multigrid"` on one rank only; `E0706` otherwise); an explicit physics ignores it.
 
 In `fp32+acc64`, round-off stops the residuals before they can drop 8 orders. So an equation also counts as converged once its residual reaches its floor C·ε₃₂·Φ_k, whichever comes first. The constants are C = 0.5 and ε₃₂ = 2⁻²³. Φ_k = f_k·√(Σ_i A_i²/N) is the flux scale of equation k: A_i is the surface of cell i (all its faces), the sum and N are those of the history residual, and f_k is the face flux magnitude of the freestream. With q∞ = |v∞| + c∞ and c∞ = √(γ p∞/ρ∞), f_k is ρ∞ q∞ for density, ρ∞ q∞² for each momentum, and ρ∞ H∞ q∞ for energy, with H∞ = c∞²/(γ−1) + |v∞|²/2. C puts the floor at least 4.3 times above the round-off plateaus measured on a NACA 0012 slice (M 0.5), manufactured solutions and Ni's transonic bump (M 0.675). A physics that gives no flux scale has no floor. The floors of a run are in its `run.json` ([results.md](results.md#runjson)). An equation whose residual at iteration 1 is below the floor, 1e-12 times the largest residual of any equation at iteration 1, is identically zero (the transverse momentum of a one-cell 2D slice, for example) and is exempt as long as its residual stays at or below the floor. The first time it rises above the floor, the runtime reports `W0710` and the equation must meet the rule like the others for the rest of the run, continuations included.
 
 With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
 
-Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
+Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 

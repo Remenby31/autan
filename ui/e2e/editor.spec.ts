@@ -1,5 +1,9 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { RUNS } from "../playwright.config";
 
 // py/examples/crm_hl.py without its module docstring and the blank line after it, as the
 // SDK's own gate compares it with Case.to_python (py/tests/test_render.py).
@@ -178,21 +182,6 @@ test("picking keeps working on another mesh", async ({ page }) => {
   await expect(rule.getByLabel("Condition")).toHaveValue("wall");
 });
 
-test("a mesh without a surface draws nothing to pick", async ({ page }) => {
-  await page.goto(`/cases/new${WEBGL}`);
-  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
-  await expect(page.getByTestId("mesh-view")).toHaveAttribute("data-ready", "true");
-  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
-  await expect(page.getByText("No boundary surface for this mesh")).toBeVisible();
-
-  const view = page.getByTestId("mesh-view");
-  const box = await view.boundingBox();
-  if (!box) throw new Error("the mesh view has no box");
-  await view.click({ position: { x: box.width / 2, y: box.height / 2 } });
-
-  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
-});
-
 test("an inviscid case walls a picked wall with slip", async ({ page }) => {
   await page.goto(`/cases/new${WEBGL}`);
   await page.getByLabel("Turbulence").selectOption("inviscid");
@@ -227,6 +216,7 @@ test("the heat exchanger built in the editor writes py/examples/heat_exchanger.p
   await page.getByLabel("Turbulence").selectOption("sst");
   await page.getByLabel("Mach").fill("0.1");
   await page.getByLabel("Temperature", { exact: true }).fill("300.0");
+  await page.getByLabel("Given by").selectOption("pressure");
   await page.getByLabel("Pressure", { exact: true }).fill("101325.0");
   await cellZone(page, 1, "co2", "fluid", "CO2");
   await cellZone(page, 2, "plate", "solid", "COPPER");
@@ -277,4 +267,272 @@ test("material libraries that fail to load say so and can be retried", async ({ 
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByText("The material libraries could not be listed")).toHaveCount(0);
   await expect(page.getByLabel("Gas").locator("option", { hasText: "co2" })).toHaveCount(1);
+});
+
+test("a copy of every sample run's case writes that case's SDK code", async ({ page }) => {
+  const listed: { run_id: string; status: string }[] = (
+    await (await page.request.get("/api/runs")).json()
+  ).runs;
+  expect(listed.length).toBeGreaterThan(0);
+  for (const { run_id } of listed) {
+    // The oracle: the SDK's code of the case the run stored, rendered by the server.
+    const stored = (await (await page.request.get(`/api/runs/${run_id}`)).json()).case;
+    const sdk = await (
+      await page.request.post("/api/cases/render", { data: { case: stored } })
+    ).json();
+    expect(sdk.ok, run_id).toBe(true);
+
+    await page.goto(`/runs/${run_id}`);
+    await page.getByRole("button", { name: "Edit a copy" }).click();
+    await expect(page).toHaveURL(new RegExp(`/cases/new\\?run=${run_id}`));
+    await expect.poll(() => page.getByTestId("case-py").textContent()).toBe(sdk.python);
+    await expect(page.getByText("Every setting of the run's case is in the form.")).toBeVisible();
+  }
+});
+
+test("a copy of a case the form cannot say lists what it changes", async ({ page }) => {
+  // A real run of a case with an unsteady time, which the editor does not offer yet, found by
+  // its own case name and removed afterwards.
+  const dir = mkdtempSync(join(tmpdir(), "autan-unsteady-"));
+  const name = `unsteady-${Date.now()}`;
+  writeFileSync(
+    join(dir, "case.py"),
+    readFileSync("../py/examples/crm_hl.py", "utf8").replace('"crm-hl"', `"${name}"`) +
+      "case.time = autan.Unsteady(steps=3, dt=1e-3 * autan.units.s)\n",
+  );
+  execFileSync("uv", [
+    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
+    ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
+  ]);
+  const listed: { run_id: string; case: { name: string } }[] = (
+    await (await page.request.get("/api/runs")).json()
+  ).runs;
+  const run = listed.find((r) => r.case.name === name);
+  if (!run) throw new Error("the unsteady run is not listed");
+  try {
+    await page.goto(`/cases/new?run=${run.run_id}`);
+
+    await expect(page.getByTestId("dropped")).toContainText('time.kind: "unsteady" → "steady"');
+  } finally {
+    rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the form waits for the copy, and a run it cannot read says so", async ({ page }) => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/materials", async (route) => {
+    await held;
+    await route.continue();
+  });
+  const listed: { run_id: string }[] = (await (await page.request.get("/api/runs")).json()).runs;
+  await page.goto(`/cases/new?run=${listed[0]?.run_id}`);
+  // The case's own name, not a monitor's.
+  const caseName = page
+    .getByRole("group")
+    .filter({ hasNotText: "Forces monitor" })
+    .getByLabel("Name")
+    .first();
+  await expect(caseName).toBeDisabled();
+  release();
+  await expect(caseName).toBeEnabled();
+  await expect(caseName).not.toHaveValue("");
+
+  await page.goto("/cases/new?run=run-20000101T000000Z-00000000");
+  await expect(
+    page.getByText("The run run-20000101T000000Z-00000000 could not be read"),
+  ).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
+test("a planned case is copied as case.py or saved as case.toml", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/cases/new");
+  const copy = page.getByRole("button", { name: "Copy case.py" });
+  const save = page.getByRole("button", { name: "Save case.toml" });
+  await expect(copy).toBeDisabled();
+
+  await crmHl(page);
+  await expect(page.getByTestId("plan-status")).toHaveText("ready");
+  // An edit not yet rendered is not what the buttons would hand over.
+  await page.getByLabel("Mach").fill("0.25");
+  await expect(copy).toBeDisabled();
+  await page.getByLabel("Mach").fill("0.2");
+  await copy.click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(CRM_HL);
+  const download = page.waitForEvent("download");
+  await save.click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("crm-hl.toml");
+  const saved = readFileSync(await file.path(), "utf8");
+  await page.getByRole("tab", { name: "case.toml" }).click();
+  expect(saved).toBe(await page.getByTestId("case-toml").textContent());
+});
+
+test("a clipboard that refuses the copy says so", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+    });
+  });
+  await page.goto("/cases/new");
+  await crmHl(page);
+  await page.getByRole("button", { name: "Copy case.py" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "clipboard" })).toBeVisible();
+});
+
+test("the plan sits below the code, and its status counts its errors", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/cases/new");
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("hybrid-cgns");
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await page.getByLabel("Mach").fill("0.8");
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+
+  const plan = page.getByTestId("plan");
+  await expect(page.getByTestId("plan-status")).toContainText("refused");
+  // One error per note, and one per zone on the line of zones without a condition (E0412).
+  const notes = await page.getByTestId("plan-diagnostics").getByRole("alert").count();
+  const uncovered = Number((await page.getByTestId("uncovered").textContent())?.split(" ")[0]);
+  await expect(page.getByTestId("plan-status")).toHaveText(`refused: ${notes + uncovered} errors`);
+  const code = await page.getByTestId("case-py").boundingBox();
+  const status = await plan.boundingBox();
+  if (!code || !status) throw new Error("the code or the plan is not laid out");
+  expect(status.y).toBeGreaterThanOrEqual(code.y + code.height);
+});
+
+test("rules a new mesh does not have are offered for removal", async ({ page }) => {
+  await page.goto("/cases/new");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await rule(page, 1, "zmax", "symmetry");
+  await rule(page, 2, "wing.*", "wall");
+  await rule(page, 3, "xmin", "farfield");
+
+  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
+
+  // crm-hl.meshinfo.json has no zone zmax or xmin; a rule added since is not the mesh's doing.
+  await expect(page.getByTestId("stale-rules")).toHaveText("zmax · xmin");
+  await page.getByRole("button", { name: "Add rule" }).click();
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  const rules = page.getByRole("group", { name: /^Boundary rule/ });
+  await expect(rules).toHaveCount(2);
+  await expect(rules.first().getByLabel("Zones")).toHaveValue("wing.*");
+  await expect(rules.last().getByLabel("Zones")).toHaveValue("");
+  await expect(page.getByTestId("stale-rules")).toHaveCount(0);
+});
+
+test("a mesh without a 3D view lists its zones to pick from", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await expect(page.getByTestId("mesh-view")).toHaveAttribute("data-ready", "true");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("crm-hl");
+  const list = page.getByTestId("zone-list");
+  await expect(list.getByRole("button")).toHaveText(
+    JSON.parse(
+      readFileSync("../py/tests/fixtures/crm-hl.meshinfo.json", "utf8"),
+    ).boundary_zones.map((z: { name: string }) => z.name),
+  );
+
+  await expect(page.getByRole("group", { name: /^Boundary rule/ })).toHaveCount(0);
+  const symmetry = list.getByRole("button", { name: "symmetry" });
+  await symmetry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(symmetry).toBeFocused();
+  const ring = await symmetry.evaluate((el) => getComputedStyle(el).boxShadow);
+  await page.getByLabel("Name").focus();
+  expect(ring).not.toBe(await symmetry.evaluate((el) => getComputedStyle(el).boxShadow));
+  await symmetry.click();
+  const rule = page.getByRole("group", { name: "Boundary rule 1" });
+  await expect(rule.getByLabel("Zones")).toHaveValue("symmetry");
+  await expect(rule.getByLabel("Condition")).toHaveValue("symmetry");
+});
+
+test("a new case asks for what it lacks before showing errors", async ({ page }) => {
+  await page.goto("/cases/new");
+  // Nothing typed yet: what the SDK requires (case-schema.md), not its errors.
+  await expect(page.getByTestId("still-to-set")).toHaveText(
+    "Still to set: Name · Mesh · Turbulence",
+  );
+  await expect(page.getByTestId("diagnostics").getByRole("alert")).toHaveCount(0);
+
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("hybrid-cgns");
+  await page.getByLabel("Turbulence").selectOption("sa");
+  await page.getByLabel("Mach").fill("0.3");
+  await expect(page.getByTestId("still-to-set")).toHaveText(
+    "Still to set: Reynolds number or pressure",
+  );
+  // A value set and refused is an error at once.
+  await page.getByLabel("Mach").fill("-0.3");
+  await expect(page.getByTestId("diagnostics")).toContainText("freestream.mach");
+  await page.getByLabel("Mach").fill("0.3");
+
+  // A Reynolds number needs its reference length (E0306): still to set, not an error.
+  await page.getByLabel("Reynolds number", { exact: true }).fill("1000000");
+  await expect(page.getByTestId("still-to-set")).toHaveText("Still to set: Reference length");
+  await expect(page.getByTestId("diagnostics").getByRole("alert")).toHaveCount(0);
+  await page.getByLabel("Reference length", { exact: true }).fill("1");
+  // Inviscid with a Reynolds number already given: the choice stays, to give a pressure.
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await expect(page.getByLabel("Given by")).toBeVisible();
+  await page.getByLabel("Turbulence").selectOption("sa");
+  // One of Reynolds number and pressure (E0306): choosing one clears the other; the reference
+  // length stays, the moments need it.
+  await page.getByLabel("Given by").selectOption("pressure");
+  await expect(page.getByLabel("Reference length", { exact: true })).toHaveValue("1");
+  await expect(page.getByLabel("Reynolds number", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Pressure", { exact: true }).fill("101325");
+  await expect(page.getByTestId("case-py")).toContainText("pressure=101325");
+  expect(await page.getByTestId("case-py").textContent()).not.toMatch(/\bre=/);
+  // An inviscid flow has no Reynolds number to give.
+  await page.getByLabel("Turbulence").selectOption("inviscid");
+  await expect(page.getByLabel("Given by")).toHaveCount(0);
+
+  // Zones without a condition are one line, not one error each.
+  await expect(page.getByTestId("uncovered")).toContainText("6 zones without a condition");
+  await expect(page.getByRole("status").filter({ hasText: "without a condition" })).toHaveText(
+    "6 zones without a condition.",
+  );
+  await expect(page.getByTestId("plan-diagnostics")).not.toContainText("E0412");
+});
+
+test("zones take the colour of their condition in 3D", async ({ page }) => {
+  await page.goto(`/cases/new${WEBGL}`);
+  await page.getByLabel("Name").fill("box");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  await page.getByLabel("Turbulence").selectOption("sa");
+  await page.getByLabel("Mach").fill("0.3");
+  await page.getByLabel("Reynolds number", { exact: true }).fill("1000000");
+  await page.getByLabel("Reference length", { exact: true }).fill("1");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+  const box = await view.boundingBox();
+  if (!box) throw new Error("the mesh view has no box");
+  // The middle of the default view is zone ymin (SurfaceViewer frameAll), which the MeshInfo
+  // types as a wall: the plan gives it that condition before any rule.
+  const centre = {
+    x: box.x + box.width / 2 - 2,
+    y: box.y + box.height / 2 - 2,
+    width: 4,
+    height: 4,
+  };
+  // Which zone has which condition is said in words too: polyMesh types zmax as a symmetry.
+  await expect(page.getByLabel("symmetry: zmax")).toBeVisible();
+  await expect(page.getByLabel("wall: ymin")).toBeVisible();
+  await expect(page.getByTestId("condition-legend")).not.toContainText("slip");
+  const wall = await page.screenshot({ clip: centre });
+
+  await rule(page, 1, "ymin", "slip");
+  await expect(page.getByTestId("condition-legend")).toContainText("slip");
+  await expect.poll(async () => (await page.screenshot({ clip: centre })).equals(wall)).toBe(false);
+
+  await page.getByRole("button", { name: "Remove boundary rule 1" }).click();
+  await expect(page.getByTestId("condition-legend")).not.toContainText("slip");
+  await expect.poll(async () => (await page.screenshot({ clip: centre })).equals(wall)).toBe(true);
 });

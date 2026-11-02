@@ -26,9 +26,9 @@ from autan.results import (
     RunWriter,
     Solver,
     field_names,
-    identity,
     iso,
     residual_names,
+    run_identity,
     run_metadata,
     utc_now,
 )
@@ -234,7 +234,7 @@ def write_run(
 
     `fields` must hold exactly the fields results.md requires for the case's physics, one value per
     cell in mesh order. The history holds one line with unit residuals. Cases with monitors or time
-    averaging are refused (V0731); runs are marked non-deterministic, since their fields are given.
+    averaging are refused (V0731).
     """
     spec = case.spec
     if spec.monitors or getattr(spec.time, "average_from", None) is not None:
@@ -258,9 +258,7 @@ def write_run(
     groups = info.groups_source.sha256 if info.groups_source else None
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),
-        identity=identity(
-            spec.hash(), info.source.sha256, groups, solver, spec.physics.precision, devices
-        ),
+        identity="0" * 64,
         status="running",
         case=CaseIdentity(name=spec.name, sha256=spec.hash()),
         mesh=MeshIdentity(
@@ -268,8 +266,6 @@ def write_run(
         ),
         solver=solver,
         precision=spec.physics.precision,
-        # The fields come from the caller, not from the identified configuration.
-        deterministic=False,
         devices=devices,
         started=iso(started),
         finished=None,
@@ -278,6 +274,7 @@ def write_run(
         averaging=None,
         diagnostics=(),
     )
+    run = run.model_copy(update={"identity": run_identity(run)})
     # oracle-state conditions: the face-state files, archived as results.md#run-directory says.
     states = {
         rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()

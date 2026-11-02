@@ -120,6 +120,25 @@ class Dataset:
     def self_(self) -> Binding:
         return Binding(self, "self")
 
+    @property
+    def near(self) -> Binding:
+        """In an incidence reduction, half [0] of a face dataset of shape (2, ...) if the cell is
+        the face's left cell, half [1] if it is the right one, in the face's global orientation
+        (Topology::face_reversed); zero on boundary faces."""
+        return Binding(self, "near")
+
+    @property
+    def far(self) -> Binding:
+        """The half `near` does not take: [1] for the left cell, [0] for the right one; zero on
+        boundary faces."""
+        return Binding(self, "far")
+
+    @property
+    def on_boundary(self) -> Binding:
+        """In an incidence reduction, the face's value on a boundary face, zero on an interior
+        face."""
+        return Binding(self, "on_boundary")
+
     def other(self, boundary: Dataset | None) -> Binding:
         """Value across each incidence of a cell; `boundary` (a face dataset) on boundary faces,
         zero when None."""
@@ -137,7 +156,7 @@ class Binding:
     """How a body argument is loaded: directly, or through the face/incidence -> cell maps."""
 
     dataset: Dataset | Parameter
-    via: str = "direct"  # direct | left | right | self | other
+    via: str = "direct"  # direct | left | right | self | other | near | far | on_boundary
     boundary: Dataset | None = None
 
 
@@ -151,6 +170,7 @@ class _SetDecl:
 
 cells = _SetDecl(MeshSet.CELLS)
 faces = _SetDecl(MeshSet.FACES)
+incidences = _SetDecl(MeshSet.INCIDENCES)
 
 
 def param(name: str, annotation: object) -> Parameter:
@@ -191,6 +211,7 @@ class Body:
     """A pointwise function in the restricted subset; parsed lazily into the IR."""
 
     fn: Callable[..., Any]
+    compute: str = "compute"
 
     @property
     def name(self) -> str:
@@ -207,9 +228,18 @@ class Body:
         )
 
 
-def pointwise(fn: Callable[..., Any]) -> Body:
-    """Declare a pointwise body. Its source is parsed into the generator's IR."""
-    return Body(fn)
+def pointwise(fn: Callable[..., Any] | None = None, *, compute: str = "compute") -> Any:
+    """Declare a pointwise body. Its source is parsed into the generator's IR.
+
+    `@pointwise(compute="accum")` computes the body in the accumulation type of the policy
+    instead of the compute type (FP64 under fp32+acc64), for bodies whose arguments are all
+    passive (blocks, geometry, parameters) in cell loops.
+    """
+    if compute not in ("compute", "accum"):
+        raise CodegenError(Code.TYPE_MISMATCH, f"compute={compute!r}: 'compute' or 'accum'")
+    if fn is None:
+        return lambda f: Body(f, compute)
+    return Body(fn, compute)
 
 
 # ---------------------------------------------------------------------------- loops
@@ -287,6 +317,7 @@ class Loop:
     over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
     jacobians: list[Jacobian] = field(default_factory=list)
     frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
+    entries: list[Write] = field(default_factory=list)  # reductions: one value per entry
 
 
 def _bindings(raw: dict[str, object]) -> dict[str, Binding]:
@@ -369,6 +400,7 @@ def cell_reduce(
     finalise: Body | None = None,
     finalise_args: dict[str, object] | None = None,
     over: str = INCIDENCES,
+    entries: object = (),
     **args: object,
 ) -> Loop:
     """Reduce `body` over the entries of each owned cell into accumulators, then write them.
@@ -381,6 +413,9 @@ def cell_reduce(
     The body's outputs feed `acc` in order (Sum, Min or Max, each naming its target cell dataset).
     With `finalise`, the accumulated values are passed to it as its first arguments, followed by
     `finalise_args`, and its outputs are written to the accumulators' datasets instead.
+    `entries` (Write outputs to datasets of the iterated set, of a passive role) take the body's
+    outputs after the accumulators' ones, one value per entry, stored at the entry: each entry
+    is written once, by its cell. A loop with entries has no active input (no derivatives).
     """
     if over not in (INCIDENCES, STENCIL):
         raise CodegenError(
@@ -392,6 +427,13 @@ def cell_reduce(
             raise CodegenError(
                 Code.INVALID_LOOP_OUTPUT, "cell_reduce accumulators are Sum, Min or Max"
             )
+    per_entry = _outs(entries) if entries != () else []
+    for w in per_entry:
+        if not isinstance(w, Write) or w.dataset.set.value != over:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT,
+                f"cell_reduce entries are Write outputs to {over} datasets",
+            )
     return Loop(
         "reduce",
         body,
@@ -400,6 +442,7 @@ def cell_reduce(
         finalise,
         _bindings(dict(finalise_args or {})),
         over=over,
+        entries=per_entry,
     )
 
 
@@ -410,6 +453,5 @@ def _intrinsic(*_: object) -> object:
     raise CodegenError(Code.UNSUPPORTED_CONSTRUCT, "DSL intrinsics only exist inside parsed bodies")
 
 
-dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = outer = Vec3 = Vec5 = (
-    _intrinsic
-)
+dot = cross = norm = sqrt = exp = log = sin = cos = rel = _intrinsic
+transpose = inverse = identity = outer = Vec3 = Vec5 = _intrinsic

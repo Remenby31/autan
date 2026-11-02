@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <random>
 #include <span>
@@ -32,6 +33,7 @@
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/runtime/diagnostic.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
 #include "run_directory.hpp"
@@ -131,8 +133,9 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
-  std::optional<StartState> start;  // input.start, read and checked
-  Json start_averaging;             // `continue`: the previous run's averaging
+  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
+  std::optional<StartState> start;          // input.start, read and checked
+  Json start_averaging;                     // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -809,11 +812,12 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
+  p.groups = entry != nullptr ? &entry->groups : nullptr;
   if (entry != nullptr && entry->scope) {
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
       data["path"] = refusal->path;
-      throw InputError(Diagnostic{.code = "E0706",
+      throw InputError(Diagnostic{.code = refusal->code,
                                   .message = std::move(refusal->message),
                                   .path = std::move(refusal->path),
                                   .data_json = data.dump()});
@@ -881,6 +885,8 @@ class Run final : public Log {
         comm_(comm),
         launched_(launched),
         geometry_(compute_geometry(p.mesh)),
+        groups_(p.groups != nullptr && *p.groups ? (*p.groups)(p.input, p.mesh, geometry_)
+                                                 : CellGroups{}),
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
     if (local_) {
@@ -889,6 +895,14 @@ class Run final : public Log {
       if (p_.initial) local_initial_ = owned_fields(*p_.initial);
     } else {
       ghosts_ = std::make_unique<NoGhosts>();
+    }
+    if (local_) {
+      face_global_id_ = local_->face_global_id;
+      face_reversed_ = local_->face_reversed;
+    } else {
+      face_global_id_.resize(at(p_.mesh.n_faces()));
+      std::iota(face_global_id_.begin(), face_global_id_.end(), std::int64_t{0});
+      face_reversed_.assign(face_global_id_.size(), 0);
     }
     colour_cells_of_physics();
     // Rank 0 names the run: its clock and its random suffix.
@@ -939,7 +953,6 @@ class Run final : public Log {
           {"groups_sha256", in.mesh_groups_sha256 ? Json(*in.mesh_groups_sha256) : Json(nullptr)}}},
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
-        {"deterministic", in.deterministic},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
         {"started", started_at},
         {"finished", nullptr},
@@ -984,6 +997,12 @@ class Run final : public Log {
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
     if (comm_.size() > 1) log_partition();
+    if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
+      note("info", "solver",
+           "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
+               ", not ranks",
+           "", Json{{"mode", p_.input.reproducibility}, {"ranks", comm_.size()}}.dump());
+    }
     if (gpu_) {
       note(
           "info", "cuda",
@@ -1012,8 +1031,14 @@ class Run final : public Log {
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
+                                 .face_global_id = face_global_id_,
+                                 .face_reversed = face_reversed_,
                                  .cell_colours = colours_,
-                                 .n_colours = n_colours_};
+                                 .n_colours = n_colours_,
+                                 .group_offsets = group_offsets_,
+                                 .group_cells = group_cells_,
+                                 .cell_group_colours = group_colours_,
+                                 .n_group_colours = n_group_colours_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1055,7 +1080,8 @@ class Run final : public Log {
   }
 
   // On several ranks, each runs its part of the mesh, partitioned by METIS
-  // with the face-count cost of each cell; every rank partitions the same
+  // with the face-count cost of each cell and the physics' groups kept
+  // whole; every rank partitions the same
   // mesh with the same seed, so all agree on the parts (partitioning.md).
   // On one rank, a mesh with periodic pairs runs on its one-part partition,
   // whose image ghosts make each periodic face an interior face; its owned
@@ -1063,9 +1089,17 @@ class Run final : public Log {
   std::optional<LocalPartition> make_part() {
     const Mesh& mesh = p_.mesh;
     const std::int32_t n = comm_.size();
-    if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
+    // Reproducibility "ranks" computes on a partition, one part on one rank,
+    // so that a physics finds the same global keys on any number of ranks.
+    if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
+      return std::nullopt;
     std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
-    if (n > 1) parts = partition_cells(mesh, n, {.cell_weights = cell_cost_weights(mesh)});
+    if (n > 1) {
+      parts = partition_cells(mesh, n,
+                              {.cell_weights = cell_cost_weights(mesh),
+                               .group_offsets = groups_.offsets,
+                               .group_cells = groups_.cells});
+    }
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1118,17 +1152,42 @@ class Run final : public Log {
   }
   // The global colouring of the mesh (colour_cells), for each cell of the
   // physics' mesh through its global id: every rank computes the same.
+  // With the physics' groups, their colouring and the groups this rank owns
+  // (by increasing least global id, each in the physics' order) likewise.
   void colour_cells_of_physics() {
     const Mesh& mesh = p_.mesh;
-    const auto colours = colour_cells(mesh);
-    std::vector<std::int32_t> by_id(colours.size());
-    for (std::size_t c = 0; c < colours.size(); ++c)
-      by_id[static_cast<std::size_t>(mesh.cell_global_id()[c])] = colours[c];
+    const auto z = [](std::int64_t i) { return static_cast<std::size_t>(i); };
+    const auto global_ids = mesh.cell_global_id();
     const auto ids = physics_mesh().cell_global_id();
-    colours_.resize(ids.size());
-    for (std::size_t c = 0; c < ids.size(); ++c)
-      colours_[c] = by_id[static_cast<std::size_t>(ids[c])];
-    for (const std::int32_t k : colours) n_colours_ = std::max(n_colours_, k + 1);
+    const auto of_physics = [&](const std::vector<std::int32_t>& colours,
+                                std::vector<std::int32_t>& out, std::int32_t& n_out) {
+      std::vector<std::int32_t> by_id(colours.size());
+      for (std::size_t c = 0; c < colours.size(); ++c) by_id[z(global_ids[c])] = colours[c];
+      out.resize(ids.size());
+      for (std::size_t c = 0; c < ids.size(); ++c) out[c] = by_id[z(ids[c])];
+      for (const std::int32_t k : colours) n_out = std::max(n_out, k + 1);
+    };
+    of_physics(colour_cells(mesh), colours_, n_colours_);
+    if (p_.groups == nullptr || !*p_.groups) return;
+    of_physics(colour_cells(mesh, groups_.offsets, groups_.cells), group_colours_,
+               n_group_colours_);
+    std::vector<index_t> owned_at(at(mesh.n_cells()), -1);  // by global id
+    for (index_t c = 0; c < physics_mesh().n_owned_cells(); ++c) owned_at[z(ids[at(c)])] = c;
+    std::vector<std::pair<std::int64_t, std::size_t>> order;  // (least global id, group)
+    for (std::size_t g = 0; g + 1 < groups_.offsets.size(); ++g) {
+      std::int64_t least = std::numeric_limits<std::int64_t>::max();
+      for (auto k = groups_.offsets[g]; k < groups_.offsets[g + 1]; ++k)
+        least = std::min(least, global_ids[at(groups_.cells[z(k)])]);
+      order.emplace_back(least, g);
+    }
+    std::ranges::sort(order);
+    group_offsets_.assign(1, 0);
+    for (const auto& [least, g] : order) {
+      if (owned_at[z(least)] < 0) continue;
+      for (auto k = groups_.offsets[g]; k < groups_.offsets[g + 1]; ++k)
+        group_cells_.push_back(owned_at[z(global_ids[at(groups_.cells[z(k)])])]);
+      group_offsets_.push_back(static_cast<offset_t>(group_cells_.size()));
+    }
   }
 
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
@@ -1250,8 +1309,8 @@ class Run final : public Log {
     // Steady convergence is measured against iteration 1 of the original run
     // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
-    std::vector<char> exempt;
-    double floor = 0.0;
+    RoundOffExemption exempt(
+        equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -1334,39 +1393,26 @@ class Run final : public Log {
       }
       if (steady) {
         if (first.empty()) first = report.residuals;
-        // case-schema.md#time: an equation whose residual at iteration 1 is
-        // below 1e-12 of the largest is exempt while it stays below that
-        // floor; once above, it must drop like the others (W0710, once).
-        if (exempt.empty()) {
-          floor = 1e-12 * *std::ranges::max_element(first);
-          // Equations that left their floor earlier in a continued chain
-          // stay subject to the drop (solver-input.md, `start.woken`).
-          const std::vector<std::string> woken =
-              continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{};
-          for (std::size_t e = 0; e < equations.size(); ++e) {
-            exempt.push_back(
-                first[e] < floor && std::ranges::find(woken, equations[e]) == woken.end() ? 1 : 0);
-          }
+        exempt.reference(first);
+        // case-schema.md#time: equations at the round-off floor are exempt while they stay there
+        // (runtime/round_off.hpp); one leaving it reports W0710, once.
+        for (const std::size_t e : exempt.update(report.residuals)) {
+          add_diagnostic(
+              Diagnostic{.code = "W0710",
+                         .message = "equation " + equations[e] + " left its floor at iteration " +
+                                    std::to_string(it) + ": it now has to converge like the others",
+                         .path = "",
+                         .data_json = Json{{"equation", equations[e]},
+                                           {"iteration", it},
+                                           {"residual", report.residuals[e]},
+                                           {"floor", exempt.floor()}}
+                                          .dump()});
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
         for (std::size_t e = 0; e < equations.size(); ++e) {
           const double r = report.residuals[e];
-          if (exempt[e] != 0 && r > floor) {
-            exempt[e] = 0;
-            add_diagnostic(Diagnostic{
-                .code = "W0710",
-                .message = "equation " + equations[e] + " left its floor at iteration " +
-                           std::to_string(it) + ": it now has to converge like the others",
-                .path = "",
-                .data_json = Json{
-                    {"equation", equations[e]},
-                    {"iteration", it},
-                    {"residual", r},
-                    {"floor",
-                     floor}}.dump()});
-          }
-          converged = converged && (exempt[e] != 0 || r <= first[e] * drop ||
+          converged = converged && (exempt.exempt(e) || r <= first[e] * drop ||
                                     (!floor_.empty() && r <= floor_[e]));
         }
         if (converged) return "converged";
@@ -1594,9 +1640,19 @@ class Run final : public Log {
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;
+  CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   std::optional<LocalPartition> local_;
+  // PhysicsContext's global keys of the physics' faces: the partition's, or
+  // the mesh's own (identity, none reversed).
+  std::vector<std::int64_t> face_global_id_;
+  std::vector<std::uint8_t> face_reversed_;
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
   std::int32_t n_colours_ = 0;
+  // The groups this rank owns, over the physics mesh's owned cells, and their colouring.
+  std::vector<offset_t> group_offsets_;
+  std::vector<index_t> group_cells_;
+  std::vector<std::int32_t> group_colours_;
+  std::int32_t n_group_colours_ = 0;
   std::unique_ptr<GhostExchange> ghosts_;
   std::optional<StartState> local_start_;                // the owned cells' share of p_.start
   std::optional<std::vector<io::Field>> local_initial_;  // and of p_.initial
@@ -1612,8 +1668,9 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks) {
-  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks});
+                          bool several_ranks, PartitionGroups groups) {
+  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
+                                              std::move(groups)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
@@ -1680,16 +1737,22 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     }
     return run.execute();
   } catch (const std::exception& e) {
-    // The run directory could not be created or its run.json not written:
+    // The run could not be set up (a coded error keeps its code, invalid
+    // partition groups E0140), its directory created or its run.json written:
     // nothing records the failure but this diagnostic. On several ranks, the
     // others may wait in a collective call: every rank ends.
-    std::fprintf(err, "%s\n",
-                 Diagnostic{.code = "E0704",
-                            .message = e.what(),
-                            .path = "",
-                            .data_json = Json{{"rank", comm->rank()}}.dump()}
-                     .json()
-                     .c_str());
+    // Every rank may fail here at once: each line goes out in one write, so
+    // that the launcher's merged stderr keeps lines whole.
+    const auto* coded = dynamic_cast<const Error*>(&e);
+    const std::string line =
+        Diagnostic{.code = coded != nullptr ? error_code_string(coded->code()) : "E0704",
+                   .message = e.what(),
+                   .path = "",
+                   .data_json = Json{{"rank", comm->rank()}}.dump()}
+            .json() +
+        "\n";
+    std::fwrite(line.data(), 1, line.size(), err);
+    std::fflush(err);
     if (comm->size() > 1) comm->abort(static_cast<int>(ExitStatus::failed));
     return ExitStatus::failed;
   }

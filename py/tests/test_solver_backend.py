@@ -24,7 +24,7 @@ from autan import cgns
 from autan.cli import main
 from autan.meshinfo import mesh_sha256
 
-from tests.conftest import ROOT
+from tests.conftest import ROOT, identity_of
 
 MESH = ROOT / "tests" / "data" / "mesh" / "hybrid" / "polyMesh"
 
@@ -86,24 +86,14 @@ def test_a_real_run_reads_back_through_the_results_contract(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     case, mesh = hybrid
-    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    backend = autan.SolverBackend(executable=RELAXATION)
     result = case.run(mesh, backend=backend, runs=tmp_path / "runs")
     run = result.run
     assert run.status in ("converged", "completed")
     assert run.solver.backend == "cpu"
     assert run.case.sha256 == case.spec.hash()
     assert run.mesh.sha256 == mesh.source.sha256
-    parts = [
-        run.case.sha256,
-        run.mesh.sha256,
-        run.mesh.groups_sha256 or "",
-        run.solver.commit,
-        run.precision,
-        run.solver.backend,
-        run.devices.kind,
-        str(run.devices.count),
-    ]
-    assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    assert run.identity == identity_of(run.document())
     assert result.history.iterations[-1] == run.iterations
     assert result.field("Density").size == mesh.counts.cells
     assert run.timing is not None  # measured by the runtime; checked by Results.open
@@ -295,7 +285,7 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
         path.write_text(CASE + f"case.time = autan.Steady(max_iterations={budget})\n")
         return autan.load(path)
 
-    backend = autan.SolverBackend(executable=RELAXATION, deterministic=True)
+    backend = autan.SolverBackend(executable=RELAXATION)
     whole = case(10000).run(mesh, backend=backend, runs=tmp_path / "whole")
     first = case(10).run(mesh, backend=backend, runs=tmp_path / "parts")
     assert (first.run.status, first.run.iterations) == ("completed", 10)
@@ -368,12 +358,12 @@ def test_a_periodic_run_reads_back_through_the_results_contract(tmp_path: Path) 
     assert np.array_equal(coordinates["in"], coordinates["m"] * 0.0254)
 
 
-def test_euler_refuses_a_periodic_mesh(tmp_path: Path) -> None:
+def test_euler_refuses_the_multigrid_on_a_periodic_mesh(tmp_path: Path) -> None:
     case, mesh = _box(tmp_path, "Inviscid")
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
     [found] = error.value.diagnostics
-    assert (found.code, found.data.get("path")) == ("E0706", "periodic")  # not missing physics
+    assert (found.code, found.data.get("path")) == ("E0706", "time.linear_solver")
     assert not any((tmp_path / "runs").iterdir())
 
 
@@ -538,7 +528,7 @@ def test_a_file_written_by_the_sdk_starts_the_real_runtime(tmp_path: Path) -> No
     )
     result = autan.load(case).run(
         mesh,
-        backend=autan.SolverBackend(executable=RELAXATION, deterministic=True),
+        backend=autan.SolverBackend(executable=RELAXATION),
         runs=tmp_path / "runs",
     )
     assert (result.path / "states" / f"{digest}.json").is_file()

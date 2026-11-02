@@ -789,7 +789,7 @@ _CODES = [
     Code(
         "E1013",
         "Policy not available on the backend",
-        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).",
         "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
     ),
     Code(

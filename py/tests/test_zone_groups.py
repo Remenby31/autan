@@ -74,9 +74,7 @@ def test_a_group_selects_the_union_of_its_groups_zones(
         "symmetry": 1,
         "farfield": None,
     }
-    document = autan.solver_input.build(
-        case, grouped, devices=autan.Devices(kind="cpu", count=1), deterministic=False
-    )
+    document = autan.solver_input.build(case, grouped, devices=autan.Devices(kind="cpu", count=1))
     # [Ww]* takes WING, wing.high-lift and wing.main, which overlap: each zone once, in
     # MeshInfo order.
     assert document.monitors[0].zones == ("wing.slat", "wing.main", "wing.flap")
@@ -177,7 +175,7 @@ def test_the_solver_input_binds_each_zone_to_its_rule(
 ) -> None:
     case = autan.load(write_case(BODY))
     document = autan.solver_input.build(
-        case, grouped, devices=autan.Devices(kind="cpu", count=1), deterministic=False
+        case, grouped, devices=autan.Devices(kind="cpu", count=1)
     ).model_dump(mode="json")
     autan.solver_input.SolverInput.model_validate(document)
     [slat] = [b for b in document["boundaries"] if b["zone"] == "wing.slat"]

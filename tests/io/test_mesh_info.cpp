@@ -1,9 +1,15 @@
 #include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <random>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -12,6 +18,7 @@
 
 #include "autan/core/cellwise.hpp"
 #include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "fixtures.hpp"
@@ -174,6 +181,164 @@ TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh
     CAPTURE(zone.dump());
     const bool periodic = zone["name"] == "xmin" || zone["name"] == "xmax";
     CHECK((zone["type"] == "periodic") == periodic);
+  }
+}
+
+TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mesh-info][surface]") {
+  // Every family through OpenFOAM, and two meshes through every reader: the
+  // file parsed here by its layout alone (mesh.md, Boundary surface).
+  std::vector<std::string> files;
+  for (const char* family : {"tet", "hex", "prism", "pyramid", "poly", "hybrid"})
+    files.push_back(std::string(family) + "/polyMesh");
+  for (const char* name : {"hybrid", "tet-gmsh"}) {
+    for (const char* suffix : {".ascii.msh", ".binary.msh", ".fluent.msh", ".fluent-binary.msh"})
+      files.push_back(std::string(name) + "/" + name + suffix);
+#ifdef AUTAN_HAVE_CGNS
+    files.push_back(std::string(name) + "/" + name + ".cgns");
+#endif
+  }
+  files.emplace_back("periodic-box/periodic-box.ascii.msh");
+  for (const auto& file : files) {
+    CAPTURE(file);
+    const fs::path path = data_dir / file;
+    const autan::Mesh mesh = autan::io::read_mesh(path);
+    const std::string hash = autan::io::mesh_hash(path);
+    const std::string bytes = autan::io::surface_bytes(mesh, hash);
+
+    std::uint32_t n = 0;
+    REQUIRE(bytes.size() >= 4);
+    std::memcpy(&n, bytes.data(), 4);
+    REQUIRE((4 + n) % 8 == 0);
+    const std::string text = bytes.substr(4, n);
+    const auto end = text.find_last_of('}');
+    REQUIRE(end != std::string::npos);
+    CHECK(text.find_first_not_of(' ', end + 1) == std::string::npos);  // spaces only
+    const auto header = nlohmann::json::parse(text);
+    CHECK(header["schema"] == "autan.surface/1");
+    CHECK(header["source"]["sha256"] == hash);
+    const auto buffer = [&](const char* name, auto element) {
+      using T = decltype(element);
+      for (const auto& b : header["buffers"]) {
+        if (b["name"] != name) continue;
+        CHECK(b["dtype"] == (std::is_same_v<T, double> ? "f64" : "u32"));
+        const auto offset = b["offset"].get<std::size_t>();
+        const auto length = b["length"].get<std::size_t>();
+        CHECK(offset % 8 == 0);
+        REQUIRE(4 + n + offset + length * sizeof(T) <= bytes.size());
+        std::vector<T> out(length);
+        if (length > 0) std::memcpy(out.data(), bytes.data() + 4 + n + offset, length * sizeof(T));
+        return out;
+      }
+      FAIL("no buffer " << name);
+      return std::vector<T>{};
+    };
+    const auto positions = buffer("positions", double{});
+    const auto offsets = buffer("face_offsets", std::uint32_t{});
+    const auto nodes = buffer("face_nodes", std::uint32_t{});
+    const auto n_faces = header["faces"].get<std::size_t>();
+    REQUIRE(positions.size() == 3 * header["nodes"].get<std::size_t>());
+    REQUIRE(offsets.size() == n_faces + 1);
+    CHECK(offsets.front() == 0);
+    REQUIRE(offsets.back() == nodes.size());
+    // Nodes numbered in order of first use.
+    std::uint32_t next = 0;
+    for (const auto node : nodes) {
+      REQUIRE(node <= next);
+      if (node == next) ++next;
+    }
+    CHECK(next == header["nodes"]);
+
+    // Zones: MeshInfo's boundary zones, their faces in a row.
+    const auto info = nlohmann::json::parse(autan::io::mesh_info_json(mesh, hash));
+    const auto& zones = header["zones"];
+    REQUIRE(zones.size() == info["boundary_zones"].size());
+    std::size_t first = 0;
+    for (std::size_t k = 0; k < zones.size(); ++k) {
+      CHECK(zones[k]["name"] == info["boundary_zones"][k]["name"]);
+      CHECK(zones[k]["type"] == info["boundary_zones"][k]["type"]);
+      CHECK(zones[k]["native_type"] == info["boundary_zones"][k]["native_type"]);
+      CHECK(zones[k]["faces"] == info["boundary_zones"][k]["faces"]);
+      CHECK(zones[k]["first_face"] == first);
+      first += zones[k]["faces"].get<std::size_t>();
+    }
+    CHECK(first == n_faces);
+    // Each side of the box (zones xmin ... zmax) holds faces on its plane only.
+    std::array<double, 3> low{}, high{};
+    for (std::size_t d = 0; d < 3; ++d) {
+      low[d] = high[d] = positions[static_cast<std::size_t>(d)];
+      for (std::size_t i = static_cast<std::size_t>(d); i < positions.size(); i += 3) {
+        low[d] = std::min(low[d], positions[i]);
+        high[d] = std::max(high[d], positions[i]);
+      }
+    }
+    for (const auto& zone : zones) {
+      const std::string name = zone["name"];
+      if (name.size() != 4 || name[0] < 'x' || name[0] > 'z') continue;
+      const auto d = static_cast<std::size_t>(name[0] - 'x');
+      const double plane = name.substr(1) == "min" ? low[d] : high[d];
+      const auto from = zone["first_face"].get<std::size_t>();
+      for (std::size_t f = from; f < from + zone["faces"].get<std::size_t>(); ++f) {
+        for (auto i = offsets[f]; i < offsets[f + 1]; ++i)
+          CHECK(std::abs(positions[3 * std::size_t{nodes[i]} + d] - plane) <=
+                1e-12 * (high[d] - low[d]));
+      }
+    }
+
+    // Closed: every edge in exactly two faces, once each way. Outward: the
+    // area vectors (Newell) sum to zero, and the divergence theorem gives the
+    // mesh's volume with a positive sign.
+    std::map<std::pair<std::uint32_t, std::uint32_t>, int> edges;
+    std::array<double, 3> sum{};
+    double area = 0.0, volume = 0.0;
+    for (std::size_t f = 0; f < n_faces; ++f) {
+      std::array<double, 3> s{}, c{};
+      const auto k = offsets[f + 1] - offsets[f];
+      for (auto i = offsets[f]; i < offsets[f + 1]; ++i) {
+        const auto a = nodes[i], b = nodes[i + 1 < offsets[f + 1] ? i + 1 : offsets[f]];
+        REQUIRE(3 * std::size_t{a} + 2 < positions.size());
+        ++edges[{a, b}];
+        const double* p = &positions[3 * std::size_t{a}];
+        const double* q = &positions[3 * std::size_t{b}];
+        s[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        s[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        s[2] += (p[0] - q[0]) * (p[1] + q[1]);
+        for (std::size_t d = 0; d < 3; ++d) c[d] += p[d] / k;
+      }
+      for (std::size_t d = 0; d < 3; ++d) {
+        s[d] *= 0.5;
+        sum[d] += s[d];
+        volume += c[d] * s[d] / 3.0;
+      }
+      area += std::hypot(s[0], s[1], s[2]);
+    }
+    for (const auto& [edge, count] : edges) {
+      CHECK(count == 1);  // these boundaries are manifolds
+      CHECK(edges.contains({edge.second, edge.first}));
+    }
+    constexpr double eps = 0x1p-52;
+    for (const double s : sum) CHECK(std::abs(s) <= 64 * eps * area);
+    const autan::Geometry g = autan::compute_geometry(mesh);
+    double cells = 0.0;
+    for (const double v : g.cell_volume) cells += v;
+    CHECK(std::abs(volume - cells) <= 1e-12 * cells);
+  }
+  // Outward normals need positive cells: an inverted tetrahedron is refused.
+  autan::CellwiseMesh inverted;
+  for (const auto& p :
+       std::array<std::array<double, 3>, 4>{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}) {
+    inverted.x.push_back(p[0]);
+    inverted.y.push_back(p[1]);
+    inverted.z.push_back(p[2]);
+  }
+  inverted.add_cell(autan::CellShape::tetra, std::array<autan::index_t, 4>{0, 2, 1, 3}, 0);
+  inverted.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(inverted));
+  try {
+    (void)autan::io::surface_bytes(mesh, std::string(64, '0'));
+    FAIL("expected E0121");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::geometry_non_positive_volume);
   }
 }
 

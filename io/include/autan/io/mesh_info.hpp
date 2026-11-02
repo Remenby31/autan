@@ -49,4 +49,12 @@ std::optional<ZoneGroups> read_zone_groups(const std::filesystem::path& mesh_pat
 std::string mesh_info_json(const Mesh& mesh, const std::string& sha256,
                            const std::optional<ZoneGroups>& groups = std::nullopt);
 
+/// The boundary surface of an assembled, unpartitioned mesh as an
+/// autan.surface/1 file (docs/contracts/mesh.md#boundary-surface): its
+/// boundary faces by zone, in MeshInfo zone order, polygons as stored, nodes
+/// in order of first use. Throws E0120 or E0121 for a face or cell whose
+/// geometry is not valid (an inverted cell would turn normals inward), E0113
+/// if a count exceeds 2^32 - 1.
+std::string surface_bytes(const Mesh& mesh, const std::string& sha256);
+
 }  // namespace autan::io

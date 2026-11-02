@@ -292,6 +292,7 @@ class SteadyInput(_Strict):
     kind: Literal["steady"]
     max_iterations: Annotated[int, Field(ge=1)]
     residual_orders: Positive
+    linear_solver: Literal["multigrid", "gauss-seidel"]
 
 
 class UnsteadyInput(_Strict):
@@ -385,7 +386,7 @@ class SolverInput(_Strict):
     case: CaseRef
     mesh: MeshRef
     precision: Literal["fp32+acc64", "fp64"]
-    deterministic: bool
+    reproducibility: Literal["none", "run", "ranks"]
     devices: Devices
     physics: PhysicsInput
     freestream: FreestreamInput
@@ -438,6 +439,9 @@ class SolverInput(_Strict):
             raise ValueError(message)
         if self.mesh.scale != metres_per(case.mesh_unit):
             message = "mesh.scale is not the case's mesh_unit in metres"
+            raise ValueError(message)
+        if self.reproducibility != case.physics.reproducibility:
+            message = "reproducibility differs from the case's physics.reproducibility"
             raise ValueError(message)
         initial = case.initial_state.sha256 if case.initial_state else None
         if initial != (self.initial_state.sha256 if self.initial_state else None):
@@ -707,7 +711,6 @@ def build(
     mesh_info: MeshInfo,
     *,
     devices: Devices,
-    deterministic: bool,
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
@@ -775,6 +778,7 @@ def build(
             kind="steady",
             max_iterations=spec.time.max_iterations,
             residual_orders=spec.time.residual_orders,
+            linear_solver=spec.time.linear_solver,
         )
         if isinstance(spec.time, Steady)
         else UnsteadyInput(
@@ -795,7 +799,7 @@ def build(
             groups_sha256=mesh_info.groups_source.sha256 if mesh_info.groups_source else None,
         ),
         precision=spec.physics.precision,
-        deterministic=deterministic,
+        reproducibility=spec.physics.reproducibility,
         devices=devices,
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,
