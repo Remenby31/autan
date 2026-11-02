@@ -376,7 +376,7 @@ Fix: Export the manufactured solution with autan-vv and give its path.
 
 **Not a manufactured solution** (error)
 
-The file named by `verification.manufactured.path` is not JSON with `"schema": "autan.mms/1"` (docs/validation/mms.md).
+The file named by `verification.manufactured.path` is not JSON with `"schema": "autan.mms/1"` (docs/validation/mms.md), is larger than 1 MiB, or has an expression that is not one or is deeper than 1 024 levels (docs/contracts/case-schema.md#verification).
 
 Fix: Point the case at a manufactured solution exported by autan-vv.
 
@@ -512,7 +512,7 @@ Fix: Set `case.time = autan.Steady(...)` in the verification case.
 
 **Face-state file missing or invalid** (error)
 
-The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the case's, or it is not a valid `autan.face-states/1` document: its variables, a row of 3 finite coordinates and 5 finite values per face, density and pressure > 0 (docs/contracts/face-states.md).
+The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the case's, or it is not a valid `autan.face-states/1` document: its variables, a row of 3 finite coordinates and 5 finite values per face, density and pressure > 0, strings and member names of at most 4 096 bytes (docs/contracts/face-states.md).
 
 Fix: Export the face states with autan-vv for this mesh and give their path and sha256.
 
@@ -616,7 +616,7 @@ Fix: Give the state the physics needs: `autan.State(pressure=..., temperature=..
 
 **Initial-state file missing or invalid** (error)
 
-The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs from the case's, or it is not a valid `autan.initial-state/1` document: its variables, a row of 3 finite coordinates and 5 finite values per cell, density and pressure > 0 (docs/contracts/initial-state.md).
+The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs from the case's, or it is not a valid `autan.initial-state/1` document: its variables, a row of 3 finite coordinates and 5 finite values per cell, density and pressure > 0, strings and member names of at most 4 096 bytes (docs/contracts/initial-state.md).
 
 Fix: Write the initial state with `autan.initial_state.write` for this mesh, and give its path and the SHA-256 it returns.
 

@@ -318,7 +318,9 @@ _CODES = [
         "E0208",
         "Not a manufactured solution",
         "The file named by `verification.manufactured.path` is not JSON with "
-        '`"schema": "autan.mms/1"` (docs/validation/mms.md).',
+        '`"schema": "autan.mms/1"` (docs/validation/mms.md), is larger than 1 MiB, or has an '
+        "expression that is not one or is deeper than 1 024 levels "
+        "(docs/contracts/case-schema.md#verification).",
         "Point the case at a manufactured solution exported by autan-vv.",
     ),
     Code(
@@ -452,8 +454,8 @@ _CODES = [
         "Face-state file missing or invalid",
         "The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the "
         "case's, or it is not a valid `autan.face-states/1` document: its variables, a row of "
-        "3 finite coordinates and 5 finite values per face, density and pressure > 0 "
-        "(docs/contracts/face-states.md).",
+        "3 finite coordinates and 5 finite values per face, density and pressure > 0, strings "
+        "and member names of at most 4 096 bytes (docs/contracts/face-states.md).",
         "Export the face states with autan-vv for this mesh and give their path and sha256.",
     ),
     Code(
@@ -546,7 +548,8 @@ _CODES = [
         "The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs "
         "from the case's, or it is not a valid `autan.initial-state/1` document: its "
         "variables, a row of 3 finite coordinates and 5 finite values per cell, density and "
-        "pressure > 0 (docs/contracts/initial-state.md).",
+        "pressure > 0, strings and member names of at most 4 096 bytes "
+        "(docs/contracts/initial-state.md).",
         "Write the initial state with `autan.initial_state.write` for this mesh, and give "
         "its path and the SHA-256 it returns.",
     ),

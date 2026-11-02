@@ -7,7 +7,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
-from autan.initial_state import unique_members
+from autan.initial_state import Text, unique_members
 
 SCHEMA = "autan.face-states/1"
 VARIABLES = ("density", "velocity-x", "velocity-y", "velocity-z", "pressure")
@@ -35,7 +35,7 @@ class ZoneStates(_Strict):
 
 class FaceStates(_Strict):
     schema_: Literal["autan.face-states/1"] = Field(alias="schema")
-    oracle: str
+    oracle: Text
     mesh_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     variables: tuple[
         Literal["density"],

@@ -28,9 +28,9 @@ FREESTREAM = [1.2, 68.0, 0.0, 0.0, 101325.0]
 FARFIELD = "case.boundary('*').farfield()\n"
 
 
-def pad(kind: str, source: Path, out: Path, *extra: str) -> Path:
+def pad(kind: str, source: Path, out: Path, *extra: str, size: int = PADDED) -> Path:
     subprocess.run(
-        [sys.executable, str(PAD), kind, str(source), str(out), str(PADDED), *extra], check=True
+        [sys.executable, str(PAD), kind, str(source), str(out), str(size), *extra], check=True
     )
     return out
 
@@ -85,6 +85,14 @@ def padded_cgns(tmp_path: Path) -> tuple[Path, str]:
     return pad("cgns", HYBRID / "hybrid.cgns", tmp_path / "padded.cgns"), FARFIELD
 
 
+def cgns_skipped_elements(tmp_path: Path) -> tuple[Path, str]:
+    # A section of a million edges the reader does not use, around a small mesh.
+    out = tmp_path / "skipped.cgns"
+    return pad(
+        "cgns", HYBRID / "hybrid.cgns", out, "--skipped-elements", "1000000", size=1
+    ), FARFIELD
+
+
 def padded_initial_state(tmp_path: Path) -> tuple[Path, str]:
     info = mesh_info(HEX, tmp_path)
     centroids = [
@@ -129,7 +137,9 @@ def padded_face_states(tmp_path: Path) -> tuple[Path, str]:
     )
 
 
-LONG = 16 * 2**20
+# case-schema.md#free-texts: a text at its 4 096-byte bound, in control characters that JSON
+# escapes six times.
+LONG = "\x01" * 4096
 
 
 def long_zone_name(tmp_path: Path) -> tuple[Path, str]:
@@ -137,7 +147,7 @@ def long_zone_name(tmp_path: Path) -> tuple[Path, str]:
     centroids = [[0.0, (j + 0.5) / 3, (k + 0.5) / 3] for k in range(3) for j in range(3)]
     zones = {
         "xmin": {"faces": 9, "centroids": centroids, "values": [FREESTREAM] * 9},
-        "z" * LONG: {"faces": 0, "centroids": [], "values": []},
+        LONG: {"faces": 0, "centroids": [], "values": []},
     }
     document = {
         "schema": "autan.face-states/1",
@@ -160,16 +170,36 @@ def long_case_name(tmp_path: Path) -> tuple[Path, str]:
     return HEX, FARFIELD
 
 
+def manufactured_at_bounds(tmp_path: Path) -> tuple[Path, str]:
+    # case-schema.md#verification: a solution of 1 MiB whose gradient of density is a chain
+    # 1 024 levels deep; the runtime compiles every expression.
+    document = json.loads((ROOT / "py" / "tests" / "fixtures" / "euler.mms.json").read_text())
+    document["gradients"]["outputs"]["rho_x"] = "0" + "+0" * 1023
+    text = json.dumps(document).encode()
+    text += b" " * (2**20 - len(text))
+    (tmp_path / "solution.mms.json").write_bytes(text)
+    digest = hashlib.sha256(text).hexdigest()
+    return HEX, (
+        "from autan.units import kg, mol, s\n"
+        "gas = autan.IdealGas(name='mms', molar_mass=8.314462618 / 287.0 * kg / mol, gamma=1.4,"
+        " prandtl=0.72, viscosity=autan.ConstantViscosity(mu=1e-3 * Pa * s))\n"
+        "case.physics = autan.Compressible(turbulence=autan.Inviscid(), gas=gas)\n"
+        f"case.verification = autan.Manufactured(path='solution.mms.json', sha256={digest!r})\n"
+    )
+
+
 @pytest.mark.parametrize(
     "make",
     [
         padded_gmsh,
         padded_polymesh,
         padded_cgns,
+        cgns_skipped_elements,
         padded_initial_state,
         padded_face_states,
         long_zone_name,
         long_case_name,
+        manufactured_at_bounds,
     ],
 )
 def test_the_estimate_bounds_a_run_on_padded_files(
@@ -177,11 +207,11 @@ def test_the_estimate_bounds_a_run_on_padded_files(
 ) -> None:
     # plan.md: each file of the case counts at its size, whatever it carries beyond the mesh
     # and the states (skipped sections, unreferenced nodes, descriptors, whitespace, empty
-    # zones and their names, the case's own name): the measured peak (VmHWM, CPU) never
-    # exceeds the estimate.
+    # zones and their names, element sections the reader skips, the case's own name): the
+    # measured peak (VmHWM, CPU) never exceeds the estimate.
     mesh, boundaries = make(tmp_path)
     info = mesh_info(mesh, tmp_path)
-    name = "c" * LONG if make is long_case_name else "padded"
+    name = LONG if make is long_case_name else "padded"
     case = autan.load(case_file(tmp_path, mesh, boundaries, name))
     estimate = case.plan(info, device_kind="cpu").memory.bytes_per_gpu
     run = case.run(info, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")

@@ -16,7 +16,7 @@ import rfc8785
 from autan.cli import json_schema, main
 from pydantic import ValidationError
 
-from tests.conftest import CRM_HL, FIXTURES, mesh_document, prepared
+from tests.conftest import CRM_HL, EXAMPLES, FIXTURES, mesh_document, place_meshes, prepared
 
 R_UNIVERSAL = 8.314462618
 
@@ -334,3 +334,61 @@ def test_the_linear_solver_is_a_steady_choice(
     unsteady = {"kind": "unsteady", "steps": 10, "dt": 1e-3, "cfl": None, "average_from": None}
     with pytest.raises(jsonschema.ValidationError):  # an unsteady run has no linear solver choice
         validator.validate(document | {"time": unsteady | {"linear_solver": "multigrid"}})
+
+
+@pytest.mark.parametrize("repeats", ["monitors", "point vortex"])
+def test_the_input_stays_within_the_size_its_plan_counts(
+    repeats: str, tmp_path: Path, mesh_variant: Callable[..., autan.MeshInfo]
+) -> None:
+    # plan.md: the solver input as `autan prepare` writes it is at most the plan's "solver
+    # input". Every free text at its 4096-byte bound in control characters, which JSON
+    # escapes 6 times, on 256 walls and 64 cell zones whose names the monitors or a point
+    # vortex repeat.
+    def long(tag: str) -> str:
+        return "\x01" * (4096 - len(tag)) + tag
+
+    def rename(document: dict[str, Any]) -> None:
+        zones = document["boundary_zones"]
+        walls = [z for z in zones if z["type"] == "wall"]
+        faces = sum(z["faces"] for z in walls)
+        split = [
+            {"name": long(f"wall-{i}"), "type": "wall", "native_type": None, "faces": faces // 256}
+            for i in range(256)
+        ]
+        split[0]["faces"] += faces % 256
+        others = [z | {"name": long(f"{z['type']}-{z['name']}")} for z in zones if z not in walls]
+        document["boundary_zones"] = split + others
+        cells = document["counts"]["cells"]
+        document["cell_zones"] = [
+            {"name": long(f"fluid-{i}"), "type": None, "native_type": None, "cells": cells // 64}
+            for i in range(64)
+        ]
+        document["cell_zones"][0]["cells"] += cells % 64
+
+    mesh = mesh_variant("crm-hl", rename)
+    place_meshes(tmp_path)
+    case = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+    case["name"] = long("case")
+    case["physics"]["gas"]["name"] = long("gas")
+    farfield: dict[str, Any] = {"kind": "farfield"}
+    if repeats == "point vortex":
+        farfield["point_vortex"] = {"surfaces": "*wall-*", "center": ["0 m", "0 m", "0 m"]}
+        case["monitors"] = []
+    else:
+        case["monitors"] = [
+            {**case["monitors"][0], "name": long(f"forces-{i}"), "surfaces": "*"} for i in range(8)
+        ]
+    case["boundaries"] = [
+        {"zones": "*wall-*", "condition": {"kind": "wall"}},
+        {"zones": "*farfield-*", "condition": farfield},
+    ]
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(case))
+    loaded = autan.load(path)
+    devices = autan.Devices(kind="cuda", count=1)
+
+    document = autan.solver_input.build(loaded, mesh, devices=devices).document()
+    written = json.dumps(document, indent=2) + "\n"
+
+    bound = {c.name: c for c in loaded.plan(mesh).memory.components}["solver input"]
+    assert len(written.encode()) <= bound.bytes_host

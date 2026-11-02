@@ -310,10 +310,30 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
     assert by_name["runtime"].bytes_host == 26 * 2**20  # measured, plan.md
-    # The solver input at most: the case's TOML escaped (6 B a character), the MeshInfo, and
-    # 64 KiB; kept once, read and parsed once more (41 times).
+    # The solver input at most: the case's TOML escaped (6 B a byte), the MeshInfo indented
+    # one level deeper (4 B a line), each zone's name and resolved condition or medium as JSON
+    # with 1 KiB of entry, three paths at PATH_MAX escaped, and 64 KiB; kept once, read and
+    # parsed once more (41 times).
     tiny_case = autan.load(write_case(TINY))
-    bound = 6 * len(tiny_case.to_toml().encode()) + len(json.dumps(tiny_mesh(20).document()))
+    resolved = tiny_case.plan(tiny_mesh(20), device_kind="cpu")
+    [farfield], [fluid] = resolved.boundaries, resolved.cell_zones
+
+    def escaped(value: object) -> int:
+        return len(json.dumps(value))
+
+    toml = len(tiny_case.to_toml().encode()) - len("m.cgns") + 4096  # the path at PATH_MAX
+    bound = (
+        6 * toml
+        + len(mesh_text := json.dumps(tiny_mesh(20).document(), indent=2))
+        + 4 * (mesh_text.count("\n") + 1)
+        + escaped("farfield")
+        + escaped(farfield.condition)
+        + 1024
+        + escaped("fluid")
+        + escaped(fluid.medium)
+        + 1024
+        + 3 * 6 * 4096
+    )
     assert by_name["solver input"].bytes_host == bound + 2**16
     assert by_name["solver input setup"].bytes_host == 41 * (bound + 2**16)
     # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).
@@ -340,11 +360,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     dense = 8 * 50 * 50 + 8 * 50, 8 * 10 * 10 + 8 * 10
     assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
-    # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one.
+    # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
+    # and its run metadata and zone names at their bounds, 64 KiB and 25 600 B for each of the
+    # 2 zones and the document, held and parsed (41 times).
     for mode, fields in (("continue", 34), ("warm", 6)):
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
         assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
-            8 * (10 + 10) * fields
+            8 * (10 + 10) * fields + 41 * (64 * 2**10 + 25_600 * 3)
         )
 
 

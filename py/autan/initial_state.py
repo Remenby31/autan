@@ -7,7 +7,17 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    model_validator,
+)
+
+from autan.texts import bounded
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -18,6 +28,7 @@ VARIABLES = ("density", "velocity-x", "velocity-y", "velocity-z", "pressure")
 
 Finite = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Positive = Annotated[float, Field(strict=True, allow_inf_nan=False, gt=0)]
+Text = Annotated[str, AfterValidator(bounded)]
 
 
 class InitialState(BaseModel):
@@ -26,7 +37,7 @@ class InitialState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_: Literal["autan.initial-state/1"] = Field(alias="schema")
-    oracle: str
+    oracle: Text
     mesh_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     variables: tuple[
         Literal["density"],
@@ -48,9 +59,9 @@ class InitialState(BaseModel):
 
 
 def unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """A JSON object whose members all have distinct names: the runtime's streaming reader
-    refuses a repeated one, so the SDK does too."""
-    names = [name for name, _ in pairs]
+    """A JSON object whose members all have distinct names of at most 4 096 bytes: the
+    runtime's streaming reader refuses a repeated or longer one, so the SDK does too."""
+    names = [bounded(name) for name, _ in pairs]
     repeated = sorted({name for name in names if names.count(name) > 1})
     if repeated:
         message = f"member {repeated[0]!r} appears twice"

@@ -21,7 +21,7 @@ Producer: `autan.initial_state.write` in the SDK, called by the `autan-vv` expor
 | Key | Content |
 |---|---|
 | `schema` | `"autan.initial-state/1"` |
-| `oracle` | Name of the field, for display. |
+| `oracle` | Name of the field, for display: at most 4 096 bytes in UTF-8 ([case-schema.md](case-schema.md#free-texts)), like every member name. |
 | `mesh_sha256` | The mesh hash ([mesh-info.md](mesh-info.md), `source.sha256`) of the mesh the state was written for. |
 | `variables` | Exactly `["density", "velocity-x", "velocity-y", "velocity-z", "pressure"]`, in SI (kg/m³, m/s, Pa), velocity in mesh axes. |
 | `cells` | The number of rows: every fluid cell of the mesh, an integer ≥ 1. |

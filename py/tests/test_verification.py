@@ -72,12 +72,13 @@ def test_every_boundary_takes_the_manufactured_data(
     case = verified(write_case, name, turbulence)
     result = autan.load(case).plan(mesh_variant("crm-hl", untype))
     assert result.diagnostics == ()
-    # docs/sdk/plan.md: the run keeps the solution's text and parses it once, at most 40 B of
-    # document per byte.
+    # docs/sdk/plan.md: the run keeps the solution's text and its compiled expressions (one
+    # 32 B node per byte at most, in vectors up to twice that), and parses it once, at most
+    # 40 B of document per byte while the node vectors grow (32 B per byte more).
     size = (case.parent / f"{name}.mms.json").stat().st_size
     by_name = {c.name: c for c in result.memory.components}
-    assert by_name["manufactured solution"].bytes_host == size
-    assert by_name["state files"].bytes_host == 40 * size
+    assert by_name["manufactured solution"].bytes_host == size + 64 * size
+    assert by_name["state files"].bytes_host == 40 * size + 32 * size
     assert {(b.condition or {}).get("kind") for b in result.boundaries} == {"manufactured"}
     assert {b.provenance for b in result.boundaries} == {"verification"}
 
@@ -107,6 +108,45 @@ def test_a_file_of_another_format_is_e0208(
     case = verified(write_case, sha256=hashlib.sha256(other).hexdigest())
     (case.parent / "euler.mms.json").write_bytes(other)
     assert [d.code for d in autan.load(case).plan(crm_mesh).diagnostics] == ["E0208"]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda depth: "0" + "+0" * (depth - 1),  # a left-deep chain, one level per operator
+        lambda depth: "(" * (depth - 1) + "x" + ")" * (depth - 1),
+        lambda depth: "-" * (depth - 1) + "x",
+    ],
+)
+def test_a_solution_is_bounded_in_depth(
+    build: Callable[[int], str], write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
+) -> None:
+    # case-schema.md#verification: every expression's tree is at most 1024 levels deep.
+    def plan(depth: int) -> list[str]:
+        document = json.loads((FIXTURES / "euler.mms.json").read_text())
+        document["fields"]["outputs"]["rho"] = build(depth)
+        text = json.dumps(document).encode()
+        case = verified(write_case, sha256=hashlib.sha256(text).hexdigest())
+        (case.parent / "euler.mms.json").write_bytes(text)
+        return [d.code for d in autan.load(case).plan(crm_mesh).diagnostics]
+
+    assert plan(1024) == []
+    assert plan(1025) == ["E0208"]
+
+
+def test_a_solution_is_bounded_in_size(
+    write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
+) -> None:
+    # case-schema.md#verification: an autan.mms/1 document is at most 1 MiB.
+    def plan(size: int) -> list[str]:
+        text = (FIXTURES / "euler.mms.json").read_bytes()
+        text += b" " * (size - len(text))
+        case = verified(write_case, sha256=hashlib.sha256(text).hexdigest())
+        (case.parent / "euler.mms.json").write_bytes(text)
+        return [d.code for d in autan.load(case).plan(crm_mesh).diagnostics]
+
+    assert plan(1 << 20) == []
+    assert plan((1 << 20) + 1) == ["E0208"]
 
 
 @pytest.mark.parametrize(
