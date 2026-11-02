@@ -3,7 +3,8 @@
   "source": {
     "path": "/src/tests/data/mesh/hybrid/hybrid.cgns",
     "format": "cgns",
-    "sha256": "906aa53313dd197f09b5d5b99ae14c7411aa3efa652978c1dffd6016b673b167"
+    "sha256": "906aa53313dd197f09b5d5b99ae14c7411aa3efa652978c1dffd6016b673b167",
+    "bytes": 94953
   },
   "counts": {
     "cells": 216,
