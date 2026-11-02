@@ -621,7 +621,6 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
   for (std::size_t k = 0; k < x_exact.size(); ++k)
     x_exact[k] = std::sin(0.37 * static_cast<double>(k));
   const auto b = apply(mesh, s, x_exact);
-  std::vector<double> x(5 * n, 0.0);
   // The multigrid's smoother and the distributed line smoother on one part.
   const auto lines = autan::solvers::smoother_lines(mesh, g);
   REQUIRE(lines.offsets.size() == 2);
