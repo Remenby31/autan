@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -47,6 +48,57 @@ struct Euler<P>::Impl {
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
   bool gather = false;
+  // freeze() and residual_frozen(): the matrix-free product's own state, primitives and gradients,
+  // the limiter and the reconstruction branches held at freeze()'s state.
+  struct Frozen {
+    std::vector<State> prim, prim_b, phi;
+    std::vector<Gr> grad;
+    std::vector<typename P::flag> keep;
+  };
+  std::optional<Frozen> frozen;
+
+  void bind(Frozen& f) {
+    d.prim = f.prim.data();
+    d.prim_b = f.prim_b.data();
+    d.grad = f.grad.data();
+    d.phi = f.phi.data();
+    d.keep = f.keep.data();
+  }
+  void unbind() {
+    d.prim = prim.data();
+    d.prim_b = prim_b.data();
+    d.grad = grad.data();
+    d.phi = phi.data();
+    d.keep = nullptr;
+  }
+
+  // Primitives, boundary states and gradients of d.u into what d points to.
+  void reconstruction_inputs(std::vector<State>& w, std::vector<Gr>& g) {
+    ek::cpu::primitives(d);
+    fill_ghosts(w, 5);
+    ek::cpu::boundary_states(d);
+    if (scheme.second_order) {
+      ek::cpu::gradients(d);
+      fill_ghosts(g, 15);
+    }
+  }
+
+  void faces_held() {
+    switch (scheme.flux) {
+      case Flux::roe:
+        run([&](auto... strategy) { ek::cpu::roe_faces_held(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::roe_boundaries_held(d, strategy...); });
+        break;
+      case Flux::hllc:
+        run([&](auto... strategy) { ek::cpu::hllc_faces_held(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::hllc_boundaries_held(d, strategy...); });
+        break;
+      case Flux::ausm_up:
+        run([&](auto... strategy) { ek::cpu::ausm_faces_held(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::ausm_boundaries_held(d, strategy...); });
+        break;
+    }
+  }
 
   // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
   // The exchange takes at most 16 components a call.
@@ -407,6 +459,53 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
   m.d.res = res.data();
   m.cell_loops(false);
   m.faces();
+}
+
+template <class P>
+void Euler<P>::freeze(std::span<const State> s) {
+  auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  if (!m.frozen) {
+    m.frozen.emplace();
+    m.frozen->prim.assign(5 * nc, State(0));
+    m.frozen->prim_b.assign(5 * nf, State(0));
+    m.frozen->phi.assign(5 * nc, State(0));
+    m.frozen->grad.assign(15 * nc, typename P::grad(0));
+    m.frozen->keep.assign(2 * nf, typename P::flag(0));
+  }
+  auto& f = *m.frozen;
+  m.bind(f);
+  m.d.u = const_cast<State*>(s.data());
+  m.reconstruction_inputs(f.prim, f.grad);
+  if (m.scheme.second_order && m.scheme.limiter) {
+    ek::cpu::limiter(m.d);
+    m.fill_ghosts(f.phi, 5);
+  } else {
+    std::fill(f.phi.begin(), f.phi.end(), State(m.scheme.second_order ? 1 : 0));
+  }
+  ek::cpu::fallbacks_faces(m.d);
+  ek::cpu::fallbacks_boundaries(m.d);
+  m.unbind();
+}
+
+template <class P>
+void Euler<P>::residual_frozen(std::span<const State> s, std::span<Res> res) {
+  auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("Euler::residual_frozen before freeze");
+  auto& f = *m.frozen;
+  m.bind(f);
+  m.d.u = const_cast<State*>(s.data());
+  m.d.res = res.data();
+  m.reconstruction_inputs(f.prim, f.grad);
+  ek::cpu::sources(m.d);
+  m.faces_held();
+  m.unbind();
+}
+
+template <class P>
+void Euler<P>::release_frozen() {
+  impl_->frozen.reset();
 }
 
 template <class P>

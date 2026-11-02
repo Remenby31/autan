@@ -395,6 +395,20 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
     }
   }
   CHECK(residual_differs == 0);
+  // The matrix-free product's frozen residual (Euler::residual_frozen) sums in the same order.
+  std::vector<typename P::residual> fa(5 * nc), fb(5 * nc);
+  ea.freeze(sa);
+  eb.freeze(sb);
+  ea.residual_frozen(sa, fa);
+  eb.residual_frozen(sb, fb);
+  std::size_t frozen_differs = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (std::size_t k = 0; k < 5; ++k) {
+      frozen_differs += bits_differ(fb[k * nc + c], fa[k * nc + cell(c)]);
+      frozen_differs += bits_differ(fa[k * nc + cell(c)], ra[k * nc + cell(c)]);
+    }
+  }
+  CHECK(frozen_differs == 0);
   BlockMatrix ma(a), mb(b);
   ea.assemble(shift_a, ma);
   eb.assemble(shift_b, mb);
