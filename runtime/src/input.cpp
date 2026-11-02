@@ -401,7 +401,7 @@ SolverInput parse_solver_input(const std::string& text) {
   }
   const Object root(doc, "",
                     {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
-                     "precision", "reproducibility", "devices", "physics", "freestream",
+                     "precision", "reproducibility", "devices", "memory", "physics", "freestream",
                      "boundaries", "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
@@ -434,6 +434,11 @@ SolverInput parse_solver_input(const std::string& text) {
     const Object d(root.get("devices"), "devices", {"kind", "count"});
     in.device_kind = d.tag("kind", {"cpu", "cuda", "hip"});
     in.device_count = d.integer("count", 1);
+  }
+  {
+    const Object m(root.get("memory"), "memory", {"bytes_host", "bytes_device"});
+    in.memory_bytes_host = m.integer("bytes_host", 0);
+    in.memory_bytes_device = m.integer("bytes_device", 0);
   }
   {
     const Object p(root.get("physics"), "physics", {"kind", "turbulence"});

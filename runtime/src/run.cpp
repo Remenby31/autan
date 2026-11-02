@@ -10,6 +10,7 @@
 #include <ctime>
 #include <exception>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -36,6 +37,7 @@
 #include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
+#include "host_memory.hpp"
 #include "run_directory.hpp"
 
 namespace autan::runtime {
@@ -134,8 +136,9 @@ struct Prepared {
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
-  std::optional<StartState> start;          // input.start, read and checked
-  Json start_averaging;                     // `continue`: the previous run's averaging
+  std::optional<Diagnostic> memory_warning = std::nullopt;  // W0712: started beyond its memory
+  std::optional<StartState> start;                          // input.start, read and checked
+  Json start_averaging;  // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -646,6 +649,45 @@ void load_initial(Prepared& p) {
   p.state_files.emplace(found, bytes);
 }
 
+// solver-input.md, `memory`: the pools of this rank's host, measured before any rank reads the
+// mesh. A device whose memory is the host's (GB10) is one pool with it, and gets no context here.
+MemoryPools memory_pools(const SolverInput& in, const Comm& comm) {
+  MemoryPools pools{.host_available = host_available_bytes(), .device_free = {}, .devices = 1};
+  if (in.device_kind == "cuda" && visible_gpus() > 0 && !device_integrated(comm.local_rank())) {
+    pools.device_free = device_free_bytes(comm.local_rank());
+    pools.devices = visible_gpus();
+  }
+  return pools;
+}
+
+Diagnostic memory_diagnostic(const char* code, const SolverInput& in, std::int64_t required,
+                             std::int64_t available, std::int64_t margin) {
+  return Diagnostic{.code = code,
+                    .message = "the run needs " + std::to_string(required) + " bytes; " +
+                               std::to_string(available) + " are available, less a margin of " +
+                               std::to_string(margin),
+                    .path = "memory",
+                    .data_json = Json{{"required_bytes", required},
+                                      {"available_bytes", available},
+                                      {"margin_bytes", margin},
+                                      {"device_kind", in.device_kind}}
+                                     .dump()};
+}
+
+// The memory check of every rank, before any reads the mesh: E0711 when the ranks of this host
+// need more than it can give less the margin, or with oversubscription allowed, W0712.
+std::optional<Diagnostic> check_memory(const fs::path& input_file, const Comm& comm,
+                                       const MemoryPolicy& memory) {
+  const SolverInput in = parse_solver_input(read_text(input_file));
+  const auto s = memory_shortfall(in.memory_bytes_host, in.memory_bytes_device, comm.local_size(),
+                                  memory_pools(in, comm), memory.margin_bytes);
+  if (!s) return std::nullopt;
+  const char* code = memory.allow_oversubscription ? "W0712" : "E0711";
+  Diagnostic d = memory_diagnostic(code, in, s->required, s->available, memory.margin_bytes);
+  if (!memory.allow_oversubscription) throw InputError(std::move(d));
+  return d;
+}
+
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
@@ -961,6 +1003,8 @@ class Run final : public Log {
         {"monitors", nullptr},
         {"timing", nullptr},
         {"diagnostics", Json::array()}};
+    // W0712 is in the run.json the directory is published with.
+    if (p_.memory_warning) info_["diagnostics"].push_back(Json::parse(p_.memory_warning->json()));
     if (continued()) {
       info_["iterations"] = in.start->iterations;
       if (in.time.kind == "unsteady") info_["time"] = *in.start->time;
@@ -994,6 +1038,10 @@ class Run final : public Log {
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
     if (comm_.size() > 1) log_partition();
+    if (p_.memory_warning) {
+      const auto& w = *p_.memory_warning;
+      note("warning", "solver", w.message, w.code, info_["diagnostics"][0]["data"].dump());
+    }
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
       note("info", "solver",
            "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
@@ -1680,7 +1728,7 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
-                    std::FILE* err, const fs::path& stop_file) {
+                    std::FILE* err, const fs::path& stop_file, const MemoryPolicy& memory) {
   const auto launched = std::chrono::steady_clock::now();
   // Every rank reads and checks the same input, so all reach the same
   // verdict; rank 0 prints it.
@@ -1698,36 +1746,59 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   }
   // The ranks agree on whether the input can run before any collective
   // call; the first rank that cannot prints why: a refused input (exit 2)
-  // or any other failure (E0704, exit 1).
-  std::optional<Prepared> prepared;
-  std::optional<Diagnostic> refusal;
-  bool failed = false;  // a failure (exit 1) rather than a refused input (exit 2)
-  try {
-    prepared.emplace(prepare(input_file, registry, comm->size()));
-  } catch (const InputError& e) {
-    refusal = e.diagnostic();
-  } catch (const Error& e) {
-    // A coded error that is not the input's (invalid groups of the physics: E0140).
-    failed = true;
-    refusal = Diagnostic{.code = error_code_string(e.code()),
-                         .message = e.what(),
-                         .path = "",
-                         .data_json = Json{{"rank", comm->rank()}}.dump()};
-  } catch (const std::exception& e) {
-    failed = true;
-    refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
-  }
-  // The key of the first refusing rank: -(2 rank + 1 if it failed).
-  constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
-  const std::int64_t key = refusal ? -(2 * std::int64_t{comm->rank()} + (failed ? 1 : 0)) : none;
-  const std::int64_t first = comm->max(key);
-  if (first != none) {
+  // or any other failure (E0704, exit 1). They agree twice: on the memory,
+  // measured on every rank before any reads the mesh, then on the input.
+  const auto refused = [&](const std::function<void()>& check) -> std::optional<ExitStatus> {
+    std::optional<Diagnostic> refusal;
+    bool failed = false;  // a failure (exit 1) rather than a refused input (exit 2)
+    try {
+      check();
+    } catch (const InputError& e) {
+      refusal = e.diagnostic();
+    } catch (const Error& e) {
+      // A coded error that is not the input's (invalid groups of the physics: E0140).
+      failed = true;
+      refusal = Diagnostic{.code = error_code_string(e.code()),
+                           .message = e.what(),
+                           .path = "",
+                           .data_json = Json{{"rank", comm->rank()}}.dump()};
+    } catch (const std::exception& e) {
+      failed = true;
+      refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
+    }
+    // The key of the first refusing rank: -(2 rank + 1 if it failed).
+    constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
+    const std::int64_t key = refusal ? -(2 * std::int64_t{comm->rank()} + (failed ? 1 : 0)) : none;
+    const std::int64_t first = comm->max(key);
+    if (first == none) return std::nullopt;
     if (first == key) {
       const std::string line = refusal->json() + "\n";
       std::fwrite(line.data(), 1, line.size(), err);
       std::fflush(err);
     }
     return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
+  };
+  std::optional<Diagnostic> memory_warning;
+  if (const auto status =
+          refused([&] { memory_warning = check_memory(input_file, *comm, memory); }))
+    return *status;
+  std::optional<Prepared> prepared;
+  if (const auto status =
+          refused([&] { prepared.emplace(prepare(input_file, registry, comm->size())); }))
+    return *status;
+  // W0712 when any rank starts beyond its memory, on every rank: the largest need and the least
+  // memory available of those ranks.
+  {
+    const auto& warning = memory_warning;
+    const Json data = warning ? Json::parse(warning->data_json) : Json::object();
+    const std::int64_t required =
+        comm->max(warning ? data["required_bytes"].get<std::int64_t>() : std::int64_t{-1});
+    const std::int64_t least = comm->max(warning ? -data["available_bytes"].get<std::int64_t>()
+                                                 : std::numeric_limits<std::int64_t>::min());
+    if (required >= 0) {
+      prepared->memory_warning =
+          memory_diagnostic("W0712", prepared->input, required, -least, memory.margin_bytes);
+    }
   }
   stop_requested = 0;
   const SignalGuard signals;

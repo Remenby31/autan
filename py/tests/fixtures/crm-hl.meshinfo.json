@@ -9,6 +9,7 @@
     "cells": 48200000,
     "faces": 151000000,
     "nodes": 52000000,
+    "face_nodes": 513400000,
     "cells_by_type": {
       "tetra": 964000,
       "pyramid": 0,
@@ -85,6 +86,11 @@
   "periodic": [],
   "quality": {
     "max_non_orthogonality_deg": 62.0,
-    "max_faces_per_cell": 214
+    "max_faces_per_cell": 214,
+    "lines": {
+      "order": "rcm",
+      "cells": 13014000,
+      "long_cells": 13014000
+    }
   }
 }

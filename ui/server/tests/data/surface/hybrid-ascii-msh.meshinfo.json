@@ -9,6 +9,7 @@
     "cells": 216,
     "faces": 564,
     "nodes": 133,
+    "face_nodes": 1864,
     "cells_by_type": {
       "tetra": 96,
       "pyramid": 48,

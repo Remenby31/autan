@@ -26,6 +26,7 @@ VALUES = [[1.2, 30.0, 0.0, 0.0, 1e5] for _ in range(CELLS)]
 def small(document: dict[str, Any]) -> None:
     """The CRM-HL MeshInfo with four fluid cells."""
     document["counts"]["cells"] = CELLS
+    document["quality"]["lines"].update(cells=0, long_cells=0)
     document["counts"]["cells_by_type"] = dict.fromkeys(document["counts"]["cells_by_type"], 0)
     document["counts"]["cells_by_type"]["hexa"] = CELLS
     document["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": CELLS}]

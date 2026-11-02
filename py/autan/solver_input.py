@@ -350,6 +350,11 @@ class StartInput(_Strict):
         return self
 
 
+class MemoryInput(_Strict):
+    bytes_host: Annotated[int, Field(strict=True, ge=0)]
+    bytes_device: Annotated[int, Field(strict=True, ge=0)]
+
+
 class SolverInput(_Strict):
     """The input document of ``autan-run`` (docs/contracts/solver-input.md); SI throughout."""
 
@@ -359,6 +364,7 @@ class SolverInput(_Strict):
     precision: Literal["fp32+acc64", "fp64"]
     reproducibility: Literal["none", "run", "ranks"]
     devices: Devices
+    memory: MemoryInput
     physics: PhysicsInput
     freestream: FreestreamInput
     boundaries: tuple[BoundaryInput, ...]
@@ -686,7 +692,7 @@ def build(
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
-    plan = case.plan(mesh_info)
+    plan = case.plan(mesh_info, gpus=devices.count, device_kind=devices.kind)
     if not plan.ok:
         raise CaseError(d for d in plan.diagnostics if d.severity == "error")
     spec = case.spec
@@ -771,6 +777,9 @@ def build(
         precision=spec.physics.precision,
         reproducibility=spec.physics.reproducibility,
         devices=devices,
+        memory=MemoryInput(
+            bytes_host=plan.memory.bytes_host, bytes_device=plan.memory.bytes_device
+        ),
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,
         boundaries=tuple(boundaries),

@@ -88,14 +88,14 @@ struct Outcome {
 };
 
 Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
-            const fs::path& stop_file = {}) {
+            const fs::path& stop_file = {}, const autan::runtime::MemoryPolicy& memory = {}) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   std::FILE* out = std::tmpfile();
   std::FILE* err = std::tmpfile();
-  const ExitStatus status =
-      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err, stop_file);
+  const ExitStatus status = autan::runtime::run_case(input_file, dir / "runs", registry, build, out,
+                                                     err, stop_file, memory);
   auto text = [](std::FILE* f) {
     std::rewind(f);
     std::string s;
@@ -1540,6 +1540,58 @@ TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[ru
   CHECK(failed["diagnostics"][0]["code"] == "E0704");
 }
 
+TEST_CASE("A run that needs more memory than its host can give is refused before the mesh",
+          "[runtime]") {
+  // solver-input.md, `memory`: on the CPU, the host and device shares of a rank together against
+  // the memory its host can still give less the margin (E0711). The mesh path does not exist: the
+  // refusal comes before the mesh is read.
+  constexpr std::int64_t huge = std::int64_t{1} << 60;
+  constexpr std::int64_t margin = std::int64_t{2} << 30;
+  const auto registry = autan_test::relaxation_registry({});
+  const auto refusal = [](const Outcome& o) {
+    CHECK(o.status == ExitStatus::invalid_input);
+    CHECK_FALSE(fs::exists(o.runs));
+    return Json::parse(o.err.substr(0, o.err.find('\n')));
+  };
+  const Json heavy = refusal(run(input([](Json& d) {
+                                   d["memory"]["bytes_host"] = huge / 2;
+                                   d["memory"]["bytes_device"] = huge / 2;
+                                   d["mesh"]["path"] = "/nonexistent/polyMesh";
+                                 }),
+                                 registry));
+  CHECK(heavy["code"] == "E0711");
+  CHECK(heavy["location"]["path"] == "memory");
+  CHECK(heavy["data"]["required_bytes"] == huge);
+  CHECK(heavy["data"]["margin_bytes"] == margin);
+  CHECK(heavy["data"]["device_kind"] == "cpu");
+  const auto available = heavy["data"]["available_bytes"].get<std::int64_t>();
+  CHECK(available >= 0);
+  CHECK(available < huge);
+  // The margin is kept free: nothing more than it fits.
+  const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}));
+  CHECK(kept["code"] == "E0711");
+  CHECK(kept["data"]["margin_bytes"] == huge);
+  // Started anyway on request, with W0712 and the same data in run.json and the log.
+  const Outcome over = run(input([&](Json& d) { d["memory"]["bytes_host"] = huge; }), registry, {},
+                           {.allow_oversubscription = true});
+  REQUIRE(over.status == ExitStatus::finished);
+  const Json info = Json::parse(read(over.run / "run.json"));
+  REQUIRE(info["diagnostics"].size() == 1);
+  CHECK(info["diagnostics"][0]["code"] == "W0712");
+  CHECK(info["diagnostics"][0]["data"]["required_bytes"] == huge);
+  bool logged = false;
+  for (const auto& line : lines_of(over.run / "log.jsonl")) {
+    const Json event = Json::parse(line);
+    logged = logged || (event["code"] == "W0712" && event["level"] == "warning" &&
+                        event["data"] == info["diagnostics"][0]["data"]);
+  }
+  CHECK(logged);
+  // The estimate is required.
+  const Json missing = refusal(run(input([](Json& d) { d.erase("memory"); }), registry));
+  CHECK(missing["code"] == "E0705");
+  CHECK(missing["data"]["path"] == "memory");
+}
+
 #ifdef AUTAN_MPIEXEC
 namespace {
 
@@ -1716,6 +1768,29 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
 }
 
 }  // namespace
+
+TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
+  // solver-input.md, `memory` is one rank's: two ranks on one host need twice it.
+  constexpr std::int64_t huge = std::int64_t{1} << 60;
+  constexpr int ranks = 2;
+  const Json heavy = input([&](Json& d) { d["memory"]["bytes_host"] = huge; });
+  Json refusal;
+  CHECK(run_on_ranks(heavy, ranks, {}, 2, &refusal, {}, false).empty());
+  CHECK(refusal["code"] == "E0711");
+  CHECK(refusal["data"]["required_bytes"] == ranks * huge);
+  // The command line sets the margin, and starts a run beyond its memory with W0712.
+  Json margined;
+  CHECK(run_on_ranks(input(), ranks, {}, 2, &margined, {"--memory-margin", std::to_string(huge)},
+                     false)
+            .empty());
+  CHECK(margined["code"] == "E0711");
+  CHECK(margined["data"]["margin_bytes"] == huge);
+  const fs::path over = run_on_ranks(heavy, ranks, {}, 0, nullptr, {"--allow-oversubscription"});
+  const Json info = Json::parse(read(over / "run.json"));
+  REQUIRE(info["diagnostics"].size() == 1);
+  CHECK(info["diagnostics"][0]["code"] == "W0712");
+  CHECK(info["diagnostics"][0]["data"]["required_bytes"] == ranks * huge);
+}
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to

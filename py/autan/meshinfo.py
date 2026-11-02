@@ -48,6 +48,7 @@ class Counts(_Strict):
     cells: Positive
     faces: Positive
     nodes: Positive
+    face_nodes: Positive
     cells_by_type: CellsByType
 
 
@@ -126,9 +127,16 @@ def shared_zones(pairs: Iterable[tuple[str, str]]) -> set[str]:
     return {name for name in names if names.count(name) > 1}
 
 
+class Lines(_Strict):
+    order: Literal["rcm", "input"]
+    cells: Annotated[int, Field(strict=True, ge=0)]
+    long_cells: Annotated[int, Field(strict=True, ge=0)]
+
+
 class Quality(_Strict):
     max_non_orthogonality_deg: Annotated[float, Field(strict=True, ge=0, le=180)]
     max_faces_per_cell: Annotated[int, Field(strict=True, ge=4)]
+    lines: Lines
 
 
 class MeshInfo(_Strict):
@@ -147,6 +155,11 @@ class MeshInfo(_Strict):
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         problems = []
+        lines = self.quality.lines
+        if not lines.long_cells <= lines.cells <= self.counts.cells:
+            problems.append("quality.lines must hold long_cells <= cells <= counts.cells")
+        if self.counts.face_nodes < 3 * self.counts.faces:
+            problems.append("counts.face_nodes is below 3 nodes per face")
         if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):
             problems.append("bounds.min exceeds bounds.max")
         if sum(self.counts.cells_by_type.model_dump().values()) != self.counts.cells:

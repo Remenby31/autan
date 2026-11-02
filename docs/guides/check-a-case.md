@@ -23,7 +23,7 @@ cell zones
   air        0.5 M cells  fluid(air)               mesh
   co2        0.5 M cells  fluid(co2)               code
   plate      0.2 M cells  solid(copper)            code
-memory      1.5 GB total · 1.5 GB/GPU on 1 GPU · 7 equations (autan.memory/1)
+memory      10.8 GB per rank (7.6 host, 3.3 cuda) x 1 · 7 equations (autan.memory/2)
 warning[W0205]: mesh '…/heat-exchanger.msh' not found; the MeshInfo is taken as given
 plan OK
 ```
@@ -33,7 +33,7 @@ Read it zone by zone:
 - `casing` has no rule in the case: it is a wall because the mesh file says so (`mesh`).
 - `co2` and `plate` take the materials the case gives them (`code`).
 - `W0205` is expected: the mesh file is not in the repository, so `plan` takes the MeshInfo as given.
-- The memory line is a lower bound; [autan plan](../sdk/plan.md#memory-model-autanmemory1) lists what it counts.
+- The memory line is what one rank needs at its peak, on the host and on its device; [autan plan](../sdk/plan.md#memory-model-autanmemory2) lists what it counts. `autan-run` refuses a run that does not fit (`E0711`).
 
 ## Read a diagnostic
 

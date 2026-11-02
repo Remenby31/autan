@@ -54,7 +54,9 @@ NORMALIZED = {"wall": "wall", "pressure-far-field": "farfield"}
 def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
     """The MeshInfo the core reader reports for `mesh` stored at `path` (docs/contracts/mesh-info.md).
 
-    Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs.
+    Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs. The multigrid's
+    lines need the core, so `quality.lines` is the upper bound every cell in lines of every
+    length, in RCM order: for fixture runs, whose memory estimate nothing reads.
     """
     kinds = mesh.cell_kinds or ("polyhedron",) * mesh.n_cells
     by_type = dict.fromkeys(KINDS.values(), 0)
@@ -87,6 +89,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "cells": mesh.n_cells,
             "faces": mesh.n_faces,
             "nodes": int(mesh.points.shape[0]),
+            "face_nodes": len(mesh.face_nodes),
             "cells_by_type": by_type,
         },
         "boundary_zones": [
@@ -106,6 +109,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
                 np.degrees(np.arccos(np.clip(cos.min(), -1.0, 1.0)))
             ),
             "max_faces_per_cell": int(faces_per_cell.max()),
+            "lines": {"order": "rcm", "cells": mesh.n_cells, "long_cells": mesh.n_cells},
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))
