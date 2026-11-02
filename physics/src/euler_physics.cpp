@@ -167,7 +167,6 @@ class EulerPhysics final : public runtime::Physics {
     state_.assign(5 * n_, State(0));
     res_.assign(5 * n_, Res(0));
     lambda_.assign(n_, State(0));
-    // The host's own steppers' work arrays: the device steps there.
     if (ctx.device < 0) {
       stage_.assign(5 * n_, 0.0);
       rhs_.assign(5 * n_, 0.0);
