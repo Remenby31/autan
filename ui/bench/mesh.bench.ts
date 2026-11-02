@@ -27,7 +27,9 @@ test(`${mesh ?? "no mesh"} surface on ${backend}`, async ({ page }) => {
   const repeat = await timed();
 
   const webgl = backend === "webgl2" ? "&webgl=1" : "";
-  await page.goto(`/viewer?bench=1&mesh=${encodeURIComponent(mesh ?? "")}${webgl}`);
+  // As a JSON string: TanStack Router would read "1e6" or "false" as a number or a boolean.
+  const named = encodeURIComponent(JSON.stringify(mesh ?? ""));
+  await page.goto(`/viewer?bench=1&mesh=${named}${webgl}`);
   const handle = await page.waitForFunction(() => window.__bench, null, { timeout: 240_000 });
   const report = (await handle.jsonValue()) as BenchReport;
   expect(report.backend).toBe(backend);

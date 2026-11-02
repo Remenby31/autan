@@ -58,14 +58,17 @@ class Meshes:
         # The `autan.surface/1` file `autan-mesh-info --surface` wrote next to the MeshInfo, as
         # a viewer message; LookupError when there is none, ValueError when it breaks a contract.
         root, name = self._listed(name)
-        with Folder(root) as folder:
-            stats = [folder.stat(name + suffix) for suffix in (MESH_INFO, SURFACE)]
-        key = (
-            name,
-            *((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) if s else None for s in stats),
-        )
+        try:
+            with Folder(root) as folder:
+                stats = [folder.stat(name + suffix) for suffix in (MESH_INFO, SURFACE)]
+        except OSError as error:
+            msg = f"the meshes directory cannot be read: {error}"
+            raise ValueError(msg) from error
+        # Kept only when both files were there: one appearing meanwhile is read, not remembered.
+        key = (name, *((s.st_ino, s.st_mtime_ns, s.st_ctime_ns, s.st_size) for s in stats if s))
+        keep = None not in stats
         with self._lock:
-            cached = self._messages.get(key)
+            cached = self._messages.get(key) if keep else None
         if cached is not None:
             return cached
         try:
@@ -83,6 +86,8 @@ class Meshes:
                 msg = f"{name}{SURFACE} is not a regular file: {error}"
                 raise ValueError(msg) from error
         message = mesh_surface(data, mesh_info)
+        if not keep:
+            return message
         with self._lock:
             self._messages[key] = message
             while len(self._messages) > 4:

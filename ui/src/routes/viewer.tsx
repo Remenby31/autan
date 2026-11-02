@@ -34,9 +34,9 @@ export const Route = createFileRoute("/viewer")({
     if (Number.isFinite(triangles) && triangles > 0) search.triangles = triangles;
     if (raw.webgl === true || raw.webgl === 1 || raw.webgl === "1") search.webgl = true;
     if (raw.bench === true || raw.bench === 1 || raw.bench === "1") search.bench = true;
-    // A mesh named by digits arrives parsed as a number.
-    if ((typeof raw.mesh === "string" && raw.mesh) || typeof raw.mesh === "number")
-      search.mesh = String(raw.mesh);
+    // A mesh name is a string; links write it as a JSON string, so that "1e6" or "false" stay
+    // names and are not parsed as a number or a boolean.
+    if (typeof raw.mesh === "string" && raw.mesh) search.mesh = raw.mesh;
     return search;
   },
   component: Analysis,
