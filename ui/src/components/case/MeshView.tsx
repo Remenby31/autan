@@ -132,9 +132,9 @@ export function MeshView({
         }}
       />
       {error && (
-        <div className="absolute inset-0 overflow-auto bg-bg-0 p-16">
-          {/* Centred when it fits, scrolled from its start when it does not. */}
-          <div className="m-auto flex min-h-full max-w-xl flex-col justify-center gap-3">
+        // Below the legend, and with room to scroll every zone above the plan laid over the stage.
+        <div className="absolute inset-0 overflow-auto bg-bg-0 px-16 pt-24 pb-[50vh]">
+          <div className="mx-auto flex max-w-xl flex-col gap-3">
             <p className="m-0 text-fg-2 text-sm">
               {error.includes("404")
                 ? "No 3D view of this mesh (autan-mesh-info --surface writes one). Its boundary zones:"

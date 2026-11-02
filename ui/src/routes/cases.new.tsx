@@ -776,6 +776,11 @@ function CaseEditor() {
               // Below 1280 px it lies over the stage as a drawer; wider, beside it.
               className="absolute inset-y-0 right-0 z-10 flex w-[min(30rem,90%)] flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5 shadow-tooltip xl:relative xl:inset-auto xl:z-auto xl:min-h-0 xl:w-[min(30rem,40%)] xl:min-w-[19rem] xl:flex-none xl:shadow-none"
               aria-label="The case's code"
+              // A drawer over the stage (below 1280 px) closes with Escape, like other drawers.
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && !window.matchMedia("(min-width: 1280px)").matches)
+                  toggleCode(false);
+              }}
             >
               <Button
                 size="sm"
@@ -964,7 +969,7 @@ function CaseActions({
     URL.revokeObjectURL(link.href);
   };
   return (
-    <span className="ml-auto flex items-center gap-2">
+    <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
       <span role="status" className="text-danger text-sm">
         {copied === "refused" && "The clipboard refused: select the code instead."}
       </span>

@@ -463,7 +463,9 @@ test("the mesh fills the stage, and the code gives it its width", async ({ page 
   await expect(code).toHaveCount(0);
   await page.getByRole("button", { name: "Code", exact: true }).click();
   await expect(code).toBeVisible();
-  await page.getByRole("button", { name: "Hide the code" }).click();
+  await expect(page.getByRole("button", { name: "Hide the code" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(code).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Copy case.py" })).toBeInViewport();
 });
 
