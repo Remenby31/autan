@@ -1402,6 +1402,26 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
+  // case-schema.md#time: the coupled turbulence step is SA's, in the host's steady
+  // multigrid on one rank.
+  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
+    if (in.turbulence.model != "sa") {
+      return runtime::PhysicsRefusal{
+          .message =
+              "time.coupled_turbulence needs the SA model, not '" + in.turbulence.model + "'",
+          .path = "time.coupled_turbulence",
+          .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
+          .code = "E0426"};
+    }
+    if (in.time.linear_solver != "multigrid" || ranks > 1) {
+      return runtime::PhysicsRefusal{
+          .message = "time.coupled_turbulence runs in the host multigrid on one rank",
+          .path = "time.coupled_turbulence",
+          .data_json =
+              nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
+          .code = "E0427"};
+    }
+  }
   // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
   // the multigrid still agglomerates, smooths and sums in local cell order.
   if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
@@ -1549,6 +1569,13 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
+  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
+    return runtime::PhysicsRefusal{
+        .message = "time.coupled_turbulence runs in the host multigrid, not on a device",
+        .path = "time.coupled_turbulence",
+        .data_json = "{}",
+        .code = "E0427"};
+  }
   // The device loops sum in local order: the host's global-order gathers have no device
   // counterpart in the Euler physics yet.
   if (in.reproducibility == "ranks") {
