@@ -8,8 +8,9 @@ set -euo pipefail
 baseline=$1 out=$2
 commit=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provenance"]["solver"]["commit"])' "$baseline")
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo "health: no baseline commit in $baseline" >&2; exit 2; }
-# Keyed by the commit: another baseline is another probe. An export (git archive), not a
-# worktree: nothing is registered in the repository, so a cleaned RUNNER_TEMP leaves nothing stale.
+# Keyed by the commit: another baseline is another probe. Built from a worktree (the baseline's own
+# CMake reads its commit from git), removed once built: nothing stays registered, so a cleaned
+# RUNNER_TEMP leaves nothing stale; prune first, in case a run was killed in between.
 ref=$out/reference-$commit
 if [[ ! -x $ref/build/stream ]]; then
   # Only if missing, and shallow only in a shallow checkout (a pull request's): main's checkout
@@ -22,12 +23,15 @@ if [[ ! -x $ref/build/stream ]]; then
     fi
   fi
   rm -rf "$ref"
-  mkdir -p "$ref/src"
-  git archive "$commit" bench | tar -x -C "$ref/src"
-  # Under the GPU lock: on the bench Spark, nothing compiles beside a measurement. The export has
-  # no .git: the commit is given, and the probe's result must record it (health.py checks).
+  git worktree prune
+  git worktree add -q --detach "$ref/src" "$commit"
+  # Under the GPU lock: on the bench Spark, nothing compiles beside a measurement. The probe's
+  # result must record the commit (health.py checks).
+  status=0
   bench/lock/autan-gpu-lock -m "gpu-bench: build the health probe (STREAM at ${commit:0:8})" -t 600 -- \
-    bash -c "cmake -S '$ref/src/bench' -B '$ref/build' -DAUTAN_COMMIT=$commit >/dev/null && cmake --build '$ref/build' >/dev/null"
+    bash -c "cmake -S '$ref/src/bench' -B '$ref/build' >/dev/null && cmake --build '$ref/build' >/dev/null" || status=$?
+  git worktree remove --force "$ref/src"
+  ((status == 0)) || exit "$status"
 fi
 echo "probe: STREAM at $commit, binary $(sha256sum "$ref/build/stream" | cut -c1-16)…" >&2
 # -n: autan-bench takes the lock itself; the wrapper bounds the whole probe (a hung STREAM is

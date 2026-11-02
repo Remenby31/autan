@@ -122,10 +122,10 @@ def test_health_sh_gives_no_state_for_a_probe_of_another_commit(repo, tmp_path):
     assert proc.stdout == ""
 
 
-def test_health_sh_builds_the_probe_from_an_export_and_keeps_a_full_history(repo, tmp_path):
+def test_health_sh_builds_the_probe_and_leaves_the_repository_as_it_was(repo, tmp_path):
     # main's checkout keeps its whole history (the bisection walks it): with the baseline's
-    # commit present, the probe is built from `git archive` without any fetch, and the
-    # repository stays complete; nothing is registered as a worktree.
+    # commit present, the probe is built without any fetch, the repository stays complete, and
+    # the worktree it was built in is removed, so a cleaned RUNNER_TEMP leaves nothing stale.
     root = Path(repo["ROOT"])
     env = {**repo, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@t"}  # fmt: skip
@@ -148,7 +148,8 @@ def test_health_sh_builds_the_probe_from_an_export_and_keeps_a_full_history(repo
                           env={**env, "PROBE": str(probe)}, capture_output=True, text=True,
                           check=False)  # fmt: skip
     assert proc.returncode == 0, proc.stderr
-    assert (out / f"reference-{commit}" / "src" / "bench" / "ci" / "health.py").is_file()
+    assert (out / f"reference-{commit}" / "build" / "stream").is_file()
+    assert not (out / f"reference-{commit}" / "src").exists()
     shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=root, env=env,
                              check=True, capture_output=True, text=True).stdout.strip()  # fmt: skip
     assert shallow == "false"
