@@ -25,7 +25,7 @@ Producer: `autan-vv` (owner: CFD - Euler for the exporters). Consumers: `autan p
 | Key | Content |
 |---|---|
 | `schema` | `"autan.face-states/1"` |
-| `oracle` | Name of the oracle, for display. |
+| `oracle` | Name of the oracle, for display: at most 4 096 bytes in UTF-8 ([case-schema.md](case-schema.md#free-texts)), like every member name, zone names included. |
 | `mesh_sha256` | The mesh hash ([mesh-info.md](mesh-info.md), `source.sha256`) of the mesh the states were exported for. |
 | `variables` | Exactly `["density", "velocity-x", "velocity-y", "velocity-z", "pressure"]`, in SI (kg/m³, m/s, Pa), velocity in mesh axes. |
 | `zones` | One entry per boundary zone given: `faces`, the zone's face count; `centroids`, one `[x, y, z]` per face (m); `values`, one row per face in the order of `variables`. Rows of `centroids` and `values` correspond. |

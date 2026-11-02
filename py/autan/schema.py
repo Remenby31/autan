@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
+from autan.texts import bounded
 from autan.units import K, UnitOfLength, deg, fail, m, quantity, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
@@ -50,19 +51,8 @@ PositiveNumber = Annotated[
 Gamma = Annotated[float, Field(gt=1), BeforeValidator(lambda v: validate_number(v, positive=True))]
 Count = Annotated[int, Field(strict=True, ge=1, le=MAX_INTEGER)]
 Index = Annotated[int, Field(strict=True, ge=0, le=MAX_INTEGER)]
-# A free text's bound (case-schema.md#free-texts): readers allocate it before checking it.
-TEXT_BYTES = 4096
-
-
-def _bounded(text: str) -> str:
-    if len(text.encode("utf-8", "surrogatepass")) > TEXT_BYTES:
-        message = f"longer than {TEXT_BYTES} bytes in UTF-8"
-        raise ValueError(message)
-    return text
-
-
-Pattern = Annotated[str, Field(min_length=1), AfterValidator(_bounded)]
-Name = Annotated[str, Field(min_length=1), AfterValidator(_bounded)]
+Pattern = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
+Name = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
 
 _RANGE_ERRORS = frozenset({"greater_than", "greater_than_equal", "less_than", "less_than_equal"})
 _TAGS = ("kind", "model", "law")

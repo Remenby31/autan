@@ -128,6 +128,9 @@ def test_an_oracle_condition_reaches_the_solver_and_the_run(
         (states(zones=zone(2, faces="2")), None, "E0420"),
         (states(zones=zone(2, value=float("nan"))), None, "E0420"),
         (states(zones=zone(2, value=-1.2)), None, "E0420"),
+        # case-schema.md#free-texts: a string or a member name above 4 096 bytes
+        (states(oracle="é" * 2048 + "x"), None, "E0420"),
+        (states(zones=zone(2) | {"é" * 2048 + "x": zone(0)["farfield"]}), None, "E0420"),
     ],
 )
 def test_the_face_state_file_is_checked(
@@ -141,6 +144,16 @@ def test_the_face_state_file_is_checked(
     codes = {d.code for d in autan.load(case).plan(autan.MeshInfo.load(two_faces)).diagnostics}
     assert code in codes
     assert codes <= {code, "E0423"}
+
+
+def test_the_strings_of_a_face_state_file_may_reach_their_bound(
+    write_case: Callable[..., Path], two_faces: Path
+) -> None:
+    # case-schema.md#free-texts: 4 096 bytes, here 2 048 two-byte characters.
+    content = states(oracle="é" * 2048, zones=zone(2) | {"é" * 2048: zone(0)["farfield"]})
+    case = oracle_case(write_case, content)
+    codes = {d.code for d in autan.load(case).plan(autan.MeshInfo.load(two_faces)).diagnostics}
+    assert codes <= {"E0423"}  # the file's extra zone is not one of the mesh
 
 
 def test_a_missing_file_is_e0420(write_case: Callable[..., Path], two_faces: Path) -> None:

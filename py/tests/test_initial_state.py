@@ -97,12 +97,12 @@ def test_the_state_reaches_the_solver_input_and_the_run(
     loaded = autan.load(case)
     planned = loaded.plan(autan.MeshInfo.load(mesh))
     assert planned.ok
-    # docs/sdk/plan.md: the text and its strings (2S), its longest member name four times
-    # ("mesh_sha256", 11 B), 1 KiB of members, 128 B a row streamed and 138 B a row paired,
-    # then 160 B per cell of the mesh paired with them.
+    # docs/sdk/plan.md: the text and its strings (2S), a string at its 4 096-byte bound four
+    # times, 1 KiB of members, 128 B a row streamed and 138 B a row paired, then 160 B per
+    # cell of the mesh paired with them.
     size = (case.parent / "state.json").stat().st_size
     files = {c.name: c for c in planned.memory.components}["state files"]
-    assert files.bytes_host == 2 * size + 4 * 11 + 1024 + (128 + 138) * CELLS + 160 * CELLS
+    assert files.bytes_host == 2 * size + 4 * 4096 + 1024 + (128 + 138) * CELLS + 160 * CELLS
     assert main(["prepare", str(case), "--mesh-info", str(mesh)]) == 0
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
@@ -142,6 +142,11 @@ def _raw(case: Path, text: str) -> None:
     )
 
 
+def _oracle(case: Path, oracle: str) -> None:
+    document = json.loads((case.parent / "state.json").read_text())
+    _raw(case, json.dumps(document | {"oracle": oracle}))
+
+
 @pytest.mark.parametrize(
     ("damage", "code"),
     [
@@ -164,15 +169,17 @@ def _raw(case: Path, text: str) -> None:
         ),
         (lambda case: (case.parent / "state.json").unlink(), "E0508"),
         (_fifo, "E0508"),  # a FIFO with no writer: never a blocking read
+        (lambda case: _oracle(case, "é" * 2048), None),  # case-schema.md#free-texts
+        (lambda case: _oracle(case, "é" * 2048 + "x"), "E0508"),
     ],
 )
 def test_the_file_is_checked(
-    damage: Callable[[Path], object], code: str, write_case: Callable[..., Path], mesh: Path
+    damage: Callable[[Path], object], code: str | None, write_case: Callable[..., Path], mesh: Path
 ) -> None:
     case = with_state(write_case)
     damage(case)
     codes = [d.code for d in autan.load(case).plan(autan.MeshInfo.load(mesh)).diagnostics]
-    assert codes == [code]
+    assert codes == ([code] if code else [])
 
 
 @pytest.mark.parametrize(

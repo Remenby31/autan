@@ -225,19 +225,6 @@ def plan(
 _PATH_MAX = 4096
 
 
-def _longest_name(data: bytes) -> int:
-    """The longest member name of a valid JSON document, in bytes."""
-    longest = 0
-
-    def note(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        nonlocal longest
-        longest = max([longest, *(len(name.encode()) for name, _ in pairs)])
-        return dict(pairs)
-
-    json.loads(data, object_pairs_hook=note)
-    return longest
-
-
 # A zone's or a monitor's entry in the solver input besides its texts: keys, a kind, at most
 # 20 numbers of at most 24 characters each (Python's repr of a double) and a SHA-256.
 _ENTRY = 1024
@@ -629,7 +616,7 @@ def _check_initial_state(
             "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
         )
         return
-    files.append(StateFileLoad(len(data), document.cells, 0, 0, "initial", _longest_name(data)))
+    files.append(StateFileLoad(len(data), document.cells, 0, 0, "initial"))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
     if fluid_cells is not None and document.cells != fluid_cells:
@@ -672,9 +659,7 @@ def _check_oracle(
         return
     rows = sum(z.faces for z in document.zones.values())
     faces = sum(zones.values())
-    files.append(
-        StateFileLoad(len(data), rows, faces, len(document.zones), "faces", _longest_name(data))
-    )
+    files.append(StateFileLoad(len(data), rows, faces, len(document.zones), "faces"))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0422", "the face states were exported for another mesh")
     for zone, faces in zones.items():

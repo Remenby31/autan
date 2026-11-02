@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict
 
 from autan.schema import Steady
+from autan.texts import TEXT_BYTES
 
 if TYPE_CHECKING:
     from autan.meshinfo import MeshInfo
@@ -25,7 +26,6 @@ class StateFileLoad:
     faces: int
     zones: int
     kind: Literal["initial", "faces", "manufactured"]
-    longest_name: int = 0
 
 
 _CUDA_CONTEXT = 512 * 2**20
@@ -211,9 +211,10 @@ def _rank(
     # vectors grow (the old buffer, half the new one, is freed after the copy).
     loads = 0
     for x in files:
-        # A member name lives in the text, the parser's token buffer (twice its length at
-        # most), the key it builds and the document's key (runtime/src/run.cpp).
-        names = 4 * x.longest_name
+        # A string (a member name or the oracle, at most TEXT_BYTES) lives in the text, the
+        # parser's token buffer (twice its length at most), the key or value it builds and the
+        # document's (runtime/src/run.cpp).
+        names = 4 * TEXT_BYTES
         if x.kind == "initial":
             loads += 2 * x.size + names + 1024 + 266 * x.rows + 160 * cells
         elif x.kind == "faces":
