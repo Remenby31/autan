@@ -74,7 +74,7 @@ Two runs of the solver (not the `fake` backend) with the same `identity` whose c
 
 ### Identity
 
-`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition.
+`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition and `autan.results.IDENTITY` follows. `autan.results.run_identity(run)` computes it from a `RunInfo` or a `run.json` document: a writer records it, a reader compares it.
 
 1. `case.sha256`
 2. `mesh.sha256`
@@ -88,6 +88,10 @@ Two runs of the solver (not the `fake` backend) with the same `identity` whose c
 10. `start.mode`
 11. `start.iterations`
 12. `start.solution_sha256`
+
+### Studies
+
+A **study** is a set of runs that solve one problem at several freestream states: their identities have the same fields except `case.sha256`, and their cases are the same once these top-level keys are removed, a closed list: `freestream` (the state that varies) and `name` (a label, not physics; a sweep may name each case after its state). `autan.results.run_identity_parts(run, case)` gives a run's identity fields one by one, `case_without_freestream` (the SHA-256 of the RFC 8785 canonical JSON of the case document without those keys, [case-schema.md](case-schema.md#case-hash)) and that `freestream` table as the document writes it. The state a run starts from is no part of the freestream: an explicit `initial` of a cell zone, an `initial_state` file or a `start` makes another study.
 
 ## History
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
 
 import numpy as np
+import rfc8785
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autan import cgns
@@ -173,21 +174,77 @@ def iso(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def identity(
-    case: str,
-    mesh: str,
-    solver: Solver,
-    precision: str,
-    devices: Devices,
-    cell_order: str,
-    start: StartInfo | None = None,
-) -> str:
-    """The reproducibility fingerprint of a run (results.md, ``identity``)."""
-    parts = [case, mesh, solver.commit, precision, solver.backend, devices.kind, str(devices.count)]
-    parts.append(cell_order)
-    if start is not None:
-        parts += [start.identity, start.mode, str(start.iterations), start.solution_sha256]
+# results.md#identity, line for line.
+IDENTITY = (
+    "case.sha256",
+    "mesh.sha256",
+    "solver.commit",
+    "precision",
+    "solver.backend",
+    "devices.kind",
+    "devices.count",
+    "cell_order",
+    "start.identity",
+    "start.mode",
+    "start.iterations",
+    "start.solution_sha256",
+)
+
+
+def run_identity(run: RunInfo | dict[str, Any]) -> str:
+    """The ``identity`` of a run from its ``run.json`` fields (results.md#identity): ``run`` is a
+    ``RunInfo`` or the ``run.json`` document, which is validated as a ``RunInfo`` first
+    (pydantic ``ValidationError`` otherwise). Its own ``identity`` field is not read, so a
+    writer computes the value to record and a reader the value to compare."""
+    if not isinstance(run, RunInfo):
+        run = RunInfo.model_validate({**run, "identity": "0" * 64})
+    document = run.document()
+    parts = []
+    for path in IDENTITY:
+        if path.startswith("start.") and document.get("start") is None:
+            continue
+        value: Any = document
+        for key in path.split("."):
+            value = value[key]
+        parts.append("" if value is None else str(value))
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+# results.md#studies: what runs of one study may differ in, besides the freestream state.
+STUDY_EXCLUDED = ("name", "freestream")
+
+
+class IdentityParts(BaseModel):
+    """What a run's identity is made of (results.md#studies)."""
+
+    model_config = ConfigDict(frozen=True)
+    fields: dict[str, str | int | None]
+    case_without_freestream: Hex
+    freestream: dict[str, Any]
+
+
+def run_identity_parts(run: RunInfo | dict[str, Any], case: CaseSpec) -> IdentityParts:
+    """The fields of ``run``'s identity one by one, in the order of results.md#identity (the
+    ``start.`` fields only for a run with a start), the SHA-256 of ``case`` without its
+    name and freestream, and that freestream as the case document writes it (results.md#studies).
+    ``case`` is the run's ``case.toml``; ``run`` a ``RunInfo`` or a ``run.json`` document."""
+    if not isinstance(run, RunInfo):
+        run = RunInfo.model_validate({**run, "identity": "0" * 64})
+    document = run.document()
+    fields: dict[str, str | int | None] = {}
+    for path in IDENTITY:
+        if path.startswith("start.") and document["start"] is None:
+            continue
+        value: Any = document
+        for key in path.split("."):
+            value = value[key]
+        fields[path] = value
+    rest = {key: value for key, value in case.document().items() if key not in STUDY_EXCLUDED}
+    return IdentityParts(
+        fields=fields,
+        case_without_freestream=hashlib.sha256(rfc8785.dumps(rest)).hexdigest(),
+        freestream=case.document()["freestream"],
+    )
 
 
 class LogLine(_Strict):
@@ -665,16 +722,7 @@ def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]
         found.append("finished must be null exactly while running")
     if run.finished is not None and not _TIMESTAMP.fullmatch(run.finished):
         found.append(f"finished {run.finished!r} is not a UTC ISO 8601 timestamp")
-    expected = identity(
-        case.hash(),
-        mesh_info.source.sha256,
-        run.solver,
-        run.precision,
-        run.devices,
-        run.cell_order,
-        run.start,
-    )
-    if run.identity != expected:
+    if run.identity != run_identity(run):
         found.append("identity does not match its definition")
     if case.hash() != run.case.sha256 or case.name != run.case.name:
         found.append("case.toml does not match run.json case")
