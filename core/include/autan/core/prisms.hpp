@@ -24,6 +24,10 @@ struct PrismReport {
   std::int64_t tetrahedra = 0;   ///< tetrahedra left
   std::int64_t other_cells = 0;  ///< cells neither tetrahedra nor merged
   std::int64_t layers = 0;       ///< most prisms stacked on one wall triangle
+  /// Quality before and after (compute_quality): the largest non-orthogonality, in degrees, and
+  /// the least volume ratio across an interior face.
+  double max_non_orthogonality_in = 0.0, max_non_orthogonality_out = 0.0;
+  double min_volume_ratio_in = 1.0, min_volume_ratio_out = 1.0;
   // Front triangles (a wall triangle or a merged prism's top cap) where a column stopped.
   std::int64_t no_candidate = 0;     ///< no three tetrahedra form a prism on it
   std::int64_t ambiguous = 0;        ///< several sets of three do

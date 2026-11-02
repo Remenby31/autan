@@ -22,7 +22,8 @@ namespace {
 // `layers` thin layers growing by 1.2 from 0.01 / n, then one layer 2 / n high, as wide as tall
 // cells are not. Each prism is split into three tetrahedra with the diagonal of each side
 // quadrilateral at its lowest node (Dompierre et al., IJNME 45, 1999), so neighbours agree.
-// `moved`, when set, shifts the node (i, j) of z-level q by a tenth of a square along x.
+// `moved`, when set, shifts the node (i, j) of z-level q by 0.0006 along x: its sides leave the
+// planarity tolerance (the layer is 0.0036 high) while its pillars stay within theirs.
 struct Layered {
   int n = 4;
   int layers = 5;
@@ -47,7 +48,7 @@ autan::CellwiseMesh layered(const Layered& g) {
       for (int i = 0; i < side; ++i) {
         const bool shifted =
             g.moved && g.moved->i == i && g.moved->j == j && g.moved->q == static_cast<int>(q);
-        mesh.x.push_back(static_cast<double>(i) / g.n + (shifted ? 0.1 / g.n : 0.0));
+        mesh.x.push_back(static_cast<double>(i) / g.n + (shifted ? 0.0006 : 0.0));
         mesh.y.push_back(static_cast<double>(j) / g.n);
         mesh.z.push_back(z[q]);
       }

@@ -15,6 +15,7 @@
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/quality.hpp"
 
 namespace autan {
 namespace {
@@ -246,7 +247,7 @@ class Merger {
       std::vector<index_t> out;
       for (const index_t g : m_.cell_faces(c)) {
         const index_t n = across(g, c);
-        if (n != no_cell && is_tet(n)) out.push_back(n);
+        if (n != no_cell && is_tet(n) && merged_[at(n)] < 0) out.push_back(n);
       }
       return out;
     };
@@ -290,9 +291,6 @@ class Merger {
     }
     if (valid.empty()) return {std::nullopt, furthest};
     if (valid.size() > 1) return {std::nullopt, Fail::ambiguous};
-    for (const index_t c : valid.front().cells) {
-      if (merged_[at(c)] >= 0) return {std::nullopt, Fail::not_tetrahedron};
-    }
     return {valid.front(), Fail::none};
   }
 
@@ -470,6 +468,13 @@ PrismMerge merge_layer_prisms(const Mesh& mesh, const PrismOptions& options) {
     total += merged[at(c)];
   }
   if (difference > 1e-12 * total) throw std::logic_error("merging prisms changed the volume");
+  const auto extremes = [](const Mesh& m, const Geometry& g, double& angle, double& ratio) {
+    const MeshQuality q = compute_quality(m, g);
+    if (!q.non_orthogonality.empty()) angle = *std::ranges::max_element(q.non_orthogonality);
+    if (!q.volume_ratio.empty()) ratio = *std::ranges::min_element(q.volume_ratio);
+  };
+  extremes(mesh, before, out.report.max_non_orthogonality_in, out.report.min_volume_ratio_in);
+  extremes(r, after, out.report.max_non_orthogonality_out, out.report.min_volume_ratio_out);
   const auto closure = cell_closure_error(r, after);
   if (!closure.empty() && *std::ranges::max_element(closure) > 1e-12)
     throw std::logic_error("a merged cell is not closed");

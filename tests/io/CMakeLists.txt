@@ -49,7 +49,7 @@ function(add_prisms_test name code regex)
       -DEXPECT_CODE=${code} "-DEXPECT=${regex}" -P ${CMAKE_CURRENT_SOURCE_DIR}/run_cli.cmake
   )
 endfunction()
-add_prisms_test(report 0 "\"prisms\": [0-9]+" ${mesh_dir}/hybrid/polyMesh ${CMAKE_CURRENT_BINARY_DIR}/prisms-out)
+add_prisms_test(report 0 "\"prisms\": [0-9]+.*\"min_volume_ratio\": [0-9]" ${mesh_dir}/hybrid/polyMesh ${CMAKE_CURRENT_BINARY_DIR}/prisms-out)
 add_prisms_test(usage 2 "usage: autan-mesh-prisms" --planarity 0 ${mesh_dir}/hybrid/polyMesh out)
 add_prisms_test(missing 1 "E0130" ${mesh_dir}/missing.msh ${CMAKE_CURRENT_BINARY_DIR}/prisms-none)
 add_test(

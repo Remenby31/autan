@@ -46,18 +46,22 @@ void labels(std::ofstream& out, std::span<const std::int32_t> v) {
   out << ")\n";
 }
 
-// `name` as an OpenFOAM word: each run of characters a word cannot hold becomes one '_'.
+// `name` as a polyMesh name: an OpenFOAM word of letters, digits and _ - . : + (each run of other
+// characters one '_'), not starting with a digit (a number to the tokenizer), and not "interior",
+// the zone read_polymesh gives the internal faces.
 std::string word(const std::string& name) {
   std::string out;
   bool run = false;
   for (const char c : name) {
-    const bool bad = std::isspace(static_cast<unsigned char>(c)) != 0 || c == '"' || c == '\'' ||
-                     c == '/' || c == ';' || c == '{' || c == '}' || c == '(' || c == ')';
-    if (bad && !run) out.push_back('_');
-    if (!bad) out.push_back(c);
-    run = bad;
+    const bool ok = std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-' ||
+                    c == '.' || c == ':' || c == '+';
+    if (!ok && !run) out.push_back('_');
+    if (ok) out.push_back(c);
+    run = !ok;
   }
-  return out.empty() ? "_" : out;
+  if (out.empty() || std::isdigit(static_cast<unsigned char>(out.front())) != 0) out.insert(0, "_");
+  if (out == "interior") out = "interior_";
+  return out;
 }
 
 }  // namespace
@@ -133,8 +137,8 @@ std::map<std::string, std::string> write_polymesh(const fs::path& directory, con
       const FaceZone& zone = mesh.face_zones()[z];
       if (!zone.boundary) continue;
       const char* type = zone.kind == BcKind::wall || zone.kind == BcKind::thermal_wall ? "wall"
-                         : zone.kind == BcKind::symmetry ? "symmetryPlane"
-                                                         : "patch";
+                         : zone.kind == BcKind::symmetry                                ? "symmetry"
+                                                                                        : "patch";
       out << "    " << patch_names[z] << "\n    {\n        type            " << type
           << ";\n        nFaces          " << offsets[z + 1] - offsets[z]
           << ";\n        startFace       " << offsets[z] << ";\n    }\n";
