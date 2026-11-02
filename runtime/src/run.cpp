@@ -133,10 +133,10 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
-  const PartitionGroups* groups = nullptr;   // the physics' groups; null or empty: none
-  std::optional<Diagnostic> memory_warning;  // W0712: started beyond its memory
-  std::optional<StartState> start;           // input.start, read and checked
-  Json start_averaging;                      // `continue`: the previous run's averaging
+  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
+  std::optional<Diagnostic> memory_warning = std::nullopt;  // W0712: started beyond its memory
+  std::optional<StartState> start;                          // input.start, read and checked
+  Json start_averaging;  // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
