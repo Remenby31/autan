@@ -397,6 +397,18 @@ def test_run_details_and_plan(runs: Path, server: str) -> None:
         z["name"] for z in mesh_info["boundary_zones"]
     }
 
+    # A started run is planned with the state it starts from.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    first = autan.Results.open(runs / run_id)
+    continued = case.run(info, backend=autan.FakeBackend(iterations=60), runs=runs, start=first)
+
+    plan = httpx.get(f"{server}/api/runs/{continued.path.name}/plan").json()
+
+    devices = json.loads((continued.path / "run.json").read_text())["devices"]
+    expected = case.plan(info, gpus=devices["count"], device_kind=devices["kind"], start="continue")
+    assert plan["memory"] == expected.document()["memory"]
+
 
 @pytest.mark.parametrize(
     "target",
