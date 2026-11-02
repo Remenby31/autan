@@ -1018,10 +1018,12 @@ test("a run's plan gives the memory of one rank, host and device apart, and of a
     await page.getByRole("button", { name: /^Plan/ }).click();
   };
 
+  // formatBytes itself is pinned by its unit test (format.test.ts); here the bytes are /plan's.
   // A fake run ran on one CPU rank: host memory only.
   const cpu = (await runs(page)).find((r) => r.status === "converged") as Run;
   const host = await memory(cpu.run_id);
   expect(host.device_kind).toBe("cpu");
+  expect(host.bytes_host).toBeGreaterThan(1000);
   await open(cpu.run_id);
   await expect(plan).toContainText(`${formatBytes(host.bytes_per_gpu)} per rank`);
   await expect(plan).toContainText(`${formatBytes(host.bytes_host)} host, cpu`);
