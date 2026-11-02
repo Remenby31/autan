@@ -313,6 +313,52 @@ test("a converged run opens its wall surface in Analysis and switches fields", a
   await expect(page).toHaveURL(/field=Cf/);
 });
 
+test("Analysis cuts a run's solution by a plane and keeps the cut in its link", async ({
+  page,
+}) => {
+  const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toContainText("wing.main");
+  const view = page.getByTestId("viewport");
+  const walls = await view.screenshot();
+  const box = await view.boundingBox();
+  if (!box) throw new Error("no viewport");
+  const picked = page.getByTestId("zones").getByRole("button", { pressed: true });
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const front = (await picked.textContent()) ?? "";
+  expect(front).not.toBe("");
+
+  await page.getByRole("button", { name: "Slice normal to y" }).click();
+  const legend = page.getByTestId("slice-legend");
+  await expect(legend).toContainText("slice · Pressure");
+  await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(false);
+  await expect(page).toHaveURL(/slice=y/);
+  // The walls between the eye and the plane are clipped: the centre now reaches a wall behind it.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(picked).not.toHaveText(front);
+  await expect(picked).toHaveCount(1);
+
+  const field = page.getByLabel("Slice field");
+  const other = (await field.locator("option").allTextContents()).find((f) => f !== "Pressure");
+  if (!other) throw new Error("the slice carries one field only");
+  await field.selectOption(other);
+  await expect(legend).toContainText(`slice · ${other}`);
+
+  await page.reload();
+  await expect(legend).toContainText(`slice · ${other}`);
+  await expect(page.getByRole("button", { name: "Slice normal to y" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await page.getByRole("button", { name: "Slice normal to y" }).click();
+  await expect(legend).toHaveCount(0);
+  await expect(page).not.toHaveURL(/slice=/);
+  await page.mouse.click(box.x + 20, box.y + box.height - 20);
+  await expect(picked).toHaveCount(0);
+  await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
+});
+
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
   // py/examples/crm_hl.py: M 0.2, α 19.57°, Re 5.49e6, SA, on crm-hl.cgns.
   const registry = await (await page.request.get("/api/runs")).json();

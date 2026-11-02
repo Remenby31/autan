@@ -32,7 +32,17 @@ export class SurfaceViewer {
   private pickMaterials: THREE.MeshBasicNodeMaterial[] = [];
   private pickTarget = new THREE.RenderTarget(1, 1);
   // A plane cut through the volume, drawn with the surface, coloured by its own field.
-  private slice: { mesh: THREE.Mesh; surface: Surface; lut: THREE.DataTexture } | null = null;
+  private slice: {
+    mesh: THREE.Mesh;
+    surface: Surface;
+    lut: THREE.DataTexture;
+    point: THREE.Vector3;
+    normal: THREE.Vector3;
+  } | null = null;
+  // With a slice, the walls between the eye and the plane are clipped away, so a cut through a
+  // body or a closed domain is seen.
+  private readonly walls = new THREE.ClippingGroup();
+  private readonly clip = new THREE.Plane();
   private readonly sliceRange = { min: uniform(0), span: uniform(1) };
   private frame = 0;
 
@@ -78,6 +88,10 @@ export class SurfaceViewer {
     this.lut.colorSpace = THREE.SRGBColorSpace;
     this.lut.magFilter = THREE.LinearFilter;
     this.lut.needsUpdate = true;
+
+    this.walls.clippingPlanes = [this.clip];
+    this.walls.enabled = false;
+    this.scene.add(this.walls);
 
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
@@ -134,7 +148,7 @@ export class SurfaceViewer {
       geometry,
       this.zones.map((z) => z.material),
     );
-    this.scene.add(this.mesh);
+    this.walls.add(this.mesh);
     this.frameAll();
   }
 
@@ -208,8 +222,13 @@ export class SurfaceViewer {
   }
 
   /** Show `slice` (or none) with the surface, coloured by its field `fieldName` on its own
-   * scale; it is placed by its origin relative to the surface's. */
-  setSlice(slice: Surface | null, fieldName: string): void {
+   * scale; it is placed by its origin relative to the surface's. `plane` is the cut's plane in
+   * the surface's coordinates: the walls on the camera's side of it are not drawn. */
+  setSlice(
+    slice: Surface | null,
+    fieldName: string,
+    plane?: { origin: readonly number[]; normal: readonly number[] },
+  ): void {
     this.clearSlice();
     if (!slice) {
       this.requestRender();
@@ -239,7 +258,16 @@ export class SurfaceViewer {
       slice.origin[2] - base[2],
     );
     this.scene.add(mesh);
-    this.slice = { mesh, surface: slice, lut };
+    const at = plane?.origin ?? slice.origin;
+    this.slice = {
+      mesh,
+      surface: slice,
+      lut,
+      point: new THREE.Vector3(at[0] ?? 0, at[1] ?? 0, at[2] ?? 0).sub(
+        new THREE.Vector3(...(base as [number, number, number])),
+      ),
+      normal: new THREE.Vector3(...((plane?.normal ?? [0, 0, 0]) as [number, number, number])),
+    };
     this.setSliceField(fieldName);
   }
 
@@ -304,9 +332,21 @@ export class SurfaceViewer {
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
       const moving = this.controls.update();
+      this.clipWalls();
       this.renderer.render(this.scene, this.camera);
       if (moving) this.requestRender();
     });
+  }
+
+  // Fragments on the negative side of a clipping plane are discarded: the plane's normal points
+  // away from the camera.
+  private clipWalls(): void {
+    const slice = this.slice;
+    this.walls.enabled = slice !== null && slice.normal.lengthSq() > 0;
+    if (!slice || !this.walls.enabled) return;
+    const towards = this.camera.position.clone().sub(slice.point).dot(slice.normal) > 0;
+    const normal = slice.normal.clone().normalize();
+    this.clip.setFromNormalAndCoplanarPoint(towards ? normal.negate() : normal, slice.point);
   }
 
   dispose(): void {
@@ -322,7 +362,7 @@ export class SurfaceViewer {
 
   private clearMesh(): void {
     if (!this.mesh) return;
-    this.scene.remove(this.mesh);
+    this.walls.remove(this.mesh);
     this.mesh.geometry.dispose();
     for (const zone of this.zones) zone.material.dispose();
     for (const material of this.pickMaterials) material.dispose();

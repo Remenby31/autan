@@ -12,7 +12,7 @@ import { Note } from "../components/ui/Note";
 import { RelativeTime } from "../components/ui/RelativeTime";
 import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
-import { COOL_WARM, colormapFor, cssGradient, displayRange } from "../viewer/colormap";
+import { colormapFor, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
 
 interface Search {
@@ -149,6 +149,47 @@ function bounds(surface: Surface): { min: number[]; max: number[] } {
 const format = (v: number) =>
   Math.abs(v) >= 1e4 || (v !== 0 && Math.abs(v) < 1e-2) ? v.toExponential(2) : v.toFixed(3);
 
+/** A field's colour scale and its range, or "uniform" and its value when the field is. */
+function Legend({
+  className,
+  name,
+  unit,
+  min,
+  max,
+  testId,
+}: {
+  className: string;
+  name: string;
+  unit: string | undefined;
+  min: number;
+  max: number;
+  testId: string;
+}) {
+  const range = displayRange(min, max);
+  return (
+    <div
+      className={`pointer-events-none absolute right-4 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs ${className}`}
+    >
+      <span data-testid={testId}>
+        {name}
+        {unit ? ` (${unit})` : ""}
+      </span>
+      <div className="h-2 rounded" style={{ background: cssGradient(colormapFor(min, max)) }} />
+      <div className="flex justify-between">
+        {max - min <= 1e-9 * Math.max(1, Math.abs(max)) ? (
+          <span className="w-full text-center">uniform {format(min)}</span>
+        ) : (
+          <>
+            <span>{format(range.min)}</span>
+            {range.min < 0 && range.max > 0 && <span>0</span>}
+            <span>{format(range.max)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Viewer() {
   const {
     run,
@@ -253,7 +294,7 @@ function Viewer() {
         .then((s) => {
           setCut(s);
           setCutError(null);
-          viewer.current?.setSlice(s, sliceField);
+          viewer.current?.setSlice(s, sliceField, { origin, normal });
         })
         .catch((e: unknown) => {
           if (abort.signal.aborted) return;
@@ -287,8 +328,6 @@ function Viewer() {
   };
 
   const field = surface?.fields.find((f) => f.name === fieldName) ?? surface?.fields[0];
-  const range = field ? displayRange(field.min, field.max) : null;
-  const map = field ? colormapFor(field.min, field.max) : COOL_WARM;
   return (
     <>
       <TopBar
@@ -417,44 +456,24 @@ function Viewer() {
           </p>
         )}
         {cutField && (
-          <div
-            className="pointer-events-none absolute right-4 bottom-28 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs"
-            data-testid="slice-legend"
-          >
-            <span>
-              slice · {cutField.name}
-              {UNITS[cutField.name] ? ` (${UNITS[cutField.name]})` : ""}
-            </span>
-            <div
-              className="h-2 rounded"
-              style={{ background: cssGradient(colormapFor(cutField.min, cutField.max)) }}
-            />
-            <div className="flex justify-between">
-              <span>{format(displayRange(cutField.min, cutField.max).min)}</span>
-              <span>{format(displayRange(cutField.min, cutField.max).max)}</span>
-            </div>
-          </div>
+          <Legend
+            className="bottom-28"
+            name={`slice · ${cutField.name}`}
+            unit={UNITS[cutField.name]}
+            min={cutField.min}
+            max={cutField.max}
+            testId="slice-legend"
+          />
         )}
-        {field && range && (
-          <div className="pointer-events-none absolute right-4 bottom-10 flex w-56 flex-col gap-1 font-mono text-fg-3 text-xs">
-            <span data-testid="legend">
-              {field.name}
-              {UNITS[field.name] ? ` (${UNITS[field.name]})` : ""}
-              {run ? "" : " · synthetic"}
-            </span>
-            <div className="h-2 rounded" style={{ background: cssGradient(map) }} />
-            <div className="flex justify-between">
-              {field.max - field.min <= 1e-9 * Math.max(1, Math.abs(field.max)) ? (
-                <span className="w-full text-center">uniform {format(field.min)}</span>
-              ) : (
-                <>
-                  <span>{format(range.min)}</span>
-                  {range.min < 0 && range.max > 0 && <span>0</span>}
-                  <span>{format(range.max)}</span>
-                </>
-              )}
-            </div>
-          </div>
+        {field && (
+          <Legend
+            className="bottom-10"
+            name={`${field.name}${run ? "" : " · synthetic"}`}
+            unit={UNITS[field.name]}
+            min={field.min}
+            max={field.max}
+            testId="legend"
+          />
         )}
         <div
           className="pointer-events-none absolute bottom-3 left-4 font-mono text-fg-3 text-xs"
