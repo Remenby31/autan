@@ -1,0 +1,14 @@
+# Files the benchmark mesh's generator loads: bench/ci/mesh-modules.py --write rewrites it.
+vv/src/autan_vv/__init__.py
+vv/src/autan_vv/cli.py
+vv/src/autan_vv/errors.py
+vv/src/autan_vv/meshes/__init__.py
+vv/src/autan_vv/meshes/dual.py
+vv/src/autan_vv/meshes/facemesh.py
+vv/src/autan_vv/meshes/families.py
+vv/src/autan_vv/meshes/fluent.py
+vv/src/autan_vv/meshes/ringleb.py
+vv/src/autan_vv/meshes/vortex.py
+vv/src/autan_vv/oracles/__init__.py
+vv/src/autan_vv/oracles/inviscid.py
+vv/src/autan_vv/oracles/riemann.py

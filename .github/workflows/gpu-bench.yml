@@ -69,12 +69,16 @@ jobs:
           persist-credentials: false
       # The mesh is a pure function of the generator, its locked dependencies and its arguments:
       # cached under their hash, it is generated again only when one of them changes.
+      - name: The mesh's cache key (bench/ci/mesh-key.sh)
+        id: mesh-key
+        run: bench/ci/mesh-key.sh >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: mesh-cache
         with:
           path: meshes/
-          # What `autan-vv meshes` runs (mesh-cache.yml fills main's cache, the one pull requests read).
-          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/meshes/**', 'vv/src/autan_vv/oracles/**', 'vv/src/autan_vv/cli.py', 'vv/src/autan_vv/errors.py', 'vv/src/autan_vv/__init__.py', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
+          # What the generator loads, listed (mesh-cache.yml fills main's cache, the one pull requests
+          # read, under the same key).
+          key: ${{ steps.mesh-key.outputs.key }}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: steps.mesh-cache.outputs.cache-hit != 'true'
         with:
@@ -87,7 +91,11 @@ jobs:
           libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
       - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
         if: steps.mesh-cache.outputs.cache-hit != 'true'
-        run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes
+        # Generated through mesh-modules.py, which checks that the repository modules the
+        # generator loads are exactly bench/ci/measured-mesh-files.txt (the key, the filter).
+        run: >-
+          uv run --project vv --locked python bench/ci/mesh-modules.py
+          --check bench/ci/measured-mesh-files.txt -- meshes hex --levels 128 --out meshes
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mesh-hex-n128
@@ -127,11 +135,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # A bisection on main checks out earlier commits of main.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          # A bisection on main checks out earlier commits of main; a pull request's merge commit
+          # needs its first parent, the base the paired gate measures it against.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
       - name: Give this job priority on the GPU lock
         # As long as the job may last: a bisection on main keeps the GPU first through its probes.
         run: bench/ci/priority.sh start ${{ github.event_name == 'pull_request' && 90 || 240 }}
+      # Pull requests: the paired gate (#403). The change is measured against its base, built from
+      # main at merge time, alternately in one hold of the GPU lock, so that the machine's state
+      # weighs on both sides alike (docs/infra/bench.md). A base that does not build ends in
+      # "BASE BUILD FAILED": no verdict on the change, never green. Built first, so that a breakage
+      # the change inherits from main reads as the base's.
+      - name: Build the base's benchmarks (pull requests)
+        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
+        run: bench/ci/build-base.sh "$RUNNER_TEMP/base"
       # Builds run under the GPU lock too, briefly: on the bench Spark no measurement ever runs
       # beside a compilation.
       - name: Build the benchmarks
@@ -157,14 +174,24 @@ jobs:
       # The health precondition: STREAM built from the GB10 baseline's own commit, never the
       # binary under test (a change that slows STREAM still fails its gate), measured first. More
       # than 3 % below the baseline, the Spark is DEGRADED (other tenants take the shared memory's
-      # bandwidth, #284): the job fails with no verdict on the change, and nothing is gated,
-      # published or bisected.
+      # bandwidth, #284). On main the job then fails with no verdict, and nothing is gated,
+      # published or bisected; on a pull request it is information only, since the paired gate
+      # (#403) measures the change against its base on the same machine (docs/infra/bench.md).
       - name: Machine health (reference STREAM against the GB10 baseline)
         id: health
         if: needs.changes.outputs.bench == 'true'
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: bench/ci/health.sh bench/baselines/gb10.json "$RUNNER_TEMP/health" >> "$GITHUB_OUTPUT"
+      - name: Machine health (pull requests, information)
+        if: always() && github.event_name == 'pull_request' && steps.health.outcome == 'failure'
+        env:
+          STATE: ${{ steps.health.outputs.state }}
+        run: >-
+          echo "::warning title=autan-bench::machine health ${STATE:-unknown (the probe failed)}:
+          the reference STREAM is not within 3 % of the GB10 baseline on this Spark (information;
+          the paired gate judges the change)"
       - name: MACHINE DEGRADED, rerun later (no verdict on this change)
-        if: failure() && steps.health.outputs.state == 'degraded'
+        if: failure() && github.event_name != 'pull_request' && steps.health.outputs.state == 'degraded'
         run: |
           echo "::error title=MACHINE DEGRADED::the reference STREAM is more than 3 % below the GB10 baseline: this Spark cannot measure now. No verdict on this change; rerun the job once the machine is healthy."
           {
@@ -172,12 +199,35 @@ jobs:
             echo "The health probe (STREAM built from the baseline's commit) is more than 3 % below \`bench/baselines/gb10.json\` on this Spark. Nothing was gated or published; rerun this job later."
           } >> "$GITHUB_STEP_SUMMARY"
           exit 1
+      - name: STREAM, paired with the base (pull requests)
+        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
+        run: >-
+          uv run --project bench --locked autan-bench pair --suite stream --precision fp64
+          --change build/bench/stream --base "$RUNNER_TEMP/base/build/bench/stream"
+          --out results/pair/stream --confirm --summary "$GITHUB_STEP_SUMMARY"
+      - name: STREAM against the GB10 baseline (pull requests, information)
+        # The machine's state, recorded and annotated, never blocking a pull request (#403): the
+        # change's first run against gb10.json, whatever the paired verdict, as soon as that run
+        # exists. Main keeps it blocking, below.
+        if: >-
+          always() && needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request' &&
+          hashFiles('results/pair/stream/series-1/01-change.json') != ''
+        run: |
+          status=0
+          uv run --project bench --locked autan-bench compare \
+            results/pair/stream/series-1/01-change.json bench/baselines/gb10.json || status=$?
+          case $status in
+            0) ;;
+            1 | 3) echo "::warning title=autan-bench::STREAM below the GB10 baseline on this machine (information: the paired gate judges the change)" ;;
+            *) echo "::warning title=autan-bench::STREAM could not be compared with the GB10 baseline (exit $status): the machine's state is not recorded" ;;
+          esac
+      # Main: the absolute gate against the GB10 baselines, the history and the bisection.
       - name: STREAM bandwidth
-        if: needs.changes.outputs.bench == 'true'
+        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)
         id: stream-gate
-        if: needs.changes.outputs.bench == 'true'
+        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
         run: >-
           bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
           uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
@@ -197,6 +247,10 @@ jobs:
       - name: The measured paths are the benchmarks' build graph
         if: needs.changes.outputs.bench == 'true'
         run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
+      # The tracked loops keep the absolute gate on pull requests too, for now: one run holds the
+      # lock about 575 s, nearly all of it host work after the gate point, so 10 paired runs would
+      # hold it for an hour and a half (#403). They are paired once loop_bench does its host work
+      # before `autan-bench: ready`.
       - name: Generated loops, hex n = 128, fp32, RCM order
         if: needs.changes.outputs.bench == 'true'
         run: >-
@@ -233,9 +287,15 @@ jobs:
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop
+      - name: Remove the base's worktree
+        if: always() && github.event_name == 'pull_request'
+        run: bench/ci/build-base.sh --remove "$RUNNER_TEMP/base"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: results
-        if: always() && needs.changes.outputs.bench == 'true' && steps.health.outputs.state != 'degraded'
+        # A degraded main publishes nothing; a pull request's paired results are kept regardless.
+        if: >-
+          always() && needs.changes.outputs.bench == 'true' &&
+          (github.event_name == 'pull_request' || steps.health.outputs.state != 'degraded')
         with:
           name: gpu-bench-${{ github.sha }}
           path: results/

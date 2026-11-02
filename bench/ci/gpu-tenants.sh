@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # After a GPU step failed on a shared Spark: names the GPU's processes outside Autan's containers,
 # as autan-gpu-guard last listed them (every 30 s), and the host memory still available (GB10's
-# GPU allocates from it). A foreign tenant becomes an error annotation; nothing is retried.
+# GPU allocates from it). A foreign tenant is an error annotation on a host that runs timed
+# benchmarks (bench/ci/timed-hosts), where it refuses GPU steps; elsewhere a warning, since it
+# is allowed there and may not be the cause (bench/ci/gpu-admit.sh). Nothing is retried.
 # Usage: bench/ci/gpu-tenants.sh   (AUTAN_GPU_LOCK: the lock, default /home/admin/autan-gpu/gpu.lock)
 set -uo pipefail
 lock=${AUTAN_GPU_LOCK:-/home/admin/autan-gpu/gpu.lock}
+host=${AUTAN_BENCH_HOST:-$(hostname)}
+# The job can set the variable itself: a name outside [A-Za-z0-9._-] is never printed or trusted.
+[[ $host =~ ^[A-Za-z0-9._-]{1,64}$ ]] || host=unnamed-host
+level=warning
+grep -qxF "$host" "$(cd "$(dirname "$0")" && pwd)/timed-hosts" && level=error
 state=${lock%/*}/foreign-gpu
 memory=$(awk '/^MemTotal/ {t = $2} /^MemAvailable/ {a = $2}
   END {printf "host memory available: %.1f of %.1f GiB", a / 1048576, t / 1048576}' /proc/meminfo)
@@ -25,7 +32,7 @@ elif ((age > 120)); then
 fi
 tenants=$(awk -F'\t' 'NR > 1 {printf "%s%s (%s, pid %s, %s)", sep, $4, $2, $1, $3; sep = "; "}' <<<"$list")
 if [[ -n $tenants ]]; then
-  echo "::error::GPU taken by a foreign tenant: $tenants; $memory (as of $stamp)"
+  echo "::$level::GPU shared with a foreign tenant on $host: $tenants; $memory (as of $stamp)"
 elif [[ $header != *"nvidia-smi failed"* ]] && ((age <= 120)); then
   echo "No foreign process on the GPU (as of $stamp); $memory"
 fi

@@ -6,6 +6,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "autan/core/error.hpp"
@@ -85,7 +86,13 @@ std::vector<double> shortest_edges(const Mesh& mesh, index_t zone) {
   return h;
 }
 
-std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std::size_t p) {
+struct PairMatch {
+  std::vector<index_t> partners;
+  std::vector<std::array<index_t, 2>> nodes;
+  double max_relative = 0.0;
+};
+
+PairMatch match_pair(const Mesh& mesh, const PeriodicPair& pair, std::size_t p) {
   const auto off = mesh.boundary_zone_offsets();
   const auto zones = mesh.face_zones();
   const std::string name_a = zones[at(pair.zone_a)].name, name_b = zones[at(pair.zone_b)].name;
@@ -152,6 +159,7 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     }
   }
 
+  PairMatch out;
   std::vector<index_t> image(at(mesh.n_points()), -1);
   for (index_t f = a0; f < a1; ++f) {
     for (const index_t n : mesh.face_nodes(f)) {
@@ -192,6 +200,9 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
                                " nodes of zone '", name_b, "'")));
       }
       image[at(n)] = found;
+      out.nodes.push_back({n, found});
+      const double d = std::hypot(x[at(found)] - q[0], y[at(found)] - q[1], z[at(found)] - q[2]);
+      out.max_relative = std::max(out.max_relative, d / tolerance);
     }
   }
 
@@ -225,18 +236,111 @@ std::vector<index_t> match_pair(const Mesh& mesh, const PeriodicPair& pair, std:
     used[at(it->second - b0)] = 1;
     partner[at(f - a0)] = it->second;
   }
-  return partner;
+  out.partners = std::move(partner);
+  return out;
 }
 
 }  // namespace
 
-std::vector<std::vector<index_t>> match_periodic_faces(const Mesh& mesh,
-                                                       std::span<const PeriodicPair> pairs) {
+PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPair> pairs) {
   check_declaration(mesh, pairs);
-  std::vector<std::vector<index_t>> partners;
-  partners.reserve(pairs.size());
-  for (std::size_t p = 0; p < pairs.size(); ++p) partners.push_back(match_pair(mesh, pairs[p], p));
-  return partners;
+  PeriodicMatch out;
+  out.partners.reserve(pairs.size());
+  out.nodes.reserve(pairs.size());
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    PairMatch m = match_pair(mesh, pairs[p], p);
+    out.partners.push_back(std::move(m.partners));
+    out.nodes.push_back(std::move(m.nodes));
+    out.max_relative = std::max(out.max_relative, m.max_relative);
+  }
+  return out;
+}
+
+PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const double> y,
+                                   std::span<const double> z, std::span<const PeriodicPair> pairs,
+                                   const PeriodicMatch& match) {
+  if (pairs.empty()) return {};
+  const std::size_t n = x.size();
+  std::vector<char> zone_b(n, 0), periodic(n, 0);
+  std::vector<std::vector<std::pair<index_t, std::size_t>>> forward(n);
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    for (const auto& [a, b] : match.nodes[p]) {
+      forward[at(a)].emplace_back(b, p);
+      zone_b[at(b)] = 1;
+      periodic[at(a)] = periodic[at(b)] = 1;
+    }
+  }
+  std::vector<std::array<double, 3>> position(n);
+  std::vector<char> placed(n, 0);
+  std::vector<index_t> queue;
+  // A root stays where it is; forward steps from it place every node not placed yet.
+  const auto walk = [&](std::size_t root) {
+    placed[root] = 1;
+    position[root] = {x[root], y[root], z[root]};
+    queue.assign(1, static_cast<index_t>(root));
+    for (std::size_t next = 0; next < queue.size(); ++next) {
+      const auto from = at(queue[next]);
+      for (const auto& [to, p] : forward[from]) {
+        if (placed[at(to)] != 0) continue;
+        placed[at(to)] = 1;
+        const auto& t = pairs[p].translation;
+        position[at(to)] = {position[from][0] + t[0], position[from][1] + t[1],
+                            position[from][2] + t[2]};
+        queue.push_back(to);
+      }
+    }
+  };
+  // Roots: every node that is zone b of no pair; then, for the nodes they do not reach (classes
+  // that are cycles, as sides split into pairs of opposite translations), the smallest left.
+  for (std::size_t i = 0; i < n; ++i) {
+    if (periodic[i] != 0 && zone_b[i] == 0 && placed[i] == 0) walk(i);
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (periodic[i] != 0 && placed[i] == 0) walk(i);
+  }
+  const auto ulp = [](double v) {
+    const double a = std::abs(v);
+    return std::nextafter(a, std::numeric_limits<double>::infinity()) - a;
+  };
+  for (std::size_t p = 0; p < pairs.size(); ++p) {
+    const auto& t = pairs[p].translation;
+    for (const auto& [a, b] : match.nodes[p]) {
+      for (std::size_t d = 0; d < 3; ++d) {
+        const double expected = position[at(a)][d] + t[d];
+        if (std::abs(position[at(b)][d] - expected) >
+            4.0 * ulp(std::max(std::abs(position[at(a)][d]), std::abs(t[d])))) {
+          unmatched(concat("periodic pair ", std::to_string(p), ": node ", std::to_string(b),
+                           " cannot be node ", std::to_string(a),
+                           " translated, as the other pairs that join them place it"));
+        }
+      }
+    }
+  }
+  // A move counts when it exceeds the round-off of the additions that placed the node: 4 ulps
+  // of the larger of its coordinate and the largest translation.
+  std::array<double, 3> largest{};
+  for (const auto& pair : pairs) {
+    for (std::size_t d = 0; d < 3; ++d)
+      largest[d] = std::max(largest[d], std::abs(pair.translation[d]));
+  }
+  PeriodicMoves out;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (placed[i] == 0) continue;
+    const std::array<double, 3> from{x[i], y[i], z[i]};
+    if (position[i] == from) continue;
+    out.nodes.push_back(static_cast<index_t>(i));
+    out.to.push_back(position[i]);
+    out.max_distance = std::max(
+        out.max_distance,
+        std::hypot(position[i][0] - from[0], position[i][1] - from[1], position[i][2] - from[2]));
+    bool significant = false;
+    for (std::size_t d = 0; d < 3; ++d) {
+      const double scale = std::max({std::abs(from[d]), std::abs(position[i][d]), largest[d]});
+      significant = significant || std::abs(position[i][d] - from[d]) > 4.0 * ulp(scale);
+    }
+    if (significant) ++out.significant;
+  }
+  return out;
 }
 
 }  // namespace autan
