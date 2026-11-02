@@ -629,6 +629,27 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
   }
 });
 
+test("Runs, a run and Compare fill the window's width", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = all.slice(0, 2).map((r) => r.run_id);
+  // The content spans the window less the sidebar and its margins, not a centred column.
+  const spans = async (selector: string) => {
+    const box = await page.locator(selector).first().boundingBox();
+    return (box?.width ?? 0) > 1600;
+  };
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  expect(await spans("a[data-row]")).toBe(true);
+  await page.goto(`/runs/${run.run_id}`);
+  await expect(page.getByTestId("conditions")).toBeVisible();
+  expect(await spans("header:has([data-testid=conditions])")).toBe(true);
+  await page.goto(`/compare?runs=${encodeURIComponent(JSON.stringify(pair))}`);
+  await expect(page.getByTestId("compared")).toBeVisible();
+  expect(await spans("[data-testid=settings-diff]")).toBe(true);
+});
+
 test("an unknown run or address says so, and outputs download as they are", async ({ page }) => {
   await page.goto("/runs/run-20200101T000000Z-deadbeef");
   await expect(page.getByRole("heading", { name: "No such run" })).toBeVisible();
