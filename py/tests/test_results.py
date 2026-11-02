@@ -818,6 +818,9 @@ def test_the_floor_test_belongs_to_a_steady_fp32_run(
         _floor_test(names[:-1], iterations),
         _floor_test(names, iterations + 1),
         _floor_test(names, iterations) | {"cells_at_floor": dict.fromkeys(names, 1.5)},
+        # Every cell at its floor exactly when the largest ratio is at most 1.
+        _floor_test(names, iterations) | {"cells_at_floor": dict.fromkeys(names, 0.5)},
+        _floor_test(names, iterations, ratio=3.0) | {"cells_at_floor": dict.fromkeys(names, 1.0)},
     ):
         _set_convergence(crm_run.path, value)
         with pytest.raises(autan.CaseError) as error:
@@ -848,6 +851,7 @@ def test_a_floor_run_is_not_converged_and_carries_its_floor_test(
         (_floor_test(names, iterations), True),
         (None, False),
         (_floor_test(names, iterations - 1), False),
+        (_floor_test(names, iterations, ratio=100.0), False),  # no equation at its floor
     ):
         document["convergence"] = record
         (crm_run.path / "run.json").write_text(json.dumps(document))

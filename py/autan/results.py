@@ -844,8 +844,14 @@ def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
             found.append("the floor test has one entry per equation")
         if record.iteration > run.iterations:
             found.append("the floor test's iteration is past the run's")
+        for name, ratio in record.max_ratio.items():
+            # Every cell is at its floor exactly when the largest ratio is at most 1.
+            if name in record.cells_at_floor and (ratio <= 1) != (record.cells_at_floor[name] == 1):
+                found.append(f"the floor test of {name} contradicts itself")
     if run.status == "floor" and (record is None or record.iteration != run.iterations):
         found.append("a floor run carries its floor test at its last iteration")
+    elif run.status == "floor" and record is not None and min(record.max_ratio.values()) > 1:
+        found.append("a floor run has an equation at its floor")
     return found
 
 
