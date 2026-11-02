@@ -18,6 +18,7 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+    from typing import BinaryIO
 
     from numpy.typing import NDArray
 
@@ -132,9 +133,10 @@ class Node:
 class OutsideFileError(ValueError):
     """A CGNS file whose data lives in other files (``nodes`` names them)."""
 
-    def __init__(self, path: Path, nodes: list[str]) -> None:
+    def __init__(self, source: Path | BinaryIO, nodes: list[str]) -> None:
         self.nodes = nodes
-        super().__init__(f"{path}: data outside the file at {', '.join(nodes)}")
+        name = getattr(source, "name", source)
+        super().__init__(f"{name}: data outside the file at {', '.join(nodes)}")
 
 
 def outside(handle: h5py.File) -> list[str]:
@@ -156,13 +158,14 @@ def outside(handle: h5py.File) -> list[str]:
 
 
 @contextmanager
-def open_file(path: Path) -> Iterator[h5py.File]:
-    """Open a CGNS/HDF5 file for reading, refusing (``OutsideFileError``) one whose data lives
-    in other files, so that reading it never reads anything else."""
-    with h5py.File(path, "r") as handle:
+def open_file(source: Path | BinaryIO) -> Iterator[h5py.File]:
+    """Open a CGNS/HDF5 file for reading, a path or a binary file object already open (so a
+    caller that opened it safely keeps that guarantee), refusing (``OutsideFileError``) one
+    whose data lives in other files, so that reading it never reads anything else."""
+    with h5py.File(source, "r") as handle:
         nodes = outside(handle)
         if nodes:
-            raise OutsideFileError(path, nodes)
+            raise OutsideFileError(source, nodes)
         yield handle
 
 

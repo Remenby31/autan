@@ -915,3 +915,10 @@ def test_a_solution_with_data_in_another_file_is_refused_before_any_read(
         autan.Results.open(crm_run.path).field("Density")
     assert error.value.codes == ["E0134"]
     assert error.value.diagnostics[0].data["node"].startswith("Base/Zone/FlowSolution/")
+    # The same through a file the caller opened itself (the UI opens under its run folder).
+    with (
+        (crm_run.path / "solution.cgns").open("rb") as file,
+        pytest.raises(cgns.OutsideFileError),
+        cgns.open_file(file),
+    ):
+        pass
