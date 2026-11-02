@@ -61,21 +61,24 @@ WHERE = ["host", *(pytest.param(x, marks=pytest.mark.gpu) for x in s.STRATEGIES)
 
 
 @pytest.mark.parametrize("where", WHERE)
+@pytest.mark.parametrize("policy", PRECISIONS)
 def test_lsq_bounds_are_min_and_max_over_cell_and_face_neighbours(
-    mesh: s.Mesh, backend: str, where: str
+    mesh: s.Mesh, backend: str, policy: str, where: str
 ) -> None:
     # One cell's value is NaN: the bounds of that cell and of its face neighbours are NaN, never a
-    # neighbour's value (#418); the others are the min and max as before.
-    if where != "host" and backend == "metal":
-        pytest.skip("Metal has no FP64 (E1013); the expected bounds here are exact in FP64")
+    # neighbour's value (#418); the others are the min and max as before. The bounds select stored
+    # values, so they are exact in every precision.
+    if where != "host" and backend == "metal" and policy == "fp64":
+        pytest.skip("Metal has no FP64 (E1013)")
     rng = np.random.default_rng(7)
-    q = rng.standard_normal(mesh.n_cells)
+    store = np.float64 if policy == "fp64" else np.float32
+    q = rng.standard_normal(mesh.n_cells).astype(store).astype(np.float64)
     q[mesh.n_cells // 2] = np.nan
-    q_b = rng.standard_normal(mesh.n_faces)
+    q_b = rng.standard_normal(mesh.n_faces).astype(store).astype(np.float64)
     if where == "host":
-        _, lo, hi = s.gradients(mesh, "fp64", "lsq", q, q_b)
+        _, lo, hi = s.gradients(mesh, policy, "lsq", q, q_b)
     else:
-        _, lo, hi = s.gpu_gradients(mesh, "fp64", "lsq", where, 128, q, q_b)
+        _, lo, hi = s.gpu_gradients(mesh, policy, "lsq", where, 128, q, q_b)
     exp_lo, exp_hi = q.copy(), q.copy()
     ni = mesh.n_interior
     for f in range(mesh.n_faces):

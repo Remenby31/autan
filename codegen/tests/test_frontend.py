@@ -187,6 +187,11 @@ def guarded_sqrt(x: State) -> State:
     return sqrt(x) if x > 0.0 else x
 
 
+@pointwise
+def min_of_a_nan(x: State) -> State:
+    return min(sqrt(sqrt(x)), 1.0)
+
+
 def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
     # d/dx at x = -1 is 1 (the else branch); the sqrt branch evaluates to NaN and must not leak.
     fn, _ = parse(guarded_sqrt)
@@ -196,6 +201,11 @@ def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
         assert run(adj, -1.0, 1.0) == [1.0]
         assert run(tan, -1.0, 1.0) == [-1.0, 1.0]
         assert run(adj, 4.0, 1.0) == [0.25]
+    # The branch taken is NaN: its derivative is NaN in both modes, never a zeroed adjoint.
+    fn, _ = parse(min_of_a_nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        assert np.isnan(run(adjoint(fn, [0], [[1.0]]), -1.0, 1.0)[0])
+        assert np.isnan(run(tangent(fn, [0]), -1.0, 1.0)[1])
 
 
 @pytest.mark.parametrize(
