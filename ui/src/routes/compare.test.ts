@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { flatten } from "../api/polars";
+import { study } from "../api/studies";
 import { degrees } from "../api/units";
-import { study } from "./index";
 
 test("angles are read in degrees from the case's units", () => {
   expect(degrees("19.57 deg")).toBe(19.57);
