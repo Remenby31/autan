@@ -23,6 +23,7 @@
 #include "autan/core/error.hpp"
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
+#include "hdf5_scan.hpp"
 
 namespace autan::io {
 
@@ -141,8 +142,10 @@ class Reader {
   explicit Reader(const fs::path& path)
       : path_(path.string()), file_((check_links(path), path), CG_MODE_READ) {}
 
-  // Scans the raw node tree before the library resolves any link.
+  // Scans the HDF5 structure and the raw node tree before the library
+  // resolves any link or reads any data (E0134).
   static void check_links(const fs::path& path) {
+    reject_outside_data(path);
     int cgio = 0;
     if (cgio_open_file(path.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) != CG_OK) {
       throw Error(ErrorCode::io_cannot_open, "cannot open '" + path.string() + "' as CGNS");

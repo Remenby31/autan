@@ -21,6 +21,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
 #include <fcntl.h>
+#include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <signal.h>
@@ -1224,6 +1225,25 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
                     d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
                   }),
                   "E0707");
+  }
+  SECTION("the previous solution keeps data in another file") {
+    // mesh.md, E0134: refused from the file's structure alone, the other file being absent.
+    const fs::path previous = fresh_dir();
+    fs::copy_file(a.run / "solution.cgns", previous / "solution.cgns");
+    const hid_t f =
+        H5Fopen((previous / "solution.cgns").string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+    REQUIRE(f >= 0);
+    REQUIRE(H5Lcreate_external("absent.cgns", "/values", f, "Elsewhere", H5P_DEFAULT,
+                               H5P_DEFAULT) >= 0);
+    H5Fclose(f);
+    const Outcome o = from([&](Json& d) {
+      d["start"]["run"] = previous.string();
+      d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
+    });
+    require_error(o, "E0134");
+    const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
+    CHECK(refusal["data"]["node"] == "/Elsewhere");
+    CHECK(refusal["location"]["path"] == "start.run");
   }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.

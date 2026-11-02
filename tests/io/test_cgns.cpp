@@ -10,6 +10,8 @@
 
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
+#include <hdf5.h>
+#include <nlohmann/json.hpp>
 
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
@@ -193,6 +195,70 @@ TEST_CASE("CGNS files outside the supported layout are coded errors", "[cgns]") 
     CHECK(mesh.n_cells() == 1);
     CHECK(zone_named(mesh, "unassigned").boundary);
   }
+}
+
+TEST_CASE("A CGNS file whose data lives in another file is refused before any read", "[cgns]") {
+  // mesh.md, E0134: an HDF5 external link, a dataset with external storage or a virtual dataset,
+  // in a mesh or a solution. The other file does not exist, so a read of it would fail with
+  // another code: E0134 comes from the file's structure alone.
+  const std::string form = GENERATE("external link", "external storage", "virtual dataset");
+  CAPTURE(form);
+  const autan::Mesh mesh = autan::io::read_mesh(data_dir / "hex" / "polyMesh");
+  fs::create_directories(temp_dir());
+  const fs::path file = temp_dir() / ("outside-" + std::to_string(form.size()) + ".cgns");
+  autan::io::write_solution(file, mesh, solution_for(mesh));
+  const hid_t f = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  REQUIRE(f >= 0);
+  std::vector<std::string> names;
+  REQUIRE(H5Lvisit2(
+              f, H5_INDEX_NAME, H5_ITER_NATIVE,
+              [](hid_t, const char* name, const H5L_info2_t*, void* out) -> herr_t {
+                static_cast<std::vector<std::string>*>(out)->emplace_back(name);
+                return 0;
+              },
+              &names) >= 0);
+  const auto x = std::ranges::find_if(
+      names, [](const std::string& n) { return n.ends_with("GridCoordinates/CoordinateX/ data"); });
+  REQUIRE(x != names.end());
+  std::string node = "/" + *x;
+  if (form == "external link") {
+    const std::string zone = x->substr(0, x->find("/GridCoordinates"));
+    node = "/" + zone + "/Elsewhere";
+    REQUIRE(H5Lcreate_external("absent.cgns", "/values", f, node.c_str(), H5P_DEFAULT,
+                               H5P_DEFAULT) >= 0);
+  } else {
+    const hid_t old = H5Dopen2(f, x->c_str(), H5P_DEFAULT);
+    const hid_t space = H5Dget_space(old);
+    const hid_t type = H5Dget_type(old);
+    const hssize_t n = H5Sget_simple_extent_npoints(space);
+    H5Dclose(old);
+    REQUIRE(H5Ldelete(f, x->c_str(), H5P_DEFAULT) >= 0);
+    const hid_t plist = H5Pcreate(H5P_DATASET_CREATE);
+    if (form == "external storage") {
+      REQUIRE(H5Pset_external(plist, "absent.bin", 0,
+                              static_cast<hsize_t>(n) * H5Tget_size(type)) >= 0);
+    } else {
+      REQUIRE(H5Pset_virtual(plist, space, "absent.h5", "/values", space) >= 0);
+    }
+    const hid_t moved = H5Dcreate2(f, x->c_str(), type, space, H5P_DEFAULT, plist, H5P_DEFAULT);
+    REQUIRE(moved >= 0);
+    H5Dclose(moved);
+    H5Pclose(plist);
+    H5Tclose(type);
+    H5Sclose(space);
+  }
+  H5Fclose(f);
+  const auto refused = [&](auto read) {
+    try {
+      read();
+      FAIL("expected E0134");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::io_external_reference);
+      CHECK(nlohmann::json::parse(e.data_json()) == nlohmann::json{{"node", node}});
+    }
+  };
+  refused([&] { (void)autan::io::read_mesh(file); });
+  refused([&] { (void)autan::io::read_solution(file); });
 }
 
 TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {

@@ -254,6 +254,10 @@ void load_start(Prepared& p) {
   try {
     stored = io::read_solution(snapshot->path());
   } catch (const Error& e) {
+    if (e.code() == ErrorCode::io_external_reference) {
+      throw InputError(Diagnostic{
+          .code = "E0134", .message = e.what(), .path = "start.run", .data_json = e.data_json()});
+    }
     unusable(e.what());
   }
   Json metadata;
@@ -670,7 +674,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     throw InputError(Diagnostic{.code = error_code_string(e.code()),
                                 .message = e.what(),
                                 .path = "mesh.path",
-                                .data_json = "{}"});
+                                .data_json = e.data_json()});
   }
   if (p.mesh_hash != p.input.mesh_sha256) {
     throw InputError(Diagnostic{

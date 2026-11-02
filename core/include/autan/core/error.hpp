@@ -53,11 +53,14 @@ std::string error_code_string(ErrorCode code);
 /// contract.
 class Error : public std::runtime_error {
  public:
-  Error(ErrorCode code, std::string_view message);
+  /// `data_json`: the diagnostic's `data`, a JSON object (case-schema.md#diagnostics).
+  Error(ErrorCode code, std::string_view message, std::string data_json = "{}");
   [[nodiscard]] ErrorCode code() const noexcept { return code_; }
+  [[nodiscard]] const std::string& data_json() const noexcept { return data_json_; }
 
  private:
   ErrorCode code_;
+  std::string data_json_;
 };
 
 }  // namespace autan
