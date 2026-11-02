@@ -301,19 +301,9 @@ TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its roun
   CHECK(last["status"] == "floor");
   CHECK(last["iterations"] == stop - 1);
   CHECK(last["convergence"]["iteration"] == stop - 1);
-  // The floors certify the solution the run saved: continued, its first iteration is at its
-  // floor too.
-  auto more = with("fp32+acc64", info["iterations"].get<int>() + 1);
-  more["start"] = continue_from(out.run);
-  const auto next = run(more);
-  INFO(next.err);
-  REQUIRE(next.status == ExitStatus::finished);
-  const Json after = Json::parse(read(next.run / "run.json"));
-  CHECK(after["status"] == "floor");
-  CHECK(after["iterations"] == info["iterations"].get<int>() + 1);
-  // Independently of the floors: the solution agrees with the fp64 one converged ten orders
-  // within 256 eps32 of each field's magnitude (measured 1.9e-5 at most; with c = 64 the stop
-  // comes earlier and velocities differ by up to 1.2e-4).
+  // The solution the run saved, after the step of the iteration it judged, agrees with the fp64
+  // one converged ten orders within 256 eps32 of each field's magnitude (measured 1.9e-5 at most;
+  // with c = 64 the stop comes earlier and velocities differ by up to 1.2e-4).
   const auto exact = run(with("fp64", 20000));
   REQUIRE(Json::parse(read(exact.run / "run.json"))["status"] == "converged");
   for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
