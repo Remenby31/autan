@@ -305,7 +305,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # The solver input at most: the case's TOML escaped (6 B a character), the MeshInfo, and
     # 64 KiB; kept once, read and parsed once more (41 times).
     tiny_case = autan.load(write_case(TINY))
-    bound = 6 * len(tiny_case.to_toml().encode()) + len(json.dumps(tiny_mesh(20).document()))
+    toml = len(tiny_case.to_toml().encode()) - len("m.cgns") + 4096  # the path at PATH_MAX
+    bound = 6 * toml + len(json.dumps(tiny_mesh(20).document()))
     assert by_name["solver input"].bytes_host == bound + 2**16
     assert by_name["solver input setup"].bytes_host == 41 * (bound + 2**16)
     # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).

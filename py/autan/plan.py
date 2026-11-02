@@ -221,6 +221,9 @@ def plan(
     )
 
 
+_PATH_MAX = 4096
+
+
 def _longest_name(data: bytes) -> int:
     """The longest member name of a valid JSON document, in bytes."""
     longest = 0
@@ -236,8 +239,9 @@ def _longest_name(data: bytes) -> int:
 
 def _input_bytes(case: Case, mesh: MeshInfo) -> int:
     """A bound on the solver input's size (solver-input.md): the case's TOML, escaped in JSON
-    (at most 6 bytes a character), the MeshInfo, and 64 KiB for the rest of the document."""
-    toml = len(case.to_toml().encode())
+    (at most 6 bytes a character) with its mesh path counted at PATH_MAX (however the case
+    names it), the MeshInfo, and 64 KiB for the rest of the document."""
+    toml = len(case.to_toml().encode()) - len(str(case.spec.mesh).encode()) + _PATH_MAX
     return 6 * toml + len(json.dumps(mesh.document())) + 64 * 2**10
 
 
