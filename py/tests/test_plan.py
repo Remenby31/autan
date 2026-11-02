@@ -299,7 +299,11 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     tiny = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu").memory
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
-    assert by_name["solution output"].bytes_host == 2 * 34 * 80
+    # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).
+    assert by_name["solution output"].bytes_host == 2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160
+    # RCM order keeps the renumbered mesh (the mesh terms without geometry) and its maps.
+    renumbered = 720 + 640 + 640 + 240 + 80 + 200 + 4 * 10 + 5 * 40 + 4 * 30
+    assert by_name["renumbered mesh"].bytes_host == renumbered
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
     two_levels = tiny_mesh(20).document()

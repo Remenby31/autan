@@ -158,13 +158,20 @@ def _rank(
     geometry = 56 * faces + 32 * cells
     add("mesh", mesh_bytes + geometry + 12 * cells)
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
+    # In RCM order (the runtime's default, quality.lines.order) the run keeps the renumbered
+    # mesh beside the one it read, with the cell order and the face and point maps.
+    if mesh.quality.lines.order == "rcm":
+        add("renumbered mesh", mesh_bytes + 4 * cells + 5 * faces + 4 * nodes)
     if ranks > 1:
         add("partition", (mesh_bytes + geometry) / ranks + 9 * f)
     # The solution gathered on rank 0 at the end and the writer's copy: the n + 1 primitive
     # fields and their means; the restart's n conserved, n + 1 average sums and their weight, the
     # steady solver's n + 5 values, one circulation per point-vortex condition.
     fields = 2 * (n + 1) + n + (n + 2) + (n + 5) + vortices
-    add("solution output", 2 * 8 * cells * fields, transient=True)
+    # The writer also copies the coordinates and writes 64-bit face and cell connectivity.
+    k_global = 2 * interior + boundary
+    writer = 24 * nodes + 8 * (max(faces, cells) + 1) + 8 * max(counts.face_nodes, k_global)
+    add("solution output", 2 * 8 * cells * fields + writer, transient=True)
     # A start reads the previous solution on every rank, every field for a continuation, the
     # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest.
     if start is not None:
