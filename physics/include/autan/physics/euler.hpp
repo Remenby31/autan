@@ -79,20 +79,12 @@ class Euler {
   /// where their condition gives the state there, and in the cells whose interior stencil alone
   /// cannot determine a gradient.
   [[nodiscard]] std::vector<double> gradient_weights() const;
-  /// Makes every second-order residual also compute the gradient of the viscous terms
-  /// (viscous_gradient; kernels/euler.py, viscous_gradients): within three face rings of the
-  /// boundary the quadratic fit of band_gradient, the reconstruction's gradient elsewhere. The
-  /// residual itself does not change.
-  void enable_viscous_gradient();
-  /// After a second-order residual with enable_viscous_gradient: the viscous terms' gradient of
-  /// the primitives, 15 x n_cells in the layout of the reconstruction's.
-  [[nodiscard]] std::span<const typename P::grad> viscous_gradient() const noexcept;
-  /// The boundary band's quadratic gradient (kernels/euler.py, band_gradients), with
-  /// enable_viscous_gradient: per cell 1 within three face rings of the boundary, else 0; its
+  /// The boundary band's quadratic gradient (kernels/euler.py, band_gradients), which replaces
+  /// the face2 one in face rings 1 and 2 of the boundary: per cell 1 in the band, else 0; its
   /// stencil (n_cells + 1 offsets, entries as kernels::Topology::stencil) and weights (3 x
   /// entries, the layout of gradient_weights). They depend on set_boundary. A cell of the band
-  /// whose two vertex rings cannot determine the fit keeps the reconstruction's gradient (band 0
-  /// there): `linear_cells` counts them, `first_linear` is the first (-1 if none).
+  /// whose two vertex rings cannot determine the fit keeps the face2 gradient (band 0 there):
+  /// `linear_cells` counts them, `first_linear` is the first (-1 if none).
   struct BandGradient {
     std::vector<double> band;
     std::vector<std::int64_t> offsets;
