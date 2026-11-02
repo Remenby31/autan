@@ -20,6 +20,7 @@ _CUDA_CONTEXT = 512 * 2**20
 # agglomerate isotropically, by up to 8, summed to 0.142-0.144 of them on the calibration
 # meshes, bounded here at 0.15; 7 coupled neighbours per coarse cell.
 _COARSE_ALONG_LINES, _COARSE_ISOTROPIC, _COARSE_DEGREE = 1.0, 0.15, 7
+_DENSE_UNKNOWNS = 1000
 
 
 class Component(BaseModel):
@@ -175,4 +176,7 @@ def _linear_solver(
     # lines, bounded here by its cells whenever there are lines.
     finest = 1200 * cells + 400 * lines + 21 * interior
     levels = 1000 * coarse + 400 * (coarse if lines else 0) + 410 * _COARSE_DEGREE * coarse
-    return "multigrid", scale * (finest + levels), graph
+    # The coarsest level, factored densely up to 1000 unknowns of 5 equations: LU and pivots.
+    unknowns = min(5 * cells, _DENSE_UNKNOWNS)
+    dense = 8 * unknowns * unknowns + 8 * unknowns
+    return "multigrid", scale * (finest + levels + dense), graph

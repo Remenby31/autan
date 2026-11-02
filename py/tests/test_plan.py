@@ -190,6 +190,17 @@ def test_incompressible_physics_rejects_solids_and_gases(
     assert diagnostic_codes(plan_of(body, mesh, write_case)) == ["E0504", "E0506"]
 
 
+TINY = (
+    "import autan\n"
+    "from autan.units import K, Pa\n"
+    "case = autan.Case('tiny', mesh='m.cgns')\n"
+    "case.physics = autan.Compressible(turbulence=autan.Inviscid())\n"
+    "case.freestream(mach=0.5, pressure=101325 * Pa, temperature=288.15 * K)\n"
+    "case.boundary('farfield').farfield()\n"
+    "case.time = autan.Steady(linear_solver='multigrid')\n"
+)
+
+
 def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
     return autan.MeshInfo.from_document(
         {
@@ -268,6 +279,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         CRM_HL.replace("autan.SA())", 'autan.SA(), precision="fp64")'), device_kind="cuda"
     )
     assert fp64.bytes_device > cuda.bytes_device
+    # The components plan.md gives in closed form, on 10 hexahedra, 40 faces (20 boundary),
+    # 30 nodes and 160 face nodes, 5 equations: the mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C,
+    # its geometry 56F + 32C and colourings 12C; the output 2(2n + 2) fields of 8C bytes.
+    tiny = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu").memory
+    by_name = {c.name: c for c in tiny.components}
+    assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
+    assert by_name["solution output"].bytes_host == 2 * 12 * 80
 
 
 @pytest.mark.parametrize(
