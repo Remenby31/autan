@@ -31,8 +31,34 @@ The flux functions' own switches (|λ|, Harten's entropy fix, the upwind side) a
 
 ## Change
 
-*(CFD - Multigrille: #397's product (Knoll and Keyes ε on the scaled unknowns, admissible and representable probes, the frozen residual of #402, the floor rows on the assembled operator), used when the criterion holds, the assembled J̃ otherwise; the preconditioner unchanged; restart state; ranks.)*
+From the step after the switch to second order, on the host's steady step with `"multigrid"` or `"lines"` (the first-order phase, `"gauss-seidel"`, unsteady runs and the device unchanged), the linear solve's operator is mixed, row by row, with the mask the criterion section defines (fixed for the whole solve, so the Krylov operator is one linear operator):
+
+  y_i = (V/Δt)_i v_i + [R_frozen(U + ε v) − R_frozen(U)]_i / ε   on a matrix-free row i;
+  y_i = (A v)_i, A = V/Δt + J̃ the assembled matrix                 on any other row.
+
+- R_frozen is #402's `residual_frozen` (φ and the reconstruction's fallback held at U, its own workspace; `NavierStokes` has the same API on `physics/ns-frozen`); ε, the admissible and representable probes and their failure rule are #397's (Knoll and Keyes 2004, §2.2, on the freestream-scaled unknowns, ε_R of the storage precision). Those parts of `docs/design/matrix-free-step.md` (#397, closed) are reused unchanged.
+- The rows of equations at the round-off floor (the runtime's exemption) take the assembled operator, as in #397: their difference would be round-off over ε.
+- The preconditioner is unchanged (one multigrid cycle, or the line sweeps, on V/Δt + J̃); tolerance, iteration limit, failure rule and SER unchanged.
+- A step with no matrix-free row computes no difference: it is `main`'s step, bit for bit (the first second-order step always is: the criterion has no record before it).
+- State between steps: each owned cell's selection hash of the last step, restart state (8 bytes a cell), so that a continued run rebuilds the same mask and repeats the uninterrupted one bit for bit; the hashes are exchanged to the ghosts and compared per cell, so the mask is the same on any number of ranks, and every reduction of the product is #397's (exact sums over the owned unknowns).
+- Logged: a `linear` info event at the first step with matrix-free rows; per run, the fraction of matrix-free rows (smallest, mean, largest over the second-order steps) in the run's end event, so that the gate can report how much of each case ran matrix-free.
+
+Cost: on a step with matrix-free rows, one frozen residual per GCR iteration (at most 10) plus one at U, the probes' checks and their reductions (#397's), and the criterion's record pass (Euler's section); on a step without, the record pass only.
 
 ## Gate, declared before any run
 
-*(To be completed: the laminar TMR flat plate 69×49 ≤ 3332 steps on `physics/ns-sa` (#395's measure); Euler no-regression unchanged — limited cases in at most `main`'s steps (tolerance 0), smooth cases ≤ 1.02 ×, forces within 10⁻⁸ |c| + 10⁻¹⁰, first order bit for bit; RAE 2822 case 9 once its grid exists; cost ≤ 1.30 × per step, measured alone under the GPU lock. SA 69×49 stays note 2's.)*
+Against `main` at the merge base unless stated (the case files identical); fp64 unless stated.
+
+- **Laminar TMR flat plate 69×49** on `physics/ns-frozen` with this change, against the same branch without it: ten orders below each equation's peak (the identically zero z-momentum excepted) in at most 3332 steps, every such equation at most 10⁻¹⁰ of its peak at the last step, and no W0710 (#395's measure, its reason stated there: the runtime's rule counts from iteration 1, where the plate's density sits at 10⁻⁸).
+- **Euler, no regression** (the cases of #356 and #397, case and mesh hashes recorded):
+  - first order bit for bit: every history identical to `main`'s, line for line, up to the switch to second order;
+  - limited cases, NACA 0012 at 256² (M 0.5 α 1.25°, M 0.8 α 0°, M 0.8 α 1.25°) and Ni's bump 384: converged to ten orders in at most `main`'s steps (tolerance 0);
+  - smooth cases, Euler MMS hex, tet and poly (levels 16–32) and Ni's bump 96: at most 1.02 × `main`'s steps, the gain or loss recorded per case;
+  - forces at convergence within 10⁻⁸ |c| + 10⁻¹⁰ of `main`'s;
+  - the fraction of matrix-free rows reported per case.
+- **RAE 2822 case 9** (transonic SA, limiter active), once its grid exists (CFD - Navier-Stokes SA, from the TMR ordinates): this change cannot be accepted for SA before it runs; its pass rule is the pseudo-transient note's (`docs/design/pseudo-transient.md`).
+- **Cost**: CPU time per step at most 1.30 × without the change on the laminar plate and on the Euler cases, measured alone under the GPU lock; time to convergence reported.
+- **Accuracy** (AGENTS.md): the discretisation does not change; the Euler MMS observed orders on hex, tet, poly and hybrid in fp64 unchanged (`euler-mms-order` PASS), fp32+acc64 agreeing with fp64 level by level (`autan-vv agree`).
+- **Tests** (public seams): a run continued at a step whose mask holds both kinds of rows repeats the uninterrupted one bit for bit (histories and solution arrays); `"lines"` under `reproducibility = "ranks"` on 1, 2 and 4 ranks gives one history, byte for byte, with matrix-free rows present; on an unlimited verification case past the switch every row becomes matrix-free once no selection changes, and on a case with an active limiter (a shock) the rows of the switching cells stay assembled.
+
+SA 69×49 is note 2's (the coupled SA solve), with this note's flow model.
