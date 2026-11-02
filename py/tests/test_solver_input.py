@@ -111,6 +111,7 @@ def test_the_coupled_turbulence_step_is_an_sa_option(
     assert codes("autan.SA()", f"{on}, linear_solver='gauss-seidel'") == ["E0427", "W0426"]
     assert codes("autan.SA()", on, gpus=2) == ["E0427", "W0426"]
     case = write_case(CRM_HL + f"case.time = autan.Steady({on})\n")
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
     status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
     assert status == 0
     assert document["time"]["coupled_turbulence"] is True
@@ -148,6 +149,7 @@ def test_the_matrix_free_step_is_a_laminar_option(
     case = write_case(
         CRM_HL.replace("autan.SA()", "autan.Laminar()") + f"case.time = autan.Steady({on})\n"
     )
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
     status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
     assert status == 0
     assert document["time"]["matrix_free"] is True
