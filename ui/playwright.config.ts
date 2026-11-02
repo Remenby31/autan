@@ -6,6 +6,8 @@ export const MESHES = "e2e/.meshes";
 
 export default defineConfig({
   testDir: "e2e",
+  // The golden path has its own server on the solver's own output: playwright.golden.config.ts.
+  testIgnore: "golden/**",
   fullyParallel: false,
   workers: 1,
   reporter: "list",
