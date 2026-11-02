@@ -29,7 +29,7 @@ printf 'changed files:\n%s\n' "$changed" >&2
 # timing, protocol; the harness's dependencies; the STREAM binary; the baselines; the gate).
 measured_paths='^(runtime|codegen|kernels|physics|solvers|core|io)/|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
 # The harness's own GPU tests and the image smoke test: whenever the harness or an image changed.
-# Without a measured change they run on the tests runner, keeping the bench Spark for measurements.
+# They run on the bench Spark too: the tests runner's GPU is shared with another team's process.
 harness='^(bench|docker)/'
 grep -q -E "$measured_paths" <<<"$changed" && say bench true || say bench false
 grep -q -E "$harness" <<<"$changed" && say harness true || say harness false

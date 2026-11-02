@@ -874,3 +874,28 @@ def test_a_solution_is_read_only_from_its_own_file(runs: Path, server: str, outs
     response = httpx.get(f"{server}/api/runs/{directory.name}/surface")
 
     assert response.status_code == 422
+
+
+def test_runs_that_differ_only_by_freestream_and_name_are_one_study(tmp_path: Path) -> None:
+    # results.md#studies: the same identity but the case's hash, and the same case without its
+    # name and freestream.
+    example = (PY / "examples" / "crm_hl.py").read_text()
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    runs = tmp_path / "runs"
+
+    def run(source: str) -> str:
+        path = tmp_path / f"case{len(list(tmp_path.glob('case*.py')))}.py"
+        path.write_text(source)
+        return (
+            autan.load(path)
+            .run(mesh_info, backend=autan.FakeBackend(iterations=3), runs=runs)
+            .path.name
+        )
+
+    base = run(example)
+    swept = run(example.replace('"crm-hl"', '"crm-hl-alpha-5"').replace("aoa=19.57", "aoa=5"))
+    other = run(example.replace("every=10", "every=30"))
+
+    study = {name: s["study"] for name, s in Registry(runs).scan().summaries.items()}
+    assert study[base] == study[swept]
+    assert study[other] != study[base]

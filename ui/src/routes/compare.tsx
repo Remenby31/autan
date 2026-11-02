@@ -6,7 +6,7 @@ import type { Run, RunSettings } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
-import { studies } from "../api/studies";
+import { shortName, studies } from "../api/studies";
 import { coefficient, degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { DASHES, PolarChart } from "../components/PolarChart";
@@ -185,7 +185,7 @@ function Compare() {
             >
               {available.map((s) => (
                 <Button
-                  key={s.name}
+                  key={s.key}
                   onClick={() => {
                     setRuns(s.ids);
                     // The chosen button leaves with the empty state: focus goes to the heading.
@@ -194,7 +194,7 @@ function Compare() {
                   data-testid="study-choice"
                   className="justify-start"
                 >
-                  {s.name}
+                  {shortName(s.names)}
                   <span className="font-mono text-fg-3 text-sm">{s.label}</span>
                 </Button>
               ))}
