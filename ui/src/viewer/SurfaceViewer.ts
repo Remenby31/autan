@@ -82,6 +82,7 @@ export class SurfaceViewer {
   private readonly clip = new THREE.Plane();
   private readonly sliceRange = { min: uniform(0), span: uniform(1) };
   private frame = 0;
+  private framed = false;
 
   static async create(
     canvas: HTMLCanvasElement,
@@ -133,6 +134,18 @@ export class SurfaceViewer {
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.addEventListener("change", () => this.requestRender());
+    // Until the user moves the camera (a change while interacting; a plain click is no move), a
+    // resize frames the surface again.
+    let interacting = false;
+    this.controls.addEventListener("start", () => {
+      interacting = true;
+    });
+    this.controls.addEventListener("end", () => {
+      interacting = false;
+    });
+    this.controls.addEventListener("change", () => {
+      if (interacting) this.framed = false;
+    });
     this.resize = new ResizeObserver(() => this.fit());
     this.resize.observe(canvas);
     this.fit();
@@ -510,7 +523,11 @@ export class SurfaceViewer {
   private frameAll(): void {
     const sphere = this.mesh?.geometry.boundingSphere;
     if (!sphere) return;
-    const distance = sphere.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    this.framed = true;
+    // The sphere fits the narrower of the two fields of view: a tall view frames by its width.
+    const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
+    const horizontal = Math.atan(Math.tan(vertical) * this.camera.aspect);
+    const distance = sphere.radius / Math.sin(Math.min(vertical, horizontal));
     this.controls.target.copy(sphere.center);
     this.camera.position
       .copy(sphere.center)
@@ -530,6 +547,7 @@ export class SurfaceViewer {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    if (this.framed) this.frameAll();
     // What is under each pixel changed, as when the camera moves.
     this.controls.dispatchEvent({ type: "change" });
   }
