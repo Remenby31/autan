@@ -14,6 +14,7 @@ import autan.solver_input
 import jsonschema
 import pytest
 from autan.cli import json_schema, main
+from autan.errors import diagnostic
 
 from tests.conftest import CRM_HL, FIXTURES, identity_of
 
@@ -280,16 +281,35 @@ def _zero_momentum_y(result: autan.Results, wake_at: int | None) -> None:
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
 
 
-@pytest.mark.parametrize(("wake_at", "woken"), [(None, []), (10, ["momentum-y"])])
+@pytest.mark.parametrize(
+    ("wake_at", "woken"), [(None, []), (10, ["momentum-y"]), ("final", ["momentum-y"])]
+)
 def test_a_continuation_carries_the_woken_equations(
-    wake_at: int | None,
+    wake_at: int | str | None,
     woken: list[str],
     case: autan.Case,
     crm_mesh: autan.MeshInfo,
     tmp_path: Path,
 ) -> None:
     first = case.run(crm_mesh, backend=autan.FakeBackend(iterations=20), runs=tmp_path)
-    _zero_momentum_y(first, wake_at)
+    _zero_momentum_y(first, wake_at if isinstance(wake_at, int) else None)
+    if wake_at == "final":
+        # runtime.md, final_floors: the final state wakes it after the last history line.
+        document = json.loads((first.path / "run.json").read_text())
+        wake = diagnostic("W0710", "equation momentum-y left its floor", equation="momentum-y")
+        document["diagnostics"].append(wake.model_dump(mode="json"))
+        (first.path / "run.json").write_text(json.dumps(document))
+        line = {
+            "time": json.loads((first.path / "log.jsonl").read_text().splitlines()[-1])["time"],
+            "iteration": document["iterations"],
+            "level": "warning",
+            "source": "solver",
+            "message": wake.message,
+            "code": "W0710",
+            "data": wake.data,
+        }
+        with (first.path / "log.jsonl").open("a") as log:
+            log.write(json.dumps(line) + "\n")
     second = case.run(
         crm_mesh,
         backend=autan.FakeBackend(iterations=10),
