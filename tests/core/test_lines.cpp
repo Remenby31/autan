@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <set>
@@ -66,7 +67,8 @@ TEST_CASE("lines follow the strong coupling of stretched cells, whatever the cel
       if (previous_z >= 0.0) {
         rising = rising && g.cell_centroid_z[c] > previous_z;
         falling = falling && g.cell_centroid_z[c] < previous_z;
-        CHECK(std::abs(std::abs(g.cell_centroid_z[c] - previous_z) - 0.25) <= 1e-12);
+        CHECK(std::abs(std::abs(g.cell_centroid_z[c] - previous_z) - 0.25) <=
+              64 * std::numeric_limits<double>::epsilon());
       }
       previous_z = g.cell_centroid_z[c];
     }
