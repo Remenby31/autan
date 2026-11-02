@@ -190,7 +190,10 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
-  StepReport step(std::int64_t /*iteration*/) override {
+  StepReport step(std::int64_t iteration) override {
+    // case-schema.md#time: the floors every floor_every iterations and at the last one
+    // (docs/design/euler.md#precision).
+    floors_now_ = iteration % floor_every == 0 || iteration == ctx_.input.time.max_iterations;
     if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
@@ -678,12 +681,14 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(true);
       euler_.residual(state_, res_);
       record_norms(report);
-      if constexpr (std::is_same_v<P, kernels::fp32_acc64>) record_floors(report);
+      if constexpr (std::is_same_v<P, kernels::fp32_acc64>) {
+        if (floors_now_) record_floors(report);
+      }
       euler_.set_second_order(false);
     }
     euler_.residual_and_jacobian(state_, res_);
     if constexpr (std::is_same_v<P, kernels::fp32_acc64>) {
-      if (second_order_) record_floors(report);
+      if (second_order_ && floors_now_) record_floors(report);
     }
     measure_circulation();
     std::vector<double> norms = report.residuals;
@@ -1064,8 +1069,12 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  std::vector<Res> floor_;             // fp32+acc64 steady: floor_terms of the last iteration
-  std::optional<BlockMatrix> matrix_;  // steady runs only
+  std::vector<Res> floor_;  // fp32+acc64 steady: floor_terms of the last iteration
+  // An evaluation costs about a fifth of an iteration; one in four delays a stop by at most three
+  // iterations (docs/design/euler.md#precision).
+  static constexpr std::int64_t floor_every = 4;
+  bool floors_now_ = false;
+  std::optional<BlockMatrix> matrix_;              // steady runs only
   std::optional<solvers::Multigrid> multigrid_;    // linear_solver = "multigrid"
   std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
