@@ -860,6 +860,7 @@ def test_a_floor_run_is_not_converged_and_carries_its_floor_test(
         (None, False),
         (_floor_test(names, iterations - 1), False),
         (_floor_test(names, iterations, ratio=100.0), False),  # no equation at its floor
+        ({"iteration": iterations, "max_ratio": {}, "cells_at_floor": {}}, False),
     ):
         document["convergence"] = record
         (crm_run.path / "run.json").write_text(json.dumps(document))

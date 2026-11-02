@@ -909,7 +909,11 @@ def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
                 found.append(f"the floor test of {name} contradicts itself")
     if run.status == "floor" and (record is None or record.iteration != run.iterations):
         found.append("a floor run carries its floor test at its last iteration")
-    elif run.status == "floor" and record is not None and min(record.max_ratio.values()) > 1:
+    elif (
+        run.status == "floor"
+        and record is not None
+        and min(record.max_ratio.values(), default=2) > 1
+    ):
         found.append("a floor run has an equation at its floor")
     return found
 
