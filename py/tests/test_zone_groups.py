@@ -85,8 +85,8 @@ def test_a_group_selects_the_union_of_its_groups_zones(
 @pytest.mark.parametrize(
     ("replace", "code"),
     [
-        (('group="WING"', 'group="TAIL"'), "E0426"),
-        (('autan.forces(group="[Ww]*"', 'autan.forces(group="tail.*"'), "E0426"),
+        (('group="WING"', 'group="TAIL"'), "E0428"),
+        (('autan.forces(group="[Ww]*"', 'autan.forces(group="tail.*"'), "E0428"),
         (('group="FUSE"', 'group="wing.main"'), "E0411"),  # wing.main is also in WING
     ],
 )
@@ -110,7 +110,7 @@ def test_a_point_vortex_takes_a_group(
     )
     assert autan.load(write_case(body.format("WING"))).plan(grouped).ok
     plan = autan.load(write_case(body.format("TAIL"))).plan(grouped)
-    assert [d.code for d in plan.diagnostics if d.severity == "error"] == ["E0426"]
+    assert [d.code for d in plan.diagnostics if d.severity == "error"] == ["E0428"]
 
 
 @pytest.mark.parametrize("selection", ['"wing.*", group="WING"', ""])

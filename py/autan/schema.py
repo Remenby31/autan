@@ -276,12 +276,14 @@ class Freestream(Spec):
 class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
     ``max_iterations`` iterations; an implicit physics solves each step's linear system with
-    ``linear_solver``."""
+    ``linear_solver``. ``coupled_turbulence`` solves the flow and the SA variable together in
+    each step (validated on the TMR flat plate only)."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
     residual_orders: PositiveNumber = 8.0
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"] = "multigrid"
+    coupled_turbulence: Annotated[bool, Field(strict=True)] = False
 
 
 class Unsteady(Spec):
@@ -607,6 +609,15 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
     if spec.verification is not None and isinstance(spec.time, Unsteady):
         found.append(
             ("E0417", "time", "manufactured solutions are steady: verification needs a steady time")
+        )
+    coupled = isinstance(spec.time, Steady) and spec.time.coupled_turbulence
+    if coupled and not (isinstance(physics, Compressible) and isinstance(physics.turbulence, SA)):
+        found.append(
+            (
+                "E0426",
+                "time.coupled_turbulence",
+                "only compressible SA has a coupled turbulence step",
+            )
         )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(

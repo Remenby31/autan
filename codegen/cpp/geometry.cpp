@@ -358,14 +358,22 @@ SlicedStencil sliced(const CellStencil& csr, int slice) {
   const std::size_t nc = csr.offsets.size() - 1;
   const auto n = static_cast<std::size_t>(out.stencil.offsets[nc]);
   const std::size_t ne = csr.entries.size();
+  // Twins and weights only if the CSR stencil has them (a forward-only physics drops its twins;
+  // weights may come later from DeviceMesh::set_stencil_weights).
   out.stencil.entries.assign(n, 0);
-  out.stencil.twin.assign(n, -1);
-  out.stencil.lsq_weight.assign(3 * n, 0.0);
+  if (!csr.twin.empty()) {
+    out.stencil.twin.assign(n, -1);
+  }
+  if (!csr.lsq_weight.empty()) {
+    out.stencil.lsq_weight.assign(3 * n, 0.0);
+  }
   for (std::size_t k = 0; k < ne; ++k) {
     const auto p = static_cast<std::size_t>(out.position[k]);
     out.stencil.entries[p] = csr.entries[k];
-    const offset_t t = csr.twin.empty() ? -1 : csr.twin[k];
-    out.stencil.twin[p] = t < 0 ? -1 : out.position[static_cast<std::size_t>(t)];
+    if (!csr.twin.empty()) {
+      const offset_t t = csr.twin[k];
+      out.stencil.twin[p] = t < 0 ? -1 : out.position[static_cast<std::size_t>(t)];
+    }
     if (!csr.lsq_weight.empty()) {
       for (std::size_t i = 0; i < 3; ++i) {
         out.stencil.lsq_weight[i * n + p] = csr.lsq_weight[i * ne + k];

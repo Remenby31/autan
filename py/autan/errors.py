@@ -168,8 +168,10 @@ _CODES = [
     Code(
         "E0119",
         "Periodic faces do not match",
-        "The faces of a periodic pair do not match one to one under its translation.",
-        "Regenerate the mesh with conforming periodic faces, and check the translation.",
+        "The faces of a periodic pair do not match one to one under its translation, the pairs "
+        "place a node in two ways, or moving the matched nodes onto translates makes a face or "
+        "cell degenerate.",
+        "Regenerate the mesh with conforming periodic faces, and check the translations.",
     ),
     Code(
         "E0120",
@@ -289,6 +291,17 @@ _CODES = [
         "Several ranks without MPI",
         "A launcher started several ranks of a build without MPI.",
         "Run this build on one rank, or use a build with MPI, such as the dev image.",
+    ),
+    Code(
+        "W0150",
+        "Periodic nodes moved",
+        "The nodes of a periodic pair matched within the tolerance but not exactly, so assembly "
+        "moved them onto translates, and the run computes on the moved coordinates (mesh.md, "
+        "Periodic pairs). `data` gives the nodes moved by more than round-off, the largest move, "
+        "the largest pair mismatch relative to its tolerance (at most 1) and the largest relative "
+        "change of a cell's volume.",
+        "Nothing is required. To avoid the move, regenerate the mesh so that one side of each "
+        "pair is the other side translated.",
     ),
     Code(
         "E0201",
@@ -516,10 +529,32 @@ _CODES = [
     ),
     Code(
         "E0426",
+        "Coupled turbulence not applicable",
+        "`time.coupled_turbulence` is set on a case whose physics has no coupled turbulence "
+        "step: only compressible physics with the SA model has one.",
+        "Remove `coupled_turbulence=True`, or use compressible SA physics.",
+    ),
+    Code(
+        "E0427",
+        "Coupled turbulence needs the host multigrid",
+        "The coupled turbulence step runs in the host multigrid on one rank: "
+        "`linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the "
+        "physics both refuse other runs.",
+        "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
+    ),
+    Code(
+        "E0428",
         "Zone group pattern matches no group",
         "A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) "
         "matches no group. Groups come from the mesh's `<mesh>.zones.json`.",
         "Use one of the group names the message lists, or select zones by name.",
+    ),
+    Code(
+        "W0426",
+        "Coupled turbulence outside its validated domain",
+        "`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate "
+        "only (#429). `autan plan` reports it, and the run logs it at its first coupled step.",
+        "Compare with a run without the option before relying on the result.",
     ),
     Code(
         "E0501",

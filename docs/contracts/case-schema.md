@@ -150,7 +150,7 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"` · `"lines"`, default `"multigrid"` |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"` · `"lines"`, default `"multigrid"`; `coupled_turbulence` boolean, default `false`: solves the flow and the SA variable together in each step, for compressible SA physics only (`E0426`), with `linear_solver = "multigrid"` on one CPU rank (`E0427`, from `autan plan` and the runtime); validated on the TMR flat plate only, which `W0426` reports whenever it is on |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
 
 A steady run uses local time stepping and has converged when every residual of [results.md](results.md#history) has dropped `residual_orders` orders of magnitude below its value at iteration 1 (of the original run, for a continued one); it stops after `max_iterations` otherwise.
@@ -165,7 +165,7 @@ Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan
 
 ### Boundaries
 
-A rule applies a condition to every boundary zone whose name matches `zones`, a glob pattern (`*`, `?`, `[…]`, case-sensitive, matched against the whole name), or to the zones of the mesh's **zone groups** whose name matches `group`, a glob of the same kind: the union of their zones, each zone once. A rule gives exactly one of `zones` and `group` (`E0003`); a `group` that matches no group is `E0426`. Groups come from the `<mesh>.zones.json` next to the mesh file (symlinks followed), through its MeshInfo ([mesh-info.md](mesh-info.md)); they may overlap. `autan plan` checks that file against the MeshInfo like the mesh: `E0210` when its hash differs or it cannot be read, `W0211` when it is absent. Every other selection of boundary zones (`point_vortex.surfaces`, a monitor's `surfaces`) takes `group` instead in the same way. In Python: `case.boundary(group="wing.*").wall()`.
+A rule applies a condition to every boundary zone whose name matches `zones`, a glob pattern (`*`, `?`, `[…]`, case-sensitive, matched against the whole name), or to the zones of the mesh's **zone groups** whose name matches `group`, a glob of the same kind: the union of their zones, each zone once. A rule gives exactly one of `zones` and `group` (`E0003`); a `group` that matches no group is `E0428`. Groups come from the `<mesh>.zones.json` next to the mesh file (symlinks followed), through its MeshInfo ([mesh-info.md](mesh-info.md)); they may overlap. `autan plan` checks that file against the MeshInfo like the mesh: `E0210` when its hash differs or it cannot be read, `W0211` when it is absent. Every other selection of boundary zones (`point_vortex.surfaces`, a monitor's `surfaces`) takes `group` instead in the same way. In Python: `case.boundary(group="wing.*").wall()`.
 
 | `condition.kind` | Keys | Physics |
 |---|---|---|
