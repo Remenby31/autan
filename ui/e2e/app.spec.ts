@@ -32,6 +32,37 @@ test("home lists every run directory and filters by state", async ({ page }) => 
   await expect(rows.first()).toContainText("D0107");
 });
 
+test("each run in the list shows its Mach, angle and final coefficients", async ({ page }) => {
+  // The crm-hl sweep of scripts/sample-runs.sh: M 0.2 at four angles, from its case files.
+  const registry = await (await page.request.get("/api/runs")).json();
+  const sweep: Run[] = registry.runs.filter(
+    (r: Run) =>
+      r.status === "converged" && registry.summaries[r.run_id]?.settings?.aoa === "11.29 deg",
+  );
+  expect(sweep.length).toBeGreaterThan(0);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto("/");
+  // At 1024 px every row fits its frame: nothing scrolls sideways, nothing overlaps.
+  const first = page.locator("a[data-row]").first();
+  await expect(first).toBeVisible();
+  expect(await first.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  // A diverged run's diagnostic code shows whole beside its state.
+  const diverged = (registry.runs as Run[]).find((r) => r.status === "diverged") as Run;
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diverged.diagnostics[0]?.code ?? "", { exact: true });
+  await expect(code).toBeVisible();
+  expect(await code.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  for (const run of sweep) {
+    const row = page.locator(`a[data-run="${run.run_id}"]`);
+    await expect(row.getByTestId("mach")).toHaveText("0.2");
+    await expect(row.getByTestId("alpha")).toHaveText("11.29°");
+    const forces = run.monitors?.forces;
+    await expect(row.getByTestId("cl")).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
+    await expect(row.getByTestId("cd")).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
+  }
+});
+
 test("a run written by another process appears and updates live", async ({ page }) => {
   await page.goto("/");
   const rows = page.locator("a[data-row]");
@@ -271,7 +302,8 @@ test("Analysis without a run lists the runs it can show, never a stand-in surfac
   const picker = page.getByTestId("run-picker");
   await expect(picker.getByRole("link")).toHaveCount(solved.length);
   await expect(page.getByTestId("viewport")).toHaveCount(0);
-  await page.goto("/viewer?bench=1");
+  // The benchmark's stand-in surface, small: a CPU renderer draws it in no time.
+  await page.goto("/viewer?bench=1&triangles=2000");
   await expect(page.getByText("Synthetic surface · viewer benchmark")).toBeVisible();
   await page.goBack();
   await picker
@@ -311,6 +343,59 @@ test("a converged run opens its wall surface in Analysis and switches fields", a
   await page.getByRole("tab", { name: "Cf" }).click();
   await expect(page.getByTestId("legend")).toHaveText("Cf");
   await expect(page).toHaveURL(/field=Cf/);
+});
+
+test("Analysis cuts a run's solution by a plane and keeps the cut in its link", async ({
+  page,
+}) => {
+  const converged = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toContainText("wing.main");
+  const view = page.getByTestId("viewport");
+  const walls = await view.screenshot();
+  const box = await view.boundingBox();
+  if (!box) throw new Error("no viewport");
+  const picked = page.getByTestId("zones").getByRole("button", { pressed: true });
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const front = (await picked.textContent()) ?? "";
+  expect(front).not.toBe("");
+
+  await page.getByRole("button", { name: "Slice normal to y" }).click();
+  const legend = page.getByTestId("slice-legend");
+  await expect(legend).toContainText("slice · Pressure");
+  await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(false);
+  await expect(page).toHaveURL(/slice=y/);
+  // The walls between the eye and the plane are clipped: the centre now reaches a wall behind it.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(picked).not.toHaveText(front);
+  await expect(picked).toHaveCount(1);
+
+  const field = page.getByLabel("Slice field");
+  const firstField = (await field.locator("option").first().textContent()) ?? "";
+  const other = (await field.locator("option").allTextContents()).find((f) => f !== "Pressure");
+  if (!other) throw new Error("the slice carries one field only");
+  await field.selectOption(other);
+  await expect(legend).toContainText(`slice · ${other}`);
+
+  await page.reload();
+  await expect(legend).toContainText(`slice · ${other}`);
+  await expect(page.getByRole("button", { name: "Slice normal to y" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await page.getByRole("button", { name: "Slice normal to y" }).click();
+  await expect(legend).toHaveCount(0);
+  await expect(page).not.toHaveURL(/slice=/);
+  await page.mouse.click(box.x + 20, box.y + box.height - 20);
+  await expect(picked).toHaveCount(0);
+  await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
+
+  // A link naming a field the slice does not carry shows its first field, in the legend and
+  // in the renderer.
+  await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=NotAField`);
+  await expect(legend).toContainText(`slice · ${firstField}`);
+  await expect(view).toHaveAttribute("data-slice-field", firstField);
 });
 
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
@@ -596,4 +681,57 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       b as string,
     );
   }
+});
+
+test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {
+  // The crm-hl runs of scripts/sample-runs.sh form a study: one case name, several angles; the
+  // newest eight are compared, newest first.
+  const crm = (await runs(page))
+    .filter((r) => r.case.name === "crm-hl")
+    .sort((a, b) => b.started.localeCompare(a.started));
+  const newest = crm.slice(0, 8).map((r) => r.run_id);
+  const compared = () =>
+    JSON.parse(new URL(page.url()).searchParams.get("runs") ?? "[]") as string[];
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("compare crm-hl");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/compare\?runs=/);
+  expect(compared()).toEqual(newest);
+
+  await page.goto("/compare");
+  const add = page.getByRole("button", { name: "Add a run" });
+  await expect(add).toHaveText("Add a run");
+  await add.click();
+  // Each run to add says its conditions: crm-hl at M 0.2 and its angle.
+  await expect(page.getByRole("menuitem").filter({ hasText: "crm-hl" }).first()).toContainText(
+    /M 0\.2 · α \d/,
+  );
+  await page.keyboard.press("Escape");
+  await page.getByTestId("study-choice").filter({ hasText: "crm-hl" }).click();
+  await expect(page.getByTestId("chart-drop").locator("canvas")).toBeVisible();
+  expect(compared()).toEqual(newest);
+  await expect(page.getByRole("heading", { name: "Compare" })).toBeFocused();
+});
+
+test("an unknown run or address says so, and outputs download as they are", async ({ page }) => {
+  await page.goto("/runs/run-20200101T000000Z-deadbeef");
+  await expect(page.getByRole("heading", { name: "No such run" })).toBeVisible();
+  await page.goto("/no/such/page");
+  await expect(page.getByTestId("not-found")).toBeVisible();
+
+  const run = (await runs(page)).find((r) => r.status === "converged") as Run;
+  await page.goto(`/runs/${run.run_id}?tab=outputs`);
+  await page.getByRole("tab", { name: /Outputs/ }).click();
+  const link = page.getByRole("link", { name: "case.toml" }).first();
+  await expect(link).toBeVisible();
+  await expect(page.getByText("Log: warnings, errors and diagnostics").first()).toBeVisible();
+  const download = page.waitForEvent("download");
+  await link.click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("case.toml");
+  expect(readFileSync(await file.path(), "utf8")).toBe(
+    readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8"),
+  );
 });

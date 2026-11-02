@@ -72,7 +72,7 @@ Two runs of the solver (not the `fake` backend) with the same `identity` whose c
 
 ### Identity
 
-`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition.
+`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition and `autan.results.IDENTITY` follows. `autan.results.run_identity(run)` computes it from a `RunInfo` or a `run.json` document: a writer records it, a reader compares it.
 
 1. `case.sha256`
 2. `mesh.sha256`
@@ -85,6 +85,10 @@ Two runs of the solver (not the `fake` backend) with the same `identity` whose c
 9. `start.mode`
 10. `start.iterations`
 11. `start.solution_sha256`
+
+### Studies
+
+A **study** is a set of runs that solve one problem at several freestream states: their identities have the same fields except `case.sha256`, and their cases are the same once these top-level keys are removed, a closed list: `freestream` (the state that varies) and `name` (a label, not physics; a sweep may name each case after its state). `autan.results.run_identity_parts(run, case)` gives a run's identity fields one by one, `case_without_freestream` (the SHA-256 of the RFC 8785 canonical JSON of the case document without those keys, [case-schema.md](case-schema.md#case-hash)) and that `freestream` table as the document writes it. The state a run starts from is no part of the freestream: an explicit `initial` of a cell zone, an `initial_state` file or a `start` makes another study.
 
 ## History
 
@@ -140,7 +144,7 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
     FamilyBC             FamilyBC_t      boundary zones with a condition: BCType of that condition
   Zone                   Zone_t          Unstructured; [nodes, cells, 0]
     ZoneType                             Unstructured
-    GridCoordinates                      CoordinateX, CoordinateY, CoordinateZ (R8)
+    GridCoordinates                      CoordinateX, CoordinateY, CoordinateZ (R8, m: the mesh's times mesh.scale)
     NGonElements         Elements_t      NGON_n, ElementRange [1, F], ElementStartOffset, ElementConnectivity (I8)
     NFaceElements        Elements_t      NFACE_n, ElementRange [F+1, F+C], ElementStartOffset, ElementConnectivity (I8, signed face ids)
     ZoneBC               ZoneBC_t        absent when every boundary zone with faces is periodic
@@ -160,7 +164,7 @@ Node names. A zone keeps its name as node name when it has 1 to 32 printable ASC
 
 BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`; `manufactured` (verification cases) → `UserDefined`; `oracle-state` → `BCDirichlet`. The node values are the SIDS strings (`BCTypeName` in the CGNS library), not the C enumerator names.
 
-Periodic pairs ([mesh-info.md](mesh-info.md), `periodic`). Each pair `[a, b]` is two reciprocal `GridConnectivity_t` of `Zone` with itself, named after the node of each side's zone; the zones of a pair have no `BC_t`, and their `Family_t` no `FamilyBC`. The side-a connection has, as `PointList`, the faces of zone a in mesh order and, as `PointListDonor`, the face of zone b each one maps to. The side-b connection holds the same correspondence the other way round, in any order. Its `GridConnectivityProperty/Periodic` (`Periodic_t`) has `RotationCenter` and `RotationAngle` zero and `Translation` in R4, as CGNS requires; the descriptor `PeriodicTranslation` holds the translation `[x, y, z]` exactly, as JSON doubles, and is the authority: `transform.vector` of the pair for side a, its opposite for side b, with `Translation` its rounding to R4. No face is both in a connection and in a `BC_t`.
+Periodic pairs ([mesh-info.md](mesh-info.md), `periodic`). Each pair `[a, b]` is two reciprocal `GridConnectivity_t` of `Zone` with itself, named after the node of each side's zone; the zones of a pair have no `BC_t`, and their `Family_t` no `FamilyBC`. The side-a connection has, as `PointList`, the faces of zone a in mesh order and, as `PointListDonor`, the face of zone b each one maps to. The side-b connection holds the same correspondence the other way round, in any order. Its `GridConnectivityProperty/Periodic` (`Periodic_t`) has `RotationCenter` and `RotationAngle` zero and `Translation` in R4, as CGNS requires; the descriptor `PeriodicTranslation` holds the translation `[x, y, z]` exactly, as JSON doubles, and is the authority: `transform.vector` of the pair times `mesh.scale` (m) for side a, its opposite for side b, with `Translation` its rounding to R4. No face is both in a connection and in a `BC_t`.
 
 `FlowSolution` fields (SIDS names):
 
