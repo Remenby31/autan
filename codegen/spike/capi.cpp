@@ -392,8 +392,8 @@ void face_weighted(const SpikeMesh& m, int mode, const double* q, const double* 
 }
 
 /// Test kernel codegen/tests/kernels/face_flags.py: keep (2 x n_faces, component-major, 255 where
-/// no loop writes) and jump (n_faces) from the face writes; res from the face loop reading keep,
-/// when `res` is given.
+/// no loop writes) and jump (n_faces) from the face writes; res from the face loop reading keep
+/// (gather-recompute, so a rank-independent topology runs too), when `res` is given.
 template <class P>
 void face_flags(const SpikeMesh& m, const double* q, std::uint8_t* keep, double* jump,
                 double* res) {
@@ -417,7 +417,7 @@ void face_flags(const SpikeMesh& m, const double* q, std::uint8_t* keep, double*
   std::copy(ks.begin(), ks.end(), keep);
   copy_out(js, jump);
   if (res != nullptr) {
-    ff::cpu::picked(d);
+    ff::cpu::picked(d, autan::kernels::Strategy::gather_recompute);
     copy_out(rs, res);
   }
 }

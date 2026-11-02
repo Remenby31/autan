@@ -122,7 +122,7 @@ class Euler {
   void freeze(std::span<const State> s);
   /// R(s) into res with the limiter and the reconstruction branches of freeze()'s state, in a
   /// workspace of its own: equal to residual(s) bit for bit at that state. Throws
-  /// std::logic_error before freeze().
+  /// std::logic_error before freeze() and after set_second_order(), which drops what freeze held.
   void residual_frozen(std::span<const State> s, std::span<Res> res);
   /// Frees what freeze() allocated.
   void release_frozen();

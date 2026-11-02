@@ -698,6 +698,9 @@ TEMPLATE_TEST_CASE(
   e.boundary_pressure(pressure, force);
   std::vector<State> lambda(nc);
   e.spectral_radius(lambda);
+  const auto& cache = e.data();
+  const std::vector<State> wmin(cache.wmin, cache.wmin + 5 * nc),
+      wmax(cache.wmax, cache.wmax + 5 * nc);
   e.freeze(at);
   e.residual_frozen(at, frozen);
   CHECK(bits(frozen, r));
@@ -713,11 +716,41 @@ TEMPLATE_TEST_CASE(
   std::vector<State> lambda_after(nc);
   e.spectral_radius(lambda_after);
   CHECK(std::memcmp(lambda_after.data(), lambda.data(), nc * sizeof(State)) == 0);
+  CHECK(std::memcmp(cache.wmin, wmin.data(), 5 * nc * sizeof(State)) == 0);
+  CHECK(std::memcmp(cache.wmax, wmax.data(), 5 * nc * sizeof(State)) == 0);
   e.freeze(other);
   e.residual_frozen(other, own);
   e.residual(other, direct);
   CHECK(bits(own, direct));
   CHECK_FALSE(bits(held, own));
+  // Between two smooth states without a fallback, only the limiter is held: without a limiter the
+  // frozen residual is the residual, gradients and all; with one, it is not.
+  auto smooth = [&](double t) {
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i];
+      const double s = std::sin(2.0 * std::numbers::pi * (x + t)) * std::cos(std::numbers::pi * y);
+      const auto q = conserved({w.rho * (1.0 + 0.1 * s),
+                                {w.v[0] * (1.0 + 0.1 * s), w.v[1], w.v[2]},
+                                w.p * (1.0 + 0.05 * s)});
+      for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+    }
+    return stored(e, u);
+  };
+  const auto first = smooth(0.0), second = smooth(0.25);
+  e.freeze(first);
+  e.residual_frozen(second, held);
+  e.residual(second, direct);
+  if (limiter) {
+    CHECK_FALSE(bits(held, direct));
+  } else {
+    CHECK(bits(held, direct));
+  }
+  // An order switch drops what freeze held, and so does release_frozen.
+  e.set_second_order(false);
+  CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
+  e.set_second_order(true);
+  e.freeze(at);
   e.release_frozen();
   CHECK_THROWS_AS(e.residual_frozen(other, own), std::logic_error);
 }
