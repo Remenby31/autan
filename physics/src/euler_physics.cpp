@@ -1252,14 +1252,13 @@ void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope,
                /*several_ranks=*/true, euler_groups);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
-               euler_scope, /*several_ranks=*/true);
+               euler_scope, /*several_ranks=*/true, euler_groups);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"}, factory<kernels::fp64>(),
                euler_device_scope);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"}, factory<kernels::fp32_acc64>(),
                euler_device_scope);
 #endif
-               euler_scope, /*several_ranks=*/true, euler_groups);
 }
 
 }  // namespace autan::physics
