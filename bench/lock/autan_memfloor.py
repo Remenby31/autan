@@ -7,10 +7,12 @@ MemAvailable (proc(5)) above a floor and kill what they run when it falls below.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
-MEMINFO = Path("/proc/meminfo")
+# The kernel's account; tests point AUTAN_MEMINFO at a file they write instead.
+MEMINFO = Path(os.environ.get("AUTAN_MEMINFO", "/proc/meminfo"))
 DEFAULT = "24G"
 _UNITS = {"G": 1 << 30, "M": 1 << 20}
 

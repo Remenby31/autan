@@ -126,10 +126,17 @@ def global_ids(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     return cells, faces
 
 
-def _wrap(h: ctypes.c_void_p) -> Mesh:
+def incidences(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int32], F64]:
+    """Cell -> face offsets, faces and incidence sides as `m` holds them now (after
+    set_global_order: in the global order, sides for the faces' global orientation)."""
+    a = _arrays(m.handle)
+    return a["cell_face_offsets"], a["cell_faces"], a["incidence_side"]
+
+
+def _arrays(h: ctypes.c_void_p) -> dict[str, np.ndarray]:
     counts = np.zeros(5, dtype=np.int64)
     lib().autan_spike_mesh_counts(h, _p(counts))
-    nc, no, nf, ni, nk = (int(c) for c in counts)
+    nc, _, nf, ni, nk = (int(c) for c in counts)
     a = {
         "owner": np.zeros(nf, np.int32),
         "neighbour": np.zeros(ni, np.int32),
@@ -144,6 +151,14 @@ def _wrap(h: ctypes.c_void_p) -> Mesh:
         "incidence_side": np.zeros(nk),
     }
     lib().autan_spike_mesh_arrays(h, *(_p(v) for v in a.values()))
+    return a
+
+
+def _wrap(h: ctypes.c_void_p) -> Mesh:
+    counts = np.zeros(5, dtype=np.int64)
+    lib().autan_spike_mesh_counts(h, _p(counts))
+    nc, no, nf, ni, nk = (int(c) for c in counts)
+    a = _arrays(h)
     soa = {k: a[k].reshape(3, n).T.copy() for k, n in
            (("face_area", nf), ("face_centroid", nf), ("cell_centroid", nc), ("lsq_weight", nk))}  # fmt: skip
     moment = a["face_moment"].reshape(9, nf).T.reshape(nf, 3, 3).copy()
@@ -488,12 +503,22 @@ def set_stencil_slice(slice_: int) -> None:
     lib().autan_spike_set_stencil_slice(ctypes.c_int(slice_))
 
 
-def gpu_bind_check(m: Mesh) -> tuple[bool, bool]:
-    """(built-in face_area bound, a physics' own writable cell_volume left alone) by DeviceMesh."""
+def set_incidence_slice(slice_: int) -> None:
+    """Cells per slice of the device incidence layout of the following calls (0: CSR)."""
+    lib().autan_spike_set_incidence_slice(ctypes.c_int(slice_))
+
+
+def gpu_bind_check(m: Mesh) -> tuple[bool, ...]:
+    """DeviceMesh: (built-in face_area bound, a physics' own writable cell_volume left alone,
+    face_area uploaded in chunks equal to the host's, still bound after release_host(), a field
+    first bound after release_host() refused with E1101, a sliced stencil without twins or
+    weights accepted with a null stencil_twin, a deterministic adjoint over it refused with
+    E1106, an upload range that wraps around refused with E1101, weights given after
+    release_host() bound in the sliced layout while a pointer bound before keeps the old ones)."""
     err = ctypes.create_string_buffer(512)
-    out = np.zeros(2, dtype=np.int32)
+    out = np.zeros(9, dtype=np.int32)
     _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
-    return bool(out[0]), bool(out[1])
+    return tuple(bool(v) for v in out)
 
 
 def gpu_reductions(x: F64, flags: npt.NDArray[np.bool_]) -> tuple[float, float, int, int]:

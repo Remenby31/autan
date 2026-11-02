@@ -2,6 +2,9 @@
 add_library(
   autan_solvers
   src/agglomeration.cpp
+  src/dense.cpp
+  src/gcr.cpp
+  src/line_smoother.cpp
   src/multigrid.cpp
   src/device_order.cpp
   src/galerkin_lists.cpp

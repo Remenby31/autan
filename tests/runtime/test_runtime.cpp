@@ -1,11 +1,14 @@
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
+#include <iterator>
 #include <map>
 #include <random>
 #include <regex>
@@ -20,6 +23,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cgnslib.h>
 #include <fcntl.h>
+#include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <signal.h>
@@ -27,11 +31,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/partition/partition.hpp"
+#include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
 #include "relaxation.hpp"
@@ -142,6 +148,17 @@ Json periodic_input(double tx, const std::function<void(Json&)>& edit = {}) {
   });
 }
 
+// The data of the run's `memory` event (#325); null without one.
+Json memory_event(const fs::path& run) {
+  std::ifstream in(run / "log.jsonl");
+  Json found = nullptr;
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "memory") found = event["data"];
+  }
+  return found;
+}
+
 std::vector<Json> history(const fs::path& run) {
   std::vector<Json> lines;
   std::ifstream in(run / "history.jsonl");
@@ -168,6 +185,21 @@ std::vector<double> solution_field(const fs::path& file, const char* solution, c
     REQUIRE(cg_field_read(fn, 1, 1, s, name, CGNS_ENUMV(RealDouble), &first, &size[1],
                           values.data()) == CG_OK);
   }
+  cg_close(fn);
+  return values;
+}
+
+// The node coordinates `axis` (CoordinateX, Y or Z) of a solution.cgns.
+std::vector<double> coordinates(const fs::path& file, const char* axis) {
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  char zone_name[33];
+  cgsize_t size[9];
+  REQUIRE(cg_zone_read(fn, 1, 1, zone_name, size) == CG_OK);
+  std::vector<double> values(static_cast<std::size_t>(size[0]));
+  const cgsize_t first = 1;
+  REQUIRE(cg_coord_read(fn, 1, 1, axis, CGNS_ENUMV(RealDouble), &first, &size[0], values.data()) ==
+          CG_OK);
   cg_close(fn);
   return values;
 }
@@ -652,6 +684,15 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
   const auto on_cuda = [](Json& d) { d["devices"]["kind"] = "cuda"; };
   const Outcome o = run(periodic ? periodic_input(1.0, on_cuda) : input(on_cuda));
   REQUIRE(o.status == ExitStatus::finished);
+  // The device figures are sampled over the whole device, which other
+  // processes share (unified memory): only their shape is certain here.
+  const Json memory = memory_event(o.run);
+  const auto peak = memory["device_peak_bytes"].get<std::int64_t>();
+  CHECK(peak >= 0);
+  CHECK(memory["after_setup"]["device"].get<std::int64_t>() <= peak);
+  CHECK(memory["device_peak_bytes_by_rank"] == Json::array({peak}));
+  // Once the stream exists, the process's resident memory is positive.
+  CHECK(memory["host_at_device_start_bytes_by_rank"][0].get<std::int64_t>() > 0);
   std::ifstream log_in(o.run / "log.jsonl");
   Json ready, cuda;
   for (std::string line; std::getline(log_in, line);) {
@@ -858,6 +899,13 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                     d["physics"]["turbulence"]["base"] = "sa";
                   })),
                   "E0705");
+  }
+  SECTION("the mesh scale is finite and positive") {
+    for (const double scale : {0.0, -0.0254}) {
+      CAPTURE(scale);
+      require_error(run(input([&](Json& d) { d["mesh"]["scale"] = scale; })), "E0705");
+    }
+    require_error(run(input([](Json& d) { d["mesh"].erase("scale"); })), "E0705");
   }
   SECTION("monitor names are unique") {
     require_error(run(input([](Json& d) { d["monitors"].push_back(d["monitors"][0]); })), "E0705");
@@ -1200,6 +1248,30 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
                     d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
                   }),
                   "E0707");
+  }
+  SECTION("the previous solution keeps data in another file") {
+    // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's
+    // structure alone: the donor is gone when the run starts.
+    const auto form =
+        GENERATE(autan_test::Outside::cgns_link, autan_test::Outside::external_link,
+                 autan_test::Outside::external_storage, autan_test::Outside::virtual_dataset);
+    CAPTURE(autan_test::outside_name(form));
+    const fs::path previous = fresh_dir();
+    fs::copy_file(a.run / "solution.cgns", previous / "solution.cgns");
+    std::string control;
+    const std::string node = autan_test::move_outside(previous / "solution.cgns", form,
+                                                      previous / "donor", 1.5, control);
+    for (const double v : autan_test::read_doubles(previous / "solution.cgns", control))
+      CHECK(v == 1.5);
+    fs::remove(previous / "donor");
+    const Outcome o = from([&](Json& d) {
+      d["start"]["run"] = previous.string();
+      d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
+    });
+    require_error(o, "E0134");
+    const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
+    CHECK(refusal["data"]["node"] == node);
+    CHECK(refusal["location"]["path"] == "start.run");
   }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.
@@ -1636,6 +1708,40 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int gr
   return w;
 }
 
+// The ranks of a run, by the markers relaxation_main.cpp writes once
+// run_main returns ("<status> <pid>\n" in exit-<rank>): those whose marker is
+// missing or malformed, holds another status, or whose process still exists.
+// A process that has ended: gone, or a zombie its parent has not reaped (proc(5),
+// /proc/<pid>/stat: the state follows the last ')' of the command name). A rank reparented to a
+// parent that does not reap, such as a container's first process, stays a zombie.
+bool ended(pid_t pid) {
+  const auto gone = [pid] { return kill(pid, 0) != 0 && errno == ESRCH; };
+  if (gone()) return true;
+  std::string stat;
+  {
+    std::ifstream in("/proc/" + std::to_string(pid) + "/stat");
+    std::getline(in, stat);
+  }
+  const auto close = stat.rfind(')');
+  if (close != std::string::npos && close + 2 < stat.size() && stat[close + 2] == 'Z') return true;
+  // Reaped between the two looks: its /proc entry went with it.
+  return gone();
+}
+
+std::vector<std::string> ranks_not_returned(const fs::path& exits, int ranks, int expected) {
+  std::vector<std::string> wrong;
+  const std::regex marker(R"(^(\d+) (\d+)\n$)");
+  for (int r = 0; r < ranks; ++r) {
+    std::ifstream in(exits / ("exit-" + std::to_string(r)));
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::smatch m;
+    const bool ok = std::regex_match(text, m, marker) && std::stoi(m[1]) == expected &&
+                    ended(static_cast<pid_t>(std::stol(m[2])));
+    if (!ok) wrong.push_back(std::to_string(r));
+  }
+  return wrong;
+}
+
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
@@ -1660,7 +1766,16 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
+  // Each rank writes its exit status to exit-<rank> (relaxation_main.cpp), in
+  // the directory the test names or in exits/.
+  fs::path exits = dir / "exits";
+  for (const auto& o : options) {
+    if (o.starts_with("AUTAN_TEST_EXIT_DIR=")) exits = o.substr(20);
+  }
+  fs::create_directories(exits);
+  REQUIRE(fs::is_empty(exits));  // no marker of another launch
   std::vector<std::string> env = options;
+  env.push_back("AUTAN_TEST_EXIT_DIR=" + exits.string());
   for (char** e = environ; *e != nullptr; ++e) env.emplace_back(*e);
   std::vector<char*> envp;
   for (auto& e : env) envp.push_back(e.data());
@@ -1675,8 +1790,22 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   posix_spawn_file_actions_destroy(&actions);
   int status = 0;
   REQUIRE(waitpid(pid, &status, 0) == pid);
-  REQUIRE(WIFEXITED(status));
-  CHECK(WEXITSTATUS(status) == expected_status);
+  if (WIFSIGNALED(status)) {
+    // #304: the launcher can hang in its cleanup once every rank has ended,
+    // and the CI watchdog then kills it. The run is judged by the ranks
+    // themselves: every one must have returned with the expected status.
+    const auto wrong = ranks_not_returned(exits, ranks, expected_status);
+    INFO("launcher ended by signal " << WTERMSIG(status)
+                                     << "; ranks not returned as expected: " << wrong.size());
+    REQUIRE(wrong.empty());
+    WARN("launcher killed after every rank ended (#304)");
+  } else {
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == expected_status);
+    // A run every rank finishes leaves each rank's status, as the watchdog's
+    // judgement above reads it (a failing rank may end the others first).
+    if (expected_status == 0) CHECK(ranks_not_returned(exits, ranks, 0).empty());
+  }
   if (diagnostic != nullptr) {
     std::ifstream in(err_file);
     for (std::string line; std::getline(in, line);) {
@@ -1692,6 +1821,41 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
 }
 
 }  // namespace
+
+TEST_CASE("A launcher killed after its ranks is judged by their markers", "[runtime]") {
+  // #304: a rank counts as returned only by a well-formed "<status> <pid>\n"
+  // marker of the expected status whose process has ended: gone, or a zombie.
+  const fs::path exits = fresh_dir();
+  const pid_t gone = fork();
+  if (gone == 0) _exit(0);
+  int waited = 0;
+  REQUIRE(waitpid(gone, &waited, 0) == gone);
+  const std::string finished = std::to_string(gone);
+  const auto marker = [&](int r, const std::string& text) {
+    std::ofstream(exits / ("exit-" + std::to_string(r))) << text;
+  };
+  marker(0, "2 " + finished + "\n");
+  marker(1, "2 " + finished + "\n");
+  CHECK(ranks_not_returned(exits, 2, 2).empty());
+  CHECK(ranks_not_returned(exits, 2, 0) == std::vector<std::string>{"0", "1"});
+  CHECK(ranks_not_returned(exits, 3, 2) == std::vector<std::string>{"2"});
+  for (const std::string& text :
+       std::vector<std::string>{"garbage\n", "2\n", "2 " + finished + "\n1\n", "2 " + finished}) {
+    CAPTURE(text);
+    marker(1, text);
+    CHECK(ranks_not_returned(exits, 2, 2) == std::vector<std::string>{"1"});
+  }
+  marker(1, "2 " + std::to_string(getpid()) + "\n");  // a process that still runs
+  CHECK(ranks_not_returned(exits, 2, 2) == std::vector<std::string>{"1"});
+  // A rank that exited and that nobody reaped yet: ended (siginfo_t tells it exited, unreaped).
+  const pid_t zombie = fork();
+  if (zombie == 0) _exit(0);
+  siginfo_t info{};
+  REQUIRE(waitid(P_PID, static_cast<id_t>(zombie), &info, WEXITED | WNOWAIT) == 0);
+  marker(1, "2 " + std::to_string(zombie) + "\n");
+  CHECK(ranks_not_returned(exits, 2, 2).empty());
+  REQUIRE(waitpid(zombie, &waited, 0) == zombie);
+}
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to
@@ -1781,13 +1945,28 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(solution_field(many_lined / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
         lined_one);
   if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
-  // Groups the partition refuses end every rank before any directory, with their code.
+  // Groups that cannot be formed or partitioned, on every rank or on rank 1
+  // alone, are refused by the ranks together before any directory: the
+  // refusing rank's code reaches stderr, and no rank ends in an abort. The
+  // launcher may end the other ranks once one has exited non-zero, so at
+  // least one rank, not every rank, is seen returning.
+  const auto refused_together = [&](const char* groups, Json& diagnostic) {
+    const fs::path exits = fresh_dir();
+    CHECK(run_on_ranks(
+              doc, ranks,
+              {std::string("AUTAN_TEST_GROUPS=") + groups, "AUTAN_TEST_EXIT_DIR=" + exits.string()},
+              1, &diagnostic, {}, false)
+              .empty());
+    int returned = 0;
+    for (int r = 0; r < ranks; ++r) returned += fs::exists(exits / ("exit-" + std::to_string(r)));
+    CAPTURE(groups);
+    CHECK(returned >= 1);
+  };
   Json malformed;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, {}, false).empty());
+  refused_together("-1", malformed);
   CHECK(malformed["code"] == "E0140");
-  // Rank 1 alone fails while the others go on into the partition: every rank ends.
   Json alone;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, {}, false).empty());
+  refused_together("-2", alone);
   CHECK(alone["code"] == "E0140");
   CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
@@ -1833,6 +2012,21 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   const auto wall = wall_solution(one.run / "solution.cgns");
   CHECK(wall.contains("Pressure"));
   CHECK(wall_solution(many / "solution.cgns") == wall);
+  // The memory event names every rank's peak: the last rank alone holds
+  // 256 MiB, which its slot and the maximum show, not rank 0's.
+  {
+    constexpr std::int64_t held = std::int64_t{256} << 20;
+    const Json memory =
+        memory_event(run_on_ranks(doc, ranks,
+                                  {"AUTAN_TEST_HOLD_BYTES=" + std::to_string(held),
+                                   "AUTAN_TEST_HOLD_RANK=" + std::to_string(ranks - 1)}));
+    const auto& by_rank = memory["host_peak_bytes_by_rank"];
+    REQUIRE(by_rank.size() == static_cast<std::size_t>(ranks));
+    CHECK(by_rank.back().get<std::int64_t>() >= held);
+    CHECK(by_rank.front().get<std::int64_t>() < held);
+    CHECK(memory["host_peak_bytes"] == by_rank.back());
+    CHECK(memory["device_peak_bytes_by_rank"].size() == static_cast<std::size_t>(ranks));
+  }
   // Rank 0 logged the partition: every cell owned once.
   std::int64_t owned = 0;
   std::ifstream log_in(many / "log.jsonl");
@@ -1956,3 +2150,116 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   }
 }
 #endif
+
+TEST_CASE("A run logs the memory it used", "[runtime]") {
+  // The physics holds 256 MiB of host memory from its construction on: the
+  // peak and the after-setup figures count it; a CPU run uses no device memory.
+  autan_test::RelaxationOptions holding;
+  holding.hold_bytes = std::int64_t{256} << 20;
+  const Outcome o = run(input(), holding);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json memory = memory_event(o.run);
+  REQUIRE(memory.is_object());
+  const auto host = memory["host_peak_bytes"].get<std::int64_t>();
+  CHECK(host >= holding.hold_bytes);
+  CHECK(memory["after_setup"]["host"].get<std::int64_t>() >= holding.hold_bytes);
+  CHECK(memory["after_setup"]["host"].get<std::int64_t>() <= host);
+  CHECK(memory["host_peak_bytes_by_rank"] == Json::array({host}));
+  CHECK(memory["device_peak_bytes"] == 0);
+  CHECK(memory["device_peak_bytes_by_rank"] == Json::array({0}));
+  CHECK(memory["host_at_device_start_bytes_by_rank"] == Json::array({0}));
+}
+
+TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime][unit]") {
+  // The hybrid mesh, and a copy whose points are divided by 0.0254 and
+  // declared in inches (mesh.scale = 0.0254, exactly one inch in metres):
+  // five explicit Euler steps of an inviscid flow at incidence give the same
+  // fields and forces to round-off of the precision, and the solution's
+  // coordinates in metres. (The SDK's test_solver_backend runs one file in m
+  // and in in through the SDK: its coordinates are then bit for bit.)
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  const fs::path inches = fresh_dir() / "polyMesh";
+  fs::copy(mesh_path, inches);
+  {
+    std::ifstream in(mesh_path / "points");
+    std::ostringstream out;
+    const std::regex point(R"(^\(([^ ]+) ([^ ]+) ([^ ]+)\)$)");
+    char buffer[96];
+    for (std::string line; std::getline(in, line);) {
+      std::smatch m;
+      if (std::regex_match(line, m, point)) {
+        std::snprintf(buffer, sizeof buffer, "(%.17g %.17g %.17g)", std::stod(m[1]) / 0.0254,
+                      std::stod(m[2]) / 0.0254, std::stod(m[3]) / 0.0254);
+        line = buffer;
+      }
+      out << line << '\n';
+    }
+    std::ofstream(inches / "points") << out.str();
+  }
+  const auto euler = [&](Json& d) {
+    d["precision"] = precision;
+    inviscid(d);
+    for (auto& b : d["boundaries"]) {
+      if (b["zone"] == "ymin") b["kind"] = "slip";
+    }
+    d["monitors"][0]["every"] = 1;
+    d["time"] = {{"kind", "unsteady"},
+                 {"steps", 5},
+                 {"dt", nullptr},
+                 {"cfl", 0.8},
+                 {"average_from", nullptr}};
+  };
+  const Json metres = input(euler);
+  Json in_inches = metres;
+  {
+    std::string toml = in_inches["case"]["toml"];
+    const std::string unit = "mesh_unit = \"m\"";
+    REQUIRE(toml.find(unit) != std::string::npos);
+    in_inches["case"]["toml"] = toml.replace(toml.find(unit), unit.size(), "mesh_unit = \"in\"");
+  }
+  in_inches["mesh"] = {
+      {"path", inches.string()}, {"sha256", autan::io::mesh_hash(inches)}, {"scale", 0.0254}};
+  autan::runtime::PhysicsRegistry registry;
+  autan::physics::register_euler(registry);
+  const Outcome a = run(metres, registry);
+  const Outcome b = run(in_inches, registry);
+  REQUIRE(a.status == ExitStatus::finished);
+  REQUIRE(b.status == ExitStatus::finished);
+  // The archived MeshInfo describes the file, in its units.
+  CHECK(read(b.run / "mesh-info.json") ==
+        autan::io::mesh_info_json(autan::io::read_mesh(inches), autan::io::mesh_hash(inches)));
+
+  // The fields' precision; the coordinates are FP64 in either.
+  double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
+  const auto close = [&](const std::vector<double>& x, const std::vector<double>& y) {
+    REQUIRE(x.size() == y.size());
+    double scale = 0.0, worst = 0.0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      scale = std::max(scale, std::abs(x[i]));
+      worst = std::max(worst, std::abs(x[i] - y[i]));
+    }
+    CAPTURE(worst / (eps * scale));
+    CHECK(worst <= 64 * eps * scale);
+  };
+  for (const char* field : {"Density", "VelocityX", "VelocityZ", "Pressure"}) {
+    CAPTURE(field);
+    close(solution_field(a.run / "solution.cgns", "FlowSolution", field),
+          solution_field(b.run / "solution.cgns", "FlowSolution", field));
+  }
+  const Json fa = history(a.run).back()["monitors"]["forces"];
+  const Json fb = history(b.run).back()["monitors"]["forces"];
+  const auto values = [](const Json& f, std::initializer_list<const char*> keys) {
+    std::vector<double> v;
+    for (const char* k : keys) v.push_back(f[k].get<double>());
+    return v;
+  };
+  close(values(fa, {"fx", "fy", "fz"}), values(fb, {"fx", "fy", "fz"}));
+  close(values(fa, {"mx", "my", "mz"}), values(fb, {"mx", "my", "mz"}));
+  close(values(fa, {"cd", "cs", "cl"}), values(fb, {"cd", "cs", "cl"}));
+  eps = 0x1p-52;
+  for (const char* axis : {"CoordinateX", "CoordinateY", "CoordinateZ"}) {
+    CAPTURE(axis);
+    close(coordinates(a.run / "solution.cgns", axis), coordinates(b.run / "solution.cgns", axis));
+  }
+}
