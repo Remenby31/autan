@@ -1623,6 +1623,31 @@ TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged",
                                          "run.json"));
   CHECK(short_of["status"] == "completed");
   convergence(short_of, 12, 2.0, std::floor(cells / 2.0) / cells);
+  // The final state is judged as an iteration is: an exempt equation awake in it wakes (W0710)
+  // and must have dropped, here not; a residual that is not finite is a divergence (D0107).
+  autan_test::RelaxationOptions waking = sparse;
+  waking.silent_equation = 1;
+  waking.final_wakes = true;
+  const auto at_budget = [](Json& d) {
+    d["precision"] = "fp32+acc64";
+    d["time"]["max_iterations"] = 13;
+  };
+  const Json woke = Json::parse(read(run(input(at_budget), waking).run / "run.json"));
+  CHECK(woke["status"] == "completed");
+  CHECK(woke["diagnostics"].size() == 1);
+  for (const Json& d : woke["diagnostics"]) {
+    CHECK(d["code"] == "W0710");
+    CHECK(d["data"]["iteration"] == 13);
+  }
+  autan_test::RelaxationOptions not_finite = sparse;
+  not_finite.final_not_finite = true;
+  const Json lost = Json::parse(read(run(input(at_budget), not_finite).run / "run.json"));
+  CHECK(lost["status"] == "diverged");
+  CHECK(lost["diagnostics"].size() == 1);
+  for (const Json& d : lost["diagnostics"]) {
+    CHECK(d["code"] == "D0107");
+    CHECK(d["data"]["iteration"] == 13);
+  }
   // The drop before the floor converges; fp64 has no floor.
   autan_test::RelaxationOptions low = floored;
   low.floor = std::ldexp(1.0, -40);

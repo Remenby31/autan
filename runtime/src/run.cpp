@@ -1379,12 +1379,28 @@ class Run final : public Log {
       if (!ends) return nullptr;
       return at_floor ? "floor" : "converged";
     };
+    // case-schema.md#time: equations at the round-off floor are exempt while they stay there
+    // (runtime/round_off.hpp); one leaving it reports W0710, once.
+    const auto wake = [&](const StepReport& report, std::int64_t it) {
+      for (const std::size_t e : exempt.update(report.residuals)) {
+        add_diagnostic(Diagnostic{.code = "W0710",
+                                  .message = "equation " + equations[e] +
+                                             " left its floor at iteration " + std::to_string(it) +
+                                             ": it now has to converge like the others",
+                                  .path = "",
+                                  .data_json = Json{{"equation", equations[e]},
+                                                    {"iteration", it},
+                                                    {"residual", report.residuals[e]},
+                                                    {"floor", exempt.floor()}}
+                                                   .dump()});
+      }
+    };
     // case-schema.md#time: a steady fp32+acc64 run that reaches its budget is judged once more
     // on its final state, whose floors the physics gives on request; a stopped run records that
     // test in `convergence` and stays `stopped`.
     const auto final_state = [&](const char* status) -> const char* {
       if (!steady || in.precision != "fp32+acc64" || first.empty()) return status;
-      const std::optional<StepReport> state = physics_->final_floors();
+      std::optional<StepReport> state = physics_->final_floors();
       if (comm_.max(std::int64_t{state ? 1 : 0}) == 0) return status;
       if (!state) throw std::runtime_error("the physics gave its final floors on some ranks only");
       if (state->residuals.size() != equations.size()) {
@@ -1393,6 +1409,16 @@ class Run final : public Log {
                                  " equations");
       }
       check_floors(*state);
+      // The final state is judged as an iteration's: a diverged cell or a residual that is not
+      // finite on any rank is D0107, and an exempt equation that left its floor wakes.
+      state->diverged_cell = first_diverged(state->diverged_cell);
+      bool finite = !state->diverged_cell.has_value();
+      for (const double r : state->residuals) finite = finite && std::isfinite(r);
+      if (!finite) {
+        diverge(done, state->diverged_cell);
+        return "diverged";
+      }
+      wake(*state, done);
       const char* judged = verdict(*state, done);
       return judged != nullptr && std::string_view(status) == "completed" ? judged : status;
     };
@@ -1481,20 +1507,7 @@ class Run final : public Log {
       if (steady) {
         if (first.empty()) first = report.residuals;
         exempt.reference(first);
-        // case-schema.md#time: equations at the round-off floor are exempt while they stay there
-        // (runtime/round_off.hpp); one leaving it reports W0710, once.
-        for (const std::size_t e : exempt.update(report.residuals)) {
-          add_diagnostic(
-              Diagnostic{.code = "W0710",
-                         .message = "equation " + equations[e] + " left its floor at iteration " +
-                                    std::to_string(it) + ": it now has to converge like the others",
-                         .path = "",
-                         .data_json = Json{{"equation", equations[e]},
-                                           {"iteration", it},
-                                           {"residual", report.residuals[e]},
-                                           {"floor", exempt.floor()}}
-                                          .dump()});
-        }
+        wake(report, it);
         if (const char* judged = verdict(report, it)) return judged;
       }
     }

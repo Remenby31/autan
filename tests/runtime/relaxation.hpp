@@ -79,6 +79,10 @@ struct RelaxationOptions {
   int floor_every = 1;
   bool floor_overcount = false;  ///< one cell more at its floor than were evaluated
   int floor_hot = 0;             ///< cells of least global id whose floor is 2^-20 times smaller
+  /// The final state (final_floors) is not the last step's: the silent equation awake in it, or
+  /// its first residual not finite.
+  bool final_wakes = false;
+  bool final_not_finite = false;
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
   /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
@@ -255,6 +259,9 @@ class Relaxation final : public autan::runtime::Physics {
     if (options_.floor <= 0.0) return std::nullopt;
     autan::runtime::StepReport report;
     report.residuals = last_residuals_;
+    if (options_.final_wakes)
+      report.residuals[static_cast<std::size_t>(options_.silent_equation)] = 1e-3;
+    if (options_.final_not_finite) report.residuals[0] = std::numeric_limits<double>::quiet_NaN();
     floors(report);
     return report;
   }
