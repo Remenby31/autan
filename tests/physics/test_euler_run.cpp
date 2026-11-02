@@ -1327,6 +1327,9 @@ TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after th
   const auto whole = run(doc(budget));
   INFO(whole.err);
   REQUIRE(whole.status == ExitStatus::finished);
+  // Finished also covers a diverged run: this one reaches its budget or converges.
+  const auto status = Json::parse(read(whole.run / "run.json"))["status"];
+  REQUIRE((status == "completed" || status == "converged"));
   std::vector<int> starts;
   std::istringstream log(read(whole.run / "log.jsonl"));
   for (std::string line; std::getline(log, line);) {

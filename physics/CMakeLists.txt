@@ -106,7 +106,7 @@ target_include_directories(autan_physics_mms PRIVATE ${CMAKE_CURRENT_BINARY_DIR}
 
 # The Euler physics behind autan-run's Physics interface; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)
-  add_library(autan_physics_runtime src/euler_physics.cpp)
+  add_library(autan_physics_runtime src/coupled_product.cpp src/euler_physics.cpp)
   add_library(autan::physics_runtime ALIAS autan_physics_runtime)
   target_include_directories(
     autan_physics_runtime
