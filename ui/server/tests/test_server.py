@@ -786,3 +786,30 @@ def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Pa
     expected = min(math.log10(reference[k] / last[k]) for k in reference)
     assert summary["orders"] == pytest.approx(expected, abs=1e-3)
     assert summary["trend"][0] > 0  # the first line of the continuation is already below
+
+
+@pytest.mark.parametrize("outside", ["external storage", "external link"])
+def test_a_solution_is_read_only_from_its_own_file(runs: Path, server: str, outside: str) -> None:
+    # results.md#solutioncgns: one HDF5 file in the run directory. Data stored in or linked to
+    # another file would be read past the run directory's confinement.
+    import h5py  # noqa: PLC0415 -- only these tests edit a CGNS file
+
+    directory = next(runs.iterdir())
+    secret = runs.parent / "secret.cgns"
+    with h5py.File(directory / "solution.cgns", "r+") as tree:
+        pressure = tree["Base"]["Zone"]["WallSolution"]["Pressure"]
+        values = pressure[" data"][()]
+        del pressure[" data"]
+        if outside == "external storage":
+            secret.write_bytes(values.astype("<f8").tobytes())
+            pressure.create_dataset(
+                " data", shape=values.shape, dtype="<f8", external=[(str(secret), 0, values.nbytes)]
+            )
+        else:
+            with h5py.File(secret, "w") as other:
+                other.create_dataset("values", data=values)
+            pressure[" data"] = h5py.ExternalLink(str(secret), "/values")
+
+    response = httpx.get(f"{server}/api/runs/{directory.name}/surface")
+
+    assert response.status_code == 422
