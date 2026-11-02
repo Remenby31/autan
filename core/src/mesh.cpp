@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -11,9 +12,32 @@
 #include <utility>
 
 #include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
 
 namespace autan {
 namespace {
+
+// A number for a diagnostic's JSON data: null when not finite.
+std::string json_number(double v) {
+  if (!std::isfinite(v)) return "null";
+  // to_chars: the shortest round-trip form, whatever the C locale.
+  std::array<char, 32> text{};
+  const auto written = std::to_chars(text.data(), text.data() + text.size(), v);
+  return {text.data(), written.ptr};
+}
+
+// mesh.md, Periodic pairs: moving the periodic nodes made a valid face or cell degenerate.
+[[noreturn]] void refuse_snap(const char* entity, const char* measure, index_t index, double before,
+                              double after) {
+  throw Error(ErrorCode::mesh_periodic_unmatched,
+              std::string("moving the periodic nodes onto translates makes ") + entity + " " +
+                  std::to_string(index) +
+                  " degenerate: the periodic sides differ by more than the cells next to them "
+                  "are thick",
+              std::string("{\"") + entity + "\":" + std::to_string(index) + ",\"" + measure +
+                  "_before\":" + json_number(before) + ",\"" + measure +
+                  "_after\":" + json_number(after) + "}");
+}
 
 std::size_t to_size(index_t value) { return static_cast<std::size_t>(value); }
 std::size_t to_size(offset_t value) { return static_cast<std::size_t>(value); }
@@ -379,7 +403,67 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   if (mesh.source_.nodes == 0) mesh.source_.nodes = static_cast<std::int64_t>(in.x.size());
 
   check_cells_closed(mesh);
-  mesh.periodic_partners_ = match_periodic_faces(mesh, in.periodic);
+  PeriodicMatch match = match_periodic_faces(mesh, in.periodic);
+  const PeriodicMoves moves = place_periodic_nodes(mesh.x_, mesh.y_, mesh.z_, in.periodic, match);
+  PeriodicSnap snap = in.periodic_snap;
+  snap.nodes += moves.significant;
+  snap.max_distance = std::max(snap.max_distance, moves.max_distance);
+  snap.max_relative = std::max(snap.max_relative, match.max_relative);
+  if (!moves.nodes.empty()) {
+    // The faces and owned cells that touch a moved node, checked against compute_geometry's
+    // criteria before and after: the move must not make a valid mesh invalid.
+    std::vector<char> moved(mesh.x_.size(), 0);
+    for (const index_t p : moves.nodes) moved[to_size(p)] = 1;
+    std::vector<index_t> faces, cells;
+    std::vector<char> cell_seen(to_size(mesh.n_owned_cells()), 0);
+    for (index_t f = 0; f < mesh.n_faces(); ++f) {
+      const auto nodes = mesh.face_nodes(f);
+      if (std::ranges::none_of(nodes, [&](index_t p) { return moved[to_size(p)] != 0; })) continue;
+      faces.push_back(f);
+      const index_t across = f < mesh.n_interior_faces() ? mesh.neighbour_[to_size(f)] : no_cell;
+      for (const index_t c : {mesh.owner_[to_size(f)], across}) {
+        if (c != no_cell && c < mesh.n_owned_cells() && cell_seen[to_size(c)] == 0) {
+          cell_seen[to_size(c)] = 1;
+          cells.push_back(c);
+        }
+      }
+    }
+    // A face or cell already degenerate keeps its own error: the move must not repair it.
+    std::vector<GeometryCheck> face_before, cell_before;
+    for (const index_t f : faces) {
+      face_before.push_back(check_face(mesh, f));
+      if (!face_before.back().valid) {
+        throw Error(ErrorCode::geometry_degenerate_face,
+                    "face " + std::to_string(f) + " has zero or non-finite area");
+      }
+    }
+    for (const index_t c : cells) {
+      cell_before.push_back(check_cell(mesh, c));
+      if (!cell_before.back().valid) {
+        throw Error(ErrorCode::geometry_non_positive_volume,
+                    "cell " + std::to_string(c) + " has non-positive or non-finite volume");
+      }
+    }
+    for (std::size_t i = 0; i < moves.nodes.size(); ++i) {
+      const auto p = to_size(moves.nodes[i]);
+      mesh.x_[p] = moves.to[i][0];
+      mesh.y_[p] = moves.to[i][1];
+      mesh.z_[p] = moves.to[i][2];
+    }
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+      const GeometryCheck after = check_face(mesh, faces[i]);
+      if (!after.valid) refuse_snap("face", "area", faces[i], face_before[i].value, after.value);
+    }
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+      const GeometryCheck after = check_cell(mesh, cells[i]);
+      if (!after.valid) refuse_snap("cell", "volume", cells[i], cell_before[i].value, after.value);
+      snap.max_volume_change =
+          std::max(snap.max_volume_change,
+                   std::abs(after.value - cell_before[i].value) / cell_before[i].value);
+    }
+  }
+  mesh.periodic_snap_ = snap;
+  mesh.periodic_partners_ = std::move(match.partners);
   mesh.periodic_pairs_ = std::move(in.periodic);
   return mesh;
 }
@@ -416,6 +500,8 @@ Mesh scaled(const Mesh& mesh, double scale) {
   for (auto& pair : in.periodic) {
     for (double& c : pair.translation) c *= scale;
   }
+  in.periodic_snap = mesh.periodic_snap();
+  in.periodic_snap.max_distance *= scale;
   in.source = mesh.source();
   return assemble(std::move(in));
 }

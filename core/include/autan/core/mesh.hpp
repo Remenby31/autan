@@ -73,6 +73,17 @@ struct PeriodicPair {
   std::array<double, 3> translation{};
 };
 
+/// What assembly moved to make each periodic pair a translation (mesh.md, Periodic pairs): the
+/// nodes moved by more than round-off, the largest move of any node, the largest mismatch of a
+/// matched pair of nodes relative to its tolerance (at most 1), and the largest relative change of
+/// an owned cell's volume.
+struct PeriodicSnap {
+  std::int64_t nodes = 0;
+  double max_distance = 0.0;
+  double max_relative = 0.0;
+  double max_volume_change = 0.0;
+};
+
 /// Face-based mesh as a reader or partitioner produces it: faces in any order,
 /// each oriented so that its right-hand-rule normal points away from
 /// `face_cell0` and into `face_cell1` (`no_cell` on the boundary). Every array
@@ -96,6 +107,8 @@ struct MeshInput {
   std::vector<CellZone> cell_zones;
   std::vector<PeriodicPair> periodic;
   MeshSource source;
+  /// A previous assembly's snap of these nodes, kept by scaled() and renumber_cells().
+  PeriodicSnap periodic_snap;
 };
 
 /// Where each entity of an assembled mesh comes from in its MeshInput, for
@@ -199,6 +212,8 @@ class Mesh {
   [[nodiscard]] std::span<const index_t> periodic_partners(std::size_t pair) const noexcept {
     return periodic_partners_[pair];
   }
+  /// What assembly moved to make the periodic pairs exact translations (mesh.md, Periodic pairs).
+  [[nodiscard]] const PeriodicSnap& periodic_snap() const noexcept { return periodic_snap_; }
 
   [[nodiscard]] MeshView view() const noexcept;
 
@@ -226,14 +241,38 @@ class Mesh {
   std::vector<PeriodicPair> periodic_pairs_;
   std::vector<std::vector<index_t>> periodic_partners_;
   MeshSource source_;
+  PeriodicSnap periodic_snap_;
+};
+
+/// The periodic pairs of a mesh matched: per pair, the face of zone b for each face of zone a,
+/// and each node of zone a's faces with its node of zone b; the largest distance between such
+/// nodes relative to the matching tolerance.
+struct PeriodicMatch {
+  std::vector<std::vector<index_t>> partners;
+  std::vector<std::vector<std::array<index_t, 2>>> nodes;
+  double max_relative = 0.0;
 };
 
 /// Matches the faces of each periodic pair of `mesh` (zone a's faces onto
-/// zone b's) and returns, per pair, the face of zone b for each face of zone
-/// a. Throws E0118 for a malformed declaration and E0119 for faces that do
-/// not match one to one. Called by assemble().
-std::vector<std::vector<index_t>> match_periodic_faces(const Mesh& mesh,
-                                                       std::span<const PeriodicPair> pairs);
+/// zone b's). Throws E0118 for a malformed declaration and E0119 for faces
+/// that do not match one to one. Called by assemble().
+PeriodicMatch match_periodic_faces(const Mesh& mesh, std::span<const PeriodicPair> pairs);
+
+/// Where the periodic nodes go: every node that is zone b of no pair is a root and stays; in
+/// increasing order, forward steps x_b = x_a + translation from each root place the nodes not yet
+/// placed; nodes no root reaches take the smallest of them as a further root. Every pair is then
+/// checked to 4 ulps, which is what makes two roots of one class agree. Lists the nodes whose
+/// position changes, with their new position, and counts those that move by more than
+/// round-off. Throws E0119 for a pair the placement contradicts. Called by assemble().
+struct PeriodicMoves {
+  std::vector<index_t> nodes;
+  std::vector<std::array<double, 3>> to;
+  std::int64_t significant = 0;
+  double max_distance = 0.0;
+};
+PeriodicMoves place_periodic_nodes(std::span<const double> x, std::span<const double> y,
+                                   std::span<const double> z, std::span<const PeriodicPair> pairs,
+                                   const PeriodicMatch& match);
 
 /// Validates `input` and returns it in canonical order: owner < neighbour on
 /// interior faces, interior faces first sorted by (owner, neighbour), then

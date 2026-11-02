@@ -192,6 +192,7 @@ Mesh renumber_cells(const Mesh& mesh, std::span<const index_t> new_to_old, Assem
   in.face_zones.assign(mesh.face_zones().begin(), mesh.face_zones().end());
   in.cell_zones.assign(mesh.cell_zones().begin(), mesh.cell_zones().end());
   in.periodic.assign(mesh.periodic_pairs().begin(), mesh.periodic_pairs().end());
+  in.periodic_snap = mesh.periodic_snap();
   in.source = mesh.source();
   // Input face f is face f of `mesh`, so the map's face_source names them.
   return assemble(std::move(in), map);

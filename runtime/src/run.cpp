@@ -1320,6 +1320,19 @@ class Run final : public Log {
            Json{{"order", "input"}}.dump());
     }
     if (comm_.size() > 1) log_partition();
+    if (const PeriodicSnap& snap = p_.mesh.periodic_snap(); snap.nodes > 0) {
+      // mesh.md, Periodic pairs: the run computes on the snapped coordinates (#426).
+      add_diagnostic(
+          Diagnostic{.code = "W0150",
+                     .message = std::to_string(snap.nodes) +
+                                " periodic nodes moved to make their pairs exact translations",
+                     .path = "mesh.path",
+                     .data_json = Json{{"nodes", snap.nodes},
+                                       {"max_distance", snap.max_distance},
+                                       {"max_relative", snap.max_relative},
+                                       {"max_volume_change", snap.max_volume_change}}
+                                      .dump()});
+    }
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
       note("info", "solver",
            "results depend on the number of ranks: reproducibility is " + p_.input.reproducibility +
