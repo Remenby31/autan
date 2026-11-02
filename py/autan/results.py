@@ -847,7 +847,15 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
 FINAL = frozenset({"converged", "floor", "completed", "stopped"})
 # run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
 # after the solution is written, or name its final state.
-NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "timing", "diagnostics")
+NOT_IN_METADATA = (
+    "status",
+    "finished",
+    "iterations",
+    "convergence",
+    "monitors",
+    "timing",
+    "diagnostics",
+)
 
 
 def run_metadata(info: RunInfo) -> dict[str, Any]:

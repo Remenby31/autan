@@ -138,7 +138,7 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
 /Base                    CGNSBase_t      CellDimension 3, PhysicalDimension 3
   DataClass                              Dimensional
   DimensionalUnits                       Kilogram Meter Second Kelvin Radian
-  RunMetadata            Descriptor_t    run.json without status, finished, iterations, monitors, timing, diagnostics (JSON)
+  RunMetadata            Descriptor_t    run.json without status, finished, iterations, convergence, monitors, timing, diagnostics (JSON)
   ZoneNames              Descriptor_t    {"boundary": {<node name>: <zone name>}, "cell": {…}} (JSON)
   <family>               Family_t        one per boundary zone and per cell zone
     FamilyBC             FamilyBC_t      boundary zones with a condition: BCType of that condition
