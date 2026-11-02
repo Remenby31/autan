@@ -29,6 +29,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -1227,22 +1228,25 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
                   "E0707");
   }
   SECTION("the previous solution keeps data in another file") {
-    // mesh.md, E0134: refused from the file's structure alone, the other file being absent.
+    // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's
+    // structure alone: the donor is gone when the run starts.
+    const auto form =
+        GENERATE(autan_test::Outside::cgns_link, autan_test::Outside::external_link,
+                 autan_test::Outside::external_storage, autan_test::Outside::virtual_dataset);
+    CAPTURE(autan_test::outside_name(form));
     const fs::path previous = fresh_dir();
     fs::copy_file(a.run / "solution.cgns", previous / "solution.cgns");
-    const hid_t f =
-        H5Fopen((previous / "solution.cgns").string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
-    REQUIRE(f >= 0);
-    REQUIRE(H5Lcreate_external("absent.cgns", "/values", f, "Elsewhere", H5P_DEFAULT,
-                               H5P_DEFAULT) >= 0);
-    H5Fclose(f);
+    std::string control;
+    const std::string node = autan_test::move_outside(previous / "solution.cgns", form,
+                                                      previous / "donor", 1.5, control);
+    fs::remove(previous / "donor");
     const Outcome o = from([&](Json& d) {
       d["start"]["run"] = previous.string();
       d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
     });
     require_error(o, "E0134");
     const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
-    CHECK(refusal["data"]["node"] == "/Elsewhere");
+    CHECK(refusal["data"]["node"] == node);
     CHECK(refusal["location"]["path"] == "start.run");
   }
   SECTION("the previous run was computed on another mesh") {

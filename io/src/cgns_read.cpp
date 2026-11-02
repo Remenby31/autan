@@ -15,7 +15,6 @@
 #include <utility>
 #include <vector>
 
-#include <cgns_io.h>
 #include <cgnslib.h>
 #include <nlohmann/json.hpp>
 
@@ -23,7 +22,7 @@
 #include "autan/core/error.hpp"
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
-#include "hdf5_scan.hpp"
+#include "self_contained.hpp"
 
 namespace autan::io {
 
@@ -50,33 +49,6 @@ void ok(int status, const std::string& what, const std::string& name = "") {
 }
 [[noreturn]] void malformed(const std::string& path, const std::string& what) {
   throw Error(ErrorCode::io_malformed, path + ": " + what);
-}
-
-// A mesh hash covers one file: links to other files are rejected (E0134).
-void reject_external_links(int cgio, double root, const std::string& path) {
-  std::vector<double> pending{root};
-  std::vector<double> children;
-  while (!pending.empty()) {
-    const double node = pending.back();
-    pending.pop_back();
-    int length = 0;
-    if (cgio_is_link(cgio, node, &length) != CG_OK) malformed(path, "unreadable node");
-    if (length > 0) {
-      int file_length = 0, name_length = 0;
-      cgio_link_size(cgio, node, &file_length, &name_length);
-      if (file_length > 0) {
-        throw Error(ErrorCode::io_external_reference, path + ": link to another file");
-      }
-      continue;
-    }
-    int count = 0;
-    cgio_number_children(cgio, node, &count);
-    if (count == 0) continue;
-    children.resize(at(count));
-    int got = 0;
-    cgio_children_ids(cgio, node, 1, count, &got, children.data());
-    pending.insert(pending.end(), children.begin(), children.begin() + got);
-  }
 }
 
 // docs/contracts/mesh-info.md, "Normalized boundary types", CGNS column.
@@ -142,24 +114,8 @@ class Reader {
   explicit Reader(const fs::path& path)
       : path_(path.string()), file_((check_links(path), path), CG_MODE_READ) {}
 
-  // Scans the HDF5 structure and the raw node tree before the library
-  // resolves any link or reads any data (E0134).
-  static void check_links(const fs::path& path) {
-    reject_outside_data(path);
-    int cgio = 0;
-    if (cgio_open_file(path.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) != CG_OK) {
-      throw Error(ErrorCode::io_cannot_open, "cannot open '" + path.string() + "' as CGNS");
-    }
-    double root = 0;
-    cgio_get_root_id(cgio, &root);
-    try {
-      reject_external_links(cgio, root, path.string());
-    } catch (...) {
-      cgio_close_file(cgio);
-      throw;
-    }
-    cgio_close_file(cgio);
-  }
+  // E0134 before the library resolves any link or reads any data.
+  static void check_links(const fs::path& path) { reject_outside_data(path); }
 
   MeshInput read() {
     fn_ = file_.handle();

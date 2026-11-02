@@ -39,14 +39,33 @@ if(AUTAN_ENABLE_CGNS)
     target_link_libraries(autan_cgns INTERFACE ${CGNS_LIBRARY})
   endif()
   # The self-containment scan reads the HDF5 structure directly (mesh.md, E0134): the HDF5 that
-  # CGNS is built on, found beside it.
-  find_path(AUTAN_HDF5_INCLUDE_DIR H5Lpublic.h HINTS ${CGNS_INCLUDE_DIR} REQUIRED)
-  find_library(AUTAN_HDF5_LIBRARY hdf5 REQUIRED)
-  target_include_directories(autan_cgns SYSTEM INTERFACE ${AUTAN_HDF5_INCLUDE_DIR})
-  target_link_libraries(autan_cgns INTERFACE ${AUTAN_HDF5_LIBRARY})
+  # CGNS is built on, its imported target when the static branch found its package, or found
+  # beside CGNS (or under HDF5_ROOT / HDF5_DIR) otherwise.
+  if(TARGET hdf5::hdf5-static)
+    target_link_libraries(autan_cgns INTERFACE hdf5::hdf5-static)
+  elseif(TARGET hdf5::hdf5-shared)
+    target_link_libraries(autan_cgns INTERFACE hdf5::hdf5-shared)
+  else()
+    find_path(
+      AUTAN_HDF5_INCLUDE_DIR
+      H5Lpublic.h
+      HINTS ${CGNS_INCLUDE_DIR} ${HDF5_ROOT} $ENV{HDF5_ROOT} ${HDF5_DIR} $ENV{HDF5_DIR}
+      PATH_SUFFIXES include
+      REQUIRED
+    )
+    find_library(
+      AUTAN_HDF5_LIBRARY
+      hdf5
+      HINTS ${HDF5_ROOT} $ENV{HDF5_ROOT} ${HDF5_DIR} $ENV{HDF5_DIR}
+      PATH_SUFFIXES lib
+      REQUIRED
+    )
+    target_include_directories(autan_cgns SYSTEM INTERFACE ${AUTAN_HDF5_INCLUDE_DIR})
+    target_link_libraries(autan_cgns INTERFACE ${AUTAN_HDF5_LIBRARY})
+  endif()
   target_sources(
     autan_io
-    PRIVATE src/cgns_read.cpp src/cgns_write.cpp src/cgns_solution.cpp src/hdf5_scan.cpp
+    PRIVATE src/cgns_read.cpp src/cgns_write.cpp src/cgns_solution.cpp src/self_contained.cpp
   )
   target_link_libraries(autan_io PRIVATE autan_cgns)
   target_compile_definitions(autan_io PRIVATE AUTAN_HAVE_CGNS)

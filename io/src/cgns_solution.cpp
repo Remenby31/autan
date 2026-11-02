@@ -11,7 +11,7 @@
 #include "autan/core/error.hpp"
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
-#include "hdf5_scan.hpp"
+#include "self_contained.hpp"
 
 namespace autan::io {
 namespace {
