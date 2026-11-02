@@ -7,61 +7,19 @@
 #include <stdexcept>
 #include <utility>
 
+#include "autan/solvers/dense.hpp"
+#include "blocks.hpp"
+
 namespace autan::solvers {
 
 namespace {
 
-constexpr std::size_t b2 = 25;
+using detail::add5;
+using detail::b2;
+using detail::invert5;
+using detail::multiply5;
 // The coarsest level is factored densely up to this many unknowns.
 constexpr std::size_t dense_unknowns = 1000;
-
-// Inverse of a 5 x 5 row-major block by Gauss-Jordan elimination with partial pivoting.
-void invert5(const double* a, double* inv) {
-  std::array<double, 50> m{};
-  for (std::size_t i = 0; i < 5; ++i) {
-    for (std::size_t j = 0; j < 5; ++j) {
-      m[10 * i + j] = a[5 * i + j];
-      m[10 * i + 5 + j] = i == j ? 1.0 : 0.0;
-    }
-  }
-  for (std::size_t k = 0; k < 5; ++k) {
-    std::size_t p = k;
-    for (std::size_t i = k + 1; i < 5; ++i) {
-      if (std::abs(m[10 * i + k]) > std::abs(m[10 * p + k])) p = i;
-    }
-    if (m[10 * p + k] == 0.0 || !std::isfinite(m[10 * p + k])) {
-      throw std::domain_error("singular diagonal block");
-    }
-    if (p != k) {
-      for (std::size_t j = 0; j < 10; ++j) std::swap(m[10 * k + j], m[10 * p + j]);
-    }
-    const double d = 1.0 / m[10 * k + k];
-    for (std::size_t j = 0; j < 10; ++j) m[10 * k + j] *= d;
-    for (std::size_t i = 0; i < 5; ++i) {
-      if (i == k) continue;
-      const double f = m[10 * i + k];
-      for (std::size_t j = 0; j < 10; ++j) m[10 * i + j] -= f * m[10 * k + j];
-    }
-  }
-  for (std::size_t i = 0; i < 5; ++i) {
-    for (std::size_t j = 0; j < 5; ++j) inv[5 * i + j] = m[10 * i + 5 + j];
-  }
-}
-
-// c = a b, 5 x 5 row-major.
-void multiply5(const double* a, const double* b, double* c) {
-  for (std::size_t i = 0; i < 5; ++i) {
-    for (std::size_t j = 0; j < 5; ++j) {
-      double s = 0.0;
-      for (std::size_t k = 0; k < 5; ++k) s += a[5 * i + k] * b[5 * k + j];
-      c[5 * i + j] = s;
-    }
-  }
-}
-
-void add5(double* a, const double* b) {
-  for (std::size_t k = 0; k < b2; ++k) a[k] += b[k];
-}
 
 }  // namespace
 
@@ -173,7 +131,6 @@ struct Multigrid::Smoother {
     prev.assign(n, -1);
     next.assign(n, -1);
     slot.assign(n, 0);
-    std::vector<std::size_t> line_of(n);
     std::size_t n_slots = 0, longest = 1;
     for (std::size_t li = 0; li < l.n_lines(); ++li) {
       const auto b = static_cast<std::size_t>(l.line_offsets[li]);
@@ -181,7 +138,6 @@ struct Multigrid::Smoother {
       longest = std::max(longest, e - b);
       for (std::size_t k = b; k < e; ++k) {
         const auto i = static_cast<std::size_t>(l.line_nodes[k]);
-        line_of[i] = li;
         if (k > b) prev[i] = l.line_nodes[k - 1];
         if (k + 1 < e) next[i] = l.line_nodes[k + 1];
         if (e - b > 1) slot[i] = n_slots++;
@@ -191,32 +147,7 @@ struct Multigrid::Smoother {
     gain.assign(b2 * n_slots, 0.0);
     dinv.assign(b2 * n, 0.0);
     work.assign(5 * longest, 0.0);
-    // Greedy colouring of the lines in line order: lines of a colour share no edge.
-    std::vector<std::vector<std::size_t>> adjacent(l.n_lines());
-    for (std::size_t e = 0; e < l.owner.size(); ++e) {
-      const std::size_t a = line_of[static_cast<std::size_t>(l.owner[e])];
-      const std::size_t b = line_of[static_cast<std::size_t>(l.neighbour[e])];
-      if (a == b) continue;
-      adjacent[a].push_back(b);
-      adjacent[b].push_back(a);
-    }
-    std::vector<int> colour(l.n_lines(), -1);
-    std::vector<int> seen;
-    int n_colours = 0;
-    for (std::size_t li = 0; li < l.n_lines(); ++li) {
-      seen.assign(static_cast<std::size_t>(n_colours) + 1, 0);
-      for (const std::size_t o : adjacent[li]) {
-        if (colour[o] >= 0) seen[static_cast<std::size_t>(colour[o])] = 1;
-      }
-      int k = 0;
-      while (seen[static_cast<std::size_t>(k)] != 0) ++k;
-      colour[li] = k;
-      n_colours = std::max(n_colours, k + 1);
-    }
-    colours.assign(static_cast<std::size_t>(n_colours), {});
-    for (std::size_t li = 0; li < l.n_lines(); ++li) {
-      colours[static_cast<std::size_t>(colour[li])].push_back(li);
-    }
+    colours = line_colours(l);
   }
 
   // Block LU of every line: D'_0 = D_0, D'_k = D_k - A(k, k-1) D'_{k-1}^-1 A(k-1, k).
@@ -320,35 +251,12 @@ struct Multigrid::Smoother {
       }
     }
     pivot.resize(m);
-    for (std::size_t k = 0; k < m; ++k) {
-      std::size_t p = k;
-      for (std::size_t i = k + 1; i < m; ++i) {
-        if (std::abs(dense[i * m + k]) > std::abs(dense[p * m + k])) p = i;
-      }
-      if (dense[p * m + k] == 0.0 || !std::isfinite(dense[p * m + k])) {
-        throw std::domain_error("singular coarsest operator");
-      }
-      pivot[k] = p;
-      if (p != k) std::swap_ranges(&dense[k * m], &dense[k * m] + m, &dense[p * m]);
-      for (std::size_t i = k + 1; i < m; ++i) {
-        const double f = dense[i * m + k] /= dense[k * m + k];
-        if (f == 0.0) continue;
-        for (std::size_t j = k + 1; j < m; ++j) dense[i * m + j] -= f * dense[k * m + j];
-      }
-    }
+    autan::solvers::factor_dense(dense, m, pivot);
   }
 
   void solve_dense(std::span<const double> b, std::span<double> x) const {
-    const std::size_t m = pivot.size();
-    std::copy_n(b.begin(), m, x.begin());
-    for (std::size_t k = 0; k < m; ++k) std::swap(x[k], x[pivot[k]]);
-    for (std::size_t i = 0; i < m; ++i) {
-      for (std::size_t j = 0; j < i; ++j) x[i] -= dense[i * m + j] * x[j];
-    }
-    for (std::size_t i = m; i-- > 0;) {
-      for (std::size_t j = i + 1; j < m; ++j) x[i] -= dense[i * m + j] * x[j];
-      x[i] /= dense[i * m + i];
-    }
+    std::copy_n(b.begin(), pivot.size(), x.begin());
+    autan::solvers::solve_dense(dense, pivot, x);
   }
 };
 
@@ -426,63 +334,11 @@ void Multigrid::cycle(std::span<const double> b, std::span<double> x) { cycle_le
 Multigrid::Report Multigrid::solve(std::span<const double> b, std::span<double> x, int max_cycles,
                                    double tolerance) {
   const Operator& a = ops_[0];
-  const std::size_t m = 5 * a.n;
-  residual_.resize(m);
+  residual_.resize(5 * a.n);
   a.residual(b, x, residual_);
-  auto dot = [](std::span<const double> u, std::span<const double> v) {
-    double s = 0.0;
-    for (std::size_t k = 0; k < u.size(); ++k) s += u[k] * v[k];
-    return s;
-  };
-  // The iteration runs on the residual scaled by its largest entry, so that no norm underflows.
-  double scale = 0.0;
-  for (const double v : residual_) scale = std::max(scale, std::abs(v));
-  Report report;
-  if (!std::isfinite(scale) ||
-      std::any_of(residual_.begin(), residual_.end(), [](double v) { return std::isnan(v); })) {
-    report.residual_drop = std::numeric_limits<double>::quiet_NaN();
-    return report;
-  }
-  if (scale == 0.0) {
-    report.residual_drop = 0.0;
-    return report;
-  }
-  for (double& v : residual_) v /= scale;
-  const double r0 = std::sqrt(dot(residual_, residual_));
-  const auto kmax = static_cast<std::size_t>(std::max(max_cycles, 0));
-  if (directions_.size() < kmax) {
-    directions_.resize(kmax);
-    images_.resize(kmax);
-  }
-  double rr = r0 * r0;
-  for (std::size_t k = 0; k < kmax; ++k) {
-    std::vector<double>& z = directions_[k];
-    std::vector<double>& w = images_[k];
-    z.assign(m, 0.0);
-    w.resize(m);
-    cycle_level(0, residual_, z);
-    a.multiply(z, w);
-    for (std::size_t j = 0; j < k; ++j) {
-      const double beta = dot(w, images_[j]) / dot(images_[j], images_[j]);
-      for (std::size_t i = 0; i < m; ++i) {
-        z[i] -= beta * directions_[j][i];
-        w[i] -= beta * images_[j][i];
-      }
-    }
-    const double ww = dot(w, w);
-    report.cycles = static_cast<int>(k) + 1;
-    if (!(ww > 0.0)) break;
-    const double alpha = dot(residual_, w) / ww;
-    for (std::size_t i = 0; i < m; ++i) {
-      x[i] += scale * alpha * z[i];
-      residual_[i] -= alpha * w[i];
-    }
-    rr = dot(residual_, residual_);
-    if (std::sqrt(rr) <= tolerance * r0) break;
-  }
-  report.residual_drop =
-      std::isfinite(rr) ? std::sqrt(rr) / r0 : std::numeric_limits<double>::quiet_NaN();
-  return report;
+  return gcr_.solve([&](std::span<const double> v, std::span<double> y) { a.multiply(v, y); },
+                    [&](std::span<const double> r, std::span<double> z) { cycle_level(0, r, z); },
+                    residual_, x, max_cycles, tolerance);
 }
 
 void Multigrid::cycle_level(std::size_t l, std::span<const double> b, std::span<double> x) {

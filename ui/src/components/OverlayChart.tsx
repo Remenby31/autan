@@ -87,5 +87,12 @@ export function OverlayChart({
     plot.current.setData(tables.length ? uPlot.join(tables) : [[]]);
   }, [version, shape]);
 
-  return <div ref={host} className="h-full w-full" />;
+  // Each series' label and number of points, as drawn: what a reader cannot see in a canvas.
+  return (
+    <div
+      ref={host}
+      className="h-full w-full"
+      data-samples={series.map((s) => `${s.label}:${s.x.length}`).join(" ")}
+    />
+  );
 }

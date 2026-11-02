@@ -1,12 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Box, Copy, FilePlus2 } from "lucide-react";
+import { Box, Copy, FilePlus2, SearchX } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 import type { CaseDocument } from "../api/cases";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import {
   type HistoryColumns,
+  HttpError,
   planQuery,
   runQuery,
   runsQuery,
@@ -27,6 +28,7 @@ import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Collapse } from "../components/ui/Collapse";
 import { cn } from "../components/ui/cn";
+import { EmptyState } from "../components/ui/EmptyState";
 import { Gauge } from "../components/ui/Gauge";
 import { LoadingDots } from "../components/ui/LoadingDots";
 import { MetaGrid } from "../components/ui/MetaGrid";
@@ -116,6 +118,28 @@ function RunView() {
     { label: <span className="font-mono">{runId.slice(-8)}</span> },
   ];
 
+  // A run the server does not have, or refuses, is said so, never left as a skeleton.
+  const missing = !run && details.isError ? details.error : null;
+  if (missing) {
+    const absent = missing instanceof HttpError && missing.status === 404;
+    const reason = missing instanceof HttpError ? missing.detail : missing.message;
+    return (
+      <>
+        <TopBar crumbs={[{ label: "Runs", to: "/" }, { label: runId.slice(-8) }]} />
+        <div className="flex flex-1 items-start justify-center px-8 py-16">
+          <EmptyState
+            icon={<SearchX className="size-5" />}
+            title={absent ? "No such run" : "This run cannot be read"}
+            description={absent ? `There is no run ${runId} in this runs directory.` : reason}
+          >
+            <Link to="/" className="self-center">
+              <Button>Go to Runs</Button>
+            </Link>
+          </EmptyState>
+        </div>
+      </>
+    );
+  }
   return (
     <>
       <TopBar
@@ -187,7 +211,7 @@ function RunView() {
           />
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-8">
+          <div className="flex flex-col gap-6 px-8 py-6">
             <header className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <h1 className="m-0 font-semibold text-xl">
                 {run?.case.name ?? <Skeleton className="h-8 w-40" />}
@@ -247,8 +271,8 @@ function RunView() {
             ))}
 
             <TabPanel value="run" className="flex flex-col gap-6 outline-none">
-              <section className="grid grid-cols-1 gap-6 rounded-lg border border-line bg-bg-0 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-                <div className="h-96 min-w-0 rounded-md border border-line bg-bg-1 p-3">
+              <section className="grid grid-cols-1 items-start gap-6 border-line border-b pb-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+                <div className="h-96 min-w-0">
                   <ResidualChart
                     history={history}
                     floors={run?.convergence?.floor}
@@ -275,7 +299,7 @@ function RunView() {
                 )}
               </section>
 
-              <section className="rounded-lg border border-line bg-bg-0">
+              <section className="border-line border-b">
                 <Collapse
                   title="Plan"
                   meta={
@@ -321,7 +345,13 @@ function RunView() {
                     )
                   }
                 >
-                  {details.data && <OutputList outputs={details.data.outputs} />}
+                  {details.data && (
+                    <OutputList
+                      runId={runId}
+                      running={details.data.run.status === "running"}
+                      outputs={details.data.outputs}
+                    />
+                  )}
                 </Collapse>
                 <Collapse
                   title="Log"
@@ -349,16 +379,19 @@ function RunView() {
 
             <TabPanel value="case" className="flex flex-col gap-4 outline-none">
               <Snippet text={`autan run case.toml --mesh-info mesh-info.json`} />
-              <pre className="m-0 overflow-auto rounded-lg border border-line bg-bg-0 p-4 font-mono text-sm leading-6">
+              <pre className="m-0 overflow-auto rounded-md bg-bg-1 p-4 font-mono text-sm leading-6">
                 {details.data?.case_toml}
               </pre>
             </TabPanel>
 
-            <TabPanel
-              value="outputs"
-              className="rounded-lg border border-line bg-bg-0 px-4 outline-none"
-            >
-              {details.data && <OutputList outputs={details.data.outputs} />}
+            <TabPanel value="outputs" className="border-line border-y px-4 outline-none">
+              {details.data && (
+                <OutputList
+                  runId={runId}
+                  running={details.data.run.status === "running"}
+                  outputs={details.data.outputs}
+                />
+              )}
             </TabPanel>
           </div>
         </div>

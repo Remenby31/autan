@@ -93,7 +93,7 @@ class DeviceArray {
   }
   /// Copies `host` to positions [first, first + host.size()).
   void upload_part(std::span<const T> host, std::size_t first, stream_t stream = nullptr) {
-    if (first + host.size() > n_) {
+    if (first > n_ || host.size() > n_ - first) {
       throw std::invalid_argument("E1101: upload past the end of a device array of " +
                                   std::to_string(n_));
     }

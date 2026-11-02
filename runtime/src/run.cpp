@@ -26,6 +26,7 @@
 
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
+#include <sys/resource.h>
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
@@ -54,6 +55,33 @@ std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
 // Set by SIGINT and SIGTERM; the loop finalises the run as stopped.
 volatile std::sig_atomic_t stop_requested = 0;
+
+// The process's resident memory now, in bytes: VmRSS on Linux; 0 elsewhere.
+std::int64_t host_resident_bytes() {
+#if defined(__linux__)
+  std::ifstream status("/proc/self/status");
+  for (std::string line; std::getline(status, line);) {
+    if (line.starts_with("VmRSS:")) return std::stoll(line.substr(6)) * 1024;  // kB
+  }
+#endif
+  return 0;
+}
+
+// The process's resident memory at its peak so far, in bytes: VmHWM on Linux,
+// ru_maxrss elsewhere (bytes on macOS).
+std::int64_t host_peak_bytes() {
+#if defined(__linux__)
+  std::ifstream status("/proc/self/status");
+  for (std::string line; std::getline(status, line);) {
+    if (line.starts_with("VmHWM:")) return std::stoll(line.substr(6)) * 1024;  // kB
+  }
+  return 0;
+#else
+  rusage usage{};
+  getrusage(RUSAGE_SELF, &usage);
+  return static_cast<std::int64_t>(usage.ru_maxrss);
+#endif
+}
 extern "C" void request_stop(int /*signal*/) { stop_requested = 1; }
 
 class SignalGuard {
@@ -129,6 +157,7 @@ struct Prepared {
   SolverInput input;
   Mesh mesh;
   std::string mesh_hash;
+  std::string mesh_info;                     // MeshInfo of the mesh as read, before mesh.scale
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
@@ -140,6 +169,12 @@ struct Prepared {
   std::map<std::string, std::string> state_files;
   // initial_state: Density, VelocityX/Y/Z and Pressure of every cell, NaN in solid cells.
   std::optional<std::vector<io::Field>> initial;
+  // Formed on every rank before the ranks agree to start, so that a rank that
+  // cannot form them refuses with the others.
+  std::optional<Geometry> geometry = std::nullopt;
+  CellGroups cell_groups = {};
+  std::vector<std::int32_t> group_colours = {};
+  std::vector<std::int32_t> parts = {};  // each cell's rank on several ranks; empty on one
 };
 
 [[noreturn]] void start_mismatch(const std::string& code, const std::string& message,
@@ -219,6 +254,11 @@ bool is_averaging(const Json& a) {
          a["from_time"].is_number() && a.contains("to_time") && a["to_time"].is_number();
 }
 
+const Geometry& geometry_of(Prepared& p) {
+  if (!p.geometry) p.geometry = compute_geometry(p.mesh);
+  return *p.geometry;
+}
+
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
 // mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
@@ -242,6 +282,10 @@ void load_start(Prepared& p) {
   try {
     stored = io::read_solution(snapshot->path());
   } catch (const Error& e) {
+    if (e.code() == ErrorCode::io_external_reference) {
+      throw InputError(Diagnostic{
+          .code = "E0134", .message = e.what(), .path = "start.run", .data_json = e.data_json()});
+    }
     unusable(e.what());
   }
   Json metadata;
@@ -350,7 +394,6 @@ std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, st
 // document, then against the mesh and the zone, then each face of the zone paired with exactly
 // one row by centroid.
 void load_states(Prepared& p) {
-  std::optional<Geometry> geometry;
   const auto offsets = p.mesh.boundary_zone_offsets();
   for (std::size_t i = 0; i < p.input.boundaries.size(); ++i) {
     const auto& b = p.input.boundaries[i];
@@ -400,8 +443,7 @@ void load_states(Prepared& p) {
       fail("E0423", "the face states give zone '" + b.zone + "' another face count", ".path",
            {{"zone", b.zone}, {"expected", n}, {"found", z.faces}});
     }
-    if (!geometry) geometry = compute_geometry(p.mesh);
-    const auto& g = *geometry;
+    const Geometry& g = geometry_of(p);
     // Tolerance: 1e-9 times the largest extent of the bounding box of the zone's nodes.
     std::array<double, 3> lo{}, hi{};
     lo.fill(std::numeric_limits<double>::infinity());
@@ -547,7 +589,7 @@ void load_initial(Prepared& p) {
     extent = std::max(extent, *hi - *lo);
   }
   const double tol = 1e-9 * extent;
-  const Geometry g = compute_geometry(mesh);
+  const Geometry& g = geometry_of(p);
   const auto centroid = [&](index_t c) {
     const auto i = at(c);
     return std::array<double, 3>{g.cell_centroid_x[i], g.cell_centroid_y[i], g.cell_centroid_z[i]};
@@ -640,6 +682,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
              .mesh_hash = {},
+             .mesh_info = {},
              .face_zone = {},
              .monitor_zones = {},
              .factory = nullptr,
@@ -647,7 +690,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .start_averaging = {},
              .boundary_states = {},
              .state_files = {},
-             .initial = std::nullopt};
+             .initial = std::nullopt,
+             .geometry = std::nullopt,
+             .cell_groups = {},
+             .group_colours = {},
+             .parts = {}};
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
@@ -655,7 +702,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     throw InputError(Diagnostic{.code = error_code_string(e.code()),
                                 .message = e.what(),
                                 .path = "mesh.path",
-                                .data_json = "{}"});
+                                .data_json = e.data_json()});
   }
   if (p.mesh_hash != p.input.mesh_sha256) {
     throw InputError(Diagnostic{
@@ -671,6 +718,10 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
                                  std::to_string(ranks) + " ranks run the case");
   }
+  // solver-input.md, mesh.scale: the coordinates and periodic translations in
+  // metres once checked against the file, before any geometry or pairing.
+  p.mesh_info = io::mesh_info_json(p.mesh, p.mesh_hash);
+  if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
   if (p.input.start) load_start(p);
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
@@ -814,6 +865,18 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                                             {"device", in.device_kind}}
                                                  .dump()});
   }
+  const Geometry& geometry = geometry_of(p);
+  if (p.groups != nullptr && *p.groups) {
+    p.cell_groups = (*p.groups)(p.input, p.mesh, geometry);
+    p.group_colours = colour_cells(p.mesh, p.cell_groups.offsets, p.cell_groups.cells);  // E0140
+  }
+  // Every rank partitions the same mesh with the same seed (E0140 to E0143).
+  if (ranks > 1) {
+    p.parts = partition_cells(p.mesh, ranks,
+                              {.cell_weights = cell_cost_weights(p.mesh),
+                               .group_offsets = p.cell_groups.offsets,
+                               .group_cells = p.cell_groups.cells});
+  }
   return p;
 }
 
@@ -853,11 +916,13 @@ class Run final : public Log {
       : p_(p),
         comm_(comm),
         launched_(launched),
-        geometry_(compute_geometry(p.mesh)),
-        groups_(p.groups != nullptr && *p.groups ? (*p.groups)(p.input, p.mesh, geometry_)
-                                                 : CellGroups{}),
+        geometry_(std::move(*p.geometry)),
+        groups_(std::move(p.cell_groups)),
         local_(make_part()) {
-    if (p_.input.device_kind == "cuda") gpu_.emplace(comm_.local_rank());
+    if (p_.input.device_kind == "cuda") {
+      gpu_.emplace(comm_.local_rank());
+      host_at_device_start_ = host_resident_bytes();
+    }
     if (local_) {
       ghosts_ = comm_.ghost_exchange(*local_);
       if (p_.start) local_start_ = owned_start(*p_.start);
@@ -945,7 +1010,7 @@ class Run final : public Log {
       try {
         dir_ = std::make_unique<RunDirectory>(
             runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
-            io::mesh_info_json(p_.mesh, p_.mesh_hash),
+            p_.mesh_info,
             log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
                      Json{{"cells", p_.mesh.n_cells()},
                           {"faces", p_.mesh.n_faces()},
@@ -1010,6 +1075,8 @@ class Run final : public Log {
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
+      host_after_setup_ = host_peak_bytes();
+      if (gpu_) device_after_setup_ = gpu_->sample();
       set_floor();
       status = std::string(iterate(done));
     } catch (const std::exception& e) {
@@ -1046,10 +1113,10 @@ class Run final : public Log {
     if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
   }
 
-  // On several ranks, each runs its part of the mesh, partitioned by METIS
-  // with the face-count cost of each cell and the physics' groups kept
-  // whole; every rank partitions the same
-  // mesh with the same seed, so all agree on the parts (partitioning.md).
+  // On several ranks, each runs its part of the mesh, as prepare() cut it
+  // (p_.parts: METIS, the face-count cost of each cell, the physics' groups
+  // kept whole; every rank cuts the same mesh with the same seed, so all
+  // agree on the parts, partitioning.md).
   // On one rank, a mesh with periodic pairs runs on its one-part partition,
   // whose image ghosts make each periodic face an interior face; its owned
   // cells are the mesh's cells, in order. Otherwise, the mesh itself.
@@ -1060,13 +1127,8 @@ class Run final : public Log {
     // so that a physics finds the same global keys on any number of ranks.
     if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
       return std::nullopt;
-    std::vector<std::int32_t> parts(at(mesh.n_cells()), 0);
-    if (n > 1) {
-      parts = partition_cells(mesh, n,
-                              {.cell_weights = cell_cost_weights(mesh),
-                               .group_offsets = groups_.offsets,
-                               .group_cells = groups_.cells});
-    }
+    const std::vector<std::int32_t> parts =
+        n > 1 ? std::move(p_.parts) : std::vector<std::int32_t>(at(mesh.n_cells()), 0);
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1136,8 +1198,8 @@ class Run final : public Log {
     };
     of_physics(colour_cells(mesh), colours_, n_colours_);
     if (p_.groups == nullptr || !*p_.groups) return;
-    of_physics(colour_cells(mesh, groups_.offsets, groups_.cells), group_colours_,
-               n_group_colours_);
+    of_physics(p_.group_colours, group_colours_, n_group_colours_);
+    p_.group_colours = {};
     std::vector<index_t> owned_at(at(mesh.n_cells()), -1);  // by global id
     for (index_t c = 0; c < physics_mesh().n_owned_cells(); ++c) owned_at[z(ids[at(c)])] = c;
     std::vector<std::pair<std::int64_t, std::size_t>> order;  // (least global id, group)
@@ -1307,6 +1369,7 @@ class Run final : public Log {
       const double logged = log_seconds_;
       StepReport report = physics_->step(it);
       solve_seconds_ += seconds_since(stepping) - (log_seconds_ - logged);
+      if (gpu_) (void)gpu_->sample();  // outside the timed step
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -1543,6 +1606,44 @@ class Run final : public Log {
   // results.md, run.json `timing`: the process's wall-clock seconds and those
   // of the physics' steps and averaging (the slowest rank's), for this run's
   // iterations; null without any. Collective.
+  // The memory every rank used (#325): its host high-water mark and its
+  // device memory beyond what was free at its start, at their peak and once
+  // the physics was built, in bytes. Collective.
+  void log_memory() {
+    if (gpu_) (void)gpu_->sample();
+    const auto n = at(comm_.size());
+    const auto r = at(comm_.rank());
+    std::vector<ExactSum> slots(5 * n);
+    slots[5 * r].add(static_cast<double>(host_peak_bytes()));
+    slots[5 * r + 1].add(static_cast<double>(gpu_ ? gpu_->peak() : 0));
+    slots[5 * r + 2].add(static_cast<double>(host_after_setup_));
+    slots[5 * r + 3].add(static_cast<double>(device_after_setup_));
+    slots[5 * r + 4].add(static_cast<double>(host_at_device_start_));
+    comm_.sum(slots);
+    Json host = Json::array(), device = Json::array(), at_device_start = Json::array();
+    std::int64_t host_setup = 0, device_setup = 0;
+    for (std::size_t k = 0; k < n; ++k) {
+      host.push_back(static_cast<std::int64_t>(slots[5 * k].value()));
+      device.push_back(static_cast<std::int64_t>(slots[5 * k + 1].value()));
+      host_setup = std::max(host_setup, static_cast<std::int64_t>(slots[5 * k + 2].value()));
+      device_setup = std::max(device_setup, static_cast<std::int64_t>(slots[5 * k + 3].value()));
+      at_device_start.push_back(static_cast<std::int64_t>(slots[5 * k + 4].value()));
+    }
+    const auto most = [](const Json& values) {
+      std::int64_t m = 0;
+      for (const auto& v : values) m = std::max(m, v.get<std::int64_t>());
+      return m;
+    };
+    note("info", "solver", "memory", "",
+         Json{{"host_peak_bytes", most(host)},
+              {"device_peak_bytes", most(device)},
+              {"host_peak_bytes_by_rank", host},
+              {"device_peak_bytes_by_rank", device},
+              {"host_at_device_start_bytes_by_rank", at_device_start},
+              {"after_setup", {{"host", host_setup}, {"device", device_setup}}}}
+             .dump());
+  }
+
   Json timing(std::int64_t done) {
     const double solve = -comm_.min(-solve_seconds_);
     const std::int64_t iterations = done - (continued() ? p_.input.start->iterations : 0);
@@ -1586,6 +1687,7 @@ class Run final : public Log {
     }
     // Only rank 0 writes the solution: its status is the run's.
     status = comm_.broadcast(status);
+    log_memory();
     // A failed run is not timed (results.md).
     info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
@@ -1626,6 +1728,9 @@ class Run final : public Log {
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
+  std::int64_t host_after_setup_ = 0;      // host_peak_bytes() once the physics exists
+  std::int64_t device_after_setup_ = 0;    // the device's sample() then
+  std::int64_t host_at_device_start_ = 0;  // host_resident_bytes() once the CUDA stream exists
   bool stopped_by_signal_ = false;
   std::int64_t iteration_ = 0;
   std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the
@@ -1676,20 +1781,32 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   // or any other failure (E0704, exit 1).
   std::optional<Prepared> prepared;
   std::optional<Diagnostic> refusal;
+  bool failed = false;  // a failure (exit 1) rather than a refused input (exit 2)
   try {
     prepared.emplace(prepare(input_file, registry, comm->size()));
   } catch (const InputError& e) {
     refusal = e.diagnostic();
+  } catch (const Error& e) {
+    // A coded error that is not the input's (invalid groups of the physics: E0140).
+    failed = true;
+    refusal = Diagnostic{.code = error_code_string(e.code()),
+                         .message = e.what(),
+                         .path = "",
+                         .data_json = Json{{"rank", comm->rank()}}.dump()};
   } catch (const std::exception& e) {
+    failed = true;
     refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
   }
   // The key of the first refusing rank: -(2 rank + 1 if it failed).
   constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
-  const std::int64_t key =
-      refusal ? -(2 * std::int64_t{comm->rank()} + (refusal->code == "E0704" ? 1 : 0)) : none;
+  const std::int64_t key = refusal ? -(2 * std::int64_t{comm->rank()} + (failed ? 1 : 0)) : none;
   const std::int64_t first = comm->max(key);
   if (first != none) {
-    if (first == key) std::fprintf(err, "%s\n", refusal->json().c_str());
+    if (first == key) {
+      const std::string line = refusal->json() + "\n";
+      std::fwrite(line.data(), 1, line.size(), err);
+      std::fflush(err);
+    }
     return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
   }
   stop_requested = 0;
@@ -1704,10 +1821,10 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     }
     return run.execute();
   } catch (const std::exception& e) {
-    // The run could not be set up (a coded error keeps its code, invalid
-    // partition groups E0140), its directory created or its run.json written:
-    // nothing records the failure but this diagnostic. On several ranks, the
-    // others may wait in a collective call: every rank ends.
+    // The run could not be set up after the ranks agreed it could (a CUDA
+    // device, the ghost exchange), its directory created or its run.json
+    // written: nothing records the failure but this diagnostic, flushed
+    // before the others, which may wait in a collective call, are ended.
     // Every rank may fail here at once: each line goes out in one write, so
     // that the launcher's merged stderr keeps lines whole.
     const auto* coded = dynamic_cast<const Error*>(&e);

@@ -364,6 +364,48 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     } catch (const std::invalid_argument& e) {
       out[6] = std::string_view(e.what()).starts_with("E1106") ? 1 : 0;
     }
+    // A range whose end wraps around size_t is refused, not copied.
+    gpu::DeviceArray<double> small(8);
+    const double two[]{1.0, 2.0};
+    try {
+      small.upload_part(two, std::size_t(-1));
+      out[7] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[7] = std::string_view(e.what()).starts_with("E1101") ? 1 : 0;
+    }
+    // Weights given after release_host() reach the device in the sliced layout (the reference
+    // mesh places them from the stencil itself); a pointer bound before keeps the old ones.
+    struct Weights {
+      autan::kernels::Topology topo;
+      const double* stencil_lsq_weight = nullptr;
+    } before, after, expected;
+    lean.bind(before);
+    lean.release_host();
+    std::vector<double> doubled(weights);
+    for (auto& w : doubled) w *= 2.0;
+    lean.set_stencil_weights(doubled);
+    lean.bind(after);
+    auto full =
+        autan::kernels::cell_stencil(m->mesh, m->packed, autan::kernels::StencilKind::face2);
+    gpu::DeviceMesh ref(m->mesh, m->packed, &full,
+                        {.block = 128,
+                         .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                         .stencil_slice = 4});
+    ref.bind(expected);
+    const std::size_t n = 3 * static_cast<std::size_t>(ref.topology().n_stencil);
+    const auto host = [n](const double* p) {
+      std::vector<double> v(n);
+      gpu::check(cudaMemcpy(v.data(), p, sizeof(double) * n, cudaMemcpyDeviceToHost), "download");
+      return v;
+    };
+    const auto want = host(expected.stencil_lsq_weight);
+    std::vector<double> want2(want);
+    for (auto& w : want2) w *= 2.0;
+    out[8] = after.stencil_lsq_weight != before.stencil_lsq_weight &&
+                     host(after.stencil_lsq_weight) == want2 &&
+                     host(before.stencil_lsq_weight) == want
+                 ? 1
+                 : 0;
   });
 }
 

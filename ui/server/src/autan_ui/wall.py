@@ -3,17 +3,29 @@
 import json
 import os
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import h5py
 import numpy as np
 import numpy.typing as npt
+from autan import cgns
 from autan.errors import Location
 from autan.schema import CaseSpec
 from autan.solver_input import freestream_state
 
 from autan_ui.confine import Folder
 from autan_ui.surface import Zone, encode
+
+
+@contextmanager
+def solution(folder: Folder) -> Iterator[h5py.File]:
+    """The run's solution.cgns, opened through the run's folder and read by the SDK's
+    `autan.cgns.open_file`, which refuses (`OutsideFileError`, a ValueError) a file whose data
+    lives in other files: reading it never leaves the run directory."""
+    with os.fdopen(folder.open("solution.cgns"), "rb") as file, cgns.open_file(file) as tree:
+        yield tree
 
 
 def _data(group: h5py.Group) -> npt.NDArray[Any]:
@@ -40,7 +52,7 @@ def wall_surface(folder: Folder) -> bytes:
     q_inf = 0.5 * state.density * state.speed**2
     # An inviscid solution has no wall shear: its zero is not a skin friction to show.
     viscous = case.physics.turbulence.model != "inviscid"
-    with os.fdopen(folder.open("solution.cgns"), "rb") as file, h5py.File(file, "r") as tree:
+    with solution(folder) as tree:
         base = tree["Base"]
         zone = base["Zone"]
         names = json.loads(_text(base["ZoneNames"]))["boundary"]
