@@ -271,10 +271,12 @@ def test_ringleb_family_carries_the_exact_states_of_its_boundary(tmp_path: Path)
                 assert tangential.max() < 4.0 * h
 
 
-def _zone_faces(mesh: FaceMesh, name: str, axis: int, shift: float) -> set[tuple[float, ...]]:
+def _zone_faces(
+    mesh: FaceMesh, name: str, axis: int, shift: float
+) -> set[tuple[tuple[float, ...], ...]]:
     """The faces of zone `name`, each its sorted nodes moved by `shift` along `axis`."""
     zone = next(z for z in mesh.zones if z.name == name)
-    out = set()
+    out: set[tuple[tuple[float, ...], ...]] = set()
     for f in range(zone.start, zone.start + zone.count):
         p = mesh.points[mesh.face(f)].copy()
         p[:, axis] += shift
@@ -322,6 +324,7 @@ def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> N
         for corners in _zone_polygons(coarse, "zmin"):
             k = len(corners)
             mid = [0.5 * (corners[i] + corners[(i + 1) % k]) for i in range(k)]
+            parts: list[tuple[np.ndarray, ...]]
             if k == 3:
                 parts = [
                     (corners[0], mid[0], mid[2]),
