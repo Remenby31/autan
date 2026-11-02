@@ -57,13 +57,13 @@ export function groupByStudy(
 export function studies(
   registry: RunRegistry | undefined,
   limit = 8,
-): { name: string; label: string; ids: string[] }[] {
-  return groupByStudy(registry?.runs ?? [], registry?.summaries).flatMap(({ name, runs }) => {
+): { key: string; name: string; label: string; ids: string[] }[] {
+  return groupByStudy(registry?.runs ?? [], registry?.summaries).flatMap(({ key, name, runs }) => {
     const label = study(runs.map((r) => registry?.summaries[r.run_id]?.settings));
     const ids = [...runs]
       .sort((a, b) => b.started.localeCompare(a.started))
       .slice(0, limit)
       .map((r) => r.run_id);
-    return label && runs.length > 1 ? [{ name, label, ids }] : [];
+    return label && runs.length > 1 ? [{ key, name, label, ids }] : [];
   });
 }

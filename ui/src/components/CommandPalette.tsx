@@ -120,10 +120,10 @@ export function CommandPalette({
             <Command.Group heading="Compare a study">
               {offered.map((s) => (
                 <Item
-                  key={s.name}
-                  // A study is one case name: its value is that name, quoted, which stays the same
-                  // as runs come and never reads as another study's; its label is searched too.
-                  value={`compare study ${JSON.stringify(s.name)}`}
+                  key={s.key}
+                  // Its value ends with the study's key: the same as runs come, and another
+                  // study's never, even under the same case name; name and label are searched.
+                  value={`compare study ${JSON.stringify(s.name)} ${s.key}`}
                   keywords={["compare", s.name, s.label]}
                   icon={<GitCompareArrows className="size-4" />}
                   title={`${s.name} · ${s.label}`}
