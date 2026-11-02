@@ -313,10 +313,32 @@ int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_
     } d;
     double own = 0.0;
     d.cell_volume = &own;
-    DeviceMesh dm(*m, 128);
+    // Staged in chunks of 7 values, so that every field crosses chunk boundaries.
+    autan::kernels::DeviceMesh dm(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
     dm.bind(d);
     out[0] = d.face_area != nullptr ? 1 : 0;
     out[1] = d.cell_volume == &own ? 1 : 0;
+    std::vector<double> area(m->packed.face_area.size());
+    gpu::check(
+        cudaMemcpy(area.data(), d.face_area, sizeof(double) * area.size(), cudaMemcpyDeviceToHost),
+        "download");
+    out[2] = area == m->packed.face_area ? 1 : 0;
+    // After release_host(): an uploaded field still binds, one never uploaded is refused.
+    dm.release_host();
+    Data again{};
+    again.cell_volume = &own;
+    dm.bind(again);
+    out[3] = again.face_area == d.face_area ? 1 : 0;
+    struct Late {
+      autan::kernels::Topology topo;
+      const double* cell_centroid = nullptr;
+    } late;
+    try {
+      dm.bind(late);
+      out[4] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[4] = std::string_view(e.what()).starts_with("E1101") ? 1 : 0;
+    }
   });
 }
 

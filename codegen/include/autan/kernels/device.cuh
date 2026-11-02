@@ -91,6 +91,15 @@ class DeviceArray {
     check(detail::to_device(p_, host.data(), n_ * sizeof(T), stream), "upload");
     check(detail::synchronize(stream), "upload");
   }
+  /// Copies `host` to positions [first, first + host.size()).
+  void upload_part(std::span<const T> host, std::size_t first, stream_t stream = nullptr) {
+    if (first + host.size() > n_) {
+      throw std::invalid_argument("E1101: upload past the end of a device array of " +
+                                  std::to_string(n_));
+    }
+    check(detail::to_device(p_ + first, host.data(), host.size() * sizeof(T), stream), "upload");
+    check(detail::synchronize(stream), "upload");
+  }
   void download(std::span<T> host, stream_t stream = nullptr) const {
     if (host.size() != n_) {
       throw std::invalid_argument("E1101: download of a device array of " + std::to_string(n_) +
@@ -130,12 +139,18 @@ class DeviceMesh {
     /// in their global orientation), for results that do not depend on the partition; the
     /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
     const GlobalKeys* global = nullptr;
+    /// Values converted and uploaded per step when bind() stages built-in geometry: the host
+    /// holds at most one such chunk in the device type beside the FP64 geometry.
+    std::size_t upload_chunk = std::size_t(1) << 20;
   };
 
-  /// `stencil` may be null (no stencil reductions); it is copied.
-  DeviceMesh(const Mesh& mesh, const PackedGeometry& geometry, const CellStencil* stencil,
-             Options options)
-      : geometry_(geometry), stream_(options.stream) {
+  /// `geometry` is kept until release_host() (move it in to avoid a copy); `stencil` may be
+  /// null (no stencil reductions) and is read during construction only, its weights kept.
+  DeviceMesh(const Mesh& mesh, PackedGeometry geometry, const CellStencil* stencil, Options options)
+      : geometry_(std::move(geometry)), chunk_(options.upload_chunk), stream_(options.stream) {
+    if (chunk_ == 0) {
+      throw std::invalid_argument("E1101: DeviceMesh upload_chunk must be at least 1");
+    }
     Topology host = kernels::topology(mesh.view());
     GlobalOrder order;
     if (options.global != nullptr) {
@@ -146,23 +161,28 @@ class DeviceMesh {
     }
     const auto& twins = order.twin;
     host.incidence_twin = twins.data();
+    // The sliced stencil is built here; a CSR one is read in place.
+    CellStencil sliced_stencil;
+    const CellStencil* st = stencil;
     if (stencil != nullptr) {
       csr_entries_ = stencil->entries.size();
       if (options.stencil_slice > 0) {
         auto s = sliced(*stencil, options.stencil_slice);
-        stencil_ = std::move(s.stencil);
+        sliced_stencil = std::move(s.stencil);
         position_ = std::move(s.position);
         length_ = std::move(s.length);
         host.stencil_stride = s.stride;
         host.stencil_length = length_.data();
+        st = &sliced_stencil;
+        geometry_.stencil_lsq_weight = std::move(sliced_stencil.lsq_weight);
       } else {
-        stencil_ = *stencil;
+        geometry_.stencil_lsq_weight = stencil->lsq_weight;
       }
-      geometry_.stencil_lsq_weight = stencil_.lsq_weight;
-      host.n_stencil = static_cast<offset_t>(stencil_.entries.size());
-      host.stencil_offsets = stencil_.offsets.data();
-      host.stencil = stencil_.entries.data();
-      host.stencil_twin = stencil_.twin.data();
+      stencil_entries_n_ = st->entries.size();
+      host.n_stencil = static_cast<offset_t>(st->entries.size());
+      host.stencil_offsets = st->offsets.data();
+      host.stencil = st->entries.data();
+      host.stencil_twin = st->twin.data();
     }
     const auto nf = static_cast<std::size_t>(host.n_faces);
     owner_ = copy(std::span(host.owner, nf));
@@ -186,9 +206,9 @@ class DeviceMesh {
     }
     topo_.rank_independent = options.global != nullptr;
     if (stencil != nullptr) {
-      stencil_offsets_ = copy(std::span<const offset_t>(stencil_.offsets));
-      stencil_entries_ = copy(std::span<const index_t>(stencil_.entries));
-      stencil_twin_ = copy(std::span<const offset_t>(stencil_.twin));
+      stencil_offsets_ = copy(std::span<const offset_t>(st->offsets));
+      stencil_entries_ = copy(std::span<const index_t>(st->entries));
+      stencil_twin_ = copy(std::span<const offset_t>(st->twin));
       topo_.stencil_offsets = stencil_offsets_.get();
       topo_.stencil = stencil_entries_.get();
       topo_.stencil_twin = stencil_twin_.get();
@@ -258,7 +278,7 @@ class DeviceMesh {
     if (position_.empty()) {
       geometry_.stencil_lsq_weight.assign(weights.begin(), weights.end());
     } else {
-      const std::size_t n = stencil_.entries.size();
+      const std::size_t n = stencil_entries_n_;
       geometry_.stencil_lsq_weight.assign(3 * n, 0.0);
       for (std::size_t k = 0; k < csr_entries_; ++k) {
         for (std::size_t i = 0; i < 3; ++i) {
@@ -277,6 +297,14 @@ class DeviceMesh {
     }
   }
 
+  /// Frees the host copy of the built-in geometry once the physics has bound its Data structs:
+  /// fields already uploaded stay bound; binding one not uploaded yet then throws E1101.
+  /// set_stencil_weights() still works (it brings its own weights).
+  void release_host() {
+    geometry_ = PackedGeometry{};
+    released_ = true;
+  }
+
  private:
   template <class T>
   DeviceArray<T> copy(std::span<const T> host) {
@@ -288,17 +316,28 @@ class DeviceMesh {
     const auto key = std::make_pair(name, std::type_index(typeid(T)));
     auto it = fields_.find(key);
     if (it == fields_.end()) {
-      const auto values = converted<T>(host);
-      DeviceArray<std::byte> a(values.size() * sizeof(T), stream_);
-      a.upload(std::as_bytes(std::span<const T>(values)), stream_);
+      if (released_ && host.empty()) {
+        throw std::invalid_argument("E1101: " + name +
+                                    " bound after release_host() without being uploaded before");
+      }
+      DeviceArray<std::byte> a(host.size() * sizeof(T), stream_);
+      std::vector<T> part;
+      for (std::size_t first = 0; first < host.size(); first += chunk_) {
+        const std::size_t count = std::min(chunk_, host.size() - first);
+        part.assign(host.begin() + static_cast<std::ptrdiff_t>(first),
+                    host.begin() + static_cast<std::ptrdiff_t>(first + count));
+        a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
+      }
       it = fields_.emplace(key, std::move(a)).first;
     }
     return reinterpret_cast<const T*>(it->second.get());
   }
 
   PackedGeometry geometry_;
-  CellStencil stencil_;
   std::size_t csr_entries_ = 0;
+  std::size_t stencil_entries_n_ = 0;  // entries of the device stencil (sliced: with padding)
+  std::size_t chunk_ = 0;
+  bool released_ = false;
   std::vector<offset_t> position_;  // sliced layout: where each CSR entry went
   std::vector<index_t> length_;
   stream_t stream_;

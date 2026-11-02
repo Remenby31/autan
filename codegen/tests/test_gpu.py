@@ -213,7 +213,7 @@ def test_device_mesh_binds_built_in_geometry_and_leaves_physics_datasets(backend
     if backend == "metal":
         pytest.skip("DeviceMesh is CUDA/HIP (autan/kernels/device.cuh)")
     m = s.mesh(meshes.build("hex", 3))
-    assert s.gpu_bind_check(m) == (True, True)
+    assert s.gpu_bind_check(m) == (True,) * 5
 
 
 @pytest.mark.parametrize("n", [0, 1, 255, 256, 257, 65_537, 1_000_003])

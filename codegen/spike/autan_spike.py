@@ -488,12 +488,14 @@ def set_stencil_slice(slice_: int) -> None:
     lib().autan_spike_set_stencil_slice(ctypes.c_int(slice_))
 
 
-def gpu_bind_check(m: Mesh) -> tuple[bool, bool]:
-    """(built-in face_area bound, a physics' own writable cell_volume left alone) by DeviceMesh."""
+def gpu_bind_check(m: Mesh) -> tuple[bool, ...]:
+    """DeviceMesh: (built-in face_area bound, a physics' own writable cell_volume left alone,
+    face_area uploaded in chunks equal to the host's, still bound after release_host(), a field
+    first bound after release_host() refused with E1101)."""
     err = ctypes.create_string_buffer(512)
-    out = np.zeros(2, dtype=np.int32)
+    out = np.zeros(5, dtype=np.int32)
     _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
-    return bool(out[0]), bool(out[1])
+    return tuple(bool(v) for v in out)
 
 
 def gpu_reductions(x: F64, flags: npt.NDArray[np.bool_]) -> tuple[float, float, int, int]:
