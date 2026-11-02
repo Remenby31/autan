@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from autan import cgns
 from autan.cli import main
-from autan.units import metres_per
+from autan.units import metres_per, ureg
 
 from tests.conftest import ROOT, identity_of
 
@@ -311,7 +311,13 @@ def _box(
     info = tmp_path / "box.meshinfo.json"
     info.write_text(
         subprocess.run(
-            [str(MESH_INFO), "--json", "--scale", str(metres_per(mesh_unit)), str(PERIODIC_BOX)],
+            [
+                str(MESH_INFO),
+                "--json",
+                "--scale",
+                str(metres_per(ureg.Unit(mesh_unit))),
+                str(PERIODIC_BOX),
+            ],
             capture_output=True,
             text=True,
             check=True,
