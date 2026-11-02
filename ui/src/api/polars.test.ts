@@ -107,7 +107,9 @@ test.each<[string, Patch, Patch]>([
 test("another mesh is another series, named by its hash", () => {
   const result = polars([
     compared("A"),
-    compared("B", undefined, undefined, { mesh: { path: "/m/naca.cgns", sha256: "9f2c11d", groups_sha256: null } }),
+    compared("B", undefined, undefined, {
+      mesh: { path: "/m/naca.cgns", sha256: "9f2c11d", groups_sha256: null },
+    }),
   ]);
   expect(result.series.map((s) => s.label)).toEqual(["mesh 0edcff6", "mesh 9f2c11d"]);
 });
