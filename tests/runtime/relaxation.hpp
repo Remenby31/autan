@@ -67,8 +67,13 @@ struct RelaxationOptions {
   /// (excluded; 0: never), where it is 1e-3.
   std::int64_t silent_equation = -1;
   std::int64_t wake_at = 0;
-  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
-  std::vector<double> scales{};  ///< residual_scales(); empty: none
+  std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at 1e-15
+  /// Round-off floors (StepReport::floor_ratio), evaluated at the iterations that are multiples
+  /// of `floor_every`: cell c's floor for equation e is floor (e + 1)(1 + 2g / N), g its global id
+  /// and N the cells of every rank, its residual the equation's. 0: none.
+  double floor = 0.0;
+  int floor_every = 1;
+  bool floor_overcount = false;  ///< one cell more at its floor than were evaluated
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
   /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
@@ -103,6 +108,8 @@ struct RelaxationOptions {
     read("AUTAN_TEST_GROUPS", o.groups);
     read("AUTAN_TEST_TOUCH_AT", o.touch_at);
     read("AUTAN_TEST_TOUCH_RANK", o.touch_rank);
+    read("AUTAN_TEST_FLOOR", o.floor);
+    read("AUTAN_TEST_FLOOR_EVERY", o.floor_every);
     if (const char* v = std::getenv("AUTAN_TEST_TOUCH_FILE")) o.touch_file = v;
     return o;
   }
@@ -212,6 +219,7 @@ class Relaxation final : public autan::runtime::Physics {
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
       report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
     }
+    if (options_.floor > 0.0 && iteration % options_.floor_every == 0) floors(report);
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
     }
@@ -229,6 +237,28 @@ class Relaxation final : public autan::runtime::Physics {
       }
     }
     return report;
+  }
+
+  void floors(autan::runtime::StepReport& report) const {
+    const auto& mesh = context_.mesh;
+    std::array<autan::runtime::ExactSum, 1> cells;
+    cells[0].add(static_cast<double>(mesh.n_owned_cells()));
+    context_.ranks.sum(cells);
+    const double n = cells[0].value();
+    report.floor_evaluated = mesh.n_owned_cells();
+    for (std::size_t e = 0; e < report.residuals.size(); ++e) {
+      const double r = report.residuals[e];
+      double ratio = 0.0;
+      std::int64_t at = 0;
+      for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+        const auto g = static_cast<double>(mesh.cell_global_id()[static_cast<std::size_t>(c)]);
+        const double floor = options_.floor * static_cast<double>(e + 1) * (1.0 + 2.0 * g / n);
+        ratio = std::max(ratio, r / floor);
+        at += r <= floor ? 1 : 0;
+      }
+      report.floor_ratio.push_back(ratio);
+      report.floor_cells.push_back(options_.floor_overcount ? mesh.n_owned_cells() + 1 : at);
+    }
   }
 
   // The exchange must give every ghost (a periodic image) its owner's value:
@@ -277,8 +307,6 @@ class Relaxation final : public autan::runtime::Physics {
       }
     }
   }
-
-  [[nodiscard]] std::vector<double> residual_scales() const override { return options_.scales; }
 
   [[nodiscard]] std::vector<autan::io::Field> fields(bool mean) const override {
     if (options_.throw_in_fields) throw std::runtime_error("relaxation: requested fields failure");

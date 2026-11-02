@@ -1478,42 +1478,68 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }
 
-TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
-  // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
-  // 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1), reached at k = 12 for every
-  // equation, before the 8-order drop at k = 28 (case-schema.md#time).
-  const std::string precision = GENERATE("fp32+acc64", "fp64");
-  CAPTURE(precision);
-  autan_test::RelaxationOptions scaled;
-  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
-  const Outcome o = run(input([&](Json& d) { d["precision"] = precision; }), scaled);
-  REQUIRE(o.status == ExitStatus::finished);
-  const Json info = Json::parse(read(o.run / "run.json"));
-  CHECK(info["status"] == "converged");
-  if (precision == "fp64") {
-    CHECK(info["iterations"] == 28);
-    CHECK(info["convergence"].is_null());
-    return;
-  }
-  CHECK(info["iterations"] == 12);
+TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged", "[runtime]") {
+  // Residuals (e + 1) 2^-(k-1) of every cell; floors 2^-12 (e + 1)(1 + 2g / N) for the cell of
+  // global id g among N: the largest ratio, at g = 0, is 2^(13-k), and the cells at their floor
+  // at k = 12 are those with 2g >= N. The 8-order drop comes at k = 28 (case-schema.md#time).
+  const auto cells = static_cast<double>(autan::io::read_mesh(mesh_path).n_cells());
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
-  REQUIRE(info["convergence"]["floor"].size() == equations.size());
-  for (std::size_t e = 0; e < equations.size(); ++e) {
-    CHECK(info["convergence"]["floor"][equations[e]] ==
-          std::ldexp(0.5, -23) * 1e4 * static_cast<double>(e + 1));
-  }
-
-  // A physics without scales has no floor; one with the wrong count fails.
-  const Outcome plain = run(input());
-  CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
-  autan_test::RelaxationOptions short_scales;
-  short_scales.scales = {1.0};
-  const Outcome bad = run(input(), short_scales);
+  const auto convergence = [&](const Json& info, std::int64_t iteration, double ratio,
+                               double at_floor) {
+    CHECK(info["convergence"]["iteration"] == iteration);
+    for (const auto& e : equations) {
+      CAPTURE(e);
+      CHECK(info["convergence"]["max_ratio"][e] == ratio);
+      CHECK(info["convergence"]["cells_at_floor"][e] == at_floor);
+    }
+  };
+  autan_test::RelaxationOptions floored;
+  floored.factor = 0.5;
+  floored.floor = std::ldexp(1.0, -12);
+  const Outcome o = run(input([](Json& d) { d["precision"] = "fp32+acc64"; }), floored);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "floor");
+  CHECK(info["iterations"] == 13);
+  convergence(info, 13, 1.0, 1.0);
+  // One iteration short of it, the budget ends the run with half the cells at their floor.
+  const Outcome cut = run(input([](Json& d) {
+                            d["precision"] = "fp32+acc64";
+                            d["time"]["max_iterations"] = 12;
+                          }),
+                          floored);
+  const Json cut_info = Json::parse(read(cut.run / "run.json"));
+  CHECK(cut_info["status"] == "completed");
+  convergence(cut_info, 12, 2.0, std::floor(cells / 2.0) / cells);
+  // Floors evaluated every 5 iterations can delay the stop, never bring it forward: it comes at
+  // the first evaluation at or after the stop of an evaluation at every iteration.
+  autan_test::RelaxationOptions sparse = floored;
+  sparse.floor_every = 5;
+  const Json late = Json::parse(
+      read(run(input([](Json& d) { d["precision"] = "fp32+acc64"; }), sparse).run / "run.json"));
+  CHECK(late["status"] == "floor");
+  CHECK(late["iterations"] == 15);
+  convergence(late, 15, 0.25, 1.0);
+  // The drop before the floor converges; fp64 has no floor.
+  autan_test::RelaxationOptions low = floored;
+  low.floor = std::ldexp(1.0, -40);
+  const Json dropped = Json::parse(
+      read(run(input([](Json& d) { d["precision"] = "fp32+acc64"; }), low).run / "run.json"));
+  CHECK(dropped["status"] == "converged");
+  CHECK(dropped["iterations"] == 28);
+  convergence(dropped, 28, std::ldexp(1.0, 13), 0.0);
+  const Json wide = Json::parse(
+      read(run(input([](Json& d) { d["precision"] = "fp64"; }), floored).run / "run.json"));
+  CHECK(wide["status"] == "converged");
+  CHECK(wide["iterations"] == 28);
+  CHECK(wide["convergence"].is_null());
+  // Floors out of range fail the run, in fp64 too, where they set nothing.
+  autan_test::RelaxationOptions overcounting = floored;
+  overcounting.floor_overcount = true;
+  const Outcome bad = run(input([](Json& d) { d["precision"] = "fp64"; }), overcounting);
   CHECK(bad.status == ExitStatus::failed);
-  const Json failed = Json::parse(read(bad.run / "run.json"));
-  CHECK(failed["status"] == "failed");
-  CHECK(failed["diagnostics"][0]["code"] == "E0704");
+  CHECK(Json::parse(read(bad.run / "run.json"))["diagnostics"][0]["code"] == "E0704");
 }
 
 #ifdef AUTAN_MPIEXEC
@@ -1732,6 +1758,22 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(lines_of(many_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
   CHECK(solution_field(many_keyed / "solution.cgns", "FlowSolution", "Pressure") ==
         solution_field(one_keyed.run / "solution.cgns", "FlowSolution", "Pressure"));
+  // The round-off floors, judged over every rank: the record of one rank, some cells at their
+  // floor and some not when the budget ends the run.
+  Json floored = doc;
+  floored["precision"] = "fp32+acc64";
+  autan_test::RelaxationOptions flooring = options;
+  flooring.floor = 0.2;
+  const Outcome one_floored = run(floored, flooring);
+  REQUIRE(one_floored.status == ExitStatus::finished);
+  const Json record = Json::parse(read(one_floored.run / "run.json"))["convergence"];
+  CHECK(record["cells_at_floor"]["density"] > 0.0);
+  CHECK(record["cells_at_floor"]["density"] < 1.0);
+  const fs::path many_floored =
+      run_on_ranks(floored, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_FLOOR=0.2"});
+  CHECK(Json::parse(read(many_floored / "run.json"))["convergence"] == record);
   const auto has_event = [](const fs::path& run_dir) {
     std::ifstream in(run_dir / "log.jsonl");
     for (std::string line; std::getline(in, line);) {

@@ -237,36 +237,6 @@ class EulerPhysics final : public runtime::Physics {
     return out;
   }
 
-  // Phi_k = f_k sqrt(sum_i A_i^2 / N), A_i the surface of cell i and f_k the face flux magnitude
-  // of the freestream with q = |v| + c: rho q, rho q^2 (each momentum) and rho H q
-  // (docs/design/euler.md, Precision).
-  [[nodiscard]] std::vector<double> residual_scales() const override {
-    const auto& mesh = ctx_.mesh;
-    const auto& g = ctx_.geometry;
-    std::vector<double> surface(n_, 0.0);
-    for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
-      surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
-      if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
-        surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
-      }
-    }
-    // Over the owned cells of every rank, as the history's norms.
-    std::array<runtime::ExactSum, 2> sums;
-    for (std::size_t c = 0; c < owned_; ++c) {
-      sums[0].add(surface[c] * surface[c]);
-      sums[1].add(1.0);
-    }
-    ctx_.ranks.sum(sums);
-    const double area = std::sqrt(sums[0].value() / sums[1].value());
-    const auto& fs = ctx_.input.freestream;
-    const double c = std::sqrt(gas_.gamma * fs.pressure / fs.density);
-    const double q = fs.speed + c;
-    const double h = c * c / (gas_.gamma - 1.0) + 0.5 * fs.speed * fs.speed;
-    const double mass = fs.density * q * area;
-    const double momentum = mass * q;
-    return {mass, momentum, momentum, momentum, mass * h};
-  }
-
   [[nodiscard]] std::vector<io::Field> fields(bool mean) const override {
     sync();
     std::vector<io::Field> out;
