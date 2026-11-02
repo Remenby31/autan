@@ -204,6 +204,9 @@ class MeshInfo(_Strict):
             problems.append("quality.multigrid gives cells and edges for the same levels")
         if hierarchy.cells_by_level[0] != self.counts.cells:
             problems.append("quality.multigrid's finest level is the mesh's cells")
+        interior = self.counts.faces - sum(zone.faces for zone in self.boundary_zones)
+        if hierarchy.edges_by_level[0] != interior:
+            problems.append("quality.multigrid's finest level has the mesh's interior faces")
         if self.counts.face_nodes < 3 * self.counts.faces:
             problems.append("counts.face_nodes is below 3 nodes per face")
         if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):

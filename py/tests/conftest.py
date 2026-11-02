@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import hashlib
 import json
@@ -85,6 +86,13 @@ def mesh_variant() -> Callable[..., autan.MeshInfo]:
     def build(name: str, edit: Callable[[dict[str, Any]], None]) -> autan.MeshInfo:
         document = copy.deepcopy(mesh_document(name))
         edit(document)
+        # The finest multigrid level's edges are the interior faces the edit leaves, when the
+        # edit keeps what they depend on (some edits break the document on purpose).
+        with contextlib.suppress(KeyError, TypeError, IndexError):
+            boundary = sum(zone["faces"] for zone in document["boundary_zones"])
+            document["quality"]["multigrid"]["edges_by_level"][0] = (
+                document["counts"]["faces"] - boundary
+            )
         return autan.MeshInfo.from_document(document, autan.Location(file=name))
 
     return build
